@@ -1,0 +1,6 @@
+# Kernel, modules and firmware staged by tools/build-kernel.sh
+/prebuilt/
+# make-payload.sh output
+/tools/payload/
+# Preinstalled app APKs downloaded by tools/fetch-apps.sh
+/apps/apks/
