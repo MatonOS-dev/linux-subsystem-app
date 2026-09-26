@@ -19,4 +19,8 @@ interface ISystemBridge {
     String call(String target, String command, String jsonArgs);
     void subscribe(String target, String topic, IMatonosListener listener);
     void unsubscribe(String target, String topic, IMatonosListener listener);
+    boolean navigateBack(boolean longPress);
+    boolean navigateHome();
+    boolean navigateRecents();
+    byte[] getRecentTaskThumbnail(int taskId);
 }
