@@ -15,7 +15,6 @@ interface ISystemBridge {
     boolean moveTaskToFront(int taskId);
     boolean setTaskFullscreen(int taskId);
     boolean removeRecentTask(int taskId);
-    Bundle prepareShellOverlay(in Bundle request);
     String call(String target, String command, String jsonArgs);
     void subscribe(String target, String topic, IMatonosListener listener);
     void unsubscribe(String target, String topic, IMatonosListener listener);
