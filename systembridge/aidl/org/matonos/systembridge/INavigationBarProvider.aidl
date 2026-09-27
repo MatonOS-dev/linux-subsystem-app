@@ -8,4 +8,5 @@ interface INavigationBarProvider {
     void attach(IBinder hostToken, int displayId, int widthPx, int heightPx,
             INavigationBarHostCallback callback);
     void detach();
+    oneway void setFallbackOverlayEnabled(boolean enabled);
 }
