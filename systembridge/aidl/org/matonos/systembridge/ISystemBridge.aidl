@@ -23,4 +23,7 @@ interface ISystemBridge {
     boolean navigateHome();
     boolean navigateRecents();
     byte[] getRecentTaskThumbnail(int taskId);
+    // The provider is preset to Shelf but disabled until a user selects it.
+    String getNavigationBarProviderState();
+    boolean setNavigationBarProvider(String packageName, boolean enabled);
 }
