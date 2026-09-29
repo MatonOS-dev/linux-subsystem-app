@@ -34,19 +34,24 @@ daemon. The included `org.matonos.Test.Echo` hook is only a smoke-test service.
   `Hello`, `RequestName`, `ReleaseName`, `GetNameOwner`, `NameHasOwner`,
   `ListNames`, `ListActivatableNames`, `AddMatch`, `RemoveMatch`,
   `GetConnectionUnixUser`, `GetConnectionUnixProcessID`, and `GetId`.
+- `StartServiceByName` is implemented but never activates an unknown service:
+  it is policy checked and returns `ServiceUnknown` for configured names that
+  have no owner.
 - `NameOwnerChanged`, `NameAcquired`, and `NameLost`; Peer `Ping` and
   `GetMachineId`; Introspectable `Introspect`.
 - Default-deny `own`/`talk` checks; unicast request/reply/error routing and
   broadcast signal delivery for supported match fields (`type`, `sender`,
-  `interface`, `member`, `path`, `destination`).
+  `interface`, `member`, `path`, `destination`, and string `argN` /
+  `argNnamespace`).
 - All Flatpak and systemd bus names and PackageKit bus names are denied.
+- Set `MATONOS_DBUS_TRACE=1` on the broker to log every inbound method call
+  (sender, destination, path, interface, member, and arguments) for app
+  compatibility investigations. Tracing is off by default.
 
-No GTK/Qt/Electron app has been exercised yet. The broker is intentionally
-not a general replacement for dbus-daemon yet.
-It has no queued name ownership, activatable services, argument match rules,
-credentials for FDs, monitors, eavesdrop, activation, or cross-stub relay.
-The first real GTK/Qt/Electron workload will determine which additions are
-needed. Portal implementations and Android mappings are outside this core.
+The broker is intentionally not a general replacement for dbus-daemon yet.
+It has no queued name ownership, activatable services, non-string argument
+matches, credentials for FDs, monitors, eavesdrop, or cross-stub relay. Portal
+implementations and Android mappings are outside this core.
 
 ## Test evidence
 
@@ -69,11 +74,72 @@ busctl --address="$DBUS_SESSION_BUS_ADDRESS" call org.freedesktop.DBus \
   /org/freedesktop/DBus org.freedesktop.DBus ListActivatableNames
 ```
 
-## Soong / image integration
+### Real host application probes (2026-09-29)
 
-The host Makefile is the only integration in this task. The eventual image
-build needs a vendor `cc_binary` for the broker linked to the in-image GIO
-and GLib modules, plus bundle init/config wiring for one socket and numeric
-UID-scoped policy file per stub. It must remain outside the shared AOSP
-module namespace until the linux/third_party GIO Soong modules and bundle
-contract are ready. No AOSP patches or kernel changes are required here.
+Each app ran with `DBUS_SESSION_BUS_ADDRESS` set to its private broker socket;
+the existing session bus was not used. Full call traces are retained under
+`out/pc-logs/dbus-broker/`.
+
+| App | Started? | Calls observed | Remaining missing services |
+|---|---|---|---|
+| GTK4 `gcr-viewer-gtk4` (GTK 4.14; opened `/etc/ssl/certs/ssl-cert-snakeoil.pem`) | Yes; stayed open until the 8-second timeout | `Hello`, `RequestName(org.gnome.GcrViewerGtk4, 4)`, `GetId`, `GetNameOwner` for portal Documents, GNOME/XFCE session managers, and portal Desktop; `AddMatch`/`RemoveMatch` for those owners and portal Inhibit signals/properties; `StartServiceByName` for `org.gtk.vfs.Daemon` and `org.freedesktop.portal.Desktop`; `org.a11y.Bus.GetAddress` | GVFS daemon, portals (Documents/Inhibit), accessibility bus, and session-manager services are absent. GTK warned about GVFS activation and the accessibility bus. |
+| Qt6 Assistant 6.4.2 (GTK platform theme) | Yes; stayed open until the 8-second timeout | Two `Hello` connections; `StartServiceByName(org.gtk.vfs.Daemon)`; `AddMatch` for `NameOwnerChanged` with `arg0='org.a11y.Bus',arg1=''`; `NameHasOwner` for `org.a11y.Bus` and `com.canonical.AppMenu.Registrar` | GVFS is absent and activation remains denied. No portal call was needed to keep Assistant running. |
+| Electron | Not run | No Electron executable or installed Electron app was present. The installed Hytale Flatpak launcher is a native ELF executable. | Recheck when an Electron app/runtime is available. |
+
+The GTK probe needed one explicit `own org.gnome.GcrViewerGtk4` rule for its
+observed `RequestName`; no `talk` rule was added. `StartServiceByName` and
+`argN` match handling were added after observing real app calls. Service
+activation remains denied by default; Qt needed no policy exception.
+
+### Discord Flatpak host probe (2026-09-30)
+
+Discord 1.0.160 was launched with `DBUS_SESSION_BUS_ADDRESS` set to an isolated
+broker socket and an empty policy (all names denied); the host session bus was
+not provided to the app. It opened an interactive main window and reached
+`SESSION_ESTABLISHED`/`READY` using the cached account, so this run did not
+exercise the login form. The broker logged 153 method calls in
+`out/pc-logs/dbus-broker/discord-logged/broker-trace.log`.
+
+Observed calls included repeated `Hello`, `AddMatch`/`RemoveMatch`,
+`GetNameOwner`, `ListNames`, `ListActivatableNames`, `NameHasOwner`,
+`StartServiceByName(org.freedesktop.Flatpak)`, `Properties.Get` on
+`org.freedesktop.portal.Flatpak`, `org.freedesktop.portal.Documents.GetMountPoint`,
+`org.a11y.Bus.GetAddress`, and `org.freedesktop.DBus.Peer.Ping`. Discord also
+probed names used for StatusNotifier, ScreenSaver, AppMenu, Unity, IBus,
+MPRIS, and Secret Service. Default-denied/absent services caused portal
+version, accessibility bus, IBus, and system-bus warnings; they did not prevent
+the main app window. No broker behavior or allowlist rule was added for
+Discord. A complete desktop experience still needs app-scoped portal/accessibility,
+IBus, Secret Service, and notification/status-notifier handling where those
+features are desired; Flatpak service activation remains denied.
+
+## MatonOS integration status
+
+The broker is not integrated into the image and has no init service. For the
+on-device bring-up test, `build-android.sh` builds a bionic x86_64 broker and
+test client with GLib/GIO statically linked from the Flatpak spike's NDK build
+inputs. Static GLib/GIO and their PCRE2/libffi dependencies are built under
+`/mnt/data/aosp/out/matonos/flatpak-ndk/`; no upstream source tree is edited.
+The binaries only need Android's `libz`, `libdl`, `libm`, and `libc` at run
+time. This avoids depending on the current `/vendor/lib64` GLib/GIO from a
+system-side process. A later image integration should wait for flatpak-spike's
+system_ext GIO port.
+
+Run the standalone NDK build with:
+
+```sh
+bash linux/dbus-broker/build-android.sh
+```
+
+It stages all generated libraries, objects, and binaries under `/mnt/data/aosp/out/`.
+The test client binary runs the same name/routing/signal/deny checks as the
+host harness.
+
+The stub host must launch one broker for each app UID, create a socket in a
+UID-owned private runtime directory, provide that app's policy file, set
+`DBUS_SESSION_BUS_ADDRESS=unix:path=<socket>` for the app and all its child
+processes, and stop/restart the broker with that app's lifecycle. App
+processes must share the same UID as their broker to pass SO_PEERCRED; apps
+must not share a socket or bus with another UID. No init service is needed.
+Image product/module integration is deferred until the system_ext GIO port is
+available.

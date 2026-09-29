@@ -37,6 +37,7 @@ struct _Broker {
     GHashTable *rules;  /* name -> access flags */
     guint next_id;
     char *id;
+    gboolean trace_calls;
 };
 
 enum { ACCESS_OWN = 1, ACCESS_TALK = 2 };
@@ -49,6 +50,7 @@ static const char dbus_xml[] =
     "<method name='NameHasOwner'><arg type='s' direction='in'/><arg type='b' direction='out'/></method>"
     "<method name='ListNames'><arg type='as' direction='out'/></method>"
     "<method name='ListActivatableNames'><arg type='as' direction='out'/></method>"
+    "<method name='StartServiceByName'><arg type='s' direction='in'/><arg type='u' direction='in'/><arg type='u' direction='out'/></method>"
     "<method name='AddMatch'><arg type='s' direction='in'/></method>"
     "<method name='RemoveMatch'><arg type='s' direction='in'/></method>"
     "<method name='GetConnectionUnixUser'><arg type='s' direction='in'/><arg type='u' direction='out'/></method>"
@@ -114,13 +116,23 @@ static gboolean match_rule(Broker *broker, const char *rule, GDBusMessage *m) {
         else if (g_str_equal(key, "member")) actual = g_dbus_message_get_member(m);
         else if (g_str_equal(key, "path")) actual = g_dbus_message_get_path(m);
         else if (g_str_equal(key, "destination")) actual = g_dbus_message_get_destination(m);
-        else if (g_str_equal(key, "arg0") || g_str_equal(key, "arg0namespace")) {
+        else if (g_str_has_prefix(key, "arg")) {
+            char *end = NULL;
+            gint64 index = g_ascii_strtoll(key + 3, &end, 10);
+            gboolean namespace_match = end != NULL && g_str_equal(end, "namespace");
+            if (end == key + 3 || index < 0 || index >= 64 ||
+                (end != NULL && *end != '\0' && !namespace_match)) { ok = FALSE; break; }
             GVariant *body = g_dbus_message_get_body(m);
-            if (body != NULL && g_variant_n_children(body) != 0) {
-                GVariant *arg = g_variant_get_child_value(body, 0);
-                if (g_variant_is_of_type(arg, G_VARIANT_TYPE_STRING)) actual = g_variant_get_string(arg, NULL);
-                ok = actual != NULL && (g_str_equal(key, "arg0") ? g_str_equal(actual, value) :
-                    (g_str_has_prefix(actual, value) && (actual[strlen(value)] == '\0' || actual[strlen(value)] == '.')));
+            if (body != NULL && (guint64)index < g_variant_n_children(body)) {
+                GVariant *arg = g_variant_get_child_value(body, (gsize)index);
+                if (g_variant_is_of_type(arg, G_VARIANT_TYPE_STRING) ||
+                    g_variant_is_of_type(arg, G_VARIANT_TYPE_OBJECT_PATH) ||
+                    g_variant_is_of_type(arg, G_VARIANT_TYPE_SIGNATURE))
+                    actual = g_variant_get_string(arg, NULL);
+                ok = actual != NULL && (namespace_match ?
+                    (g_str_has_prefix(actual, value) &&
+                     (actual[strlen(value)] == '\0' || actual[strlen(value)] == '.')) :
+                    g_str_equal(actual, value));
                 g_variant_unref(arg);
             } else ok = FALSE;
             continue;
@@ -271,6 +283,18 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
     } else if (g_str_equal(method, "ListActivatableNames")) {
         GVariantBuilder a; g_variant_builder_init(&a, G_VARIANT_TYPE("as"));
         g_dbus_method_invocation_return_value(inv, g_variant_new("(as)", &a));
+    } else if (g_str_equal(method, "StartServiceByName")) {
+        const char *name; guint flags; g_variant_get(parameters, "(&su)", &name, &flags);
+        if (!g_dbus_is_name(name) || name[0] == ':' || flags != 0) {
+            return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid activation request"); return;
+        }
+        if (name_is_denied(name) || !(access_for(b, name) & ACCESS_TALK)) {
+            return_dbus_error(inv, "org.freedesktop.DBus.Error.AccessDenied", "Activation is denied by broker policy"); return;
+        }
+        if (owner_of(b, name) != NULL)
+            g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 2u));
+        else
+            return_dbus_error(inv, "org.freedesktop.DBus.Error.ServiceUnknown", "No activatable service is configured");
     } else if (g_str_equal(method, "AddMatch") || g_str_equal(method, "RemoveMatch")) {
         const char *rule; g_variant_get(parameters, "(&s)", &rule);
         if (strlen(rule) > 4096) { return_dbus_error(inv, "org.freedesktop.DBus.Error.MatchRuleInvalid", "Match rule too long"); return; }
@@ -364,6 +388,16 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
     }
     if (type != G_DBUS_MESSAGE_TYPE_METHOD_CALL) return message;
     const char *dest = g_dbus_message_get_destination(message);
+    if (b->trace_calls) {
+        GVariant *body = g_dbus_message_get_body(message);
+        char *args = body ? g_variant_print(body, TRUE) : g_strdup("()");
+        g_printerr("CALL serial=%u sender=%s destination=%s path=%s interface=%s member=%s args=%s\n",
+            g_dbus_message_get_serial(message), c->unique ? c->unique : "<pre-Hello>",
+            dest ? dest : "<none>", g_dbus_message_get_path(message) ? g_dbus_message_get_path(message) : "<none>",
+            g_dbus_message_get_interface(message) ? g_dbus_message_get_interface(message) : "<none>",
+            g_dbus_message_get_member(message) ? g_dbus_message_get_member(message) : "<none>", args);
+        g_free(args);
+    }
     gboolean control_path = g_strcmp0(g_dbus_message_get_path(message), "/org/freedesktop/DBus") == 0 &&
         g_strcmp0(dest, "org.freedesktop.DBus") == 0;
     if (control_path &&
@@ -502,6 +536,7 @@ Broker *broker_new(const char *socket_path, const char *config_path, GError **er
     b->owners = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     b->name_flags = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     b->rules = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL); b->next_id = 1;
+    b->trace_calls = g_strcmp0(g_getenv("MATONOS_DBUS_TRACE"), "1") == 0;
     b->id = g_dbus_generate_guid();
     gchar *contents = NULL; gsize length = 0;
     if (!g_file_get_contents(config_path, &contents, &length, error)) { broker_free(b); return NULL; }

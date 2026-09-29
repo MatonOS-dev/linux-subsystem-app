@@ -23,14 +23,18 @@ static void signal_cb(GDBusConnection *c, const char *sender, const char *path,
     (void)c; (void)sender; (void)path; (void)interface; (void)signal; (void)parameters; (void)data;
     signal_seen = TRUE;
 }
-static void owner_changed_cb(GDBusConnection *c, const char *sender, const char *path,
-                             const char *interface, const char *signal,
-                             GVariant *parameters, gpointer data) {
-    (void)c; (void)sender; (void)path; (void)interface; (void)signal; (void)data;
-    const char *name, *old_owner, *new_owner;
-    g_variant_get(parameters, "(&s&s&s)", &name, &old_owner, &new_owner);
-    (void)old_owner; (void)new_owner;
-    if (g_str_equal(name, "org.example.Transient")) owner_changed_seen = TRUE;
+static GDBusMessage *owner_changed_filter(GDBusConnection *c, GDBusMessage *message,
+                                          gboolean incoming, gpointer data) {
+    (void)c; (void)data;
+    if (incoming && g_dbus_message_get_message_type(message) == G_DBUS_MESSAGE_TYPE_SIGNAL &&
+        g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus") == 0 &&
+        g_strcmp0(g_dbus_message_get_member(message), "NameOwnerChanged") == 0) {
+        GVariant *body = g_dbus_message_get_body(message);
+        const char *name = NULL;
+        if (body) g_variant_get_child(body, 0, "&s", &name);
+        if (g_strcmp0(name, "org.example.Transient") == 0) owner_changed_seen = TRUE;
+    }
+    return message;
 }
 static void routed_call_done(GObject *source, GAsyncResult *result, gpointer data) {
     CallResult *call = data;
@@ -93,9 +97,13 @@ int main(int argc, char **argv) {
 
     g_dbus_connection_signal_subscribe(receiver, "org.example.Sender", "org.example.Events",
         "Changed", "/org/example/Sender", NULL, G_DBUS_SIGNAL_FLAGS_NONE, signal_cb, NULL, NULL);
-    g_dbus_connection_signal_subscribe(receiver, "org.freedesktop.DBus", "org.freedesktop.DBus",
-        "NameOwnerChanged", "/org/freedesktop/DBus", "org.example.Transient",
-        G_DBUS_SIGNAL_FLAGS_NONE, owner_changed_cb, NULL, NULL);
+    g_dbus_connection_add_filter(receiver, owner_changed_filter, NULL, NULL);
+    GVariant *match_reply = NULL;
+    ok &= require(bus_call(receiver, "AddMatch", NULL, g_variant_new("(s)",
+        "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',path='/org/freedesktop/DBus',arg0='org.example.Transient',arg1=''"),
+        &match_reply, &error), "AddMatch arg1", &error);
+    if (match_reply) g_variant_unref(match_reply);
+    g_clear_error(&error);
     g_dbus_connection_flush_sync(receiver, NULL, &error); g_clear_error(&error);
     g_dbus_connection_emit_signal(sender, NULL, "/org/example/Sender", "org.example.Events",
         "Changed", g_variant_new("(s)", "signal-ok"), &error);
@@ -145,6 +153,11 @@ int main(int argc, char **argv) {
         "org.freedesktop.Flatpak", "Call", NULL, NULL, G_DBUS_CALL_FLAGS_NONE, 3000, NULL, &error);
     ok &= require(reply == NULL && error != NULL && g_dbus_error_is_remote_error(error), "Flatpak deny", NULL);
     g_clear_error(&error); if (reply) g_variant_unref(reply);
+    GVariant *activation = NULL;
+    ok &= require(!bus_call(sender, "StartServiceByName", "(u)",
+        g_variant_new("(su)", "org.gtk.vfs.Daemon", 0u), &activation, &error) &&
+        error != NULL && g_dbus_error_is_remote_error(error), "default-deny service activation", NULL);
+    g_clear_error(&error); if (activation) g_variant_unref(activation);
     ok &= require(!request_name(sender, "org.example.Unlisted", &error), "default-deny RequestName", NULL);
     g_clear_error(&error);
 
