@@ -1,0 +1,6 @@
+# One rule per name. Unlisted names are denied.
+own org.matonos.Test
+talk org.matonos.Test
+
+# Add one own rule per name a Flatpak app declares under --own-name.
+# Add one talk rule per name declared by --talk-name.

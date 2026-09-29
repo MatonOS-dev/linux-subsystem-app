@@ -1,0 +1,12 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+java_library {
+    name: "MatonLinuxStubGenerator",
+    srcs: ["src/**/*.java"],
+    static_libs: ["apksig"],
+    sdk_version: "current",
+    min_sdk_version: "36",
+    java_version: "1.8",
+}
