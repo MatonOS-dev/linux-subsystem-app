@@ -26,7 +26,8 @@ with `#`. Names not listed are denied. `org.freedesktop.Flatpak`,
 The broker also claims the internal service names registered through
 `broker_add_service()`. Such hooks are exported on each connected peer, so
 the later portal implementation can be broker-owned code without a separate
-daemon. The included `org.matonos.Test.Echo` hook is only a smoke-test service.
+daemon. The included `org.matonos.Test.Echo` hook is only a smoke-test service
+and is available only when the broker is explicitly started with `--example`.
 
 ## Current protocol coverage
 
@@ -67,7 +68,7 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/matonos-bus.sock
 gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
   --method org.freedesktop.DBus.ListNames
 gdbus call --session --dest org.matonos.Test --object-path /org/matonos/Test \
-  --method org.matonos.Test.Echo hello
+  --method org.matonos.Test.Echo hello # start broker with --example
 dbus-send --address="$DBUS_SESSION_BUS_ADDRESS" --print-reply \
   --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetId
 busctl --address="$DBUS_SESSION_BUS_ADDRESS" call org.freedesktop.DBus \

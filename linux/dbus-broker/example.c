@@ -33,7 +33,7 @@ gboolean broker_register_example(Broker *broker, GError **error) {
     if (node == NULL) return FALSE;
     gboolean ok = broker_add_service(broker, "org.matonos.Test",
                                      "/org/matonos/Test", node->interfaces[0],
-                                     &vtable, node, error);
+                                     &vtable, NULL, error);
     g_dbus_node_info_unref(node);
     return ok;
 }

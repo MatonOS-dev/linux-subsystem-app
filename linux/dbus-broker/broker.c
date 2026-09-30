@@ -43,6 +43,7 @@ struct _Broker {
 };
 
 enum { ACCESS_OWN = 1, ACCESS_TALK = 2 };
+enum { MAX_CLIENTS = 1024, MAX_MATCHES_PER_CLIENT = 256, MAX_PENDING_PER_CLIENT = 256 };
 static const char dbus_xml[] =
     "<node><interface name='org.freedesktop.DBus'>"
     "<method name='Hello'><arg type='s' direction='out'/></method>"
@@ -83,7 +84,9 @@ static Client *find_client(Broker *b, const char *unique) {
     return NULL;
 }
 static const char *owner_of(Broker *b, const char *name) {
+    if (g_str_equal(name, "org.freedesktop.DBus")) return ":1.0";
     if (g_str_equal(name, ":1.0") && b->services->len != 0) return ":1.0";
+    if (name[0] == ':') return find_client(b, name) ? name : NULL;
     Client *c = g_hash_table_lookup(b->owners, name);
     if (c != NULL) return c->unique;
     if (g_hash_table_contains(b->owners, name)) return ":1.0";
@@ -118,6 +121,16 @@ static gboolean match_rule(Broker *broker, const char *rule, GDBusMessage *m) {
         gsize n = strlen(value);
         if (n >= 2 && value[0] == '\'' && value[n - 1] == '\'') {
             value[n - 1] = '\0'; value++;
+            char *read = value, *write = value;
+            while (*read != '\0') {
+                if (*read == '\\') {
+                    read++;
+                    if (*read != '\\' && *read != '\'') { ok = FALSE; break; }
+                }
+                *write++ = *read++;
+            }
+            *write = '\0';
+            if (!ok) break;
         }
         const char *actual = NULL;
         if (g_str_equal(key, "type")) {
@@ -156,6 +169,27 @@ static gboolean match_rule(Broker *broker, const char *rule, GDBusMessage *m) {
     }
     g_ptr_array_unref(parts);
     return ok;
+}
+static gboolean match_rule_supported(const char *rule) {
+    char **parts = g_strsplit(rule, ",", -1);
+    gboolean supported = TRUE;
+    for (guint i = 0; parts[i] != NULL && supported; i++) {
+        char *part = g_strstrip(parts[i]);
+        char *eq = strchr(part, '=');
+        if (eq == NULL) { supported = FALSE; break; }
+        *eq = '\0';
+        char *key = g_strstrip(part);
+        if (g_str_equal(key, "type") || g_str_equal(key, "sender") ||
+                g_str_equal(key, "interface") || g_str_equal(key, "member") ||
+                g_str_equal(key, "path") || g_str_equal(key, "destination")) continue;
+        if (!g_str_has_prefix(key, "arg")) { supported = FALSE; break; }
+        char *end = NULL;
+        guint64 index = g_ascii_strtoull(key + 3, &end, 10);
+        if (end == key + 3 || index >= 64 ||
+                (*end != '\0' && !g_str_equal(end, "namespace"))) supported = FALSE;
+    }
+    g_strfreev(parts);
+    return supported;
 }
 static void send_raw(Client *c, GDBusMessage *m) {
     if (g_dbus_connection_is_closed(c->connection)) return;
@@ -202,12 +236,34 @@ static void return_dbus_error(GDBusMethodInvocation *inv, const char *name,
     g_dbus_method_invocation_return_dbus_error(inv, name, message);
 }
 
+static const char *expected_signature(const char *interface, const char *method) {
+    if (g_str_equal(interface, "org.freedesktop.DBus.Peer")) {
+        if (g_str_equal(method, "Ping") || g_str_equal(method, "GetMachineId")) return "()";
+    } else if (g_str_equal(interface, "org.freedesktop.DBus.Introspectable")) {
+        if (g_str_equal(method, "Introspect")) return "()";
+    } else if (g_str_equal(interface, "org.freedesktop.DBus")) {
+        if (g_str_equal(method, "Hello") || g_str_equal(method, "ListNames") ||
+                g_str_equal(method, "ListActivatableNames") || g_str_equal(method, "GetId")) return "()";
+        if (g_str_equal(method, "RequestName") || g_str_equal(method, "StartServiceByName")) return "(su)";
+        if (g_str_equal(method, "ReleaseName") || g_str_equal(method, "GetNameOwner") ||
+                g_str_equal(method, "NameHasOwner") || g_str_equal(method, "AddMatch") ||
+                g_str_equal(method, "RemoveMatch") || g_str_equal(method, "GetConnectionUnixUser") ||
+                g_str_equal(method, "GetConnectionUnixProcessID")) return "(s)";
+    }
+    return NULL;
+}
+
 static void bus_method_call(GDBusConnection *connection, const char *sender,
                             const char *path, const char *interface,
                             const char *method, GVariant *parameters,
                             GDBusMethodInvocation *inv, gpointer user_data) {
     (void)connection; (void)path;
     Client *c = user_data; Broker *b = c->broker;
+    const char *signature = expected_signature(interface, method);
+    if (signature != NULL && !g_variant_is_of_type(parameters, G_VARIANT_TYPE(signature))) {
+        return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Method body has the wrong signature");
+        return;
+    }
     if (g_str_equal(interface, "org.freedesktop.DBus.Peer")) {
         if (g_str_equal(method, "Ping")) g_dbus_method_invocation_return_value(inv, NULL);
         else if (g_str_equal(method, "GetMachineId")) {
@@ -239,6 +295,7 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
         c->unique = g_strdup_printf(":1.%u", b->next_id++);
         g_dbus_method_invocation_return_value(inv, g_variant_new("(s)", c->unique));
     } else if (g_str_equal(method, "RequestName")) {
+        if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(su)"))) { return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (su)"); return; }
         const char *name; guint flags; g_variant_get(parameters, "(&su)", &name, &flags);
         if (c->unique == NULL || !g_dbus_is_name(name) || name[0] == ':' ||
             g_str_equal(name, "org.freedesktop.DBus") || (flags & ~7u) != 0) {
@@ -267,6 +324,7 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 1u));
         }
     } else if (g_str_equal(method, "ReleaseName")) {
+        if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(s)"))) { return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (s)"); return; }
         const char *name; g_variant_get(parameters, "(&s)", &name);
         Client *owner = g_hash_table_lookup(b->owners, name);
         if (!g_hash_table_contains(b->owners, name)) g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 3u));
@@ -308,10 +366,18 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
         else
             return_dbus_error(inv, "org.freedesktop.DBus.Error.ServiceUnknown", "No activatable service is configured");
     } else if (g_str_equal(method, "AddMatch") || g_str_equal(method, "RemoveMatch")) {
+        if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(s)"))) { return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (s)"); return; }
         const char *rule; g_variant_get(parameters, "(&s)", &rule);
         if (strlen(rule) > 4096) { return_dbus_error(inv, "org.freedesktop.DBus.Error.MatchRuleInvalid", "Match rule too long"); return; }
+        /* This broker implements only these keys. Reject rules it cannot honor. */
+        if (!match_rule_supported(rule)) {
+            return_dbus_error(inv, "org.freedesktop.DBus.Error.MatchRuleInvalid", "Unsupported match rule key"); return;
+        }
         gboolean add = g_str_equal(method, "AddMatch");
-        if (add) g_ptr_array_add(c->matches, g_strdup(rule));
+        if (add) {
+            if (c->matches->len >= MAX_MATCHES_PER_CLIENT) { return_dbus_error(inv, "org.freedesktop.DBus.Error.LimitsExceeded", "Too many match rules"); return; }
+            g_ptr_array_add(c->matches, g_strdup(rule));
+        }
         else {
             gboolean removed = FALSE;
             for (guint i = 0; i < c->matches->len; i++) if (g_str_equal(rule, g_ptr_array_index(c->matches, i))) {
@@ -335,11 +401,13 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
         Client *target = unique ? find_client(b, unique) : NULL;
         if (target == NULL) { return_dbus_error(inv, "org.freedesktop.DBus.Error.NameHasNoOwner", "Connection does not exist"); return; }
         GCredentials *credentials = g_dbus_connection_get_peer_credentials(target->connection);
-        guint value = g_str_equal(method, "GetConnectionUnixUser") ? (guint)b->owner_uid : (guint)getpid();
-        if (g_str_equal(method, "GetConnectionUnixProcessID") && credentials != NULL) {
+        guint value = (guint)b->owner_uid;
+        if (g_str_equal(method, "GetConnectionUnixProcessID")) {
+            if (credentials == NULL) { return_dbus_error(inv, "org.freedesktop.DBus.Error.Failed", "Peer process credentials are unavailable"); return; }
             pid_t pid = g_credentials_get_unix_pid(credentials, NULL);
-            if (pid > 0) value = (guint)pid;
-        } else if (g_str_equal(method, "GetConnectionUnixUser") && credentials != NULL) {
+            if (pid <= 0) { return_dbus_error(inv, "org.freedesktop.DBus.Error.Failed", "Peer process ID is unavailable"); return; }
+            value = (guint)pid;
+        } else if (credentials != NULL) {
             GError *ce = NULL; uid_t uid = g_credentials_get_unix_user(credentials, &ce);
             if (ce == NULL) value = (guint)uid; else g_clear_error(&ce);
         }
@@ -367,6 +435,17 @@ static void discard_client(Broker *b, Client *c) {
 
 static gboolean is_local_service(Broker *b, const char *name) {
     return g_hash_table_contains(b->owners, name) && g_hash_table_lookup(b->owners, name) == NULL;
+}
+static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *message) {
+    const char *path = g_dbus_message_get_path(message);
+    const char *interface = g_dbus_message_get_interface(message);
+    for (guint i = 0; i < b->services->len; i++) {
+        Service *service = g_ptr_array_index(b->services, i);
+        if (g_strcmp0(path, service->path) == 0 &&
+                g_strcmp0(interface, service->interface_info->name) == 0 &&
+                (access_for(b, service->name) & ACCESS_TALK)) return TRUE;
+    }
+    return FALSE;
 }
 static gboolean denied_call(GDBusMessage *m) {
     const char *dest = g_dbus_message_get_destination(m), *iface = g_dbus_message_get_interface(m), *member = g_dbus_message_get_member(m);
@@ -429,6 +508,18 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
     }
     gboolean control_path = g_strcmp0(g_dbus_message_get_path(message), "/org/freedesktop/DBus") == 0 &&
         g_strcmp0(dest, "org.freedesktop.DBus") == 0;
+    if (c->unique == NULL && !(control_path &&
+            g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus") == 0 &&
+            g_strcmp0(g_dbus_message_get_member(message), "Hello") == 0)) {
+        GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
+            "org.freedesktop.DBus.Error.AccessDenied", "Hello must be called before other bus methods");
+        send_raw(c, err); g_object_unref(err); return NULL;
+    }
+    if (g_strcmp0(g_dbus_message_get_path(message), "/org/freedesktop/DBus") == 0 && !control_path) {
+        GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
+            "org.freedesktop.DBus.Error.AccessDenied", "Control path forwarding is denied");
+        send_raw(c, err); g_object_unref(err); return NULL;
+    }
     if (control_path &&
         (g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus") == 0 ||
          g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus.Peer") == 0 ||
@@ -452,7 +543,14 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
         }
         return message;
     }
-    if (g_str_equal(dest, ":1.0") && b->services->len != 0) return message;
+    if (g_str_equal(dest, ":1.0") && b->services->len != 0) {
+        if (!internal_service_has_talk_access(b, message)) {
+            GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
+                "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
+            send_raw(c, err); g_object_unref(err); return NULL;
+        }
+        return message;
+    }
     const char *target_name = dest;
     Client *target = dest[0] == ':' ? find_client(b, dest) : g_hash_table_lookup(b->owners, dest);
     if (target == NULL) {
@@ -464,6 +562,11 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
         (dest[0] == ':' && !destination_has_talk_access(b, target))) {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
             "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
+        send_raw(c, err); g_object_unref(err); return NULL;
+    }
+    if (c->outgoing->len >= MAX_PENDING_PER_CLIENT || g_hash_table_size(target->pending) >= MAX_PENDING_PER_CLIENT) {
+        GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
+            "org.freedesktop.DBus.Error.LimitsExceeded", "Too many pending method calls");
         send_raw(c, err); g_object_unref(err); return NULL;
     }
     GDBusMessage *copy = g_dbus_message_copy(message, NULL);
@@ -536,6 +639,7 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
                                   gpointer data) {
     (void)server;
     Broker *b = data;
+    if (b->clients->len >= MAX_CLIENTS) return FALSE;
     Client *c = g_new0(Client, 1); c->broker = b; c->connection = g_object_ref(connection);
     GIOStream *stream = g_dbus_connection_get_stream(connection);
     if (!G_IS_SOCKET_CONNECTION(stream)) { g_object_unref(c->connection); g_free(c); return FALSE; }
@@ -571,7 +675,7 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
         if (g_dbus_connection_register_object(connection, s->path, s->interface_info,
             s->vtable, s->user_data, NULL, &error) == 0) {
             g_warning("cannot register service object: %s", error->message); g_clear_error(&error);
-            g_dbus_node_info_unref(node); discard_client(b, c); return FALSE;
+            discard_client(b, c); return FALSE;
         }
     }
     c->filter_id = g_dbus_connection_add_filter(connection, filter_message, c, NULL);

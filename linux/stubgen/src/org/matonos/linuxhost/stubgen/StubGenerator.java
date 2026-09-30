@@ -38,6 +38,8 @@ public final class StubGenerator {
     public static final String REF_META = "org.matonos.linuxhost.FLATPAK_REF";
     public static final String MIN_INTERFACE_META = "org.matonos.linuxhost.MIN_INTERFACE_VERSION";
     private static final String KEY_ALIAS = "matonos_flatpak_stub_v1";
+    private static final int MAX_ICON_BYTES = 1024 * 1024;
+    private static final long MAX_DESKTOP_BYTES = 1024 * 1024;
 
     private StubGenerator() { }
 
@@ -54,10 +56,11 @@ public final class StubGenerator {
             List<String> permissions, String packageName, File output) throws Exception {
         if (workDir == null || desktopFile == null || !desktopFile.isFile())
             throw new IllegalArgumentException("Private work directory and readable .desktop file are required");
-        if (iconPng == null || iconPng.length == 0) throw new IllegalArgumentException("PNG icon is required");
-        if (ref == null || !ref.matches("(?:app|runtime)/[A-Za-z0-9._-]+/[A-Za-z0-9_-]+/[A-Za-z0-9._-]+"))
+        if (desktopFile.length() > MAX_DESKTOP_BYTES) throw new IllegalArgumentException("Desktop entry is too large");
+        if (iconPng == null || iconPng.length == 0 || iconPng.length > MAX_ICON_BYTES) throw new IllegalArgumentException("PNG icon size is invalid");
+        if (!validRef(ref))
             throw new IllegalArgumentException("Invalid Flatpak ref");
-        if (packageName == null || !packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
+        if (packageName == null || packageName.length() > 255 || !packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
             throw new IllegalArgumentException("Invalid stub package name");
         if (output == null) throw new IllegalArgumentException("Output APK is required");
 
@@ -96,18 +99,56 @@ public final class StubGenerator {
         properties.load(new StringReader(section.toString()));
         String name = properties.getProperty("Name", "Linux application").trim();
         if (name.isEmpty()) name = "Linux application";
+        if (name.getBytes(StandardCharsets.UTF_8).length > 4096) name = "Linux application";
         List<String> mimes = new ArrayList<>();
         for (String item : properties.getProperty("MimeType", "").split(";")) {
             String mime = item.trim();
-            if (mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+") && !mimes.contains(mime)) mimes.add(mime);
+            if (mime.length() <= 255 && mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+") && !mimes.contains(mime)) mimes.add(mime);
         }
+        if (mimes.size() > 128) mimes.subList(128, mimes.size()).clear();
         return new DesktopEntry(name, mimes);
+    }
+
+    private static boolean validRef(String ref) {
+        if (ref == null || ref.length() < 12 || ref.length() > 512) return false;
+        String[] parts = ref.split("/", -1);
+        if (parts.length != 4 || !(parts[0].equals("app") || parts[0].equals("runtime")) ||
+                !validAppId(parts[1]) || !validRefPart(parts[2]) || !validRefPart(parts[3])) return false;
+        for (String part : parts) if (part.equals(".") || part.equals("..")) return false;
+        return true;
+    }
+
+    private static boolean validRefPart(String value) {
+        return value.length() > 0 && value.length() <= 96 && value.matches("[A-Za-z0-9_.-]+") &&
+                !value.equals(".") && !value.equals("..");
+    }
+
+    private static boolean validAppId(String value) {
+        if (value.length() < 3 || value.length() > 255 || value.startsWith(".") || value.endsWith(".")) return false;
+        int lastDot = value.lastIndexOf('.');
+        if (lastDot < 0) return false;
+        int component = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '.') {
+                if (component == 0 || component > 63 || value.charAt(i - 1) == '-') return false;
+                component = 0;
+            } else if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '_') {
+                if (component == 0 && !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) return false;
+                component++;
+            } else if (c == '-' && i > lastDot && component > 0 && i + 1 < value.length() && value.charAt(i + 1) != '.') {
+                component++;
+            } else return false;
+        }
+        return component > 0 && component <= 63;
     }
 
     private static void writeUnsigned(File file, String pkg, DesktopEntry entry, String ref,
             byte[] icon, List<String> permissions) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
+            if (cleanPermissions.size() >= 128 || (p != null && p.length() > 255)) throw new IllegalArgumentException("Too many or oversized Android permissions");
             if (p == null || !p.matches("[A-Za-z0-9_.]+")) throw new IllegalArgumentException("Invalid Android permission: " + p);
             if (!cleanPermissions.contains(p)) cleanPermissions.add(p);
         }
@@ -219,8 +260,8 @@ public final class StubGenerator {
             namespace(true);
             start("manifest", null, attrs(a("package", pkg), ai("versionCode", 1), a("versionName", "1.0")));
             start("uses-sdk", null, attrs(ai("minSdkVersion", 30), ai("targetSdkVersion", 36)));
-            for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             end("uses-sdk");
+            for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), ab("hasCode", true)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
             start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), a("label", label)));
@@ -284,7 +325,10 @@ public final class StubGenerator {
                 case "minSdkVersion": return 0x0101020c; case "targetSdkVersion": return 0x01010270; default: return 0;
             }
         }
-        private static void write8Length(ByteArrayOutputStream out, int n) { if (n > 127) { out.write((n >> 8) | 0x80); out.write(n & 0xff); } else out.write(n); }
+        private static void write8Length(ByteArrayOutputStream out, int n) {
+            if (n < 0 || n > 32767) throw new IllegalArgumentException("Manifest string is too large");
+            if (n > 127) { out.write((n >> 8) | 0x80); out.write(n & 0xff); } else out.write(n);
+        }
         private static void write16(ByteArrayOutputStream out, int n) { out.write(n & 255); out.write((n >> 8) & 255); }
         private static void write32(ByteArrayOutputStream out, int n) { write16(out, n); write16(out, n >>> 16); }
         private static final class Attr {
