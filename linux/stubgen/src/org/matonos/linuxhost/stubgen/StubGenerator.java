@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -113,16 +114,31 @@ public final class StubGenerator {
         byte[] manifest = new BinaryManifest(pkg, entry, ref, cleanPermissions).encode();
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);
+            // AAPT2 emits this valid empty resource table for a manifest-only package. PackageManager
+            // requires resources.arsc to open the manifest, even when the APK has no resources.
+            put(zip, "resources.arsc", EMPTY_RESOURCE_TABLE);
             put(zip, "classes.dex", emptyDex());
             put(zip, "assets/matonos-stub/icon.png", icon);
         }
     }
 
+    private static final byte[] EMPTY_RESOURCE_TABLE = new byte[] {
+            0x02, 0x00, 0x0c, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x1c, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+    };
+
     private static byte[] emptyDex() {
-        byte[] dex = new byte[112];
+        // Minimal DEX header plus the required map list (header_item, map_list).
+        byte[] dex = new byte[140];
         byte[] magic = "dex\n035\0".getBytes(StandardCharsets.US_ASCII);
         System.arraycopy(magic, 0, dex, 0, magic.length);
         putInt(dex, 32, dex.length); putInt(dex, 36, 112); putInt(dex, 40, 0x12345678);
+        putInt(dex, 52, 112); putInt(dex, 104, 28); putInt(dex, 108, 112);
+        putInt(dex, 112, 2); // map_list.size
+        put16(dex, 116, 0x0000); put32(dex, 120, 1); put32(dex, 124, 0);
+        put16(dex, 128, 0x1000); put32(dex, 132, 1); put32(dex, 136, 112);
         try {
             byte[] sha1 = java.security.MessageDigest.getInstance("SHA-1").digest(Arrays.copyOfRange(dex, 32, dex.length));
             System.arraycopy(sha1, 0, dex, 12, sha1.length);
@@ -136,9 +152,19 @@ public final class StubGenerator {
         out[offset] = (byte) value; out[offset + 1] = (byte) (value >>> 8);
         out[offset + 2] = (byte) (value >>> 16); out[offset + 3] = (byte) (value >>> 24);
     }
+    private static void put16(byte[] out, int offset, int value) {
+        out[offset] = (byte) value; out[offset + 1] = (byte) (value >>> 8);
+    }
+    private static void put32(byte[] out, int offset, int value) { putInt(out, offset, value); }
 
     private static void put(ZipOutputStream zip, String name, byte[] bytes) throws IOException {
-        zip.putNextEntry(new ZipEntry(name)); zip.write(bytes); zip.closeEntry();
+        ZipEntry entry = new ZipEntry(name);
+        // Android's package parser reads binary XML directly from the APK; keep it uncompressed.
+        // Store all v1 contents for a simpler, deterministic ZIP layout.
+        CRC32 crc = new CRC32(); crc.update(bytes);
+        entry.setMethod(ZipEntry.STORED); entry.setSize(bytes.length);
+        entry.setCompressedSize(bytes.length); entry.setCrc(crc.getValue());
+        zip.putNextEntry(entry); zip.write(bytes); zip.closeEntry();
     }
 
     private static synchronized KeyMaterial getOrCreateKey() throws Exception {
@@ -193,6 +219,7 @@ public final class StubGenerator {
             namespace(true);
             start("manifest", null, attrs(a("package", pkg), ai("versionCode", 1), a("versionName", "1.0")));
             start("uses-sdk", null, attrs(ai("minSdkVersion", 30), ai("targetSdkVersion", 36)));
+            end("uses-sdk");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), ab("hasCode", true)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
