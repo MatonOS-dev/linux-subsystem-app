@@ -219,8 +219,8 @@ public final class StubGenerator {
             namespace(true);
             start("manifest", null, attrs(a("package", pkg), ai("versionCode", 1), a("versionName", "1.0")));
             start("uses-sdk", null, attrs(ai("minSdkVersion", 30), ai("targetSdkVersion", 36)));
-            end("uses-sdk");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
+            end("uses-sdk");
             start("application", null, attrs(a("label", label), ab("hasCode", true)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
             start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), a("label", label)));
