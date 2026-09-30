@@ -16,7 +16,9 @@ struct _Client {
     GDBusConnection *connection;
     char *unique;
     GPtrArray *matches;
+    GPtrArray *outgoing; /* Pending calls originated here, for disconnect cleanup. */
     GHashTable *pending; /* forwarded serial -> Pending */
+    guint filter_id, closed_id;
 };
 struct _Service {
     char *name, *path;
@@ -87,18 +89,28 @@ static const char *owner_of(Broker *b, const char *name) {
     if (g_hash_table_contains(b->owners, name)) return ":1.0";
     return NULL;
 }
-static gboolean client_may_talk_to(Broker *b, Client *client) {
+static gboolean destination_has_talk_access(Broker *b, Client *destination) {
     GHashTableIter iter; gpointer key, value;
     g_hash_table_iter_init(&iter, b->owners);
     while (g_hash_table_iter_next(&iter, &key, &value))
-        if (value == client && (access_for(b, key) & ACCESS_TALK)) return TRUE;
+        if (value == destination && (access_for(b, key) & ACCESS_TALK)) return TRUE;
     return FALSE;
 }
 static gboolean match_rule(Broker *broker, const char *rule, GDBusMessage *m) {
-    char **parts = g_strsplit(rule, ",", -1);
+    GPtrArray *parts = g_ptr_array_new_with_free_func(g_free);
+    const char *start = rule; gboolean quoted = FALSE, escaped = FALSE;
+    for (const char *p = rule; ; p++) {
+        if (*p == '\0' || (*p == ',' && !quoted && !escaped)) {
+            g_ptr_array_add(parts, g_strndup(start, p - start));
+            if (*p == '\0') break;
+            start = p + 1;
+        } else if (*p == '\\' && quoted && !escaped) escaped = TRUE;
+        else { if (*p == '\'' && !escaped) quoted = !quoted; escaped = FALSE; }
+    }
+    g_ptr_array_add(parts, NULL);
     gboolean ok = TRUE;
-    for (guint i = 0; parts[i] != NULL && ok; i++) {
-        char *part = g_strstrip(parts[i]);
+    for (guint i = 0; i + 1 < parts->len && ok; i++) {
+        char *part = g_strstrip(g_ptr_array_index(parts, i));
         char *eq = strchr(part, '=');
         if (eq == NULL) { ok = FALSE; break; }
         *eq++ = '\0';
@@ -142,7 +154,7 @@ static gboolean match_rule(Broker *broker, const char *rule, GDBusMessage *m) {
             (g_str_equal(key, "sender") && owner_of(broker, value) != NULL &&
              g_str_equal(actual, owner_of(broker, value))));
     }
-    g_strfreev(parts);
+    g_ptr_array_unref(parts);
     return ok;
 }
 static void send_raw(Client *c, GDBusMessage *m) {
@@ -315,7 +327,12 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             guint value = g_str_equal(method, "GetConnectionUnixUser") ? (guint)b->owner_uid : (guint)getpid();
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", value)); return;
         }
-        Client *target = find_client(b, name);
+        const char *unique = owner_of(b, name);
+        if (g_strcmp0(unique, ":1.0") == 0) {
+            guint value = g_str_equal(method, "GetConnectionUnixUser") ? (guint)b->owner_uid : (guint)getpid();
+            g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", value)); return;
+        }
+        Client *target = unique ? find_client(b, unique) : NULL;
         if (target == NULL) { return_dbus_error(inv, "org.freedesktop.DBus.Error.NameHasNoOwner", "Connection does not exist"); return; }
         GCredentials *credentials = g_dbus_connection_get_peer_credentials(target->connection);
         guint value = g_str_equal(method, "GetConnectionUnixUser") ? (guint)b->owner_uid : (guint)getpid();
@@ -336,6 +353,17 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
 }
 
 static const GDBusInterfaceVTable bus_vtable = { .method_call = bus_method_call };
+
+static void discard_client(Broker *b, Client *c) {
+    if (c->closed_id) g_signal_handler_disconnect(c->connection, c->closed_id);
+    if (c->filter_id) g_dbus_connection_remove_filter(c->connection, c->filter_id);
+    g_dbus_connection_close(c->connection, NULL, NULL, NULL);
+    for (guint i = 0; i < b->clients->len; i++) if (g_ptr_array_index(b->clients, i) == c) {
+        g_ptr_array_remove_index(b->clients, i); break;
+    }
+    g_hash_table_unref(c->pending); g_ptr_array_unref(c->outgoing); g_ptr_array_unref(c->matches);
+    g_free(c->unique); g_object_unref(c->connection); g_free(c);
+}
 
 static gboolean is_local_service(Broker *b, const char *name) {
     return g_hash_table_contains(b->owners, name) && g_hash_table_lookup(b->owners, name) == NULL;
@@ -364,6 +392,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
             g_dbus_message_set_destination(forward, p->origin->unique);
             g_dbus_message_set_sender(forward, c->unique);
             send_raw(p->origin, forward); g_object_unref(forward);
+            g_ptr_array_remove(p->origin->outgoing, p);
             g_hash_table_remove(c->pending, GUINT_TO_POINTER(reply));
         }
         return NULL;
@@ -432,7 +461,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
         send_raw(c, err); g_object_unref(err); return NULL;
     }
     if ((dest[0] != ':' && !(access_for(b, target_name) & ACCESS_TALK)) ||
-        (dest[0] == ':' && !client_may_talk_to(b, target))) {
+        (dest[0] == ':' && !destination_has_talk_access(b, target))) {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
             "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
         send_raw(c, err); g_object_unref(err); return NULL;
@@ -445,6 +474,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
     if (g_dbus_connection_send_message(target->connection, copy,
             G_DBUS_SEND_MESSAGE_FLAGS_NONE, &forwarded, &error)) {
         Pending *p = g_new0(Pending, 1); p->origin = c; p->serial = g_dbus_message_get_serial(message);
+        g_ptr_array_add(c->outgoing, p);
         g_hash_table_insert(target->pending, GUINT_TO_POINTER(forwarded), p);
     } else {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
@@ -464,6 +494,7 @@ static void client_closed(GDBusConnection *connection, gboolean vanished,
     g_hash_table_iter_init(&pending_iter, c->pending);
     while (g_hash_table_iter_next(&pending_iter, &pending_key, &pending_value)) {
         Pending *p = pending_value;
+        g_ptr_array_remove(p->origin->outgoing, p);
         GDBusMessage *request = g_dbus_message_new();
         g_dbus_message_set_message_type(request, G_DBUS_MESSAGE_TYPE_METHOD_CALL);
         g_dbus_message_set_serial(request, p->serial);
@@ -472,6 +503,18 @@ static void client_closed(GDBusConnection *connection, gboolean vanished,
         send_raw(p->origin, failure); g_object_unref(failure); g_object_unref(request);
     }
     (void)pending_key;
+    /* A disconnected origin must be removed from every destination table. */
+    for (guint i = 0; i < c->outgoing->len; i++) {
+        Pending *origin_pending = g_ptr_array_index(c->outgoing, i);
+        for (guint j = 0; j < b->clients->len; j++) {
+            Client *destination = g_ptr_array_index(b->clients, j);
+            GHashTableIter iter; gpointer key, value;
+            g_hash_table_iter_init(&iter, destination->pending);
+            while (g_hash_table_iter_next(&iter, &key, &value))
+                if (value == origin_pending) g_hash_table_iter_remove(&iter);
+        }
+    }
+    g_ptr_array_set_size(c->outgoing, 0);
     for (guint i = 0; i < b->clients->len; i++) if (g_ptr_array_index(b->clients, i) == c) {
         GHashTableIter iter; gpointer key, value; GPtrArray *gone = g_ptr_array_new_with_free_func(g_free);
         g_hash_table_iter_init(&iter, b->owners);
@@ -483,7 +526,9 @@ static void client_closed(GDBusConnection *connection, gboolean vanished,
         }
         g_ptr_array_unref(gone);
         g_ptr_array_remove_index(b->clients, i);
-        g_hash_table_unref(c->pending); g_ptr_array_unref(c->matches);
+        if (c->filter_id) g_dbus_connection_remove_filter(c->connection, c->filter_id);
+        if (c->closed_id) g_signal_handler_disconnect(c->connection, c->closed_id);
+        g_hash_table_unref(c->pending); g_ptr_array_unref(c->outgoing); g_ptr_array_unref(c->matches);
         g_free(c->unique); g_object_unref(c->connection); g_free(c); break;
     }
 }
@@ -508,25 +553,28 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
         g_clear_error(&cred_error); g_object_unref(c->connection); g_free(c); return FALSE;
     }
     c->matches = g_ptr_array_new_with_free_func(g_free);
+    c->outgoing = g_ptr_array_new();
     c->pending = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    c->closed_id = g_signal_connect(connection, "closed", G_CALLBACK(client_closed), c);
     g_ptr_array_add(b->clients, c);
     GError *error = NULL;
     GDBusNodeInfo *node = g_dbus_node_info_new_for_xml(dbus_xml, &error);
-    if (node == NULL) { g_warning("cannot parse bus interface: %s", error->message); g_error_free(error); return TRUE; }
-    g_dbus_connection_register_object(connection, "/org/freedesktop/DBus",
-        node->interfaces[0], &bus_vtable, c, NULL, NULL);
-    g_dbus_connection_register_object(connection, "/org/freedesktop/DBus",
-        node->interfaces[1], &bus_vtable, c, NULL, NULL);
-    g_dbus_connection_register_object(connection, "/org/freedesktop/DBus",
-        node->interfaces[2], &bus_vtable, c, NULL, NULL);
+    if (node == NULL) { g_warning("cannot parse bus interface: %s", error->message); g_error_free(error); discard_client(b, c); return FALSE; }
+    for (guint i = 0; i < 3; i++) if (g_dbus_connection_register_object(connection, "/org/freedesktop/DBus",
+        node->interfaces[i], &bus_vtable, c, NULL, &error) == 0) {
+        g_warning("cannot register bus interface: %s", error->message); g_clear_error(&error);
+        g_dbus_node_info_unref(node); discard_client(b, c); return FALSE;
+    }
     g_dbus_node_info_unref(node);
     for (guint i = 0; i < b->services->len; i++) {
         Service *s = g_ptr_array_index(b->services, i);
-        g_dbus_connection_register_object(connection, s->path, s->interface_info,
-            s->vtable, s->user_data, NULL, NULL);
+        if (g_dbus_connection_register_object(connection, s->path, s->interface_info,
+            s->vtable, s->user_data, NULL, &error) == 0) {
+            g_warning("cannot register service object: %s", error->message); g_clear_error(&error);
+            g_dbus_node_info_unref(node); discard_client(b, c); return FALSE;
+        }
     }
-    g_dbus_connection_add_filter(connection, filter_message, c, NULL);
-    g_signal_connect(connection, "closed", G_CALLBACK(client_closed), c);
+    c->filter_id = g_dbus_connection_add_filter(connection, filter_message, c, NULL);
     return TRUE;
 }
 
@@ -591,7 +639,12 @@ gboolean broker_run(Broker *b, GError **error) {
         g_dbus_server_stop(b->server); g_clear_object(&b->server); return FALSE;
     }
     g_signal_connect(b->server, "new-connection", G_CALLBACK(on_new_connection), b);
-    b->loop = g_main_loop_new(NULL, FALSE); g_dbus_server_start(b->server);
+    b->loop = g_main_loop_new(NULL, FALSE);
+    if (b->loop == NULL) {
+        g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_FAILED, "cannot create broker main loop");
+        g_dbus_server_stop(b->server); g_clear_object(&b->server); return FALSE;
+    }
+    g_dbus_server_start(b->server);
     g_print("DBUS_SESSION_BUS_ADDRESS=unix:path=%s\n", b->socket_path);
     g_main_loop_run(b->loop);
     return TRUE;
@@ -600,7 +653,18 @@ void broker_free(Broker *b) {
     if (!b) return;
     if (b->server) { g_dbus_server_stop(b->server); g_object_unref(b->server); }
     if (b->loop) g_main_loop_unref(b->loop);
-    if (b->clients) g_ptr_array_unref(b->clients);
+    if (b->clients) {
+        while (b->clients->len) {
+            Client *c = g_ptr_array_index(b->clients, b->clients->len - 1);
+            if (c->closed_id) g_signal_handler_disconnect(c->connection, c->closed_id);
+            if (c->filter_id) g_dbus_connection_remove_filter(c->connection, c->filter_id);
+            g_dbus_connection_close_sync(c->connection, NULL, NULL);
+            g_ptr_array_remove_index(b->clients, b->clients->len - 1);
+            g_hash_table_unref(c->pending); g_ptr_array_unref(c->outgoing); g_ptr_array_unref(c->matches);
+            g_free(c->unique); g_object_unref(c->connection); g_free(c);
+        }
+        g_ptr_array_unref(b->clients);
+    }
     if (b->services) { for (guint i=0; i<b->services->len; i++) { Service *s=g_ptr_array_index(b->services,i); g_free(s->name); g_free(s->path); g_dbus_interface_info_unref(s->interface_info); g_free(s); } g_ptr_array_unref(b->services); }
     if (b->owners) g_hash_table_unref(b->owners);
     if (b->name_flags) g_hash_table_unref(b->name_flags);
