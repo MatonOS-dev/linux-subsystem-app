@@ -10,7 +10,7 @@ all: $(OUT)/matonos-dbus-broker
 
 test: $(OUT)/broker-test
 
-$(OUT)/matonos-dbus-broker: $(OUT)/main.o $(OUT)/broker.o $(OUT)/example.o
+$(OUT)/matonos-dbus-broker: $(OUT)/main.o $(OUT)/broker.o $(OUT)/example.o $(OUT)/portals.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(OUT)/%.o: %.c broker.h | $(OUT)

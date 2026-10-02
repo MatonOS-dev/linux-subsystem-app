@@ -1,4 +1,8 @@
 # flatpak-spike: fixed NDK prebuilts until the Soong port is ready.
+# The CLI launches this sandbox helper; a staged binary alone is not included
+# in images unless the module is selected.
+PRODUCT_PACKAGES += bwrap
+
 FLATPAK_SYSTEM_EXT_PREBUILT := device/maton/pc_x86_64/linux/flatpak/prebuilt/system_ext
 FLATPAK_SYSTEM_EXT_FILES := \
     $(wildcard $(FLATPAK_SYSTEM_EXT_PREBUILT)/bin/*) \

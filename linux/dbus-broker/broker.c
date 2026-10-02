@@ -6,6 +6,9 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <signal.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
 
 typedef struct _Client Client;
 typedef struct _Service Service;
@@ -40,6 +43,10 @@ struct _Broker {
     guint next_id;
     char *id;
     gboolean trace_calls;
+    gboolean flatpak_portal;
+    GPid portal_pid;
+    int ready_fd;
+    guint portal_watch;
 };
 
 enum { ACCESS_OWN = 1, ACCESS_TALK = 2 };
@@ -57,6 +64,7 @@ static const char dbus_xml[] =
     "<method name='AddMatch'><arg type='s' direction='in'/></method>"
     "<method name='RemoveMatch'><arg type='s' direction='in'/></method>"
     "<method name='GetConnectionUnixUser'><arg type='s' direction='in'/><arg type='u' direction='out'/></method>"
+    "<method name='GetConnectionCredentials'><arg type='s' direction='in'/><arg type='a{sv}' direction='out'/></method>"
     "<method name='GetConnectionUnixProcessID'><arg type='s' direction='in'/><arg type='u' direction='out'/></method>"
     "<method name='GetId'><arg type='s' direction='out'/></method>"
     "<signal name='NameOwnerChanged'><arg type='s'/><arg type='s'/><arg type='s'/></signal>"
@@ -248,7 +256,7 @@ static const char *expected_signature(const char *interface, const char *method)
         if (g_str_equal(method, "ReleaseName") || g_str_equal(method, "GetNameOwner") ||
                 g_str_equal(method, "NameHasOwner") || g_str_equal(method, "AddMatch") ||
                 g_str_equal(method, "RemoveMatch") || g_str_equal(method, "GetConnectionUnixUser") ||
-                g_str_equal(method, "GetConnectionUnixProcessID")) return "(s)";
+                g_str_equal(method, "GetConnectionUnixProcessID") || g_str_equal(method,"GetConnectionCredentials")) return "(s)";
     }
     return NULL;
 }
@@ -301,7 +309,16 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             g_str_equal(name, "org.freedesktop.DBus") || (flags & ~7u) != 0) {
             return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid bus name"); return;
         }
-        if (name_is_denied(name) || !(access_for(b, name) & ACCESS_OWN)) {
+        gboolean trusted_portal=FALSE;
+        if (b->flatpak_portal && g_str_equal(name,"org.freedesktop.portal.Flatpak")) {
+            GCredentials* credentials=g_dbus_connection_get_peer_credentials(c->connection);
+            trusted_portal=credentials && b->portal_pid>0 &&
+                g_credentials_get_unix_pid(credentials,NULL)==b->portal_pid;
+            if (!trusted_portal) {
+                return_dbus_error(inv,"org.freedesktop.DBus.Error.AccessDenied","Only the managed portal may own this name"); return;
+            }
+        }
+        if (name_is_denied(name) || (!(access_for(b, name) & ACCESS_OWN) && !trusted_portal)) {
             return_dbus_error(inv, "org.freedesktop.DBus.Error.AccessDenied", "Name is denied by broker policy"); return;
         }
         const char *old = owner_of(b, name);
@@ -322,6 +339,9 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             g_hash_table_insert(b->name_flags, g_strdup(name), GUINT_TO_POINTER(flags));
             emit_name(c, "NameAcquired", name); emit_changed(b, name, NULL, c->unique);
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 1u));
+        }
+        if (trusted_portal && g_hash_table_lookup(b->owners,name)==c && b->ready_fd>=0) {
+            char ready=1; (void)write(b->ready_fd,&ready,1);close(b->ready_fd);b->ready_fd=-1;
         }
     } else if (g_str_equal(method, "ReleaseName")) {
         if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(s)"))) { return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (s)"); return; }
@@ -358,7 +378,7 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
         if (!g_dbus_is_name(name) || name[0] == ':' || flags != 0) {
             return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid activation request"); return;
         }
-        if (name_is_denied(name) || !(access_for(b, name) & ACCESS_TALK)) {
+        if ((name_is_denied(name) && !(g_hash_table_contains(b->owners,name) && g_hash_table_lookup(b->owners,name)==NULL)) || !(access_for(b, name) & ACCESS_TALK)) {
             return_dbus_error(inv, "org.freedesktop.DBus.Error.AccessDenied", "Activation is denied by broker policy"); return;
         }
         if (owner_of(b, name) != NULL)
@@ -386,9 +406,23 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             if (!removed) { return_dbus_error(inv, "org.freedesktop.DBus.Error.MatchRuleNotFound", "No matching rule"); return; }
         }
         g_dbus_method_invocation_return_value(inv, NULL);
+    } else if (g_str_equal(method,"GetConnectionCredentials")) {
+        const char* name;g_variant_get(parameters,"(&s)",&name);
+        const char* unique=owner_of(b,name);
+        Client* target=unique ? find_client(b,unique) : NULL;
+        GCredentials* credentials=target ? g_dbus_connection_get_peer_credentials(target->connection) : NULL;
+        gboolean internal=g_strcmp0(unique,":1.0")==0;
+        if (!credentials && !internal) {return_dbus_error(inv,"org.freedesktop.DBus.Error.NameHasNoOwner","Peer credentials are unavailable");return;}
+        GError* ce=NULL;uid_t uid=internal ? b->owner_uid : g_credentials_get_unix_user(credentials,&ce);
+        pid_t pid=internal ? getpid() : g_credentials_get_unix_pid(credentials,NULL);
+        if (ce || pid<=0) {g_clear_error(&ce);return_dbus_error(inv,"org.freedesktop.DBus.Error.Failed","Peer credentials are unavailable");return;}
+        GVariantBuilder result;g_variant_builder_init(&result,G_VARIANT_TYPE_VARDICT);
+        g_variant_builder_add(&result,"{sv}","UnixUserID",g_variant_new_uint32(uid));
+        g_variant_builder_add(&result,"{sv}","ProcessID",g_variant_new_uint32(pid));
+        g_dbus_method_invocation_return_value(inv,g_variant_new("(a{sv})",&result));
     } else if (g_str_equal(method, "GetConnectionUnixUser") || g_str_equal(method, "GetConnectionUnixProcessID")) {
         const char *name; g_variant_get(parameters, "(&s)", &name);
-        if (g_str_equal(name, "org.freedesktop.DBus")) { g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", (guint)b->owner_uid)); return; }
+        if (g_str_equal(name, "org.freedesktop.DBus")) { guint value=g_str_equal(method,"GetConnectionUnixUser") ? (guint)b->owner_uid : (guint)getpid();g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", value)); return; }
         if (g_str_equal(name, ":1.0")) {
             guint value = g_str_equal(method, "GetConnectionUnixUser") ? (guint)b->owner_uid : (guint)getpid();
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", value)); return;
@@ -442,7 +476,9 @@ static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *messag
     for (guint i = 0; i < b->services->len; i++) {
         Service *service = g_ptr_array_index(b->services, i);
         if (g_strcmp0(path, service->path) == 0 &&
-                g_strcmp0(interface, service->interface_info->name) == 0 &&
+                (g_strcmp0(interface, service->interface_info->name) == 0 ||
+                 g_strcmp0(interface,"org.freedesktop.DBus.Properties")==0 ||
+                 g_strcmp0(interface,"org.freedesktop.DBus.Introspectable")==0) &&
                 (access_for(b, service->name) & ACCESS_TALK)) return TRUE;
     }
     return FALSE;
@@ -450,6 +486,11 @@ static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *messag
 static gboolean denied_call(GDBusMessage *m) {
     const char *dest = g_dbus_message_get_destination(m), *iface = g_dbus_message_get_interface(m), *member = g_dbus_message_get_member(m);
     if (dest == NULL) return FALSE;
+    if (g_str_equal(dest,"org.freedesktop.Flatpak") &&
+            g_strcmp0(g_dbus_message_get_path(m),"/org/freedesktop/Flatpak/SessionHelper")==0 &&
+            (g_strcmp0(iface,"org.freedesktop.Flatpak.SessionHelper")==0 ||
+             g_strcmp0(iface,"org.freedesktop.DBus.Properties")==0 ||
+             g_strcmp0(iface,"org.freedesktop.DBus.Introspectable")==0)) return FALSE;
     if (name_is_denied(dest)) return TRUE;
     if ((g_str_equal(dest, "org.freedesktop.PackageKit") || g_str_has_prefix(dest, "org.freedesktop.PackageKit.")) &&
         member != NULL && (g_strrstr(member, "Install") != NULL || g_strrstr(member, "Remove") != NULL)) return TRUE;
@@ -481,6 +522,18 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
         GDBusMessage *routed = g_dbus_message_copy(message, NULL);
         g_dbus_message_set_sender(routed, c->unique);
         const char *sender = c->unique;
+        const char* destination=g_dbus_message_get_destination(routed);
+        if (destination) {
+            const char* unique=owner_of(b,destination);
+            Client* target=unique ? find_client(b,unique) : NULL;
+            // Directed signals require no AddMatch and must never be broadcast.
+            gboolean portal_sender = b->portal_pid > 0 &&
+                g_hash_table_lookup(b->owners, "org.freedesktop.portal.Flatpak") == c;
+            gboolean allowed = destination[0] == ':' ?
+                destination_has_talk_access(b, target) : (access_for(b, destination) & ACCESS_TALK);
+            if (target && (portal_sender || allowed)) send_raw(target,routed);
+            g_object_unref(routed);return NULL;
+        }
         for (guint j = 0; j < b->clients->len; j++) {
             Client *dst = g_ptr_array_index(b->clients, j);
             if (dst == c && dst->matches->len == 0) continue;
@@ -506,7 +559,8 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
             g_dbus_message_get_member(message) ? g_dbus_message_get_member(message) : "<none>", args);
         g_free(args);
     }
-    gboolean control_path = g_strcmp0(g_dbus_message_get_path(message), "/org/freedesktop/DBus") == 0 &&
+    gboolean control_path = (g_strcmp0(g_dbus_message_get_path(message), "/org/freedesktop/DBus") == 0 ||
+        g_strcmp0(g_dbus_message_get_path(message), "/") == 0) &&
         g_strcmp0(dest, "org.freedesktop.DBus") == 0;
     if (c->unique == NULL && !(control_path &&
             g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus") == 0 &&
@@ -664,7 +718,9 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
     GError *error = NULL;
     GDBusNodeInfo *node = g_dbus_node_info_new_for_xml(dbus_xml, &error);
     if (node == NULL) { g_warning("cannot parse bus interface: %s", error->message); g_error_free(error); discard_client(b, c); return FALSE; }
-    for (guint i = 0; i < 3; i++) if (g_dbus_connection_register_object(connection, "/org/freedesktop/DBus",
+    const char *control_paths[] = { "/org/freedesktop/DBus", "/" };
+    for (guint path = 0; path < G_N_ELEMENTS(control_paths); path++)
+    for (guint i = 0; i < 3; i++) if (g_dbus_connection_register_object(connection, control_paths[path],
         node->interfaces[i], &bus_vtable, c, NULL, &error) == 0) {
         g_warning("cannot register bus interface: %s", error->message); g_clear_error(&error);
         g_dbus_node_info_unref(node); discard_client(b, c); return FALSE;
@@ -683,7 +739,7 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
 }
 
 Broker *broker_new(const char *socket_path, const char *config_path, GError **error) {
-    Broker *b = g_new0(Broker, 1); b->socket_path = g_strdup(socket_path); b->owner_uid = geteuid();
+    Broker *b = g_new0(Broker, 1); b->socket_path = g_strdup(socket_path); b->owner_uid = geteuid(); b->ready_fd=-1;
     b->clients = g_ptr_array_new(); b->services = g_ptr_array_new();
     b->owners = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     b->name_flags = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -724,6 +780,19 @@ gboolean broker_add_service(Broker *b, const char *name, const char *path,
     g_ptr_array_add(b->services, s); g_hash_table_insert(b->owners, g_strdup(name), NULL);
     return TRUE;
 }
+void broker_enable_flatpak_portal(Broker* b, int ready_fd) {
+    b->flatpak_portal=TRUE;b->ready_fd=ready_fd;
+}
+static void portal_child_setup(void* data) {
+    pid_t parent=GPOINTER_TO_INT(data);
+    if (prctl(PR_SET_PDEATHSIG,SIGTERM) || getppid()!=parent) _exit(127);
+}
+static void portal_exited(GPid pid, gint status, void* data) {
+    Broker* b=data;b->portal_pid=0;b->portal_watch=0;g_spawn_close_pid(pid);
+    g_warning("Flatpak portal exited (wait status %d)",status);
+    if (b->ready_fd>=0) {close(b->ready_fd);b->ready_fd=-1;}
+    g_main_loop_quit(b->loop);
+}
 gboolean broker_run(Broker *b, GError **error) {
     struct stat st;
     if (lstat(b->socket_path, &st) == 0) {
@@ -749,12 +818,23 @@ gboolean broker_run(Broker *b, GError **error) {
         g_dbus_server_stop(b->server); g_clear_object(&b->server); return FALSE;
     }
     g_dbus_server_start(b->server);
+    if (b->flatpak_portal) {
+        char* portal_address=g_strdup_printf("unix:path=%s",b->socket_path);
+        g_setenv("DBUS_SESSION_BUS_ADDRESS",portal_address,TRUE);g_free(portal_address);
+        char* portal_argv[]={"/system_ext/bin/flatpak-portal",NULL};
+        if (!g_spawn_async(NULL,portal_argv,NULL,G_SPAWN_DO_NOT_REAP_CHILD,
+                portal_child_setup,GINT_TO_POINTER(getpid()),&b->portal_pid,error)) return FALSE;
+        b->portal_watch=g_child_watch_add(b->portal_pid,portal_exited,b);
+    }
     g_print("DBUS_SESSION_BUS_ADDRESS=unix:path=%s\n", b->socket_path);
     g_main_loop_run(b->loop);
     return TRUE;
 }
 void broker_free(Broker *b) {
     if (!b) return;
+    if (b->portal_watch) g_source_remove(b->portal_watch);
+    if (b->portal_pid>0) {kill(b->portal_pid,SIGTERM);while(waitpid(b->portal_pid,NULL,0)<0 && errno==EINTR){}g_spawn_close_pid(b->portal_pid);}
+    if (b->ready_fd>=0) close(b->ready_fd);
     if (b->server) { g_dbus_server_stop(b->server); g_object_unref(b->server); }
     if (b->loop) g_main_loop_unref(b->loop);
     if (b->clients) {

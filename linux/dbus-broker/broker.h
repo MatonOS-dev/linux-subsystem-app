@@ -12,6 +12,8 @@ gboolean broker_add_service(Broker *broker, const char *name,
                             gpointer user_data, GError **error);
 Broker *broker_new(const char *socket_path, const char *config_path,
                    GError **error);
+void broker_enable_flatpak_portal(Broker *broker, int ready_fd);
+gboolean broker_register_session_services(Broker *broker, const char *monitor, GError **error);
 gboolean broker_run(Broker *broker, GError **error);
 void broker_free(Broker *broker);
 

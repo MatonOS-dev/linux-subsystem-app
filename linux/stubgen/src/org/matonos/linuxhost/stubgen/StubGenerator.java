@@ -155,20 +155,53 @@ public final class StubGenerator {
         byte[] manifest = new BinaryManifest(pkg, entry, ref, cleanPermissions).encode();
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);
-            // AAPT2 emits this valid empty resource table for a manifest-only package. PackageManager
-            // requires resources.arsc to open the manifest, even when the APK has no resources.
-            put(zip, "resources.arsc", EMPTY_RESOURCE_TABLE);
+            // Supply a real drawable resource so Android launchers can resolve the app icon.
+            put(zip, "resources.arsc", iconResourceTable(pkg));
             put(zip, "classes.dex", emptyDex());
-            put(zip, "assets/matonos-stub/icon.png", icon);
+            put(zip, "res/drawable/foreground.png", icon);
+            put(zip, "res/drawable/icon.xml", new BinaryManifest("", entry, "", Collections.emptyList()).adaptiveIcon());
         }
     }
 
-    private static final byte[] EMPTY_RESOURCE_TABLE = new byte[] {
-            0x02, 0x00, 0x0c, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x01, 0x00, 0x1c, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00
-    };
+    /** Adaptive icon XML, foreground bitmap and background color resources.
+     * The background must be a reference: density-specific drawable inflation
+     * resolves a layer's resource ID, which is zero for an inline XML color.
+     */
+    private static byte[] iconResourceTable(String pkg) throws IOException {
+        byte[] global = resourceStringPool("res/drawable/icon.xml", "res/drawable/foreground.png");
+        byte[] types = resourceStringPool("drawable");
+        byte[] keys = resourceStringPool("icon", "foreground", "background");
+        byte[] spec = new byte[28];
+        put16(spec,0,0x0202); put16(spec,2,16); putInt(spec,4,spec.length);
+        spec[8]=1; putInt(spec,12,3);
+        byte[] type = new byte[144];
+        put16(type,0,0x0201); put16(type,2,84); putInt(type,4,type.length);
+        type[8]=1; putInt(type,12,3); putInt(type,16,96); putInt(type,20,64);
+        putInt(type,84,0); putInt(type,88,16); putInt(type,92,32);
+        for (int i=0;i<3;i++) {
+            int offset=96+i*16; put16(type,offset,8); putInt(type,offset+4,i);
+            put16(type,offset+8,8); type[offset+11]=(byte)(i==2?0x1c:3); putInt(type,offset+12,i==2?0xfff5f5f5:i);
+        }
+        byte[] header = new byte[288];
+        put16(header,0,0x0200); put16(header,2,288);
+        putInt(header,4,288+types.length+keys.length+spec.length+type.length); putInt(header,8,0x7f);
+        byte[] name = pkg.getBytes(StandardCharsets.UTF_16LE);
+        System.arraycopy(name,0,header,12,Math.min(name.length,254));
+        putInt(header,268,288); putInt(header,272,1);
+        putInt(header,276,288+types.length); putInt(header,280,3);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        BinaryManifest.write16(out,2); BinaryManifest.write16(out,12);
+        BinaryManifest.write32(out,12+global.length+header.length+types.length+keys.length+spec.length+type.length);
+        BinaryManifest.write32(out,1);
+        out.write(global); out.write(header); out.write(types); out.write(keys); out.write(spec); out.write(type);
+        return out.toByteArray();
+    }
+
+    private static byte[] resourceStringPool(String... values) throws IOException {
+        BinaryManifest encoder = new BinaryManifest("",new DesktopEntry("",Collections.emptyList()),"",Collections.emptyList());
+        for (String value: values) encoder.str(value);
+        ByteArrayOutputStream out = new ByteArrayOutputStream(); encoder.writeStringPool(out); return out.toByteArray();
+    }
 
     private static byte[] emptyDex() {
         // Minimal DEX header plus the required map list (header_item, map_list).
@@ -208,6 +241,13 @@ public final class StubGenerator {
         zip.putNextEntry(entry); zip.write(bytes); zip.closeEntry();
     }
 
+    /** Read-only attestation: do not mint a replacement key during verification. */
+    public static byte[] getExistingSigningCertificate() throws Exception {
+        KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);
+        java.security.cert.Certificate certificate=store.getCertificate(KEY_ALIAS);
+        return certificate!=null?certificate.getEncoded():null;
+    }
+
     private static synchronized KeyMaterial getOrCreateKey() throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore"); store.load(null);
         if (!store.containsAlias(KEY_ALIAS)) {
@@ -229,8 +269,9 @@ public final class StubGenerator {
         ApkSigner.SignerConfig signer = new ApkSigner.SignerConfig.Builder("matonos-stub", material.key,
                 Collections.singletonList(material.certificate)).build();
         new ApkSigner.Builder(Collections.singletonList(signer)).setInputApk(input).setOutputApk(output)
-                .setV1SigningEnabled(true).setV2SigningEnabled(true).setV3SigningEnabled(true)
-                .setV4SigningEnabled(false).build().sign();
+                // Stubs require API 30; v2/v3 cover their supported Android versions.
+                .setV1SigningEnabled(false).setV2SigningEnabled(true).setV3SigningEnabled(true)
+                .setV4SigningEnabled(false).setAlignmentPreserved(false).build().sign();
     }
 
     private static final class KeyMaterial {
@@ -258,15 +299,19 @@ public final class StubGenerator {
             for (String p : permissions) str(p);
             for (String mime : mimes) str(mime);
             namespace(true);
-            start("manifest", null, attrs(a("package", pkg), ai("versionCode", 1), a("versionName", "1.0")));
+            start("manifest", null, attrs(a("package", pkg), ai("versionCode", 9), a("versionName", "1.0")));
             start("uses-sdk", null, attrs(ai("minSdkVersion", 30), ai("targetSdkVersion", 36)));
             end("uses-sdk");
+            startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE")));
+            start("queries",null,attrs());
+            startEnd("package",attrs(a("name","org.matonos.compositor")));
+            end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
-            start("application", null, attrs(a("label", label), ab("hasCode", true)));
+            start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true),new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
-            start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), a("label", label)));
+            start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
-            startEnd("meta-data", attrs(a("name", MIN_INTERFACE_META), ai("value", 1)));
+            startEnd("meta-data", attrs(a("name", MIN_INTERFACE_META), ai("value", 2)));
             start("intent-filter", null, attrs());
             startEnd("action", attrs(a("name", "android.intent.action.MAIN")));
             startEnd("category", attrs(a("name", "android.intent.category.LAUNCHER")));
@@ -288,6 +333,19 @@ public final class StubGenerator {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             write16(out, 0x0003); write16(out, 8); write32(out, 8 + body.size()); body.writeTo(out); return out.toByteArray();
         }
+        byte[] adaptiveIcon() throws IOException {
+            namespace(true);
+            start("adaptive-icon", null, attrs());
+            startEnd("background", attrs(new Attr("drawable", "@drawable/background", 0x7f010002, 1)));
+            startEnd("foreground", attrs(new Attr("drawable", "@drawable/foreground", 0x7f010001, 1)));
+            end("adaptive-icon"); namespace(false);
+            ByteArrayOutputStream body=new ByteArrayOutputStream();
+            writeStringPool(body);writeResourceMap(body);
+            for (Chunk chunk:nodes) chunk.write(body);
+            ByteArrayOutputStream out=new ByteArrayOutputStream();
+            write16(out,3);write16(out,8);write32(out,8+body.size());body.writeTo(out);
+            return out.toByteArray();
+        }
         private int str(String s) { Integer i = strings.get(s); if (i != null) return i; int n = strings.size(); strings.put(s, n); return n; }
         private Attr a(String name, String value) { return new Attr(name, value, 0, 3); }
         private Attr ai(String name, int value) { return new Attr(name, Integer.toString(value), value, 0x10); }
@@ -295,6 +353,10 @@ public final class StubGenerator {
         private List<Attr> attrs(Attr... a) { return Arrays.asList(a); }
         private void namespace(boolean start) throws IOException { int t = start ? 0x0100 : 0x0101; nodes.add(Chunk.namespace(t, str("android"), str(ANDROID))); }
         private void start(String name, String text, List<Attr> attrs) throws IOException {
+            // Android's TypedArray retrieval walks attributes by resource ID.
+            // Unsorted attributes can silently disappear during manifest parsing.
+            attrs = new ArrayList<>(attrs);
+            attrs.sort((left, right) -> Integer.compareUnsigned(resourceId(left.name), resourceId(right.name)));
             for (Attr attr : attrs) { str(attr.name); str(attr.value); }
             nodes.add(Chunk.start(str(name), attrs, strings, str(ANDROID)));
         }
@@ -312,14 +374,15 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("name", "label", "exported", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("theme", "drawable", "name", "label", "icon", "exported", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
         }
         private int resourceId(String name) {
             switch (name) {
-                case "name": return 0x01010003; case "label": return 0x01010001; case "exported": return 0x01010010;
+                case "theme": return 0x01010000;
+                case "drawable": return 0x01010199; case "icon": return 0x01010002; case "name": return 0x01010003; case "label": return 0x01010001; case "exported": return 0x01010010;
                 case "hasCode": return 0x0101000c; case "required": return 0x0101028e; case "value": return 0x01010024;
                 case "mimeType": return 0x01010026; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
                 case "minSdkVersion": return 0x0101020c; case "targetSdkVersion": return 0x01010270; default: return 0;

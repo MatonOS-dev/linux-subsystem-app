@@ -5,8 +5,17 @@ package {
 java_library {
     name: "MatonLinuxStubGenerator",
     srcs: ["src/**/*.java"],
-    static_libs: ["apksig"],
+    static_libs: ["MatonApkSig"],
     sdk_version: "current",
     min_sdk_version: "36",
     java_version: "1.8",
+}
+
+// Unmodified upstream apksig classes, imported for platform use. AOSP's
+// apksig module is restricted to com.android.webapp; see prebuilt/README.md.
+java_import {
+    name: "MatonApkSig",
+    jars: ["prebuilt/apksig.jar"],
+    sdk_version: "current",
+    min_sdk_version: "36",
 }

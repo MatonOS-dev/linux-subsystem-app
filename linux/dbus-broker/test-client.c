@@ -1,8 +1,14 @@
 #include <gio/gio.h>
 #include <stdio.h>
+#include <unistd.h>
 
 static gboolean signal_seen;
 static gboolean owner_changed_seen;
+static gboolean directed_seen, observer_seen;
+static void directed_cb(GDBusConnection* c,const char* sender,const char* path,const char* interface,const char* signal,GVariant* parameters,void* data) {
+    (void)c;(void)sender;(void)path;(void)interface;(void)signal;(void)parameters;
+    *(gboolean*)data=TRUE;
+}
 typedef struct { GMainLoop *loop; GVariant *reply; GError *error; } CallResult;
 static const char service_xml[] =
     "<node><interface name='org.example.Echo'>"
@@ -113,6 +119,36 @@ int main(int argc, char **argv) {
         g_main_context_iteration(NULL, FALSE); g_usleep(1000);
     }
     ok &= require(signal_seen, "match-rule signal forwarding", NULL);
+
+    GVariant* credentials=NULL;
+    ok &= require(bus_call(sender,"GetConnectionCredentials","(a{sv})",
+        g_variant_new("(s)",g_dbus_connection_get_unique_name(sender)),&credentials,&error),"peer credentials",&error);
+    if (credentials) {
+        GVariant* values;g_variant_get(credentials,"(@a{sv})",&values);guint uid=0,pid=0;
+        ok &= require(g_variant_lookup(values,"UnixUserID","u",&uid) && uid==geteuid() &&
+            g_variant_lookup(values,"ProcessID","u",&pid) && pid==(guint)getpid(),"kernel UID/PID",NULL);
+        g_variant_unref(values);g_variant_unref(credentials);
+    }
+    g_clear_error(&error);
+    GDBusConnection* observer=connect_bus(address);
+    if (!observer) return 1;
+    g_dbus_connection_signal_subscribe(receiver,NULL,"org.example.Events","Directed",
+        "/org/example/Sender",NULL,G_DBUS_SIGNAL_FLAGS_NO_MATCH_RULE,directed_cb,&directed_seen,NULL);
+    g_dbus_connection_signal_subscribe(observer,NULL,"org.example.Events","Directed",
+        "/org/example/Sender",NULL,G_DBUS_SIGNAL_FLAGS_NO_MATCH_RULE,directed_cb,&observer_seen,NULL);
+    g_dbus_connection_emit_signal(sender,g_dbus_connection_get_unique_name(receiver),
+        "/org/example/Sender","org.example.Events","Directed",g_variant_new("(s)","private"),&error);
+    ok &= require(error==NULL,"emit directed signal",&error);g_clear_error(&error);
+    deadline=g_get_monotonic_time()+500000;
+    while(g_get_monotonic_time()<deadline){g_main_context_iteration(NULL,FALSE);g_usleep(1000);}
+    ok &= require(directed_seen && !observer_seen,"directed delivery without match or broadcast",NULL);
+    g_dbus_connection_emit_signal(sender,g_dbus_connection_get_unique_name(observer),
+        "/org/example/Sender","org.example.Events","Directed",g_variant_new("(s)","denied"),&error);
+    ok &= require(error==NULL,"emit unlisted directed signal",&error);g_clear_error(&error);
+    deadline=g_get_monotonic_time()+500000;
+    while(g_get_monotonic_time()<deadline){g_main_context_iteration(NULL,FALSE);g_usleep(1000);}
+    ok &= require(!observer_seen,"directed signal to unlisted peer denied",NULL);
+    g_object_unref(observer);
 
     GVariant *names = NULL;
     ok &= require(bus_call(sender, "ListNames", "(as)", NULL, &names, &error), "ListNames", &error);
