@@ -1,0 +1,20 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// MatonOS bwrap shim: binds the per-app X11 relay socket
+// into the Flatpak sandbox. Launched as $FLATPAK_BWRAP by
+// flatpak-env-wrapper.c; see flatpak.mk.
+cc_binary {
+    name: "matonos-bwrap",
+    srcs: [
+        "matonos-bwrap.c",
+    ],
+    system_ext_specific: true,
+    compile_multilib: "64",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}

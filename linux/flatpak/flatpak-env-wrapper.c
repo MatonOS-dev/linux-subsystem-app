@@ -106,9 +106,21 @@ static int start_session_bus(const char* display, const char* ref, const char* m
 
 int main(int argc, char** argv) {
     const char* display = getenv("WAYLAND_DISPLAY");
+    const char* bwrap = "/system_ext/bin/bwrap";
     int display_fd = -1; char trailing; char display_copy[128] = {0};
+    char x11_socket[160] = {0};
     int graphical = display && sscanf(display, "/data/matonos/linux/runtime/wayland-%d%c", &display_fd, &trailing) == 1 && display_fd >= 0;
     if (graphical) snprintf(display_copy, sizeof(display_copy), "%s", display);
+    if (graphical) {
+        // linuxd relays X11 on a sibling socket of the Wayland
+        // one; only then does the bwrap shim have a socket to bind.
+        struct stat socket_info;
+        snprintf(x11_socket, sizeof(x11_socket), "%s-x11", display_copy);
+        if (lstat(x11_socket, &socket_info) != 0 || !S_ISSOCK(socket_info.st_mode))
+            x11_socket[0] = '\0';
+        else
+            bwrap = "/system_ext/bin/matonos-bwrap";
+    }
     char dns[2048], bus[192];
     snprintf(dns,sizeof(dns),"%s",getenv("MATON_FLATPAK_DNS") ? getenv("MATON_FLATPAK_DNS") : "");
     snprintf(bus,sizeof(bus),"%s",getenv("DBUS_SESSION_BUS_ADDRESS") ? getenv("DBUS_SESSION_BUS_ADDRESS") : "");
@@ -122,9 +134,15 @@ int main(int argc, char** argv) {
         setenv("FLATPAK_SYSTEM_DIR", "/data/matonos/linux/flatpak", 1) != 0 ||
         setenv("FLATPAK_SYSTEM_CACHE_DIR", "/data/matonos/linux/cache", 1) != 0 ||
         setenv("FLATPAK_USER_DIR", "/data/matonos/linux/flatpak-user", 1) != 0 ||
-        setenv("FLATPAK_DBUSPROXY", "/system_ext/bin/xdg-dbus-proxy", 1) != 0 ||
-        setenv("FLATPAK_BWRAP", "/system_ext/bin/bwrap", 1) != 0) {
+        setenv("FLATPAK_DBUSPROXY", "/system_ext/bin/xdg-dbus-proxy", 1) != 0) {
         perror("matonos-flatpak: setting runtime environment failed");
+        return 127;
+    }
+    // clearenv() above dropped everything, so the shim path
+    // and its socket are exported here, after the reset.
+    if (setenv("FLATPAK_BWRAP", bwrap, 1) != 0 ||
+        (x11_socket[0] != '\0' && setenv("MATON_X11_SOCKET", x11_socket, 1) != 0)) {
+        perror("matonos-flatpak: setting bwrap environment failed");
         return 127;
     }
     if (setenv("FLATPAK_REVOKEFS_FUSE", "/system_ext/bin/revokefs-fuse", 1) != 0) {
