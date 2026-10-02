@@ -31,19 +31,30 @@ static void call(GDBusConnection* c, const char* sender, const char* path,
         if (g_str_equal(ns,"org.freedesktop.appearance") &&
                 (g_str_equal(key,"color-scheme") || g_str_equal(key,"contrast")))
             g_dbus_method_invocation_return_value(inv, g_variant_new("(v)",g_variant_new_uint32(0)));
+        // Android's caption bar owns minimize/maximize/close: toolkits draw none.
+        // GTK prefers this over settings.ini whenever a settings portal answers.
+        else if (g_str_equal(ns,"org.gnome.desktop.wm.preferences") && g_str_equal(key,"button-layout"))
+            g_dbus_method_invocation_return_value(inv, g_variant_new("(v)",g_variant_new_string(":")));
         else g_dbus_method_invocation_return_dbus_error(inv,
                 "org.freedesktop.portal.Error.NotFound", "Setting is unavailable");
     } else if (g_str_equal(method, "ReadAll")) {
         char** namespaces; g_variant_get(args,"(^as)",&namespaces);
-        gboolean include = namespaces[0] == NULL;
-        for (unsigned i=0; namespaces[i]; ++i)
+        gboolean include = namespaces[0] == NULL, include_wm = include;
+        for (unsigned i=0; namespaces[i]; ++i) {
             if (g_pattern_match_simple(namespaces[i],"org.freedesktop.appearance")) include=TRUE;
+            if (g_pattern_match_simple(namespaces[i],"org.gnome.desktop.wm.preferences")) include_wm=TRUE;
+        }
         GVariantBuilder result; g_variant_builder_init(&result,G_VARIANT_TYPE("a{sa{sv}}"));
         if (include) {
             GVariantBuilder appearance; g_variant_builder_init(&appearance,G_VARIANT_TYPE_VARDICT);
             g_variant_builder_add(&appearance,"{sv}","color-scheme",g_variant_new_uint32(0));
             g_variant_builder_add(&appearance,"{sv}","contrast",g_variant_new_uint32(0));
             g_variant_builder_add(&result,"{sa{sv}}","org.freedesktop.appearance",&appearance);
+        }
+        if (include_wm) {
+            GVariantBuilder wm; g_variant_builder_init(&wm,G_VARIANT_TYPE_VARDICT);
+            g_variant_builder_add(&wm,"{sv}","button-layout",g_variant_new_string(":"));
+            g_variant_builder_add(&result,"{sa{sv}}","org.gnome.desktop.wm.preferences",&wm);
         }
         g_strfreev(namespaces);
         g_dbus_method_invocation_return_value(inv,g_variant_new("(a{sa{sv}})",&result));
