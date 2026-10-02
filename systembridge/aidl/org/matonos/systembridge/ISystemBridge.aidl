@@ -24,7 +24,7 @@ interface ISystemBridge {
     byte[] getRecentTaskThumbnail(int taskId);
     // The provider is preset to Shelf but disabled until a user selects it.
     String getNavigationBarProviderState();
-    String launchFlatpak(String ref, in android.os.ParcelFileDescriptor runtimeDirectory);
+    String launchFlatpak(String ref, in android.os.ParcelFileDescriptor runtimeDirectory, String x11Display);
     String getFlatpakLaunchStatus(String ref);
     // Host-only attestation of an installed generated stub's UID, ref and signer.
     boolean isFlatpakStub(int uid, String ref);
