@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <sys/syscall.h>
 #include "session-control.h"
+#include "flatpak-compat.h"
 
 typedef struct _Client Client;
 typedef struct _Service Service;
@@ -60,6 +61,7 @@ struct _Broker {
     guint control_source, control_client_source;
     char *control_path;
     char monitor[192];
+    char flatpak_error[256];
     pid_t supervisor_pid;
     gint portal_generation;
 };
@@ -333,6 +335,9 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
         }
         gboolean trusted_portal=FALSE;
         if (b->flatpak_portal && g_str_equal(name,"org.freedesktop.portal.Flatpak")) {
+            if (b->host_session && b->flatpak_error[0]) {
+                return_dbus_error(inv,MATON_SESSION_FLATPAK_ERROR,b->flatpak_error); return;
+            }
             GCredentials* credentials=g_dbus_connection_get_peer_credentials(c->connection);
             trusted_portal=managed_portal_credentials(b,credentials,c->portal_generation);
             if (!trusted_portal) {
@@ -857,13 +862,29 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
     int client=accept4(fd,NULL,NULL,SOCK_CLOEXEC|SOCK_NONBLOCK);
     if(client<0)return G_SOURCE_CONTINUE;
     struct ucred cred; socklen_t size=sizeof(cred);
-    struct MatonSessionRegistration registration;
-    /* SOCK_SEQPACKET preserves the registration boundary; incomplete clients
-     * have a bounded wait and cannot hold the event loop indefinitely. */
+    struct MatonSessionRegistration registration={0};
+    /* SOCK_SEQPACKET preserves packet boundaries and bounds the wait. */
     struct pollfd ready={.fd=client,.events=POLLIN};
     if(getsockopt(client,SOL_SOCKET,SO_PEERCRED,&cred,&size) || cred.uid!=1000 ||
-       poll(&ready,1,1000)<=0 || recv(client,&registration,sizeof(registration),MSG_TRUNC)!=sizeof(registration) ||
-       registration.pid<=0 || !memchr(registration.monitor,0,sizeof(registration.monitor)) ||
+       poll(&ready,1,1000)<=0) {close(client);return G_SOURCE_CONTINUE;}
+    ssize_t received=recv(client,&registration,sizeof(registration),MSG_TRUNC);
+    if(received!=sizeof(registration) ||
+       !memchr(registration.flatpak_version,0,sizeof(registration.flatpak_version)) ||
+       !maton_flatpak_supported(registration.flatpak_version)) {
+        struct MatonSessionReply response={.status=MATON_SESSION_FLATPAK_UNSUPPORTED};
+        const char* version=received==sizeof(registration) &&
+            memchr(registration.flatpak_version,0,sizeof(registration.flatpak_version)) ?
+            registration.flatpak_version : "unknown (missing/invalid registration)";
+        g_strlcpy(response.error,MATON_SESSION_FLATPAK_ERROR,sizeof(response.error));
+        g_snprintf(response.message,sizeof(response.message),
+            "System Flatpak %s is unsupported; broker requires >= %s (built against %s). Update the system Flatpak/image.",
+            version,MATON_BROKER_MIN_FLATPAK_VERSION,MATON_BROKER_BUILT_FLATPAK_VERSION);
+        g_warning("%s: %s; refusing portal registration",response.error,response.message);
+        if(b->control_fd<0)g_strlcpy(b->flatpak_error,response.message,sizeof(b->flatpak_error));
+        (void)!send(client,&response,sizeof(response),MSG_NOSIGNAL);
+        close(client);return G_SOURCE_CONTINUE;
+    }
+    if(registration.pid<=0 || !memchr(registration.monitor,0,sizeof(registration.monitor)) ||
        !g_str_has_prefix(registration.monitor,"/data/matonos/linux/runtime/wayland-")) {close(client);return G_SOURCE_CONTINUE;}
     struct pollfd alive={.fd=b->portal_pidfd,.events=POLLIN};
     gboolean reusable=b->ready_fd<0 && b->portal_pidfd>=0 && poll(&alive,1,0)==0 &&
@@ -875,6 +896,7 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
     if(response.status==0) {
         b->portal_pidfd=(int)syscall(SYS_pidfd_open,registration.pid,0);
         if(b->portal_pidfd<0) {g_warning("Cannot pin managed portal PID: %s",g_strerror(errno));response.status=3;(void)!send(client,&response,sizeof(response),MSG_NOSIGNAL);close(client);return G_SOURCE_CONTINUE;}
+        b->flatpak_error[0]=0;
         g_atomic_int_inc(&b->portal_generation);
         b->supervisor_pid=cred.pid; b->portal_pid=registration.pid; b->control_fd=client;b->ready_fd=client;
         g_strlcpy(b->monitor,registration.monitor,sizeof(b->monitor));
@@ -886,6 +908,8 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
 }
 gboolean broker_enable_host_session(Broker* b,GError** error) {
     b->host_session=TRUE;b->flatpak_portal=TRUE;
+    g_message("APK session broker built against Flatpak %s; minimum supported system Flatpak %s",
+        MATON_BROKER_BUILT_FLATPAK_VERSION,MATON_BROKER_MIN_FLATPAK_VERSION);
     b->control_path=g_strconcat(b->socket_path,"-control",NULL);
     struct sockaddr_un address={.sun_family=AF_UNIX};
     if(strlen(b->control_path)>=sizeof(address.sun_path))goto fail;

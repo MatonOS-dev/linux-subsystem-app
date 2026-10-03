@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -105,6 +106,50 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     }
     unlink(path);_exit(0);
 }
+/* Query the actual image CLI, bypassing this wrapper (no recursive portal
+ * startup). Bounded output/time; a broken CLI reports unknown and fails closed. */
+static void system_flatpak_version(char version[64]) {
+    snprintf(version,64,"unknown");
+    int output[2];if(pipe2(output,O_CLOEXEC))return;
+    pid_t child=fork();
+    if(child<0){close(output[0]);close(output[1]);return;}
+    if(child==0) {
+        close(output[0]);
+        if(dup2(output[1],STDOUT_FILENO)<0)_exit(127);
+        close(output[1]);
+        execl("/system_ext/bin/matonos-flatpak","flatpak","--version",NULL);
+        _exit(127);
+    }
+    close(output[1]);
+    if(fcntl(output[0],F_SETFL,O_NONBLOCK)<0) {
+        close(output[0]);kill(child,SIGKILL);while(waitpid(child,NULL,0)<0&&errno==EINTR){};return;
+    }
+    char text[128];size_t used=0;int status=0,exited=0;
+    struct timespec start,now;clock_gettime(CLOCK_MONOTONIC,&start);
+    for(;;) {
+        ssize_t got=read(output[0],text+used,sizeof(text)-1-used);
+        if(got>0)used+=(size_t)got;
+        pid_t waited=waitpid(child,&status,WNOHANG);
+        if(waited==child){exited=1;break;}
+        if(waited<0 && errno!=EINTR)break;
+        clock_gettime(CLOCK_MONOTONIC,&now);
+        if((now.tv_sec-start.tv_sec)*1000+(now.tv_nsec-start.tv_nsec)/1000000>=2000 ||
+           used==sizeof(text)-1)break;
+        struct pollfd ready={.fd=got==0 ? -1 : output[0],.events=POLLIN};
+        (void)poll(&ready,1,20);
+    }
+    if(exited && used<sizeof(text)-1) {
+        ssize_t got=read(output[0],text+used,sizeof(text)-1-used);
+        if(got>0)used+=(size_t)got;
+    }
+    close(output[0]);
+    if(!exited){kill(child,SIGKILL);while(waitpid(child,NULL,0)<0&&errno==EINTR){};return;}
+    if(!WIFEXITED(status) || WEXITSTATUS(status)!=0)return;
+    text[used]=0;
+    while(used && (text[used-1]=='\n'||text[used-1]=='\r'||text[used-1]==' '))text[--used]=0;
+    if(strncmp(text,"Flatpak ",8) || !text[8] || strlen(text+8)>=64)return;
+    snprintf(version,64,"%s",text+8);
+}
 /* The supervisor holds the delegated directory for the whole host session.
  * Only its bus socket path is exported; the control capability never reaches
  * the CLI, bwrap, portal, or application children. */
@@ -114,6 +159,7 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
     if(supervisor<0){close(ready[0]);close(ready[1]);return -1;}
     if(supervisor==0) {
         close(ready[0]);
+        char flatpak_version[64];system_flatpak_version(flatpak_version);
         struct sockaddr_un address={.sun_family=AF_UNIX};
         snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/bus-control",directory);
         int control=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);
@@ -139,11 +185,19 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
         }
         close(gate[0]);
         struct MatonSessionRegistration registration={.pid=portal};
+        snprintf(registration.flatpak_version,sizeof(registration.flatpak_version),"%s",flatpak_version);
         snprintf(registration.monitor,sizeof(registration.monitor),"%s",monitor);
         struct MatonSessionReply reply={0};
         struct pollfd event={.fd=control,.events=POLLIN};
         int ok=send(control,&registration,sizeof(registration),MSG_NOSIGNAL)==sizeof(registration) &&
-            poll(&event,1,5000)>0 && recv(control,&reply,sizeof(reply),0)==sizeof(reply);
+            poll(&event,1,5000)>0 && recv(control,&reply,sizeof(reply),MSG_TRUNC)==sizeof(reply);
+        if(ok && reply.status==MATON_SESSION_FLATPAK_UNSUPPORTED) {
+            fprintf(stderr,"matonos-flatpak: %.*s: %.*s\n",
+                (int)sizeof(reply.error),reply.error,(int)sizeof(reply.message),reply.message);
+            ok=0;
+        } else if(!ok) {
+            fprintf(stderr,"matonos-flatpak: invalid or missing session portal registration reply\n");
+        }
         if(ok && reply.status==0) {
             char value=1;ok=write(gate[1],&value,1)==1;
             if(ok)ok=poll(&event,1,5000)>0 && recv(control,&value,1,0)==1 && value==1;

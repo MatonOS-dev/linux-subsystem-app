@@ -200,3 +200,37 @@ and skips with status 77 if the host sandbox prevents GIO socket setup.
 `make check-portal-credentials` checks the actual RequestName credential
 predicate: exact live PID and UID are required; an exited process's pidfd
 cannot authorize a matching recycled PID. This check needs no GIO sockets.
+
+### APK delivery and Flatpak compatibility
+
+The host Gradle preBuild builds `build-android.sh` and packages its static-GIO
+PIE executable as `lib/x86_64/libmatonos-dbus-broker.so`. Legacy JNI packaging
+and `extractNativeLibs=true` let PackageManager extract it executable in
+`ApplicationInfo.nativeLibraryDir`; SessionBus uses that absolute path.
+Broker changes ship with `adb install -r MatonWaylandHost.apk`. The system
+image no longer packages a broker executable. The native wrapper/portal
+remain in the image; an image containing this registration metadata is
+needed for the initial migration.
+
+There is no independently numbered control protocol. The broker records
+`PACKAGE_VERSION` from the image Flatpak build's generated `config.h`
+(default `out/matonos/flatpak-ndk/flatpak/build/config.h`, override with
+`MATON_FLATPAK_BUILD_CONFIG`). A missing/invalid build version fails the APK
+build. At registration, the native supervisor runs the actual system
+`matonos-flatpak --version` with a two-second limit. The broker accepts
+numeric system Flatpak releases >= **1.14.10**, the explicit floor in
+`flatpak-compat.h`, regardless of the version it was built against.
+Future Flatpak incompatibilities require deliberate broker changes.
+
+Older, malformed, or unknown versions are refused before the child gate is
+released or a pidfd is registered. The control response carries
+`org.matonos.DBus.Error.UnsupportedFlatpakVersion` and an explanation;
+the supervisor logs it and terminates the gated child. D-Bus portal
+`RequestName` also returns this error after rejected registration until a
+valid registration succeeds. Broker logs include built, minimum and rejected
+system versions. Malformed/legacy packet lengths fail closed.
+
+Stock Android appdomain permissions allow nativeLibraryDir execution as
+`apk_data_file` for installed APK updates and `system_file` for image apps,
+without a domain transition. No broker exec label or additional grant is
+needed. Execution from writable private app data is not used.
