@@ -101,6 +101,16 @@ static const char *owner_of(Broker *b, const char *name) {
     if (g_hash_table_contains(b->owners, name)) return ":1.0";
     return NULL;
 }
+/* Names outside a client's policy are absent, as behind xdg-dbus-proxy:
+ * no owner, not listed, calls fail with ServiceUnknown. Software treats a
+ * missing service as "not on this system" and falls back; AccessDenied
+ * tends to surface as an error (MatonOS looks like a system without
+ * systemd or logind, for example). */
+static gboolean name_visible(Broker *b, Client *c, const char *name) {
+    if (name[0] == ':' || g_str_equal(name, "org.freedesktop.DBus")) return TRUE;
+    if (g_hash_table_lookup(b->owners, name) == c && c != NULL) return TRUE;
+    return (access_for(b, name) & (ACCESS_TALK | ACCESS_OWN)) != 0;
+}
 static gboolean destination_has_talk_access(Broker *b, Client *destination) {
     GHashTableIter iter; gpointer key, value;
     g_hash_table_iter_init(&iter, b->owners);
@@ -357,7 +367,8 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 1u));
         }
     } else if (g_str_equal(method, "GetNameOwner") || g_str_equal(method, "NameHasOwner")) {
-        const char *name; g_variant_get(parameters, "(&s)", &name); const char *owner = owner_of(b, name);
+        const char *name; g_variant_get(parameters, "(&s)", &name);
+        const char *owner = name_visible(b, c, name) ? owner_of(b, name) : NULL;
         if (g_str_equal(method, "NameHasOwner")) g_dbus_method_invocation_return_value(inv, g_variant_new("(b)", owner != NULL));
         else if (owner == NULL) return_dbus_error(inv, "org.freedesktop.DBus.Error.NameHasNoOwner", "Name has no owner");
         else g_dbus_method_invocation_return_value(inv, g_variant_new("(s)", owner));
@@ -369,7 +380,8 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             Client *x = g_ptr_array_index(b->clients, i); if (x->unique) g_variant_builder_add(&a, "s", x->unique);
         }
         GHashTableIter it; gpointer key; g_hash_table_iter_init(&it, b->owners);
-        while (g_hash_table_iter_next(&it, &key, NULL)) g_variant_builder_add(&a, "s", (char *)key);
+        while (g_hash_table_iter_next(&it, &key, NULL))
+            if (name_visible(b, c, key)) g_variant_builder_add(&a, "s", (char *)key);
         g_dbus_method_invocation_return_value(inv, g_variant_new("(as)", &a));
     } else if (g_str_equal(method, "ListActivatableNames")) {
         GVariantBuilder a; g_variant_builder_init(&a, G_VARIANT_TYPE("as"));
@@ -490,18 +502,6 @@ static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *messag
     }
     return FALSE;
 }
-/* MatonOS presents itself as a system without systemd or logind: their
- * names are absent rather than forbidden, as on Alpine or Void. Software
- * treats ServiceUnknown as "no such service here" and falls back, while
- * AccessDenied tends to surface as an error. */
-static gboolean name_is_systemd(const char *name) {
-    static const char *const names[] = {"org.freedesktop.systemd1", "org.freedesktop.login1",
-        "org.freedesktop.hostname1", "org.freedesktop.timedate1", "org.freedesktop.locale1",
-        "org.freedesktop.resolve1", "org.freedesktop.network1", "org.freedesktop.home1"};
-    for (guint i = 0; i < G_N_ELEMENTS(names); i++)
-        if (g_str_equal(name, names[i]) || (g_str_has_prefix(name, names[i]) && name[strlen(names[i])] == '.')) return TRUE;
-    return FALSE;
-}
 static gboolean denied_call(GDBusMessage *m) {
     const char *dest = g_dbus_message_get_destination(m), *iface = g_dbus_message_get_interface(m), *member = g_dbus_message_get_member(m);
     if (dest == NULL) return FALSE;
@@ -598,14 +598,9 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
          g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus.Peer") == 0 ||
          g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus.Introspectable") == 0))
         return message;
-    if (dest != NULL && name_is_systemd(dest) && owner_of(b, dest) == NULL) {
-        GDBusMessage *err = g_dbus_message_new_method_error(message,
-            "org.freedesktop.DBus.Error.ServiceUnknown", "The name %s was not provided by any .service files", dest);
-        send_raw(c, err); g_object_unref(err); return NULL;
-    }
     if (denied_call(message)) {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
-            "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
+            "org.freedesktop.DBus.Error.ServiceUnknown", "The name is not provided by any service");
         send_raw(c, err); g_object_unref(err); return NULL;
     }
     if (dest == NULL) {
@@ -616,7 +611,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
     if (is_local_service(b, dest)) {
         if (!(access_for(b, dest) & ACCESS_TALK)) {
             GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
-                "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
+                "org.freedesktop.DBus.Error.ServiceUnknown", "The name is not provided by any service");
             send_raw(c, err); g_object_unref(err); return NULL;
         }
         return message;
@@ -624,7 +619,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
     if (g_str_equal(dest, ":1.0") && b->services->len != 0) {
         if (!internal_service_has_talk_access(b, message)) {
             GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
-                "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
+                "org.freedesktop.DBus.Error.ServiceUnknown", "The name is not provided by any service");
             send_raw(c, err); g_object_unref(err); return NULL;
         }
         return message;
@@ -639,7 +634,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
     if ((dest[0] != ':' && !(access_for(b, target_name) & ACCESS_TALK)) ||
         (dest[0] == ':' && !destination_has_talk_access(b, target))) {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
-            "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
+            "org.freedesktop.DBus.Error.ServiceUnknown", "The name is not provided by any service");
         send_raw(c, err); g_object_unref(err); return NULL;
     }
     if (c->outgoing->len >= MAX_PENDING_PER_CLIENT || g_hash_table_size(target->pending) >= MAX_PENDING_PER_CLIENT) {
