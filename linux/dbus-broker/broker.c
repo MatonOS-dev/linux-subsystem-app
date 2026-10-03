@@ -9,6 +9,12 @@
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
+#include <sys/un.h>
+#include <glib-unix.h>
+#include <poll.h>
+#include <stdio.h>
+#include <sys/syscall.h>
+#include "session-control.h"
 
 typedef struct _Client Client;
 typedef struct _Service Service;
@@ -22,6 +28,7 @@ struct _Client {
     GPtrArray *outgoing; /* Pending calls originated here, for disconnect cleanup. */
     GHashTable *pending; /* forwarded serial -> Pending */
     guint filter_id, closed_id;
+    gint portal_generation;
 };
 struct _Service {
     char *name, *path;
@@ -46,12 +53,26 @@ struct _Broker {
     void* session_services;
     gboolean flatpak_portal;
     GPid portal_pid;
+    int portal_pidfd;
     int ready_fd;
-    guint portal_watch;
+    gboolean host_session;
+    int control_listener, control_fd;
+    guint control_source, control_client_source;
+    char *control_path;
+    char monitor[192];
+    pid_t supervisor_pid;
+    gint portal_generation;
 };
 
 enum { ACCESS_OWN = 1, ACCESS_TALK = 2 };
 enum { MAX_CLIENTS = 1024, MAX_MATCHES_PER_CLIENT = 256, MAX_PENDING_PER_CLIENT = 256 };
+static gboolean managed_portal_credentials(Broker* b,GCredentials* credentials,gint generation) {
+    struct pollfd alive={.fd=b->portal_pidfd,.events=POLLIN};
+    return generation==g_atomic_int_get(&b->portal_generation) && credentials && b->portal_pid>0 && b->portal_pidfd>=0 &&
+        poll(&alive,1,0)==0 &&
+        g_credentials_get_unix_user(credentials,NULL)==1000 &&
+        g_credentials_get_unix_pid(credentials,NULL)==b->portal_pid;
+}
 static const char dbus_xml[] =
     "<node><interface name='org.freedesktop.DBus'>"
     "<method name='Hello'><arg type='s' direction='out'/></method>"
@@ -313,8 +334,7 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
         gboolean trusted_portal=FALSE;
         if (b->flatpak_portal && g_str_equal(name,"org.freedesktop.portal.Flatpak")) {
             GCredentials* credentials=g_dbus_connection_get_peer_credentials(c->connection);
-            trusted_portal=credentials && b->portal_pid>0 &&
-                g_credentials_get_unix_pid(credentials,NULL)==b->portal_pid;
+            trusted_portal=managed_portal_credentials(b,credentials,c->portal_generation);
             if (!trusted_portal) {
                 return_dbus_error(inv,"org.freedesktop.DBus.Error.AccessDenied","Only the managed portal may own this name"); return;
             }
@@ -342,7 +362,9 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 1u));
         }
         if (trusted_portal && g_hash_table_lookup(b->owners,name)==c && b->ready_fd>=0) {
-            char ready=1; (void)!write(b->ready_fd,&ready,1);close(b->ready_fd);b->ready_fd=-1;
+            char ready=1; (void)!send(b->ready_fd,&ready,1,MSG_NOSIGNAL);
+            if (!b->host_session) close(b->ready_fd);
+            b->ready_fd=-1;
         }
     } else if (g_str_equal(method, "ReleaseName")) {
         if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(s)"))) { return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (s)"); return; }
@@ -539,7 +561,8 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
             const char* unique=owner_of(b,destination);
             Client* target=unique ? find_client(b,unique) : NULL;
             // Directed signals require no AddMatch and must never be broadcast.
-            gboolean portal_sender = b->portal_pid > 0 &&
+            gboolean portal_sender = c->portal_generation==g_atomic_int_get(&b->portal_generation) &&
+                b->flatpak_portal && b->portal_pid > 0 &&
                 g_hash_table_lookup(b->owners, "org.freedesktop.portal.Flatpak") == c;
             gboolean allowed = destination[0] == ':' ?
                 destination_has_talk_access(b, target) : ((access_for(b, destination) & ACCESS_TALK)!=0);
@@ -722,16 +745,17 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
     int fd = g_socket_get_fd(g_socket_connection_get_socket(G_SOCKET_CONNECTION(stream)));
     struct ucred peercred; socklen_t peercred_len = sizeof(peercred);
     if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peercred, &peercred_len) != 0 ||
-        peercred.uid != b->owner_uid) {
+        peercred.uid != (b->host_session ? 1000u : b->owner_uid)) {
         g_object_unref(c->connection); g_free(c); return FALSE;
     }
     GCredentials *peer = g_dbus_connection_get_peer_credentials(connection);
     if (peer == NULL) { g_object_unref(c->connection); g_free(c); return FALSE; }
     GError *cred_error = NULL;
     uid_t peer_uid = g_credentials_get_unix_user(peer, &cred_error);
-    if (cred_error != NULL || peer_uid != b->owner_uid) {
+    if (cred_error != NULL || peer_uid != (b->host_session ? 1000u : b->owner_uid)) {
         g_clear_error(&cred_error); g_object_unref(c->connection); g_free(c); return FALSE;
     }
+    c->portal_generation=g_atomic_int_get(&b->portal_generation);
     c->matches = g_ptr_array_new_with_free_func(g_free);
     c->outgoing = g_ptr_array_new();
     c->pending = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
@@ -761,7 +785,7 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
 }
 
 Broker *broker_new(const char *socket_path, const char *config_path, GError **error) {
-    Broker *b = g_new0(Broker, 1); b->socket_path = g_strdup(socket_path); b->owner_uid = geteuid(); b->ready_fd=-1;
+    Broker *b = g_new0(Broker, 1); b->socket_path = g_strdup(socket_path); b->owner_uid = geteuid(); b->ready_fd=-1; b->control_listener=-1; b->control_fd=-1; b->portal_pidfd=-1;
     b->clients = g_ptr_array_new(); b->services = g_ptr_array_new();
     b->owners = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     b->name_flags = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -810,19 +834,73 @@ gboolean broker_add_service(Broker *b, const char *name, const char *path,
     g_ptr_array_add(b->services, s); g_hash_table_insert(b->owners, g_strdup(name), NULL);
     return TRUE;
 }
-void broker_enable_flatpak_portal(Broker* b, int ready_fd) {
-    b->flatpak_portal=TRUE;b->ready_fd=ready_fd;
+/* This endpoint is reachable only through the host's private directory
+ * capability. The wrapper supervisor registers its gated, unreaped child. */
+static gboolean control_closed(gint fd, GIOCondition condition, gpointer data) {
+    (void)condition;
+    Broker* b=data; char byte;
+    if (recv(fd,&byte,1,MSG_DONTWAIT)<0 && errno==EAGAIN) return G_SOURCE_CONTINUE;
+    /* Fail closed: disconnect all peers before a registered PID can be reused. */
+    g_atomic_int_inc(&b->portal_generation);
+    b->portal_pid=0; b->ready_fd=-1; b->monitor[0]=0;
+    if(b->portal_pidfd>=0)close(b->portal_pidfd);
+    b->portal_pidfd=-1;
+    for (guint i=0;i<b->clients->len;i++) {
+        Client* c=g_ptr_array_index(b->clients,i);
+        g_dbus_connection_close(c->connection,NULL,NULL,NULL);
+    }
+    close(b->control_fd);b->control_fd=-1;b->control_client_source=0;
+    return G_SOURCE_REMOVE;
 }
-static void portal_child_setup(void* data) {
-    pid_t parent=GPOINTER_TO_INT(data);
-    if (prctl(PR_SET_PDEATHSIG,SIGTERM) || getppid()!=parent) _exit(127);
+static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
+    (void)condition; Broker* b=data;
+    int client=accept4(fd,NULL,NULL,SOCK_CLOEXEC|SOCK_NONBLOCK);
+    if(client<0)return G_SOURCE_CONTINUE;
+    struct ucred cred; socklen_t size=sizeof(cred);
+    struct MatonSessionRegistration registration;
+    /* SOCK_SEQPACKET preserves the registration boundary; incomplete clients
+     * have a bounded wait and cannot hold the event loop indefinitely. */
+    struct pollfd ready={.fd=client,.events=POLLIN};
+    if(getsockopt(client,SOL_SOCKET,SO_PEERCRED,&cred,&size) || cred.uid!=1000 ||
+       poll(&ready,1,1000)<=0 || recv(client,&registration,sizeof(registration),MSG_TRUNC)!=sizeof(registration) ||
+       registration.pid<=0 || !memchr(registration.monitor,0,sizeof(registration.monitor)) ||
+       !g_str_has_prefix(registration.monitor,"/data/matonos/linux/runtime/wayland-")) {close(client);return G_SOURCE_CONTINUE;}
+    struct pollfd alive={.fd=b->portal_pidfd,.events=POLLIN};
+    gboolean reusable=b->ready_fd<0 && b->portal_pidfd>=0 && poll(&alive,1,0)==0 &&
+        g_hash_table_lookup(b->owners,"org.freedesktop.portal.Flatpak")!=NULL;
+    struct MatonSessionReply response={
+        .status=b->control_fd>=0 ? (reusable ? 2 : 3) : 0,
+        .supervisor=b->control_fd>=0 ? b->supervisor_pid : cred.pid
+    };
+    if(response.status==0) {
+        b->portal_pidfd=(int)syscall(SYS_pidfd_open,registration.pid,0);
+        if(b->portal_pidfd<0) {g_warning("Cannot pin managed portal PID: %s",g_strerror(errno));response.status=3;(void)!send(client,&response,sizeof(response),MSG_NOSIGNAL);close(client);return G_SOURCE_CONTINUE;}
+        g_atomic_int_inc(&b->portal_generation);
+        b->supervisor_pid=cred.pid; b->portal_pid=registration.pid; b->control_fd=client;b->ready_fd=client;
+        g_strlcpy(b->monitor,registration.monitor,sizeof(b->monitor));
+        b->control_client_source=g_unix_fd_add(client,G_IO_IN|G_IO_HUP|G_IO_ERR,control_closed,b);
+    }
+    (void)!send(client,&response,sizeof(response),MSG_NOSIGNAL);
+    if(response.status!=0)close(client);
+    return G_SOURCE_CONTINUE;
 }
-static void portal_exited(GPid pid, gint status, void* data) {
-    Broker* b=data;b->portal_pid=0;b->portal_watch=0;g_spawn_close_pid(pid);
-    g_warning("Flatpak portal exited (wait status %d)",status);
-    if (b->ready_fd>=0) {close(b->ready_fd);b->ready_fd=-1;}
-    g_main_loop_quit(b->loop);
+gboolean broker_enable_host_session(Broker* b,GError** error) {
+    b->host_session=TRUE;b->flatpak_portal=TRUE;
+    b->control_path=g_strconcat(b->socket_path,"-control",NULL);
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    if(strlen(b->control_path)>=sizeof(address.sun_path))goto fail;
+    strcpy(address.sun_path,b->control_path);
+    /* The host removes stale sockets before launch, never replace arbitrary files. */
+    b->control_listener=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC|SOCK_NONBLOCK,0);
+    if(b->control_listener<0 || bind(b->control_listener,(struct sockaddr*)&address,sizeof(address)) ||
+       chmod(b->control_path,0666) || listen(b->control_listener,8))goto fail;
+    b->control_source=g_unix_fd_add(b->control_listener,G_IO_IN,control_accept,b);
+    return TRUE;
+fail:
+    g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_FAILED,"cannot create session portal control socket");return FALSE;
 }
+const char* broker_monitor_path(Broker* b) {return b->monitor;}
+void broker_set_monitor_path(Broker* b,const char* path) {if(path)g_strlcpy(b->monitor,path,sizeof(b->monitor));}
 gboolean broker_run(Broker *b, GError **error) {
     struct stat st;
     if (lstat(b->socket_path, &st) == 0) {
@@ -833,11 +911,11 @@ gboolean broker_run(Broker *b, GError **error) {
     }
     char *address = g_strdup_printf("unix:path=%s", b->socket_path);
     char *guid = g_dbus_generate_guid();
-    b->server = g_dbus_server_new_sync(address, G_DBUS_SERVER_FLAGS_AUTHENTICATION_REQUIRE_SAME_USER,
+    b->server = g_dbus_server_new_sync(address, b->host_session ? G_DBUS_SERVER_FLAGS_NONE : G_DBUS_SERVER_FLAGS_AUTHENTICATION_REQUIRE_SAME_USER,
                                         guid, NULL, NULL, error);
     g_free(address); g_free(guid);
     if (b->server == NULL) return FALSE;
-    if (chmod(b->socket_path, 0600) != 0) {
+    if (chmod(b->socket_path, b->host_session ? 0666 : 0600) != 0) {
         g_set_error(error, G_IO_ERROR, g_io_error_from_errno(errno), "chmod broker socket: %s", g_strerror(errno));
         g_dbus_server_stop(b->server); g_clear_object(&b->server); return FALSE;
     }
@@ -848,24 +926,22 @@ gboolean broker_run(Broker *b, GError **error) {
         g_dbus_server_stop(b->server); g_clear_object(&b->server); return FALSE;
     }
     g_dbus_server_start(b->server);
-    if (b->flatpak_portal) {
-        char* portal_address=g_strdup_printf("unix:path=%s",b->socket_path);
-        g_setenv("DBUS_SESSION_BUS_ADDRESS",portal_address,TRUE);g_free(portal_address);
-        char* portal_argv[]={"/system_ext/bin/flatpak-portal",NULL};
-        if (!g_spawn_async(NULL,portal_argv,NULL,G_SPAWN_DO_NOT_REAP_CHILD,
-                portal_child_setup,GINT_TO_POINTER(getpid()),&b->portal_pid,error)) return FALSE;
-        b->portal_watch=g_child_watch_add(b->portal_pid,portal_exited,b);
-    }
     g_print("DBUS_SESSION_BUS_ADDRESS=unix:path=%s\n", b->socket_path);
+    fflush(stdout);
     g_main_loop_run(b->loop);
     return TRUE;
 }
+void broker_stop(Broker* b) {if(b->loop)g_main_loop_quit(b->loop);}
 void broker_free(Broker *b) {
     if (!b) return;
     broker_session_services_free(b);
-    if (b->portal_watch) g_source_remove(b->portal_watch);
-    if (b->portal_pid>0) {kill(b->portal_pid,SIGTERM);while(waitpid(b->portal_pid,NULL,0)<0 && errno==EINTR){}g_spawn_close_pid(b->portal_pid);}
-    if (b->ready_fd>=0) close(b->ready_fd);
+    if (b->portal_pidfd>=0)close(b->portal_pidfd);
+    if (b->control_source) g_source_remove(b->control_source);
+    if (b->control_client_source) g_source_remove(b->control_client_source);
+    if (b->control_fd>=0) close(b->control_fd);
+    if (b->control_listener>=0) close(b->control_listener);
+    if (b->control_path) {unlink(b->control_path);g_free(b->control_path);}
+    if (b->ready_fd>=0 && !b->host_session) close(b->ready_fd);
     if (b->server) { g_dbus_server_stop(b->server); g_object_unref(b->server); }
     if (b->loop) g_main_loop_unref(b->loop);
     if (b->clients) {

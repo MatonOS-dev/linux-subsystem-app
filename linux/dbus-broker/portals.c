@@ -30,8 +30,12 @@ static void call(GDBusConnection* c, const char* sender, const char* path,
                  GDBusMethodInvocation* inv, void* data) {
     (void)c; (void)sender; (void)path; (void)iface;
     if (g_str_equal(method, "RequestSession")) {
+        const char* monitor=broker_monitor_path(data);
+        if(!monitor[0]) {
+            g_dbus_method_invocation_return_error(inv,G_IO_ERROR,G_IO_ERROR_NOT_INITIALIZED,"Session portal is not ready");return;
+        }
         GVariantBuilder result; g_variant_builder_init(&result, G_VARIANT_TYPE_VARDICT);
-        g_variant_builder_add(&result, "{sv}", "path", g_variant_new_string(data));
+        g_variant_builder_add(&result, "{sv}", "path", g_variant_new_string(monitor));
         g_dbus_method_invocation_return_value(inv, g_variant_new("(a{sv})", &result));
     } else if (g_str_equal(method, "Read") || g_str_equal(method, "ReadOne")) {
         const char *ns, *key; g_variant_get(args, "(&s&s)", &ns, &key);
@@ -274,6 +278,7 @@ void broker_session_services_free(Broker* b) {
 }
 
 gboolean broker_register_session_services(Broker* broker, const char* monitor, int hold_fd, GError** error) {
+    broker_set_monitor_path(broker,monitor);
     SessionPortals* p=g_new0(SessionPortals,1);p->broker=broker;p->hold_fd=hold_fd;
     p->objects=g_ptr_array_new();p->node=g_dbus_node_info_new_for_xml(inhibit_xml,error);
     broker_set_session_data(broker,p);
@@ -284,7 +289,7 @@ gboolean broker_register_session_services(Broker* broker, const char* monitor, i
     gboolean ok=broker_add_service(broker,"org.freedesktop.portal.Desktop",
             "/org/freedesktop/portal/desktop",node->interfaces[0],&table,NULL,error) &&
         broker_add_service(broker,"org.freedesktop.Flatpak",
-            "/org/freedesktop/Flatpak/SessionHelper",node->interfaces[1],&table,(void*)monitor,error);
+            "/org/freedesktop/Flatpak/SessionHelper",node->interfaces[1],&table,broker,error);
     static const GDBusInterfaceVTable inhibit_table={.method_call=inhibit_call,.get_property=property};
     if(ok)ok=broker_add_service(broker,"org.freedesktop.portal.Desktop",
         "/org/freedesktop/portal/desktop",p->node->interfaces[0],&inhibit_table,p,error);
