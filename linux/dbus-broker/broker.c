@@ -43,6 +43,7 @@ struct _Broker {
     guint next_id;
     char *id;
     gboolean trace_calls;
+    void* session_services;
     gboolean flatpak_portal;
     GPid portal_pid;
     int ready_fd;
@@ -341,7 +342,7 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 1u));
         }
         if (trusted_portal && g_hash_table_lookup(b->owners,name)==c && b->ready_fd>=0) {
-            char ready=1; (void)write(b->ready_fd,&ready,1);close(b->ready_fd);b->ready_fd=-1;
+            char ready=1; (void)!write(b->ready_fd,&ready,1);close(b->ready_fd);b->ready_fd=-1;
         }
     } else if (g_str_equal(method, "ReleaseName")) {
         if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(s)"))) { return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (s)"); return; }
@@ -476,6 +477,9 @@ static gboolean is_local_service(Broker *b, const char *name) {
 static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *message) {
     const char *path = g_dbus_message_get_path(message);
     const char *interface = g_dbus_message_get_interface(message);
+    if(path && (g_str_has_prefix(path,"/org/freedesktop/portal/desktop/request/") ||
+                g_str_has_prefix(path,"/org/freedesktop/portal/desktop/session/")) &&
+            (access_for(b,"org.freedesktop.portal.Desktop") & ACCESS_TALK))return TRUE;
     for (guint i = 0; i < b->services->len; i++) {
         Service *service = g_ptr_array_index(b->services, i);
         if (g_strcmp0(path, service->path) == 0 &&
@@ -533,7 +537,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
             gboolean portal_sender = b->portal_pid > 0 &&
                 g_hash_table_lookup(b->owners, "org.freedesktop.portal.Flatpak") == c;
             gboolean allowed = destination[0] == ':' ?
-                destination_has_talk_access(b, target) : (access_for(b, destination) & ACCESS_TALK);
+                destination_has_talk_access(b, target) : ((access_for(b, destination) & ACCESS_TALK)!=0);
             if (target && (portal_sender || allowed)) send_raw(target,routed);
             g_object_unref(routed);return NULL;
         }
@@ -649,6 +653,7 @@ static void client_closed(GDBusConnection *connection, gboolean vanished,
                           GError *error, gpointer data) {
     (void)connection; (void)vanished; (void)error;
     Client *c = data; Broker *b = c->broker;
+    broker_session_client_closed(b,connection);
     /* Fail calls waiting on the connection that just disappeared. */
     GHashTableIter pending_iter; gpointer pending_key, pending_value;
     g_hash_table_iter_init(&pending_iter, c->pending);
@@ -775,8 +780,16 @@ gboolean broker_add_service(Broker *b, const char *name, const char *path,
     if (!g_dbus_is_name(name) || !g_variant_is_object_path(path) || interface == NULL || interface->name == NULL) {
         g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "invalid service name, path, or interface"); return FALSE;
     }
-    if (g_hash_table_contains(b->owners, name)) {
+    if (g_hash_table_contains(b->owners, name) && g_hash_table_lookup(b->owners,name)!=NULL) {
         g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_EXISTS, "duplicate service name"); return FALSE;
+    }
+    /* One well-known name may export several interfaces, but not duplicate
+     * registrations of the same interface at a path. */
+    for(guint i=0;i<b->services->len;i++) {
+        Service* old=g_ptr_array_index(b->services,i);
+        if(!strcmp(old->path,path) && !strcmp(old->interface_info->name,interface->name)) {
+            g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_EXISTS,"duplicate service interface");return FALSE;
+        }
     }
     Service *s = g_new0(Service, 1); s->name = g_strdup(name); s->path = g_strdup(path);
     s->interface_info = g_dbus_interface_info_ref(interface); s->vtable = vtable; s->user_data = user_data;
@@ -835,6 +848,7 @@ gboolean broker_run(Broker *b, GError **error) {
 }
 void broker_free(Broker *b) {
     if (!b) return;
+    broker_session_services_free(b);
     if (b->portal_watch) g_source_remove(b->portal_watch);
     if (b->portal_pid>0) {kill(b->portal_pid,SIGTERM);while(waitpid(b->portal_pid,NULL,0)<0 && errno==EINTR){}g_spawn_close_pid(b->portal_pid);}
     if (b->ready_fd>=0) close(b->ready_fd);
@@ -859,3 +873,12 @@ void broker_free(Broker *b) {
     if (b->socket_path) { struct stat st; if (lstat(b->socket_path,&st)==0 && S_ISSOCK(st.st_mode) && st.st_uid==b->owner_uid) unlink(b->socket_path); }
     g_free(b->id); g_free(b->socket_path); g_free(b);
 }
+
+const char* broker_connection_name(Broker* b,GDBusConnection* connection) {
+    for(guint i=0;i<b->clients->len;i++) {
+        Client* c=g_ptr_array_index(b->clients,i);if(c->connection==connection)return c->unique;
+    }
+    return NULL;
+}
+void* broker_session_data(Broker* b){return b->session_services;}
+void broker_set_session_data(Broker* b,void* data){b->session_services=data;}

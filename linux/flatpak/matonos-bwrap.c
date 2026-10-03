@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
     int command;
     int at;
     char** extended;
-    char* extra[9];
+    char* extra[15];
     int count=0;
 
     int x11_tmpfs=0, app_sandbox=0;
@@ -191,6 +191,12 @@ int main(int argc, char** argv) {
      * the app's launch log. */
     if(app_sandbox && is_socket(journal_path)) {
         extra[count++]="--bind";extra[count++]=(char*)journal_path;extra[count++]=JOURNAL_SOCKET_PATH;
+    }
+    /* flatpak-run.c only uses the host ID if /etc or /var has one.
+     * Android has neither. Override both paths after Flatpak mounts /var. */
+    if(app_sandbox) {
+        extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/machine-id";extra[count++]="/etc/machine-id";
+        extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/machine-id";extra[count++]="/var/lib/dbus/machine-id";
     }
     if(count) {
         /* bwrap applies the bundled arguments at the --args pair,

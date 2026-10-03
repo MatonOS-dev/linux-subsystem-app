@@ -1,6 +1,8 @@
+#define execv capture_execv
 #define main shim_main
 #include "../matonos-bwrap.c"
 #undef main
+#undef execv
 #include <assert.h>
 #include <sys/mman.h>
 
@@ -67,7 +69,8 @@ static void test_scan_argv(void) {
 
 static void test_insert_x11_args(void) {
     char* argv[]={"/system_ext/bin/matonos-bwrap","--args","3","--","app",NULL};
-    char** extended=insert_x11_args(5,argv,3,"/data/matonos/linux/runtime/wayland-1-x11");
+    char* extra[]={"--bind","/data/matonos/linux/runtime/wayland-1-x11","/tmp/.X11-unix/X0","--setenv","DISPLAY",":0"};
+    char** extended=insert_args(5,argv,3,extra,6);
     int i;
     assert(extended);
     assert(!strcmp(extended[0],"/system_ext/bin/matonos-bwrap"));
@@ -91,13 +94,13 @@ static void test_args_fd_x11_socket(void) {
                       "--setenv\0WAYLAND_DISPLAY\0/data/matonos/linux/runtime/wayland-1\0"
                       "--setenv\0MATON_X11_SOCKET\0/data/matonos/linux/runtime/wayland-1-x11\0";
     char* found;
-    int tmpfs=0;
+    int tmpfs=0, app=0;char* journal=NULL;
     int fd=memfd_create("bwrap-args",MFD_CLOEXEC|MFD_ALLOW_SEALING);
     assert(fd>=0);
     assert(ftruncate(fd,sizeof(data)-1)==0);
     assert(write(fd,data,sizeof(data)-1)==(ssize_t)(sizeof(data)-1));
     assert(lseek(fd,0,SEEK_SET)==0);
-    found=args_fd_x11_socket(fd,&tmpfs);
+    found=args_fd_x11_socket(fd,&tmpfs,&journal,&app);
     assert(found && !strcmp(found,"/data/matonos/linux/runtime/wayland-1-x11"));
     assert(tmpfs);
     /* the real bwrap must still read the arguments from the start */
@@ -112,7 +115,7 @@ static void test_args_fd_x11_socket(void) {
     assert(write(fd,plain,sizeof(plain)-1)==(ssize_t)(sizeof(plain)-1));
     assert(lseek(fd,0,SEEK_SET)==0);
     tmpfs=0;
-    assert(args_fd_x11_socket(fd,&tmpfs)==NULL);
+    assert(args_fd_x11_socket(fd,&tmpfs,&journal,&app)==NULL);
     assert(tmpfs);
     assert(lseek(fd,0,SEEK_CUR)==0);
     close(fd);
@@ -124,12 +127,40 @@ static void test_args_fd_x11_socket(void) {
     assert(write(fd,helper,sizeof(helper)-1)==(ssize_t)(sizeof(helper)-1));
     assert(lseek(fd,0,SEEK_SET)==0);
     tmpfs=0;
-    assert(args_fd_x11_socket(fd,&tmpfs));
+    assert(args_fd_x11_socket(fd,&tmpfs,&journal,&app));
     assert(!tmpfs);
     close(fd);
 }
 
+static char** captured;
+int capture_execv(const char* path,char* const* argv) {
+    assert(!strcmp(path,BWRAP));
+    unsigned n=0;while(argv[n])n++;
+    captured=calloc(n+1,sizeof(char*));assert(captured);
+    for(unsigned i=0;i<n;i++)captured[i]=strdup(argv[i]);
+    errno=ENOENT;return -1;
+}
+static void test_machine_id_binds(void) {
+    const char app[]="--dir\0/var\0--setenv\0FLATPAK_ID\0org.example.AnyApp\0";
+    const char helper[]="--ro-bind\0/\0/\0";
+    for(unsigned test=0;test<2;test++) {
+        int fd=memfd_create("bwrap-args",MFD_CLOEXEC);assert(fd>=0);
+        const char* data=test?helper:app;size_t size=test?sizeof(helper)-1:sizeof(app)-1;
+        assert(write(fd,data,size)==(ssize_t)size);assert(lseek(fd,0,SEEK_SET)==0);
+        char number[24];snprintf(number,sizeof(number),"%d",fd);
+        char* args[]={"shim","--args",number,"--","app",NULL};
+        assert(shim_main(5,args)==127);
+        unsigned ids=0;
+        for(unsigned i=0;captured[i];i++)if(!strcmp(captured[i],"/data/matonos/linux/machine-id")) {
+            assert(i>0&&!strcmp(captured[i-1],"--ro-bind"));
+            assert(!strcmp(captured[i+1],ids?"/var/lib/dbus/machine-id":"/etc/machine-id"));ids++;
+        }
+        assert(ids==(test?0:2));assert(lseek(fd,0,SEEK_CUR)==0);
+        for(unsigned i=0;captured[i];i++)free(captured[i]);free(captured);close(fd);
+    }
+}
 int main(void) {
+    test_machine_id_binds();
     test_option_values();
     test_scan_argv();
     test_insert_x11_args();

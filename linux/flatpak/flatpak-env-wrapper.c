@@ -19,6 +19,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include "machine-id.h"
 
 static int valid_dns_server(const char* server) {
     unsigned char address[16];
@@ -80,6 +81,8 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     if(sink<0){close(fd);unlink(path);return -1;}
     if(sink>0){close(fd);return 0;}
     if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(0);
+    const char* directory=getenv("MATON_INHIBIT_DIRECTORY_FD");
+    if(directory)close(atoi(directory));
     static char message[65536];
     for(;;) {
         ssize_t got=recv(fd,message,sizeof(message)-1,0);
@@ -98,7 +101,7 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     }
     unlink(path);_exit(0);
 }
-static int start_session_bus(const char* display, const char* ref, const char* monitor) {
+static int start_session_bus(const char* display, const char* ref, const char* monitor, int inhibit) {
     char app[256], path[160], policy[192], address[192];
     size_t length=strcspn(ref,"/");
     if(length==0 || length>=sizeof(app))return -1;
@@ -123,13 +126,15 @@ static int start_session_bus(const char* display, const char* ref, const char* m
     if(broker==0) {
         close(ready[0]);
         if(fcntl(ready[1],F_SETFD,0))_exit(127);
+        char hold_fd[24];snprintf(hold_fd,sizeof(hold_fd),"%d",inhibit);
+        if(inhibit>=0 && fcntl(inhibit,F_SETFD,0))_exit(127);
         char ready_fd[24];snprintf(ready_fd,sizeof(ready_fd),"%d",ready[1]);
         if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(127);
         /* Broker stdout announces its address; it is not an application error. */
         int quiet=open("/dev/null",O_WRONLY|O_CLOEXEC);
         if(quiet<0||dup2(quiet,STDOUT_FILENO)<0)_exit(127);
         close(quiet);
-        execl("/system_ext/bin/matonos-dbus-broker","matonos-dbus-broker",path,policy,"--flatpak-session",monitor,ready_fd,NULL);
+        execl("/system_ext/bin/matonos-dbus-broker","matonos-dbus-broker",path,policy,"--flatpak-session",monitor,ready_fd,hold_fd,NULL);
         _exit(127);
     }
     close(ready[1]);
@@ -146,7 +151,10 @@ static int start_session_bus(const char* display, const char* ref, const char* m
 
 int main(int argc, char** argv) {
     const char* display = getenv("WAYLAND_DISPLAY");
-    const char* bwrap = "/system_ext/bin/bwrap";
+    const char* bwrap = "/system_ext/bin/matonos-bwrap";
+    if(prepare_machine_id("/data/matonos/linux")) {
+        perror("matonos-flatpak: machine-id");return 127;
+    }
     int display_fd = -1; char trailing; char display_copy[128] = {0};
     char x11_socket[160] = {0};
     int graphical = display && sscanf(display, "/data/matonos/linux/runtime/wayland-%d%c", &display_fd, &trailing) == 1 && display_fd >= 0;
@@ -166,6 +174,17 @@ int main(int argc, char** argv) {
         if (start_journal_sink(display_copy, journal, sizeof(journal)) == 0)
             bwrap = "/system_ext/bin/matonos-bwrap";
         else journal[0] = '\0';
+    }
+    int inhibit=-1;
+    const char* directory=getenv("MATON_INHIBIT_DIRECTORY_FD");
+    if(directory) {
+        char* end;long fd=strtol(directory,&end,10);
+        if(*end || fd<3 || fd>1024)return 127;
+        struct sockaddr_un address={.sun_family=AF_UNIX};
+        snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%ld/inhibit",fd);
+        inhibit=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
+        if(inhibit>=0 && connect(inhibit,(struct sockaddr*)&address,sizeof(address))) {close(inhibit);inhibit=-1;}
+        close((int)fd);
     }
     char dns[2048], bus[192];
     snprintf(dns,sizeof(dns),"%s",getenv("MATON_FLATPAK_DNS") ? getenv("MATON_FLATPAK_DNS") : "");
@@ -208,11 +227,12 @@ int main(int argc, char** argv) {
         } else {
             char monitor[192];
             if(argc<2 || prepare_monitor(display_copy,dns,monitor,sizeof(monitor)) ||
-                    start_session_bus(display_copy,argv[argc-1],monitor)) {
+                    start_session_bus(display_copy,argv[argc-1],monitor,inhibit)) {
                 fprintf(stderr,"matonos-flatpak: cannot start private session services\n");return 127;
             }
         }
     }
+    if(inhibit>=0)close(inhibit);
     execv("/system_ext/bin/matonos-flatpak", argv);
     perror("matonos-flatpak: exec failed");
     return 127;

@@ -144,3 +144,37 @@ processes must share the same UID as their broker to pass SO_PEERCRED; apps
 must not share a socket or bus with another UID. No init service is needed.
 Image product/module integration is deferred until the system_ext GIO port is
 available.
+
+
+### Built-in Inhibit portal
+
+The session broker exports `org.freedesktop.portal.Inhibit` version 3 on
+`/org/freedesktop/portal/desktop`, alongside Settings. `Inhibit` accepts idle
+(8), suspend (4), or both; unsupported logout/user-switch flags return an
+error. Each accepted call exports a caller-owned Request, sends a directed
+Response, and holds the Android session until Request.Close or D-Bus client
+EOF. Request tokens are validated and active objects are bounded. Objects
+are registered only on their originating connection, so another connection
+cannot close them, including via the broker's unique name.
+
+`CreateMonitor` returns a Request whose Response contains a string-typed
+`session_handle`, followed by an initial StateChanged (Running, screensaver
+inactive). The monitoring Session supports Close. `QueryEndResponse` accepts
+only the owner's live Session. Android logout/screensaver state changes are
+not forwarded yet; this is the minimal monitor implementation.
+
+linuxd passes its validated compositor directory capability to the Flatpak
+wrapper on FD 198. The wrapper connects to `inhibit` within that directory,
+closes the directory FD, and delegates only the connected socket to the
+broker. Neither FD reaches Flatpak apps or flatpak-portal. The Android host
+accepts only system-UID peers; byte 1 acquires its session partial wake lock
+and enables the owning activities' keep-screen-on flags, byte 0 releases,
+and an echoed byte acknowledges completion. Socket EOF releases the hold,
+including after a broker crash. Stub activities receive state through their
+existing session listener, and newly attached activities receive the current
+state. No System Bridge AIDL change is needed. Its existing Android wake-state
+forwarder reports the wake lock to sleepd.
+
+`make test` also builds `inhibit-test`; `make check-inhibit` runs it. The
+harness uses authenticated socketpairs with the real broker connection path,
+and skips with status 77 if the host sandbox prevents GIO socket setup.
