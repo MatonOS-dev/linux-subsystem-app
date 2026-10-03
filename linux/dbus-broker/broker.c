@@ -490,6 +490,18 @@ static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *messag
     }
     return FALSE;
 }
+/* MatonOS presents itself as a system without systemd or logind: their
+ * names are absent rather than forbidden, as on Alpine or Void. Software
+ * treats ServiceUnknown as "no such service here" and falls back, while
+ * AccessDenied tends to surface as an error. */
+static gboolean name_is_systemd(const char *name) {
+    static const char *const names[] = {"org.freedesktop.systemd1", "org.freedesktop.login1",
+        "org.freedesktop.hostname1", "org.freedesktop.timedate1", "org.freedesktop.locale1",
+        "org.freedesktop.resolve1", "org.freedesktop.network1", "org.freedesktop.home1"};
+    for (guint i = 0; i < G_N_ELEMENTS(names); i++)
+        if (g_str_equal(name, names[i]) || (g_str_has_prefix(name, names[i]) && name[strlen(names[i])] == '.')) return TRUE;
+    return FALSE;
+}
 static gboolean denied_call(GDBusMessage *m) {
     const char *dest = g_dbus_message_get_destination(m), *iface = g_dbus_message_get_interface(m), *member = g_dbus_message_get_member(m);
     if (dest == NULL) return FALSE;
@@ -586,6 +598,11 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
          g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus.Peer") == 0 ||
          g_strcmp0(g_dbus_message_get_interface(message), "org.freedesktop.DBus.Introspectable") == 0))
         return message;
+    if (dest != NULL && name_is_systemd(dest) && owner_of(b, dest) == NULL) {
+        GDBusMessage *err = g_dbus_message_new_method_error(message,
+            "org.freedesktop.DBus.Error.ServiceUnknown", "The name %s was not provided by any .service files", dest);
+        send_raw(c, err); g_object_unref(err); return NULL;
+    }
     if (denied_call(message)) {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
             "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
