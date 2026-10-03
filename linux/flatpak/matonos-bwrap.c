@@ -117,11 +117,18 @@ static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app
         if(got<=0)break;
         length+=(size_t)got;
     }
+    if(!data || !length || data[length-1]!=0) {
+        (void)lseek(fd,origin,SEEK_SET);
+        free(data);
+        return NULL;
+    }
     end=data+length;
     p=data;
     while(p && p<end) {
         char* var;
         char* value;
+        if(p[0]!='-' || !strcmp(p,"--"))break;
+        int values=option_values(p);
         if(!strcmp(p,"--setenv")) {
             var=next_string(p,end);
             value=var ? next_string(var,end) : NULL;
@@ -135,7 +142,8 @@ static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app
             value=next_string(p,end);
             if(value && !strcmp(value,"/tmp/.X11-unix"))*x11_tmpfs=1;
         }
-        p=next_string(p,end);
+        /* Values and command arguments must not masquerade as options. */
+        for(int i=0;i<=values && p;i++)p=next_string(p,end);
     }
     if(lseek(fd,origin,SEEK_SET)==(off_t)-1)socket_path=NULL;
     return socket_path;
@@ -166,13 +174,17 @@ int main(int argc, char** argv) {
     int command;
     int at;
     char** extended;
-    char* extra[15];
+    char* extra[21];
     int count=0;
 
     int x11_tmpfs=0, app_sandbox=0;
     char* bundled=NULL;
     char* bundled_journal=NULL;
     command=scan_argv(argc,argv,&args_end,&dashdash);
+    for(int i=1;i<command && strcmp(argv[i],"--");) {
+        if(!strcmp(argv[i],"--setenv") && i+2<command && !strcmp(argv[i+1],"FLATPAK_ID"))app_sandbox=1;
+        i+=1+option_values(argv[i]);
+    }
     /* Only the app sandbox gets the binds: flatpak's own --tmpfs
      * /tmp/.X11-unix (from --socket=x11) marks X11 access, FLATPAK_ID
      * the app itself. Helper sandboxes such as xdg-dbus-proxy inherit
@@ -197,6 +209,16 @@ int main(int argc, char** argv) {
     if(app_sandbox) {
         extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/machine-id";extra[count++]="/etc/machine-id";
         extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/machine-id";extra[count++]="/var/lib/dbus/machine-id";
+        /* Flatpak already exposes /sys/class, /sys/dev and /sys/devices.
+         * Bind the directory itself, so atomic database replacements and
+         * future devices are visible in existing sandboxes. Metadata does
+         * not grant access to any device node. */
+        extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/udev";extra[count++]="/run/udev";
+        /* Host udev multicast cannot reliably cross Flatpak's net namespace,
+         * and linuxd's system UID is not a trusted root udev sender. SDL2/3
+         * support this generic hint and watch /dev/input with inotify (or
+         * poll when inotify is unavailable), including permission changes. */
+        extra[count++]="--setenv";extra[count++]="SDL_JOYSTICK_DISABLE_UDEV";extra[count++]="1";
     }
     if(count) {
         /* bwrap applies the bundled arguments at the --args pair,
