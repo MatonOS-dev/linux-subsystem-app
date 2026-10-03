@@ -3,9 +3,10 @@
 `matonos-dbus-broker` is a small per-stub session-bus broker. It uses GLib's
 GDBus server transport and manually supplies the bus name registry, policy,
 message routing, and signal match routing. Each app's processes connect to
-the socket owned by that stub; the server requires same-user EXTERNAL
-authentication and checks peer credentials against the UID that launched
-the broker.
+the socket in their compositor session's delegated directory. Standalone
+mode requires same-user authentication. `--host-session` runs as the
+compositor app and authenticates system-UID (1000) native clients using both
+SO_PEERCRED and GDBus peer credentials; it never enables anonymous auth.
 
 ## Build and run on a host
 
@@ -116,15 +117,10 @@ features are desired; Flatpak service activation remains denied.
 
 ## MatonOS integration status
 
-The broker is not integrated into the image and has no init service. For the
-on-device bring-up test, `build-android.sh` builds a bionic x86_64 broker and
-test client with GLib/GIO statically linked from the Flatpak spike's NDK build
-inputs. Static GLib/GIO and their PCRE2/libffi dependencies are built under
-`/mnt/data/aosp/out/matonos/flatpak-ndk/`; no upstream source tree is edited.
-The binaries only need Android's `libz`, `libdl`, `libm`, and `libc` at run
-time. This avoids depending on the current `/vendor/lib64` GLib/GIO from a
-system-side process. A later image integration should wait for flatpak-spike's
-system_ext GIO port.
+The compositor owns one C broker process per Wayland session. The broker
+binary is statically linked with GLib/GIO and its PCRE2/libffi dependencies;
+it needs only Android's libz, libdl, libm and libc at runtime. It does not
+start flatpak-portal or invoke bubblewrap. No init service is used.
 
 Run the standalone NDK build with:
 
@@ -136,15 +132,38 @@ It stages all generated libraries, objects, and binaries under `/mnt/data/aosp/o
 The test client binary runs the same name/routing/signal/deny checks as the
 host harness.
 
-The stub host must launch one broker for each app UID, create a socket in a
-UID-owned private runtime directory, provide that app's policy file, set
-`DBUS_SESSION_BUS_ADDRESS=unix:path=<socket>` for the app and all its child
-processes, and stop/restart the broker with that app's lifecycle. App
-processes must share the same UID as their broker to pass SO_PEERCRED; apps
-must not share a socket or bus with another UID. No init service is needed.
-Image product/module integration is deferred until the system_ext GIO port is
-available.
+`SessionBus` writes the session's generic `own <app-id>` and portal `talk`
+policy from its validated ref, starts `--host-session`, waits for listener
+readiness, and destroys/reaps it on host session shutdown. The broker has
+PDEATHSIG and graceful SIGTERM cleanup. Legacy host-window launches also
+use dedicated Wayland sessions. No application-specific rules are present.
 
+linuxd delegates the validated Wayland directory on FD 198 and, when
+available, the Xwayland directory on FD 199. The wrapper forks a native
+supervisor, which connects `bus-control` (SOCK_SEQPACKET) through FD 198,
+registers a gated portal child and its monitor path, and keeps both directory
+capabilities private. The wrapper and portal close these FDs before exec.
+Only the supervisor retains them. Native clients use
+`unix:path=/proc/<supervisor>/fd/198/bus`; Flatpak binds/proxies that socket
+into its sandbox as before. The portal's Wayland/X11 paths also refer to the
+supervisor's retained capabilities, avoiding dependence on a completed
+CLI launch's relays. Normal nested portal launches retain the same bus.
+
+The control listener requires a kernel-authenticated UID 1000 peer and is
+protected by the compositor's private app-data parent and SELinux. Neither
+the control socket nor its directory capability is mounted into an app
+sandbox. The trusted wrapper registers only its own child while that child
+is still blocked before exec of the fixed native flatpak-portal binary.
+The broker pins the PID with pidfd_open. Only a D-Bus peer with the exact
+registered PID and system UID, with a live pidfd, may RequestName for
+org.freedesktop.portal.Flatpak, even if the policy says `own` that name.
+Same UID, a claimed D-Bus sender, or PID reuse is insufficient. Each accepted
+connection also belongs to one registration generation, so stale authenticated
+connections cannot acquire authority from a later portal with a reused PID. Registration
+EOF revokes authority and disconnects clients; the supervisor waits for
+revocation before reaping, and pidfd validation also handles abrupt
+supervisor failure. Broker/control EOF terminates the native portal. A
+repeat launch reuses an already-ready live portal and the same supervisor.
 
 ### Built-in Inhibit portal
 
@@ -163,11 +182,10 @@ inactive). The monitoring Session supports Close. `QueryEndResponse` accepts
 only the owner's live Session. Android logout/screensaver state changes are
 not forwarded yet; this is the minimal monitor implementation.
 
-linuxd passes its validated compositor directory capability to the Flatpak
-wrapper on FD 198. The wrapper connects to `inhibit` within that directory,
-closes the directory FD, and delegates only the connected socket to the
-broker. Neither FD reaches Flatpak apps or flatpak-portal. The Android host
-accepts only system-UID peers; byte 1 acquires its session partial wake lock
+The broker connects directly to the host's session `inhibit` socket before
+starting its bus. This local transport is mode 0600 and accepts only the
+compositor's own UID. No hold FD passes through linuxd or flatpak-portal;
+byte 1 acquires its session partial wake lock
 and enables the owning activities' keep-screen-on flags, byte 0 releases,
 and an echoed byte acknowledges completion. Socket EOF releases the hold,
 including after a broker crash. Stub activities receive state through their
@@ -178,3 +196,7 @@ forwarder reports the wake lock to sleepd.
 `make test` also builds `inhibit-test`; `make check-inhibit` runs it. The
 harness uses authenticated socketpairs with the real broker connection path,
 and skips with status 77 if the host sandbox prevents GIO socket setup.
+
+`make check-portal-credentials` checks the actual RequestName credential
+predicate: exact live PID and UID are required; an exited process's pidfd
+cannot authorize a matching recycled PID. This check needs no GIO sockets.

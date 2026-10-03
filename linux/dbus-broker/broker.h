@@ -12,10 +12,13 @@ gboolean broker_add_service(Broker *broker, const char *name,
                             gpointer user_data, GError **error);
 Broker *broker_new(const char *socket_path, const char *config_path,
                    GError **error);
-void broker_enable_flatpak_portal(Broker *broker, int ready_fd);
+gboolean broker_enable_host_session(Broker *broker, GError **error);
+const char* broker_monitor_path(Broker *broker);
+void broker_set_monitor_path(Broker *broker, const char *path);
 gboolean broker_register_session_services(Broker *broker, const char *monitor, int hold_fd, GError **error);
 gboolean broker_run(Broker *broker, GError **error);
 void broker_free(Broker *broker);
+void broker_stop(Broker *broker);
 const char* broker_connection_name(Broker* broker, GDBusConnection* connection);
 void* broker_session_data(Broker* broker);
 void broker_set_session_data(Broker* broker, void* data);
