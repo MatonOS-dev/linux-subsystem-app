@@ -7,9 +7,9 @@ PRODUCT_PACKAGES += bwrap
 PRODUCT_PACKAGES += matonos-bwrap
 
 FLATPAK_SYSTEM_EXT_PREBUILT := device/maton/pc_x86_64/linux/flatpak/prebuilt/system_ext
-FLATPAK_SYSTEM_EXT_FILES := \
+FLATPAK_SYSTEM_EXT_FILES := $(filter-out $(FLATPAK_SYSTEM_EXT_PREBUILT)/bin/matonos-dbus-broker,\
     $(wildcard $(FLATPAK_SYSTEM_EXT_PREBUILT)/bin/*) \
     $(wildcard $(FLATPAK_SYSTEM_EXT_PREBUILT)/lib64/*.so) \
-    $(wildcard $(FLATPAK_SYSTEM_EXT_PREBUILT)/share/flatpak/triggers/*)
+    $(wildcard $(FLATPAK_SYSTEM_EXT_PREBUILT)/share/flatpak/triggers/*))
 
 PRODUCT_COPY_FILES += $(foreach f,$(FLATPAK_SYSTEM_EXT_FILES),$(f):$(TARGET_COPY_OUT_SYSTEM_EXT)/$(patsubst $(FLATPAK_SYSTEM_EXT_PREBUILT)/%,%,$(f)))
