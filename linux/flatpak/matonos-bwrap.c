@@ -13,6 +13,8 @@
  * /tmp/.X11-unix tmpfs flatpak mounts and restore DISPLAY,
  * then hand the real bwrap the extended argv.
  */
+#include <glob.h>
+#include "controller-access.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -166,7 +168,8 @@ int main(int argc, char** argv) {
     int command;
     int at;
     char** extended;
-    char* extra[15];
+    glob_t controllers = {0};
+    char** extra;
     int count=0;
 
     int x11_tmpfs=0, app_sandbox=0;
@@ -182,6 +185,23 @@ int main(int argc, char** argv) {
     if(!socket_path || !*socket_path)socket_path=bundled;
     journal_path=getenv(JOURNAL_SOCKET_ENV);
     if(!journal_path || !*journal_path)journal_path=bundled_journal;
+    /* Old Flatpak has no devices=input support. Add only controller nodes,
+     * using the actual inherited group rather than sandbox environment data. */
+    if (app_sandbox && controller_group_present())
+        glob("/dev/hidraw*", GLOB_NOSORT, NULL, &controllers);
+    extra = calloc(18 + 3 * controllers.gl_pathc, sizeof(char*));
+    if (!extra) return 127;
+    if (app_sandbox && controller_group_present()) {
+        for (size_t i = 0; i < controllers.gl_pathc; ++i) {
+            struct stat node;
+            if (lstat(controllers.gl_pathv[i], &node) || !S_ISCHR(node.st_mode)) continue;
+            extra[count++] = "--dev-bind"; extra[count++] = controllers.gl_pathv[i]; extra[count++] = controllers.gl_pathv[i];
+        }
+        struct stat node;
+        if (!lstat("/dev/uinput", &node) && S_ISCHR(node.st_mode)) {
+            extra[count++] = "--dev-bind"; extra[count++] = "/dev/uinput"; extra[count++] = "/dev/uinput";
+        }
+    }
     if(x11_tmpfs && is_socket(socket_path)) {
         extra[count++]="--bind";extra[count++]=(char*)socket_path;extra[count++]=X11_SOCKET_PATH;
         extra[count++]="--setenv";extra[count++]="DISPLAY";extra[count++]=X11_DISPLAY;

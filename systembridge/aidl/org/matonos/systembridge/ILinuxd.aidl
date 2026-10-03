@@ -6,5 +6,5 @@ interface ILinuxd {
     String call(String command, String jsonArgs);
     void subscribe(String topic, ILinuxdListener listener);
     void unsubscribe(String topic, ILinuxdListener listener);
-    String launchGraphical(String ref, in android.os.ParcelFileDescriptor runtimeDirectory, String dnsServers, in @nullable android.os.ParcelFileDescriptor x11Directory, @nullable String x11Display);
+    String launchGraphical(String ref, in android.os.ParcelFileDescriptor runtimeDirectory, String dnsServers, in @nullable android.os.ParcelFileDescriptor x11Directory, @nullable String x11Display, boolean gameControllers);
 }

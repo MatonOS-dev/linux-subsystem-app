@@ -41,6 +41,29 @@ public final class StubGenerator {
     private static final int MAX_ICON_BYTES = 1024 * 1024;
     private static final long MAX_DESKTOP_BYTES = 1024 * 1024;
 
+    public static final String GAME_CONTROLLERS = "org.matonos.permission.GAME_CONTROLLERS";
+
+    /** Read only the declared Context devices list, never app IDs or overrides. */
+    public static List<String> permissionsForMetadata(String metadata) throws IOException {
+        boolean context = false;
+        String devices = "";
+        try (BufferedReader reader = new BufferedReader(new StringReader(metadata))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.startsWith("#") || line.startsWith(";")) continue;
+                if (line.startsWith("[")) { context = line.equals("[Context]"); continue; }
+                int equals = line.indexOf('=');
+                if (context && equals >= 0 && line.substring(0, equals).trim().equals("devices"))
+                    devices = line.substring(equals + 1).trim();
+            }
+        }
+        for (String device : devices.split(";"))
+            if (device.trim().equals("all") || device.trim().equals("input"))
+                return Collections.singletonList(GAME_CONTROLLERS);
+        return Collections.emptyList();
+    }
+
     private StubGenerator() { }
 
     /**
@@ -299,7 +322,7 @@ public final class StubGenerator {
             for (String p : permissions) str(p);
             for (String mime : mimes) str(mime);
             namespace(true);
-            start("manifest", null, attrs(a("package", pkg), ai("versionCode", 9), a("versionName", "1.0")));
+            start("manifest", null, attrs(a("package", pkg), ai("versionCode", 10), a("versionName", "1.0")));
             start("uses-sdk", null, attrs(ai("minSdkVersion", 30), ai("targetSdkVersion", 36)));
             end("uses-sdk");
             startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE")));

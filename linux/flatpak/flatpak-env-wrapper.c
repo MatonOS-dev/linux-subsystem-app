@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include "machine-id.h"
+#include "controller-access.h"
 
 static int valid_dns_server(const char* server) {
     unsigned char address[16];
@@ -150,6 +151,7 @@ static int start_session_bus(const char* display, const char* ref, const char* m
 }
 
 int main(int argc, char** argv) {
+    if (configure_controller_group()) { perror("matonos-flatpak: controller groups"); return 127; }
     const char* display = getenv("WAYLAND_DISPLAY");
     const char* bwrap = "/system_ext/bin/matonos-bwrap";
     if(prepare_machine_id("/data/matonos/linux")) {
