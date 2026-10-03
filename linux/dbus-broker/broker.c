@@ -379,7 +379,10 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid activation request"); return;
         }
         if ((name_is_denied(name) && !(g_hash_table_contains(b->owners,name) && g_hash_table_lookup(b->owners,name)==NULL)) || !(access_for(b, name) & ACCESS_TALK)) {
-            return_dbus_error(inv, "org.freedesktop.DBus.Error.AccessDenied", "Activation is denied by broker policy"); return;
+            /* Like xdg-dbus-proxy, a name outside the policy is invisible:
+             * apps treat ServiceUnknown as "not installed" and carry on,
+             * while AccessDenied surfaces as an error dialog (LibreOffice). */
+            return_dbus_error(inv, "org.freedesktop.DBus.Error.ServiceUnknown", "The name is not provided by any service"); return;
         }
         if (owner_of(b, name) != NULL)
             g_dbus_method_invocation_return_value(inv, g_variant_new("(u)", 2u));

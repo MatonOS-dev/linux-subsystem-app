@@ -25,6 +25,8 @@
 #define X11_SOCKET_PATH "/tmp/.X11-unix/X0"
 #define X11_SOCKET_ENV "MATON_X11_SOCKET"
 #define X11_DISPLAY ":0"
+#define JOURNAL_SOCKET_ENV "MATON_JOURNAL_SOCKET"
+#define JOURNAL_SOCKET_PATH "/run/systemd/journal/socket"
 
 /* Values each bwrap option consumes, mirroring parse_args_recurse()
  * in bubblewrap's bubblewrap.c. Unknown dashed arguments count as
@@ -94,7 +96,7 @@ static char* next_string(char* p, char* end) {
  * triplet there. The FD is rewound to its original offset so the
  * real bwrap still reads the arguments from the start (bwrap's
  * load_file_data() reads from the current offset). */
-static char* args_fd_x11_socket(int fd, int* x11_tmpfs) {
+static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app_sandbox) {
     char* data=NULL;
     size_t capacity=0, length=0;
     char *p,*end,*socket_path=NULL;
@@ -125,6 +127,10 @@ static char* args_fd_x11_socket(int fd, int* x11_tmpfs) {
             value=var ? next_string(var,end) : NULL;
             if(var && !strcmp(var,X11_SOCKET_ENV) && value && *value)
                 socket_path=value;
+            if(var && !strcmp(var,JOURNAL_SOCKET_ENV) && value && *value)
+                *journal=value;
+            /* flatpak exports FLATPAK_ID only into the app sandbox. */
+            if(var && !strcmp(var,"FLATPAK_ID"))*app_sandbox=1;
         } else if(!strcmp(p,"--tmpfs")) {
             value=next_string(p,end);
             if(value && !strcmp(value,"/tmp/.X11-unix"))*x11_tmpfs=1;
@@ -135,45 +141,58 @@ static char* args_fd_x11_socket(int fd, int* x11_tmpfs) {
     return socket_path;
 }
 
-/* Build the argv passed to the real bwrap: the six relay arguments
- * go at index at, everything else keeps its position. */
-static char** insert_x11_args(int argc, char** argv, int at, const char* socket_path) {
-    char** extended=calloc((size_t)argc+7,sizeof(char*));
+/* Build the argv passed to the real bwrap: the extra arguments go at
+ * index at, everything else keeps its position. */
+static char** insert_args(int argc, char** argv, int at, char** extra, int count) {
+    char** extended=calloc((size_t)argc+(size_t)count+1,sizeof(char*));
     int i;
     int n=0;
     if(!extended)return NULL;
     for(i=0;i<at;i++)extended[n++]=argv[i];
-    extended[n++]="--bind";
-    extended[n++]=(char*)socket_path;
-    extended[n++]=X11_SOCKET_PATH;
-    extended[n++]="--setenv";
-    extended[n++]="DISPLAY";
-    extended[n++]=X11_DISPLAY;
+    for(i=0;i<count;i++)extended[n++]=extra[i];
     for(i=at;i<argc;i++)extended[n++]=argv[i];
     return extended;
+}
+static int is_socket(const char* path) {
+    struct stat info;
+    return path && *path && lstat(path,&info)==0 && S_ISSOCK(info.st_mode);
 }
 
 int main(int argc, char** argv) {
     const char* socket_path;
+    const char* journal_path;
     int args_end;
     int dashdash;
     int command;
     int at;
-    struct stat socket_info;
     char** extended;
+    char* extra[9];
+    int count=0;
 
-    int x11_tmpfs=0;
+    int x11_tmpfs=0, app_sandbox=0;
     char* bundled=NULL;
+    char* bundled_journal=NULL;
     command=scan_argv(argc,argv,&args_end,&dashdash);
-    /* Only the app sandbox gets the bind: flatpak's own --tmpfs
-     * /tmp/.X11-unix (from --socket=x11) marks it. Helper sandboxes
-     * such as xdg-dbus-proxy inherit MATON_X11_SOCKET but have no
-     * such mount and must stay untouched. */
-    if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs);
+    /* Only the app sandbox gets the binds: flatpak's own --tmpfs
+     * /tmp/.X11-unix (from --socket=x11) marks X11 access, FLATPAK_ID
+     * the app itself. Helper sandboxes such as xdg-dbus-proxy inherit
+     * the variables but have neither and must stay untouched. */
+    if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox);
     socket_path=getenv(X11_SOCKET_ENV);
     if(!socket_path || !*socket_path)socket_path=bundled;
-    if(x11_tmpfs && socket_path && *socket_path &&
-            lstat(socket_path,&socket_info)==0 && S_ISSOCK(socket_info.st_mode)) {
+    journal_path=getenv(JOURNAL_SOCKET_ENV);
+    if(!journal_path || !*journal_path)journal_path=bundled_journal;
+    if(x11_tmpfs && is_socket(socket_path)) {
+        extra[count++]="--bind";extra[count++]=(char*)socket_path;extra[count++]=X11_SOCKET_PATH;
+        extra[count++]="--setenv";extra[count++]="DISPLAY";extra[count++]=X11_DISPLAY;
+    }
+    /* Programs logging straight to journald (tracing-journald, sd_journal)
+     * fail to start without its socket; the launcher drains this one into
+     * the app's launch log. */
+    if(app_sandbox && is_socket(journal_path)) {
+        extra[count++]="--bind";extra[count++]=(char*)journal_path;extra[count++]=JOURNAL_SOCKET_PATH;
+    }
+    if(count) {
         /* bwrap applies the bundled arguments at the --args pair,
          * so inserting right after it puts the bind on top of
          * flatpak's --tmpfs /tmp/.X11-unix and after its sorted
@@ -183,9 +202,10 @@ int main(int argc, char** argv) {
          * parsing ends: before an explicit "--", else directly
          * before the command. */
         at=args_end>=0 ? args_end : (dashdash>=0 ? dashdash : command);
-        extended=insert_x11_args(argc,argv,at,socket_path);
+        extended=insert_args(argc,argv,at,extra,count);
         if(extended) {
             unsetenv(X11_SOCKET_ENV);
+            unsetenv(JOURNAL_SOCKET_ENV);
             execv(BWRAP,extended);
             perror("matonos-bwrap: exec failed");
             return 127;

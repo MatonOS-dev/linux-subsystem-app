@@ -17,6 +17,8 @@
 #include <sys/wait.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 static int valid_dns_server(const char* server) {
     unsigned char address[16];
@@ -57,6 +59,44 @@ static int prepare_monitor(const char* display, const char* dns, char* path, siz
         monitor_file(directory,"hosts","127.0.0.1 localhost\n::1 localhost\n") ||
         monitor_file(directory,"host.conf","multi on\n") || monitor_file(directory,"gai.conf","");
     close(directory);return rc ? -1 : 0;
+}
+/* A journald socket for the app sandbox (matonos-bwrap binds it at
+ * /run/systemd/journal/socket): programs built with journald logging refuse
+ * to start without one. Each datagram's MESSAGE field goes to stderr, which
+ * linuxd keeps as the app's launch log. */
+static int start_journal_sink(const char* display, char* path, size_t size) {
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    snprintf(path,size,"%s-journal",display);
+    if(strlen(path)>=sizeof(address.sun_path))return -1;
+    struct stat previous;
+    if(!lstat(path,&previous)) {
+        if(!S_ISSOCK(previous.st_mode)||previous.st_uid!=getuid()||unlink(path))return -1;
+    } else if(errno!=ENOENT)return -1;
+    strcpy(address.sun_path,path);
+    int fd=socket(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0);
+    if(fd<0)return -1;
+    if(bind(fd,(struct sockaddr*)&address,sizeof(address))){close(fd);return -1;}
+    pid_t parent=getpid(), sink=fork();
+    if(sink<0){close(fd);unlink(path);return -1;}
+    if(sink>0){close(fd);return 0;}
+    if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(0);
+    static char message[65536];
+    for(;;) {
+        ssize_t got=recv(fd,message,sizeof(message)-1,0);
+        if(got<0){if(errno==EINTR)continue;break;}
+        message[got]=0;
+        /* Native protocol: KEY=value lines; binary fields are skipped. */
+        for(char* line=message;line<message+got;) {
+            char* end=memchr(line,'\n',(size_t)(message+got-line));
+            if(!end)end=message+got;
+            if(end-line>8&&!memcmp(line,"MESSAGE=",8)) {
+                (void)!write(STDERR_FILENO,line+8,(size_t)(end-line-8));
+                (void)!write(STDERR_FILENO,"\n",1);
+            }
+            line=end+1;
+        }
+    }
+    unlink(path);_exit(0);
 }
 static int start_session_bus(const char* display, const char* ref, const char* monitor) {
     char app[256], path[160], policy[192], address[192];
@@ -121,6 +161,12 @@ int main(int argc, char** argv) {
         else
             bwrap = "/system_ext/bin/matonos-bwrap";
     }
+    char journal[160] = {0};
+    if (graphical) {
+        if (start_journal_sink(display_copy, journal, sizeof(journal)) == 0)
+            bwrap = "/system_ext/bin/matonos-bwrap";
+        else journal[0] = '\0';
+    }
     char dns[2048], bus[192];
     snprintf(dns,sizeof(dns),"%s",getenv("MATON_FLATPAK_DNS") ? getenv("MATON_FLATPAK_DNS") : "");
     snprintf(bus,sizeof(bus),"%s",getenv("DBUS_SESSION_BUS_ADDRESS") ? getenv("DBUS_SESSION_BUS_ADDRESS") : "");
@@ -141,7 +187,8 @@ int main(int argc, char** argv) {
     // clearenv() above dropped everything, so the shim path
     // and its socket are exported here, after the reset.
     if (setenv("FLATPAK_BWRAP", bwrap, 1) != 0 ||
-        (x11_socket[0] != '\0' && setenv("MATON_X11_SOCKET", x11_socket, 1) != 0)) {
+        (x11_socket[0] != '\0' && setenv("MATON_X11_SOCKET", x11_socket, 1) != 0) ||
+        (journal[0] != '\0' && setenv("MATON_JOURNAL_SOCKET", journal, 1) != 0)) {
         perror("matonos-flatpak: setting bwrap environment failed");
         return 127;
     }
