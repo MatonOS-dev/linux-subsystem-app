@@ -29,6 +29,21 @@
 #define X11_DISPLAY ":0"
 #define JOURNAL_SOCKET_ENV "MATON_JOURNAL_SOCKET"
 #define JOURNAL_SOCKET_PATH "/run/systemd/journal/socket"
+/* r24: bwrap runs matonos-app-exec as the sandbox command; it dyntransitions
+ * to the verified app domain before exec'ing the payload. */
+#define APP_EXEC_HOST "/system_ext/bin/matonos-app-exec"
+#define APP_EXEC_SANDBOX "/run/matonos/matonos-app-exec"
+#define APP_LABEL_ENV "MATON_APP_LABEL"
+/* r24: installer-attached loop devices for the app's verified code image and
+ * optional volume. bwrap dev-binds them into the sandbox and exports their
+ * paths so the trusted launcher can mount them inside the sandbox's own mount
+ * namespace (never at a shared host path). */
+#define CODE_LOOP_ENV "MATON_CODE_LOOP"
+#define CODE_MOUNT_ENV "MATON_CODE_MOUNT"
+#define VOLUME_LOOP_ENV "MATON_VOLUME_LOOP"
+#define VOLUME_MOUNT_ENV "MATON_VOLUME_MOUNT"
+#define CODE_LOOP_SANDBOX "/run/matonos/code-loop"
+#define VOLUME_LOOP_SANDBOX "/run/matonos/volume-loop"
 
 /* Values each bwrap option consumes, mirroring parse_args_recurse()
  * in bubblewrap's bubblewrap.c. Unknown dashed arguments count as
@@ -154,10 +169,59 @@ static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app
     return socket_path;
 }
 
+/* Look up a single --setenv value in the bundled --args FD data. The FD is
+ * rewound so the real bwrap still reads it from the start (see above). */
+static char* args_fd_lookup(int fd, const char* wanted) {
+    char* data=NULL;
+    size_t capacity=0, length=0;
+    off_t origin=lseek(fd,0,SEEK_CUR);
+    if(origin==(off_t)-1)return NULL;
+    for(;;) {
+        ssize_t got;
+        if(length==capacity) {
+            size_t grown=capacity ? capacity*2 : 4096;
+            char* bigger=realloc(data,grown);
+            if(!bigger)break;
+            data=bigger;capacity=grown;
+        }
+        do { got=read(fd,data+length,capacity-length); } while(got<0 && errno==EINTR);
+        if(got<=0)break;
+        length+=(size_t)got;
+    }
+    char* found=NULL;
+    if(data && length && data[length-1]==0) {
+        char* end=data+length;
+        char* p=data;
+        while(p && p<end) {
+            if(p[0]!='-' || !strcmp(p,"--"))break;
+            int values=option_values(p);
+            if(!strcmp(p,"--setenv")) {
+                char* var=next_string(p,end);
+                char* value=var ? next_string(var,end) : NULL;
+                if(var && value && !strcmp(var,wanted) && *value) { free(found); found=strdup(value); }
+            }
+            for(int i=0;i<=values && p;i++)p=next_string(p,end);
+        }
+    }
+    (void)lseek(fd,origin,SEEK_SET);
+    free(data);
+    return found;
+}
+
+/* Prepend one argument at index at. */
+static char** prepend_argument(char** argv, int count, int at, const char* value) {
+    char** out=calloc((size_t)count+2,sizeof(char*));
+    if(!out)return NULL;
+    for(int i=0;i<at;i++)out[i]=argv[i];
+    out[at]=(char*)value;
+    for(int i=at;i<count;i++)out[i+1]=argv[i];
+    out[count+1]=NULL;
+    return out;
+}
+
 /* Build the argv passed to the real bwrap: the extra arguments go at
  * index at, everything else keeps its position. */
-static char** insert_args(int argc, char** argv, int at, char** extra, int count) {
-    char** extended=calloc((size_t)argc+(size_t)count+1,sizeof(char*));
+static char** insert_args(int argc, char** argv, int at, char** extra, int count) {    char** extended=calloc((size_t)argc+(size_t)count+1,sizeof(char*));
     int i;
     int n=0;
     if(!extended)return NULL;
@@ -186,6 +250,11 @@ int main(int argc, char** argv) {
     int x11_tmpfs=0, app_sandbox=0;
     char* bundled=NULL;
     char* bundled_journal=NULL;
+    char* app_label=NULL;
+    char* code_loop=NULL;
+    char* code_mount=NULL;
+    char* volume_loop=NULL;
+    char* volume_mount=NULL;
     command=scan_argv(argc,argv,&args_end,&dashdash);
     for(int i=1;i<command && strcmp(argv[i],"--");) {
         if(!strcmp(argv[i],"--setenv") && i+2<command && !strcmp(argv[i+1],"FLATPAK_ID"))app_sandbox=1;
@@ -196,6 +265,26 @@ int main(int argc, char** argv) {
      * the app itself. Helper sandboxes such as xdg-dbus-proxy inherit
      * the variables but have neither and must stay untouched. */
     if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox);
+    if(args_end>=0)app_label=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_LABEL");
+    if(!app_label && getenv("MATON_APP_LABEL"))app_label=strdup(getenv("MATON_APP_LABEL"));
+    /* r24 loop devices: flatpak converted the launcher environment into
+     * --setenv triplets in the bundled FD. Recover them there first. */
+    if(args_end>=0) {
+        int fd=atoi(argv[args_end-1]);
+        code_loop=args_fd_lookup(fd,CODE_LOOP_ENV);
+        code_mount=args_fd_lookup(fd,CODE_MOUNT_ENV);
+        volume_loop=args_fd_lookup(fd,VOLUME_LOOP_ENV);
+        volume_mount=args_fd_lookup(fd,VOLUME_MOUNT_ENV);
+    }
+    if(!code_loop && getenv(CODE_LOOP_ENV))code_loop=strdup(getenv(CODE_LOOP_ENV));
+    if(!code_mount && getenv(CODE_MOUNT_ENV))code_mount=strdup(getenv(CODE_MOUNT_ENV));
+    if(!volume_loop && getenv(VOLUME_LOOP_ENV))volume_loop=strdup(getenv(VOLUME_LOOP_ENV));
+    if(!volume_mount && getenv(VOLUME_MOUNT_ENV))volume_mount=strdup(getenv(VOLUME_MOUNT_ENV));
+    /* Only enter the app domain for the real app sandbox; helpers keep their
+     * own flow. The label must be a matonos app context or it is ignored. */
+    if(!app_sandbox || !app_label || strncmp(app_label,"u:r:matonos_flatpak_app",23)) {
+        free(app_label);app_label=NULL;
+    }
     socket_path=getenv(X11_SOCKET_ENV);
     if(!socket_path || !*socket_path)socket_path=bundled;
     journal_path=getenv(JOURNAL_SOCKET_ENV);
@@ -204,8 +293,9 @@ int main(int argc, char** argv) {
      * using the actual inherited group rather than sandbox environment data. */
     if (app_sandbox && controller_group_present())
         glob("/dev/hidraw*", GLOB_NOSORT, NULL, &controllers);
-    /* uinput 3, X11 6, journal 3, machine-id 6, udev 3, SDL fallback 3. */
-    extra = calloc(24 + 3 * controllers.gl_pathc, sizeof(char*));
+    /* uinput 3, X11 6, journal 3, machine-id 6, udev 3, SDL fallback 3,
+     * app-exec bind/setenv 6, loop binds/setenvs + capability 18. */
+    extra = calloc(56 + 3 * controllers.gl_pathc, sizeof(char*));
     if (!extra) return 127;
     if (app_sandbox && controller_group_present()) {
         for (size_t i = 0; i < controllers.gl_pathc; ++i) {
@@ -244,6 +334,34 @@ int main(int argc, char** argv) {
          * poll when inotify is unavailable), including permission changes. */
         extra[count++]="--setenv";extra[count++]="SDL_JOYSTICK_DISABLE_UDEV";extra[count++]="1";
     }
+    /* r24: expose the launcher and its label inside the app sandbox. bwrap
+     * calls it as the command; it setcon()s to the app domain and execs the
+     * verified payload. */
+    if(app_sandbox && app_label) {
+        extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
+        extra[count++]="--setenv";extra[count++]=APP_LABEL_ENV;extra[count++]=app_label;
+    }
+    /* r24: let the trusted launcher mount the app's verified code image and
+     * volume inside this sandbox's mount namespace. The loop devices are
+     * dev-bound in; the launcher drops CAP_SYS_ADMIN before exec'ing the
+     * payload, so the app cannot mount or change its code. */
+    if(app_sandbox && code_loop && *code_loop) {
+        extra[count++]="--dev-bind";extra[count++]=(char*)code_loop;extra[count++]=CODE_LOOP_SANDBOX;
+        extra[count++]="--setenv";extra[count++]=CODE_LOOP_ENV;extra[count++]=(char*)code_loop;
+    }
+    if(app_sandbox && volume_loop && *volume_loop) {
+        extra[count++]="--dev-bind";extra[count++]=(char*)volume_loop;extra[count++]=VOLUME_LOOP_SANDBOX;
+        extra[count++]="--setenv";extra[count++]=VOLUME_LOOP_ENV;extra[count++]=(char*)volume_loop;
+    }
+    if(app_sandbox && code_mount && *code_mount) {
+        extra[count++]="--setenv";extra[count++]=CODE_MOUNT_ENV;extra[count++]=(char*)code_mount;
+    }
+    if(app_sandbox && volume_mount && *volume_mount) {
+        extra[count++]="--setenv";extra[count++]=VOLUME_MOUNT_ENV;extra[count++]=(char*)volume_mount;
+    }
+    if(app_sandbox && code_loop && *code_loop) {
+        extra[count++]="--cap-add";extra[count++]="CAP_SYS_ADMIN";
+    }
     if(count) {
         /* bwrap applies the bundled arguments at the --args pair,
          * so inserting right after it puts the bind on top of
@@ -258,6 +376,17 @@ int main(int argc, char** argv) {
         if(extended) {
             unsetenv(X11_SOCKET_ENV);
             unsetenv(JOURNAL_SOCKET_ENV);
+            if(app_label && command<argc) {
+                /* The command was shifted right by the inserted arguments;
+                 * put the launcher immediately in front of it. */
+                int shifted=command + (at<=command ? count : 0);
+                char** with_launcher=prepend_argument(extended,argc+count,shifted,APP_EXEC_SANDBOX);
+                if(with_launcher) {
+                    execv(BWRAP,with_launcher);
+                    perror("matonos-bwrap: exec failed");
+                    return 127;
+                }
+            }
             execv(BWRAP,extended);
             perror("matonos-bwrap: exec failed");
             return 127;

@@ -22,7 +22,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include "machine-id.h"
-#include "controller-access.h"
+#include "app-session.h"
 #include "socket-relay.h"
 #include "../dbus-broker/session-control.h"
 
@@ -32,6 +32,7 @@ static void stop_portal(int number) {(void)number;portal_stop=1;}
 
 static void remove_session_directory(int fd,const char* path) {
     if(fd>=0) {
+        (void)fchown(fd,1000,1000);(void)fchmod(fd,0700);
         unlinkat(fd,"bus",0);unlinkat(fd,"wayland-0",0);unlinkat(fd,"X0",0);close(fd);
         rmdir(path);
     }
@@ -39,7 +40,7 @@ static void remove_session_directory(int fd,const char* path) {
 static int prepare_session_directory(const char* path) {
     struct stat info;
     if(lstat("/data/matonos/linux/runtime",&info) || !S_ISDIR(info.st_mode) ||
-       info.st_uid!=getuid() || (info.st_mode&07777)!=0700)return -1;
+       info.st_uid!=getuid() || (info.st_mode&07777)!=0711)return -1;
     int created=mkdir(path,0700)==0;
     if(!created && errno!=EEXIST)return -1;
     int fd=open(path,O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
@@ -57,7 +58,7 @@ static int prepare_session_directory(const char* path) {
         } else if(S_ISSOCK(info.st_mode) && !unlinkat(fd,names[i],0))continue;
         close(fd);if(created)rmdir(path);return -1;
     }
-    if(fchmod(fd,0777)){remove_session_directory(fd,path);return -1;}
+    if(fchmod(fd,0710) || fchown(fd,1000,(gid_t)atoi(getenv("MATON_APP_UID")))){remove_session_directory(fd,path);return -1;}
     return fd;
 }
 
@@ -66,7 +67,7 @@ static int display_listener(int directory,const char* name) {
     snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/%s",directory,name);
     int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
     if(fd>=0 && !bind(fd,(struct sockaddr*)&address,sizeof(address)) &&
-       !fchmodat(directory,name,0600,0) && !listen(fd,16))return fd;
+       !fchmodat(directory,name,0660,0) && !fchownat(directory,name,1000,(gid_t)atoi(getenv("MATON_APP_UID")),0) && !listen(fd,16))return fd;
     if(fd>=0)close(fd);
     return -1;
 }
@@ -106,7 +107,7 @@ static int valid_dns_server(const char* server) {
 }
 
 static int monitor_file(int directory, const char* name, const char* text) {
-    int fd=openat(directory,name,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW,0600);
+    int fd=openat(directory,name,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW,0644);
     if(fd<0)return -1;
     size_t size=strlen(text);ssize_t written=write(fd,text,size);close(fd);
     return written==(ssize_t)size ? 0 : -1;
@@ -148,9 +149,11 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     int fd=socket(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0);
     if(fd<0)return -1;
     if(bind(fd,(struct sockaddr*)&address,sizeof(address))){close(fd);return -1;}
+    if(chmod(path,0660)||chown(path,1000,(gid_t)atoi(getenv("MATON_APP_UID")?getenv("MATON_APP_UID"):"1000"))){close(fd);unlink(path);return -1;}
     pid_t parent=getpid(), sink=fork();
     if(sink<0){close(fd);unlink(path);return -1;}
     if(sink>0){close(fd);return 0;}
+    close(196);
     if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(0);
     const char* directory=getenv("MATON_SESSION_DIRECTORY_FD");
     if(directory)close(atoi(directory));
@@ -260,7 +263,7 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
         pid_t parent=getpid(),portal=fork();
         if(portal<0){remove_session_directory(native_fd,native_directory);_exit(127);}
         if(portal==0) {
-            close(gate[1]);close(control);close(ready[1]);close(directory);
+            close(196);close(gate[1]);close(control);close(ready[1]);close(directory);
             close(native_fd);
             close(wayland_listener);if(x11_listener>=0)close(x11_listener);
             signal(SIGTERM,SIG_DFL);signal(SIGINT,SIG_DFL);
@@ -276,9 +279,16 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
                 snprintf(address,sizeof(address),"%s/X0",native_directory);
                 if(setenv("MATON_X11_SOCKET",address,1))_exit(127);
             } else unsetenv("MATON_X11_SOCKET");
+            if(session_portal_uid())_exit(127);
             execl("/system_ext/bin/flatpak-portal","flatpak-portal",NULL);_exit(127);
         }
         close(gate[0]);
+        struct stat host_directory;
+        if(fstat(directory,&host_directory) || host_directory.st_uid<10000 ||
+           fchmod(native_fd,0750) ||
+           fchown(native_fd,host_directory.st_uid,(gid_t)atoi(getenv("MATON_APP_UID")))) {
+            kill(portal,SIGTERM);remove_session_directory(native_fd,native_directory);_exit(127);
+        }
         struct MatonSessionRegistration registration={.pid=portal};
         snprintf(registration.flatpak_version,sizeof(registration.flatpak_version),"%s",flatpak_version);
         snprintf(registration.monitor,sizeof(registration.monitor),"%s",monitor);
@@ -316,6 +326,8 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
          * zombie reserves the PID against reuse during broker revocation. */
         unsigned connections=0;
         while(ok && !portal_stop) {
+            struct pollfd life={.fd=196,.events=POLLIN};
+            if(poll(&life,1,0)>0 && life.revents)break;
             siginfo_t info={0};
             if(waitid(P_PID,portal,&info,WEXITED|WNOHANG|WNOWAIT)<0 || info.si_pid)break;
             struct pollfd events[3]={event,{.fd=wayland_listener,.events=POLLIN},{.fd=x11_listener,.events=POLLIN}};
@@ -346,7 +358,15 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
 
 int main(int argc, char** argv) {
     (void)argc;
-    if (configure_controller_group()) { perror("matonos-flatpak: controller groups"); return 127; }
+    int is_run=0;
+    for(int i=1;i<argc;i++)if(!strcmp(argv[i],"run")){is_run=1;break;}
+    AppSession app={.lifeline=-1,.group=-1};
+    int owned=is_run;
+    int initial=getenv("MATON_SESSION_DIRECTORY_FD")!=NULL;
+    if(owned && (session_owner(&app,initial) || session_home(&app))) {
+        perror("matonos-flatpak: unverified app owner");return 127;
+    }
+    if(owned){char uid[32];snprintf(uid,sizeof(uid),"%u",app.uid);if(setenv("MATON_APP_UID",uid,1))return 127;}
     const char* display = getenv("WAYLAND_DISPLAY");
     const char* bwrap = "/system_ext/bin/matonos-bwrap";
     if(prepare_machine_id("/data/matonos/linux")) {
@@ -422,6 +442,12 @@ int main(int argc, char** argv) {
         perror("matonos-flatpak: setting runtime environment failed");
         return 127;
     }
+    if(owned) {
+        char owner[384],uid[32];
+        snprintf(owner,sizeof(owner),"%u:%d:%d:%s",app.uid,app.pid,app.controllers,app.id);
+        snprintf(uid,sizeof(uid),"%u",app.uid);
+        if(setenv("MATON_APP_OWNER",owner,1)||setenv("MATON_APP_UID",uid,1)||setenv("FLATPAK","/system_ext/bin/flatpak",1))return 127;
+    }
     // clearenv() above dropped everything, so the shim path
     // and its socket are exported here, after the reset.
     if (setenv("FLATPAK_BWRAP", bwrap, 1) != 0 ||
@@ -459,6 +485,50 @@ int main(int argc, char** argv) {
     }
     if(session_directory>=0)close(session_directory);
     if(x11_directory>=0)close(x11_directory);
+    if(owned) {
+        if(fsetxattr(app.group,"user.app_id",app.id,strlen(app.id),0)) {
+            if(errno!=EOPNOTSUPP && errno!=ENOTSUP){perror("cgroup app_id");return 127;}
+            fprintf(stderr,"matonos-flatpak: cgroup user.app_id unsupported\n");
+        }
+        if(setenv("HOME",app.home,1)||setenv("TMPDIR",app.home,1)||
+           setenv("XDG_RUNTIME_DIR",app.home,1)||setenv("FLATPAK_SYSTEM_CACHE_DIR",app.home,1)||
+           setenv("FLATPAK_USER_DIR",app.home,1))return 127;
+        char data[160];snprintf(data,sizeof(data),"%s/.local/share",app.home);
+        if(setenv("XDG_DATA_HOME",data,1))return 127;
+        pid_t child=initial?fork():0;
+        if(child<0)return 127;
+        if(child==0) {
+            if(app.lifeline>=0)close(app.lifeline);
+            if(session_enter(&app)){perror("matonos-flatpak: enter app sandbox");_exit(127);}
+            int home=open(app.home,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+            if(home>=0) {
+                char gtk[384];const char* versions[]={"gtk-3.0","gtk-4.0"};
+                for(unsigned i=0;i<2;i++) {
+                    snprintf(gtk,sizeof(gtk),".var/app/%s/config/%s",app.id,versions[i]);
+                    set_gtk_settings_key(home,gtk);
+                }
+                close(home);
+            }
+            /* Hand the app-domain label (with the stub's MLS categories) to
+             * the sandbox; bwrap forwards it to matonos-app-exec. */
+            if(setenv("MATON_APP_LABEL",app.app_label,1))_exit(127);
+            unsetenv("MATON_APP_OWNER");unsetenv("MATON_APP_UID");
+            execv("/system_ext/bin/matonos-flatpak",argv);_exit(127);
+        }
+        int status=0,exited=0;
+        for(;;) {
+            if(!exited && waitpid(child,&status,WNOHANG)==child)exited=1;
+            struct pollfd life={.fd=app.lifeline,.events=POLLIN};
+            int rc=poll(&life,1,100);
+            if(rc>0 && life.revents){session_kill(&app);break;}
+            if(exited && !session_has_payload(&app))break;
+        }
+        int supervisor=0;
+        if(sscanf(bus,"unix:path=" SESSION_BUS_DIRECTORY "/bus",&supervisor)==1 && supervisor>0)kill(supervisor,SIGTERM);
+        if(!exited)while(waitpid(child,&status,0)<0 && errno==EINTR){}
+        close(app.group);close(app.lifeline);
+        return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
+    }
     execv("/system_ext/bin/matonos-flatpak", argv);
     perror("matonos-flatpak: exec failed");
     return 127;

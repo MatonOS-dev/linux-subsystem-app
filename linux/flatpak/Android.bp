@@ -18,3 +18,20 @@ cc_binary {
         "-Werror",
     ],
 }
+
+// r24 payload entry: bwrap execs this tiny launcher, which dyntransitions to
+// the app sandbox domain and execs the verified payload. See
+// install/linuxd/CODE-STORAGE-r24.md and the exec chain in matonos-bwrap.c.
+cc_binary {
+    name: "matonos-app-exec",
+    srcs: [
+        "matonos-app-exec.c",
+    ],
+    system_ext_specific: true,
+    compile_multilib: "64",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}

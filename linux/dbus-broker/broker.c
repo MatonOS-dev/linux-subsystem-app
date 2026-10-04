@@ -60,6 +60,7 @@ struct _Broker {
     int portal_pidfd;
     int ready_fd;
     gboolean host_session;
+    uid_t app_uid;
     int control_listener, control_fd;
     guint control_source, control_client_source;
     char *control_path;
@@ -755,14 +756,14 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
     int fd = g_socket_get_fd(g_socket_connection_get_socket(G_SOCKET_CONNECTION(stream)));
     struct ucred peercred; socklen_t peercred_len = sizeof(peercred);
     if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peercred, &peercred_len) != 0 ||
-        peercred.uid != (b->host_session ? 1000u : b->owner_uid)) {
+        (b->host_session ? (peercred.uid != 1000u && peercred.uid != b->app_uid) : peercred.uid != b->owner_uid)) {
         g_object_unref(c->connection); g_free(c); return FALSE;
     }
     GCredentials *peer = g_dbus_connection_get_peer_credentials(connection);
     if (peer == NULL) { g_object_unref(c->connection); g_free(c); return FALSE; }
     GError *cred_error = NULL;
     uid_t peer_uid = g_credentials_get_unix_user(peer, &cred_error);
-    if (cred_error != NULL || peer_uid != (b->host_session ? 1000u : b->owner_uid)) {
+    if (cred_error != NULL || (b->host_session ? (peer_uid != 1000u && peer_uid != b->app_uid) : peer_uid != b->owner_uid)) {
         g_clear_error(&cred_error); g_object_unref(c->connection); g_free(c); return FALSE;
     }
     c->portal_generation=g_atomic_int_get(&b->portal_generation);
@@ -902,7 +903,7 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
     }
     struct stat native_info;
     if(fd_count!=1 || (packet.msg_flags&MSG_CTRUNC) || fstat(native_fd,&native_info) ||
-       !S_ISDIR(native_info.st_mode) || native_info.st_uid!=cred.uid ||
+       !S_ISDIR(native_info.st_mode) || native_info.st_uid!=b->owner_uid || native_info.st_gid!=b->app_uid ||
        (native_info.st_mode&07777)!=0777) {close(client);return G_SOURCE_CONTINUE;}
     if(received!=sizeof(registration) ||
        !memchr(registration.flatpak_version,0,sizeof(registration.flatpak_version)) ||
@@ -956,6 +957,12 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 gboolean broker_enable_host_session(Broker* b,GError** error) {
+    const char* uid=g_getenv("MATON_SESSION_APP_UID");char* end=NULL;
+    unsigned long value=uid?strtoul(uid,&end,10):0;
+    if(!uid || !*uid || !end || *end || value<10000 || value>=20000) {
+        g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_INVALID_ARGUMENT,"Verified app UID required");return FALSE;
+    }
+    b->app_uid=(uid_t)value;
     b->host_session=TRUE;b->flatpak_portal=TRUE;
     g_message("APK session broker built against Flatpak %s; minimum supported system Flatpak %s",
         MATON_BROKER_BUILT_FLATPAK_VERSION,MATON_BROKER_MIN_FLATPAK_VERSION);
