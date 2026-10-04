@@ -465,6 +465,10 @@ int main(int argc, char** argv) {
         if(fcntl(x11_directory,F_SETFD,FD_CLOEXEC))return 127;
         snprintf(x11_name,sizeof(x11_name),"%s",x11_file);
     }
+    char pads[320];
+    const char *pad_list=getenv("MATON_SESSION_PAD_NODES");
+    if(pad_list && strlen(pad_list)>=sizeof(pads))return 127;
+    snprintf(pads,sizeof(pads),"%s",owned && pad_list ? pad_list : "");
     char dns[2048], bus[192];
     snprintf(dns,sizeof(dns),"%s",getenv("MATON_FLATPAK_DNS") ? getenv("MATON_FLATPAK_DNS") : "");
     snprintf(bus,sizeof(bus),"%s",getenv("DBUS_SESSION_BUS_ADDRESS") ? getenv("DBUS_SESSION_BUS_ADDRESS") : "");
@@ -482,6 +486,7 @@ int main(int argc, char** argv) {
         perror("matonos-flatpak: setting runtime environment failed");
         return 127;
     }
+    if(setenv("MATON_SESSION_PAD_NODES",pads,1))return 127;
     if(owned) {
         char owner[384],uid[32];
         snprintf(owner,sizeof(owner),"%u:%d:%d:%s",app.uid,app.pid,app.controllers,app.id);
