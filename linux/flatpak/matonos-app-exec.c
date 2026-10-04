@@ -18,11 +18,9 @@
  *      mlstrustedsubject for MLS only, exactly like zygote);
  *   3. execs the payload with execute_no_trans.
  *
- * It mounts nothing and holds no capabilities. The app's verified code image
- * and optional volume are mounted *from outside the sandbox* by the privileged
- * mount helper (matonos-mount-helper) into this sandbox's mount namespace,
- * before bubblewrap is allowed to exec this launcher. No capability ever
- * enters the sandbox.
+ * It mounts nothing and holds no capabilities. Flatpak and bubblewrap provide
+ * the deployment paths directly; no privileged mount helper participates in
+ * the launch chain. No capability enters the app sandbox.
  */
 #include "../../install/linuxd/MatonMls.h"
 

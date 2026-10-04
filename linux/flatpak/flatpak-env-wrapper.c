@@ -1,9 +1,9 @@
 #define _GNU_SOURCE
 /*
- * MatonOS launcher for the NDK-built Flatpak CLI. linuxd execs the stable
- * /apex/com.matonos.flatpak/bin/flatpak path; give its GPGME and bwrap
- * subprocesses the APEX paths they need, then preserve argv[0] and replace
- * this process with the tested CLI binary.
+ * Bionic host launcher for the static Flatpak CLI. linuxd execs
+ * /apex/com.matonos.flatpak/bin/flatpak-env-wrapper; this process prepares
+ * the Android-side session and environment, then execs the static multicall
+ * binary at matonos-flatpak.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -24,7 +24,6 @@
 #include "machine-id.h"
 #include "app-session.h"
 #include "socket-relay.h"
-#include "maton-mount.h"
 #include "../dbus-broker/session-control.h"
 #include <stddef.h>
 
@@ -130,15 +129,21 @@ static int prepare_monitor(const char* display, const char* dns, char* path, siz
     char resolv[2048]={0};size_t used=0;
     char servers[2048];snprintf(servers,sizeof(servers),"%s",dns ? dns : "");
     char* state=NULL;
+    int server_count=0;
     for(char* server=strtok_r(servers,",",&state);server;server=strtok_r(NULL,",",&state)) {
         if(!valid_dns_server(server)) {close(directory);return -1;}
         int added=snprintf(resolv+used,sizeof(resolv)-used,"nameserver %s\n",server);
         if(added<0 || (size_t)added>=sizeof(resolv)-used){close(directory);return -1;}
         used+=(size_t)added;
+        server_count++;
     }
+    /* Phase 1 stub: linuxd will replace loopback with its per-app forwarder. */
+    if(!server_count)snprintf(resolv,sizeof(resolv),"nameserver 127.0.0.1\n");
     int rc=monitor_file(directory,"resolv.conf",resolv) ||
         monitor_file(directory,"hosts","127.0.0.1 localhost\n::1 localhost\n") ||
-        monitor_file(directory,"host.conf","multi on\n") || monitor_file(directory,"gai.conf","");
+        monitor_file(directory,"host.conf","multi on\n") || monitor_file(directory,"gai.conf","") ||
+        monitor_file(directory,"passwd","linuxd:x:1000:1000:Linux user:/home/linuxd:/sbin/nologin\n") ||
+        monitor_file(directory,"group","linuxd:x:1000:\n");
     close(directory);return rc ? -1 : 0;
 }
 /* A journald socket for the app sandbox (matonos-bwrap binds it at
@@ -185,39 +190,6 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     }
     unlink(path);_exit(0);
 }
-/* r24: boot the privileged mount helper for this launch. The helper lives
- * outside the sandbox and is the only holder of CAP_SYS_ADMIN on the app
- * launch path. We create an unnamed AF_UNIX SOCK_SEQPACKET socketpair, hand
- * the helper one end on a fixed fd and leave the other end inherited (not
- * CLOEXEC) by the matonos-bwrap shim, exporting only the fd number. A
- * socketpair is never bound, so no process - in particular no Flatpak app
- * sharing the host network namespace - can connect to, address or race it.
- * The helper derives the loop devices, levels and targets itself (see
- * matonos-mount-helper.c) and dies with this process. */
-static int start_mount_helper(int* shim_fd) {
-    int pair[2];
-    if(socketpair(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0,pair))return -1;
-    pid_t parent=getpid(),child=fork();
-    if(child<0){close(pair[0]);close(pair[1]);return -1;}
-    if(child==0) {
-        if(pair[0]!=MATON_MOUNT_HELPER_FD){
-            if(dup2(pair[0],MATON_MOUNT_HELPER_FD)<0)_exit(127);
-            close(pair[0]);
-        } else if(fcntl(MATON_MOUNT_HELPER_FD,F_SETFD,0))_exit(127);
-        close(pair[1]);
-        if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(127);
-        char* const arguments[]={"matonos-mount-helper",NULL};
-        execv(MATON_FLATPAK_BIN "/matonos-mount-helper",arguments);
-        _exit(127);
-    }
-    close(pair[0]);
-    /* The shim's end is the single deliberately non-CLOEXEC fd: it must
-     * survive the Flatpak CLI and reach matonos-bwrap. */
-    if(fcntl(pair[1],F_SETFD,0)){close(pair[1]);return -1;}
-    *shim_fd=pair[1];
-    return 0;
-}
-
 /* Query the actual image CLI, bypassing this wrapper (no recursive portal
  * startup). Bounded output/time; a broken CLI reports unknown and fails closed. */
 static void system_flatpak_version(char version[64]) {
@@ -267,7 +239,7 @@ static void system_flatpak_version(char version[64]) {
  * which exposes a second socket without relaying D-Bus credentials. Native
  * display relays also survive the initial CLI for nested portal launches.
  * The control capability never reaches application children. */
-static int start_session_portal(int directory, int x11_directory, const char* x11_name, const char* monitor, char* bus, size_t size) {
+static int __attribute__((unused)) start_session_portal(int directory, int x11_directory, const char* x11_name, const char* monitor, char* bus, size_t size) {
     int ready[2];if(pipe2(ready,O_CLOEXEC))return -1;
     pid_t supervisor=fork();
     if(supervisor<0){close(ready[0]);close(ready[1]);return -1;}
@@ -419,6 +391,12 @@ int main(int argc, char** argv) {
         }
     }
     int display_fd = -1; char trailing; char display_copy[128] = {0};
+    char static_base[192],static_config[192];
+    snprintf(static_base,sizeof(static_base),"/data/matonos/linux/runtime/flatpak-config-%d",getpid());
+    const char* supplied_dns=getenv("MATON_FLATPAK_DNS");
+    if(prepare_monitor(static_base,supplied_dns,static_config,sizeof(static_config))) {
+        fprintf(stderr,"matonos-flatpak: cannot prepare static namespace configuration\n");return 127;
+    }
     char x11_socket[160] = {0};
     int graphical = display && sscanf(display, "/data/matonos/linux/runtime/wayland-%d%c", &display_fd, &trailing) == 1 && display_fd >= 0;
     int nested=0, owner=0;
@@ -481,19 +459,18 @@ int main(int argc, char** argv) {
     if (clearenv() != 0 ||
         setenv("PATH", MATON_FLATPAK_BIN ":/system/bin:/system/xbin", 1) != 0 ||
         setenv("XDG_RUNTIME_DIR", "/data/matonos/linux/runtime", 1) != 0 ||
-        setenv("TMPDIR", "/data/matonos/linux/cache", 1) != 0 ||
+        setenv("TMPDIR", "/tmp", 1) != 0 ||
         setenv("HOME", "/data/matonos/linux/flatpak-data", 1) != 0 ||
+        setenv("TMPDIR", "/tmp", 1) != 0 ||
         setenv("XDG_DATA_HOME", "/data/matonos/linux/flatpak-data/.local/share", 1) != 0 ||
         setenv("FLATPAK_SYSTEM_DIR", "/data/matonos/linux/flatpak", 1) != 0 ||
         setenv("FLATPAK_SYSTEM_CACHE_DIR", "/data/matonos/linux/cache", 1) != 0 ||
         setenv("FLATPAK_USER_DIR", "/data/matonos/linux/flatpak-user", 1) != 0 ||
-        setenv("FLATPAK_DBUSPROXY", MATON_FLATPAK_BIN "/xdg-dbus-proxy", 1) != 0 ||
-        /* The APEX stages Flatpak's data under the APEX-standard usr/share
-         * (prebuilt_usr_share), while the CLI/portal were compiled with the
-         * default datadir (share/flatpak). Point trigger discovery at the
-         * path the APEX actually ships and rebuild the CLI with
-         * --datadir=usr/share next time it is touched. */
-        setenv("FLATPAK_TRIGGERSDIR", MATON_FLATPAK_APEX "/usr/share/flatpak/triggers", 1) != 0) {
+        setenv("FLATPAK_DOWNLOAD_TMPDIR", "/tmp", 1) != 0 ||
+        setenv("SSL_CERT_DIR", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
+        setenv("CURL_CA_BUNDLE", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
+        setenv("G_TLS_CA_PATH", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
+        setenv("MATON_FLATPAK_CONFIG_DIR", static_config, 1) != 0) {
         perror("matonos-flatpak: setting runtime environment failed");
         return 127;
     }
@@ -513,29 +490,10 @@ int main(int argc, char** argv) {
         perror("matonos-flatpak: setting bwrap environment failed");
         return 127;
     }
-    if (setenv("FLATPAK_REVOKEFS_FUSE", MATON_FLATPAK_BIN "/revokefs-fuse", 1) != 0) {
-        perror("matonos-flatpak: setting revokefs path failed");
-        return 127;
-    }
     if (graphical && setenv("WAYLAND_DISPLAY", display_copy, 1) != 0) return 127;
     if (graphical) {
         if(setenv("MATON_FLATPAK_DNS",dns,1))return 127;
-        // Nested native portal launches already carry the host session bus.
-        if(session_directory>=0) {
-            char monitor[192];
-            if(prepare_monitor(display_copy,dns,monitor,sizeof(monitor)) ||
-               start_session_portal(session_directory,x11_directory,x11_name,monitor,bus,sizeof(bus))) {
-                fprintf(stderr,"matonos-flatpak: cannot start session portal\n");return 127;
-            }
-            int supervisor=0;
-            if(sscanf(bus,"unix:path=" SESSION_BUS_DIRECTORY "/bus",&supervisor)!=1)return 127;
-            snprintf(display_copy,sizeof(display_copy),SESSION_BUS_DIRECTORY "/wayland-0",supervisor);
-            if(setenv("WAYLAND_DISPLAY",display_copy,1))return 127;
-            if(x11_directory>=0) {
-                snprintf(x11_socket,sizeof(x11_socket),SESSION_BUS_DIRECTORY "/X0",supervisor);
-                if(setenv("MATON_X11_SOCKET",x11_socket,1))return 127;
-            }
-        } else if(!bus[0]) {
+        if(!bus[0]) {
             fprintf(stderr,"matonos-flatpak: missing compositor session bus\n");return 127;
         }
         if(setenv("DBUS_SESSION_BUS_ADDRESS",bus,1))return 127;
@@ -547,26 +505,11 @@ int main(int argc, char** argv) {
             if(errno!=EOPNOTSUPP && errno!=ENOTSUP){perror("cgroup app_id");return 127;}
             fprintf(stderr,"matonos-flatpak: cgroup user.app_id unsupported\n");
         }
-        if(setenv("HOME",app.home,1)||setenv("TMPDIR",app.home,1)||
+        if(setenv("HOME",app.home,1)||
            setenv("XDG_RUNTIME_DIR",app.home,1)||setenv("FLATPAK_SYSTEM_CACHE_DIR",app.home,1)||
            setenv("FLATPAK_USER_DIR",app.home,1))return 127;
         char data[160];snprintf(data,sizeof(data),"%s/.local/share",app.home);
         if(setenv("XDG_DATA_HOME",data,1))return 127;
-        /* Every verified app launch gets the privileged mount helper. The
-         * helper derives the loop devices from the installer's store records
-         * and the fixed targets itself; only the unnamed socketpair fd crosses
-         * to the shim, which fails closed if it is missing. */
-        {
-            int mount_fd=-1;
-            char mount_fd_text[16];
-            if(start_mount_helper(&mount_fd)) {
-                fprintf(stderr,"matonos-flatpak: cannot start mount helper\n");return 127;
-            }
-            snprintf(mount_fd_text,sizeof(mount_fd_text),"%d",mount_fd);
-            if(setenv(MATON_MOUNT_FD_ENV,mount_fd_text,1)) {
-                fprintf(stderr,"matonos-flatpak: cannot export mount fd\n");return 127;
-            }
-        }
         pid_t child=initial?fork():0;
         if(child<0)return 127;
         if(child==0) {
@@ -581,10 +524,9 @@ int main(int argc, char** argv) {
                 }
                 close(home);
             }
-            /* Hand the app-domain label (with the stub's MLS categories) and
-             * the verified app id to the sandbox; bwrap forwards the label to
-             * matonos-app-exec and the id to the privileged mount helper. */
-            if(setenv("MATON_APP_LABEL",app.app_label,1)||setenv(MATON_APP_ID_ENV,app.id,1))_exit(127);
+            /* Hand the app-domain label (with the stub's MLS categories) to
+             * the sandbox's static-NDK transition launcher. */
+            if(setenv("MATON_APP_LABEL",app.app_label,1))_exit(127);
             unsetenv("MATON_APP_OWNER");unsetenv("MATON_APP_UID");
             execv(MATON_FLATPAK_BIN "/matonos-flatpak",argv);_exit(127);
         }

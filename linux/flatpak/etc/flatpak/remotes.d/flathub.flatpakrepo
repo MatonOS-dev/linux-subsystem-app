@@ -1,0 +1,7 @@
+[Flatpak Repo]
+Version=1
+Url=https://dl.flathub.org/repo/
+Title=Flathub
+Homepage=https://flathub.org
+Comment=Flathub app and runtime repository
+Description=The Flathub repository for Flatpak applications.

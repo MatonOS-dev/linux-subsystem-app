@@ -1,26 +1,18 @@
-# Shared changes for the Flatpak prebuilt handoff
+# Static Flatpak APEX handoff
 
-- SUPERSEDED (r24 APEX) — `device.mk` still includes
-  `linux/flatpak/flatpak.mk`, but that file no longer copies the Flatpak
-  binaries/libraries into `/system_ext`. It now adds
-  `PRODUCT_PACKAGES += com.matonos.flatpak`; the whole stack is packaged by
-  `linux/flatpak/Android.bp` as one updatable APEX preinstalled at
-  `/system_ext/apex/com.matonos.flatpak.apex` and mounted at
-  `/apex/com.matonos.flatpak`.
-- SUPERSEDED (r24 APEX) — `systembridge/sepolicy/system_ext/private/file_contexts`
-  no longer labels any `/system_ext/bin/(flatpak|...)` or `/system_ext/lib64`
-  Flatpak path. The same exec types are applied inside the APEX by
-  `linux/flatpak/apex_file_contexts`; no SELinux types, domains or binder
-  neverallows changed.
+`flatpak.mk` includes the one updatable `com.matonos.flatpak` APEX. Its static
+multicall ELF supplies Flatpak, OSTree and bubblewrap. The bionic
+`flatpak-env-wrapper` and `matonos-flatpak-store` remain outside the musl app
+namespace. The compositor owns portals and the D-Bus session bus; APEX portal,
+proxy and GnuPG executables are removed.
 
-`install/linuxd` changes only the launcher path (it still execs the fixed
-`/apex/com.matonos.flatpak/bin/flatpak`). The prebuilt `flatpak` launcher is a
-small NDK wrapper that sets the APEX `PATH`, `FLATPAK_BWRAP`, `FLATPAK` and the
-other subprocess paths, then execs the Flatpak ELF payload in the same APEX.
-GPGME finds `/apex/com.matonos.flatpak/bin/gpg`; Flatpak finds
-`/apex/com.matonos.flatpak/bin/bwrap` (through the `matonos-bwrap` shim).
-`LD_LIBRARY_PATH` is gone: the binaries use the APEX linker namespace.
-- SUPERSEDED (r24 APEX) — the Flatpak payload and revokefs helper are now APEX
-  bin entries, not `/system_ext/bin`. The launcher still sets
-  `FLATPAK_REVOKEFS_FUSE` to the helper's fixed APEX bin path (Flatpak's
-  supported runtime override).
+The launcher supplies the minimal namespace files and CA path required by the
+static stack. `matonos-bwrap` binds those files and the Conscrypt certificate
+directory into the app root, along with `/var/tmp -> /tmp`. It does not mount
+host `/etc`, `/usr` or `/lib` wholesale.
+
+Static artifact hashes and build provenance live in `prebuilt/static/SOURCE`.
+The current Alpine 3.24 artifact is version-correct but still has the old
+GPGME/GnuPG backend; replace it with the DullPGP MatonOS_apexs output before
+runtime validation. Do not restore bionic shared libraries, a standalone gpg,
+xdg-dbus-proxy, native portal, revokefs-fuse or Flatpak triggers to this APEX.

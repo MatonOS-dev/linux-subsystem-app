@@ -1,188 +1,112 @@
-# com.matonos.flatpak APEX (r24)
+# `com.matonos.flatpak` APEX: static Alpine stack
 
-MatonOS's Flatpak stack ships as one updatable APEX, `com.matonos.flatpak`.
-It is preinstalled on the system_ext partition at
-`/system_ext/apex/com.matonos.flatpak.apex` and mounted (read-only) at
-`/apex/com.matonos.flatpak`. Only linuxd stays in system_ext; it execs the
-fixed `/apex/com.matonos.flatpak/bin/flatpak` launcher. The D-Bus broker is
-*not* here (it lives in `MatonWaylandHost.apk`).
+The APEX is installed on `system_ext` and mounted at
+`/apex/com.matonos.flatpak`. Phase 1 replaces the old bionic dependency tree
+with the Alpine 3.24/musl stack: Flatpak 1.16.6, OSTree 2025.7, bubblewrap
+0.12.0, DullPGP and BoringSSL. One static multicall ELF provides the
+`flatpak`, `ostree` and `bwrap` applets. The D-Bus broker remains in
+`MatonWaylandHost.apk`; linuxd remains a bionic system component outside the
+musl namespace.
 
-Everything that Flatpak runs from is in the APEX:
+## Integration plan: every current APEX member
 
-| Path in the APEX | Contents |
-|---|---|
-| `bin/matonos-flatpak` | Flatpak CLI (seccomp enabled) |
-| `bin/flatpak` | NDK launcher (`flatpak-env-wrapper.c`) that linuxd execs |
-| `bin/flatpak-portal` | session portal |
-| `bin/gpg` | GnuPG for GPGME |
-| `bin/ostree`, `bin/revokefs-fuse`, `bin/xdg-dbus-proxy` | helpers |
-| `bin/bwrap` | bubblewrap (Soong) |
-| `bin/matonos-bwrap` | X11-binding bwrap shim (Soong) |
-| `bin/matonos-app-exec` | payload dyntransition launcher (Soong) |
-| `bin/matonos-mount-helper` | outside-the-sandbox mount helper (Soong) |
-| `bin/matonos-flatpak-store` | store installer helper, `FlatpakStore.c` (Soong) |
-| `lib64/*.so` | Flatpak/GPG/GLib/ostree/AppStream dependency set + `libseccomp_matonos.so` |
-| `usr/share/flatpak/triggers/*` | Flatpak runtime triggers |
+| Current member | Phase 1 decision | Reason / destination |
+|---|---|---|
+| Bionic Flatpak CLI | **Replaced by static binary** | `matonos-flatpak`, linked for musl; applet symlinks are `flatpak`, `ostree` and `bwrap`. |
+| `flatpak-env-wrapper` launcher | **Kept (bionic, outside the sandbox)** | APEX entrypoint at `bin/flatpak-env-wrapper`; prepares Android-side launch state and starts the static CLI. |
+| `flatpak-portal` | **Dropped** | Portal implementation moves to the compositor Java service. |
+| `gpg` | **Dropped** | DullPGP performs OpenPGP operations in-process; no GnuPG child is shipped. |
+| `ostree` | **Replaced by static binary** | `ostree` symlink to `matonos-flatpak`. |
+| `revokefs-fuse` | **Dropped** | Not part of the tested Alpine static payload or user install flow. |
+| `xdg-dbus-proxy` | **Dropped** | The global `--socket=session-bus` override is used; the separate proxy is not shipped. |
+| `bwrap` | **Replaced by static binary** | `bwrap` symlink to `matonos-flatpak`; no bionic shared libraries. |
+| `matonos-bwrap` | **Must become static-NDK** | Runs after entering the musl-only root and cannot depend on bionic. |
+| `matonos-app-exec` | **Must become static-NDK** | Runs inside the musl namespace as the payload transition launcher. |
+| `matonos-mount-helper` | **Dropped** | It is a no-op/vestigial helper and is removed from the launch chain. |
+| `matonos-flatpak-store` | **Kept (bionic, outside the sandbox)** | linuxd's privileged storage helper remains outside the app namespace. |
+| APEX `lib64` set | **Dropped** | The Flatpak, OSTree and bwrap payload is static; no APEX private shared libraries remain. |
+| Flatpak runtime triggers | **Dropped** | Apps are installed by users; trigger scripts are not shipped or run. |
 
-The binaries/libraries built out-of-tree under
-`linux/flatpak/prebuilt/system_ext` are wrapped as `cc_prebuilt_binary` /
-`cc_prebuilt_library_shared`; the Soong-built ones are ordinary `cc_binary` /
-`cc_library_shared` with `apex_available: ["com.matonos.flatpak"]`. All of this
-is defined in `linux/flatpak/Android.bp` (and the `bwrap` /
-`libseccomp_matonos` modules in `linux/third_party/Android.bp`).
+`linux/flatpak/Android.bp` describes this payload. The static ELF and static-NDK
+helpers are staged below `prebuilt/static/<arch>/`; only the static multicall
+binary is architecture-specific for the current x86_64 product. The key and
+remote definition are ordinary APEX `etc` files. The bionic launcher and store
+helper stay built as Android binaries and outside the musl namespace. linuxd
+execs `flatpak-env-wrapper`; the public `flatpak` symlink points to the static
+multicall binary for applet invocations.
 
-## Data dir and triggers
+## Static namespace setup
 
-Flatpak's data files are shipped at the APEX-standard `usr/share` (Soong only
-has a `prebuilt_usr_share` module type), i.e.
-`/apex/com.matonos.flatpak/usr/share/flatpak/triggers`. The CLI/portal are
-built with `--datadir=usr/share`, so their compiled `FLATPAK_DATADIR` matches.
-The launcher also exports `FLATPAK_TRIGGERSDIR` to that path, which makes the
-current prebuilt binaries (built with the default `share` datadir) look in the
-right place and keeps trigger execution correct across a later rebuild.
+The launcher is the boundary between Android's bionic environment and the
+musl root. Before starting Flatpak it prepares a private configuration
+directory and exports the `FLATPAK_*` settings used by the static stack:
 
-## Linker namespace
+- `/etc/ssl/certs` resolves to `/apex/com.android.conscrypt/cacerts`;
+- `/var/tmp` resolves to `/tmp`;
+- `/etc/passwd` and `/etc/group` describe the one unprivileged Flatpak user;
+- `/etc/resolv.conf` contains the per-app forwarder address (currently a
+  loopback stub until linuxd supplies the forwarder);
+- `FLATPAK_DOWNLOAD_TMPDIR=/tmp`, Flatpak system/user/cache directories, and
+  the static APEX applet paths are set before exec.
 
-No `LD_LIBRARY_PATH` is used. linkerconfig inspects
-`/apex/apex-info-list.xml` and generates a `com.matonos.flatpak` linker
-namespace whose search path is the APEX's own `lib64` (and `lib`), falling
-back to the system/system_ext namespaces for platform libraries (`libcap.so`,
-`libcurl.so`, `libxml2.so`, `libz.so`, `libc++`, …). Binaries executed from
-`/apex/com.matonos.flatpak/bin` therefore resolve both APEX-private and
-platform libraries automatically. There is no `ld.config.txt` entry to add and
-nothing to install in `/system/etc/ld.config.*`. The prebuilt ELFs keep their
-harmless build-time `RUNPATH`; it is never needed at runtime.
+The launcher and bwrap shim provide these paths inside the namespace; they do
+not bind the host's general `/etc`, `/usr`, or `/lib`. Keep this setup in C in
+`flatpak-env-wrapper.c` and `matonos-bwrap.c`, next to the existing namespace
+construction.
 
-## SELinux
+## Trust files and versions
 
-The APEX carries its own `apex_file_contexts`. It applies the *same* exec types
-those binaries had in system_ext (`matonos_bwrap_exec`,
-`matonos_app_exec_exec`, `matonos_mount_helper_exec`,
-`matonos_flatpak_cli_exec`, `matonos_flatpak_installer_exec`); everything else
-stays `system_file`. No new SELinux types, domains, allows or binder
-neverallows are added by the move. The corresponding `/system_ext/...` lines
-were removed from
-`systembridge/sepolicy/system_ext/private/file_contexts`.
+The minimum tested APEX files are:
 
-Validate it with the same rig used for the platform policy and with `checkfc`:
+- `bin/matonos-flatpak` plus symlinks `bin/flatpak`, `bin/ostree`, and
+  `bin/bwrap`;
+- `bin/matonos-bwrap` and `bin/matonos-app-exec`, static-NDK launch helpers;
+- `etc/flatpak/flathub.gpg` and
+  `etc/flatpak/remotes.d/flathub.flatpakrepo`.
 
-```sh
-# Platform policy rig (system_ext + vendor), pointed at this worktree.
-cp -a /mnt/data/aosp/out/pc-logs/agents/codex-app-owns/policy /tmp/opencode/apex-policy
-# edit /tmp/opencode/apex-policy/compile.py: work = root/'out/worktrees/flatpak-apex'
-python3 /tmp/opencode/apex-policy/compile.py        # must print PASS
-out/host/linux-x86/bin/checkfc \
-  /tmp/opencode/apex-policy/precompiled_sepolicy \
-  linux/flatpak/apex_file_contexts
-```
+The Conscrypt CA directory is supplied by the Android image, not copied into
+this APEX. The Flathub key fingerprint is
+`6E5C05D979C76DAF93C081354184DD4D907A7CAE`.
 
-`checkfc` resolves the apex-relative paths as absolute source paths, which is
-enough to prove every exec type exists in the compiled policy.
-
-## Versioning
-
-`apex_manifest.json`'s `version` encodes the Flatpak + bubblewrap pair, and is
-bumped whenever *either* pin changes. The formula used here is
+The Flatpak/bubblewrap pair is deliberately pinned to Alpine 3.24 stable
+Flatpak 1.16.6 and bubblewrap 0.12.0 (user decision, 2026-10-05). OSTree is
+2025.7. The manifest version keeps the existing encoding:
 
 ```
-version = flatpak_binary_age * 1000 + bwrap_major * 100 + bwrap_minor
-flatpak_binary_age = 10000*major + 100*minor + patch      # Flatpak's own scheme
+flatpak_age = 10000*major + 100*minor + patch = 11606
+bwrap_code = 100*major + minor = 12
+apex_version = flatpak_age*1000 + bwrap_code = 11606012
 ```
 
-Current pair: Flatpak 1.18.4 + bubblewrap 0.13.0
-(`linux/third_party/source-pins.json`) → `11804 * 1000 + 13 = 11804013`.
+Flatpak and bubblewrap are tested as a pair. Keep the version pin and manifest
+version synchronized.
 
-**Flatpak and bwrap are tested as a pair.** bubblewrap's option table is
-mirrored by `matonos-bwrap.c`'s `option_values()`; a stale table corrupts the
-launch. Bump both together and regenerate the shim table in the same commit
-(see the r24 "Flatpak ↔ bwrap" note in the design docs). Never mix a new
-Flatpak CLI with an old bwrap APEX.
+## Prebuilt provenance
 
-## Keys and release TODO
+`prebuilt/static/README.md` describes how the architecture directory is filled
+from the `MatonOS-dev/MatonOS_apexs` output. `prebuilt/static/SOURCE` records
+the source commit and SHA-256 for every staged executable. Do not put APEX
+private keys in that directory. The development APEX key remains
+`com.matonos.flatpak.pem` / `com.matonos.flatpak.avbpubkey`; release builds
+must use the matching release key.
 
-`apex_key com.matonos.flatpak.key` points at the repository dev key
-`com.matonos.flatpak.pem` / `com.matonos.flatpak.avbpubkey` (RSA-4096,
-`SHA256_RSA4096`, generated with `avbtool extract_public_key`). This key is for
-bring-up and `adb install` only.
+## Image validation still required
 
-**Release TODO:** replace both files with the MatonOS release APEX key before
-cutting a release. An APEX can only be updated by an APEX signed with the same
-key, so a device that shipped the dev key cannot accept a release-key update
-(and vice versa); the release image and all later updates must use the release
-key. Keep the release private key out of the repository.
+Host-side `tools/preflight.sh` checks the repository structure, but Phase 1
+still needs an image build and runtime validation for:
 
-## Rebuilding the APEX
+1. APEX assembly/signing and confirmation that the three applet symlinks and
+   both static-NDK helpers land at the expected paths.
+2. SELinux file-context compilation for the static `matonos-flatpak`,
+   `matonos-bwrap`, and `matonos-app-exec` paths. The existing domain and
+   transition rules must be checked against the new binary labels.
+3. Launcher namespace setup on-device: Conscrypt CA projection, `/var/tmp`,
+   generated passwd/group, and DNS forwarder address.
+4. User remote-add, signature verification, fresh Flathub pull, offline
+   install, and read-only runtime/app execution with no D-Bus service mounted.
+5. End-to-end graphical portal behavior after the compositor Java portal
+   implementation replaces the native portal.
 
-The binaries are a tested pair, so a Flatpak or bwrap bump means rebuilding
-everything below. On a host with `MATON_AOSP` and zram set up:
-
-```sh
-# 1. (only if the pins changed) rebuild the NDK dependency prefix + Flatpak CLI.
-#    The APEX-prefix build scripts stage prebuilt/system_ext/bin/*:
-linux/flatpak/build-seccomp-apex.sh     # CLI + portal + revokefs, seccomp evidence
-linux/flatpak/build-dbus-proxy-apex.sh  # xdg-dbus-proxy
-#    (build-seccomp.sh / build-dbus-proxy.sh are the shared base pipeline; the
-#    -apex variants add the APEX prefix, a clean $ORIGIN/../lib64 RUNPATH and
-#    --datadir=usr/share so the CLI matches the APEX layout.)
-#    The GLib/GPGME/ostree/AppStream prefix under out/matonos/flatpak-ndk is
-#    built by the same out-of-tree recipe when its pin changes; it is not a
-#    Soong module. The Flatpak build uses --prefix=/apex/com.matonos.flatpak
-#    and rebuilds the libraries the CLI links.
-
-# 2. rebuild the NDK launcher (uses the APEX paths from this worktree):
-tools/build-native.sh                    # or the single clang line it runs
-
-# 3. build the APEX itself (Soong; needs no image):
-m com.matonos.flatpak
-#    -> out/target/product/pc_x86_64/system_ext/apex/com.matonos.flatpak.apex
-#    It is signed with com.matonos.flatpak.key and preinstalled in system_ext.
-
-# 4. (optional) sign an APEX built for a release key:
-#    system/apex/apexer/apexer.py already signed it during the build using the
-#    apex_key; to re-sign outside Soong use sign_apex.py / apksigner with the
-#    same key. Never re-sign with a different key on a shipped device.
-```
-
-`flatpak.mk` keeps the seccomp gate: the build fails if
-`linux/flatpak/seccomp-config.h` does not say `ENABLE_SECCOMP 1` or if
-`bin/matonos-flatpak` does not match `seccomp.sha256`. `build-seccomp.sh`
-regenerates both. Keep that invariant when changing the CLI.
-
-## Installing an update on a device
-
-```sh
-adb install -r /path/to/com.matonos.flatpak.apex   # userdebug/eng live image
-adb reboot
-# after boot:
-adb shell ls -lZ /apex/com.matonos.flatpak/bin
-adb shell su 1000 /apex/com.matonos.flatpak/bin/flatpak --version
-```
-
-Installing a *newer* APEX over the preinstalled one only succeeds when it is
-signed with the same key as the active version. `apexd` rejects a downgrade
-(lower `version`) unless the developer option allows it. After a reboot the
-old payload is gone; Flatpak and bwrap update together, as tested.
-
-## AOSP prerequisite: libcap
-
-`bwrap` links `libcap` (`cap_from_name`). `libcap` is an AOSP `external/`
-module and its `apex_available` list does not include `com.matonos.flatpak`,
-so Soong rejects the APEX analysis with
-`"bwrap" requires "libcap" that doesn't list the APEX under 'apex_available'`.
-
-The one-line fix is outside this device tree (the coordinator must carry it
-in the AOSP checkout, or as a reviewed fork/patch):
-
-```
-external/libcap/Android.bp:
-    apex_available: [
-        "//apex_available:platform",
-        ...
-        "com.matonos.flatpak",
-    ],
-```
-
-`libcap.so` is already installed in `/system/lib64`; the APEX namespace
-resolves it there, so it is *not* bundled into the APEX. `target.apex.
-exclude_shared_libs` is not used because it would drop the dependency from the
-link entirely, leaving `cap_from_name` undefined.
+No AOSP `system/sepolicy` files are changed in this phase. A real image remains
+necessary to validate the new APEX file contexts against the platform policy
+and exercise the launcher in Android's namespaces.
