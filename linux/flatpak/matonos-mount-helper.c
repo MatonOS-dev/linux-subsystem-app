@@ -972,17 +972,10 @@ static void set_error(mount_reply* reply, const char* text) {
     snprintf(reply->error, sizeof(reply->error), "%s", text);
 }
 
-/* The app'''s Flatpak data directory inside the sandbox (see maton-mount.h). */
-static int build_volume_target(uid_t uid, const char* app_id, char* out, size_t size) {
-    int written = snprintf(out, size, "%s/%u%s/%s",
-            MATON_APP_HOME_ROOT, (unsigned)uid, MATON_VOLUME_SUBDIR, app_id);
-    if (written < 0 || (size_t)written >= size) return -1;
-    return 0;
-}
-
 /* Try the APK-image path first; fall back to the legacy attach-record path. */
 static int serve_attach_images(int ns_fd, const char* app_id,
         const char* level, uid_t peer_uid, mount_reply* reply) {
+    (void)peer_uid;
     /* ---- try APK-carried images ----------------------------------------- */
     package_spec specs[PACKAGES_MAX_LINES];
     for (int i = 0; i < PACKAGES_MAX_LINES; i++) {
@@ -1067,34 +1060,8 @@ static int serve_attach_images(int ns_fd, const char* app_id,
         set_error(reply, "cannot mount code image");
         return -1;
     }
-    /* Optional writable volume; never executable. */
-    if (read_loop_record(app_id, "vol", loop, sizeof(loop)) == 0) {
-        char target[640];
-        /* The volume target uses peer_uid which is derived from level.
-         * We recompute it here; note that level is already verified. */
-        uid_t uid = 0;
-        /* Derive uid from level by reversing maton_mls_level_from_uid.
-         * We can't directly reverse the mapping, so we use a simpler approach:
-         * the volume target is MATON_APP_HOME_ROOT + UID + MATON_VOLUME_SUBDIR + app_id
-         * We need the UID. Since we already verified the sandbox uid in
-         * serve_request, we should have it. But here we don't have it directly.
-         * Instead, we use a range-based target derived from the level. */
-        /* Actually, looking at the code more carefully, the legacy volume
-         * target is: /data/matonos/linux/apps/<uid>/.var/app/<app_id>
-         * But we don't have the uid here - we need to change the interface.
-         * For now, the legacy code path stays working unchanged since the
-         * existing serve_request handles it directly — see below. */
-        (void)uid;
-        if (build_volume_target(peer_uid, app_id, target, sizeof(target))) {
-            set_error(reply, "invalid volume target");
-            return -1;
-        }
-        if (mount_image("ext4", loop, "matonos_app_volume_file",
-                    MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, level, ns_fd, target)) {
-            set_error(reply, "cannot mount volume image");
-            return -1;
-        }
-    }
+    /* linux-data: writable state is the UID-owned home bind, never vol.img. */
+
     reply->status = 0;
     return 0;
 }

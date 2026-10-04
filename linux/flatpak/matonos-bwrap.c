@@ -383,7 +383,7 @@ int main(int argc, char** argv) {
     if(mount_fd>=0 && fcntl(mount_fd,F_GETFD)<0)mount_fd=-1;
     /* Only enter the app domain for the real app sandbox; helpers keep their
      * own flow. The label must be a matonos app context or it is ignored. */
-    if(!app_sandbox || !app_label || strncmp(app_label,"u:r:matonos_flatpak_app",23)) {
+    if(!app_sandbox || !app_label || strncmp(app_label,"u:r:matonos_linux_app:",sizeof("u:r:matonos_linux_app:")-1)) {
         free(app_label);app_label=NULL;
     }
     /* A verified app sandbox is always set up by the privileged helper. If the
@@ -408,7 +408,7 @@ int main(int argc, char** argv) {
     if(!journal_path || !*journal_path)journal_path=bundled_journal;
     if(args_end>=0)pad_nodes=args_fd_lookup(atoi(argv[args_end-1]),"MATON_SESSION_PAD_NODES");
     if(!pad_nodes && getenv("MATON_SESSION_PAD_NODES"))pad_nodes=strdup(getenv("MATON_SESSION_PAD_NODES"));
-    extra = calloc(56 + 3 * 4, sizeof(char*));
+    extra = calloc(96 + 3 * 4, sizeof(char*));
     if (!extra) return 127;
     if(app_sandbox && pad_nodes && *pad_nodes) {
         char* state;unsigned pads=0;
@@ -452,6 +452,14 @@ int main(int argc, char** argv) {
      * calls it as the command; it setcon()s to the app domain and execs the
      * verified payload. */
     if(app_sandbox && app_label) {
+        const char* data=getenv("MATON_APP_DATA_DIR");
+        unsigned uid=0;char trailing;
+        if(!data || sscanf(data,"/data/matonos/linux/apps/%u%c",&uid,&trailing)!=1 ||
+           uid%100000<10000 || uid%100000>19999) return 125;
+        static char home[192];
+        snprintf(home,sizeof(home),"%s/home",data);
+        extra[count++]="--bind";extra[count++]=home;extra[count++]=home;
+        extra[count++]="--setenv";extra[count++]="HOME";extra[count++]=home;
         extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
         extra[count++]="--setenv";extra[count++]=APP_LABEL_ENV;extra[count++]=app_label;
     }

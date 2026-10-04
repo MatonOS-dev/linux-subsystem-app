@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
         return 127;
     }
     char label[128];
-    written = snprintf(label, sizeof(label), "u:r:matonos_flatpak_app:%s", level);
+    written = snprintf(label, sizeof(label), "u:r:matonos_linux_app:%s", level);
     if (written < 0 || (size_t)written >= sizeof(label)) return 127;
     const char* supplied = getenv("MATON_APP_LABEL");
     if (supplied && strcmp(supplied, label)) {

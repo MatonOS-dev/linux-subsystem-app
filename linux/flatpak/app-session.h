@@ -18,7 +18,7 @@
 typedef struct AppSession {
     unsigned uid;
     int pid, controllers, lifeline, group;
-    char home[128], label[256], id[256], app_label[256];
+    char home[128], data_dir[128], label[256], id[256], app_label[256];
 } AppSession;
 
 static int session_text(const char* path,char* text,size_t size) {
@@ -54,7 +54,7 @@ static int session_owner(AppSession* s,int initial) {
         }
     }
     if(sscanf(owner,"%u:%d:%d:%255[A-Za-z0-9._-]%c",&s->uid,&s->pid,&s->controllers,s->id,&extra)!=4 ||
-       s->uid<10000 || s->uid>=20000 || s->pid<=0 || (s->controllers!=0 && s->controllers!=1))return -1;
+       s->uid%100000<10000 || s->uid%100000>=20000 || s->pid<=0 || (s->controllers!=0 && s->controllers!=1))return -1;
     if(getuid()!=1000 && getuid()!=s->uid)return -1;
     char path[128],text[4096];struct stat st;
     snprintf(path,sizeof(path),"/proc/%d",s->pid);
@@ -70,7 +70,7 @@ static int session_owner(AppSession* s,int initial) {
     if(maton_mls_level_from_uid(s->uid,level,sizeof(level)) || strcmp(range+1,level))return -1;
     /* The dyntransition target is the narrow flatpak-run domain; the verified
      * payload is moved to the app domain later by matonos-app-exec. */
-    snprintf(s->app_label,sizeof(s->app_label),"u:r:matonos_flatpak_app:%s",level);
+    snprintf(s->app_label,sizeof(s->app_label),"u:r:matonos_linux_app:%s",level);
     snprintf(s->label,sizeof(s->label),"u:r:matonos_flatpak_run:%s",level);
     snprintf(path,sizeof(path),"/sys/fs/cgroup/apps/uid_%u/pid_%d",s->uid,s->pid);
     s->group=open(path,O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
@@ -82,14 +82,15 @@ static int session_owner(AppSession* s,int initial) {
     char expected[128];snprintf(expected,sizeof(expected),"0::/apps/uid_%u/pid_%d\n",s->uid,s->pid);
     if(!strstr(text,expected))return -1;
     if(initial){struct pollfd life={.fd=s->lifeline,.events=POLLIN};if(poll(&life,1,0)!=0)return -1;}
-    snprintf(s->home,sizeof(s->home),"/data/matonos/linux/apps/%u",s->uid);
+    snprintf(s->data_dir,sizeof(s->data_dir),"/data/matonos/linux/apps/%u",s->uid);
+    snprintf(s->home,sizeof(s->home),"%s/home",s->data_dir);
     return 0;
 }
 static int session_portal_uid(void) {
     uid_t uid=(uid_t)atoi(getenv("MATON_APP_UID"));
     struct __user_cap_header_struct h={.version=_LINUX_CAPABILITY_VERSION_3};
     struct __user_cap_data_struct caps[2]={{0}};
-    if(uid<10000 || uid>=20000 || syscall(SYS_capget,&h,caps) || prctl(PR_SET_KEEPCAPS,1) ||
+    if(uid%100000<10000 || uid%100000>=20000 || syscall(SYS_capget,&h,caps) || prctl(PR_SET_KEEPCAPS,1) ||
        setresgid(uid,uid,uid) || setresuid(uid,uid,uid))return -1;
     caps[0].effective=caps[0].permitted;
     caps[0].inheritable=caps[0].permitted;
@@ -101,34 +102,15 @@ static int session_portal_uid(void) {
     return prctl(PR_SET_DUMPABLE,1);
 }
 static int session_home(AppSession* s) {
-    int parent=open("/data/matonos/linux/apps",O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-    if(parent<0)return -1;
-    char name[32];snprintf(name,sizeof(name),"%u.owner",s->uid);
-    int record=openat(parent,name,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0640);
-    if(record>=0) {
-        size_t n=strlen(s->id);
-        if(write(record,s->id,n)!=(ssize_t)n){close(record);close(parent);return -1;}
-        close(record);
-    } else {
-        record=openat(parent,name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
-        char stored[256];struct stat owner;
-        ssize_t n=record>=0?read(record,stored,sizeof(stored)-1):-1;
-        if(record<0 || fstat(record,&owner) || owner.st_uid!=1000 || n<=0){if(record>=0)close(record);close(parent);return -1;}
-        stored[n]=0;close(record);
-        if(strcmp(stored,s->id)){close(parent);errno=EPERM;return -1;}
+    const char* paths[]={s->data_dir,s->home};
+    for(unsigned i=0;i<2;i++) {
+        int fd=open(paths[i],O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        struct stat st;
+        if(fd<0)return -1;
+        int bad=fstat(fd,&st)||st.st_uid!=s->uid||(st.st_mode&0777)!=0700;
+        close(fd);if(bad)return -1;
     }
-    snprintf(name,sizeof(name),"%u",s->uid);
-    int created=mkdirat(parent,name,0700)==0;
-    if(!created && errno!=EEXIST){close(parent);return -1;}
-    int fd=openat(parent,name,(created?O_RDONLY:O_PATH)|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);close(parent);
-    if(fd<0)return -1;
-    struct stat st;
-    if(fstat(fd,&st) || (!created && (st.st_uid!=s->uid || (st.st_mode&0777)!=0700))){close(fd);return -1;}
-    if(!created){close(fd);return 0;}
-    char label[256];const char* range=strstr(s->label,":s0");
-    snprintf(label,sizeof(label),"u:object_r:matonos_flatpak_app_data_file%s",range);
-    int rc=(created && fchown(fd,s->uid,s->uid)) || fsetxattr(fd,"security.selinux",label,strlen(label)+1,0);
-    close(fd);return rc ? -1 : 0;
+    return 0;
 }
 static int session_filter_binder(void) {
     /* Flatpak/bwrap use no Android Binder. Reject all 'b' ioctls, including

@@ -499,6 +499,7 @@ int main(int argc, char** argv) {
     }
     if(setenv("MATON_SESSION_PAD_NODES",pads,1))return 127;
     if(owned) {
+        if(setenv("MATON_APP_DATA_DIR",app.data_dir,1))return 127;
         char owner[384],uid[32];
         snprintf(owner,sizeof(owner),"%u:%d:%d:%s",app.uid,app.pid,app.controllers,app.id);
         snprintf(uid,sizeof(uid),"%u",app.uid);
