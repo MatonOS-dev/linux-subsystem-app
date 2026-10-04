@@ -34,3 +34,7 @@ matonos.local.env
 
 # --- pristine upstream sources for the Linux-apps stack (fetched, not committed) ---
 /linux/third_party/*/upstream/
+
+# Private signing keys never go into this public repo
+*.pem
+*.pk8
