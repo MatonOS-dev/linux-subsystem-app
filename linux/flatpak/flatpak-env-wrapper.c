@@ -18,11 +18,79 @@
 #include <sys/wait.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include "machine-id.h"
 #include "controller-access.h"
+#include "socket-relay.h"
 #include "../dbus-broker/session-control.h"
+
+#define SESSION_BUS_DIRECTORY "/data/matonos/linux/runtime/session-bus-%d"
+static volatile sig_atomic_t portal_stop;
+static void stop_portal(int number) {(void)number;portal_stop=1;}
+
+static void remove_session_directory(int fd,const char* path) {
+    if(fd>=0) {
+        unlinkat(fd,"bus",0);unlinkat(fd,"wayland-0",0);unlinkat(fd,"X0",0);close(fd);
+        rmdir(path);
+    }
+}
+static int prepare_session_directory(const char* path) {
+    struct stat info;
+    if(lstat("/data/matonos/linux/runtime",&info) || !S_ISDIR(info.st_mode) ||
+       info.st_uid!=getuid() || (info.st_mode&07777)!=0700)return -1;
+    int created=mkdir(path,0700)==0;
+    if(!created && errno!=EEXIST)return -1;
+    int fd=open(path,O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0 || fstat(fd,&info) || info.st_uid!=getuid()) {
+        if(fd>=0)close(fd);
+        if(created)rmdir(path);
+        return -1;
+    }
+    /* A live supervisor uniquely owns this PID. Remove only named sockets
+     * left by abrupt death, after checking the native directory's owner. */
+    const char* names[]={"bus","wayland-0","X0"};
+    for(unsigned i=0;i<3;i++) {
+        if(fstatat(fd,names[i],&info,AT_SYMLINK_NOFOLLOW)) {
+            if(errno==ENOENT)continue;
+        } else if(S_ISSOCK(info.st_mode) && !unlinkat(fd,names[i],0))continue;
+        close(fd);if(created)rmdir(path);return -1;
+    }
+    if(fchmod(fd,0777)){remove_session_directory(fd,path);return -1;}
+    return fd;
+}
+
+static int display_listener(int directory,const char* name) {
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/%s",directory,name);
+    int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
+    if(fd>=0 && !bind(fd,(struct sockaddr*)&address,sizeof(address)) &&
+       !fchmodat(directory,name,0600,0) && !listen(fd,16))return fd;
+    if(fd>=0)close(fd);
+    return -1;
+}
+static void accept_display(int listener,int directory,const char* name,unsigned* connections) {
+    int client=accept4(listener,NULL,NULL,SOCK_CLOEXEC);
+    if(client<0)return;
+    if((*connections)++>=128){close(client);return;}
+    int upstream=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/%s",directory,name);
+    if(upstream<0 || connect(upstream,(struct sockaddr*)&address,sizeof(address))) {
+        if(upstream>=0)close(upstream);
+        close(client);return;
+    }
+    struct timeval timeout={.tv_sec=5};
+    setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+    setsockopt(upstream,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+    WaylandRelay* relay=malloc(sizeof(*relay));pthread_t thread;
+    if(relay){relay->client=client;relay->compositor=upstream;}
+    pthread_attr_t attributes;pthread_attr_init(&attributes);pthread_attr_setstacksize(&attributes,256*1024);
+    int error=relay ? pthread_create(&thread,&attributes,relay_wayland,relay) : ENOMEM;
+    pthread_attr_destroy(&attributes);
+    if(error){free(relay);close(client);close(upstream);}else pthread_detach(thread);
+}
 
 static int valid_dns_server(const char* server) {
     unsigned char address[16];
@@ -151,34 +219,61 @@ static void system_flatpak_version(char version[64]) {
     snprintf(version,64,"%s",text+8);
 }
 /* The supervisor holds the delegated directory for the whole host session.
- * Only its bus socket path is exported; the control capability never reaches
- * the CLI, bwrap, portal, or application children. */
+ * It delegates a native runtime directory back to the compositor broker,
+ * which exposes a second socket without relaying D-Bus credentials. Native
+ * display relays also survive the initial CLI for nested portal launches.
+ * The control capability never reaches application children. */
 static int start_session_portal(int directory, int x11_directory, const char* x11_name, const char* monitor, char* bus, size_t size) {
     int ready[2];if(pipe2(ready,O_CLOEXEC))return -1;
     pid_t supervisor=fork();
     if(supervisor<0){close(ready[0]);close(ready[1]);return -1;}
     if(supervisor==0) {
         close(ready[0]);
+        char native_directory[128],bus_path[160];
+        snprintf(native_directory,sizeof(native_directory),SESSION_BUS_DIRECTORY,getpid());
+        snprintf(bus_path,sizeof(bus_path),"%s/bus",native_directory);
+        int native_fd=prepare_session_directory(native_directory);
+        if(native_fd<0)_exit(127);
+        /* Nested portal launches outlive the initial CLI's linuxd relays.
+         * Retain both display capabilities here and expose native sockets. */
+        int wayland_listener=display_listener(native_fd,"wayland-0");
+        int x11_listener=x11_directory>=0 ? display_listener(native_fd,"X0") : -1;
+        if(wayland_listener<0 || (x11_directory>=0 && x11_listener<0)) {
+            remove_session_directory(native_fd,native_directory);_exit(127);
+        }
+        /* The runtime parent is system-owned 0700. Only the broker gets this
+         * directory capability; application sandboxes receive one bus socket. */
+        struct sigaction stop={.sa_handler=stop_portal};sigemptyset(&stop.sa_mask);
+        if(sigaction(SIGTERM,&stop,NULL) || sigaction(SIGINT,&stop,NULL)) {
+            remove_session_directory(native_fd,native_directory);_exit(127);
+        }
         char flatpak_version[64];system_flatpak_version(flatpak_version);
         struct sockaddr_un address={.sun_family=AF_UNIX};
         snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/bus-control",directory);
         int control=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);
-        if(control<0 || connect(control,(struct sockaddr*)&address,sizeof(address)))_exit(127);
-        int gate[2];if(pipe2(gate,O_CLOEXEC))_exit(127);
+        if(control<0 || connect(control,(struct sockaddr*)&address,sizeof(address))) {
+            remove_session_directory(native_fd,native_directory);_exit(127);
+        }
+        int gate[2];if(pipe2(gate,O_CLOEXEC)) {
+            remove_session_directory(native_fd,native_directory);_exit(127);
+        }
         pid_t parent=getpid(),portal=fork();
-        if(portal<0)_exit(127);
+        if(portal<0){remove_session_directory(native_fd,native_directory);_exit(127);}
         if(portal==0) {
             close(gate[1]);close(control);close(ready[1]);close(directory);
+            close(native_fd);
+            close(wayland_listener);if(x11_listener>=0)close(x11_listener);
+            signal(SIGTERM,SIG_DFL);signal(SIGINT,SIG_DFL);
             if(x11_directory>=0)close(x11_directory);
             if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(127);
             char value=0;if(read(gate[0],&value,1)!=1 || value!=1)_exit(127);
             close(gate[0]);
-            char address[192];snprintf(address,sizeof(address),"unix:path=/proc/%d/fd/%d/bus",parent,directory);
+            char address[192];snprintf(address,sizeof(address),"unix:path=%s",bus_path);
             if(setenv("DBUS_SESSION_BUS_ADDRESS",address,1))_exit(127);
-            snprintf(address,sizeof(address),"/proc/%d/fd/%d/wayland-0",parent,directory);
+            snprintf(address,sizeof(address),"%s/wayland-0",native_directory);
             if(setenv("WAYLAND_DISPLAY",address,1))_exit(127);
             if(x11_directory>=0) {
-                snprintf(address,sizeof(address),"/proc/%d/fd/%d/%s",parent,x11_directory,x11_name);
+                snprintf(address,sizeof(address),"%s/X0",native_directory);
                 if(setenv("MATON_X11_SOCKET",address,1))_exit(127);
             } else unsetenv("MATON_X11_SOCKET");
             execl("/system_ext/bin/flatpak-portal","flatpak-portal",NULL);_exit(127);
@@ -189,7 +284,13 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
         snprintf(registration.monitor,sizeof(registration.monitor),"%s",monitor);
         struct MatonSessionReply reply={0};
         struct pollfd event={.fd=control,.events=POLLIN};
-        int ok=send(control,&registration,sizeof(registration),MSG_NOSIGNAL)==sizeof(registration) &&
+        union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(int))]; } ancillary={0};
+        struct iovec payload={.iov_base=&registration,.iov_len=sizeof(registration)};
+        struct msghdr packet={.msg_iov=&payload,.msg_iovlen=1,.msg_control=ancillary.bytes,.msg_controllen=sizeof(ancillary.bytes)};
+        struct cmsghdr* rights=CMSG_FIRSTHDR(&packet);
+        rights->cmsg_level=SOL_SOCKET;rights->cmsg_type=SCM_RIGHTS;rights->cmsg_len=CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(rights),&native_fd,sizeof(native_fd));
+        int ok=sendmsg(control,&packet,MSG_NOSIGNAL)==sizeof(registration) &&
             poll(&event,1,5000)>0 && recv(control,&reply,sizeof(reply),MSG_TRUNC)==sizeof(reply);
         if(ok && reply.status==MATON_SESSION_FLATPAK_UNSUPPORTED) {
             fprintf(stderr,"matonos-flatpak: %.*s: %.*s\n",
@@ -204,6 +305,8 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
         } else if(ok && reply.status==2) {
             close(gate[1]);gate[1]=-1;
             kill(portal,SIGTERM);while(waitpid(portal,NULL,0)<0&&errno==EINTR){}
+            close(wayland_listener);if(x11_listener>=0)close(x11_listener);
+            remove_session_directory(native_fd,native_directory);
             (void)!write(ready[1],&reply.supervisor,sizeof(reply.supervisor));_exit(0);
         } else ok=0;
         if(gate[1]>=0)close(gate[1]);
@@ -211,12 +314,16 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
         close(ready[1]);
         /* Do not reap until control EOF has revoked the registered PID. A
          * zombie reserves the PID against reuse during broker revocation. */
-        while(ok) {
+        unsigned connections=0;
+        while(ok && !portal_stop) {
             siginfo_t info={0};
             if(waitid(P_PID,portal,&info,WEXITED|WNOHANG|WNOWAIT)<0 || info.si_pid)break;
-            int rc=poll(&event,1,100);
+            struct pollfd events[3]={event,{.fd=wayland_listener,.events=POLLIN},{.fd=x11_listener,.events=POLLIN}};
+            int rc=poll(events,3,100);
             if(rc<0 && errno==EINTR)continue;
-            if(rc!=0)break;
+            if(rc<0 || events[0].revents)break;
+            if(events[1].revents&POLLIN)accept_display(wayland_listener,directory,"wayland-0",&connections);
+            if(events[2].revents&POLLIN)accept_display(x11_listener,x11_directory,x11_name,&connections);
         }
         kill(portal,SIGTERM);
         /* Closing control before reaping reserves the child PID until the
@@ -225,6 +332,8 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
         char byte;while(recv(control,&byte,1,0)<0&&errno==EINTR){}
         close(control);
         while(waitpid(portal,NULL,0)<0&&errno==EINTR){}
+        close(wayland_listener);if(x11_listener>=0)close(x11_listener);
+        remove_session_directory(native_fd,native_directory);
         close(directory);if(x11_directory>=0)close(x11_directory);_exit(ok?0:127);
     }
     close(ready[1]);pid_t owner=0;
@@ -232,7 +341,7 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
     int ok=poll(&event,1,12000)>0 && read(ready[0],&owner,sizeof(owner))==sizeof(owner) && owner>0;
     close(ready[0]);
     if(!ok){kill(supervisor,SIGTERM);while(waitpid(supervisor,NULL,0)<0&&errno==EINTR){}return -1;}
-    snprintf(bus,size,"unix:path=/proc/%d/fd/%d/bus",owner,directory);return 0;
+    snprintf(bus,size,"unix:path=" SESSION_BUS_DIRECTORY "/bus",owner);return 0;
 }
 
 int main(int argc, char** argv) {
@@ -247,10 +356,10 @@ int main(int argc, char** argv) {
     char x11_socket[160] = {0};
     int graphical = display && sscanf(display, "/data/matonos/linux/runtime/wayland-%d%c", &display_fd, &trailing) == 1 && display_fd >= 0;
     int nested=0, owner=0;
-    if(!graphical && display && sscanf(display,"/proc/%d/fd/198/wayland-0%c",&owner,&trailing)==1 && owner>0) {
-        char expected[192];snprintf(expected,sizeof(expected),"unix:path=/proc/%d/fd/198/bus",owner);
+    if(!graphical && display && sscanf(display,SESSION_BUS_DIRECTORY "/wayland-0%c",&owner,&trailing)==1 && owner>0) {
+        char expected[192];snprintf(expected,sizeof(expected),"unix:path=" SESSION_BUS_DIRECTORY "/bus",owner);
         nested=getenv("DBUS_SESSION_BUS_ADDRESS") && !strcmp(getenv("DBUS_SESSION_BUS_ADDRESS"),expected);
-        snprintf(expected,sizeof(expected),"/proc/%d/fd/198/wayland-0",owner);
+        snprintf(expected,sizeof(expected),SESSION_BUS_DIRECTORY "/wayland-0",owner);
         nested=nested && !strcmp(display,expected);
         graphical=nested;
     }
@@ -261,8 +370,8 @@ int main(int argc, char** argv) {
         struct stat socket_info;
         if(nested) {
             const char* inherited=getenv("MATON_X11_SOCKET");
-            int pid,number;char extra;
-            if(inherited && sscanf(inherited,"/proc/%d/fd/199/X%d%c",&pid,&number,&extra)==2 && pid==owner && number>=0)
+            int pid;char extra;
+            if(inherited && sscanf(inherited,SESSION_BUS_DIRECTORY "/X0%c",&pid,&extra)==1 && pid==owner)
                 snprintf(x11_socket,sizeof(x11_socket),"%s",inherited);
         } else snprintf(x11_socket, sizeof(x11_socket), "%s-x11", display_copy);
         if (lstat(x11_socket, &socket_info) != 0 || !S_ISSOCK(socket_info.st_mode))
@@ -334,6 +443,14 @@ int main(int argc, char** argv) {
             if(prepare_monitor(display_copy,dns,monitor,sizeof(monitor)) ||
                start_session_portal(session_directory,x11_directory,x11_name,monitor,bus,sizeof(bus))) {
                 fprintf(stderr,"matonos-flatpak: cannot start session portal\n");return 127;
+            }
+            int supervisor=0;
+            if(sscanf(bus,"unix:path=" SESSION_BUS_DIRECTORY "/bus",&supervisor)!=1)return 127;
+            snprintf(display_copy,sizeof(display_copy),SESSION_BUS_DIRECTORY "/wayland-0",supervisor);
+            if(setenv("WAYLAND_DISPLAY",display_copy,1))return 127;
+            if(x11_directory>=0) {
+                snprintf(x11_socket,sizeof(x11_socket),SESSION_BUS_DIRECTORY "/X0",supervisor);
+                if(setenv("MATON_X11_SOCKET",x11_socket,1))return 127;
             }
         } else if(!bus[0]) {
             fprintf(stderr,"matonos-flatpak: missing compositor session bus\n");return 127;

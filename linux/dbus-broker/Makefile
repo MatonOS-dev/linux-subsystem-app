@@ -8,7 +8,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs gio-2.0)
 
 all: $(OUT)/matonos-dbus-broker
 
-test: $(OUT)/broker-test $(OUT)/inhibit-test $(OUT)/portal-credentials-test $(OUT)/flatpak-version-test
+test: $(OUT)/broker-test $(OUT)/inhibit-test $(OUT)/portal-credentials-test $(OUT)/flatpak-version-test $(OUT)/native-bus-test
 
 $(OUT)/matonos-dbus-broker: $(OUT)/main.o $(OUT)/broker.o $(OUT)/example.o $(OUT)/portals.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -50,3 +50,11 @@ check-flatpak-version: $(OUT)/flatpak-version-test
 	$<
 
 .PHONY: check-flatpak-version
+
+$(OUT)/native-bus-test: native-bus-test.c broker.c broker.h session-control.h flatpak-compat.h $(OUT)/portals.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ native-bus-test.c $(OUT)/portals.o $(LDLIBS)
+
+check-native-bus: $(OUT)/native-bus-test
+	$<
+
+.PHONY: check-native-bus

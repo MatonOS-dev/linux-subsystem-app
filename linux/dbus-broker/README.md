@@ -143,11 +143,25 @@ available, the Xwayland directory on FD 199. The wrapper forks a native
 supervisor, which connects `bus-control` (SOCK_SEQPACKET) through FD 198,
 registers a gated portal child and its monitor path, and keeps both directory
 capabilities private. The wrapper and portal close these FDs before exec.
-Only the supervisor retains them. Native clients use
-`unix:path=/proc/<supervisor>/fd/198/bus`; Flatpak binds/proxies that socket
-into its sandbox as before. The portal's Wayland/X11 paths also refer to the
-supervisor's retained capabilities, avoiding dependence on a completed
-CLI launch's relays. Normal nested portal launches retain the same bus.
+Only the supervisor retains them. It creates a directory under linuxd's
+private mode-0700 runtime parent and sends that directory FD with the
+registration using SCM_RIGHTS. The mode-0777 child permits the compositor
+broker to bind through the FD without opening the private native parent.
+The broker validates the directory owner/type/mode and creates another
+listener for the same bus at `session-bus-<supervisor>/bus`. Native clients
+use that filesystem address; Flatpak binds/proxies only the socket into
+its sandbox. Both listeners enforce identical peer credentials and policy.
+The supervisor also provides Wayland/X11 relays in that directory, using
+the same descriptor-preserving relay implementation as linuxd. This keeps
+nested portal launches independent of a completed CLI's relays.
+
+Proc FD paths remain private capabilities used only by native processes.
+They are unsuitable upstream addresses for Flatpak's pivoted proxy helper,
+and bwrap's source canonicalization cannot traverse the compositor's
+private Android app-data bind mount. The native filesystem paths avoid both
+failures. Control EOF removes the native bus listener; supervisor teardown
+removes its display sockets and directory. Repeated ready launches reuse
+the original supervisor and native socket paths.
 
 The control listener requires a kernel-authenticated UID 1000 peer and is
 protected by the compositor's private app-data parent and SELinux. Neither

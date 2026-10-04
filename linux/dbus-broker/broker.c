@@ -1,6 +1,7 @@
 #include "broker.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stddef.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -42,6 +43,8 @@ struct _Broker {
     char *socket_path;
     uid_t owner_uid;
     GDBusServer *server;
+    GDBusServer *native_server;
+    int native_directory;
     GMainLoop *loop;
     GPtrArray *clients;
     GPtrArray *services;
@@ -790,7 +793,7 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
 }
 
 Broker *broker_new(const char *socket_path, const char *config_path, GError **error) {
-    Broker *b = g_new0(Broker, 1); b->socket_path = g_strdup(socket_path); b->owner_uid = geteuid(); b->ready_fd=-1; b->control_listener=-1; b->control_fd=-1; b->portal_pidfd=-1;
+    Broker *b = g_new0(Broker, 1); b->native_directory=-1; b->socket_path = g_strdup(socket_path); b->owner_uid = geteuid(); b->ready_fd=-1; b->control_listener=-1; b->control_fd=-1; b->portal_pidfd=-1;
     b->clients = g_ptr_array_new(); b->services = g_ptr_array_new();
     b->owners = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     b->name_flags = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -841,6 +844,16 @@ gboolean broker_add_service(Broker *b, const char *name, const char *path,
 }
 /* This endpoint is reachable only through the host's private directory
  * capability. The wrapper supervisor registers its gated, unreaped child. */
+static void native_listener_close(Broker* b) {
+    if(b->native_server) {
+        g_dbus_server_stop(b->native_server);g_clear_object(&b->native_server);
+    }
+    if(b->native_directory>=0) {
+        unlinkat(b->native_directory,"bus",0);close(b->native_directory);b->native_directory=-1;
+    }
+}
+static void close_received_fd(int* fd) {if(*fd>=0)close(*fd);}
+
 static gboolean control_closed(gint fd, GIOCondition condition, gpointer data) {
     (void)condition;
     Broker* b=data; char byte;
@@ -850,6 +863,7 @@ static gboolean control_closed(gint fd, GIOCondition condition, gpointer data) {
     b->portal_pid=0; b->ready_fd=-1; b->monitor[0]=0;
     if(b->portal_pidfd>=0)close(b->portal_pidfd);
     b->portal_pidfd=-1;
+    native_listener_close(b);
     for (guint i=0;i<b->clients->len;i++) {
         Client* c=g_ptr_array_index(b->clients,i);
         g_dbus_connection_close(c->connection,NULL,NULL,NULL);
@@ -867,7 +881,27 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
     struct pollfd ready={.fd=client,.events=POLLIN};
     if(getsockopt(client,SOL_SOCKET,SO_PEERCRED,&cred,&size) || cred.uid!=1000 ||
        poll(&ready,1,1000)<=0) {close(client);return G_SOURCE_CONTINUE;}
-    ssize_t received=recv(client,&registration,sizeof(registration),MSG_TRUNC);
+    /* Accept exactly one directory capability, never a pathname supplied by
+     * another UID. The native parent remains private to linuxd; the broker
+     * binds through this FD without traversing that parent's permissions. */
+    union {struct cmsghdr align;char bytes[CMSG_SPACE(sizeof(int))];} ancillary={0};
+    struct iovec payload={.iov_base=&registration,.iov_len=sizeof(registration)};
+    struct msghdr packet={.msg_iov=&payload,.msg_iovlen=1,.msg_control=ancillary.bytes,.msg_controllen=sizeof(ancillary.bytes)};
+    int native_fd __attribute__((cleanup(close_received_fd)))=-1;
+    ssize_t received=recvmsg(client,&packet,MSG_TRUNC|MSG_CMSG_CLOEXEC);
+    unsigned fd_count=0;
+    for(struct cmsghdr* rights=CMSG_FIRSTHDR(&packet);rights;rights=CMSG_NXTHDR(&packet,rights)) {
+        if(rights->cmsg_level!=SOL_SOCKET || rights->cmsg_type!=SCM_RIGHTS || rights->cmsg_len<CMSG_LEN(0))continue;
+        size_t count=(rights->cmsg_len-CMSG_LEN(0))/sizeof(int);
+        for(size_t i=0;i<count;i++) {
+            int passed;memcpy(&passed,(char*)CMSG_DATA(rights)+i*sizeof(int),sizeof(int));
+            if(fd_count++==0)native_fd=passed;else close(passed);
+        }
+    }
+    struct stat native_info;
+    if(fd_count!=1 || (packet.msg_flags&MSG_CTRUNC) || fstat(native_fd,&native_info) ||
+       !S_ISDIR(native_info.st_mode) || native_info.st_uid!=cred.uid ||
+       (native_info.st_mode&07777)!=0777) {close(client);return G_SOURCE_CONTINUE;}
     if(received!=sizeof(registration) ||
        !memchr(registration.flatpak_version,0,sizeof(registration.flatpak_version)) ||
        !maton_flatpak_supported(registration.flatpak_version)) {
@@ -896,6 +930,19 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
     if(response.status==0) {
         b->portal_pidfd=(int)syscall(SYS_pidfd_open,registration.pid,0);
         if(b->portal_pidfd<0) {g_warning("Cannot pin managed portal PID: %s",g_strerror(errno));response.status=3;(void)!send(client,&response,sizeof(response),MSG_NOSIGNAL);close(client);return G_SOURCE_CONTINUE;}
+        char* address=g_strdup_printf("unix:path=/proc/self/fd/%d/bus",native_fd);
+        GError* error=NULL;
+        b->native_server=g_dbus_server_new_sync(address,G_DBUS_SERVER_FLAGS_NONE,b->id,NULL,NULL,&error);
+        g_free(address);
+        if(!b->native_server || fchmodat(native_fd,"bus",0666,0)) {
+            g_warning("Cannot expose native session bus: %s",error ? error->message : g_strerror(errno));
+            g_clear_error(&error);b->native_directory=native_fd;native_fd=-1;native_listener_close(b);
+            close(b->portal_pidfd);b->portal_pidfd=-1;response.status=3;
+            (void)!send(client,&response,sizeof(response),MSG_NOSIGNAL);close(client);return G_SOURCE_CONTINUE;
+        }
+        b->native_directory=native_fd;native_fd=-1;
+        g_signal_connect(b->native_server,"new-connection",G_CALLBACK(on_new_connection),b);
+        g_dbus_server_start(b->native_server);
         b->flatpak_error[0]=0;
         g_atomic_int_inc(&b->portal_generation);
         b->supervisor_pid=cred.pid; b->portal_pid=registration.pid; b->control_fd=client;b->ready_fd=client;
@@ -958,6 +1005,7 @@ gboolean broker_run(Broker *b, GError **error) {
 void broker_stop(Broker* b) {if(b->loop)g_main_loop_quit(b->loop);}
 void broker_free(Broker *b) {
     if (!b) return;
+    native_listener_close(b);
     broker_session_services_free(b);
     if (b->portal_pidfd>=0)close(b->portal_pidfd);
     if (b->control_source) g_source_remove(b->control_source);
