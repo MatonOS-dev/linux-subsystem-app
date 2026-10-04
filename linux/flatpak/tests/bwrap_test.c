@@ -7,6 +7,12 @@
 #include <sys/mman.h>
 
 static void test_option_values(void) {
+    assert(option_values("--overlay")==3);
+    assert(option_values("--overlay-src")==1);
+    assert(option_values("--tmp-overlay")==1);
+    assert(option_values("--ro-overlay")==1);
+    assert(option_values("--level-prefix")==0);
+    assert(option_values("--not-a-security-boundary")==0);
     assert(option_values("--bind")==2);
     assert(option_values("--ro-bind-try")==2);
     assert(option_values("--dev-bind")==2);
@@ -66,6 +72,27 @@ static void test_scan_argv(void) {
 
     command=scan_argv(2,bare,&args_end,&dashdash);
     assert(args_end==-1 && dashdash==-1 && command==1);
+}
+
+/* Overlay values must not masquerade as options or the command. This also
+ * checks bundled FD scanning reaches real environment entries after overlays. */
+static void test_overlay_args(void) {
+    char* argv[]={"shim","--overlay-src","/lower","--overlay","--args",
+                  "--setenv","/merged","--level-prefix","--not-a-security-boundary",
+                  "--tmp-overlay","/tmp","--ro-overlay","/ro","--","app",NULL};
+    int args_end,dashdash;
+    assert(scan_argv(15,argv,&args_end,&dashdash)==14);
+    assert(args_end==-1 && dashdash==13);
+    const char data[]="--overlay-src\0/lower\0--overlay\0--setenv\0MATON_X11_SOCKET\0/fake\0"
+                      "--tmp-overlay\0/tmp\0--ro-overlay\0/ro\0--tmpfs\0/tmp/.X11-unix\0"
+                      "--setenv\0MATON_X11_SOCKET\0/real\0";
+    int fd=memfd_create("overlay-args",MFD_CLOEXEC);assert(fd>=0);
+    assert(write(fd,data,sizeof(data)-1)==sizeof(data)-1);
+    assert(lseek(fd,0,SEEK_SET)==0);
+    int tmpfs=0,app=0;char* journal=NULL;
+    char* found=args_fd_x11_socket(fd,&tmpfs,&journal,&app);
+    assert(found && !strcmp(found,"/real") && tmpfs);
+    assert(lseek(fd,0,SEEK_CUR)==0);close(fd);
 }
 
 static void test_insert_x11_args(void) {
@@ -188,6 +215,7 @@ int main(void) {
     test_seccomp_forwarding();
     test_machine_id_binds();
     test_option_values();
+    test_overlay_args();
     test_scan_argv();
     test_insert_x11_args();
     test_args_fd_x11_socket();
