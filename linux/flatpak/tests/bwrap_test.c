@@ -28,6 +28,7 @@ static void test_option_values(void) {
     assert(option_values("--size")==1);
     assert(option_values("--userns2")==1);
     assert(option_values("--json-status-fd")==1);
+    assert(option_values("--seccomp")==1);
     assert(option_values("--unshare-all")==0);
     assert(option_values("--share-net")==0);
     assert(option_values("--clearenv")==0);
@@ -140,6 +141,30 @@ int capture_execv(const char* path,char* const* argv) {
     for(unsigned i=0;i<n;i++)captured[i]=strdup(argv[i]);
     errno=ENOENT;return -1;
 }
+static void test_seccomp_forwarding(void) {
+    int filter=memfd_create("filter",0);assert(filter>=0);
+    assert(write(filter,"BPF",3)==3);assert(lseek(filter,0,SEEK_SET)==0);
+    char number[24];snprintf(number,sizeof(number),"%d",filter);
+    char* args[]={"shim","--seccomp",number,"--","app",NULL};
+    assert(shim_main(5,args)==127);
+    assert(!strcmp(captured[1],"--seccomp"));assert(!strcmp(captured[2],number));
+    assert(fcntl(filter,F_GETFD)>=0);assert(lseek(filter,0,SEEK_CUR)==0);
+    for(unsigned i=0;captured[i];i++)free(captured[i]);free(captured);
+    /* Flatpak normally bundles --seccomp into the inherited --args FD. */
+    int fd=memfd_create("args",0);assert(fd>=0);
+    const char bundled[]="--seccomp\0";
+    assert(write(fd,bundled,sizeof(bundled)-1)==sizeof(bundled)-1);
+    assert(write(fd,number,strlen(number)+1)==(ssize_t)strlen(number)+1);
+    assert(lseek(fd,0,SEEK_SET)==0);
+    snprintf(number,sizeof(number),"%d",fd);
+    char* packed[]={"shim","--args",number,"--","app",NULL};
+    assert(shim_main(5,packed)==127);
+    assert(!strcmp(captured[1],"--args"));assert(!strcmp(captured[2],number));
+    assert(lseek(fd,0,SEEK_CUR)==0);
+    char contents[64];assert(read(fd,contents,sizeof(contents))>0);
+    assert(!strcmp(contents,"--seccomp"));
+    for(unsigned i=0;captured[i];i++)free(captured[i]);free(captured);close(fd);close(filter);
+}
 static void test_machine_id_binds(void) {
     const char app[]="--dir\0/var\0--setenv\0FLATPAK_ID\0org.example.AnyApp\0";
     const char helper[]="--ro-bind\0/\0/\0";
@@ -160,6 +185,7 @@ static void test_machine_id_binds(void) {
     }
 }
 int main(void) {
+    test_seccomp_forwarding();
     test_machine_id_binds();
     test_option_values();
     test_scan_argv();
