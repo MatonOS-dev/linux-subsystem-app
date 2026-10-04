@@ -179,37 +179,85 @@ revocation before reaping, and pidfd validation also handles abrupt
 supervisor failure. Broker/control EOF terminates the native portal. A
 repeat launch reuses an already-ready live portal and the same supervisor.
 
-### Built-in Inhibit portal
+### Java portals in the compositor host
 
-The session broker exports `org.freedesktop.portal.Inhibit` version 3 on
-`/org/freedesktop/portal/desktop`, alongside Settings. `Inhibit` accepts idle
-(8), suspend (4), or both; unsupported logout/user-switch flags return an
-error. Each accepted call exports a caller-owned Request, sends a directed
-Response, and holds the Android session until Request.Close or D-Bus client
-EOF. Request tokens are validated and active objects are bounded. Objects
-are registered only on their originating connection, so another connection
-cannot close them, including via the broker's unique name.
+The C broker retains authentication, per-app routing, default-deny policy,
+Flatpak portal ownership and the native SessionHelper. Android portal logic
+lives in the APK: Settings v2, Inhibit v3 and OpenURI v3. After Hello and
+policy checks, calls to Desktop (or its broker unique name at desktop/request/
+session paths) are forwarded unchanged except for their authenticated sender.
+Unknown portal interfaces receive a Java UnknownMethod error. Standard Peer
+methods remain native. No app-ID exceptions or bridge bypass is introduced.
 
-`CreateMonitor` returns a Request whose Response contains a string-typed
-`session_handle`, followed by an initial StateChanged (Running, screensaver
-inactive). The monitoring Session supports Close. `QueryEndResponse` accepts
-only the owner's live Session. Android logout/screensaver state changes are
-not forwarded yet; this is the minimal monitor implementation.
+SessionBus creates `portal-backend` beside `bus` before starting the broker.
+This filesystem stream socket is mode 0600 in private compositor app data;
+Java checks the compositor UID and a fresh 256-bit capability passed only in
+the broker environment. The startup handshake is ASCII `MBP1`, then 64 ASCII
+hex characters of that capability. Java acknowledges authentication with ASCII
+`OKAY`; the broker waits up to two seconds before announcing bus readiness.
+The broker clears it from its environment
+after connecting. There is one backend connection per session, without
+reconnection or stale request reuse.
 
-The broker connects directly to the host's session `inhibit` socket before
-starting its bus. This local transport is mode 0600 and accepts only the
-compositor's own UID. No hold FD passes through linuxd or flatpak-portal;
-byte 1 acquires its session partial wake lock
-and enables the owning activities' keep-screen-on flags, byte 0 releases,
-and an echoed byte acknowledges completion. Socket EOF releases the hold,
-including after a broker crash. Stub activities receive state through their
-existing session listener, and newly attached activities receive the current
-state. No System Bridge AIDL change is needed. Its existing Android wake-state
-forwarder reports the wake lock to sleepd.
+Each subsequent frame contains two little-endian uint32 fields (D-Bus blob
+length and descriptor count), followed by a complete standard D-Bus message.
+The blob retains its own byte order. Limits are 1 MiB and 16 FDs. SCM_RIGHTS
+is attached to the first header byte; partial sends do not resend rights.
+Java collects rights while reading only that frame's header, verifies the
+D-Bus FD count, duplicates into ParcelFileDescriptor and closes received
+copies after dispatch. Replies and errors use the original serial and
+canonical destination; directed signals use the same channel. Java sends no
+FDs back in this first protocol version.
 
-`make test` also builds `inhibit-test`; `make check-inhibit` runs it. The
-harness uses authenticated socketpairs with the real broker connection path,
-and skips with status 77 if the host sandbox prevents GIO socket setup.
+The broker queues at most 256 forwards and retains at most 256 pending calls.
+Forwards and channel IO run on the default GLib main context, outside the
+GDBus filter worker. Writes have a one-second socket timeout; pending calls
+have a 15-second deadline. Channel failure/deadline closes the transport and
+fails outstanding calls. Host EOF clears Java requests and Android holds.
+The internal ClientClosed signal carries the disconnected authenticated unique
+name; Java releases just that caller's handles and file grants. Queued calls
+recheck the live connection before dispatch, and queued state is retained
+safely through broker destruction.
+
+Settings reads Android night mode/configuration, API-34 contrast and the
+Material You system accent resource where present. Read preserves its legacy
+double variant; ReadOne returns one variant. ReadAll filters namespaces,
+including empty patterns. Android owns title buttons, so button-layout is
+`:`. Settings are sampled on each read; dynamic SettingChanged emission is a
+follow-up. No hidden Android APIs are used.
+
+Inhibit requests are Java objects scoped to the originating unique name.
+Only suspend (4), idle (8), or both are accepted. Request.Close, client EOF,
+channel EOF and host teardown release the aggregate partial wake lock and
+activity keep-screen-on state. CreateMonitor/QueryEndResponse retain the
+existing minimal running/screensaver-inactive monitor with private Session
+handles. There is no logout/user-switch or live end-session source. The old
+C implementation and byte-ACK `inhibit` socket are removed. The existing
+Android wake-state forwarder still reports the wake lock through the bridge.
+
+OpenURI launches ACTION_VIEW, preferring a verified session stub activity via
+its Binder listener and falling back to host context with NEW_TASK. The ask
+option uses Android's chooser. OpenFile/OpenDirectory consume SCM_RIGHTS FDs,
+not caller paths, and publish bounded, random capability content URIs.
+Read/write URI grants propagate to the stub and selected Android handler.
+The public StorageManager proxy-FD API supplies read-only/read-write modes
+and independent offsets via pread/pwrite on the received capability. It never
+reopens a cross-UID native pathname; a read-only grant cannot inherit O_RDWR.
+MIME is inferred from FD metadata; unknown types use application/octet-stream.
+Only regular files/directories are accepted. Directory ACTION_VIEW depends
+on an installed handler for directory content URIs; there is no DocumentsProvider
+navigation/export or parent-directory revelation for regular-file FDs yet.
+Failure is a portal response code 2; success means Android accepted the intent,
+not that the receiving activity completed. File grants expire at caller/session
+EOF. URI OpenURI rejects file/content/intent schemes so it cannot open arbitrary
+host paths/providers on a sandbox caller's behalf.
+
+`make test` builds the broker tests and portal-wire-test. `make check-java-portals`
+runs standalone JVM unit tests, without Android/Gradle. `make check-portal-wire`
+checks real GLib/Java messages in both byte orders, nested variants/dictionaries,
+SCM_RIGHTS descriptors, fragmented reads and malformed frames without GSocket.
+`make check-inhibit` uses the real broker accepted-connection path and the Java
+backend over a test pipe adapter; status 77 means sandbox GIO sockets are denied.
 
 `make check-portal-credentials` checks the actual RequestName credential
 predicate: exact live PID and UID are required; an exited process's pidfd
