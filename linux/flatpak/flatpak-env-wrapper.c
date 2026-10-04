@@ -404,8 +404,13 @@ int main(int argc, char** argv) {
     if(owned){char uid[32];snprintf(uid,sizeof(uid),"%u",app.uid);if(setenv("MATON_APP_UID",uid,1))return 127;}
     const char* display = getenv("WAYLAND_DISPLAY");
     const char* bwrap = "/system_ext/bin/matonos-bwrap";
-    if(prepare_machine_id("/data/matonos/linux")) {
-        perror("matonos-flatpak: machine-id");return 127;
+    {
+        char machine_reason[256];
+        if(prepare_machine_id_reason("/data/matonos/linux",machine_reason,sizeof(machine_reason))) {
+            fprintf(stderr,"matonos-flatpak: machine-id: %s\n",
+                    machine_reason[0] ? machine_reason : "unknown failure");
+            return 127;
+        }
     }
     int display_fd = -1; char trailing; char display_copy[128] = {0};
     char x11_socket[160] = {0};
