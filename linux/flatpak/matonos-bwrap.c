@@ -38,6 +38,8 @@ static int option_values(const char* arg) {
         const char* name;
         int values;
     } options[] = {
+        /* bubblewrap 0.13.0: three values */
+        {"--overlay",3},
         /* two values */
         {"--bind",2},{"--bind-try",2},{"--ro-bind",2},{"--ro-bind-try",2},
         {"--dev-bind",2},{"--dev-bind-try",2},{"--bind-fd",2},{"--ro-bind-fd",2},
@@ -45,6 +47,7 @@ static int option_values(const char* arg) {
         {"--chmod",2},{"--setenv",2},
         /* one value */
         {"--args",1},{"--argv0",1},{"--chdir",1},{"--remount-ro",1},
+        {"--overlay-src",1},{"--tmp-overlay",1},{"--ro-overlay",1},
         {"--proc",1},{"--exec-label",1},{"--file-label",1},{"--dev",1},
         {"--tmpfs",1},{"--mqueue",1},{"--dir",1},{"--lock-file",1},
         {"--sync-fd",1},{"--block-fd",1},{"--userns-block-fd",1},
