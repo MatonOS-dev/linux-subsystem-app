@@ -20,7 +20,7 @@ JOBS=${MATON_BUILD_JOBS:-4}
 setup=()
 [[ ! -f $BUILD/meson-private/coredata.dat ]] || setup+=(--reconfigure)
 meson setup "${setup[@]}" "$BUILD" "$SOURCE" \
-  --cross-file "$WORK/android-x86_64-api35.ini" --prefix /system_ext \
+  --cross-file "$WORK/android-x86_64-api35.ini" --prefix /apex/com.matonos.flatpak \
   -Dtests=false -Dman=disabled -Dc_args=-march=x86-64-v2
 meson compile -C "$BUILD" -j "$JOBS"
 install -m 0755 "$BUILD/xdg-dbus-proxy" "$HERE/prebuilt/system_ext/bin/xdg-dbus-proxy"

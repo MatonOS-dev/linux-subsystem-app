@@ -44,7 +44,7 @@ static int session_owner(AppSession* s,int initial) {
         ssize_t n=readlink(path,exe,sizeof(exe)-1);
         if(n<=0)return -1;
         exe[n]=0;
-        if(strcmp(exe,"/system_ext/bin/flatpak-portal"))return -1;
+        if(strcmp(exe,"/apex/com.matonos.flatpak/bin/flatpak-portal"))return -1;
         snprintf(path,sizeof(path),"/proc/%d/environ",getppid());
         int got=session_text(path,env,sizeof(env));if(got<0)return -1;
         for(int i=0;i<got;) {

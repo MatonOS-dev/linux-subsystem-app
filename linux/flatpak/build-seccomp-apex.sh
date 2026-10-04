@@ -43,7 +43,15 @@ cp -al "$FORK_TREE" "$SOURCE" 2>/dev/null || cp -a "$FORK_TREE" "$SOURCE"
 
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 export PATH="$WORK/host-tools/prefix/bin:$PREFIX/bin:$PATH"
-[[ -f $PRODUCT/system_ext/lib64/libseccomp_matonos.so && -f $SECCOMP_SOURCE/include/seccomp.h ]]
+# libseccomp_matonos.so now ships inside the APEX, not system_ext. Prefer the
+# Soong-built copy; fall back to a legacy system_ext staging. MATON_LIBSECCOMP_LIB
+# overrides.
+SECCOMP_LIB=${MATON_LIBSECCOMP_LIB:-$(find "$MATON_AOSP/out/soong/.intermediates" \
+    -path '*libseccomp_matonos*' -name 'libseccomp_matonos.so' \
+    ! -path '*before_final_validations*' ! -path '*unstripped*' 2>/dev/null | head -1)}
+[[ -s $SECCOMP_LIB ]] || SECCOMP_LIB=$PRODUCT/system_ext/lib64/libseccomp_matonos.so
+[[ -s $SECCOMP_LIB && -f $SECCOMP_SOURCE/include/seccomp.h ]] || {
+    echo "libseccomp_matonos.so not found (set MATON_LIBSECCOMP_LIB); build it first" >&2; exit 1; }
 python3 "$DEVICE/linux/third_party/verify-source.py" flatpak "$SOURCE"
 mkdir -p "$BUILD"
 BUILD=$(cd "$BUILD" && pwd)
@@ -53,7 +61,7 @@ Name: libseccomp
 Description: Matching AOSP MatonOS libseccomp
 Version: 2.5.5
 Cflags: -I$SECCOMP_SOURCE/include
-Libs: -L$PRODUCT/system_ext/lib64 -lseccomp_matonos
+Libs: -L$(dirname "$SECCOMP_LIB") -lseccomp_matonos
 PC
 cat > "$BUILD/cross.ini" <<CROSS
 [binaries]
@@ -77,6 +85,7 @@ setup=()
 [[ ! -f $BUILD/obj/meson-private/coredata.dat ]] || setup+=(--reconfigure)
 meson setup "${setup[@]}" "$BUILD/obj" "$SOURCE" --cross-file "$BUILD/cross.ini" \
     --wrap-mode=nofallback --prefix=$APEX_PREFIX --libdir=lib64 --libexecdir=bin \
+    --datadir=usr/share \
     --sysconfdir=/data/matonos/linux/config --localstatedir=/data/matonos/linux \
     -Dsystem_install_dir=/data/matonos/linux/flatpak \
     -Dsystem_bubblewrap=$APEX_PREFIX/bin/matonos-bwrap \

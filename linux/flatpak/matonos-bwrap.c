@@ -36,7 +36,10 @@
 #define SYS_pidfd_open 434
 #endif
 
-#define BWRAP "/system_ext/bin/bwrap"
+/* r24: the Flatpak stack lives in the com.matonos.flatpak APEX. bwrap finds
+ * its own libraries through the APEX linker namespace. */
+#define MATON_FLATPAK_BIN "/apex/com.matonos.flatpak/bin"
+#define BWRAP MATON_FLATPAK_BIN "/bwrap"
 #define X11_SOCKET_PATH "/tmp/.X11-unix/X0"
 #define X11_SOCKET_ENV "MATON_X11_SOCKET"
 #define X11_DISPLAY ":0"
@@ -44,7 +47,7 @@
 #define JOURNAL_SOCKET_PATH "/run/systemd/journal/socket"
 /* r24: bwrap runs matonos-app-exec as the sandbox command; it dyntransitions
  * to the verified app domain before exec'ing the payload. */
-#define APP_EXEC_HOST "/system_ext/bin/matonos-app-exec"
+#define APP_EXEC_HOST MATON_FLATPAK_BIN "/matonos-app-exec"
 #define APP_EXEC_SANDBOX "/run/matonos/matonos-app-exec"
 #define APP_LABEL_ENV "MATON_APP_LABEL"
 
