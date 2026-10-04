@@ -1,9 +1,9 @@
 #define _GNU_SOURCE
 /*
  * MatonOS launcher for the NDK-built Flatpak CLI. linuxd execs the stable
- * /system_ext/bin/flatpak path; give its GPGME and bwrap subprocesses the
- * image paths they need, then preserve argv[0] and replace this process with
- * the tested CLI binary.
+ * /apex/com.matonos.flatpak/bin/flatpak path; give its GPGME and bwrap
+ * subprocesses the APEX paths they need, then preserve argv[0] and replace
+ * this process with the tested CLI binary.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -29,6 +29,12 @@
 #include <stddef.h>
 
 #define SESSION_BUS_DIRECTORY "/data/matonos/linux/runtime/session-bus-%d"
+/* r24: the whole Flatpak stack ships in the com.matonos.flatpak APEX, mounted
+ * at /apex/com.matonos.flatpak, instead of /system_ext. The binaries find
+ * their own libraries through the APEX linker namespace, so no
+ * LD_LIBRARY_PATH is needed. */
+#define MATON_FLATPAK_APEX "/apex/com.matonos.flatpak"
+#define MATON_FLATPAK_BIN MATON_FLATPAK_APEX "/bin"
 static volatile sig_atomic_t portal_stop;
 static void stop_portal(int number) {(void)number;portal_stop=1;}
 
@@ -201,7 +207,7 @@ static int start_mount_helper(int* shim_fd) {
         close(pair[1]);
         if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(127);
         char* const arguments[]={"matonos-mount-helper",NULL};
-        execv("/system_ext/bin/matonos-mount-helper",arguments);
+        execv(MATON_FLATPAK_BIN "/matonos-mount-helper",arguments);
         _exit(127);
     }
     close(pair[0]);
@@ -223,7 +229,7 @@ static void system_flatpak_version(char version[64]) {
         close(output[0]);
         if(dup2(output[1],STDOUT_FILENO)<0)_exit(127);
         close(output[1]);
-        execl("/system_ext/bin/matonos-flatpak","flatpak","--version",NULL);
+        execl(MATON_FLATPAK_BIN "/matonos-flatpak","flatpak","--version",NULL);
         _exit(127);
     }
     close(output[1]);
@@ -315,7 +321,7 @@ static int start_session_portal(int directory, int x11_directory, const char* x1
                 if(setenv("MATON_X11_SOCKET",address,1))_exit(127);
             } else unsetenv("MATON_X11_SOCKET");
             if(session_portal_uid())_exit(127);
-            execl("/system_ext/bin/flatpak-portal","flatpak-portal",NULL);_exit(127);
+            execl(MATON_FLATPAK_BIN "/flatpak-portal","flatpak-portal",NULL);_exit(127);
         }
         close(gate[0]);
         struct stat host_directory;
@@ -403,7 +409,7 @@ int main(int argc, char** argv) {
     }
     if(owned){char uid[32];snprintf(uid,sizeof(uid),"%u",app.uid);if(setenv("MATON_APP_UID",uid,1))return 127;}
     const char* display = getenv("WAYLAND_DISPLAY");
-    const char* bwrap = "/system_ext/bin/matonos-bwrap";
+    const char* bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
     {
         char machine_reason[256];
         if(prepare_machine_id_reason("/data/matonos/linux",machine_reason,sizeof(machine_reason))) {
@@ -437,14 +443,14 @@ int main(int argc, char** argv) {
         if (lstat(x11_socket, &socket_info) != 0 || !S_ISSOCK(socket_info.st_mode))
             x11_socket[0] = '\0';
         else
-            bwrap = "/system_ext/bin/matonos-bwrap";
+            bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
     }
     char journal[160] = {0};
     if (graphical) {
         char journal_display[128];
         snprintf(journal_display,sizeof(journal_display),"/data/matonos/linux/runtime/wayland-%d",getpid());
         if (start_journal_sink(nested?journal_display:display_copy, journal, sizeof(journal)) == 0)
-            bwrap = "/system_ext/bin/matonos-bwrap";
+            bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
         else journal[0] = '\0';
     }
     int session_directory=-1;
@@ -469,8 +475,7 @@ int main(int argc, char** argv) {
     snprintf(dns,sizeof(dns),"%s",getenv("MATON_FLATPAK_DNS") ? getenv("MATON_FLATPAK_DNS") : "");
     snprintf(bus,sizeof(bus),"%s",getenv("DBUS_SESSION_BUS_ADDRESS") ? getenv("DBUS_SESSION_BUS_ADDRESS") : "");
     if (clearenv() != 0 ||
-        setenv("PATH", "/system_ext/bin:/system/bin:/system/xbin", 1) != 0 ||
-        setenv("LD_LIBRARY_PATH", "/system_ext/lib64", 1) != 0 ||
+        setenv("PATH", MATON_FLATPAK_BIN ":/system/bin:/system/xbin", 1) != 0 ||
         setenv("XDG_RUNTIME_DIR", "/data/matonos/linux/runtime", 1) != 0 ||
         setenv("TMPDIR", "/data/matonos/linux/cache", 1) != 0 ||
         setenv("HOME", "/data/matonos/linux/flatpak-data", 1) != 0 ||
@@ -478,7 +483,13 @@ int main(int argc, char** argv) {
         setenv("FLATPAK_SYSTEM_DIR", "/data/matonos/linux/flatpak", 1) != 0 ||
         setenv("FLATPAK_SYSTEM_CACHE_DIR", "/data/matonos/linux/cache", 1) != 0 ||
         setenv("FLATPAK_USER_DIR", "/data/matonos/linux/flatpak-user", 1) != 0 ||
-        setenv("FLATPAK_DBUSPROXY", "/system_ext/bin/xdg-dbus-proxy", 1) != 0) {
+        setenv("FLATPAK_DBUSPROXY", MATON_FLATPAK_BIN "/xdg-dbus-proxy", 1) != 0 ||
+        /* The APEX stages Flatpak's data under the APEX-standard usr/share
+         * (prebuilt_usr_share), while the CLI/portal were compiled with the
+         * default datadir (share/flatpak). Point trigger discovery at the
+         * path the APEX actually ships and rebuild the CLI with
+         * --datadir=usr/share next time it is touched. */
+        setenv("FLATPAK_TRIGGERSDIR", MATON_FLATPAK_APEX "/usr/share/flatpak/triggers", 1) != 0) {
         perror("matonos-flatpak: setting runtime environment failed");
         return 127;
     }
@@ -486,7 +497,7 @@ int main(int argc, char** argv) {
         char owner[384],uid[32];
         snprintf(owner,sizeof(owner),"%u:%d:%d:%s",app.uid,app.pid,app.controllers,app.id);
         snprintf(uid,sizeof(uid),"%u",app.uid);
-        if(setenv("MATON_APP_OWNER",owner,1)||setenv("MATON_APP_UID",uid,1)||setenv("FLATPAK","/system_ext/bin/flatpak",1))return 127;
+        if(setenv("MATON_APP_OWNER",owner,1)||setenv("MATON_APP_UID",uid,1)||setenv("FLATPAK",MATON_FLATPAK_BIN "/flatpak",1))return 127;
     }
     // clearenv() above dropped everything, so the shim path
     // and its socket are exported here, after the reset.
@@ -496,7 +507,7 @@ int main(int argc, char** argv) {
         perror("matonos-flatpak: setting bwrap environment failed");
         return 127;
     }
-    if (setenv("FLATPAK_REVOKEFS_FUSE", "/system_ext/bin/revokefs-fuse", 1) != 0) {
+    if (setenv("FLATPAK_REVOKEFS_FUSE", MATON_FLATPAK_BIN "/revokefs-fuse", 1) != 0) {
         perror("matonos-flatpak: setting revokefs path failed");
         return 127;
     }
@@ -569,7 +580,7 @@ int main(int argc, char** argv) {
              * matonos-app-exec and the id to the privileged mount helper. */
             if(setenv("MATON_APP_LABEL",app.app_label,1)||setenv(MATON_APP_ID_ENV,app.id,1))_exit(127);
             unsetenv("MATON_APP_OWNER");unsetenv("MATON_APP_UID");
-            execv("/system_ext/bin/matonos-flatpak",argv);_exit(127);
+            execv(MATON_FLATPAK_BIN "/matonos-flatpak",argv);_exit(127);
         }
         int status=0,exited=0;
         for(;;) {
@@ -585,7 +596,7 @@ int main(int argc, char** argv) {
         close(app.group);close(app.lifeline);
         return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
     }
-    execv("/system_ext/bin/matonos-flatpak", argv);
+    execv(MATON_FLATPAK_BIN "/matonos-flatpak", argv);
     perror("matonos-flatpak: exec failed");
     return 127;
 }

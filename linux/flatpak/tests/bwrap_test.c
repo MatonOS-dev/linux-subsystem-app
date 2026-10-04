@@ -45,12 +45,12 @@ static void test_option_values(void) {
 }
 
 static void test_scan_argv(void) {
-    char* flatpak_run[]={"/system_ext/bin/matonos-bwrap","--args","3","--","app","--flag",NULL};
-    char* direct[]={"/system_ext/bin/matonos-bwrap","--unshare-all","--bind","/a","/b","--setenv","X","Y","--tmpfs","/t","app","arg",NULL};
-    char* proxy[]={"/system_ext/bin/matonos-bwrap","--args","5","--","xdg-dbus-proxy","--args=9",NULL};
-    char* trap[]={"/system_ext/bin/matonos-bwrap","--setenv","--args","3","app",NULL};
-    char* perms[]={"/system_ext/bin/matonos-bwrap","--perms","0755","--tmpfs","/t","app",NULL};
-    char* bare[]={"/system_ext/bin/matonos-bwrap","app",NULL};
+    char* flatpak_run[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","--args","3","--","app","--flag",NULL};
+    char* direct[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","--unshare-all","--bind","/a","/b","--setenv","X","Y","--tmpfs","/t","app","arg",NULL};
+    char* proxy[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","--args","5","--","xdg-dbus-proxy","--args=9",NULL};
+    char* trap[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","--setenv","--args","3","app",NULL};
+    char* perms[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","--perms","0755","--tmpfs","/t","app",NULL};
+    char* bare[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","app",NULL};
     int args_end,dashdash,command;
 
     command=scan_argv(6,flatpak_run,&args_end,&dashdash);
@@ -96,12 +96,12 @@ static void test_overlay_args(void) {
 }
 
 static void test_insert_x11_args(void) {
-    char* argv[]={"/system_ext/bin/matonos-bwrap","--args","3","--","app",NULL};
+    char* argv[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","--args","3","--","app",NULL};
     char* extra[]={"--bind","/data/matonos/linux/runtime/wayland-1-x11","/tmp/.X11-unix/X0","--setenv","DISPLAY",":0"};
     char** extended=insert_args(5,argv,3,extra,6);
     int i;
     assert(extended);
-    assert(!strcmp(extended[0],"/system_ext/bin/matonos-bwrap"));
+    assert(!strcmp(extended[0],"/apex/com.matonos.flatpak/bin/matonos-bwrap"));
     assert(!strcmp(extended[1],"--args"));
     assert(!strcmp(extended[2],"3"));
     assert(!strcmp(extended[3],"--bind"));

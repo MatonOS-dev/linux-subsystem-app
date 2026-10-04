@@ -2,6 +2,37 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// ============================================================================
+// MatonOS Flatpak stack — one updatable APEX (com.matonos.flatpak, r24)
+//
+// The APEX is preinstalled on system_ext
+// (/system_ext/apex/com.matonos.flatpak.apex) and mounts at
+// /apex/com.matonos.flatpak. Everything Flatpak runs from is inside it; the
+// only thing that stays in system_ext is linuxd, which execs paths under the
+// APEX. See linux/flatpak/APEX.md for the build/update/versioning procedure.
+//
+// The binaries and libraries below that are built out-of-tree (the NDK
+// Flatpak/GPG stack: linux/flatpak/prebuilt/system_ext) are wrapped as
+// cc_prebuilt_binary / cc_prebuilt_library_shared so they land in the APEX
+// bin/ and lib64/ with that APEX's linker namespace. No LD_LIBRARY_PATH is
+// needed: linkerconfig generates the `com.matonos.flatpak` namespace from the
+// APEX itself (see APEX.md, "Linker namespace").
+// ============================================================================
+
+cc_defaults {
+    name: "matonos_flatpak_apex_defaults",
+    system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    compile_multilib: "64",
+    strip: {
+        none: true,
+    },
+    // These are third-party prebuilts: do not re-validate DT_NEEDED/SONAME.
+    check_elf_files: false,
+}
+
+// ---------------------------------------------------------------- Soong-built
+
 // MatonOS bwrap shim: binds the per-app X11 relay socket
 // into the Flatpak sandbox. Launched as $FLATPAK_BWRAP by
 // flatpak-env-wrapper.c; see flatpak.mk.
@@ -11,6 +42,9 @@ cc_binary {
         "matonos-bwrap.c",
     ],
     system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    // APEX payload modules must support the APEX's min_sdk_version (37).
+    min_sdk_version: "37",
     compile_multilib: "64",
     cflags: [
         "-Wall",
@@ -28,6 +62,9 @@ cc_binary {
         "matonos-app-exec.c",
     ],
     system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    // APEX payload modules must support the APEX's min_sdk_version (37).
+    min_sdk_version: "37",
     compile_multilib: "64",
     cflags: [
         "-Wall",
@@ -45,10 +82,319 @@ cc_binary {
         "matonos-mount-helper.c",
     ],
     system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    // APEX payload modules must support the APEX's min_sdk_version (37).
+    min_sdk_version: "37",
     compile_multilib: "64",
     cflags: [
         "-Wall",
         "-Wextra",
         "-Werror",
+    ],
+}
+
+// ------------------------------------------------------- out-of-tree prebuilts
+
+// The Flatpak launcher (flatpak-env-wrapper.c) is compiled by
+// tools/build-native.sh and staged in prebuilt/system_ext/bin/flatpak.
+cc_prebuilt_binary {
+    name: "matonos-flatpak-launcher-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/bin/flatpak"],
+    stem: "flatpak",
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-cli-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/bin/matonos-flatpak"],
+    stem: "matonos-flatpak",
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-portal-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/bin/flatpak-portal"],
+    stem: "flatpak-portal",
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-gpg-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/bin/gpg"],
+    stem: "gpg",
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-ostree-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/bin/ostree"],
+    stem: "ostree",
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-revokefs-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/bin/revokefs-fuse"],
+    stem: "revokefs-fuse",
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-xdg-dbus-proxy-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/bin/xdg-dbus-proxy"],
+    stem: "xdg-dbus-proxy",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libappstream-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libappstream.so"],
+    stem: "libappstream",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libarchive-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libarchive.so"],
+    stem: "libarchive",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libassuan-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libassuan.so"],
+    stem: "libassuan",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libffi-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libffi.so"],
+    stem: "libffi",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libfuse-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libfuse.so"],
+    stem: "libfuse",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libfyaml-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libfyaml.so"],
+    stem: "libfyaml",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgcrypt-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgcrypt.so"],
+    stem: "libgcrypt",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgio-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgio-2.0.so"],
+    stem: "libgio-2.0",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgirepository-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgirepository-2.0.so"],
+    stem: "libgirepository-2.0",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libglib-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libglib-2.0.so"],
+    stem: "libglib-2.0",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgmodule-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgmodule-2.0.so"],
+    stem: "libgmodule-2.0",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgobject-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgobject-2.0.so"],
+    stem: "libgobject-2.0",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgpg-error-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgpg-error.so"],
+    stem: "libgpg-error",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgpgme-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgpgme.so"],
+    stem: "libgpgme",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libgthread-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libgthread-2.0.so"],
+    stem: "libgthread-2.0",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libintl-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libintl.so"],
+    stem: "libintl",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libjson-glib-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libjson-glib-1.0.so"],
+    stem: "libjson-glib-1.0",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libksba-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libksba.so"],
+    stem: "libksba",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libnpth-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libnpth.so"],
+    stem: "libnpth",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libostree-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libostree-1.so"],
+    stem: "libostree-1",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libxmlb-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libxmlb.so"],
+    stem: "libxmlb",
+}
+
+cc_prebuilt_library_shared {
+    name: "matonos-flatpak-libyaml-prebuilt",
+    defaults: ["matonos_flatpak_apex_defaults"],
+    srcs: ["prebuilt/system_ext/lib64/libyaml-0.so"],
+    stem: "libyaml-0",
+}
+
+// Flatpak runtime triggers, installed under usr/share (Flatpak's datadir is
+// compiled to /apex/com.matonos.flatpak/usr/share; see build-seccomp.sh and
+// APEX.md).
+prebuilt_usr_share {
+    name: "matonos-flatpak-trigger-desktop-database",
+    src: "prebuilt/system_ext/share/flatpak/triggers/desktop-database.trigger",
+    filename_from_src: true,
+    sub_dir: "flatpak/triggers",
+    installable: false,
+}
+
+prebuilt_usr_share {
+    name: "matonos-flatpak-trigger-gtk-icon-cache",
+    src: "prebuilt/system_ext/share/flatpak/triggers/gtk-icon-cache.trigger",
+    filename_from_src: true,
+    sub_dir: "flatpak/triggers",
+    installable: false,
+}
+
+prebuilt_usr_share {
+    name: "matonos-flatpak-trigger-mime-database",
+    src: "prebuilt/system_ext/share/flatpak/triggers/mime-database.trigger",
+    filename_from_src: true,
+    sub_dir: "flatpak/triggers",
+    installable: false,
+}
+
+// ---------------------------------------------------------------- key + APEX
+
+// Repository development key. The release build MUST replace both files with
+// the MatonOS release APEX key (see APEX.md, "Keys"): a release APEX can only
+// be updated by an APEX signed with the same key, so the dev key is for
+// adb install / bring-up only.
+apex_key {
+    name: "com.matonos.flatpak.key",
+    public_key: "com.matonos.flatpak.avbpubkey",
+    private_key: "com.matonos.flatpak.pem",
+}
+
+apex {
+    name: "com.matonos.flatpak",
+    manifest: "apex_manifest.json",
+    key: "com.matonos.flatpak.key",
+    file_contexts: "apex_file_contexts",
+    system_ext_specific: true,
+    compile_multilib: "64",
+    updatable: true,
+    // Android 17 / API 37: first SDK that ships this APEX.
+    min_sdk_version: "37",
+
+    binaries: [
+        // Soong-built.
+        "bwrap",
+        "matonos-bwrap",
+        "matonos-app-exec",
+        "matonos-mount-helper",
+        // install/linuxd/FlatpakStore.c, built next to linuxd but shipped here.
+        "matonos-flatpak-store",
+        // NDK prebuilts.
+        "matonos-flatpak-launcher-prebuilt",
+        "matonos-flatpak-cli-prebuilt",
+        "matonos-flatpak-portal-prebuilt",
+        "matonos-flatpak-gpg-prebuilt",
+        "matonos-flatpak-ostree-prebuilt",
+        "matonos-flatpak-revokefs-prebuilt",
+        "matonos-flatpak-xdg-dbus-proxy-prebuilt",
+    ],
+    native_shared_libs: [
+        "libseccomp_matonos",
+        "matonos-flatpak-libappstream-prebuilt",
+        "matonos-flatpak-libarchive-prebuilt",
+        "matonos-flatpak-libassuan-prebuilt",
+        "matonos-flatpak-libffi-prebuilt",
+        "matonos-flatpak-libfuse-prebuilt",
+        "matonos-flatpak-libfyaml-prebuilt",
+        "matonos-flatpak-libgcrypt-prebuilt",
+        "matonos-flatpak-libgio-prebuilt",
+        "matonos-flatpak-libgirepository-prebuilt",
+        "matonos-flatpak-libglib-prebuilt",
+        "matonos-flatpak-libgmodule-prebuilt",
+        "matonos-flatpak-libgobject-prebuilt",
+        "matonos-flatpak-libgpg-error-prebuilt",
+        "matonos-flatpak-libgpgme-prebuilt",
+        "matonos-flatpak-libgthread-prebuilt",
+        "matonos-flatpak-libintl-prebuilt",
+        "matonos-flatpak-libjson-glib-prebuilt",
+        "matonos-flatpak-libksba-prebuilt",
+        "matonos-flatpak-libnpth-prebuilt",
+        "matonos-flatpak-libostree-prebuilt",
+        "matonos-flatpak-libxmlb-prebuilt",
+        "matonos-flatpak-libyaml-prebuilt",
+    ],
+    prebuilts: [
+        "matonos-flatpak-trigger-desktop-database",
+        "matonos-flatpak-trigger-gtk-icon-cache",
+        "matonos-flatpak-trigger-mime-database",
     ],
 }

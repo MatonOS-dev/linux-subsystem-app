@@ -9,8 +9,11 @@ Built from unmodified upstream source for Android x86_64 / NDK r30 API 35,
 against the existing Flatpak NDK GLib/GIO dependency stack. Tests and man
 generation disabled. Rebuild with `../build-dbus-proxy.sh`.
 
-Installed as `/system_ext/bin/xdg-dbus-proxy` by `flatpak.mk`'s prebuilt file
-list. The Flatpak environment wrapper sets `FLATPAK_DBUSPROXY` to this
-runtime path, overriding the old host configure-time probe path.
+Ships inside the `com.matonos.flatpak` APEX as
+`/apex/com.matonos.flatpak/bin/xdg-dbus-proxy` (cc_prebuilt_binary in
+`linux/flatpak/Android.bp`). The Flatpak environment wrapper sets
+`FLATPAK_DBUSPROXY` to this runtime path, and the Flatpak build bakes the same
+apex path in via `-Dsystem_dbus_proxy`, overriding the host configure-time
+probe path.
 
 License: LGPL-2.1-or-later; upstream COPYING is included alongside this file.

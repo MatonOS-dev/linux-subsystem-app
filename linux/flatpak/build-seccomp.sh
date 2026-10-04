@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Build the complete consumer Flatpak fork with seccomp, then stage
 # after all checks pass. Dependencies are read from the matching AOSP/NDK build.
+#
+# r24: the Flatpak stack ships in the updatable com.matonos.flatpak APEX and is
+# compiled with that APEX as its prefix, so its compiled-in FLATPAK_BINDIR,
+# LIBEXECDIR, FLATPAK_DATADIR, HELPER (bwrap) and DBUSPROXY paths all point at
+# /apex/com.matonos.flatpak/... . The datadir is usr/share so the trigger files
+# match the apex's prebuilt_usr_share entries in Android.bp. Rebuild after any
+# pin change; see linux/flatpak/APEX.md.
 set -euo pipefail
 DEVICE=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 : "${MATON_AOSP:?Set MATON_AOSP to the matching AOSP checkout}"
@@ -15,7 +22,14 @@ JOBS=${MATON_BUILD_JOBS:-4}
 [[ $JOBS =~ ^[1-4]$ ]] || { echo 'Use 1 to 4 jobs' >&2; exit 1; }
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 export PATH="$MATON_AOSP/out/matonos/flatpak-ndk/host-tools/prefix/bin:$PREFIX/bin:$PATH"
-[[ -f $PRODUCT/system_ext/lib64/libseccomp_matonos.so && -f $SECCOMP_SOURCE/include/seccomp.h ]]
+# libseccomp_matonos.so now lives inside the APEX, not in system_ext. Link the
+# CLI against the Soong-built copy; both the prebuilt CLI and the APEX ship this
+# exact library in lib64, resolved through the APEX linker namespace.
+SECCOMP_LIB=${MATON_LIBSECCOMP_LIB:-$(find "$MATON_AOSP/out/soong/.intermediates" \
+    -path '*libseccomp_matonos*' -name 'libseccomp_matonos.so' \
+    ! -path '*before_final_validations*' ! -path '*unstripped*' 2>/dev/null | head -1)}
+[[ -s $SECCOMP_LIB && -f $SECCOMP_SOURCE/include/seccomp.h ]] || {
+  echo "libseccomp_matonos.so not found (set MATON_LIBSECCOMP_LIB); build it first" >&2; exit 1; }
 [[ $(git -C "$SOURCE" rev-parse HEAD) == a02d0ba48abe9aacc377de15699e5d8c024b5669 ]]
 python3 "$DEVICE/linux/third_party/verify-source.py" flatpak "$SOURCE"
 mkdir -p "$BUILD"
@@ -26,7 +40,7 @@ Name: libseccomp
 Description: Matching AOSP MatonOS libseccomp
 Version: 2.5.5
 Cflags: -I$SECCOMP_SOURCE/include
-Libs: -L$PRODUCT/system_ext/lib64 -lseccomp_matonos
+Libs: -L$(dirname "$SECCOMP_LIB") -lseccomp_matonos
 PC
 cat > "$BUILD/cross.ini" <<CROSS
 [binaries]
@@ -49,11 +63,12 @@ CROSS
 setup=()
 [[ ! -f $BUILD/obj/meson-private/coredata.dat ]] || setup+=(--reconfigure)
 meson setup "${setup[@]}" "$BUILD/obj" "$SOURCE" --cross-file "$BUILD/cross.ini" \
-    --wrap-mode=nofallback --prefix=/system_ext --libdir=lib64 --libexecdir=bin \
+    --wrap-mode=nofallback --prefix=/apex/com.matonos.flatpak \
+    --libdir=lib64 --libexecdir=bin --datadir=usr/share \
     --sysconfdir=/data/matonos/linux/config --localstatedir=/data/matonos/linux \
     -Dsystem_install_dir=/data/matonos/linux/flatpak \
-    -Dsystem_bubblewrap=/system_ext/bin/matonos-bwrap \
-    -Dsystem_dbus_proxy=/system_ext/bin/xdg-dbus-proxy \
+    -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-bwrap \
+    -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy \
     -Dsystem_fusermount=/system/bin/fusermount3 \
     -Dseccomp=enabled -Dsystem_helper=disabled -Dsystemd=disabled \
     -Dselinux_module=disabled -Dxauth=disabled -Dgir=disabled \

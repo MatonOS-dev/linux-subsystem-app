@@ -1,0 +1,20 @@
+# SELinux contexts for the com.matonos.flatpak APEX.
+#
+# Patterns are relative to the APEX mount point (/apex/com.matonos.flatpak);
+# the leading "/" is the apex image root, exactly as e2fsdroid/apexd apply
+# them. Everything not matched explicitly stays system_file/system_file_type,
+# which is what the moved binaries and NDK libraries used in system_ext before.
+#
+# The exec types below are IDENTICAL to the ones the same binaries carried at
+# /system_ext/... today. No new SELinux types or allows are introduced by the
+# move: the domains/transitions in
+# systembridge/sepolicy/system_ext/private/matonos_system_bridge.te are
+# unchanged. The plain `flatpak` launcher and `flatpak-portal` keep
+# system_file, as today; only the Flatpak CLI had its own exec type.
+(/.*)?                       u:object_r:system_file:s0
+/bin/bwrap                   u:object_r:matonos_bwrap_exec:s0
+/bin/matonos-bwrap           u:object_r:matonos_bwrap_exec:s0
+/bin/matonos-app-exec        u:object_r:matonos_app_exec_exec:s0
+/bin/matonos-mount-helper    u:object_r:matonos_mount_helper_exec:s0
+/bin/matonos-flatpak         u:object_r:matonos_flatpak_cli_exec:s0
+/bin/matonos-flatpak-store   u:object_r:matonos_flatpak_installer_exec:s0
