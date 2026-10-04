@@ -13,7 +13,6 @@
  * /tmp/.X11-unix tmpfs flatpak mounts and restore DISPLAY,
  * then hand the real bwrap the extended argv.
  */
-#include <glob.h>
 #include "controller-access.h"
 #include "maton-mount.h"
 #include <errno.h>
@@ -345,7 +344,7 @@ int main(int argc, char** argv) {
     int command;
     int at;
     char** extended;
-    glob_t controllers = {0};
+    char* pad_nodes=NULL;
     char** extra;
     int count=0;
 
@@ -407,23 +406,20 @@ int main(int argc, char** argv) {
     if(!socket_path || !*socket_path)socket_path=bundled;
     journal_path=getenv(JOURNAL_SOCKET_ENV);
     if(!journal_path || !*journal_path)journal_path=bundled_journal;
-    /* Old Flatpak has no devices=input support. Add only controller nodes,
-     * using the actual inherited group rather than sandbox environment data. */
-    if (app_sandbox && controller_group_present())
-        glob("/dev/hidraw*", GLOB_NOSORT, NULL, &controllers);
-    /* uinput 3, X11 6, journal 3, machine-id 6, udev 3, SDL fallback 3,
-     * app-exec bind/setenv 6, loop binds/setenvs + capability 18. */
-    extra = calloc(56 + 3 * controllers.gl_pathc, sizeof(char*));
+    if(args_end>=0)pad_nodes=args_fd_lookup(atoi(argv[args_end-1]),"MATON_SESSION_PAD_NODES");
+    if(!pad_nodes && getenv("MATON_SESSION_PAD_NODES"))pad_nodes=strdup(getenv("MATON_SESSION_PAD_NODES"));
+    extra = calloc(56 + 3 * 4, sizeof(char*));
     if (!extra) return 127;
-    if (app_sandbox && controller_group_present()) {
-        for (size_t i = 0; i < controllers.gl_pathc; ++i) {
-            struct stat node;
-            if (lstat(controllers.gl_pathv[i], &node) || !S_ISCHR(node.st_mode)) continue;
-            extra[count++] = "--dev-bind"; extra[count++] = controllers.gl_pathv[i]; extra[count++] = controllers.gl_pathv[i];
-        }
-        struct stat node;
-        if (!lstat("/dev/uinput", &node) && S_ISCHR(node.st_mode)) {
-            extra[count++] = "--dev-bind"; extra[count++] = "/dev/uinput"; extra[count++] = "/dev/uinput";
+    if(app_sandbox && pad_nodes && *pad_nodes) {
+        char* state;unsigned pads=0;
+        for(char* node=strtok_r(pad_nodes,",",&state);node;node=strtok_r(NULL,",",&state)) {
+            struct stat st;
+            if(++pads>4 || strncmp(node,"/dev/input/event",16) || !node[16] ||
+                    strspn(node+16,"0123456789")!=strlen(node+16) ||
+                    lstat(node,&st) || !S_ISCHR(st.st_mode)) {
+                fprintf(stderr,"matonos-bwrap: invalid session pad node\n");return 127;
+            }
+            extra[count++]="--dev-bind";extra[count++]=node;extra[count++]=node;
         }
     }
     if(x11_tmpfs && is_socket(socket_path)) {
