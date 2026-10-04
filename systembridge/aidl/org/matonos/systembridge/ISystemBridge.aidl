@@ -29,10 +29,6 @@ interface ISystemBridge {
     // Host-only attestation of an installed generated stub's UID, ref and signer.
     boolean isFlatpakStub(int uid, String ref);
     String launchOwnedFlatpak(String ref, in android.os.ParcelFileDescriptor runtimeDirectory, in @nullable android.os.ParcelFileDescriptor x11Directory, @nullable String x11Display, int stubUid, int stubPid, in android.os.ParcelFileDescriptor lifeline);
-    // Privileged installer; returns runtime/extra PackageInstaller session ID.
-    int installFlatpakImagePackages(String ref, in android.os.ParcelFileDescriptor runtimeApk, in android.os.ParcelFileDescriptor appApk);
-    int installFlatpakExtra(String ref, in android.os.ParcelFileDescriptor extraApk);
-    // Verified PackageManager-derived launch record, code/extra/runtime lines.
-    String getFlatpakImagePackages(int uid, String ref);
-    int reserveFlatpakRuntimeVersion(String runtimeRef);
+    // Verified stub commit info: returns JSON with appCommit, runtimeRef, runtimeCommit
+    String getFlatpakStubCommits(int uid, String ref);
 }
