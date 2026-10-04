@@ -5,6 +5,8 @@
 # the X11 relay socket exists.
 PRODUCT_PACKAGES += bwrap libseccomp_matonos
 PRODUCT_PACKAGES += matonos-bwrap
+PRODUCT_PACKAGES += matonos-app-exec
+PRODUCT_PACKAGES += matonos-mount-helper
 
 FLATPAK_SYSTEM_EXT_PREBUILT := device/maton/pc_x86_64/linux/flatpak/prebuilt/system_ext
 # Fail staging if the validated seccomp-enabled CLI is missing/stale.

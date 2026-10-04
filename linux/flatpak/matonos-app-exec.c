@@ -8,79 +8,31 @@
  * must never be mislabelled as system or vendor code) cannot be entered by an
  * exec transition. This launcher therefore:
  *
- *   1. computes the app's MLS level from the UID it actually runs as (the
- *      verified stub UID) with the same algorithm Android uses for app
+ *   1. verifies that it really runs in the trusted matonos_app_launch domain
+ *      at the per-app MLS level derived from the UID it actually runs as (the
+ *      verified stub UID), using the same algorithm Android uses for app
  *      processes (external/selinux android_seapp.c set_range_from_level
  *      LEVELFROM_ALL via seapp_contexts levelFrom=all); a caller-supplied
  *      MATON_APP_LABEL is only accepted if it matches exactly;
- *   2. mounts the app's code image and optional volume *inside this sandbox's
- *      mount namespace* (the loop devices were dev-bound by bwrap); the code
- *      is never mounted at a shared host path;
- *   3. drops the mount capability, changes to the app domain at that level and
- *      execs the payload with execute_no_trans.
+ *   2. changes to the app domain at that level (dyntransition; the launcher is
+ *      mlstrustedsubject for MLS only, exactly like zygote);
+ *   3. execs the payload with execute_no_trans.
  *
- * The launcher runs in the narrow, MLS-trusted matonos_app_launch domain; the
- * app domain it enters is untrusted so MLS constraints really apply.
+ * It mounts nothing and holds no capabilities. The app's verified code image
+ * and optional volume are mounted *from outside the sandbox* by the privileged
+ * mount helper (matonos-mount-helper) into this sandbox's mount namespace,
+ * before bubblewrap is allowed to exec this launcher. No capability ever
+ * enters the sandbox.
  */
 #include "../../install/linuxd/MatonMls.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/capability.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mount.h>
-#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-/* Mount one image with a per-app inode label. The superblock label is always
- * matonos_code_fs; the inode label carries the app's MLS categories. */
-static int mount_image(const char* loop, const char* target, const char* fstype,
-        int read_only, const char* inode_type, const char* level) {
-    if (!loop || !*loop || !target || target[0] != '/') {
-        fprintf(stderr, "matonos-app-exec: refusing to mount without a sandbox target\n");
-        return -1;
-    }
-    char context[256];
-    int written = snprintf(context, sizeof(context),
-            "fscontext=u:object_r:matonos_code_fs:s0,context=u:object_r:%s:%s",
-            inode_type, level);
-    if (written < 0 || (size_t)written >= sizeof(context)) return -1;
-    unsigned long flags = MS_NOSUID | MS_NODEV;
-    if (read_only) flags |= MS_RDONLY;
-    if (mount(loop, target, fstype, flags, context)) return -1;
-    return 0;
-}
-
-static int mount_app_images(const char* level) {
-    const char* code = getenv("MATON_CODE_LOOP");
-    if (code && *code) {
-        if (mount_image(code, getenv("MATON_CODE_MOUNT"), "erofs", 1,
-                    "matonos_app_code_exec", level)) {
-            perror("matonos-app-exec: mount code image");
-            return -1;
-        }
-    }
-    const char* volume = getenv("MATON_VOLUME_LOOP");
-    if (volume && *volume) {
-        if (mount_image(volume, getenv("MATON_VOLUME_MOUNT"), "ext4", 0,
-                    "matonos_app_volume_file", level)) {
-            perror("matonos-app-exec: mount app volume");
-            return -1;
-        }
-    }
-    return 0;
-}
-
-/* The payload keeps no mount capability: the verified images are read-only
- * (code) or plain data (volume) and must not change under a running app. */
-static void drop_capabilities(void) {
-    struct __user_cap_header_struct header = { .version = _LINUX_CAPABILITY_VERSION_3 };
-    struct __user_cap_data_struct caps[2] = {{0}};
-    (void)syscall(SYS_capset, &header, caps);
-}
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -93,17 +45,39 @@ int main(int argc, char** argv) {
         fprintf(stderr, "matonos-app-exec: uid %u is not an Android app UID\n", (unsigned)uid);
         return 127;
     }
+    /* The trusted launcher's own label is fixed by the exec chain: bwrap
+     * transitions matonos_bwrap -> matonos_app_launch at the same per-app
+     * level. Refuse to act if that is not what we actually are. */
+    char own[160];
+    int fd = open("/proc/thread-self/attr/current", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        perror("matonos-app-exec: attr/current");
+        return 127;
+    }
+    ssize_t got = read(fd, own, sizeof(own) - 1);
+    close(fd);
+    if (got <= 0) {
+        perror("matonos-app-exec: read attr/current");
+        return 127;
+    }
+    own[got] = 0;
+    own[strcspn(own, "\n")] = 0;
+    char expected_own[160];
+    int written = snprintf(expected_own, sizeof(expected_own), "u:r:matonos_app_launch:%s", level);
+    if (written < 0 || (size_t)written >= sizeof(expected_own)) return 127;
+    if (strcmp(own, expected_own)) {
+        fprintf(stderr, "matonos-app-exec: not running in the trusted launcher domain\n");
+        return 127;
+    }
     char label[128];
-    int written = snprintf(label, sizeof(label), "u:r:matonos_flatpak_app:%s", level);
+    written = snprintf(label, sizeof(label), "u:r:matonos_flatpak_app:%s", level);
     if (written < 0 || (size_t)written >= sizeof(label)) return 127;
     const char* supplied = getenv("MATON_APP_LABEL");
     if (supplied && strcmp(supplied, label)) {
         fprintf(stderr, "matonos-app-exec: supplied label does not match verified UID\n");
         return 127;
     }
-    if (mount_app_images(level)) return 127;
-    drop_capabilities();
-    int fd = open("/proc/thread-self/attr/current", O_WRONLY | O_CLOEXEC);
+    fd = open("/proc/thread-self/attr/current", O_WRONLY | O_CLOEXEC);
     if (fd < 0) {
         perror("matonos-app-exec: attr/current");
         return 127;

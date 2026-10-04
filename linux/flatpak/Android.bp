@@ -35,3 +35,20 @@ cc_binary {
         "-Werror",
     ],
 }
+
+// r24 privileged mount helper: the only holder of CAP_SYS_ADMIN on the app
+// launch path. It setns()es into the sandbox mount namespace and mounts the
+// verified code image/volume from outside. Exec'd by flatpak-env-wrapper.c.
+cc_binary {
+    name: "matonos-mount-helper",
+    srcs: [
+        "matonos-mount-helper.c",
+    ],
+    system_ext_specific: true,
+    compile_multilib: "64",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}

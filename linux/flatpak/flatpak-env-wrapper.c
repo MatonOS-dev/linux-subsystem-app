@@ -24,7 +24,9 @@
 #include "machine-id.h"
 #include "app-session.h"
 #include "socket-relay.h"
+#include "maton-mount.h"
 #include "../dbus-broker/session-control.h"
+#include <stddef.h>
 
 #define SESSION_BUS_DIRECTORY "/data/matonos/linux/runtime/session-bus-%d"
 static volatile sig_atomic_t portal_stop;
@@ -177,6 +179,39 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     }
     unlink(path);_exit(0);
 }
+/* r24: boot the privileged mount helper for this launch. The helper lives
+ * outside the sandbox and is the only holder of CAP_SYS_ADMIN on the app
+ * launch path. We create an unnamed AF_UNIX SOCK_SEQPACKET socketpair, hand
+ * the helper one end on a fixed fd and leave the other end inherited (not
+ * CLOEXEC) by the matonos-bwrap shim, exporting only the fd number. A
+ * socketpair is never bound, so no process - in particular no Flatpak app
+ * sharing the host network namespace - can connect to, address or race it.
+ * The helper derives the loop devices, levels and targets itself (see
+ * matonos-mount-helper.c) and dies with this process. */
+static int start_mount_helper(int* shim_fd) {
+    int pair[2];
+    if(socketpair(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0,pair))return -1;
+    pid_t parent=getpid(),child=fork();
+    if(child<0){close(pair[0]);close(pair[1]);return -1;}
+    if(child==0) {
+        if(pair[0]!=MATON_MOUNT_HELPER_FD){
+            if(dup2(pair[0],MATON_MOUNT_HELPER_FD)<0)_exit(127);
+            close(pair[0]);
+        } else if(fcntl(MATON_MOUNT_HELPER_FD,F_SETFD,0))_exit(127);
+        close(pair[1]);
+        if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(127);
+        char* const arguments[]={"matonos-mount-helper",NULL};
+        execv("/system_ext/bin/matonos-mount-helper",arguments);
+        _exit(127);
+    }
+    close(pair[0]);
+    /* The shim's end is the single deliberately non-CLOEXEC fd: it must
+     * survive the Flatpak CLI and reach matonos-bwrap. */
+    if(fcntl(pair[1],F_SETFD,0)){close(pair[1]);return -1;}
+    *shim_fd=pair[1];
+    return 0;
+}
+
 /* Query the actual image CLI, bypassing this wrapper (no recursive portal
  * startup). Bounded output/time; a broken CLI reports unknown and fails closed. */
 static void system_flatpak_version(char version[64]) {
@@ -495,6 +530,21 @@ int main(int argc, char** argv) {
            setenv("FLATPAK_USER_DIR",app.home,1))return 127;
         char data[160];snprintf(data,sizeof(data),"%s/.local/share",app.home);
         if(setenv("XDG_DATA_HOME",data,1))return 127;
+        /* Every verified app launch gets the privileged mount helper. The
+         * helper derives the loop devices from the installer's store records
+         * and the fixed targets itself; only the unnamed socketpair fd crosses
+         * to the shim, which fails closed if it is missing. */
+        {
+            int mount_fd=-1;
+            char mount_fd_text[16];
+            if(start_mount_helper(&mount_fd)) {
+                fprintf(stderr,"matonos-flatpak: cannot start mount helper\n");return 127;
+            }
+            snprintf(mount_fd_text,sizeof(mount_fd_text),"%d",mount_fd);
+            if(setenv(MATON_MOUNT_FD_ENV,mount_fd_text,1)) {
+                fprintf(stderr,"matonos-flatpak: cannot export mount fd\n");return 127;
+            }
+        }
         pid_t child=initial?fork():0;
         if(child<0)return 127;
         if(child==0) {
@@ -509,9 +559,10 @@ int main(int argc, char** argv) {
                 }
                 close(home);
             }
-            /* Hand the app-domain label (with the stub's MLS categories) to
-             * the sandbox; bwrap forwards it to matonos-app-exec. */
-            if(setenv("MATON_APP_LABEL",app.app_label,1))_exit(127);
+            /* Hand the app-domain label (with the stub's MLS categories) and
+             * the verified app id to the sandbox; bwrap forwards the label to
+             * matonos-app-exec and the id to the privileged mount helper. */
+            if(setenv("MATON_APP_LABEL",app.app_label,1)||setenv(MATON_APP_ID_ENV,app.id,1))_exit(127);
             unsetenv("MATON_APP_OWNER");unsetenv("MATON_APP_UID");
             execv("/system_ext/bin/matonos-flatpak",argv);_exit(127);
         }

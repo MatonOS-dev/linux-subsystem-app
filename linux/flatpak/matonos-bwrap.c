@@ -15,13 +15,26 @@
  */
 #include <glob.h>
 #include "controller-access.h"
+#include "maton-mount.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
 
 #define BWRAP "/system_ext/bin/bwrap"
 #define X11_SOCKET_PATH "/tmp/.X11-unix/X0"
@@ -34,16 +47,6 @@
 #define APP_EXEC_HOST "/system_ext/bin/matonos-app-exec"
 #define APP_EXEC_SANDBOX "/run/matonos/matonos-app-exec"
 #define APP_LABEL_ENV "MATON_APP_LABEL"
-/* r24: installer-attached loop devices for the app's verified code image and
- * optional volume. bwrap dev-binds them into the sandbox and exports their
- * paths so the trusted launcher can mount them inside the sandbox's own mount
- * namespace (never at a shared host path). */
-#define CODE_LOOP_ENV "MATON_CODE_LOOP"
-#define CODE_MOUNT_ENV "MATON_CODE_MOUNT"
-#define VOLUME_LOOP_ENV "MATON_VOLUME_LOOP"
-#define VOLUME_MOUNT_ENV "MATON_VOLUME_MOUNT"
-#define CODE_LOOP_SANDBOX "/run/matonos/code-loop"
-#define VOLUME_LOOP_SANDBOX "/run/matonos/volume-loop"
 
 /* Values each bwrap option consumes, mirroring parse_args_recurse()
  * in bubblewrap's bubblewrap.c. Unknown dashed arguments count as
@@ -235,6 +238,102 @@ static int is_socket(const char* path) {
     return path && *path && lstat(path,&info)==0 && S_ISSOCK(info.st_mode);
 }
 
+/* Read the "child-pid" from the JSON bubblewrap writes to --info-fd. The
+ * document is small; a bounded read and a scan for the field is enough. */
+static int read_info_pid(int fd,pid_t* pid) {
+    char buffer[4096];size_t used=0;
+    for(;;) {
+        if(used>=sizeof(buffer)-1)break;
+        ssize_t got=read(fd,buffer+used,sizeof(buffer)-1-used);
+        if(got<0) { if(errno==EINTR)continue; break; }
+        if(got==0)break;
+        used+=(size_t)got;
+        if(memchr(buffer,'}',used))break;
+    }
+    buffer[used]=0;
+    char* field=strstr(buffer,"\"child-pid\"");
+    if(!field)return -1;
+    char* colon=strchr(field,':');
+    if(!colon)return -1;
+    long value=strtol(colon+1,NULL,10);
+    if(value<=0)return -1;
+    *pid=(pid_t)value;
+    return 0;
+}
+
+/* Ask the privileged mount helper to mount the verified images into the
+ * sandbox's mount namespace. The rendezvous is the connected socketpair end
+ * inherited from the launcher wrapper (never bound, so it has no name). We pass
+ * a pidfd for the sandbox process - not a bare pid or namespace fd - and the
+ * helper independently verifies it before opening the namespace itself. The
+ * helper derives the app MLS level from our kernel-provided credentials and the
+ * loop device from the installer's store attach record. */
+static int send_mount_request(int mount_fd,const char* app_id,pid_t sandbox) {
+    if(mount_fd<0 || !app_id || !*app_id)return 0;
+    long pidfd=syscall(SYS_pidfd_open,sandbox,0);
+    if(pidfd<0)return 0;
+    struct maton_mount_request request;
+    memset(&request,0,sizeof(request));
+    request.magic=MATON_MOUNT_MAGIC;request.version=MATON_MOUNT_VERSION;
+    snprintf(request.app_id,sizeof(request.app_id),"%s",app_id);
+    char control[CMSG_SPACE(sizeof(int))];
+    struct iovec payload={.iov_base=&request,.iov_len=sizeof(request)};
+    struct msghdr message={.msg_iov=&payload,.msg_iovlen=1,
+        .msg_control=control,.msg_controllen=sizeof(control)};
+    struct cmsghdr* rights=CMSG_FIRSTHDR(&message);
+    rights->cmsg_level=SOL_SOCKET;rights->cmsg_type=SCM_RIGHTS;
+    rights->cmsg_len=CMSG_LEN(sizeof(int));
+    int fd=(int)pidfd;
+    memcpy(CMSG_DATA(rights),&fd,sizeof(int));
+    int ok=0;
+    if(sendmsg(mount_fd,&message,MSG_NOSIGNAL)==(ssize_t)sizeof(request)) {
+        struct maton_mount_reply reply;
+        ssize_t got=recv(mount_fd,&reply,sizeof(reply),0);
+        ok=got==(ssize_t)sizeof(reply) && reply.status==0;
+        if(!ok && got==(ssize_t)sizeof(reply))
+            fprintf(stderr,"matonos-bwrap: mount helper refused: %s\n",reply.error);
+    }
+    close((int)pidfd);
+    return ok;
+}
+
+/* Run bubblewrap and, while it waits on --block-fd before running the payload,
+ * have the privileged helper mount the app's verified images into the sandbox.
+ * Any failure kills the sandbox (fail closed). Returns bubblewrap's status. */
+static int launch_sandbox(char** argv,int info_write,int info_read,int block_read,
+        int block_write,int mount_fd,const char* app_id) {
+    pid_t child=fork();
+    if(child<0) {
+        perror("matonos-bwrap: fork");
+        return 127;
+    }
+    if(child==0) {
+        close(info_read);close(block_write);
+        if(fcntl(info_write,F_SETFD,0)||fcntl(block_read,F_SETFD,0))_exit(127);
+        execv(BWRAP,argv);
+        _exit(127);
+    }
+    close(info_write);close(block_read);
+    pid_t sandbox=0;
+    int ok=read_info_pid(info_read,&sandbox)==0;
+    close(info_read);
+    if(ok)ok=send_mount_request(mount_fd,app_id,sandbox);
+    if(ok) {
+        char released=1;
+        ok=write(block_write,&released,1)==1;
+    }
+    close(block_write);
+    if(!ok) {
+        fprintf(stderr,"matonos-bwrap: app code mount failed; killing sandbox\n");
+        kill(child,SIGKILL);
+        while(waitpid(child,NULL,0)<0&&errno==EINTR){}
+        return 127;
+    }
+    int status=0;
+    while(waitpid(child,&status,0)<0&&errno==EINTR){}
+    return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
+}
+
 int main(int argc, char** argv) {
     const char* socket_path;
     const char* journal_path;
@@ -251,10 +350,12 @@ int main(int argc, char** argv) {
     char* bundled=NULL;
     char* bundled_journal=NULL;
     char* app_label=NULL;
-    char* code_loop=NULL;
-    char* code_mount=NULL;
-    char* volume_loop=NULL;
-    char* volume_mount=NULL;
+    char* app_id=NULL;
+    char* mount_fd_text=NULL;
+    int mount_fd=-1;
+    int info_pipe[2]={-1,-1}, block_pipe[2]={-1,-1};
+    int needs_mounts=0;
+    static char info_fd_arg[16], block_fd_arg[16];
     command=scan_argv(argc,argv,&args_end,&dashdash);
     for(int i=1;i<command && strcmp(argv[i],"--");) {
         if(!strcmp(argv[i],"--setenv") && i+2<command && !strcmp(argv[i+1],"FLATPAK_ID"))app_sandbox=1;
@@ -267,23 +368,37 @@ int main(int argc, char** argv) {
     if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox);
     if(args_end>=0)app_label=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_LABEL");
     if(!app_label && getenv("MATON_APP_LABEL"))app_label=strdup(getenv("MATON_APP_LABEL"));
-    /* r24 loop devices: flatpak converted the launcher environment into
-     * --setenv triplets in the bundled FD. Recover them there first. */
-    if(args_end>=0) {
-        int fd=atoi(argv[args_end-1]);
-        code_loop=args_fd_lookup(fd,CODE_LOOP_ENV);
-        code_mount=args_fd_lookup(fd,CODE_MOUNT_ENV);
-        volume_loop=args_fd_lookup(fd,VOLUME_LOOP_ENV);
-        volume_mount=args_fd_lookup(fd,VOLUME_MOUNT_ENV);
-    }
-    if(!code_loop && getenv(CODE_LOOP_ENV))code_loop=strdup(getenv(CODE_LOOP_ENV));
-    if(!code_mount && getenv(CODE_MOUNT_ENV))code_mount=strdup(getenv(CODE_MOUNT_ENV));
-    if(!volume_loop && getenv(VOLUME_LOOP_ENV))volume_loop=strdup(getenv(VOLUME_LOOP_ENV));
-    if(!volume_mount && getenv(VOLUME_MOUNT_ENV))volume_mount=strdup(getenv(VOLUME_MOUNT_ENV));
+    if(args_end>=0)app_id=args_fd_lookup(atoi(argv[args_end-1]),MATON_APP_ID_ENV);
+    if(!app_id && getenv(MATON_APP_ID_ENV))app_id=strdup(getenv(MATON_APP_ID_ENV));
+    /* r24: the privileged mount helper rendezvous. The launcher created an
+     * unnamed socketpair and left our end inherited (not CLOEXEC); flatpak may
+     * have turned the launcher environment into bundled --setenv triplets, so
+     * look there too. A socketpair cannot be addressed by name, so no app can
+     * connect to or race it. */
+    if(args_end>=0)mount_fd_text=args_fd_lookup(atoi(argv[args_end-1]),MATON_MOUNT_FD_ENV);
+    if(!mount_fd_text && getenv(MATON_MOUNT_FD_ENV))mount_fd_text=strdup(getenv(MATON_MOUNT_FD_ENV));
+    if(mount_fd_text && *mount_fd_text)mount_fd=atoi(mount_fd_text);
+    if(mount_fd>=0 && fcntl(mount_fd,F_GETFD)<0)mount_fd=-1;
     /* Only enter the app domain for the real app sandbox; helpers keep their
      * own flow. The label must be a matonos app context or it is ignored. */
     if(!app_sandbox || !app_label || strncmp(app_label,"u:r:matonos_flatpak_app",23)) {
         free(app_label);app_label=NULL;
+    }
+    /* A verified app sandbox is always set up by the privileged helper. If the
+     * helper or its rendezvous or the verified app id is missing we fail
+     * closed: never run a verified app unmounted. */
+    needs_mounts=app_sandbox;
+    if(needs_mounts && (mount_fd<0 || !app_id || !*app_id)) {
+        fprintf(stderr,"matonos-bwrap: verified app launch without a mount helper\n");
+        return 127;
+    }
+    if(needs_mounts) {
+        if(pipe2(info_pipe,O_CLOEXEC)||pipe2(block_pipe,O_CLOEXEC)) {
+            perror("matonos-bwrap: pipe");
+            return 127;
+        }
+        snprintf(info_fd_arg,sizeof(info_fd_arg),"%d",info_pipe[1]);
+        snprintf(block_fd_arg,sizeof(block_fd_arg),"%d",block_pipe[0]);
     }
     socket_path=getenv(X11_SOCKET_ENV);
     if(!socket_path || !*socket_path)socket_path=bundled;
@@ -341,26 +456,15 @@ int main(int argc, char** argv) {
         extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
         extra[count++]="--setenv";extra[count++]=APP_LABEL_ENV;extra[count++]=app_label;
     }
-    /* r24: let the trusted launcher mount the app's verified code image and
-     * volume inside this sandbox's mount namespace. The loop devices are
-     * dev-bound in; the launcher drops CAP_SYS_ADMIN before exec'ing the
-     * payload, so the app cannot mount or change its code. */
-    if(app_sandbox && code_loop && *code_loop) {
-        extra[count++]="--dev-bind";extra[count++]=(char*)code_loop;extra[count++]=CODE_LOOP_SANDBOX;
-        extra[count++]="--setenv";extra[count++]=CODE_LOOP_ENV;extra[count++]=(char*)code_loop;
-    }
-    if(app_sandbox && volume_loop && *volume_loop) {
-        extra[count++]="--dev-bind";extra[count++]=(char*)volume_loop;extra[count++]=VOLUME_LOOP_SANDBOX;
-        extra[count++]="--setenv";extra[count++]=VOLUME_LOOP_ENV;extra[count++]=(char*)volume_loop;
-    }
-    if(app_sandbox && code_mount && *code_mount) {
-        extra[count++]="--setenv";extra[count++]=CODE_MOUNT_ENV;extra[count++]=(char*)code_mount;
-    }
-    if(app_sandbox && volume_mount && *volume_mount) {
-        extra[count++]="--setenv";extra[count++]=VOLUME_MOUNT_ENV;extra[count++]=(char*)volume_mount;
-    }
-    if(app_sandbox && code_loop && *code_loop) {
-        extra[count++]="--cap-add";extra[count++]="CAP_SYS_ADMIN";
+    /* r24: the app's verified images are mounted from *outside* the sandbox by
+     * the privileged matonos-mount-helper. bubblewrap reports the sandbox
+     * child pid on --info-fd and waits on --block-fd before it execs the
+     * payload; the shim performs the helpers' round trip and only then
+     * releases bubblewrap. No loop device, mount right or capability enters
+     * the sandbox. */
+    if(needs_mounts) {
+        extra[count++]="--info-fd";extra[count++]=info_fd_arg;
+        extra[count++]="--block-fd";extra[count++]=block_fd_arg;
     }
     if(count) {
         /* bwrap applies the bundled arguments at the --args pair,
@@ -376,18 +480,18 @@ int main(int argc, char** argv) {
         if(extended) {
             unsetenv(X11_SOCKET_ENV);
             unsetenv(JOURNAL_SOCKET_ENV);
+            char** final_argv=extended;
             if(app_label && command<argc) {
                 /* The command was shifted right by the inserted arguments;
                  * put the launcher immediately in front of it. */
                 int shifted=command + (at<=command ? count : 0);
                 char** with_launcher=prepend_argument(extended,argc+count,shifted,APP_EXEC_SANDBOX);
-                if(with_launcher) {
-                    execv(BWRAP,with_launcher);
-                    perror("matonos-bwrap: exec failed");
-                    return 127;
-                }
+                if(with_launcher) final_argv=with_launcher;
             }
-            execv(BWRAP,extended);
+            if(needs_mounts)
+                return launch_sandbox(final_argv,info_pipe[1],info_pipe[0],
+                        block_pipe[0],block_pipe[1],mount_fd,app_id);
+            execv(BWRAP,final_argv);
             perror("matonos-bwrap: exec failed");
             return 127;
         }
