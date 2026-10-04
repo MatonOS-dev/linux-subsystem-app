@@ -28,13 +28,23 @@ int main(int argc, char **argv) {
     if (broker && session) {
         struct sockaddr_un address={.sun_family=AF_UNIX};
         char* parent=g_path_get_dirname(argv[1]);
-        char* path=g_build_filename(parent,"inhibit",NULL);
-        int hold_fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
-        if(strlen(path)>=sizeof(address.sun_path)) {close(hold_fd);hold_fd=-1;}
-        else {strcpy(address.sun_path,path);if(hold_fd>=0 && connect(hold_fd,(struct sockaddr*)&address,sizeof(address))) {close(hold_fd);hold_fd=-1;}}
+        char* path=g_build_filename(parent,"portal-backend",NULL);
+        int backend_fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
+        if(strlen(path)>=sizeof(address.sun_path)) {close(backend_fd);backend_fd=-1;}
+        else {strcpy(address.sun_path,path);if(backend_fd>=0 && connect(backend_fd,(struct sockaddr*)&address,sizeof(address))) {close(backend_fd);backend_fd=-1;}}
         g_free(path);g_free(parent);
+        const char* secret=getenv("MATON_PORTAL_SECRET");
+        struct timeval handshake_timeout={.tv_sec=2};
+        if(backend_fd>=0)setsockopt(backend_fd,SOL_SOCKET,SO_RCVTIMEO,&handshake_timeout,sizeof(handshake_timeout));
+        char accepted[4];
+        if(backend_fd<0 || !secret || strlen(secret)!=64 || send(backend_fd,"MBP1",4,MSG_NOSIGNAL)!=4 || send(backend_fd,secret,64,MSG_NOSIGNAL)!=64 ||
+                recv(backend_fd,accepted,sizeof(accepted),MSG_WAITALL)!=4 || memcmp(accepted,"OKAY",4)) {
+            if(backend_fd>=0)close(backend_fd);
+            broker_free(broker);fprintf(stderr,"Java portal backend unavailable\n");return 1;
+        }
+        unsetenv("MATON_PORTAL_SECRET");
         if (!broker_enable_host_session(broker,&error) ||
-            !broker_register_session_services(broker,NULL,hold_fd,&error)) {broker_free(broker);broker=NULL;}
+            !broker_register_session_services(broker,NULL,backend_fd,&error)) {broker_free(broker);broker=NULL;}
     }
     guint term=broker ? g_unix_signal_add(SIGTERM,stopped,broker) : 0;
     guint interrupt=broker ? g_unix_signal_add(SIGINT,stopped,broker) : 0;

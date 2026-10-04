@@ -51,7 +51,12 @@ int main(int argc,char** argv) {
     reply=call("org.freedesktop.portal.Desktop","/org/freedesktop/portal/desktop",
         "org.freedesktop.portal.Settings","Read",g_variant_new("(ss)","org.freedesktop.appearance","color-scheme"),"(v)");
     if(reply){GVariant* value;g_variant_get(reply,"(v)",&value);
-        CHECK(g_variant_is_of_type(value,G_VARIANT_TYPE_UINT32)&&g_variant_get_uint32(value)==0,"no-preference color scheme");
+        CHECK(g_variant_is_of_type(value,G_VARIANT_TYPE_VARIANT),"deprecated Read double-wrap");
+        if(g_variant_is_of_type(value,G_VARIANT_TYPE_VARIANT)) {
+            GVariant* inner=g_variant_get_variant(value);
+            CHECK(g_variant_is_of_type(inner,G_VARIANT_TYPE_UINT32)&&g_variant_get_uint32(inner)<=2,"Android color scheme");
+            g_variant_unref(inner);
+        }
         g_variant_unref(value);g_variant_unref(reply);}
     reply=call("org.freedesktop.portal.Desktop","/org/freedesktop/portal/desktop",
         "org.freedesktop.DBus.Properties","GetAll",g_variant_new("(s)","org.freedesktop.portal.Settings"),"(a{sv})");

@@ -4,22 +4,31 @@
 #include "broker.c"
 #include <errno.h>
 #include <signal.h>
-#include <stdatomic.h>
 #include <sys/socket.h>
 
 #include <sys/wait.h>
 #include <unistd.h>
 
-static atomic_int hold, transitions;
 static guint responses, states, inhibited;
 static char* session_handle;
-static gpointer android_peer(gpointer data) {
-    int fd=GPOINTER_TO_INT(data);unsigned char byte;
-    while(read(fd,&byte,1)==1) {
-        atomic_store(&hold,byte);atomic_fetch_add(&transitions,1);
-        if(write(fd,&byte,1)!=1)break;
+static gpointer java_peer(gpointer data) {
+    int fd=GPOINTER_TO_INT(data);GError* error=NULL;GPid child;int input,output;
+    char* argv[]={"java","-cp",(char*)g_getenv("MATON_PORTAL_TEST_CLASSPATH"),"org.matonos.compositor.PortalTestPeer",NULL};
+    g_assert_true(g_spawn_async_with_pipes(NULL,argv,NULL,G_SPAWN_SEARCH_PATH|G_SPAWN_DO_NOT_REAP_CHILD,NULL,NULL,&child,&input,&output,NULL,&error));
+    g_assert_no_error(error);
+    struct pollfd p[2]={{.fd=fd,.events=POLLIN},{.fd=output,.events=POLLIN}};
+    for(;;) {
+        if(poll(p,2,-1)<0)break;
+        gboolean done=FALSE;
+        for(unsigned i=0;i<2;i++)if(p[i].revents) {
+            char bytes[8192];ssize_t n=read(p[i].fd,bytes,sizeof(bytes));
+            if(n<=0){done=TRUE;break;}
+            int target=i?fd:input;ssize_t offset=0;
+            while(offset<n){ssize_t wrote=write(target,bytes+offset,n-offset);if(wrote<=0){done=TRUE;break;}offset+=wrote;}
+        }
+        if(done)break;
     }
-    atomic_store(&hold,0);return NULL;
+    close(input);close(output);kill(child,SIGTERM);waitpid(child,NULL,0);g_spawn_close_pid(child);return NULL;
 }
 static void signal_cb(GDBusConnection* c,const char* sender,const char* path,const char* iface,
         const char* signal,GVariant* args,void* data) {
@@ -59,10 +68,6 @@ static char* inhibit(GDBusConnection* c,const char* token,guint flags,gboolean s
 static void close_request(GDBusConnection* c,const char* path,gboolean success) {
     GVariant* r=call(c,path,"org.freedesktop.portal.Request","Close",NULL,success);if(r)g_variant_unref(r);
 }
-static void wait_hold(int value) {
-    for(unsigned i=0;i<100 && atomic_load(&hold)!=value;i++)g_usleep(10000);
-    g_assert_cmpint(atomic_load(&hold),==,value);
-}
 typedef struct {Broker* broker;int fds[2];} TestServer;
 static GIOStream* peer_stream(int fd) {
     GError* error=NULL;GSocket* socket=g_socket_new_from_fd(fd,&error);g_assert_no_error(error);
@@ -88,6 +93,7 @@ static GDBusConnection* test_connect(int fd) {
     g_assert_no_error(error);g_assert_nonnull(c);g_object_unref(stream);return c;
 }
 int main(void) {
+    if(!g_getenv("MATON_PORTAL_TEST_CLASSPATH")){g_print("Run make check-inhibit for Java backend classpath\n");return 77;}
     GError* error=NULL;char* dir=g_dir_make_tmp("maton-inhibit-XXXXXX",&error);g_assert_no_error(error);
     char* socket_path=g_build_filename(dir,"bus",NULL);char* policy=g_build_filename(dir,"policy",NULL);
     g_assert_true(g_file_set_contents(policy,"talk org.freedesktop.portal.Desktop\n",-1,&error));g_assert_no_error(error);
@@ -112,7 +118,7 @@ int main(void) {
         g_thread_new("bus-test-accept",test_server,&server);
         GMainLoop* loop=g_main_loop_new(NULL,FALSE);g_main_loop_run(loop);_exit(0);
     }
-    close(fds[1]);GThread* thread=g_thread_new("android-test",android_peer,GINT_TO_POINTER(fds[0]));
+    close(fds[1]);GThread* thread=g_thread_new("java-test",java_peer,GINT_TO_POINTER(fds[0]));
     for(unsigned i=0;i<2;i++)close(peers[i][1]);
     GDBusConnection* a=test_connect(peers[0][0]);
     GDBusConnection* b=test_connect(peers[1][0]);
@@ -120,21 +126,19 @@ int main(void) {
             g_variant_new("(ss)","org.freedesktop.portal.Inhibit","version"),TRUE);
     GVariant* v;g_variant_get(r,"(v)",&v);g_assert_cmpuint(g_variant_get_uint32(v),==,3);g_variant_unref(v);g_variant_unref(r);
     guint sub=g_dbus_connection_signal_subscribe(a,"org.freedesktop.portal.Desktop",NULL,NULL,NULL,NULL,G_DBUS_SIGNAL_FLAGS_NONE,signal_cb,NULL,NULL);
-    char* first=inhibit(a,"first",8,TRUE);wait_hold(1);
+    char* first=inhibit(a,"first",8,TRUE);
     char* expected=g_strdup_printf("/org/freedesktop/portal/desktop/request/%s/first",g_dbus_connection_get_unique_name(a)+1);
     for(char* p=expected;*p;p++)if(*p=='.')*p='_';
     g_assert_cmpstr(first,==,expected);g_free(expected);
-    close_request(b,first,FALSE);wait_hold(1);
+    close_request(b,first,FALSE);
     g_assert_null(inhibit(a,"first",4,FALSE)); /* duplicate */
     g_assert_null(inhibit(a,"bad/token",8,FALSE));
     g_assert_null(inhibit(a,"zero",0,FALSE));
     g_assert_null(inhibit(a,"logout",1,FALSE));
     g_assert_null(inhibit(a,"unknown",16,FALSE));
     char* second=inhibit(a,"second",4,TRUE);char* third=inhibit(b,"third",12,TRUE);
-    g_assert_cmpint(atomic_load(&transitions),==,1);
-    close_request(a,first,TRUE);close_request(a,first,FALSE);close_request(a,second,TRUE);wait_hold(1);
-    g_dbus_connection_close_sync(b,NULL,&error);g_assert_no_error(error);wait_hold(0);
-    g_assert_cmpint(atomic_load(&transitions),==,2);
+    close_request(a,first,TRUE);close_request(a,first,FALSE);close_request(a,second,TRUE);
+    g_dbus_connection_close_sync(b,NULL,&error);g_assert_no_error(error);
     for(unsigned i=0;i<100 && inhibited<2;i++){while(g_main_context_iteration(NULL,FALSE)){}g_usleep(10000);}
     g_assert_cmpuint(inhibited,==,2);
     r=call(a,"/org/freedesktop/portal/desktop","org.freedesktop.portal.Inhibit","CreateMonitor",

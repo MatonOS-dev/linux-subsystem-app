@@ -512,8 +512,8 @@ static gboolean is_local_service(Broker *b, const char *name) {
 static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *message) {
     const char *path = g_dbus_message_get_path(message);
     const char *interface = g_dbus_message_get_interface(message);
-    if(path && (g_str_has_prefix(path,"/org/freedesktop/portal/desktop/request/") ||
-                g_str_has_prefix(path,"/org/freedesktop/portal/desktop/session/")) &&
+    if(path && (g_str_equal(path,"/org/freedesktop/portal/desktop") ||
+                g_str_has_prefix(path,"/org/freedesktop/portal/desktop/")) &&
             (access_for(b,"org.freedesktop.portal.Desktop") & ACCESS_TALK))return TRUE;
     for (guint i = 0; i < b->services->len; i++) {
         Service *service = g_ptr_array_index(b->services, i);
@@ -647,6 +647,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
                 "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
             send_raw(c, err); g_object_unref(err); return NULL;
         }
+        if (g_str_equal(dest,"org.freedesktop.portal.Desktop") && broker_portal_forward(b,connection,message,c->unique)) return NULL;
         return message;
     }
     if (g_str_equal(dest, ":1.0") && b->services->len != 0) {
@@ -655,6 +656,7 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
                 "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
             send_raw(c, err); g_object_unref(err); return NULL;
         }
+        if (broker_portal_forward(b,connection,message,c->unique)) return NULL;
         return message;
     }
     const char *target_name = dest;
@@ -1044,3 +1046,9 @@ const char* broker_connection_name(Broker* b,GDBusConnection* connection) {
 }
 void* broker_session_data(Broker* b){return b->session_services;}
 void broker_set_session_data(Broker* b,void* data){b->session_services=data;}
+
+void broker_portal_signal(Broker* b,GDBusMessage* message) {
+    const char* dest=g_dbus_message_get_destination(message);
+    Client* c=dest ? find_client(b,dest) : NULL;
+    if(c){g_dbus_message_set_sender(message,":1.0");send_raw(c,message);}
+}

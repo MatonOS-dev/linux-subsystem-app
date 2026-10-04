@@ -15,7 +15,7 @@ Broker *broker_new(const char *socket_path, const char *config_path,
 gboolean broker_enable_host_session(Broker *broker, GError **error);
 const char* broker_monitor_path(Broker *broker);
 void broker_set_monitor_path(Broker *broker, const char *path);
-gboolean broker_register_session_services(Broker *broker, const char *monitor, int hold_fd, GError **error);
+gboolean broker_register_session_services(Broker *broker, const char *monitor, int backend_fd, GError **error);
 gboolean broker_run(Broker *broker, GError **error);
 void broker_free(Broker *broker);
 void broker_stop(Broker *broker);
@@ -24,5 +24,7 @@ void* broker_session_data(Broker* broker);
 void broker_set_session_data(Broker* broker, void* data);
 void broker_session_client_closed(Broker* broker, GDBusConnection* connection);
 void broker_session_services_free(Broker* broker);
+gboolean broker_portal_forward(Broker* broker, GDBusConnection* connection, GDBusMessage* message, const char* owner);
+void broker_portal_signal(Broker* broker, GDBusMessage* message);
 
 #endif

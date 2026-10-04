@@ -8,7 +8,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs gio-2.0)
 
 all: $(OUT)/matonos-dbus-broker
 
-test: $(OUT)/broker-test $(OUT)/inhibit-test $(OUT)/portal-credentials-test $(OUT)/flatpak-version-test $(OUT)/native-bus-test
+test: $(OUT)/broker-test $(OUT)/inhibit-test $(OUT)/portal-credentials-test $(OUT)/flatpak-version-test $(OUT)/native-bus-test $(OUT)/portal-wire-test
 
 $(OUT)/matonos-dbus-broker: $(OUT)/main.o $(OUT)/broker.o $(OUT)/example.o $(OUT)/portals.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -30,8 +30,11 @@ $(OUT):
 $(OUT)/inhibit-test: inhibit-test.c broker.c broker.h $(OUT)/portals.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ inhibit-test.c $(OUT)/portals.o $(LDLIBS)
 
-check-inhibit: $(OUT)/inhibit-test
-	$<
+check-java-portals:
+	../compositor/host/test-portals.sh $(OUT)/java-portals
+
+check-inhibit: $(OUT)/inhibit-test check-java-portals
+	MATON_PORTAL_TEST_CLASSPATH=$(OUT)/java-portals $(OUT)/inhibit-test
 
 .PHONY: check-inhibit
 
@@ -58,3 +61,11 @@ check-native-bus: $(OUT)/native-bus-test
 	$<
 
 .PHONY: check-native-bus
+
+$(OUT)/portal-wire-test: portal-wire-test.c portals.c broker.h $(OUT)/broker.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ portal-wire-test.c $(OUT)/broker.o $(LDLIBS)
+
+check-portal-wire: $(OUT)/portal-wire-test check-java-portals
+	MATON_PORTAL_TEST_CLASSPATH=$(OUT)/java-portals $(OUT)/portal-wire-test
+
+.PHONY: check-java-portals check-portal-wire
