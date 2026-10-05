@@ -36,7 +36,6 @@
  * its own libraries through the APEX linker namespace. */
 #ifndef MATON_FLATPAK_BIN
 #define MATON_FLATPAK_BIN "/apex/com.matonos.flatpak/bin"
-#define BWRAP MATON_FLATPAK_BIN "/matonos-flatpak"
 #endif
 #ifndef BWRAP
 #define BWRAP MATON_FLATPAK_BIN "/matonos-flatpak"

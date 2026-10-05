@@ -27,6 +27,7 @@ printf '0123456789abcdef0123456789abcdef\n' > "$TMP/machine-id"
 : > "$TMP/udev/control"
 cc -std=c11 -Wall -Wextra -Werror -static \
   -DMATON_FLATPAK_BIN="\"$TMP/bin\"" \
+  -DBWRAP="\"$TMP/bin/bwrap\"" \
   -DMATON_MACHINE_ID_PATH="\"$TMP/machine-id\"" \
   -DMATON_UDEV_DB_PATH="\"$TMP/udev\"" \
   "$WORKTREE/linux/flatpak/matonos-bwrap.c" -o "$TMP/matonos-bwrap"
