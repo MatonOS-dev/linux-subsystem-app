@@ -1,12 +1,13 @@
 # Per-stub D-Bus broker core
 
-> **Transitional.** The session bus is moving into the stub app via dbus-java
-> (`codex/dbus-java-2`), replacing this native broker. The native
-> `flatpak-portal` and the launcher supervisor that registered it have been
-> removed; the compositor's Java portal fills that role now. The `bus-control`
-> registration and `--host-session` broker remain the on-image mechanism until
-> dbus-java lands, so the portal/supervisor text further down describes the
-> removed native path and is kept only for the transition.
+> **Transitional.** The session bus is moving into the app via dbus-java, now
+> merged into the compositor host (dbus-java-core 5.2.2 with a custom Android
+> LocalSocket transport). The native `flatpak-portal` and the launcher
+> supervisor that registered it have been removed; the compositor's Java
+> portal fills that role. The `bus-control` registration and `--host-session`
+> broker remain the on-image mechanism until the dbus-java path is validated
+> on device, so the portal/supervisor text further down describes the removed
+> native path and is kept only for the transition.
 
 `matonos-dbus-broker` is a small per-stub session-bus broker. It uses GLib's
 GDBus server transport and manually supplies the bus name registry, policy,
