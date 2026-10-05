@@ -15,7 +15,7 @@ matonos-flatpak
   GPG backend: DullPGP compatibility shim; no standalone gpg executable
 
 matonos-bwrap
-  SHA-256: c94bfa404976afc134f3ef26a548f9c37ac2949f2a6e1cdb8f38f33f772b3d84
+  SHA-256: 06ca457a901742e13e4bebdeec333de1c41de6cb3d903dc225d0403d8cf2cf60
   Source: linux/flatpak/matonos-bwrap.c
   Toolchain: Android NDK r30, x86_64-linux-android35-clang, -static
 

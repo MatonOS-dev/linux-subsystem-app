@@ -54,6 +54,40 @@ not bind the host's general `/etc`, `/usr`, or `/lib`. Keep this setup in C in
 `flatpak-env-wrapper.c` and `matonos-bwrap.c`, next to the existing namespace
 construction.
 
+## Launch handoff and D-Bus
+
+linuxd launches the signed app with `flatpak run` from this APEX, passing the
+per-app S (runtime) and U (app) installation roots. It prepares the broker
+socket, the per-app DNS address, the Conscrypt CA link, `/var/tmp -> /tmp`,
+and read-only passwd/group/resolv.conf inputs before the static stack starts.
+The stub supplies only the launch request; linuxd resolves installation roots
+from the verified UID and the per-Android-user runtime installation recorded
+at publish time.
+Flatpak mounts application and runtime deployments read-only.
+
+At publish time linuxd applies `override --system --socket=session-bus` to S
+and `override --user --socket=session-bus` to U, without an app ID. These are
+global overrides for each installation. The run command does not request
+`--socket=session-bus` per app. The bionic launcher sets
+`DBUS_SESSION_BUS_ADDRESS=unix:path=<broker socket>`; Flatpak 1.16.6 sees the
+global unrestricted socket grant and binds that socket directly to
+`/run/flatpak/bus`. Its `flatpak_run_add_session_dbus_args()` does not create
+proxy arguments on this path, so no `xdg-dbus-proxy` child is spawned.
+
+`AT_SPI_BUS_ADDRESS` is never exported. Flatpak normally queries
+`org.a11y.Bus.GetAddress` on the session bus and creates an accessibility
+proxy only if it receives an address. linuxd passes `--no-a11y-bus`, which
+sets Flatpak's `NO_A11Y_BUS_PROXY` run flag and skips that query and proxy.
+The Android broker also has no accessibility service or service activation.
+
+`matonos-bwrap` and `matonos-app-exec` are static NDK binaries. Their sources
+do not call Android system-property APIs, bionic DNS/resolver APIs, `dlopen`,
+or liblog. bwrap only manipulates argv, mounts and file descriptors; app-exec
+checks its UID-derived MLS label through `/proc/thread-self/attr/current`,
+performs the existing dyntransition, then `execvp`s the payload. Static files
+have no ELF interpreter or dynamic section. The two SELinux exec transitions
+remain `matonos_bwrap -> matonos_app_launch -> matonos_linux_app`.
+
 ## Trust files and versions
 
 The minimum tested APEX files are:

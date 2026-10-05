@@ -34,8 +34,18 @@
 
 /* r24: the Flatpak stack lives in the com.matonos.flatpak APEX. bwrap finds
  * its own libraries through the APEX linker namespace. */
+#ifndef MATON_FLATPAK_BIN
 #define MATON_FLATPAK_BIN "/apex/com.matonos.flatpak/bin"
+#endif
+#ifndef BWRAP
 #define BWRAP MATON_FLATPAK_BIN "/bwrap"
+#endif
+#ifndef MATON_MACHINE_ID_PATH
+#define MATON_MACHINE_ID_PATH "/data/matonos/linux/machine-id"
+#endif
+#ifndef MATON_UDEV_DB_PATH
+#define MATON_UDEV_DB_PATH "/data/matonos/linux/udev"
+#endif
 #define X11_SOCKET_PATH "/tmp/.X11-unix/X0"
 #define X11_SOCKET_ENV "MATON_X11_SOCKET"
 #define X11_DISPLAY ":0"
@@ -321,13 +331,13 @@ int main(int argc, char** argv) {
     /* flatpak-run.c only uses the host ID if /etc or /var has one.
      * Android has neither. Override both paths after Flatpak mounts /var. */
     if(app_sandbox) {
-        extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/machine-id";extra[count++]="/etc/machine-id";
-        extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/machine-id";extra[count++]="/var/lib/dbus/machine-id";
+        extra[count++]="--ro-bind";extra[count++]=MATON_MACHINE_ID_PATH;extra[count++]="/etc/machine-id";
+        extra[count++]="--ro-bind";extra[count++]=MATON_MACHINE_ID_PATH;extra[count++]="/var/lib/dbus/machine-id";
         /* Flatpak already exposes /sys/class, /sys/dev and /sys/devices.
          * Bind the directory itself, so atomic database replacements and
          * future devices are visible in existing sandboxes. Metadata does
          * not grant access to any device node. */
-        extra[count++]="--ro-bind";extra[count++]="/data/matonos/linux/udev";extra[count++]="/run/udev";
+        extra[count++]="--ro-bind";extra[count++]=MATON_UDEV_DB_PATH;extra[count++]="/run/udev";
         /* Host udev multicast cannot reliably cross Flatpak's net namespace,
          * and linuxd's system UID is not a trusted root udev sender. SDL2/3
          * support this generic hint and watch /dev/input with inotify (or
@@ -371,11 +381,18 @@ int main(int argc, char** argv) {
                 char** with_launcher=prepend_argument(extended,argc+count,shifted,APP_EXEC_SANDBOX);
                 if(with_launcher) final_argv=with_launcher;
             }
+            /* The APEX multicall ELF selects the bwrap applet from argv[0].
+             * The shim itself was launched as matonos-bwrap, so preserve the
+             * target applet name explicitly across this exec. */
+            final_argv[0]=(char*)BWRAP;
             execv(BWRAP,final_argv);
             perror("matonos-bwrap: exec failed");
             return 127;
         }
     }
+    /* Helper invocations (for example Flatpak's ldconfig setup) have no
+     * injected arguments, but still need multicall applet dispatch. */
+    argv[0]=(char*)BWRAP;
     execv(BWRAP,argv);
     perror("matonos-bwrap: exec failed");
     return 127;
