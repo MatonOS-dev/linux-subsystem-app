@@ -1,9 +1,9 @@
 Target architecture: x86_64
 
 matonos-flatpak
-  SHA-256: 3f3c3c8f69c826a449578b6425be12218ac44c76ce401d0bfba8e340d8ac81ee
+  SHA-256: 8537b5136427d44c7672eafe38afb9536d9501880ec71e61aefbd443cbf1b417
   Build output: MatonOS-dev/MatonOS_apexs flatpak/build-static.sh
-  MatonOS_apexs commit: bbdc6994e618627e6692e6df90ae9c26e61e0421
+  MatonOS_apexs commit: 2a85cfc22db3fb2e23bfb58361c45bb8e9a7a760
   Flatpak source fork: MatonOS-dev/flatpak, branch matonos/v26.10
   Flatpak fork commit: 03e6b205d01c9560a829941d95065a7c683d9667
   DullPGP source: MatonOS-dev/DullPGP
@@ -12,11 +12,13 @@ matonos-flatpak
   Versions: Flatpak 1.16.6; OSTree 2025.7; bubblewrap 0.12.0
   BoringSSL: 0cd1f6a94b670e6b61af95a06e71e690ae8e3262
   Linkage: static PIE; no PT_INTERP and no DT_NEEDED entries
+  Applet invocation: argv[0] flatpak/ostree/bwrap; no aliases staged
+  Flatpak system_bubblewrap: /apex/com.matonos.flatpak/bin/matonos-bwrap
   GPG backend: DullPGP compatibility shim; no standalone gpg executable
 
 matonos-bwrap
-  SHA-256: c94bfa404976afc134f3ef26a548f9c37ac2949f2a6e1cdb8f38f33f772b3d84
-  Source: linux/flatpak/matonos-bwrap.c
+  SHA-256: f95606ab5c6ad84c7ccc86d50a9967bd6b023cdc251e0038e985701e45eee3eb
+  Source: linux/flatpak/matonos-bwrap.c; static-apex commit d3bdfae5331280bba77d4bf27b037962ee085951
   Toolchain: Android NDK r30, x86_64-linux-android35-clang, -static
 
 matonos-app-exec
