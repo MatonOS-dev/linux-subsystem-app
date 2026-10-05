@@ -373,6 +373,11 @@ static int __attribute__((unused)) start_session_portal(int directory, int x11_d
 
 int main(int argc, char** argv) {
     (void)argc;
+    const char* staging_request=getenv("MATON_FLATPAK_STAGING_DIR");
+    int installer_mode=staging_request && !strcmp(staging_request,"/data/matonos/linux/staging") && geteuid()==2902;
+    if(staging_request && !installer_mode) {
+        fprintf(stderr,"matonos-flatpak: invalid staging installer context\n");return 127;
+    }
     int is_run=0;
     for(int i=1;i<argc;i++)if(!strcmp(argv[i],"run")){is_run=1;break;}
     AppSession app={.lifeline=-1,.group=-1};
@@ -384,7 +389,7 @@ int main(int argc, char** argv) {
     if(owned){char uid[32];snprintf(uid,sizeof(uid),"%u",app.uid);if(setenv("MATON_APP_UID",uid,1))return 127;}
     const char* display = getenv("WAYLAND_DISPLAY");
     const char* bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
-    {
+    if(!installer_mode) {
         char machine_reason[256];
         if(prepare_machine_id_reason("/data/matonos/linux",machine_reason,sizeof(machine_reason))) {
             fprintf(stderr,"matonos-flatpak: machine-id: %s\n",
@@ -393,10 +398,10 @@ int main(int argc, char** argv) {
         }
     }
     int display_fd = -1; char trailing; char display_copy[128] = {0};
-    char static_base[192],static_config[192];
+    char static_base[192],static_config[192]={0};
     snprintf(static_base,sizeof(static_base),"/data/matonos/linux/runtime/flatpak-config-%d",getpid());
     const char* supplied_dns=getenv("MATON_FLATPAK_DNS");
-    if(prepare_monitor(static_base,supplied_dns,static_config,sizeof(static_config))) {
+    if(!installer_mode && prepare_monitor(static_base,supplied_dns,static_config,sizeof(static_config))) {
         fprintf(stderr,"matonos-flatpak: cannot prepare static namespace configuration\n");return 127;
     }
     char x11_socket[160] = {0};
@@ -465,7 +470,7 @@ int main(int argc, char** argv) {
         setenv("HOME", "/data/matonos/linux/flatpak-data", 1) != 0 ||
         setenv("TMPDIR", "/tmp", 1) != 0 ||
         setenv("XDG_DATA_HOME", "/data/matonos/linux/flatpak-data/.local/share", 1) != 0 ||
-        setenv("FLATPAK_SYSTEM_DIR", "/data/matonos/linux/flatpak", 1) != 0 ||
+        setenv("FLATPAK_SYSTEM_DIR", installer_mode ? "/data/matonos/linux/staging" : "/data/matonos/linux/flatpak", 1) != 0 ||
         setenv("FLATPAK_SYSTEM_CACHE_DIR", "/data/matonos/linux/cache", 1) != 0 ||
         setenv("FLATPAK_USER_DIR", "/data/matonos/linux/flatpak-user", 1) != 0 ||
         setenv("FLATPAK_DOWNLOAD_TMPDIR", "/tmp", 1) != 0 ||
