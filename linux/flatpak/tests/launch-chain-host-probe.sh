@@ -25,16 +25,21 @@ trap cleanup EXIT
 mkdir -p "$TMP/bin" "$TMP/udev"
 printf '0123456789abcdef0123456789abcdef\n' > "$TMP/machine-id"
 : > "$TMP/udev/control"
-cc -std=c11 -Wall -Wextra -Werror -static \
-  -DMATON_FLATPAK_BIN="\"$TMP/bin\"" \
-  -DBWRAP="\"$TMP/bin/bwrap\"" \
-  -DMATON_MACHINE_ID_PATH="\"$TMP/machine-id\"" \
-  -DMATON_UDEV_DB_PATH="\"$TMP/udev\"" \
-  "$WORKTREE/linux/flatpak/matonos-bwrap.c" -o "$TMP/matonos-bwrap"
+if [[ -n ${MATONOS_BWRAP_BINARY:-} ]]; then
+  install -m755 "$MATONOS_BWRAP_BINARY" "$TMP/matonos-bwrap"
+else
+  cc -std=c11 -Wall -Wextra -Werror -static \
+    -DMATON_FLATPAK_BIN="\"$TMP/bin\"" \
+    -DMATON_MACHINE_ID_PATH="\"$TMP/machine-id\"" \
+    -DMATON_UDEV_DB_PATH="\"$TMP/udev\"" \
+    "$WORKTREE/linux/flatpak/matonos-bwrap.c" -o "$TMP/matonos-bwrap"
+fi
 cc -std=c11 -Wall -Wextra -Werror \
   "$WORKTREE/linux/flatpak/tests/fake-bus-listener.c" -o "$TMP/fake-bus-listener"
 ln -s "$STATIC" "$TMP/bin/bwrap"
 ln -s "$STATIC" "$TMP/bin/flatpak"
+ln -s "$STATIC" "$TMP/bin/matonos-flatpak"
+ln -s "$STATIC" "$TMP/matonos-flatpak"
 "$TMP/fake-bus-listener" "$TMP/session-bus.sock" &
 listener_pid=$!
 for _ in {1..100}; do
@@ -52,6 +57,7 @@ test ! -w /app && test ! -w /usr
 ! touch /usr/.matonos-write-probe 2>/dev/null
 printf "launch-chain-probe-ok\\n"'
 env -u AT_SPI_BUS_ADDRESS \
+  MATONOS_BWRAP_PROBE_ROOT="$TMP" \
   FLATPAK_SYSTEM_DIR="$SYSTEM_INSTALL" \
   FLATPAK_USER_DIR="$USER_INSTALL" \
   FLATPAK_BWRAP="$TMP/matonos-bwrap" \

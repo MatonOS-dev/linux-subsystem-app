@@ -102,20 +102,26 @@ proxy only if it receives an address. linuxd passes `--no-a11y-bus`, which
 sets Flatpak's `NO_A11Y_BUS_PROXY` run flag and skips that query and proxy.
 The Android broker also has no accessibility service or service activation.
 
-`matonos-bwrap` and `matonos-app-exec` are static NDK binaries. Their sources
-do not call Android system-property APIs, bionic DNS/resolver APIs, `dlopen`,
-or liblog. bwrap only manipulates argv, mounts and file descriptors; app-exec
-checks its UID-derived MLS label through `/proc/thread-self/attr/current`,
-performs the existing dyntransition, then `execvp`s the payload. Static files
-have no ELF interpreter or dynamic section. The two SELinux exec transitions
-remain `matonos_bwrap -> matonos_app_launch -> matonos_linux_app`.
+`matonos-bwrap` and `matonos-app-exec` are stripped static musl PIE binaries,
+built in the pinned Alpine 3.24 root alongside `matonos-flatpak`. The canonical
+C sources remain in this device tree (`matonos-bwrap.c`,
+`matonos-app-exec.c`, and the `MatonMls.h` symlink to linuxd's shared header).
+`stage-static-musl.sh` refreshes checksum-verified build inputs in
+`MatonOS_apexs/flatpak/helpers/`; do not edit those generated copies. No
+bionic, libselinux, Android property, resolver, or logging APIs are used.
+app-exec reads its current context and performs the existing dyntransition by
+writing `/proc/thread-self/attr/current`, then `execvp`s the payload. The two
+SELinux transitions remain `matonos_bwrap -> matonos_app_launch ->
+matonos_linux_app`. The staged-ELF check rejects debug sections, `PT_INTERP`,
+and `DT_NEEDED` entries for every executable in the architecture directory.
 
 ## Trust files and versions
 
 The minimum tested APEX files are:
 
 - `bin/matonos-flatpak`, with no applet symlinks;
-- `bin/matonos-bwrap` and `bin/matonos-app-exec`, static-NDK launch helpers;
+- `bin/matonos-bwrap` and `bin/matonos-app-exec`, stripped static-musl launch
+  helpers;
 - `etc/flatpak/flathub.gpg` and
   `etc/flatpak/remotes.d/flathub.flatpakrepo`.
 
@@ -138,10 +144,10 @@ version synchronized.
 
 ## Prebuilt provenance
 
-`prebuilt/static/README.md` describes how the architecture directory is filled
-from the `MatonOS-dev/MatonOS_apexs` output. `prebuilt/static/SOURCE` records
-the source commit and SHA-256 for every staged executable. Do not put APEX
-private keys in that directory. The development APEX key remains
+`prebuilt/static/README.md` describes how `stage-static-musl.sh` fills the
+architecture directory from the `MatonOS_apexs` Alpine output.
+`prebuilt/static/SOURCE` records artifact hashes and canonical source hashes.
+Do not put APEX private keys in that directory. The development APEX key remains
 `com.matonos.flatpak.pem` / `com.matonos.flatpak.avbpubkey`; release builds
 must use the matching release key.
 

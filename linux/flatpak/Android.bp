@@ -39,9 +39,9 @@ cc_binary {
 }
 
 // These two launch-chain helpers execute after entering the musl-only root.
-// Stage them as static-NDK files alongside the multicall payload. Their
-// sources remain authoritative in this directory; the release output records
-// their NDK/build identity in prebuilt/static/SOURCE.
+// Stage stripped static-musl files alongside the multicall payload. Their
+// canonical sources remain in this directory; prebuilt/static/SOURCE records
+// source and artifact hashes.
 cc_prebuilt_binary {
     name: "matonos-bwrap-static-prebuilt",
     srcs: ["prebuilt/static/x86_64/matonos-bwrap"],

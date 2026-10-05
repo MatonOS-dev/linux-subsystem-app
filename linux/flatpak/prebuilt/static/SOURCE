@@ -17,11 +17,16 @@ matonos-flatpak
   GPG backend: DullPGP compatibility shim; no standalone gpg executable
 
 matonos-bwrap
-  SHA-256: f95606ab5c6ad84c7ccc86d50a9967bd6b023cdc251e0038e985701e45eee3eb
-  Source: linux/flatpak/matonos-bwrap.c; rebuilt from merged launch-chain and argv[0] sources
-  Toolchain: Android NDK r30, x86_64-linux-android35-clang, -static
+  SHA-256: b7d7fdf05c4063656bdd77a08dd38007947acbdd4169dcf5369e0a802a448701
+  Source: linux/flatpak/matonos-bwrap.c
+  Source SHA-256: 0dcda245d0a2e6a2818fead944745b0f21c4be1292a575f30b9edf4e0e4f537c
+  Header: linux/flatpak/controller-access.h
+  Header SHA-256: 6df97b53c6c7bf00e71d5deabb98be171c1d6accdefa491419ac88ccf04c4c8e
+  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
 
 matonos-app-exec
-  SHA-256: cae20e83902f26f309edecd041b5974b458134a6d748db449ca075b34408111a
-  Source: linux/flatpak/matonos-app-exec.c; rebuilt with NDK r30 after merge
-  Toolchain: Android NDK r30, x86_64-linux-android35-clang, -static
+  SHA-256: a6c388e524cfa18f768bf6b8658a4f6d879f73bdea4c53e30b7246f71dcfd5b7
+  Source: linux/flatpak/matonos-app-exec.c and install/linuxd/MatonMls.h
+  Source SHA-256: c3787e635df9544cef07b3d6b66883c6f79658551031533ce955ef38c8edbff4
+  Header SHA-256: c5814108b6ff9884abef93252b1fad3736f8b2a0f6bfee9465e8bacc27308744
+  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all

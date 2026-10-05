@@ -24,7 +24,7 @@
  * the deployment paths directly; no privileged mount helper participates in
  * the launch chain. No capability enters the app sandbox.
  */
-#include "../../install/linuxd/MatonMls.h"
+#include "MatonMls.h"
 
 #include <errno.h>
 #include <fcntl.h>

@@ -1,11 +1,12 @@
 # Static APEX payload staging
 
-Copy release artifacts from the reviewed `MatonOS-dev/MatonOS_apexs` output
-into `static/<arch>/`. Record the exact source repository commit and SHA-256
-for each executable in `static/SOURCE`. For the current x86_64 image the
+Run `linux/flatpak/stage-static-musl.sh` to refresh checksum-verified helper
+inputs, build in the pinned Alpine root, and stage the output from
+`MatonOS_apexs` into `static/<arch>/`. The canonical helper sources live in
+`linux/flatpak/`; `MatonOS_apexs/flatpak/helpers/` contains generated build
+copies. `static/SOURCE` records artifact and source SHA-256 hashes. The three
 required files are `matonos-flatpak`, `matonos-bwrap`, and
-`matonos-app-exec`. The latter two are static-NDK launch glue; they must not
-link to bionic shared libraries because they execute in the musl namespace.
+`matonos-app-exec`; all are stripped static musl PIE files.
 
 The multicall binary must provide Flatpak 1.16.6, OSTree 2025.7 and
 bubblewrap 0.12.0 applets and use the DullPGP implementation linked with

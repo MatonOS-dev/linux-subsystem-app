@@ -18,6 +18,7 @@
 #include "controller-access.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stddef.h>
@@ -36,9 +37,6 @@
  * its own libraries through the APEX linker namespace. */
 #ifndef MATON_FLATPAK_BIN
 #define MATON_FLATPAK_BIN "/apex/com.matonos.flatpak/bin"
-#endif
-#ifndef BWRAP
-#define BWRAP MATON_FLATPAK_BIN "/matonos-flatpak"
 #endif
 #ifndef MATON_MACHINE_ID_PATH
 #define MATON_MACHINE_ID_PATH "/data/matonos/linux/machine-id"
@@ -251,6 +249,23 @@ static int is_socket(const char* path) {
     return path && *path && lstat(path,&info)==0 && S_ISSOCK(info.st_mode);
 }
 
+/* The shim and multicall executable are staged beside each other in the
+ * APEX. Resolve the multicall path from this ELF's actual location so host
+ * launch probes can exercise the staged musl shim from a temporary directory
+ * without changing the production executable path or trusting an env var. */
+static int multicall_path(char* path, size_t size) {
+    ssize_t length = readlink("/proc/self/exe", path, size - 1);
+    if (length <= 0 || (size_t)length >= size - 1) return -1;
+    path[length] = '\0';
+    char* slash = strrchr(path, '/');
+    if (!slash) return -1;
+    static const char name[] = "/matonos-flatpak";
+    size_t directory = (size_t)(slash - path);
+    if (directory + sizeof(name) > size) return -1;
+    memcpy(path + directory, name, sizeof(name));
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const char* socket_path;
     const char* journal_path;
@@ -259,6 +274,14 @@ int main(int argc, char** argv) {
     int command;
     int at;
     char** extended;
+    char multicall[PATH_MAX];
+    const char* machine_id_path = MATON_MACHINE_ID_PATH;
+    const char* udev_db_path = MATON_UDEV_DB_PATH;
+#ifdef MATONOS_HOST_LAUNCH_PROBE
+    char probe_machine_id[PATH_MAX];
+    char probe_udev[PATH_MAX];
+    char* bundled_probe_root = NULL;
+#endif
     char* pad_nodes=NULL;
     char** extra;
     int count=0;
@@ -278,6 +301,21 @@ int main(int argc, char** argv) {
      * the variables but have neither and must stay untouched. */
     if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox);
     if(args_end>=0)app_label=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_LABEL");
+#ifdef MATONOS_HOST_LAUNCH_PROBE
+    if(args_end>=0)bundled_probe_root=args_fd_lookup(atoi(argv[args_end-1]),"MATONOS_BWRAP_PROBE_ROOT");
+    const char* probe_root=getenv("MATONOS_BWRAP_PROBE_ROOT");
+    if((!probe_root || !*probe_root) && bundled_probe_root)probe_root=bundled_probe_root;
+    if(probe_root && *probe_root) {
+        int machine_len=snprintf(probe_machine_id,sizeof(probe_machine_id),"%s/machine-id",probe_root);
+        int udev_len=snprintf(probe_udev,sizeof(probe_udev),"%s/udev",probe_root);
+        if(machine_len>0 && (size_t)machine_len<sizeof(probe_machine_id) &&
+           udev_len>0 && (size_t)udev_len<sizeof(probe_udev)) {
+            machine_id_path=probe_machine_id;
+            udev_db_path=probe_udev;
+        }
+    }
+    free(bundled_probe_root);
+#endif
     if(!app_label && getenv("MATON_APP_LABEL"))app_label=strdup(getenv("MATON_APP_LABEL"));
     /* Only enter the app domain for the real app sandbox; helpers keep their
      * own flow. The label must be a matonos app context or it is ignored. */
@@ -335,13 +373,13 @@ int main(int argc, char** argv) {
     /* flatpak-run.c only uses the host ID if /etc or /var has one.
      * Android has neither. Override both paths after Flatpak mounts /var. */
     if(app_sandbox) {
-        extra[count++]="--ro-bind";extra[count++]=MATON_MACHINE_ID_PATH;extra[count++]="/etc/machine-id";
-        extra[count++]="--ro-bind";extra[count++]=MATON_MACHINE_ID_PATH;extra[count++]="/var/lib/dbus/machine-id";
+        extra[count++]="--ro-bind";extra[count++]=(char*)machine_id_path;extra[count++]="/etc/machine-id";
+        extra[count++]="--ro-bind";extra[count++]=(char*)machine_id_path;extra[count++]="/var/lib/dbus/machine-id";
         /* Flatpak already exposes /sys/class, /sys/dev and /sys/devices.
          * Bind the directory itself, so atomic database replacements and
          * future devices are visible in existing sandboxes. Metadata does
          * not grant access to any device node. */
-        extra[count++]="--ro-bind";extra[count++]=MATON_UDEV_DB_PATH;extra[count++]="/run/udev";
+        extra[count++]="--ro-bind";extra[count++]=(char*)udev_db_path;extra[count++]="/run/udev";
         /* Host udev multicast cannot reliably cross Flatpak's net namespace,
          * and linuxd's system UID is not a trusted root udev sender. SDL2/3
          * support this generic hint and watch /dev/input with inotify (or
@@ -389,7 +427,11 @@ int main(int argc, char** argv) {
              * The shim itself was launched as matonos-bwrap, so preserve the
              * target applet name explicitly across this exec. */
             final_argv[0]="bwrap";
-            execv(BWRAP,final_argv);
+            if (multicall_path(multicall, sizeof(multicall)) != 0) {
+                fprintf(stderr,"matonos-bwrap: cannot resolve adjacent multicall binary\n");
+                return 127;
+            }
+            execv(multicall,final_argv);
             perror("matonos-bwrap: exec failed");
             return 127;
         }
@@ -397,7 +439,11 @@ int main(int argc, char** argv) {
     /* Helper invocations (for example Flatpak's ldconfig setup) have no
      * injected arguments, but still need multicall applet dispatch. */
     argv[0]="bwrap";
-    execv(BWRAP,argv);
+    if (multicall_path(multicall, sizeof(multicall)) != 0) {
+        fprintf(stderr,"matonos-bwrap: cannot resolve adjacent multicall binary\n");
+        return 127;
+    }
+    execv(multicall,argv);
     perror("matonos-bwrap: exec failed");
     return 127;
 }
