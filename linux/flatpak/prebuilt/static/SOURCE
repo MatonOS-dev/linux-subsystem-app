@@ -3,7 +3,7 @@ Target architecture: x86_64
 matonos-flatpak
   SHA-256: 8537b5136427d44c7672eafe38afb9536d9501880ec71e61aefbd443cbf1b417
   Build output: MatonOS-dev/MatonOS_apexs flatpak/build-static.sh
-  MatonOS_apexs commit: 2a85cfc22db3fb2e23bfb58361c45bb8e9a7a760
+  MatonOS_apexs commit: e7fe3de6d606b6fcb06e382ac6edb5939355bff8
   Flatpak source fork: MatonOS-dev/flatpak, branch matonos/v26.10
   Flatpak fork commit: 03e6b205d01c9560a829941d95065a7c683d9667
   DullPGP source: MatonOS-dev/DullPGP
