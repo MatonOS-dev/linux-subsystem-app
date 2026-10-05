@@ -28,7 +28,7 @@ interface ISystemBridge {
     String getFlatpakLaunchStatus(String ref);
     // Host-only attestation of an installed generated stub's UID, ref and signer.
     boolean isFlatpakStub(int uid, String ref);
-    String launchOwnedFlatpak(String ref, in android.os.ParcelFileDescriptor runtimeDirectory, in @nullable android.os.ParcelFileDescriptor x11Directory, @nullable String x11Display, int stubUid, int stubPid, in android.os.ParcelFileDescriptor lifeline);
+    String launchOwnedFlatpak(String ref, in android.os.ParcelFileDescriptor runtimeDirectory, in @nullable android.os.ParcelFileDescriptor x11Directory, @nullable String x11Display, @nullable String dnsForwarder, int stubUid, int stubPid, in android.os.ParcelFileDescriptor lifeline);
     // Verified stub commit info: returns JSON with appCommit, runtimeRef, runtimeCommit
     String getFlatpakStubCommits(int uid, String ref);
 }
