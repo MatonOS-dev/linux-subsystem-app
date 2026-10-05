@@ -32,26 +32,24 @@ matonos-app-exec
   Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
 
 flatpak-env-wrapper
-  SHA-256: 46596d2c9108b909571d0bc73cdd327bd96b970386d0104726647380f78cd508
+  SHA-256: 4f2e1b8f914ab9c4a82e21ff2fa24895a29d121aedf9b805230a65f8082f261f
   Sources: linux/flatpak/flatpak-env-wrapper.c and Linux session headers
-  Source SHA-256: c79bb8d40b605ad09631425bf823df52ca67e735e14e1cee84b860b075c24e44
+  Source SHA-256: ba41ad6db806b08ad42bd562beeb26b5f4c72376874ba674286059b76801dd8b
   Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
 
 matonos-flatpak-store
-  SHA-256: 4cc721bd5e4bb1d18d50f18ece973d81f4563c1c48d80254974bdafbc404caba
+  SHA-256: 5911bfec554e88f9e4c64c558b5c633a1e43661193f72e08fa292047749d327a
   Sources: install/linuxd/FlatpakStore.c and FlatpakStore.h
-  Source SHA-256: c020ac3c1900df713a6cac8abaf43b54bb8d3fd44a3060d49548078571b10de8
+  Source SHA-256: ebcf9422ab5a6bd7b4f745910354add584a00621bc2cd7d6a83d014f6fb68f71
   Header SHA-256: 250916cc744cffd492d88519c943215773546ffb0a96d26ab8202b97ba44ff28
   Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
 
 APEX license notices and per-component license texts
-4bb7bd7b7939a13db322b8a87ee2eaf80ad73df157606aeef614d8d26ab78c51  ./DullPGP.txt
-1bdfe565cb9f0697e9d023e83d64d82c681e43c85a2d41e40720f02cd2e1aaba  ./LICENSES.md
-68cb4a4324f49adfa94f481085b76121c654df9854871e82fb01d7aeec172848  ./NOTICE
 ab539efae8aeb083b1c3f83839cd8be99ba1afe89477fdf0cb87a28be6a459f2  ./boringssl.txt
 8c7c26c330c32866b29a555670d09961b9fbd2809d7967ed96002b08218cd237  ./bubblewrap.txt
 c4d088cac240ccff76d38b38c38369dab4b30da834883dc364aee5c620e27e4b  ./bzip2.txt
 c427dcee6c1f9abf64590cbe971e85e97a176323b4ee99aa5796dfdcb4a6cae3  ./curl.txt
+4bb7bd7b7939a13db322b8a87ee2eaf80ad73df157606aeef614d8d26ab78c51  ./DullPGP.txt
 4bb7bd7b7939a13db322b8a87ee2eaf80ad73df157606aeef614d8d26ab78c51  ./flatpak.txt
 10e6c973b95aae276cc5ad72b20d9cbc13f5394a6c8a9f36378a0e8e94942eff  ./gcc-libgcc.txt
 10e6c973b95aae276cc5ad72b20d9cbc13f5394a6c8a9f36378a0e8e94942eff  ./gcc-libstdc++.txt
@@ -64,9 +62,11 @@ e42d64eecf5526f5fa8ee2ca63bc9cb74260e05fbf80b5f551a840d31a7234b1  ./libcap.txt
 d93761898e8285921b75cb543b2d404d1858cb7b9bf5c58499f9b443fdfc9eb7  ./libffi.txt
 0ebae952320b60090226b146961fb59c8ac6b9a3fd0d415a6d5083ef051415d3  ./libseccomp.txt
 f2b142c3e0d46a7336b2076a2e5c68fc376c6a480a62082509cb5ed77e410f18  ./libxml2.txt
+1bdfe565cb9f0697e9d023e83d64d82c681e43c85a2d41e40720f02cd2e1aaba  ./LICENSES.md
 fb17abb9fd896f941a67fae87b907287f28fd431f3bdb64d5d4dea9d9688b6ef  ./linked-components.json
 c92ec991e99ce2f187c4bc28614aa3bc6995544d6ded7ab6144b4400d3324df1  ./lz4.txt
 f27a6160166106485e7c9958289d403621294dfd78873cf83b69b12a9d05f1aa  ./musl.txt
+68cb4a4324f49adfa94f481085b76121c654df9854871e82fb01d7aeec172848  ./NOTICE
 48bfbd45feae3d392c52f6acc29e9782c2452d82de515789760bc7ad07238d99  ./ostree.txt
 32ac464eabc2db9184a77773ab9a1a2c04636b12ee865b40e0524246a74bf3db  ./pcre2.txt
 db11eeb1d2f8a6ccae0519e46055d3c127fd7c8cdc12d6994354bb4d080f1b2a  ./util-linux-libs.txt
