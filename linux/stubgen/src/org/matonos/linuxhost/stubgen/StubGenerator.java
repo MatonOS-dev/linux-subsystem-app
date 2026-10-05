@@ -50,25 +50,16 @@ public final class StubGenerator {
     private static final long MAX_DESKTOP_BYTES = 1024 * 1024;
 
     public static final String GAME_CONTROLLERS = "org.matonos.permission.GAME_CONTROLLERS";
-    public static final String RUN_DOWNLOADED_CODE = "org.matonos.permission.RUN_DOWNLOADED_CODE";
 
     /** Validate a 64-char hex commit checksum (lowercase). */
     public static boolean validCommit(String commit) {
         return commit != null && commit.length() == 64 && commit.matches("[0-9a-f]{64}");
     }
 
-    /** Read only the declared Context devices and filesystem/persistent
-     * patterns, never app IDs or overrides. Rule, default deny:
-     *  - devices all|input  -> GAME_CONTROLLERS (unchanged);
-     *  - a broad writable filesystem grant (host, home, ~, or any persistent
-     *    path) means the app installs and runs code of its own, so it gets the
-     *    optional per-app volume behind RUN_DOWNLOADED_CODE. Narrow ro grants
-     *    (documents, specific paths) do not. */
+    /** Read only the declared Context devices, never app IDs or overrides. */
     public static List<String> permissionsForMetadata(String metadata) throws IOException {
         boolean context = false;
         String devices = "";
-        String filesystems = "";
-        boolean persistent = false;
         try (BufferedReader reader = new BufferedReader(new StringReader(metadata))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -79,10 +70,6 @@ public final class StubGenerator {
                 if (context && equals >= 0) {
                     String key = line.substring(0, equals).trim();
                     if (key.equals("devices")) devices = line.substring(equals + 1).trim();
-                    else if (key.equals("filesystems")) filesystems = line.substring(equals + 1).trim();
-                    else if (key.equals("persistent"))
-                        for (String token : line.substring(equals + 1).split(";"))
-                            if (!token.trim().isEmpty()) persistent = true;
                 }
             }
         }
@@ -92,18 +79,7 @@ public final class StubGenerator {
                 permissions.add(GAME_CONTROLLERS);
                 break;
             }
-        if (persistent || broadFilesystem(filesystems)) permissions.add(RUN_DOWNLOADED_CODE);
         return permissions;
-    }
-
-    private static boolean broadFilesystem(String filesystems) {
-        for (String item : filesystems.split(";")) {
-            // Strip Flatpak access modifiers: "home:ro", "host:rw", "~/.x:create".
-            String path = item.split(":", 2)[0].trim();
-            if (path.isEmpty()) continue;
-            if (path.equals("host") || path.equals("home") || path.equals("~") || path.startsWith("~/")) return true;
-        }
-        return false;
     }
 
     private StubGenerator() { }
