@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 /*
  * matonos-app-exec: enter the verified app sandbox domain and exec the
  * payload. bubblewrap runs this as the final command of a sandbox.

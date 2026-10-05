@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 /*
  * Bionic host launcher for the static Flatpak CLI. linuxd execs
  * /apex/com.matonos.flatpak/bin/flatpak-env-wrapper; this process prepares

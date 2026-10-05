@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 /*
  * MatonOS bwrap shim. flatpak-env-wrapper.c routes the Flatpak
  * CLI through $FLATPAK_BWRAP, and flatpak run execs bwrap with
