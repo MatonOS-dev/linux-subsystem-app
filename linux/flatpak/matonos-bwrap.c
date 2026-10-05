@@ -35,14 +35,18 @@
 /* r24: the Flatpak stack lives in the com.matonos.flatpak APEX. bwrap finds
  * its own libraries through the APEX linker namespace. */
 #define MATON_FLATPAK_BIN "/apex/com.matonos.flatpak/bin"
-#define BWRAP MATON_FLATPAK_BIN "/bwrap"
+#define BWRAP MATON_FLATPAK_BIN "/matonos-flatpak"
 #define X11_SOCKET_PATH "/tmp/.X11-unix/X0"
 #define X11_SOCKET_ENV "MATON_X11_SOCKET"
 #define X11_DISPLAY ":0"
 #define JOURNAL_SOCKET_ENV "MATON_JOURNAL_SOCKET"
 #define JOURNAL_SOCKET_PATH "/run/systemd/journal/socket"
-/* r24: bwrap runs matonos-app-exec as the sandbox command; it dyntransitions
- * to the verified app domain before exec'ing the payload. */
+/* SELinux exec chain: matonos_flatpak_run execs the separately labeled
+ * matonos-bwrap shim (matonos_bwrap_exec), entering matonos_bwrap. The shim
+ * then execs matonos-flatpak (matonos_flatpak_cli_exec) with argv[0]="bwrap",
+ * returning to matonos_flatpak_run for bubblewrap's namespace setup. bwrap
+ * runs matonos-app-exec as the sandbox command; it dyntransitions to the
+ * verified app domain before exec'ing the payload. */
 #define APP_EXEC_HOST MATON_FLATPAK_BIN "/matonos-app-exec"
 #define APP_EXEC_SANDBOX "/run/matonos/matonos-app-exec"
 #define APP_LABEL_ENV "MATON_APP_LABEL"
@@ -371,11 +375,13 @@ int main(int argc, char** argv) {
                 char** with_launcher=prepend_argument(extended,argc+count,shifted,APP_EXEC_SANDBOX);
                 if(with_launcher) final_argv=with_launcher;
             }
+            final_argv[0]="bwrap";
             execv(BWRAP,final_argv);
             perror("matonos-bwrap: exec failed");
             return 127;
         }
     }
+    argv[0]="bwrap";
     execv(BWRAP,argv);
     perror("matonos-bwrap: exec failed");
     return 127;

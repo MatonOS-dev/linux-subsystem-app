@@ -1,8 +1,5 @@
 # Static Flatpak APEX file contexts. Paths are relative to the APEX root.
 (/.*)?                       u:object_r:system_file:s0
-/bin/bwrap                   u:object_r:matonos_bwrap_exec:s0
 /bin/matonos-bwrap           u:object_r:matonos_bwrap_exec:s0
 /bin/matonos-app-exec        u:object_r:matonos_app_exec_exec:s0
 /bin/matonos-flatpak         u:object_r:matonos_flatpak_cli_exec:s0
-/bin/flatpak                 u:object_r:matonos_flatpak_cli_exec:s0
-/bin/ostree                  u:object_r:matonos_flatpak_cli_exec:s0

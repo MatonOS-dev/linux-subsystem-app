@@ -3,17 +3,13 @@ package {
 }
 
 // Static musl stack produced by MatonOS-dev/MatonOS_apexs. Its executable
-// has applet dispatch for Flatpak, OSTree and bubblewrap; Soong only places
-// the one ELF and its three symlinks in the APEX.
+// has applet dispatch for Flatpak, OSTree and bubblewrap. Soong drops
+// prebuilt-binary symlinks in APEX payloads, so callers set argv[0] to select
+// the applet while executing this one ELF by its real filename.
 cc_prebuilt_binary {
     name: "matonos-flatpak-static-prebuilt",
     srcs: ["prebuilt/static/x86_64/matonos-flatpak"],
     stem: "matonos-flatpak",
-    symlinks: [
-        "flatpak",
-        "ostree",
-        "bwrap",
-    ],
     system_ext_specific: true,
     apex_available: ["com.matonos.flatpak"],
     compile_multilib: "64",

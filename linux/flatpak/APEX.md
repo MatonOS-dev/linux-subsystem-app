@@ -4,7 +4,8 @@ The APEX is installed on `system_ext` and mounted at
 `/apex/com.matonos.flatpak`. Phase 1 replaces the old bionic dependency tree
 with the Alpine 3.24/musl stack: Flatpak 1.16.6, OSTree 2025.7, bubblewrap
 0.12.0, DullPGP and BoringSSL. One static multicall ELF provides the
-`flatpak`, `ostree` and `bwrap` applets. The D-Bus broker remains in
+`flatpak`, `ostree` and `bwrap` applets. Applets are selected through `argv[0]`
+because Soong drops prebuilt-binary symlinks from the APEX payload. The D-Bus broker remains in
 `MatonWaylandHost.apk`; linuxd remains a bionic system component outside the
 musl namespace.
 
@@ -12,14 +13,14 @@ musl namespace.
 
 | Current member | Phase 1 decision | Reason / destination |
 |---|---|---|
-| Bionic Flatpak CLI | **Replaced by static binary** | `matonos-flatpak`, linked for musl; applet symlinks are `flatpak`, `ostree` and `bwrap`. |
+| Bionic Flatpak CLI | **Replaced by static binary** | `matonos-flatpak`, linked for musl; callers set `argv[0]` to select the applet. |
 | `flatpak-env-wrapper` launcher | **Kept (bionic, outside the sandbox)** | APEX entrypoint at `bin/flatpak-env-wrapper`; prepares Android-side launch state and starts the static CLI. |
 | `flatpak-portal` | **Dropped** | Portal implementation moves to the compositor Java service. |
 | `gpg` | **Dropped** | DullPGP performs OpenPGP operations in-process; no GnuPG child is shipped. |
-| `ostree` | **Replaced by static binary** | `ostree` symlink to `matonos-flatpak`. |
+| `ostree` | **Replaced by static binary** | linuxd passes `argv[0]="ostree"` for OSTree applet calls. |
 | `revokefs-fuse` | **Dropped** | Not part of the tested Alpine static payload or user install flow. |
 | `xdg-dbus-proxy` | **Dropped** | The global `--socket=session-bus` override is used; the separate proxy is not shipped. |
-| `bwrap` | **Replaced by static binary** | `bwrap` symlink to `matonos-flatpak`; no bionic shared libraries. |
+| `bwrap` | **Replaced by static binary** | Flatpak invokes the labeled `matonos-bwrap` shim, which execs `matonos-flatpak` with `argv[0]="bwrap"`; no bionic shared libraries. |
 | `matonos-bwrap` | **Must become static-NDK** | Runs after entering the musl-only root and cannot depend on bionic. |
 | `matonos-app-exec` | **Must become static-NDK** | Runs inside the musl namespace as the payload transition launcher. |
 | `matonos-mount-helper` | **Dropped** | It is a no-op/vestigial helper and is removed from the launch chain. |
@@ -32,8 +33,29 @@ helpers are staged below `prebuilt/static/<arch>/`; only the static multicall
 binary is architecture-specific for the current x86_64 product. The key and
 remote definition are ordinary APEX `etc` files. The bionic launcher and store
 helper stay built as Android binaries and outside the musl namespace. linuxd
-execs `flatpak-env-wrapper`; the public `flatpak` symlink points to the static
-multicall binary for applet invocations.
+execs `flatpak-env-wrapper` with `argv[0]="flatpak"`; the wrapper preserves
+`"flatpak"` or `"ostree"` when execing `bin/matonos-flatpak`. Current linuxd
+operations use Flatpak; OSTree is linked into the same binary and can be
+selected by callers that need its CLI. Flatpak's configured `system_bubblewrap` is
+`bin/matonos-bwrap`; the shim executes the same multicall ELF with
+`argv[0]="bwrap"`.
+
+Flatpak 1.16.6 has one self-reexec path for its `build-update-repo` worker:
+it resolves `/proc/self/exe` to `matonos-flatpak`, then passes the worker
+command in `argv[1]`. The multicall entrypoint recognizes the three explicit
+applet selectors and routes this real-filename self-reexec to Flatpak's own
+command table. Normal OSTree operations use linked libostree; they do not
+exec an `ostree` binary by path. OSTree extension commands may use
+`ostree-*` from `PATH`, but the MatonOS install/run flow does not invoke such
+extensions.
+
+The two-domain SELinux chain keeps distinct executable labels: Flatpak runs
+in `matonos_flatpak_run`; the `matonos-bwrap` path has
+`matonos_bwrap_exec` and transitions to `matonos_bwrap`; that shim then
+executes the real `matonos-flatpak`, labeled `matonos_flatpak_cli_exec`, and
+transitions back to `matonos_flatpak_run`. Applet dispatch uses `argv[0]`,
+while SELinux labels the actual executable path, so no alias file or symlink
+is needed.
 
 ## Static namespace setup
 
@@ -58,8 +80,7 @@ construction.
 
 The minimum tested APEX files are:
 
-- `bin/matonos-flatpak` plus symlinks `bin/flatpak`, `bin/ostree`, and
-  `bin/bwrap`;
+- `bin/matonos-flatpak`, with no applet symlinks;
 - `bin/matonos-bwrap` and `bin/matonos-app-exec`, static-NDK launch helpers;
 - `etc/flatpak/flathub.gpg` and
   `etc/flatpak/remotes.d/flathub.flatpakrepo`.

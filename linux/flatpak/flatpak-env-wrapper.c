@@ -5,7 +5,9 @@
  * Bionic host launcher for the static Flatpak CLI. linuxd execs
  * /apex/com.matonos.flatpak/bin/flatpak-env-wrapper; this process prepares
  * the Android-side session and environment, then execs the static multicall
- * binary at matonos-flatpak.
+ * binary at matonos-flatpak. linuxd passes argv[0]="flatpak" or "ostree"
+ * so multicall dispatch does not need APEX symlinks (Soong drops prebuilt
+ * symlinks from the payload).
  */
 #include <errno.h>
 #include <stdio.h>
@@ -373,6 +375,11 @@ static int __attribute__((unused)) start_session_portal(int directory, int x11_d
 
 int main(int argc, char** argv) {
     (void)argc;
+    /* linuxd supplies the multicall applet name in argv[0]. */
+    if(strcmp(argv[0],"flatpak") && strcmp(argv[0],"ostree")) {
+        fprintf(stderr,"matonos-flatpak: unsupported applet name: %s\n",argv[0]);
+        return 127;
+    }
     int is_run=0;
     for(int i=1;i<argc;i++)if(!strcmp(argv[i],"run")){is_run=1;break;}
     AppSession app={.lifeline=-1,.group=-1};
