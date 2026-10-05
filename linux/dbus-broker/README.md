@@ -211,11 +211,22 @@ Each subsequent frame contains two little-endian uint32 fields (D-Bus blob
 length and descriptor count), followed by a complete standard D-Bus message.
 The blob retains its own byte order. Limits are 1 MiB and 16 FDs. SCM_RIGHTS
 is attached to the first header byte; partial sends do not resend rights.
-Java collects rights while reading only that frame's header, verifies the
-D-Bus FD count, duplicates into ParcelFileDescriptor and closes received
-copies after dispatch. Replies and errors use the original serial and
-canonical destination; directed signals use the same channel. Java sends no
-FDs back in this first protocol version.
+The compositor APK pins dbus-java-core 5.2.2 and implements its
+`ITransportProvider` and `ISocketProvider` over Android `LocalSocket`. The
+provider accepts either an already connected LocalSocket or a pre-connected
+FileDescriptor. It preserves this frame format, collects SCM_RIGHTS and checks
+the frame and D-Bus UNIX_FDS counts before exposing a message. Portal messages
+are read and written through dbus-java; the former hand-written D-Bus value
+codec is no longer used. Settings, Inhibit and OpenURI are exported as
+dbus-java interfaces, with the existing portal backend retaining state and
+caller checks. MBP1, SO_PEERCRED and the capability remain the actual
+channel authentication. Since dbus-java's AbstractTransport always performs
+SASL, the adapter satisfies that library state machine locally after the
+capability check; it sends no additional authentication bytes to the broker.
+Received descriptors are duplicated into ParcelFileDescriptor and closed
+after dispatch. Replies and errors use the original serial and canonical
+destination; directed signals use the same channel. Java sends no FDs back in
+this first protocol version.
 
 The broker queues at most 256 forwards and retains at most 256 pending calls.
 Forwards and channel IO run on the default GLib main context, outside the
