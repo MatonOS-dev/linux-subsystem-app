@@ -18,10 +18,10 @@ matonos-flatpak
 
 matonos-bwrap
   SHA-256: f95606ab5c6ad84c7ccc86d50a9967bd6b023cdc251e0038e985701e45eee3eb
-  Source: linux/flatpak/matonos-bwrap.c; static-apex commit d3bdfae5331280bba77d4bf27b037962ee085951
+  Source: linux/flatpak/matonos-bwrap.c; rebuilt from merged launch-chain and argv[0] sources
   Toolchain: Android NDK r30, x86_64-linux-android35-clang, -static
 
 matonos-app-exec
   SHA-256: cae20e83902f26f309edecd041b5974b458134a6d748db449ca075b34408111a
-  Source: linux/flatpak/matonos-app-exec.c
+  Source: linux/flatpak/matonos-app-exec.c; rebuilt with NDK r30 after merge
   Toolchain: Android NDK r30, x86_64-linux-android35-clang, -static

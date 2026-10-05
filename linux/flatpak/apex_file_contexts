@@ -3,3 +3,4 @@
 /bin/matonos-bwrap           u:object_r:matonos_bwrap_exec:s0
 /bin/matonos-app-exec        u:object_r:matonos_app_exec_exec:s0
 /bin/matonos-flatpak         u:object_r:matonos_flatpak_cli_exec:s0
+/bin/matonos-flatpak-store   u:object_r:matonos_flatpak_installer_exec:s0
