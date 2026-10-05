@@ -116,8 +116,9 @@ must use the matching release key.
 Host-side `tools/preflight.sh` checks the repository structure, but Phase 1
 still needs an image build and runtime validation for:
 
-1. APEX assembly/signing and confirmation that the three applet symlinks and
-   both static-NDK helpers land at the expected paths.
+1. APEX assembly/signing and confirmation that `matonos-flatpak`,
+   `matonos-bwrap`, and `matonos-app-exec` land at the expected paths, with
+   no applet alias symlinks in `bin/`.
 2. SELinux file-context compilation for the static `matonos-flatpak`,
    `matonos-bwrap`, and `matonos-app-exec` paths. The existing domain and
    transition rules must be checked against the new binary labels.
