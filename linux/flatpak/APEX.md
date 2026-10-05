@@ -24,7 +24,7 @@ musl namespace.
 | `matonos-bwrap` | **Static musl** | Runs after entering the musl-only root and cannot depend on bionic. |
 | `matonos-app-exec` | **Static musl** | Runs inside the musl namespace as the payload transition launcher. |
 | `matonos-mount-helper` | **Dropped** | It is a no-op/vestigial helper and is removed from the launch chain. |
-| `matonos-flatpak-store` | **Replaced by static musl binary** | linuxd execs the unchanged APEX path; Linux credential, loop, mount and fs-verity syscalls need no Android library. It still runs in the dedicated installer domain and AID 2902. |
+| `matonos-flatpak-store` | **Static musl staging helper** | linuxd uses only `stage` to pull signed refs into the shared staging repo. It drops to AID 2902 before execing the fixed Flatpak wrapper. |
 | APEX `lib64` set | **Dropped** | The Flatpak, OSTree and bwrap payload is static; no APEX private shared libraries remain. |
 | Flatpak runtime triggers | **Dropped** | Apps are installed by users; trigger scripts are not shipped or run. |
 
@@ -124,8 +124,8 @@ The expected APEX files are:
 - `bin/matonos-bwrap` and `bin/matonos-app-exec`, stripped static-musl launch
   helpers;
 - `bin/flatpak-env-wrapper`, the static-musl host session launcher;
-- `bin/matonos-flatpak-store`, the static-musl installer helper, retaining
-  its AID 2902 and existing SELinux label and linuxd exec path;
+- `bin/matonos-flatpak-store`, the stage-only static-musl helper, retaining
+  its AID 2902 and dedicated SELinux transition;
 - `etc/flatpak/flathub.gpg` and
   `etc/flatpak/remotes.d/flathub.flatpakrepo`.
 
@@ -167,19 +167,13 @@ still needs an image build and runtime validation for:
 1. APEX assembly/signing and confirmation that all five binaries land at the
    expected paths, with no applet alias symlinks in `bin/`.
 2. SELinux file-context compilation for all five static binaries. Preserve the
-   `matonos-flatpak-store` installer transition and the existing launch
-   transitions and labels.
+   stage-only `matonos-flatpak-store` transition and the launch transitions.
 3. Launcher namespace setup on-device: Conscrypt CA projection, `/var/tmp`,
    generated passwd/group, and DNS forwarder address. For app launches linuxd
    supplies the per-app forwarder address as `MATON_FLATPAK_DNS`; the launcher
    writes it into a private generated `resolv.conf`, which `matonos-bwrap`
-   binds read-only at `/etc/resolv.conf` in the app namespace. Installer pulls
-   still need a linuxd-supplied installer forwarder address and a private
-   mount-namespace resolver handoff. The current publish path does not provide
-   that address, and installer mode skips the generated resolver file; do not
-   enable online installer pulls until this is wired. Installer pulls must
-   never read Android's host resolver file or use upstream DNS addresses
-   directly.
+   binds read-only at `/etc/resolv.conf` in the app namespace. Staging pulls
+   use Flatpak's configured remote and signature verification.
 4. User remote-add, signature verification, fresh Flathub pull, offline
    install, and read-only runtime/app execution with no D-Bus service mounted.
 5. End-to-end graphical portal behavior after the compositor Java portal
