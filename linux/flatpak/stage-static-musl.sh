@@ -40,6 +40,17 @@ for name in matonos-flatpak matonos-bwrap matonos-app-exec flatpak-env-wrapper m
     install -m755 "$out/$name" "$stage/$name"
 done
 
+license_src="$APEX_REPO/flatpak/licenses"
+license_dst="$TREE/linux/flatpak/licenses"
+[ -s "$license_src/NOTICE" ] && [ -s "$license_src/linked-components.json" ] || {
+    echo "ERROR: generated Flatpak license records are missing; run the gated static build first" >&2; exit 1;
+}
+rm -rf "$license_dst"
+mkdir -p "$license_dst"
+cp "$APEX_REPO/flatpak/LICENSES.md" "$license_dst/LICENSES.md"
+cp "$license_src/NOTICE" "$license_src/linked-components.json" "$license_dst/"
+find "$license_src" -maxdepth 1 -type f -name '*.txt' -exec cp '{}' "$license_dst/" \;
+
 source_file="$TREE/linux/flatpak/prebuilt/static/SOURCE"
 awk '/^matonos-bwrap$/ { exit } { print }' "$source_file" > "$source_file.tmp"
 {
@@ -59,6 +70,8 @@ awk '/^matonos-bwrap$/ { exit } { print }' "$source_file" > "$source_file.tmp"
         "$(sha256sum "$stage/matonos-flatpak-store" | awk '{print $1}')" \
         "$(sha256sum "$TREE/install/linuxd/FlatpakStore.c" | awk '{print $1}')" \
         "$(sha256sum "$TREE/install/linuxd/FlatpakStore.h" | awk '{print $1}')"
+    printf '\nAPEX license notices and per-component license texts\n'
+    (cd "$license_dst" && find . -type f ! -name SOURCE.sha256 -print0 | sort -z | xargs -0 sha256sum)
 } > "$source_file"
 rm -f "$source_file.tmp"
 "$APEX_REPO/flatpak/check-static-apex.sh" "$stage"

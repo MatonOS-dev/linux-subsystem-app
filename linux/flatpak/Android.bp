@@ -89,6 +89,230 @@ prebuilt_etc {
     installable: false,
 }
 
+prebuilt_etc {
+    name: "matonos-flatpak-license-dullpgp-txt",
+    src: "licenses/DullPGP.txt",
+    filename: "DullPGP.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-licenses-md",
+    src: "licenses/LICENSES.md",
+    filename: "LICENSES.md",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-notice",
+    src: "licenses/NOTICE",
+    filename: "NOTICE",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-boringssl-txt",
+    src: "licenses/boringssl.txt",
+    filename: "boringssl.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-bubblewrap-txt",
+    src: "licenses/bubblewrap.txt",
+    filename: "bubblewrap.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-bzip2-txt",
+    src: "licenses/bzip2.txt",
+    filename: "bzip2.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-curl-txt",
+    src: "licenses/curl.txt",
+    filename: "curl.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-flatpak-txt",
+    src: "licenses/flatpak.txt",
+    filename: "flatpak.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-gcc-libgcc-txt",
+    src: "licenses/gcc-libgcc.txt",
+    filename: "gcc-libgcc.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-gcc-libstdc-txt",
+    src: "licenses/gcc-libstdc++.txt",
+    filename: "gcc-libstdc++.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-gettext-libintl-txt",
+    src: "licenses/gettext-libintl.txt",
+    filename: "gettext-libintl.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-glib-txt",
+    src: "licenses/glib.txt",
+    filename: "glib.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-json-glib-txt",
+    src: "licenses/json-glib.txt",
+    filename: "json-glib.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-libarchive-txt",
+    src: "licenses/libarchive.txt",
+    filename: "libarchive.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-libcap-txt",
+    src: "licenses/libcap.txt",
+    filename: "libcap.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-libeconf-txt",
+    src: "licenses/libeconf.txt",
+    filename: "libeconf.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-libffi-txt",
+    src: "licenses/libffi.txt",
+    filename: "libffi.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-libseccomp-txt",
+    src: "licenses/libseccomp.txt",
+    filename: "libseccomp.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-libxml2-txt",
+    src: "licenses/libxml2.txt",
+    filename: "libxml2.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-linked-components-json",
+    src: "licenses/linked-components.json",
+    filename: "linked-components.json",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-lz4-txt",
+    src: "licenses/lz4.txt",
+    filename: "lz4.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-musl-txt",
+    src: "licenses/musl.txt",
+    filename: "musl.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-ostree-txt",
+    src: "licenses/ostree.txt",
+    filename: "ostree.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-pcre2-txt",
+    src: "licenses/pcre2.txt",
+    filename: "pcre2.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-util-linux-libs-txt",
+    src: "licenses/util-linux-libs.txt",
+    filename: "util-linux-libs.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-xz-txt",
+    src: "licenses/xz.txt",
+    filename: "xz.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-zlib-txt",
+    src: "licenses/zlib.txt",
+    filename: "zlib.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-license-zstd-txt",
+    src: "licenses/zstd.txt",
+    filename: "zstd.txt",
+    sub_dir: "licenses",
+    installable: false,
+}
+
 apex_key {
     name: "com.matonos.flatpak.key",
     public_key: "com.matonos.flatpak.avbpubkey",
@@ -114,5 +338,33 @@ apex {
     prebuilts: [
         "matonos-flatpak-flathub-key",
         "matonos-flatpak-flathub-remote",
+        "matonos-flatpak-license-dullpgp-txt",
+        "matonos-flatpak-license-licenses-md",
+        "matonos-flatpak-license-notice",
+        "matonos-flatpak-license-boringssl-txt",
+        "matonos-flatpak-license-bubblewrap-txt",
+        "matonos-flatpak-license-bzip2-txt",
+        "matonos-flatpak-license-curl-txt",
+        "matonos-flatpak-license-flatpak-txt",
+        "matonos-flatpak-license-gcc-libgcc-txt",
+        "matonos-flatpak-license-gcc-libstdc-txt",
+        "matonos-flatpak-license-gettext-libintl-txt",
+        "matonos-flatpak-license-glib-txt",
+        "matonos-flatpak-license-json-glib-txt",
+        "matonos-flatpak-license-libarchive-txt",
+        "matonos-flatpak-license-libcap-txt",
+        "matonos-flatpak-license-libeconf-txt",
+        "matonos-flatpak-license-libffi-txt",
+        "matonos-flatpak-license-libseccomp-txt",
+        "matonos-flatpak-license-libxml2-txt",
+        "matonos-flatpak-license-linked-components-json",
+        "matonos-flatpak-license-lz4-txt",
+        "matonos-flatpak-license-musl-txt",
+        "matonos-flatpak-license-ostree-txt",
+        "matonos-flatpak-license-pcre2-txt",
+        "matonos-flatpak-license-util-linux-libs-txt",
+        "matonos-flatpak-license-xz-txt",
+        "matonos-flatpak-license-zlib-txt",
+        "matonos-flatpak-license-zstd-txt",
     ],
 }

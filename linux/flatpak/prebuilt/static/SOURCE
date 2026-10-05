@@ -43,3 +43,33 @@ matonos-flatpak-store
   Source SHA-256: b7aa7843708de56e9901e4545dba90f7abf1466ed6afe54d8d14ae7a7ee74b1e
   Header SHA-256: 9ac6531bac02cb10f3d2822bac7f3e75814cd2a8cfed66486cd2bcec4621e4b3
   Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
+
+APEX license notices and per-component license texts
+4bb7bd7b7939a13db322b8a87ee2eaf80ad73df157606aeef614d8d26ab78c51  ./DullPGP.txt
+1bdfe565cb9f0697e9d023e83d64d82c681e43c85a2d41e40720f02cd2e1aaba  ./LICENSES.md
+68cb4a4324f49adfa94f481085b76121c654df9854871e82fb01d7aeec172848  ./NOTICE
+ab539efae8aeb083b1c3f83839cd8be99ba1afe89477fdf0cb87a28be6a459f2  ./boringssl.txt
+8c7c26c330c32866b29a555670d09961b9fbd2809d7967ed96002b08218cd237  ./bubblewrap.txt
+c4d088cac240ccff76d38b38c38369dab4b30da834883dc364aee5c620e27e4b  ./bzip2.txt
+c427dcee6c1f9abf64590cbe971e85e97a176323b4ee99aa5796dfdcb4a6cae3  ./curl.txt
+4bb7bd7b7939a13db322b8a87ee2eaf80ad73df157606aeef614d8d26ab78c51  ./flatpak.txt
+10e6c973b95aae276cc5ad72b20d9cbc13f5394a6c8a9f36378a0e8e94942eff  ./gcc-libgcc.txt
+10e6c973b95aae276cc5ad72b20d9cbc13f5394a6c8a9f36378a0e8e94942eff  ./gcc-libstdc++.txt
+d77d6aefb3803bb23793f4bcf0a4dd42e27ae620104082aed34668bde84d33fc  ./gettext-libintl.txt
+3685110da0865cf2d8ce69b846b76cd3637810a4bff188e9f19ed4b0acd1f029  ./glib.txt
+0d4da1bbbdc95d3e32b3616d526dbfa3f7e6b0c6427a756515ca2f3a0633b143  ./json-glib.txt
+b99b03dc9012b16cde08df9d64621eff4b43d1504cae8004dd533b6e58f0f519  ./libarchive.txt
+e42d64eecf5526f5fa8ee2ca63bc9cb74260e05fbf80b5f551a840d31a7234b1  ./libcap.txt
+670b11068e80a36b271101daba457bfa3cf05839da80696fc880fde54284c580  ./libeconf.txt
+d93761898e8285921b75cb543b2d404d1858cb7b9bf5c58499f9b443fdfc9eb7  ./libffi.txt
+0ebae952320b60090226b146961fb59c8ac6b9a3fd0d415a6d5083ef051415d3  ./libseccomp.txt
+f2b142c3e0d46a7336b2076a2e5c68fc376c6a480a62082509cb5ed77e410f18  ./libxml2.txt
+fb17abb9fd896f941a67fae87b907287f28fd431f3bdb64d5d4dea9d9688b6ef  ./linked-components.json
+c92ec991e99ce2f187c4bc28614aa3bc6995544d6ded7ab6144b4400d3324df1  ./lz4.txt
+f27a6160166106485e7c9958289d403621294dfd78873cf83b69b12a9d05f1aa  ./musl.txt
+48bfbd45feae3d392c52f6acc29e9782c2452d82de515789760bc7ad07238d99  ./ostree.txt
+32ac464eabc2db9184a77773ab9a1a2c04636b12ee865b40e0524246a74bf3db  ./pcre2.txt
+db11eeb1d2f8a6ccae0519e46055d3c127fd7c8cdc12d6994354bb4d080f1b2a  ./util-linux-libs.txt
+c2c34792ecc606cc791d45093f1f0719f08973cd6dad91377a6006c5b05aba56  ./xz.txt
+219ac8fa1a35a5446979b10fb33090485ec4b369fceaa5cac44a24c04ac3fefd  ./zlib.txt
+3781d9241318e55d8096184be5473454ce0d8d42aa28a3b184b1b7c958b30460  ./zstd.txt
