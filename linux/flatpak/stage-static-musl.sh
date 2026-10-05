@@ -4,8 +4,9 @@ set -eu
 TREE=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 APEX_REPO=${MATONOS_APEXS_REPO:-$HOME/matonos/repos/MatonOS_apexs}
 ARCH=${ARCH:-$(uname -m)}
-[ "$(git -C "$TREE" branch --show-current)" = codex/store-strip ] || {
-    echo "ERROR: expected codex/store-strip worktree" >&2; exit 2;
+branch=$(git -C "$TREE" branch --show-current)
+[ "$branch" = main ] || {
+    echo "ERROR: run stage-static-musl.sh from the main worktree (found ${branch:-detached})" >&2; exit 2;
 }
 [ -d "$APEX_REPO/.git" ] || { echo "Missing MatonOS_apexs repo: $APEX_REPO" >&2; exit 2; }
 

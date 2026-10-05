@@ -6,6 +6,8 @@ build/
 .kotlin/
 .expo/
 .metro-health-check*
+__pycache__/
+*.pyc
 *.apk
 *.aab
 *.jks
