@@ -2,7 +2,7 @@
 
 `flatpak.mk` includes the one updatable `com.matonos.flatpak` APEX. Its static
 multicall ELF supplies Flatpak, OSTree and bubblewrap. The bionic
-`flatpak-env-wrapper` and `matonos-flatpak-store` remain outside the musl app
+`flatpak-env-wrapper` and the stage-only `matonos-flatpak-store` remain outside
 namespace. The compositor owns portals and the D-Bus session bus; APEX portal,
 proxy and GnuPG executables are removed.
 

@@ -38,10 +38,10 @@ flatpak-env-wrapper
   Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
 
 matonos-flatpak-store
-  SHA-256: 2be0f8b06f9aa1d50c695c29740269232a3cb612f45e125787cc21a672e3c87e
+  SHA-256: 4cc721bd5e4bb1d18d50f18ece973d81f4563c1c48d80254974bdafbc404caba
   Sources: install/linuxd/FlatpakStore.c and FlatpakStore.h
-  Source SHA-256: b7aa7843708de56e9901e4545dba90f7abf1466ed6afe54d8d14ae7a7ee74b1e
-  Header SHA-256: 9ac6531bac02cb10f3d2822bac7f3e75814cd2a8cfed66486cd2bcec4621e4b3
+  Source SHA-256: c020ac3c1900df713a6cac8abaf43b54bb8d3fd44a3060d49548078571b10de8
+  Header SHA-256: 250916cc744cffd492d88519c943215773546ffb0a96d26ab8202b97ba44ff28
   Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
 
 APEX license notices and per-component license texts

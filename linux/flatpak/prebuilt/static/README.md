@@ -7,7 +7,8 @@ inputs, build in the pinned Alpine root, and stage the output from
 copies. `static/SOURCE` records artifact and source SHA-256 hashes. The five
 APEX binaries are `matonos-flatpak`, `matonos-bwrap`, `matonos-app-exec`,
 `flatpak-env-wrapper`, and `matonos-flatpak-store`; all are stripped static
-musl PIE files. The host-only launch probes are built in the Alpine output
+musl PIE files. `matonos-flatpak-store` supports only signed-ref staging and
+`selftest`. The host-only launch probes are built in the Alpine output
 directory and are not staged into the APEX.
 
 The multicall binary must provide Flatpak 1.16.6, OSTree 2025.7 and

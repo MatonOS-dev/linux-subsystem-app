@@ -4,8 +4,8 @@ set -eu
 TREE=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 APEX_REPO=${MATONOS_APEXS_REPO:-$HOME/matonos/repos/MatonOS_apexs}
 ARCH=${ARCH:-$(uname -m)}
-[ "$(git -C "$TREE" branch --show-current)" = static-flatpak-apex ] || {
-    echo "ERROR: expected static-flatpak-apex worktree" >&2; exit 2;
+[ "$(git -C "$TREE" branch --show-current)" = codex/store-strip ] || {
+    echo "ERROR: expected codex/store-strip worktree" >&2; exit 2;
 }
 [ -d "$APEX_REPO/.git" ] || { echo "Missing MatonOS_apexs repo: $APEX_REPO" >&2; exit 2; }
 
