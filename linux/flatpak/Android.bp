@@ -19,33 +19,38 @@ cc_prebuilt_binary {
     check_elf_files: false,
 }
 
-// The namespace entrypoint remains a normal Android process. It prepares
-// the host-side launch handoff before the static stack creates its musl root.
-cc_binary {
-    name: "matonos-flatpak-launcher",
-    srcs: ["flatpak-env-wrapper.c"],
-    local_include_dirs: ["."],
-    system_ext_specific: true,
-    apex_available: ["com.matonos.flatpak"],
-    min_sdk_version: "37",
-    compile_multilib: "64",
-    cflags: [
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        "-D_GNU_SOURCE",
-    ],
-    stem: "flatpak-env-wrapper",
-}
-
-// These two launch-chain helpers execute after entering the musl-only root.
-// Stage stripped static-musl files alongside the multicall payload. Their
-// canonical sources remain in this directory; prebuilt/static/SOURCE records
-// source and artifact hashes.
+// The launch-chain helpers are all stripped static-musl prebuilts staged by
+// stage-static-musl.sh. Source and artifact hashes are in prebuilt/static/SOURCE.
 cc_prebuilt_binary {
     name: "matonos-bwrap-static-prebuilt",
     srcs: ["prebuilt/static/x86_64/matonos-bwrap"],
     stem: "matonos-bwrap",
+    system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    compile_multilib: "64",
+    strip: {
+        none: true,
+    },
+    check_elf_files: false,
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-launcher-static-prebuilt",
+    srcs: ["prebuilt/static/x86_64/flatpak-env-wrapper"],
+    stem: "flatpak-env-wrapper",
+    system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    compile_multilib: "64",
+    strip: {
+        none: true,
+    },
+    check_elf_files: false,
+}
+
+cc_prebuilt_binary {
+    name: "matonos-flatpak-store-static-prebuilt",
+    srcs: ["prebuilt/static/x86_64/matonos-flatpak-store"],
+    stem: "matonos-flatpak-store",
     system_ext_specific: true,
     apex_available: ["com.matonos.flatpak"],
     compile_multilib: "64",
@@ -101,10 +106,10 @@ apex {
     min_sdk_version: "37",
     binaries: [
         "matonos-flatpak-static-prebuilt",
-        "matonos-flatpak-launcher",
+        "matonos-flatpak-launcher-static-prebuilt",
         "matonos-bwrap-static-prebuilt",
         "matonos-app-exec-static-prebuilt",
-        "matonos-flatpak-store",
+        "matonos-flatpak-store-static-prebuilt",
     ],
     prebuilts: [
         "matonos-flatpak-flathub-key",

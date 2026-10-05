@@ -7,12 +7,17 @@ if [[ $# != 2 ]]; then
 fi
 WORKTREE=$(cd "$(dirname "$0")/../../.." && pwd)
 STATIC=${MATONOS_FLATPAK_TEST_BINARY:-$WORKTREE/linux/flatpak/prebuilt/static/x86_64/matonos-flatpak}
+LAUNCHER_PROBE=${MATONOS_FLATPAK_LAUNCHER_PROBE:-}
 SYSTEM_INSTALL=$(realpath "$1")
 USER_INSTALL=$(realpath "$2")
 [[ -x $STATIC && -d $SYSTEM_INSTALL && -d $USER_INSTALL ]] || {
   echo "static Flatpak binary and both published installs are required" >&2
   exit 2
 }
+if [[ -n $LAUNCHER_PROBE && ! -x $LAUNCHER_PROBE ]]; then
+  echo "static launcher probe is not executable: $LAUNCHER_PROBE" >&2
+  exit 2
+fi
 command -v strace >/dev/null || { echo "strace is required for the exec audit" >&2; exit 2; }
 
 TMP=$(mktemp -d "$WORKTREE/.flatpak-launch-test.XXXXXX")
@@ -56,20 +61,31 @@ test ! -w /app && test ! -w /usr
 ! touch /app/.matonos-write-probe 2>/dev/null
 ! touch /usr/.matonos-write-probe 2>/dev/null
 printf "launch-chain-probe-ok\\n"'
-env -u AT_SPI_BUS_ADDRESS \
-  MATONOS_BWRAP_PROBE_ROOT="$TMP" \
-  FLATPAK_SYSTEM_DIR="$SYSTEM_INSTALL" \
-  FLATPAK_USER_DIR="$USER_INSTALL" \
-  FLATPAK_BWRAP="$TMP/matonos-bwrap" \
-  FLATPAK_DBUSPROXY="$TMP/should-not-start-xdg-dbus-proxy" \
-  DBUS_SESSION_BUS_ADDRESS="unix:path=$TMP/session-bus.sock" \
-  strace -f -e trace=execve -o "$TMP/exec.log" \
-    "$TMP/bin/flatpak" run --user --command=sh --no-a11y-bus \
-    org.gnome.Calculator -c "$probe" > "$TMP/app.log" 2>&1 || {
+run_probe() {
+  env -u AT_SPI_BUS_ADDRESS \
+    MATONOS_BWRAP_PROBE_ROOT="$TMP" \
+    FLATPAK_SYSTEM_DIR="$SYSTEM_INSTALL" \
+    FLATPAK_USER_DIR="$USER_INSTALL" \
+    FLATPAK_BWRAP="$TMP/matonos-bwrap" \
+    FLATPAK_DBUSPROXY="$TMP/should-not-start-xdg-dbus-proxy" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$TMP/session-bus.sock" \
+    strace -f -e trace=execve -o "$TMP/exec.log" "$@" > "$TMP/app.log" 2>&1
+}
+if [[ -n $LAUNCHER_PROBE ]]; then
+  run_probe "$LAUNCHER_PROBE" --host-probe "$STATIC" run --user --command=sh --no-a11y-bus \
+    org.gnome.Calculator -c "$probe" || {
       cat "$TMP/app.log" >&2
       cat "$TMP/exec.log" >&2
       exit 1
     }
+else
+  run_probe "$TMP/bin/flatpak" run --user --command=sh --no-a11y-bus \
+    org.gnome.Calculator -c "$probe" || {
+      cat "$TMP/app.log" >&2
+      cat "$TMP/exec.log" >&2
+      exit 1
+    }
+fi
 grep -F 'launch-chain-probe-ok' "$TMP/app.log" >/dev/null || {
   cat "$TMP/app.log" >&2
   echo "sandbox probe did not report success" >&2
@@ -80,4 +96,4 @@ if grep -F 'xdg-dbus-proxy' "$TMP/exec.log" >/dev/null; then
   echo "Flatpak attempted to execute a D-Bus proxy" >&2
   exit 1
 fi
-echo "PASS real static Flatpak launch: broker socket bind, no a11y address, no proxy exec, no binder nodes, read-only app/runtime"
+echo "PASS real static Flatpak launch: broker socket bind, no a11y address, no proxy exec, no binder nodes, read-only app/runtime${LAUNCHER_PROBE:+, static-musl launcher handoff}"

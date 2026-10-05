@@ -385,6 +385,21 @@ static int __attribute__((unused)) start_session_portal(int directory, int x11_d
     snprintf(bus,size,"unix:path=" SESSION_BUS_DIRECTORY "/bus",owner);return 0;
 }
 
+#ifdef MATONOS_HOST_LAUNCH_PROBE
+int main(int argc, char** argv) {
+    if (argc < 3 || strcmp(argv[1], "--host-probe")) {
+        fprintf(stderr, "usage: flatpak-env-wrapper-host-probe --host-probe STATIC_FLATPAK [args...]\n");
+        return 2;
+    }
+    char** child = calloc((size_t)argc, sizeof(*child));
+    if (!child) return 127;
+    child[0] = (char*)"flatpak";
+    for (int i = 3; i < argc; i++) child[i - 2] = argv[i];
+    execv(argv[2], child);
+    perror("flatpak-env-wrapper-host-probe: exec static Flatpak");
+    return 127;
+}
+#else
 int main(int argc, char** argv) {
     (void)argc;
     /* linuxd supplies the multicall applet name in argv[0]. */
@@ -593,3 +608,4 @@ int main(int argc, char** argv) {
     perror("matonos-flatpak: exec failed");
     return 127;
 }
+#endif

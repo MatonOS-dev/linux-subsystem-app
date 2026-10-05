@@ -30,3 +30,16 @@ matonos-app-exec
   Source SHA-256: c3787e635df9544cef07b3d6b66883c6f79658551031533ce955ef38c8edbff4
   Header SHA-256: c5814108b6ff9884abef93252b1fad3736f8b2a0f6bfee9465e8bacc27308744
   Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
+
+flatpak-env-wrapper
+  SHA-256: 46596d2c9108b909571d0bc73cdd327bd96b970386d0104726647380f78cd508
+  Sources: linux/flatpak/flatpak-env-wrapper.c and Linux session headers
+  Source SHA-256: c79bb8d40b605ad09631425bf823df52ca67e735e14e1cee84b860b075c24e44
+  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
+
+matonos-flatpak-store
+  SHA-256: 2be0f8b06f9aa1d50c695c29740269232a3cb612f45e125787cc21a672e3c87e
+  Sources: install/linuxd/FlatpakStore.c and FlatpakStore.h
+  Source SHA-256: b7aa7843708de56e9901e4545dba90f7abf1466ed6afe54d8d14ae7a7ee74b1e
+  Header SHA-256: 9ac6531bac02cb10f3d2822bac7f3e75814cd2a8cfed66486cd2bcec4621e4b3
+  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
