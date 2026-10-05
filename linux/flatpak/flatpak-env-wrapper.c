@@ -115,6 +115,18 @@ static int valid_dns_server(const char* server) {
     return strlen(zone+1)<16;
 }
 
+static int install_directory_uid(const char* path, unsigned* result) {
+    unsigned uid = 0;
+    char trailing;
+    char expected[128];
+    if (!path || sscanf(path, "/data/matonos/linux/apps/%u%c", &uid, &trailing) != 1 ||
+            uid % 100000 < 10000 || uid % 100000 > 19999) return 0;
+    snprintf(expected, sizeof(expected), "/data/matonos/linux/apps/%u", uid);
+    if (strcmp(path, expected)) return 0;
+    *result = uid;
+    return 1;
+}
+
 static int monitor_file(int directory, const char* name, const char* text) {
     int fd=openat(directory,name,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW,0644);
     if(fd<0)return -1;
@@ -387,6 +399,25 @@ int main(int argc, char** argv) {
         perror("matonos-flatpak: unverified app owner");return 127;
     }
     if(owned){char uid[32];snprintf(uid,sizeof(uid),"%u",app.uid);if(setenv("MATON_APP_UID",uid,1))return 127;}
+    char flatpak_system_dir[128], flatpak_user_dir[128];
+    const char* supplied_system_dir=getenv("FLATPAK_SYSTEM_DIR");
+    const char* supplied_user_dir=getenv("FLATPAK_USER_DIR");
+    if(owned) {
+        unsigned runtime_install_uid=0;
+        if(!install_directory_uid(supplied_system_dir,&runtime_install_uid) ||
+                runtime_install_uid==(unsigned)app.uid ||
+                runtime_install_uid/100000!=(unsigned)app.uid/100000 || !supplied_user_dir ||
+                strcmp(supplied_user_dir,app.data_dir)) {
+            fprintf(stderr,"matonos-flatpak: invalid installation roots for verified app\n");return 127;
+        }
+        snprintf(flatpak_system_dir,sizeof(flatpak_system_dir),"%s",supplied_system_dir);
+        snprintf(flatpak_user_dir,sizeof(flatpak_user_dir),"%s",supplied_user_dir);
+    } else {
+        snprintf(flatpak_system_dir,sizeof(flatpak_system_dir),"%s",
+                supplied_system_dir ? supplied_system_dir : "/data/matonos/linux/flatpak");
+        snprintf(flatpak_user_dir,sizeof(flatpak_user_dir),"%s",
+                supplied_user_dir ? supplied_user_dir : "/data/matonos/linux/flatpak-user");
+    }
     const char* display = getenv("WAYLAND_DISPLAY");
     const char* bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
     if(!installer_mode) {
@@ -470,9 +501,9 @@ int main(int argc, char** argv) {
         setenv("HOME", "/data/matonos/linux/flatpak-data", 1) != 0 ||
         setenv("TMPDIR", "/tmp", 1) != 0 ||
         setenv("XDG_DATA_HOME", "/data/matonos/linux/flatpak-data/.local/share", 1) != 0 ||
-        setenv("FLATPAK_SYSTEM_DIR", installer_mode ? "/data/matonos/linux/staging" : "/data/matonos/linux/flatpak", 1) != 0 ||
+        setenv("FLATPAK_SYSTEM_DIR", installer_mode ? "/data/matonos/linux/staging" : flatpak_system_dir, 1) != 0 ||
         setenv("FLATPAK_SYSTEM_CACHE_DIR", "/data/matonos/linux/cache", 1) != 0 ||
-        setenv("FLATPAK_USER_DIR", "/data/matonos/linux/flatpak-user", 1) != 0 ||
+        setenv("FLATPAK_USER_DIR", flatpak_user_dir, 1) != 0 ||
         setenv("FLATPAK_DOWNLOAD_TMPDIR", "/tmp", 1) != 0 ||
         setenv("SSL_CERT_DIR", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
         setenv("CURL_CA_BUNDLE", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
@@ -514,7 +545,7 @@ int main(int argc, char** argv) {
         }
         if(setenv("HOME",app.home,1)||
            setenv("XDG_RUNTIME_DIR",app.home,1)||setenv("FLATPAK_SYSTEM_CACHE_DIR",app.home,1)||
-           setenv("FLATPAK_USER_DIR",app.home,1))return 127;
+           setenv("FLATPAK_USER_DIR",app.data_dir,1))return 127;
         char data[160];snprintf(data,sizeof(data),"%s/.local/share",app.home);
         if(setenv("XDG_DATA_HOME",data,1))return 127;
         pid_t child=initial?fork():0;
