@@ -37,7 +37,12 @@ public final class StubGenerator {
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.compositor.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.compositor.stub.StubService";
+    /** Unprivileged entry point (the store uses it): asks the bridge to install this stub's Flatpak; no-op when installed. */
+    public static final String INSTALL_ACTIVITY = "org.matonos.compositor.stub.InstallActivity";
+    /** Action the store resolves (by its FLATPAK_REF metadata) to find a new stub's install activity. */
+    public static final String INSTALL_ACTION = "org.matonos.linuxhost.INSTALL";
     public static final String REF_META = "org.matonos.linuxhost.FLATPAK_REF";
+    public static final String REMOTE_META = "org.matonos.linuxhost.FLATPAK_REMOTE";
     public static final String MIN_INTERFACE_META = "org.matonos.linuxhost.MIN_INTERFACE_VERSION";
     /** App OSTree commit checksum (64 lowercase hex chars). */
     public static final String APP_COMMIT_META = "org.matonos.linuxhost.APP_COMMIT";
@@ -131,12 +136,21 @@ public final class StubGenerator {
     public static File generate(File workDir, String ref, File desktopFile, byte[] iconPng,
             List<String> permissions, String packageName, File output, CommitInfo commitInfo,
             Integer minInterfaceVersion) throws Exception {
+        return generate(workDir, ref, "flathub", desktopFile, iconPng, permissions,
+                packageName, output, commitInfo, minInterfaceVersion);
+    }
+
+    public static File generate(File workDir, String ref, String remote, File desktopFile,
+            byte[] iconPng, List<String> permissions, String packageName, File output,
+            CommitInfo commitInfo, Integer minInterfaceVersion) throws Exception {
         if (workDir == null || desktopFile == null || !desktopFile.isFile())
             throw new IllegalArgumentException("Private work directory and readable .desktop file are required");
         if (desktopFile.length() > MAX_DESKTOP_BYTES) throw new IllegalArgumentException("Desktop entry is too large");
         if (iconPng == null || iconPng.length == 0 || iconPng.length > MAX_ICON_BYTES) throw new IllegalArgumentException("PNG icon size is invalid");
         if (!validRef(ref))
             throw new IllegalArgumentException("Invalid Flatpak ref");
+        if (remote == null || remote.length() > 128 || !remote.matches("[A-Za-z0-9._-]+"))
+            throw new IllegalArgumentException("Invalid Flatpak remote");
         if (packageName == null || packageName.length() > 255 || !packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
             throw new IllegalArgumentException("Invalid stub package name");
         if (output == null) throw new IllegalArgumentException("Output APK is required");
@@ -147,7 +161,7 @@ public final class StubGenerator {
         if (!workDir.isDirectory() && !workDir.mkdirs()) throw new IOException("Cannot create private work directory");
         File unsigned = File.createTempFile("matonos-stub-", ".unsigned.apk", workDir);
         try {
-            writeUnsigned(unsigned, packageName, entry, ref, iconPng, permissions, commitInfo,
+            writeUnsigned(unsigned, packageName, entry, ref, remote, iconPng, permissions, commitInfo,
                     minInterfaceVersion != null ? minInterfaceVersion : 2);
             sign(unsigned, output, getOrCreateKey());
             return output;
@@ -228,7 +242,7 @@ public final class StubGenerator {
         return component > 0 && component <= 63;
     }
 
-    private static void writeUnsigned(File file, String pkg, DesktopEntry entry, String ref,
+    private static void writeUnsigned(File file, String pkg, DesktopEntry entry, String ref, String remote,
             byte[] icon, List<String> permissions, CommitInfo commitInfo, int minInterfaceVersion) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
@@ -246,7 +260,7 @@ public final class StubGenerator {
             if (!validCommit(commitInfo.runtimeCommit))
                 throw new IllegalArgumentException("Invalid runtime commit checksum");
         }
-        BinaryManifest encoder = new BinaryManifest(pkg, entry, ref, cleanPermissions);
+        BinaryManifest encoder = new BinaryManifest(pkg, entry, ref, remote, cleanPermissions);
         encoder.commitInfo = commitInfo;
         encoder.minInterfaceVersion = minInterfaceVersion;
         byte[] manifest = encoder.encode();
@@ -256,7 +270,7 @@ public final class StubGenerator {
             put(zip, "resources.arsc", iconResourceTable(pkg));
             put(zip, "classes.dex", emptyDex());
             put(zip, "res/drawable/foreground.png", icon);
-            put(zip, "res/drawable/icon.xml", new BinaryManifest("", entry, "", Collections.emptyList()).adaptiveIcon());
+            put(zip, "res/drawable/icon.xml", new BinaryManifest("", entry, "", "flathub", Collections.emptyList()).adaptiveIcon());
         }
     }
 
@@ -295,7 +309,7 @@ public final class StubGenerator {
     }
 
     private static byte[] resourceStringPool(String... values) throws IOException {
-        BinaryManifest encoder = new BinaryManifest("",new DesktopEntry("",Collections.emptyList()),"",Collections.emptyList());
+        BinaryManifest encoder = new BinaryManifest("",new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
         for (String value: values) encoder.str(value);
         ByteArrayOutputStream out = new ByteArrayOutputStream(); encoder.writeStringPool(out); return out.toByteArray();
     }
@@ -384,17 +398,17 @@ public final class StubGenerator {
     private static final class BinaryManifest {
         private static final String ANDROID = "http://schemas.android.com/apk/res/android";
         private static final int ANDROID_URI = 0x01000000;
-        private final String pkg, label, ref;
+        private final String pkg, label, ref, remote;
         private final List<String> mimes, permissions;
         private final LinkedHashMap<String, Integer> strings = new LinkedHashMap<>();
         private final List<Chunk> nodes = new ArrayList<>();
-        BinaryManifest(String pkg, DesktopEntry entry, String ref, List<String> permissions) {
-            this.pkg = pkg; this.label = entry.name; this.ref = ref; this.mimes = entry.mimeTypes; this.permissions = permissions;
+        BinaryManifest(String pkg, DesktopEntry entry, String ref, String remote, List<String> permissions) {
+            this.pkg = pkg; this.label = entry.name; this.ref = ref; this.remote = remote; this.mimes = entry.mimeTypes; this.permissions = permissions;
         }
         CommitInfo commitInfo;
         int minInterfaceVersion = 2;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "activity", "exported", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.compositor.stub.StubActivity", "org.matonos.compositor.stub.StubService", "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, pkg, label, ref, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.compositor.stub.StubActivity", "org.matonos.compositor.stub.StubService", INSTALL_ACTIVITY, INSTALL_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             for (String mime : mimes) str(mime);
             // Pre-intern commit info values if present
@@ -417,8 +431,9 @@ public final class StubGenerator {
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true),new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
-            start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
+            start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", false), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
+            startEnd("meta-data", attrs(a("name", REMOTE_META), a("value", remote)));
             startEnd("meta-data", attrs(a("name", MIN_INTERFACE_META), ai("value", minInterfaceVersion)));
             if (commitInfo != null) {
                 startEnd("meta-data", attrs(a("name", APP_COMMIT_META), a("value", commitInfo.appCommit)));
@@ -437,6 +452,16 @@ public final class StubGenerator {
                 startEnd("data", attrs(a("mimeType", mime)));
                 end("intent-filter");
             }
+            end("activity");
+            // Stays enabled while the launcher is hidden, so the store can
+            // resume an install interrupted by a crash or power cut.
+            start("activity", null, attrs(a("name", INSTALL_ACTIVITY), ab("exported", true),
+                    new Attr("theme", "@android:style/Theme.Translucent.NoTitleBar", android.R.style.Theme_Translucent_NoTitleBar, 1)));
+            startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
+            start("intent-filter", null, attrs());
+            startEnd("action", attrs(a("name", INSTALL_ACTION)));
+            startEnd("category", attrs(a("name", "android.intent.category.DEFAULT")));
+            end("intent-filter");
             end("activity");
             startEnd("service", attrs(a("name", HOST_SERVICE), ab("exported", false)));
             end("application"); end("manifest"); namespace(false);
@@ -490,7 +515,7 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("version", "certDigest", "theme", "drawable", "name", "label", "icon", "exported", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("version", "certDigest", "theme", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
@@ -500,7 +525,7 @@ public final class StubGenerator {
                 case "version": return 0x01010519;
                 case "certDigest": return 0x01010548;
                 case "theme": return 0x01010000;
-                case "drawable": return 0x01010199; case "icon": return 0x01010002; case "name": return 0x01010003; case "label": return 0x01010001; case "exported": return 0x01010010;
+                case "drawable": return 0x01010199; case "icon": return 0x01010002; case "name": return 0x01010003; case "label": return 0x01010001; case "exported": return 0x01010010; case "enabled": return 0x0101000e;
                 case "hasCode": return 0x0101000c; case "required": return 0x0101028e; case "value": return 0x01010024;
                 case "mimeType": return 0x01010026; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
                 case "minSdkVersion": return 0x0101020c; case "targetSdkVersion": return 0x01010270; default: return 0;
