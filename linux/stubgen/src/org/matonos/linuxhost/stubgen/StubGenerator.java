@@ -506,7 +506,7 @@ public final class StubGenerator {
         private void writeStringPool(ByteArrayOutputStream out) throws IOException {
             ByteArrayOutputStream data = new ByteArrayOutputStream(); List<Integer> offsets = new ArrayList<>();
             for (String s : strings.keySet()) {
-                offsets.add(data.size()); byte[] utf8 = s.getBytes(StandardCharsets.UTF_8); write8Length(out, s.length()); write8Length(out, utf8.length); data.write(utf8); data.write(0);
+                offsets.add(data.size()); byte[] utf8 = s.getBytes(StandardCharsets.UTF_8); write8Length(data, s.length()); write8Length(data, utf8.length); data.write(utf8); data.write(0);
             }
             while ((data.size() & 3) != 0) data.write(0);
             int header = 28, start = header + offsets.size() * 4, size = start + data.size();

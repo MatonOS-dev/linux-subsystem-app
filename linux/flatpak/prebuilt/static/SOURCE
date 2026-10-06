@@ -1,75 +1,39 @@
 Target architecture: x86_64
 
-matonos-flatpak
-  SHA-256: 8537b5136427d44c7672eafe38afb9536d9501880ec71e61aefbd443cbf1b417
-  Build output: MatonOS-dev/MatonOS_apexs flatpak/build-static.sh
-  MatonOS_apexs commit: e7fe3de6d606b6fcb06e382ac6edb5939355bff8
-  Flatpak source fork: MatonOS-dev/flatpak, branch matonos/v26.10
-  Flatpak fork commit: 03e6b205d01c9560a829941d95065a7c683d9667
-  DullPGP source: MatonOS-dev/DullPGP
-  DullPGP commit: 195ed326465e898711012cd877556510f32d3fbc
-  Alpine inputs: v3.24.2; aports 3.24-stable commit d61fd049abbcf4948bcb0b1baf894bd17a1fb978
-  Versions: Flatpak 1.16.6; OSTree 2025.7; bubblewrap 0.12.0
-  BoringSSL: 0cd1f6a94b670e6b61af95a06e71e690ae8e3262
-  Linkage: static PIE; no PT_INTERP and no DT_NEEDED entries
-  Applet invocation: argv[0] flatpak/ostree/bwrap; no aliases staged
-  Flatpak system_bubblewrap: /apex/com.matonos.flatpak/bin/matonos-bwrap
-  GPG backend: DullPGP compatibility shim; no standalone gpg executable
+Built by MatonOS-dev/MatonOS_apexs 53214ff flatpak/build.sh (bionic, NDK r30, API 36).
 
-matonos-bwrap
-  SHA-256: b7d7fdf05c4063656bdd77a08dd38007947acbdd4169dcf5369e0a802a448701
-  Source: linux/flatpak/matonos-bwrap.c
-  Source SHA-256: 0dcda245d0a2e6a2818fead944745b0f21c4be1292a575f30b9edf4e0e4f537c
-  Header: linux/flatpak/controller-access.h
-  Header SHA-256: 6df97b53c6c7bf00e71d5deabb98be171c1d6accdefa491419ac88ccf04c4c8e
-  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
+flatpak-bionic source manifest
+# name|kind|location|revision-or-version|sha256
+# Flatpak is MatonOS-dev/flatpak branch matonos/v26.10 at the pinned commit below.
+glib|git|https://github.com/GNOME/glib.git|6f873bc0e6265995cebd797b969dcd5f548f91f6|-
+glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08f2dcb400|-
+ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-
+ostree-libglnx|git|https://github.com/GNOME/libglnx.git|b415d046880d585e5161bf230590543adeea4fe6|-
+ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462ef9e2657ca4ccd7667|-
+flatpak|git|https://github.com/MatonOS-dev/flatpak|a1a11b2451edfff78e2d1f8b034d4d5beae6d6ca|-
+flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
+variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
+bionic-fill|git|https://github.com/MatonOS-dev/bionic-fill.git|a8b3eef4b3f74e27eb0b16a339a106660938af03|-
+DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
+zstd|tar|https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz|1.5.7|eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+libxml2|tar|https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.2.tar.xz|2.15.2|c8b9bc81f8b590c33af8cc6c336dbff2f53409973588a351c95f1c621b13d09d
+json-glib|tar|https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.8.tar.xz|1.10.8|55c5c141a564245b8f8fbe7698663c87a45a7333c2a2c56f06f811ab73b212dd
+libxmlb|tar|https://github.com/hughsie/libxmlb/releases/download/0.3.29/libxmlb-0.3.29.tar.xz|0.3.29|448294be33bfae62f00fa66e506f1cae80237ce71b7ab6530aefa75005eeb08a
+libseccomp|tar|https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz|2.6.1|501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be
+libcap|tar|https://kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.76.tar.xz|2.76|629da4ab29900d0f7fcc36227073743119925fd711c99a1689bbf5c9b40c8e6f
+bubblewrap|tar|https://github.com/containers/bubblewrap/releases/download/v0.13.0/bubblewrap-0.13.0.tar.xz|0.13.0|4734237473c0e5d695e4e9034a34e43b2dbf5164655bd13fa59ae376b2b7a765
+boringssl|tar|https://sourceforge.net/projects/boringssl.mirror/files/0.20260929.0/boringssl-0.20260929.0.tar.gz/download|0.20260929.0|04da9ba0664e0a7f028e961c38d604f2cc6dac852a84ca0e51dc1fa051d4c8fe
+libarchive|tar|https://www.libarchive.org/downloads/libarchive-3.8.9.tar.xz|3.8.9|888c934f9d95648ecb9163dc8e23ab80a476ecb81a8f1154704a227b5b676dde
+curl|tar|https://curl.se/download/curl-8.22.0.tar.xz|8.22.0|f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+liblzma|tar|https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz|5.8.1|507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543
+meson|tar|https://github.com/mesonbuild/meson/releases/download/1.12.1/meson-1.12.1.tar.gz|1.12.1|ab0a6ca09f8ef70c564c8241fb5a23957886a0b53fb58412b5e07eaf07dba743
+libffi|tar|https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz|3.5.2|f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc
+pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pcre2-10.46.tar.bz2|10.46|15fbc5aba6beee0b17aecb04602ae39432393aba1ebd8e39b7cabf7db883299f
+e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
+gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
 
-matonos-app-exec
-  SHA-256: a6c388e524cfa18f768bf6b8658a4f6d879f73bdea4c53e30b7246f71dcfd5b7
-  Source: linux/flatpak/matonos-app-exec.c and install/linuxd/MatonMls.h
-  Source SHA-256: c3787e635df9544cef07b3d6b66883c6f79658551031533ce955ef38c8edbff4
-  Header SHA-256: c5814108b6ff9884abef93252b1fad3736f8b2a0f6bfee9465e8bacc27308744
-  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
-
-flatpak-env-wrapper
-  SHA-256: 4f2e1b8f914ab9c4a82e21ff2fa24895a29d121aedf9b805230a65f8082f261f
-  Sources: linux/flatpak/flatpak-env-wrapper.c and Linux session headers
-  Source SHA-256: ba41ad6db806b08ad42bd562beeb26b5f4c72376874ba674286059b76801dd8b
-  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
-
-matonos-flatpak-store
-  SHA-256: 5911bfec554e88f9e4c64c558b5c633a1e43661193f72e08fa292047749d327a
-  Sources: install/linuxd/FlatpakStore.c and FlatpakStore.h
-  Source SHA-256: ebcf9422ab5a6bd7b4f745910354add584a00621bc2cd7d6a83d014f6fb68f71
-  Header SHA-256: 250916cc744cffd492d88519c943215773546ffb0a96d26ab8202b97ba44ff28
-  Toolchain: Alpine 3.24 musl, cc, -Os -ffunction-sections -fdata-sections -static-pie -Wl,--gc-sections; strip --strip-all
-
-APEX license notices and per-component license texts
-ab539efae8aeb083b1c3f83839cd8be99ba1afe89477fdf0cb87a28be6a459f2  ./boringssl.txt
-8c7c26c330c32866b29a555670d09961b9fbd2809d7967ed96002b08218cd237  ./bubblewrap.txt
-c4d088cac240ccff76d38b38c38369dab4b30da834883dc364aee5c620e27e4b  ./bzip2.txt
-c427dcee6c1f9abf64590cbe971e85e97a176323b4ee99aa5796dfdcb4a6cae3  ./curl.txt
-4bb7bd7b7939a13db322b8a87ee2eaf80ad73df157606aeef614d8d26ab78c51  ./DullPGP.txt
-4bb7bd7b7939a13db322b8a87ee2eaf80ad73df157606aeef614d8d26ab78c51  ./flatpak.txt
-10e6c973b95aae276cc5ad72b20d9cbc13f5394a6c8a9f36378a0e8e94942eff  ./gcc-libgcc.txt
-10e6c973b95aae276cc5ad72b20d9cbc13f5394a6c8a9f36378a0e8e94942eff  ./gcc-libstdc++.txt
-d77d6aefb3803bb23793f4bcf0a4dd42e27ae620104082aed34668bde84d33fc  ./gettext-libintl.txt
-3685110da0865cf2d8ce69b846b76cd3637810a4bff188e9f19ed4b0acd1f029  ./glib.txt
-0d4da1bbbdc95d3e32b3616d526dbfa3f7e6b0c6427a756515ca2f3a0633b143  ./json-glib.txt
-b99b03dc9012b16cde08df9d64621eff4b43d1504cae8004dd533b6e58f0f519  ./libarchive.txt
-e42d64eecf5526f5fa8ee2ca63bc9cb74260e05fbf80b5f551a840d31a7234b1  ./libcap.txt
-670b11068e80a36b271101daba457bfa3cf05839da80696fc880fde54284c580  ./libeconf.txt
-d93761898e8285921b75cb543b2d404d1858cb7b9bf5c58499f9b443fdfc9eb7  ./libffi.txt
-0ebae952320b60090226b146961fb59c8ac6b9a3fd0d415a6d5083ef051415d3  ./libseccomp.txt
-f2b142c3e0d46a7336b2076a2e5c68fc376c6a480a62082509cb5ed77e410f18  ./libxml2.txt
-1bdfe565cb9f0697e9d023e83d64d82c681e43c85a2d41e40720f02cd2e1aaba  ./LICENSES.md
-fb17abb9fd896f941a67fae87b907287f28fd431f3bdb64d5d4dea9d9688b6ef  ./linked-components.json
-c92ec991e99ce2f187c4bc28614aa3bc6995544d6ded7ab6144b4400d3324df1  ./lz4.txt
-f27a6160166106485e7c9958289d403621294dfd78873cf83b69b12a9d05f1aa  ./musl.txt
-68cb4a4324f49adfa94f481085b76121c654df9854871e82fb01d7aeec172848  ./NOTICE
-48bfbd45feae3d392c52f6acc29e9782c2452d82de515789760bc7ad07238d99  ./ostree.txt
-32ac464eabc2db9184a77773ab9a1a2c04636b12ee865b40e0524246a74bf3db  ./pcre2.txt
-db11eeb1d2f8a6ccae0519e46055d3c127fd7c8cdc12d6994354bb4d080f1b2a  ./util-linux-libs.txt
-c2c34792ecc606cc791d45093f1f0719f08973cd6dad91377a6006c5b05aba56  ./xz.txt
-219ac8fa1a35a5446979b10fb33090485ec4b369fceaa5cac44a24c04ac3fefd  ./zlib.txt
-3781d9241318e55d8096184be5473454ce0d8d42aa28a3b184b1b7c958b30460  ./zstd.txt
+c464a176940edc53258421fa67ef45821ea5ac9eaa5a2d6059ba46028a9cec81  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak
+a3414e187fe9f0dd3aa360588079f1cc3f919dc09bbb2ac8bd03ded804422a92  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/flatpak-env-wrapper
+b71023c8b02bbca86dbc96bf5c552f4be8b6f783e9cc3ab0a3844bb8618ec4ce  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-bwrap
+766891522d0082c8fdb867a4a1260fa7abc67afc78def94fdf5372e77d131248  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-app-exec
+2f1ac650dfb9f9289e08948349b92de293006dddf2b6071d7a0577015ba01274  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak-store

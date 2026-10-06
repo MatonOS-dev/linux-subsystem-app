@@ -1,4 +1,9 @@
 {
   "name": "com.matonos.flatpak",
-  "version": 11606012
+  "version": 11906061,
+  "requireNativeLibs": [
+    "libc.so",
+    "libdl.so",
+    "libm.so"
+  ]
 }
