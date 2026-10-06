@@ -382,7 +382,7 @@ public final class StubGenerator {
         new ApkSigner.Builder(Collections.singletonList(signer)).setInputApk(input).setOutputApk(output)
                 // Stubs require API 30; v2/v3 cover their supported Android versions.
                 .setV1SigningEnabled(false).setV2SigningEnabled(true).setV3SigningEnabled(true)
-                .setV4SigningEnabled(false).setAlignmentPreserved(true).build().sign();
+                .setV4SigningEnabled(false).setAlignmentPreserved(false).build().sign();
     }
 
     private static final class KeyMaterial {
