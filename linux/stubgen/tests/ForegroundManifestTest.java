@@ -34,6 +34,11 @@ public final class ForegroundManifestTest {
             String value=service.equals("StubService")?"1073741824":"1";
             if(!block.contains("foregroundServiceType(0x01010599)="+value+" "))throw new AssertionError("Incorrect service type for "+service+"\n"+block);
         }
-        System.out.println("PASS: AOSP parses foreground-service type IDs, install dataSync and runtime specialUse");
+        // The host loader replaces the shared-library class loader; the ABI
+        // marker and extractNativeLibs are gone with it.
+        if(!xml.contains("appComponentFactory(0x0101057a)=\"org.matonos.compositor.stub.StubLoader\""))throw new AssertionError("Missing host StubLoader factory\n"+xml);
+        if(xml.contains("extractNativeLibs"))throw new AssertionError("extractNativeLibs must not be set\n"+xml);
+        if(!xml.contains("org.matonos.linuxhost"))throw new AssertionError("Missing host uses-library\n"+xml);
+        System.out.println("PASS: AOSP parses foreground-service type IDs, install dataSync, runtime specialUse and the host StubLoader factory");
     }
 }

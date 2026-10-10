@@ -1,13 +1,16 @@
 # Image-carrying launcher APKs
 
-Generated stubs include a tiny no-op Android shared library under the target
-ABI directory (`x86_64`, `arm64-v8a`, or `riscv64`). Its sole purpose is to make
-PackageManager assign the stub that ABI, which adds the shared-library provider
-APK's native library path to the process. The generator chooses from the
-device's `Build.SUPPORTED_ABIS`; the host machine's ABI is irrelevant. The
-markers can be regenerated from `native/abi_marker.c` with
-`native/build-abi-markers.sh`. `extractNativeLibs` is enabled so the marker can
-be extracted without APK page-alignment requirements.
+Generated stubs carry no native code. They declare `<uses-library
+org.matonos.linuxhost>` (host resources and package visibility) and name the
+host's `org.matonos.compositor.stub.StubLoader` as their
+`android:appComponentFactory`. The platform builds a stub's shared-library
+class loader from the image copy of the host even after the host is updated;
+StubLoader replaces it with a loader over the host APK PackageManager lists
+for the stub (`sharedLibraryFiles`, which follows updates), so the stub's
+classes and native libraries (`<apk>!/lib/<primary ABI>`) always come from the
+installed host. It accepts only the image path or an installed update of the
+host package; an update must match the system package's signature, so no
+extra certificate check is needed.
 
 MatonOS is based on AOSP. StubGenerator remains Java and retains its existing
 no-image generate signature. Its new overload accepts a file containing the

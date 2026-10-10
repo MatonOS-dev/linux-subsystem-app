@@ -2,7 +2,6 @@ package org.matonos.linuxhost.stubgen;
 
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
-import android.os.Build;
 
 import com.android.apksig.ApkSigner;
 
@@ -40,6 +39,8 @@ public final class StubGenerator {
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.compositor.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.compositor.stub.StubService";
+    /** Host-side AppComponentFactory: loads the stub's components from the current host APK. */
+    public static final String HOST_LOADER = "org.matonos.compositor.stub.StubLoader";
     /** Unprivileged entry point (the store uses it): asks the bridge to install this stub's Flatpak; no-op when installed. */
     public static final String INSTALL_ACTIVITY = "org.matonos.compositor.stub.InstallActivity";
     /** Action the store resolves (by its FLATPAK_REF metadata) to find a new stub's install activity. */
@@ -57,8 +58,6 @@ public final class StubGenerator {
     /** Runtime OSTree commit checksum (64 lowercase hex chars). */
     public static final String RUNTIME_COMMIT_META = "org.matonos.linuxhost.RUNTIME_COMMIT";
     private static final String KEY_ALIAS = "matonos_flatpak_stub_v1";
-    private static final String ABI_MARKER_RESOURCE_PREFIX = "/lib/";
-    private static final String ABI_MARKER_FILENAME = "/libmatonos-abi-marker.so";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
     private static final long MAX_DESKTOP_BYTES = 1024 * 1024;
 
@@ -286,44 +285,11 @@ public final class StubGenerator {
             // Supply a real drawable resource so Android launchers can resolve the app icon.
             put(zip, "resources.arsc", iconResourceTable(pkg));
             put(zip, "classes.dex", emptyDex());
-            putAbiMarker(zip);
             put(zip, "res/drawable/foreground.png", icon);
             put(zip, "res/drawable/icon.xml", new BinaryManifest("", entry, "", "flathub", Collections.emptyList()).adaptiveIcon());
         }
     }
 
-    /** Include a tiny target-ABI library so PackageManager assigns the stub an ABI. */
-    private static void putAbiMarker(ZipOutputStream zip) throws IOException {
-        String abi = null;
-        for (String candidate : Build.SUPPORTED_ABIS) {
-            if ("x86_64".equals(candidate) || "arm64-v8a".equals(candidate)
-                    || "riscv64".equals(candidate)) {
-                abi = candidate;
-                break;
-            }
-        }
-        if (abi == null) throw new IOException("No supported ABI marker for this device");
-        String resourcePath = ABI_MARKER_RESOURCE_PREFIX + abi + ABI_MARKER_FILENAME;
-        byte[] library;
-        try (java.io.InputStream in = StubGenerator.class.getResourceAsStream(resourcePath)) {
-            if (in == null) throw new IOException("Missing ABI marker resource: " + resourcePath);
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            byte[] buffer = new byte[4096];
-            int count;
-            while ((count = in.read(buffer)) != -1) bytes.write(buffer, 0, count);
-            library = bytes.toByteArray();
-        }
-        CRC32 crc = new CRC32();
-        crc.update(library);
-        ZipEntry entry = new ZipEntry("lib/" + abi + ABI_MARKER_FILENAME);
-        entry.setMethod(ZipEntry.STORED);
-        entry.setSize(library.length);
-        entry.setCompressedSize(library.length);
-        entry.setCrc(crc.getValue());
-        zip.putNextEntry(entry);
-        zip.write(library);
-        zip.closeEntry();
-    }
 
     /** Adaptive icon XML, foreground bitmap and background color resources.
      * The background must be a reference: density-specific drawable inflation
@@ -459,7 +425,7 @@ public final class StubGenerator {
         CommitInfo commitInfo;
         int minInterfaceVersion = 2;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "extractNativeLibs", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.compositor.stub.StubActivity", "org.matonos.compositor.stub.StubService", INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.compositor.stub.StubActivity", "org.matonos.compositor.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             for (String mime : mimes) str(mime);
             // Pre-intern commit info values if present
@@ -484,7 +450,7 @@ public final class StubGenerator {
             startEnd("package",attrs(a("name","org.matonos.compositor")));
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
-            start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), ab("extractNativeLibs", true),new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
+            start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), a("appComponentFactory", HOST_LOADER), new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
             start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", false), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
@@ -584,7 +550,7 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("version", "certDigest", "theme", "foregroundServiceType", "extractNativeLibs", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
@@ -595,7 +561,7 @@ public final class StubGenerator {
                 case "certDigest": return 0x01010548;
                 case "theme": return 0x01010000;
                 case "foregroundServiceType": return android.R.attr.foregroundServiceType;
-                case "extractNativeLibs": return android.R.attr.extractNativeLibs;
+                case "appComponentFactory": return android.R.attr.appComponentFactory;
                 case "drawable": return 0x01010199; case "icon": return 0x01010002; case "name": return 0x01010003; case "label": return 0x01010001; case "exported": return 0x01010010; case "enabled": return 0x0101000e;
                 case "hasCode": return 0x0101000c; case "required": return 0x0101028e; case "value": return 0x01010024;
                 case "mimeType": return 0x01010026; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
