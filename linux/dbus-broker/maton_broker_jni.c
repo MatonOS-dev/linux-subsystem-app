@@ -10,6 +10,7 @@
  * protocol is unchanged.
  */
 #include "broker.h"
+#include "sysvipc-host.h"
 
 #include <jni.h>
 #include <pthread.h>
@@ -79,7 +80,10 @@ static void *run_broker(void *data) {
         g_broker = broker;
         g_running = 1;
         pthread_mutex_unlock(&g_lock);
+        /* SysV IPC for the app's Linux sessions (kernel has no CONFIG_SYSVIPC). */
+        int sysvipc = maton_sysvipc_host_start(a->socket);
         broker_run(broker, &error);           /* blocks; broker_stop() quits it */
+        if (!sysvipc) maton_sysvipc_host_stop();
     } else if (broker) {
         if (backend >= 0) close(backend);
         broker_free(broker);

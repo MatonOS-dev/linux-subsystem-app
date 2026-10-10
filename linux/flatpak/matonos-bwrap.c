@@ -38,6 +38,9 @@
 #ifndef MATON_FLATPAK_BIN
 #define MATON_FLATPAK_BIN "/apex/com.matonos.flatpak/bin"
 #endif
+#ifndef MATON_FLATPAK_ETC
+#define MATON_FLATPAK_ETC "/apex/com.matonos.flatpak/etc"
+#endif
 #ifndef MATON_MACHINE_ID_PATH
 #define MATON_MACHINE_ID_PATH "/data/matonos/linux/machine-id"
 #endif
@@ -57,6 +60,9 @@
  * verified app domain before exec'ing the payload. */
 #define APP_EXEC_HOST MATON_FLATPAK_BIN "/matonos-app-exec"
 #define APP_EXEC_SANDBOX "/run/matonos/matonos-app-exec"
+/* SysV shm helper (linux/sysvipc/shm-helper.c), one build per glibc ABI. */
+#define SHM_HELPER_HOST MATON_FLATPAK_ETC "/sysvipc/libmaton-shm-"
+#define SHM_HELPER_PRELOAD "/run/matonos/$LIB/libmaton-shm.so"
 #define APP_LABEL_ENV "MATON_APP_LABEL"
 
 /* Values each bwrap option consumes, mirroring parse_args_recurse()
@@ -438,6 +444,22 @@ int main(int argc, char** argv) {
          * support this generic hint and watch /dev/input with inotify (or
          * poll when inotify is unavailable), including permission changes. */
         extra[count++]="--setenv";extra[count++]="SDL_JOYSTICK_DISABLE_UDEV";extra[count++]="1";
+        /* SysV shared memory needs an in-process mmap (the supervisor injects
+         * the memfd). glibc's $LIB picks the build for each process's ABI;
+         * bind it under the multiarch and lib64/lib32 spellings. */
+        static const char* const helper_dirs[][3]={
+            {"x86_64","/run/matonos/lib/x86_64-linux-gnu/libmaton-shm.so","/run/matonos/lib64/libmaton-shm.so"},
+            {"i386","/run/matonos/lib/i386-linux-gnu/libmaton-shm.so","/run/matonos/lib32/libmaton-shm.so"},
+        };
+        static char helper_host[2][96];
+        int helpers=0;
+        for(int i=0;i<2;i++) {
+            snprintf(helper_host[i],sizeof(helper_host[i]),SHM_HELPER_HOST "%s.so",helper_dirs[i][0]);
+            if(access(helper_host[i],R_OK))continue;
+            for(int j=1;j<3;j++){extra[count++]="--ro-bind";extra[count++]=helper_host[i];extra[count++]=(char*)helper_dirs[i][j];}
+            helpers++;
+        }
+        if(helpers){extra[count++]="--setenv";extra[count++]="LD_PRELOAD";extra[count++]=SHM_HELPER_PRELOAD;}
     }
     /* r24: expose the launcher and its label inside the app sandbox. bwrap
      * calls it as the command; it setcon()s to the app domain and execs the

@@ -87,10 +87,13 @@ INCLUDES=(-I"$GLIB_PREFIX/include/glib-2.0" \
   -I"$GLIB_PREFIX/lib64/glib-2.0/include" -I"$GLIB_PREFIX/include" \
   -I"$GLIB_PREFIX/include/gio-unix-2.0")
 CFLAGS=(-O2 -g -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror -include "$OUT/flatpak-build-version.h")
-for source in main broker example portals maton_broker_jni test-client session-test-client; do
+for source in main broker example portals maton_broker_jni sysvipc-host test-client session-test-client; do
   "$TOOLCHAIN/x86_64-linux-android35-clang" "${CFLAGS[@]}" "${INCLUDES[@]}" \
     -c "$DEVICE_DIR/linux/dbus-broker/$source.c" -o "$OUT/$source.o"
 done
+# Per-app SysV IPC supervisor (linux/sysvipc), served from the stub.
+"$TOOLCHAIN/x86_64-linux-android35-clang" -O2 -g -std=c11 -Wall -Wextra -Werror \
+  -c "$DEVICE_DIR/linux/sysvipc/sysvipc.c" -o "$OUT/sysvipc.o"
 
 STATIC_LIBS=("$GLIB_PREFIX/lib64/libgio-2.0.a" \
   "$GLIB_PREFIX/lib64/libgobject-2.0.a" "$GLIB_PREFIX/lib64/libgmodule-2.0.a" \
@@ -98,7 +101,8 @@ STATIC_LIBS=("$GLIB_PREFIX/lib64/libgio-2.0.a" \
   "$FFI_BUILD/libffi.a" "$GLIB_PREFIX/lib64/libintl.a" -lz -ldl -lm)
 # Per-app bus: a JNI library loaded into the app's own process, not an executable.
 "$TOOLCHAIN/x86_64-linux-android35-clang" -shared -o "$OUT/libmatonos-dbus-broker.so" \
-  "$OUT/maton_broker_jni.o" "$OUT/broker.o" "$OUT/example.o" "$OUT/portals.o" "${STATIC_LIBS[@]}"
+  "$OUT/maton_broker_jni.o" "$OUT/broker.o" "$OUT/example.o" "$OUT/portals.o" \
+  "$OUT/sysvipc-host.o" "$OUT/sysvipc.o" "${STATIC_LIBS[@]}"
 "$TOOLCHAIN/x86_64-linux-android35-clang" -o "$OUT/matonos-dbus-test-client" \
   "$OUT/test-client.o" "${STATIC_LIBS[@]}"
 "$TOOLCHAIN/x86_64-linux-android35-clang" -o "$OUT/matonos-dbus-session-test" \

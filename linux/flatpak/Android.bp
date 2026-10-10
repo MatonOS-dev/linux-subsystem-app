@@ -112,6 +112,25 @@ cc_prebuilt_binary {
     check_elf_files: false,
 }
 
+// SysV shm LD_PRELOAD helper (linux/sysvipc/shm-helper.c), freestanding
+// builds for each glibc ABI from tools/build-flatpak-helpers.sh. matonos-bwrap
+// binds them into app sandboxes as /run/matonos/$LIB/libmaton-shm.so.
+prebuilt_etc {
+    name: "matonos-flatpak-shm-helper-x86_64",
+    src: "prebuilt/static/x86_64/libmaton-shm-x86_64.so",
+    filename: "libmaton-shm-x86_64.so",
+    sub_dir: "sysvipc",
+    installable: false,
+}
+
+prebuilt_etc {
+    name: "matonos-flatpak-shm-helper-i386",
+    src: "prebuilt/static/x86_64/libmaton-shm-i386.so",
+    filename: "libmaton-shm-i386.so",
+    sub_dir: "sysvipc",
+    installable: false,
+}
+
 prebuilt_etc {
     name: "matonos-flatpak-flathub-key",
     src: "etc/flatpak/flathub.gpg",
@@ -378,6 +397,8 @@ apex {
         "matonos-app-bwrap-prebuilt",
     ],
     prebuilts: [
+        "matonos-flatpak-shm-helper-x86_64",
+        "matonos-flatpak-shm-helper-i386",
         "matonos-flatpak-flathub-key",
         "matonos-flatpak-flathub-remote",
         "matonos-flatpak-license-dullpgp-txt",
