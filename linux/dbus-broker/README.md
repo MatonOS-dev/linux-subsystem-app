@@ -1,13 +1,13 @@
 # Per-stub D-Bus broker core
 
-> **Transitional.** The session bus is moving into the app via dbus-java, now
-> merged into the compositor host (dbus-java-core 5.2.2 with a custom Android
-> LocalSocket transport). The native `flatpak-portal` and the launcher
-> supervisor that registered it have been removed; the compositor's Java
-> portal fills that role. The `bus-control` registration and `--host-session`
-> broker remain the on-image mechanism until the dbus-java path is validated
-> on device, so the portal/supervisor text further down describes the removed
-> native path and is kept only for the transition.
+> **OBSOLETE (2026-10-07).** Superseded by the per-app runtime. Each stub is to
+> host its own session bus, portal and compositor in its own process/UID
+> (`docs/PER-APP-RUNTIME.md`); the session-bus/portal half is our own pure-Java
+> D-Bus (`docs/OWN-DBUS.md`). This native GDBus broker and its `--host-session`
+> forwarding are the transitional on-image mechanism and are to be **deleted**
+> once the per-app runtime is validated on device. Do not add features here.
+> The native `flatpak-portal` and launcher supervisor were already removed; the
+> portal/supervisor text further down is kept only for the transition.
 
 `matonos-dbus-broker` is a small per-stub session-bus broker. It uses GLib's
 GDBus server transport and manually supplies the bus name registry, policy,
@@ -212,22 +212,17 @@ Each subsequent frame contains two little-endian uint32 fields (D-Bus blob
 length and descriptor count), followed by a complete standard D-Bus message.
 The blob retains its own byte order. Limits are 1 MiB and 16 FDs. SCM_RIGHTS
 is attached to the first header byte; partial sends do not resend rights.
-The compositor APK pins dbus-java-core 5.2.2 and implements its
-`ITransportProvider` and `ISocketProvider` over Android `LocalSocket`. The
-provider accepts either an already connected LocalSocket or a pre-connected
-FileDescriptor. It preserves this frame format, collects SCM_RIGHTS and checks
-the frame and D-Bus UNIX_FDS counts before exposing a message. Portal messages
-are read and written through dbus-java; the former hand-written D-Bus value
-codec is no longer used. Settings, Inhibit and OpenURI are exported as
-dbus-java interfaces, with the existing portal backend retaining state and
-caller checks. MBP1, SO_PEERCRED and the capability remain the actual
-channel authentication. Since dbus-java's AbstractTransport always performs
-SASL, the adapter satisfies that library state machine locally after the
-capability check; it sends no additional authentication bytes to the broker.
-Received descriptors are duplicated into ParcelFileDescriptor and closed
-after dispatch. Replies and errors use the original serial and canonical
-destination; directed signals use the same channel. Java sends no FDs back in
-this first protocol version.
+The compositor reads and writes these frames with its own Java codec
+(`DBusReader`/`DBusWriter`) over an Android `LocalSocket` (`LocalSocketChannel`).
+It preserves this frame format, gathers `SCM_RIGHTS` as each frame arrives, and
+checks the frame and D-Bus `UNIX_FDS` counts before exposing a message. Portal
+semantics, state and caller checks live in `PortalBackend`; `PeerConnection`
+dispatches method calls and signals. MBP1, SO_PEERCRED and the capability remain
+the actual channel authentication, so no SASL is performed on this socket.
+Received descriptors are passed to the portal as indices into the frame,
+duplicated into ParcelFileDescriptor and closed after dispatch. Replies and
+errors use the original serial and canonical destination; directed signals use
+the same channel. Java sends no FDs back in this first protocol version.
 
 The broker queues at most 256 forwards and retains at most 256 pending calls.
 Forwards and channel IO run on the default GLib main context, outside the

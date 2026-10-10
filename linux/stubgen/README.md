@@ -1,5 +1,14 @@
 # Image-carrying launcher APKs
 
+Generated stubs include a tiny no-op Android shared library under the target
+ABI directory (`x86_64`, `arm64-v8a`, or `riscv64`). Its sole purpose is to make
+PackageManager assign the stub that ABI, which adds the shared-library provider
+APK's native library path to the process. The generator chooses from the
+device's `Build.SUPPORTED_ABIS`; the host machine's ABI is irrelevant. The
+markers can be regenerated from `native/abi_marker.c` with
+`native/build-abi-markers.sh`. `extractNativeLibs` is enabled so the marker can
+be extracted without APK page-alignment requirements.
+
 MatonOS is based on AOSP. StubGenerator remains Java and retains its existing
 no-image generate signature. Its new overload accepts a file containing the
 code EROFS image and an optional RuntimeDependency. generateRuntime creates a

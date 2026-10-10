@@ -7,7 +7,7 @@ static int registration(Broker* broker,int listener,const char* path,int* fds,un
     struct sockaddr_un address={.sun_family=AF_UNIX};strcpy(address.sun_path,path);
     assert(connect(client,(struct sockaddr*)&address,sizeof(address))==0);
     struct MatonSessionRegistration registration={.pid=getpid()};
-    strcpy(registration.monitor,"/data/matonos/linux/runtime/wayland-test-monitor");
+    strcpy(registration.monitor,"/data/matonos/linux/run/wayland-test-monitor");
     strcpy(registration.flatpak_version,"1.14.10");
     union {struct cmsghdr align;char bytes[CMSG_SPACE(2*sizeof(int))];} control={0};
     struct iovec payload={.iov_base=&registration,.iov_len=sizeof(registration)};

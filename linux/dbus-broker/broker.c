@@ -76,7 +76,7 @@ static gboolean managed_portal_credentials(Broker* b,GCredentials* credentials,g
     struct pollfd alive={.fd=b->portal_pidfd,.events=POLLIN};
     return generation==g_atomic_int_get(&b->portal_generation) && credentials && b->portal_pid>0 && b->portal_pidfd>=0 &&
         poll(&alive,1,0)==0 &&
-        g_credentials_get_unix_user(credentials,NULL)==1000 &&
+        g_credentials_get_unix_user(credentials,NULL)==b->owner_uid &&
         g_credentials_get_unix_pid(credentials,NULL)==b->portal_pid;
 }
 static const char dbus_xml[] =
@@ -884,6 +884,41 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
     struct pollfd ready={.fd=client,.events=POLLIN};
     if(getsockopt(client,SOL_SOCKET,SO_PEERCRED,&cred,&size) || cred.uid!=1000 ||
        poll(&ready,1,1000)<=0) {close(client);return G_SOURCE_CONTINUE;}
+    /* A private app bus needs only a pinned portal PID. The authenticated
+     * linuxd supervisor has already dropped this child to the app UID and
+     * gates its exec until registration succeeds. No second listener or
+     * directory capability is needed: the portal uses this app's bus. */
+    if(b->owner_uid==b->app_uid && b->app_uid%100000>=10000 && b->app_uid%100000<20000) {
+        struct MatonSessionReply response={.status=3};
+        ssize_t got=recv(client,&registration,sizeof(registration),MSG_TRUNC);
+        char path[64];struct stat process;
+        snprintf(path,sizeof(path),"/proc/%d",registration.pid);
+        char* monitor_end=NULL;
+        static const char prefix[]="/data/matonos/linux/run/flatpak-config-";
+        long monitor_pid=memchr(registration.monitor,0,sizeof(registration.monitor)) &&
+                g_str_has_prefix(registration.monitor,prefix) ?
+                strtol(registration.monitor+sizeof(prefix)-1,&monitor_end,10) : 0;
+        if(got==sizeof(registration) && b->control_fd<0 && registration.pid>0 &&
+                !stat(path,&process) && process.st_uid==b->app_uid &&
+                monitor_pid==cred.pid && monitor_end && !strcmp(monitor_end,"-monitor") &&
+                memchr(registration.flatpak_version,0,sizeof(registration.flatpak_version)) &&
+                maton_flatpak_supported(registration.flatpak_version)) {
+            int pinned=(int)syscall(SYS_pidfd_open,registration.pid,0);
+            if(pinned>=0) {
+                if(b->portal_pidfd>=0)close(b->portal_pidfd);
+                b->portal_pidfd=pinned;b->portal_pid=registration.pid;
+                b->supervisor_pid=cred.pid;b->control_fd=client;b->ready_fd=client;
+                b->flatpak_error[0]=0;
+                g_atomic_int_inc(&b->portal_generation);
+                g_strlcpy(b->monitor,registration.monitor,sizeof(b->monitor));
+                b->control_client_source=g_unix_fd_add(client,G_IO_IN|G_IO_HUP|G_IO_ERR,control_closed,b);
+                response.status=0;response.supervisor=cred.pid;
+            }
+        }
+        (void)!send(client,&response,sizeof(response),MSG_NOSIGNAL);
+        if(response.status)close(client);
+        return G_SOURCE_CONTINUE;
+    }
     /* Accept exactly one directory capability, never a pathname supplied by
      * another UID. The native parent remains private to linuxd; the broker
      * binds through this FD without traversing that parent's permissions. */
@@ -922,7 +957,7 @@ static gboolean control_accept(gint fd, GIOCondition condition, gpointer data) {
         close(client);return G_SOURCE_CONTINUE;
     }
     if(registration.pid<=0 || !memchr(registration.monitor,0,sizeof(registration.monitor)) ||
-       !g_str_has_prefix(registration.monitor,"/data/matonos/linux/runtime/wayland-")) {close(client);return G_SOURCE_CONTINUE;}
+       !g_str_has_prefix(registration.monitor,"/data/matonos/linux/run/wayland-")) {close(client);return G_SOURCE_CONTINUE;}
     struct pollfd alive={.fd=b->portal_pidfd,.events=POLLIN};
     gboolean reusable=b->ready_fd<0 && b->portal_pidfd>=0 && poll(&alive,1,0)==0 &&
         g_hash_table_lookup(b->owners,"org.freedesktop.portal.Flatpak")!=NULL;
@@ -962,7 +997,13 @@ gboolean broker_enable_host_session(Broker* b,GError** error) {
     if(!uid || !*uid || !end || *end || value<10000 || value>=20000) {
         g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_INVALID_ARGUMENT,"Verified app UID required");return FALSE;
     }
-    b->app_uid=(uid_t)value;
+    return broker_enable_host_session_for_uid(b,(uid_t)value,error);
+}
+gboolean broker_enable_host_session_for_uid(Broker* b,uid_t uid,GError** error) {
+    if(uid%100000<10000 || uid%100000>=20000) {
+        g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_INVALID_ARGUMENT,"Verified app UID required");return FALSE;
+    }
+    b->app_uid=uid;
     b->host_session=TRUE;b->flatpak_portal=TRUE;
     g_message("APK session broker built against Flatpak %s; minimum supported system Flatpak %s",
         MATON_BROKER_BUILT_FLATPAK_VERSION,MATON_BROKER_MIN_FLATPAK_VERSION);

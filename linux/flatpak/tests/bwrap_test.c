@@ -97,7 +97,7 @@ static void test_overlay_args(void) {
 
 static void test_insert_x11_args(void) {
     char* argv[]={"/apex/com.matonos.flatpak/bin/matonos-bwrap","--args","3","--","app",NULL};
-    char* extra[]={"--bind","/data/matonos/linux/runtime/wayland-1-x11","/tmp/.X11-unix/X0","--setenv","DISPLAY",":0"};
+    char* extra[]={"--bind","/data/matonos/linux/run/wayland-1-x11","/tmp/.X11-unix/X0","--setenv","DISPLAY",":0"};
     char** extended=insert_args(5,argv,3,extra,6);
     int i;
     assert(extended);
@@ -105,7 +105,7 @@ static void test_insert_x11_args(void) {
     assert(!strcmp(extended[1],"--args"));
     assert(!strcmp(extended[2],"3"));
     assert(!strcmp(extended[3],"--bind"));
-    assert(!strcmp(extended[4],"/data/matonos/linux/runtime/wayland-1-x11"));
+    assert(!strcmp(extended[4],"/data/matonos/linux/run/wayland-1-x11"));
     assert(!strcmp(extended[5],"/tmp/.X11-unix/X0"));
     assert(!strcmp(extended[6],"--setenv"));
     assert(!strcmp(extended[7],"DISPLAY"));
@@ -119,8 +119,8 @@ static void test_insert_x11_args(void) {
 
 static void test_args_fd_x11_socket(void) {
     const char data[]="--unshare-all\0--tmpfs\0/tmp/.X11-unix\0--unsetenv\0DISPLAY\0"
-                      "--setenv\0WAYLAND_DISPLAY\0/data/matonos/linux/runtime/wayland-1\0"
-                      "--setenv\0MATON_X11_SOCKET\0/data/matonos/linux/runtime/wayland-1-x11\0";
+                      "--setenv\0WAYLAND_DISPLAY\0/data/matonos/linux/run/wayland-1\0"
+                      "--setenv\0MATON_X11_SOCKET\0/data/matonos/linux/run/wayland-1-x11\0";
     char* found;
     int tmpfs=0, app=0;char* journal=NULL;
     int fd=memfd_create("bwrap-args",MFD_CLOEXEC|MFD_ALLOW_SEALING);
@@ -129,7 +129,7 @@ static void test_args_fd_x11_socket(void) {
     assert(write(fd,data,sizeof(data)-1)==(ssize_t)(sizeof(data)-1));
     assert(lseek(fd,0,SEEK_SET)==0);
     found=args_fd_x11_socket(fd,&tmpfs,&journal,&app);
-    assert(found && !strcmp(found,"/data/matonos/linux/runtime/wayland-1-x11"));
+    assert(found && !strcmp(found,"/data/matonos/linux/run/wayland-1-x11"));
     assert(tmpfs);
     /* the real bwrap must still read the arguments from the start */
     assert(lseek(fd,0,SEEK_CUR)==0);
@@ -162,7 +162,9 @@ static void test_args_fd_x11_socket(void) {
 
 static char** captured;
 int capture_execv(const char* path,char* const* argv) {
-    assert(!strcmp(path,BWRAP));
+    char expected[PATH_MAX];
+    assert(multicall_path(expected,sizeof(expected))==0);
+    assert(!strcmp(path,expected));
     unsigned n=0;while(argv[n])n++;
     captured=calloc(n+1,sizeof(char*));assert(captured);
     for(unsigned i=0;i<n;i++)captured[i]=strdup(argv[i]);
@@ -202,7 +204,13 @@ static void test_machine_id_binds(void) {
         char number[24];snprintf(number,sizeof(number),"%d",fd);
         char* args[]={"shim","--args",number,"--","app",NULL};
         assert(shim_main(5,args)==127);
-        unsigned ids=0;
+        unsigned ids=0, shm=0;
+        for(unsigned i=0;captured[i];i++)if(!strcmp(captured[i],"/dev/shm")) {
+            assert(i>=3 && !strcmp(captured[i-1],"--tmpfs"));
+            assert(!strcmp(captured[i-2],"1777") && !strcmp(captured[i-3],"--perms"));
+            shm++;
+        }
+        assert(shm==(test?0:1));
         for(unsigned i=0;captured[i];i++)if(!strcmp(captured[i],"/data/matonos/linux/machine-id")) {
             assert(i>0&&!strcmp(captured[i-1],"--ro-bind"));
             assert(!strcmp(captured[i+1],ids?"/var/lib/dbus/machine-id":"/etc/machine-id"));ids++;

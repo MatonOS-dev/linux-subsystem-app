@@ -32,8 +32,50 @@ pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pc
 e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
 gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
 
-c464a176940edc53258421fa67ef45821ea5ac9eaa5a2d6059ba46028a9cec81  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak
-e643a2bc734cd194482618d923ab1eadbac7f2fb33acbf6f7b44e509c214c3ee  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/flatpak-env-wrapper
-b71023c8b02bbca86dbc96bf5c552f4be8b6f783e9cc3ab0a3844bb8618ec4ce  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-bwrap
+4a5a48efc960dfcb1300e297e69e88655a025a650aa1a6f3936c3f5f21c2261e  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak
+99a0bad96b97f4a0afa7bf9d63857ef1e27cac4aa2f6f388e94304414e8cc29a  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/flatpak-env-wrapper
+1b7739bdc573455d83a8907dc469afbcba892e9d6606c6911e1480a691d999c2  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-bwrap
 766891522d0082c8fdb867a4a1260fa7abc67afc78def94fdf5372e77d131248  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-app-exec
-227e68144015f799ffa32ffecc0a652206118dec1cf770bff6151be78025399e  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak-store
+6e7c8b8a65bb9786b38443a224ad5a9eae5b0a2c18b698ee9f0a53587626c88f  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak-store
+
+Bionic helper source refresh (2026-10-08):
+07eb0c747824a8c60008932e5ecdec04f71f1b5ba9d48c117b24cefc56527a05  linux/flatpak/flatpak-env-wrapper.c
+0bfaed8bfc20627a44fab35e163f6596a9268ca13df2245c32189f7e568fda08  linux/flatpak/app-session.h
+8312e821d1e1ab03174a10c97ddb126c34135064df35259830e75e4641499353  linux/flatpak/matonos-bwrap.c
+c3787e635df9544cef07b3d6b66883c6f79658551031533ce955ef38c8edbff4  linux/flatpak/matonos-app-exec.c
+11d353b9e28c3ac7078aebd53c8e9042351480578e2046a909661fa3b5c493fa  linux/flatpak/machine-id.h
+6df97b53c6c7bf00e71d5deabb98be171c1d6accdefa491419ac88ccf04c4c8e  linux/flatpak/controller-access.h
+c5814108b6ff9884abef93252b1fad3736f8b2a0f6bfee9465e8bacc27308744  install/linuxd/MatonMls.h
+ccb79c35902d864c320f43323cf305018a1c81a76ffd372315bf13a1bf15d657  install/linuxd/GtkSettings.h
+02e065e68a63d056e1351e182df395e472c72de3141e77130e694572190b9fa9  install/linuxd/FlatpakStore.c
+250916cc744cffd492d88519c943215773546ffb0a96d26ab8202b97ba44ff28  install/linuxd/FlatpakStore.h
+Flatpak fork base: a1a11b2451edfff78e2d1f8b034d4d5beae6d6ca + local changes below (not committed).
+2b74b80cba1c90d902e95be2b49340f2ccf6abe7a6c64e0e25fbc522a61d5f49  MatonOS-dev/flatpak/common/flatpak-run.c
+435b4fab93a1dd02c071b3c862f3ce190ba6b8f0e8408cc2982308bc60e3a501  MatonOS-dev/flatpak/common/flatpak-run-dbus.c
+Toolchain: NDK r30, x86_64-linux-android36; Bionic helpers and multicall, stripped.
+
+Per-app stock portal VM refresh (2026-10-08; supersedes helper hashes above):
+Portal: existing Bionic recipe portal/flatpak-portal artifact; stock-portal-build.log records link.
+Wrapper/applets: NDK r30 x86_64-linux-android36-clang -Os; wrapper unstripped.
+08fea2c32f4333db9a9cb37d76f73ee0e44bf40199c0e03998af5b3df7e85475  linux/flatpak/prebuilt/static/x86_64/flatpak-env-wrapper
+d94e7f79a6291c4ac53f5187d9c7d725bbbf0a0aad4ea6da89014e683b5beef9  linux/flatpak/prebuilt/static/x86_64/matonos-flatpak-portal
+5912e01b4847c89bfd1619b1084e8f54f01e32dce2809d34a9cd13c890fb2c6f  linux/flatpak/prebuilt/static/x86_64/matonos-app-flatpak
+5912e01b4847c89bfd1619b1084e8f54f01e32dce2809d34a9cd13c890fb2c6f  linux/flatpak/prebuilt/static/x86_64/matonos-app-bwrap
+ef94c2c9609b3876dacac812d1c00b6caac83e8da29df80c7e23ddf182207a88  linux/flatpak/flatpak-env-wrapper.c
+760a047e90514c09a128383ab9dfc8bc15e47813992ad374058bdbc4d3fc49e7  linux/flatpak/matonos-app-tool.c
+e7132e85a624993c68bdc0b6d1f1b9fc71d4b3a620a4f9feb5d26d1b31a1a6d3  linux/flatpak/app-session.h
+
+Binder/DMA-BUF filter correction (2026-10-08; latest wrapper snapshot):
+89c7c924c2ff9525b9de6002792bf7b7bc4297cb6866e44e0bdd01d07012438a  linux/flatpak/prebuilt/static/x86_64/flatpak-env-wrapper
+1b59997a59191ead9e5018a2750b84045f339a26cc8533f869271067fa49d114  linux/flatpak/app-session.h
+aa7fba0e3549df6a94666467d402f6c9e4f4aa3aca7c5433c85f203b4639bb05  linux/flatpak/session-binder-filter.h
+
+Per-app X11 socket handoff (2026-10-08; latest wrapper snapshot):
+bf3fae8535c8e23cfbd642e9ecc222726066cabb24c7b05e37d89f9272e44a86  linux/flatpak/prebuilt/static/x86_64/flatpak-env-wrapper
+c2b0dc2ed91baeca19707409f057458b9dcb971152a79980bf67cc2270c23f98  linux/flatpak/flatpak-env-wrapper.c
+
+App launch and installer extra-data paths (2026-10-09; latest wrapper snapshot):
+NDK r30 x86_64-linux-android36-clang -Os -Wall -Wextra -Werror
+-ffunction-sections -fdata-sections -Wl,--gc-sections; wrapper unstripped.
+8589a733e117ab109c8b85a3f85063e3faebb3a33054e23a3458576a2d08764d  linux/flatpak/prebuilt/static/x86_64/flatpak-env-wrapper
+543a0c850483e1aef6537db26dcb7d9df44de3db9f30d85689e60c98fbb57c1b  linux/flatpak/flatpak-env-wrapper.c

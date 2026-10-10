@@ -5,6 +5,7 @@ package {
 java_library {
     name: "MatonLinuxStubGenerator",
     srcs: ["src/**/*.java"],
+    java_resource_dirs: ["resources"],
     static_libs: ["MatonApkSig"],
     sdk_version: "current",
     min_sdk_version: "36",

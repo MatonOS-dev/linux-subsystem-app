@@ -11,3 +11,5 @@ trap 'rm -f "$TEST_OUT/key.pem" "$TEST_OUT/key.der"' EXIT
 javac -cp "$AOSP_ROOT/prebuilts/sdk/current/public/android.jar:$STUB_DIR/prebuilt/apksig.jar" -d "$TEST_OUT/classes" "$STUB_DIR/src/org/matonos/linuxhost/stubgen/StubGenerator.java" "$STUB_DIR"/tests/*.java
 java -Xmx256m -cp "$TEST_OUT/classes" ControllerMetadataTest
 java -Xmx256m -cp "$TEST_OUT/classes" CommitValidationTest
+java -Xmx256m -cp "$TEST_OUT/classes" DesktopDisplayNameTest
+java -cp "$TEST_OUT/classes:$AOSP_ROOT/prebuilts/sdk/current/public/android.jar" ForegroundManifestTest "$AOSP_ROOT/out/host/linux-x86/bin/aapt2" "$TEST_OUT"

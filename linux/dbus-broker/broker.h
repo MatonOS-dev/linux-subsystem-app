@@ -2,6 +2,7 @@
 #define MATONOS_DBUS_BROKER_H
 
 #include <gio/gio.h>
+#include <sys/types.h>
 
 typedef struct _Broker Broker;
 
@@ -13,6 +14,7 @@ gboolean broker_add_service(Broker *broker, const char *name,
 Broker *broker_new(const char *socket_path, const char *config_path,
                    GError **error);
 gboolean broker_enable_host_session(Broker *broker, GError **error);
+gboolean broker_enable_host_session_for_uid(Broker *broker, uid_t uid, GError **error);
 const char* broker_monitor_path(Broker *broker);
 void broker_set_monitor_path(Broker *broker, const char *path);
 gboolean broker_register_session_services(Broker *broker, const char *monitor, int backend_fd, GError **error);

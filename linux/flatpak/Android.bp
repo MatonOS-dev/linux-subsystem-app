@@ -73,6 +73,45 @@ cc_prebuilt_binary {
     check_elf_files: false,
 }
 
+cc_prebuilt_binary {
+    name: "matonos-flatpak-portal-prebuilt",
+    srcs: ["prebuilt/static/x86_64/matonos-flatpak-portal"],
+    stem: "matonos-flatpak-portal",
+    system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    compile_multilib: "64",
+    strip: {
+        none: true,
+    },
+    check_elf_files: false,
+}
+
+cc_prebuilt_binary {
+    name: "matonos-app-flatpak-prebuilt",
+    srcs: ["prebuilt/static/x86_64/matonos-app-flatpak"],
+    stem: "matonos-app-flatpak",
+    system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    compile_multilib: "64",
+    strip: {
+        none: true,
+    },
+    check_elf_files: false,
+}
+
+cc_prebuilt_binary {
+    name: "matonos-app-bwrap-prebuilt",
+    srcs: ["prebuilt/static/x86_64/matonos-app-bwrap"],
+    stem: "matonos-app-bwrap",
+    system_ext_specific: true,
+    apex_available: ["com.matonos.flatpak"],
+    compile_multilib: "64",
+    strip: {
+        none: true,
+    },
+    check_elf_files: false,
+}
+
 prebuilt_etc {
     name: "matonos-flatpak-flathub-key",
     src: "etc/flatpak/flathub.gpg",
@@ -334,6 +373,9 @@ apex {
         "matonos-bwrap-static-prebuilt",
         "matonos-app-exec-static-prebuilt",
         "matonos-flatpak-store-static-prebuilt",
+        "matonos-flatpak-portal-prebuilt",
+        "matonos-app-flatpak-prebuilt",
+        "matonos-app-bwrap-prebuilt",
     ],
     prebuilts: [
         "matonos-flatpak-flathub-key",
