@@ -442,6 +442,20 @@ int main(int argc, char** argv) {
     /* r24: expose the launcher and its label inside the app sandbox. bwrap
      * calls it as the command; it setcon()s to the app domain and execs the
      * verified payload. */
+    /* Only the trusted launcher domain switches into the app domain. A nested
+     * sandbox (portal Spawn from inside an app) already runs in
+     * matonos_linux_app, which its children inherit; matonos-app-exec
+     * rightly refuses to run there, so it is not inserted. */
+    int launcher=0;
+    if(app_sandbox && app_label) {
+        char own[160]={0};
+        int fd=open("/proc/thread-self/attr/current",O_RDONLY|O_CLOEXEC);
+        if(fd>=0) {
+            ssize_t got=read(fd,own,sizeof(own)-1);
+            close(fd);
+            if(got>0)launcher=!strncmp(own,"u:r:matonos_app_launch:",sizeof("u:r:matonos_app_launch:")-1);
+        }
+    }
     if(app_sandbox && app_label) {
         const char* data=getenv("MATON_APP_HOME_DIR");
         if(!data && args_end>=0)data=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_HOME_DIR");
@@ -460,7 +474,9 @@ int main(int argc, char** argv) {
         snprintf(runtime_dir,sizeof(runtime_dir),"/data/matonos/linux/tmp/%u",uid);
         extra[count++]="--bind";extra[count++]=runtime_dir;extra[count++]=runtime_dir;
         extra[count++]="--setenv";extra[count++]="XDG_RUNTIME_DIR";extra[count++]=runtime_dir;
-        extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
+        if(launcher) {
+            extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
+        }
         extra[count++]="--setenv";extra[count++]=APP_LABEL_ENV;extra[count++]=app_label;
     }
     if(count) {
@@ -478,7 +494,7 @@ int main(int argc, char** argv) {
             unsetenv(X11_SOCKET_ENV);
             unsetenv(JOURNAL_SOCKET_ENV);
             char** final_argv=extended;
-            if(app_label && command<argc) {
+            if(launcher && command<argc) {
                 /* The command was shifted right by the inserted arguments;
                  * put the launcher immediately in front of it. */
                 int shifted=command + (at<=command ? count : 0);
