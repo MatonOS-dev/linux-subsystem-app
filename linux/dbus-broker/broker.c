@@ -540,8 +540,8 @@ static gboolean denied_call(GDBusMessage *m) {
     if (iface != NULL && g_str_equal(iface, "org.freedesktop.Flatpak")) return TRUE;
     return FALSE;
 }
-static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *message,
-                                    gboolean incoming, gpointer data) {
+static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *message,
+                                   gboolean incoming, gpointer data) {
     (void)connection;
     Client *c = data; Broker *b = c->broker;
     if (!incoming) return message;
@@ -695,6 +695,17 @@ static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *m
     }
     g_object_unref(copy);
     return NULL;
+}
+
+/* GDBus passes the filter ownership of message (transfer full). route_message
+ * forwards copies and returns NULL to drop the original, so release it here:
+ * otherwise every routed message leaks, and with it any SCM_RIGHTS fds it
+ * carried (a Spawn's stdio pipes then never reach EOF in the caller). */
+static GDBusMessage *filter_message(GDBusConnection *connection, GDBusMessage *message,
+                                    gboolean incoming, gpointer data) {
+    GDBusMessage *result = route_message(connection, message, incoming, data);
+    if (result != message) g_object_unref(message);
+    return result;
 }
 
 static void client_closed(GDBusConnection *connection, gboolean vanished,

@@ -31,6 +31,9 @@ int main(void) {
     snprintf(bus,sizeof(bus),"%s/bus",directory);
     assert(g_file_set_contents(policy,"own org.example.Test\n",-1,NULL));
     Broker* broker=broker_new(bus,policy,NULL);assert(broker);broker->host_session=TRUE;
+    /* The real native directory is system:<app gid>; here the test's own gid
+     * stands in for the app (mkdtemp gives it that group). */
+    broker->app_uid=getegid();
     int listener=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);assert(listener>=0);
     struct sockaddr_un address={.sun_family=AF_UNIX};strcpy(address.sun_path,path);
     assert(bind(listener,(struct sockaddr*)&address,sizeof(address))==0);assert(listen(listener,8)==0);

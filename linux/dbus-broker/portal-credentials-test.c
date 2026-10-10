@@ -5,7 +5,7 @@
 int main(void) {
     if(getuid()!=1000) {g_print("SKIP: host session clients require system UID 1000\n");return 77;}
     GCredentials* credentials=g_credentials_new();
-    Broker b={.portal_pid=getpid(),.portal_pidfd=-1};
+    Broker b={.portal_pid=getpid(),.portal_pidfd=-1,.owner_uid=1000};
     g_assert_false(managed_portal_credentials(&b,credentials,b.portal_generation));
     b.portal_pidfd=(int)syscall(SYS_pidfd_open,getpid(),0);
     if(b.portal_pidfd<0) {g_print("SKIP: pidfd_open unavailable: %s\n",g_strerror(errno));g_object_unref(credentials);return 77;}
