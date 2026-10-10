@@ -8,7 +8,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs gio-2.0)
 
 all: $(OUT)/matonos-dbus-broker
 
-test: $(OUT)/broker-test $(OUT)/inhibit-test $(OUT)/portal-credentials-test $(OUT)/flatpak-version-test $(OUT)/native-bus-test $(OUT)/portal-wire-test
+test: $(OUT)/broker-test $(OUT)/inhibit-test $(OUT)/portal-credentials-test $(OUT)/flatpak-version-test $(OUT)/native-bus-test $(OUT)/portal-wire-test $(OUT)/policy-wildcard-test
 
 $(OUT)/matonos-dbus-broker: $(OUT)/main.o $(OUT)/broker.o $(OUT)/example.o $(OUT)/portals.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -69,3 +69,9 @@ check-portal-wire: $(OUT)/portal-wire-test check-java-portals
 	MATON_PORTAL_TEST_CLASSPATH=$(OUT)/java-portals $(OUT)/portal-wire-test
 
 .PHONY: check-java-portals check-portal-wire
+
+$(OUT)/policy-wildcard-test: policy-wildcard-test.c broker.c broker.h session-control.h flatpak-compat.h $(OUT)/portals.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ policy-wildcard-test.c $(OUT)/portals.o $(LDLIBS)
+
+check-policy-wildcard: $(OUT)/policy-wildcard-test
+	$<

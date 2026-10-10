@@ -109,8 +109,20 @@ static gboolean name_is_denied(const char *name) {
            g_str_equal(name, "org.freedesktop.PackageKit") ||
            g_str_has_prefix(name, "org.freedesktop.PackageKit.");
 }
+/* Names an app may never claim through a wildcard rule: the portal and bus
+ * services it talks to, plus the always-denied host services. The managed
+ * portal claims org.freedesktop.portal.Flatpak through its own check. */
+static gboolean name_is_reserved(const char *name) {
+    return name_is_denied(name) || g_str_has_prefix(name, "org.freedesktop.portal.") ||
+           g_str_has_prefix(name, "org.freedesktop.impl.portal.") ||
+           g_str_equal(name, "org.freedesktop.DBus") || g_str_has_prefix(name, "org.freedesktop.DBus.");
+}
+/* "own *" / "talk *": an app's private bus lets it register any other name
+ * (its own services, e.g. Steam's launcher service) and call them. */
 static guint access_for(Broker *b, const char *name) {
-    return GPOINTER_TO_UINT(g_hash_table_lookup(b->rules, name));
+    guint access = GPOINTER_TO_UINT(g_hash_table_lookup(b->rules, name));
+    if (!name_is_reserved(name)) access |= GPOINTER_TO_UINT(g_hash_table_lookup(b->rules, "*"));
+    return access;
 }
 static Client *find_client(Broker *b, const char *unique) {
     for (guint i = 0; i < b->clients->len; i++) {
@@ -820,7 +832,7 @@ Broker *broker_new(const char *socket_path, const char *config_path, GError **er
     for (guint i = 0; lines[i] != NULL; i++) {
         char *line = g_strstrip(lines[i]); if (!*line || *line == '#') continue;
         char **p = g_strsplit_set(line, " \t", 2);
-        if (p[0] == NULL || p[1] == NULL || !g_dbus_is_name(g_strstrip(p[1]))) {
+        if (p[0] == NULL || p[1] == NULL || (!g_dbus_is_name(g_strstrip(p[1])) && strcmp(p[1], "*"))) {
             g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "invalid policy line %u", i + 1);
             g_strfreev(p); g_strfreev(lines); g_free(contents); broker_free(b); return NULL;
         }
