@@ -131,12 +131,23 @@ static char* next_string(char* p, char* end) {
     return nul+1;
 }
 
+/* Flatpak's own /dev/shm: a per-app directory (--allow=per-app-dev-shm,
+ * shared by all of an app's sandboxes, e.g. Steam and its web helper) or a
+ * private tmpfs. A bind of the host's /dev/shm itself is neither: on Android
+ * that one is global. */
+static int provides_dev_shm(const char* option, const char* first, const char* second) {
+    if(!strcmp(option,"--tmpfs"))return first && !strcmp(first,"/dev/shm");
+    if(strcmp(option,"--bind") && strcmp(option,"--ro-bind") && strcmp(option,"--dev-bind") &&
+       strcmp(option,"--bind-try") && strcmp(option,"--ro-bind-try") && strcmp(option,"--dev-bind-try"))return 0;
+    return first && second && !strcmp(second,"/dev/shm") && strcmp(first,"/dev/shm");
+}
+
 /* Recover the relay socket path from the bundled --args FD data:
  * flatpak converted MATON_X11_SOCKET into a --setenv VAR VALUE
  * triplet there. The FD is rewound to its original offset so the
  * real bwrap still reads the arguments from the start (bwrap's
  * load_file_data() reads from the current offset). */
-static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app_sandbox) {
+static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app_sandbox, int* shm_provided) {
     char* data=NULL;
     size_t capacity=0, length=0;
     char *p,*end,*socket_path=NULL;
@@ -181,6 +192,11 @@ static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app
         } else if(!strcmp(p,"--tmpfs")) {
             value=next_string(p,end);
             if(value && !strcmp(value,"/tmp/.X11-unix"))*x11_tmpfs=1;
+        }
+        {
+            char* first=values>=1 ? next_string(p,end) : NULL;
+            char* second=values>=2 && first ? next_string(first,end) : NULL;
+            if(provides_dev_shm(p,first,second))*shm_provided=1;
         }
         /* Values and command arguments must not masquerade as options. */
         for(int i=0;i<=values && p;i++)p=next_string(p,end);
@@ -338,20 +354,21 @@ int main(int argc, char** argv) {
     char** extra;
     int count=0;
 
-    int x11_tmpfs=0, app_sandbox=0;
+    int x11_tmpfs=0, app_sandbox=0, shm_provided=0;
     char* bundled=NULL;
     char* bundled_journal=NULL;
     char* app_label=NULL;
     command=scan_argv(argc,argv,&args_end,&dashdash);
     for(int i=1;i<command && strcmp(argv[i],"--");) {
         if(!strcmp(argv[i],"--setenv") && i+2<command && !strcmp(argv[i+1],"FLATPAK_ID"))app_sandbox=1;
+        if(provides_dev_shm(argv[i],i+1<command?argv[i+1]:NULL,i+2<command?argv[i+2]:NULL))shm_provided=1;
         i+=1+option_values(argv[i]);
     }
     /* Only the app sandbox gets the binds: flatpak's own --tmpfs
      * /tmp/.X11-unix (from --socket=x11) marks X11 access, FLATPAK_ID
      * the app itself. Helper sandboxes such as xdg-dbus-proxy inherit
      * the variables but have neither and must stay untouched. */
-    if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox);
+    if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox,&shm_provided);
     if(args_end>=0)app_label=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_LABEL");
 #ifdef MATONOS_HOST_LAUNCH_PROBE
     if(args_end>=0)bundled_probe_root=args_fd_lookup(atoi(argv[args_end-1]),"MATONOS_BWRAP_PROBE_ROOT");
@@ -428,10 +445,13 @@ int main(int argc, char** argv) {
     /* flatpak-run.c only uses the host ID if /etc or /var has one.
      * Android has neither. Override both paths after Flatpak mounts /var. */
     if(app_sandbox) {
-        /* Android has no /dev/shm. Give each app its own POSIX shared-memory
-         * mount after Flatpak constructs /dev, including --device=all. */
-        extra[count++]="--perms";extra[count++]="1777";
-        extra[count++]="--tmpfs";extra[count++]="/dev/shm";
+        /* Android's /dev/shm is global (--device=all binds all of /dev).
+         * Unless Flatpak set up its own per-app or private one, give this
+         * sandbox a private POSIX shared-memory mount after /dev is built. */
+        if(!shm_provided) {
+            extra[count++]="--perms";extra[count++]="1777";
+            extra[count++]="--tmpfs";extra[count++]="/dev/shm";
+        }
         extra[count++]="--ro-bind";extra[count++]=(char*)machine_id_path;extra[count++]="/etc/machine-id";
         extra[count++]="--ro-bind";extra[count++]=(char*)machine_id_path;extra[count++]="/var/lib/dbus/machine-id";
         /* Flatpak already exposes /sys/class, /sys/dev and /sys/devices.
@@ -464,18 +484,21 @@ int main(int argc, char** argv) {
     /* r24: expose the launcher and its label inside the app sandbox. bwrap
      * calls it as the command; it setcon()s to the app domain and execs the
      * verified payload. */
-    /* Only the trusted launcher domain switches into the app domain. A nested
-     * sandbox (portal Spawn from inside an app) already runs in
-     * matonos_linux_app, which its children inherit; matonos-app-exec
+    /* Switch into the app domain unless already there. The shim runs in
+     * matonos_bwrap (its exec label) on a normal launch; bwrap then execs
+     * matonos-app-exec, which enters matonos_app_launch and setcon()s to the
+     * app. A nested sandbox (portal Spawn from inside an app) already runs in
+     * matonos_linux_app, which its children inherit, and matonos-app-exec
      * rightly refuses to run there, so it is not inserted. */
-    int launcher=0;
-    if(app_sandbox && app_label) {
+    /* Fail closed: if the context is unreadable, insert it anyway. */
+    int launcher=app_sandbox && app_label;
+    if(launcher) {
         char own[160]={0};
         int fd=open("/proc/thread-self/attr/current",O_RDONLY|O_CLOEXEC);
         if(fd>=0) {
             ssize_t got=read(fd,own,sizeof(own)-1);
             close(fd);
-            if(got>0)launcher=!strncmp(own,"u:r:matonos_app_launch:",sizeof("u:r:matonos_app_launch:")-1);
+            if(got>0&&!strncmp(own,"u:r:matonos_linux_app:",sizeof("u:r:matonos_linux_app:")-1))launcher=0;
         }
     }
     if(app_sandbox && app_label) {
