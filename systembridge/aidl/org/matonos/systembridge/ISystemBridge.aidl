@@ -15,6 +15,9 @@ interface ISystemBridge {
     boolean moveTaskToFront(int taskId);
     boolean setTaskFullscreen(int taskId);
     boolean removeRecentTask(int taskId);
+    /** Flatpak management resolves a ref to a signed stub in the calling user.
+     * Optional concrete userId requires cross-user permission when different;
+     * raw installation UIDs are never accepted from apps. */
     String call(String target, String command, String jsonArgs);
     void subscribe(String target, String topic, IMatonosListener listener);
     void unsubscribe(String target, String topic, IMatonosListener listener);

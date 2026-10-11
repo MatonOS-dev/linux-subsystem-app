@@ -42,7 +42,7 @@ needs_exe_wrapper = true
 CROSS
 export PKG_CONFIG_LIBDIR="$BUILD/no-host-packages" PKG_CONFIG_PATH=
 opts=(--cross-file "$BUILD/android.ini" --prefix /pipewire --libdir lib --buildtype release
-    -Dauto_features=disabled -Ddbus=disabled -Dflatpak=disabled -Dspa-plugins=enabled -Dsupport=enabled -Daudioconvert=enabled
+    -Dauto_features=disabled -Ddbus=disabled -Dflatpak=disabled -Dspa-plugins=enabled -Dsupport=enabled -Daudioconvert=enabled -Daudiomixer=enabled
     -Dpipewire-jack=disabled -Dpipewire-alsa=disabled -Dpipewire-v4l2=disabled
     -Dsession-managers=[] -Dtests=disabled -Dexamples=disabled)
 if [[ -f $BUILD/build/build.ninja ]]; then
@@ -58,7 +58,10 @@ cp -L "$LIBS/libpipewire-0.3.so" "$BUILD/jniLibs/x86_64/"
 for module in protocol-native protocol-pulse client-node adapter link-factory spa-node-factory metadata access; do
     cp -L "$LIBS/pipewire-0.3/libpipewire-module-$module.so" "$BUILD/jniLibs/x86_64/"
 done
-for plugin in support/libspa-support audioconvert/libspa-audioconvert; do
+# DSP sink ports need a real mixer when several playback streams overlap.
+# The scheduler fallback forwards IDs into one peer's buffer array; it does
+# not own a separate output buffer when that peer disconnects.
+for plugin in support/libspa-support audioconvert/libspa-audioconvert audiomixer/libspa-audiomixer; do
     cp -L "$LIBS/spa-0.2/$plugin.so" "$BUILD/jniLibs/x86_64/"
 done
 printf 'PipeWire 1.6.9\ncommit %s\nunmodified upstream; NDK compatibility header linux/pipewire/compat/android.h\n' "$REV" > "$BUILD/SOURCE"

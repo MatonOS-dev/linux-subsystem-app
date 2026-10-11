@@ -89,8 +89,8 @@ static void test_overlay_args(void) {
     int fd=memfd_create("overlay-args",MFD_CLOEXEC);assert(fd>=0);
     assert(write(fd,data,sizeof(data)-1)==sizeof(data)-1);
     assert(lseek(fd,0,SEEK_SET)==0);
-    int tmpfs=0,app=0;char* journal=NULL;
-    char* found=args_fd_x11_socket(fd,&tmpfs,&journal,&app);
+    int tmpfs=0,app=0,shm=0;char* journal=NULL;
+    char* found=args_fd_x11_socket(fd,&tmpfs,&journal,&app,&shm);
     assert(found && !strcmp(found,"/real") && tmpfs);
     assert(lseek(fd,0,SEEK_CUR)==0);close(fd);
 }
@@ -122,13 +122,13 @@ static void test_args_fd_x11_socket(void) {
                       "--setenv\0WAYLAND_DISPLAY\0/data/matonos/linux/run/wayland-1\0"
                       "--setenv\0MATON_X11_SOCKET\0/data/matonos/linux/run/wayland-1-x11\0";
     char* found;
-    int tmpfs=0, app=0;char* journal=NULL;
+    int tmpfs=0, app=0,shm=0;char* journal=NULL;
     int fd=memfd_create("bwrap-args",MFD_CLOEXEC|MFD_ALLOW_SEALING);
     assert(fd>=0);
     assert(ftruncate(fd,sizeof(data)-1)==0);
     assert(write(fd,data,sizeof(data)-1)==(ssize_t)(sizeof(data)-1));
     assert(lseek(fd,0,SEEK_SET)==0);
-    found=args_fd_x11_socket(fd,&tmpfs,&journal,&app);
+    found=args_fd_x11_socket(fd,&tmpfs,&journal,&app,&shm);
     assert(found && !strcmp(found,"/data/matonos/linux/run/wayland-1-x11"));
     assert(tmpfs);
     /* the real bwrap must still read the arguments from the start */
@@ -143,7 +143,7 @@ static void test_args_fd_x11_socket(void) {
     assert(write(fd,plain,sizeof(plain)-1)==(ssize_t)(sizeof(plain)-1));
     assert(lseek(fd,0,SEEK_SET)==0);
     tmpfs=0;
-    assert(args_fd_x11_socket(fd,&tmpfs,&journal,&app)==NULL);
+    assert(args_fd_x11_socket(fd,&tmpfs,&journal,&app,&shm)==NULL);
     assert(tmpfs);
     assert(lseek(fd,0,SEEK_CUR)==0);
     close(fd);
@@ -155,7 +155,7 @@ static void test_args_fd_x11_socket(void) {
     assert(write(fd,helper,sizeof(helper)-1)==(ssize_t)(sizeof(helper)-1));
     assert(lseek(fd,0,SEEK_SET)==0);
     tmpfs=0;
-    assert(args_fd_x11_socket(fd,&tmpfs,&journal,&app));
+    assert(args_fd_x11_socket(fd,&tmpfs,&journal,&app,&shm));
     assert(!tmpfs);
     close(fd);
 }
@@ -178,7 +178,8 @@ static void test_seccomp_forwarding(void) {
     assert(shim_main(5,args)==127);
     assert(!strcmp(captured[1],"--seccomp"));assert(!strcmp(captured[2],number));
     assert(fcntl(filter,F_GETFD)>=0);assert(lseek(filter,0,SEEK_CUR)==0);
-    for(unsigned i=0;captured[i];i++)free(captured[i]);free(captured);
+    for(unsigned i=0;captured[i];i++)free(captured[i]);
+    free(captured);
     /* Flatpak normally bundles --seccomp into the inherited --args FD. */
     int fd=memfd_create("args",0);assert(fd>=0);
     const char bundled[]="--seccomp\0";
@@ -192,7 +193,8 @@ static void test_seccomp_forwarding(void) {
     assert(lseek(fd,0,SEEK_CUR)==0);
     char contents[64];assert(read(fd,contents,sizeof(contents))>0);
     assert(!strcmp(contents,"--seccomp"));
-    for(unsigned i=0;captured[i];i++)free(captured[i]);free(captured);close(fd);close(filter);
+    for(unsigned i=0;captured[i];i++)free(captured[i]);
+    free(captured);close(fd);close(filter);
 }
 static void test_machine_id_binds(void) {
     const char app[]="--dir\0/var\0--setenv\0FLATPAK_ID\0org.example.AnyApp\0";
@@ -216,10 +218,50 @@ static void test_machine_id_binds(void) {
             assert(!strcmp(captured[i+1],ids?"/var/lib/dbus/machine-id":"/etc/machine-id"));ids++;
         }
         assert(ids==(test?0:2));assert(lseek(fd,0,SEEK_CUR)==0);
-        for(unsigned i=0;captured[i];i++)free(captured[i]);free(captured);close(fd);
+        for(unsigned i=0;captured[i];i++)free(captured[i]);
+    free(captured);close(fd);
     }
 }
+static void test_download_binds(void) {
+    char source[]="/tmp/maton-bind-XXXXXX";assert(mkdtemp(source));
+    int folder=open(source,O_PATH|O_DIRECTORY|O_CLOEXEC);assert(folder>=0);
+    for(unsigned ro=0;ro<2;ro++) {
+        MatonFolderRequests downloads={0};assert(!maton_folder_add(&downloads,"sub folder",ro));
+        downloads.items[0].fd=folder;
+        char* wire=maton_folders_encode(&downloads);assert(wire);
+        int fd=memfd_create("Downloads-args",MFD_CLOEXEC);assert(fd>=0);
+        const char prefix[]="--setenv\0FLATPAK_ID\0org.example.App\0"
+            "--setenv\0MATON_APP_LABEL\0u:r:matonos_linux_app:s0:c1,c2\0"
+            "--setenv\0MATON_APP_HOME_DIR\0/data/misc_ce/0/matonos-linux/home/10001\0"
+            "--setenv\0MATON_DOWNLOAD_GRANTS\0";
+        assert(write(fd,prefix,sizeof(prefix)-1)==sizeof(prefix)-1);
+        assert(write(fd,wire,strlen(wire)+1)==(ssize_t)strlen(wire)+1);
+        assert(lseek(fd,0,SEEK_SET)==0);
+        char number[32];snprintf(number,sizeof(number),"%d",fd);
+        char* argv[]={"shim","--args",number,"--","app",NULL};
+        assert(shim_main(5,argv)==127);
+        /* Preserve the pre-existing home-bind-first change. */
+        assert(!strcmp(captured[1],"--bind"));
+        assert(!strcmp(captured[2],"/data/misc_ce/0/matonos-linux/home/10001"));
+        unsigned binds=0,unset=0;
+        for(unsigned i=1;captured[i];i++) {
+            if(!strcmp(captured[i],ro?"--ro-bind-fd":"--bind-fd")) {
+                assert(atoi(captured[i+1])==folder);
+                assert(!strcmp(captured[i+2],"/data/misc_ce/0/matonos-linux/home/10001/Downloads/sub folder"));
+                binds++;
+            }
+            if(!strcmp(captured[i],"--unsetenv") && !strcmp(captured[i+1],"MATON_DOWNLOAD_GRANTS"))unset++;
+        }
+        assert(binds==1 && unset==1);assert(lseek(fd,0,SEEK_CUR)==0);
+        for(unsigned i=0;captured[i];i++)free(captured[i]);
+        free(captured);close(fd);free(wire);
+        /* capture_execv does not run bubblewrap, so our source fd remains. */
+        downloads.items[0].fd=-1;maton_folders_clear(&downloads);
+    }
+    close(folder);assert(rmdir(source)==0);
+}
 int main(void) {
+    test_download_binds();
     test_seccomp_forwarding();
     test_machine_id_binds();
     test_option_values();

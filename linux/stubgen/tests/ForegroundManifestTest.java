@@ -39,6 +39,10 @@ public final class ForegroundManifestTest {
         if(!xml.contains("appComponentFactory(0x0101057a)=\"org.matonos.compositor.stub.StubLoader\""))throw new AssertionError("Missing host StubLoader factory\n"+xml);
         if(xml.contains("extractNativeLibs"))throw new AssertionError("extractNativeLibs must not be set\n"+xml);
         if(!xml.contains("org.matonos.linuxhost"))throw new AssertionError("Missing host uses-library\n"+xml);
+        if (!xml.contains("org.matonos.systembridge"))
+            throw new AssertionError("Missing self-task bridge package visibility query\n"+xml);
+        if (xml.contains("org.matonos.permission.SYSTEM_BRIDGE"))
+            throw new AssertionError("A generated stub must not request the general bridge permission");
         System.out.println("PASS: AOSP parses foreground-service type IDs, install dataSync, runtime specialUse and the host StubLoader factory");
     }
 }

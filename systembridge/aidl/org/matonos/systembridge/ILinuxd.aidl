@@ -3,6 +3,10 @@ package org.matonos.systembridge;
 import org.matonos.systembridge.ILinuxdListener;
 
 interface ILinuxd {
+    /** Bridge-only management: metadata, desktop_entry, icon, uninstall,
+     * installed_for_uid, launch_status and kill require {ref, uid}. The bridge
+     * verifies the stub UID with PackageManager; listing requires {userId}.
+     * Ref-only lookup and appId-only kill are not supported. */
     String call(String command, String jsonArgs);
     void subscribe(String topic, ILinuxdListener listener);
     void unsubscribe(String topic, ILinuxdListener listener);
@@ -17,4 +21,7 @@ interface ILinuxd {
      * per-app runtime dir /data/matonos/linux/tmp/<uid> (owned by the caller,
      * labelled, no app can squat it) before the stub binds its sockets. */
     String prepareRuntime(String packageName);
+    /** Self-only, verified like prepareRuntime. No caller-supplied paths. */
+    String downloadsRequest(String packageName);
+    String answerDownloads(String packageName, String request, boolean allow);
 }
