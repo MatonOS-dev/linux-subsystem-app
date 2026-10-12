@@ -1,0 +1,112 @@
+/* A virtual NEWNET has no kernel namespace. Never send its route requests to
+ * the real network. This deliberately implements only bwrap's lo setup. */
+#define _GNU_SOURCE
+#include "proxy.h"
+#include "vfs.h"
+#include "net.h"
+#include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/eventfd.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <net/if.h>
+#include <errno.h>
+#include <limits.h>
+#include <linux/sockios.h>
+struct reply { struct reply *next; struct nlmsghdr header; struct nlmsgerr error; };
+struct endpoint { unsigned refs; unsigned port; int route; struct reply *first, *last; };
+struct descriptor { int fd; struct endpoint *ep; struct descriptor *next; };
+static struct descriptor *fds;
+static struct endpoint *lookup(int fd) {
+    for(struct descriptor *p=fds;p;p=p->next)if(p->fd==fd)return p->ep;
+    return NULL;
+}
+void net_close(int fd) {
+    struct descriptor **p=&fds;
+    while(*p){struct descriptor *d=*p;if(d->fd!=fd){p=&d->next;continue;}
+        *p=d->next;struct endpoint *e=d->ep;vfs_free(d);
+        if(!--e->refs){while(e->first){struct reply *r=e->first;e->first=r->next;vfs_free(r);}vfs_free(e);}return;
+    }
+}
+void net_dup(int from,int to) {
+    if(from==to)return;
+    struct endpoint *e=lookup(from);net_close(to);if(!e)return;
+    struct descriptor *d=vfs_alloc(sizeof(*d));if(!d)return;
+    *d=(struct descriptor){to,e,fds};fds=d;e->refs++;
+}
+static long address(void *out, unsigned *len, unsigned port) {
+    if(!len)return -EFAULT;
+    struct sockaddr_nl addr={.nl_family=AF_NETLINK,.nl_pid=port};
+    unsigned n=*len;if(n>sizeof(addr))n=sizeof(addr);
+    if(n && !out)return -EFAULT;
+    p_copy(out,&addr,n);*len=sizeof(addr);return 0;
+}
+static int request_error(struct nlmsghdr *h) {
+    if(!(h->nlmsg_flags&NLM_F_REQUEST))return -EINVAL;
+    if(h->nlmsg_type==RTM_NEWADDR && h->nlmsg_len>=NLMSG_LENGTH(sizeof(struct ifaddrmsg))){
+        struct ifaddrmsg *a=NLMSG_DATA(h);
+        if(a->ifa_index!=1 || a->ifa_family!=AF_INET || a->ifa_prefixlen!=8)return -EOPNOTSUPP;
+        unsigned len=h->nlmsg_len-NLMSG_LENGTH(sizeof(*a));struct rtattr *r=IFA_RTA(a);unsigned found=0;
+        for(;RTA_OK(r,len);r=RTA_NEXT(r,len)){
+            if(r->rta_type!=IFA_LOCAL && r->rta_type!=IFA_ADDRESS)return -EOPNOTSUPP;
+            if(RTA_PAYLOAD(r)!=4)return -EINVAL;
+            unsigned char *ip=RTA_DATA(r);if(ip[0]!=127 || ip[1] || ip[2] || ip[3]!=1)return -EOPNOTSUPP;
+            found|=r->rta_type==IFA_LOCAL?1:2;
+        }
+        return len || found!=3?-EINVAL:0;
+    }
+    if(h->nlmsg_type==RTM_NEWLINK && h->nlmsg_len==NLMSG_LENGTH(sizeof(struct ifinfomsg))){
+        struct ifinfomsg *i=NLMSG_DATA(h);
+        return i->ifi_index==1 && i->ifi_change==IFF_UP && i->ifi_flags==IFF_UP?0:-EOPNOTSUPP;
+    }
+    return -EOPNOTSUPP;
+}
+static long send_request(int fd,struct endpoint *e,void *buf,size_t len,void *addr,unsigned addrlen) {
+    if(addr){struct sockaddr_nl *a=addr;if(addrlen<sizeof(*a) || a->nl_family!=AF_NETLINK)return -EINVAL;if(a->nl_pid || a->nl_groups)return -EOPNOTSUPP;}
+    if(!buf || len<sizeof(struct nlmsghdr) || len>UINT_MAX)return -EINVAL;
+    /* Validate the whole datagram before enqueueing anything. */
+    size_t off=0;
+    while(off<len){if(len-off<sizeof(struct nlmsghdr))return -EINVAL;struct nlmsghdr *h=(void *)((char *)buf+off);
+        if(h->nlmsg_len<sizeof(*h) || h->nlmsg_len>len-off)return -EINVAL;
+        size_t n=NLMSG_ALIGN((size_t)h->nlmsg_len);off+=n>len-off?h->nlmsg_len:n;
+    }
+    for(off=0;off<len;){struct nlmsghdr *h=(void *)((char *)buf+off);struct reply *r=vfs_alloc(sizeof(*r));if(!r)return -ENOMEM;
+        int error=request_error(h);*r=(struct reply){.header={.nlmsg_len=NLMSG_LENGTH(sizeof(struct nlmsgerr)),.nlmsg_type=NLMSG_ERROR,.nlmsg_flags=NLM_F_CAPPED,.nlmsg_seq=h->nlmsg_seq,.nlmsg_pid=e->port},.error={.error=error,.msg=*h}};
+        if(e->last)e->last->next=r;else e->first=r;e->last=r;
+        uint64_t one=1;long written=RAW(SYS_write,fd,&one,sizeof(one),0,0,0);if(written<0)return written;
+        proxy_log("virtual-netlink",h->nlmsg_type,error);
+        size_t n=NLMSG_ALIGN((size_t)h->nlmsg_len);off+=n>len-off?h->nlmsg_len:n;
+    }
+    return (long)len;
+}
+static long receive(int fd,struct endpoint *e,struct iovec *iov,size_t count,int flags,int *msgflags) {
+    struct reply *r=e->first;if(!r)return -EAGAIN;
+    size_t total=0,used=0;char *data=(char *)&r->header;size_t len=r->header.nlmsg_len;
+    for(size_t k=0;k<count;k++){if(iov[k].iov_len>SIZE_MAX-total)return -EINVAL;total+=iov[k].iov_len;size_t n=len-used;if(n>iov[k].iov_len)n=iov[k].iov_len;p_copy(iov[k].iov_base,data+used,n);used+=n;}
+    if(msgflags)*msgflags=total<len?MSG_TRUNC:0;
+    if(!(flags&MSG_PEEK)){uint64_t one;long n=RAW(SYS_read,fd,&one,sizeof(one),0,0,0);if(n<0)return n;e->first=r->next;if(!e->first)e->last=NULL;vfs_free(r);}
+    return flags&MSG_TRUNC?(long)len:(long)used;
+}
+long net_call(long nr,long *a,int newnet,int *handled) {
+    *handled=0;
+    if(nr==SYS_socket && newnet && ((a[0]==AF_NETLINK && a[2]==NETLINK_ROUTE) || (a[0]==AF_INET && (a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))==SOCK_DGRAM && !a[2]))){
+        *handled=1;if((a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))!=SOCK_RAW && (a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))!=SOCK_DGRAM)return -EPROTOTYPE;
+        struct endpoint *e=vfs_alloc(sizeof(*e));struct descriptor *d=vfs_alloc(sizeof(*d));if(!e || !d){vfs_free(e);vfs_free(d);return -ENOMEM;}
+        long fd=RAW(SYS_eventfd2,0,EFD_SEMAPHORE|EFD_NONBLOCK|((a[1]&SOCK_CLOEXEC)?EFD_CLOEXEC:0),0,0,0,0);
+        if(fd<0){vfs_free(e);vfs_free(d);return fd;}
+        *e=(struct endpoint){.refs=1,.route=a[0]==AF_NETLINK,.port=(unsigned)RAW(SYS_getpid,0,0,0,0,0,0)};*d=(struct descriptor){(int)fd,e,fds};fds=d;return fd;
+    }
+    struct endpoint *e=lookup((int)a[0]);if(!e)return 0;
+    if(nr==SYS_ioctl && !e->route){*handled=1;struct ifreq *r=(void *)a[2];if(a[1]!=SIOCGIFINDEX)return -EOPNOTSUPP;if(!r)return -EFAULT;if(r->ifr_name[0]!='l' || r->ifr_name[1]!='o' || r->ifr_name[2])return -ENODEV;r->ifr_ifindex=1;return 0;}
+    if(!e->route && (nr==SYS_sendto || nr==SYS_sendmsg || nr==SYS_recvfrom || nr==SYS_recvmsg || nr==SYS_connect || nr==SYS_bind || nr==SYS_getsockname)){*handled=1;return -EOPNOTSUPP;}
+    switch(nr){
+    case SYS_bind:{*handled=1;struct sockaddr_nl *s=(void *)a[1];if(!s || a[2]<(long)sizeof(*s) || s->nl_family!=AF_NETLINK)return -EINVAL;if(s->nl_groups)return -EOPNOTSUPP;if(s->nl_pid)e->port=s->nl_pid;return 0;}
+    case SYS_getsockname:*handled=1;return address((void *)a[1],(void *)a[2],e->port);
+    case SYS_sendto:*handled=1;return send_request((int)a[0],e,(void *)a[1],a[2],(void *)a[4],a[5]);
+    case SYS_sendmsg:{*handled=1;struct msghdr *m=(void *)a[1];if(!m || m->msg_controllen)return -EINVAL;size_t size=0;for(size_t k=0;k<m->msg_iovlen;k++){if(m->msg_iov[k].iov_len>UINT_MAX-size)return -EMSGSIZE;size+=m->msg_iov[k].iov_len;}char *buf=vfs_alloc(size);if(!buf)return -ENOMEM;size_t off=0;for(size_t k=0;k<m->msg_iovlen;k++){p_copy(buf+off,m->msg_iov[k].iov_base,m->msg_iov[k].iov_len);off+=m->msg_iov[k].iov_len;}long r=send_request((int)a[0],e,buf,size,m->msg_name,m->msg_namelen);vfs_free(buf);return r;}
+    case SYS_recvfrom:{*handled=1;struct iovec iov={(void *)a[1],a[2]};if(a[4]){long r=address((void *)a[4],(void *)a[5],0);if(r)return r;}return receive((int)a[0],e,&iov,1,a[3],NULL);}
+    case SYS_recvmsg:{*handled=1;struct msghdr *m=(void *)a[1];if(!m)return -EFAULT;if(m->msg_name){long r=address(m->msg_name,&m->msg_namelen,0);if(r)return r;}else m->msg_namelen=0;m->msg_controllen=0;return receive((int)a[0],e,m->msg_iov,m->msg_iovlen,a[2],&m->msg_flags);}
+    case SYS_connect:case SYS_setsockopt:case SYS_getsockopt:*handled=1;return -EOPNOTSUPP;
+    default:return 0;
+    }
+}

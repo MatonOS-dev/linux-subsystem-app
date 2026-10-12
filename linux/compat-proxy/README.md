@@ -125,3 +125,64 @@ does not represent production launch identity/portal integration.
 It requires no Soong/Gradle/image build and performs no VM reboot or policy
 change. VM tests were not run in this sandbox. Result report:
 `/mnt/data/aosp/out/pc-logs/agents/compat-proxy-3-result.md`.
+
+Round 4: a virtual NEWNET's NETLINK_ROUTE socket is an eventfd-backed
+readiness carrier with a per-process ACK queue. bwrap's IPv4 127.0.0.1/8
+RTM_NEWADDR and IFF_UP RTM_NEWLINK for virtual lo (index 1) receive
+NLMSG_ERROR success ACKs with the request sequence, port ID and embedded
+request header. Unsupported requests receive EOPNOTSUPP ACKs; malformed
+messages return EINVAL. No route send reaches the host kernel. sendto/recvfrom
+and scatter/gather sendmsg/recvmsg, sender address, MSG_PEEK/MSG_TRUNC,
+poll readiness and descriptor duplication/close are covered. The AF_INET
+SOCK_DGRAM control socket used for SIOCGIFINDEX("lo") is virtual too, so
+setup does not need a real IP socket. Other descriptors retain raw behavior.
+Namespace flags on clone now become active only in the child, not its parent
+monitor. Virtual userns sysctl writes use memfds and a child-namespace budget,
+allowing bwrap's --disable-userns setup/check without changing the host's
+user.max_user_namespaces. This implements that setup sequence, not general
+Linux user-namespace accounting or a security boundary.
+
+`tests/bionic-host.sh` now also runs `tests/flatpak-bwrap-host.py`. Its
+Flatpak 1.19-shaped fd bundles use --ro-bind-fd for /usr and /app,
+--ro-bind-data for generated config, --bind-fd for the cache, user/PID/IPC/net
+namespace setup, --disable-userns, proc/dev mounts, usr links and sysfs binds.
+Sealed --args data drives the staged bionic shim and bwrap. The ldconfig -X
+-C phase must produce a cache. The bash phase verifies --file plus
+--ro-bind-data /.flatpak-info, --info-fd, --json-status-fd setup/exit events,
+--block-fd release and --sync-fd EOF. Both phases install the nondevel,
+nonmultiarch x86_64 rules from Flatpak 1.19.2 setup_seccomp, exported by the
+host libseccomp; the payload filter adds getppid -> EACCES for an observable
+filter check. Set COMPAT_HOST_RUNTIME to a runtime's files/ directory to
+exercise its ldconfig/bash; default /usr uses the host glibc tools. Expanded
+argv and the actual exec argv are saved in build/flatpak-bwrap/*.argv.json.
+This is a source-derived fixture, not a replay of the VM's exact deployments,
+extensions, environment or Flatpak-generated filter bytes. Stage 2 now adds
+Flatpak -v so the next VM log includes expanded --args contents.
+
+Network spike limits: no general virtual IP stack or route enumeration;
+empty ACK queues return EAGAIN even for a blocking receive. Kernel carrier
+flags/type/stat differ from an actual netlink socket. ACK state is private
+copy-on-write memory; concurrently using the same endpoint after fork or
+SCM_RIGHTS transfer is unsupported, as is concurrent thread mutation.
+Namespace sysctl reads and kernel namespace IDs still show host values.
+Filters remain installed in the kernel and constrain raw operations; virtual
+answers are not a full interpreter for additional seccomp policies (TRAP has
+priority over ERRNO). Do not infer containment from these host tests.
+
+Round 5 inode publication: `linkat` preserves a final `/proc/self/fd/N`
+magic link when following the source. `AT_EMPTY_PATH` is translated to that
+proc form so publication does not require CAP_DAC_READ_SEARCH. Destination
+resolution, virtual mount identity and read-only checks still apply. Other
+proc-fd resolution (especially bind-mount sources) keeps its existing backing
+path behavior. `O_TMPFILE` and `renameat2` flags pass to the kernel after
+virtual path checks; `tests/publication.c` covers publication/replacement,
+fd duplication, NOREPLACE/EXCHANGE, EXDEV and EROFS.
+
+Bwrap loads now log outer argv and NUL-separated `--args` bundles through
+pread without consuming or changing the fd. `tests/flatpak-bwrap-host.py`
+accepts `COMPAT_STAGE2_LOG` to replay the logged outer ldconfig command.
+The fd bundle remains source-derived host test data: the round-4 log has no
+expanded bundle and no app-launch invocation, so this does not reproduce
+all VM deployments, metadata, extensions or permissions. Instance files,
+locks, status/lifetime fds and actual seccomp installation are exercised by
+the offline payload phase. No storage layout is hard-coded into the proxy.

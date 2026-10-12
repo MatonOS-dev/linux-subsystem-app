@@ -15,4 +15,5 @@ void proxy_log(const char *, long, long);
 size_t p_len(const char *);
 void p_copy(void *, const void *, size_t);
 int p_equal(const char *,const char *);
+void proxy_log_bwrap_args(const char *,char *const *);
 #endif

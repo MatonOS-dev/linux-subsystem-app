@@ -58,3 +58,13 @@ printf 'child\n' >build/process-child/fixture
 cc -no-pie -O2 -Wall -Wextra -Werror tests/process.c -o build/process
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/process" "$PWD/build/process-parent" "$PWD/build/process-child" >build/process.out 2>build/process.log
 cat build/process.out
+
+cc -no-pie -O2 -Wall -Wextra -Werror tests/net.c -o build/net-test
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/net-test" >build/net-test.out 2>build/net-test.log
+cat build/net-test.out
+
+cc -no-pie -O2 -Wall -Wextra -Werror tests/publication.c -o build/publication
+mkdir -p build/publication-a build/publication-b
+rm -f build/publication-a/{run-environ,empty,new,different}
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/publication" "$PWD/build/publication-a" "$PWD/build/publication-b" >build/publication.out 2>build/publication.log
+cat build/publication.out

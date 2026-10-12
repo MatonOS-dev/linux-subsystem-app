@@ -34,3 +34,7 @@ timeout 20 "${proxy[@]}" "$bwrap" --ro-bind / / --tmpfs /tmp --proc /proc --dev 
 timeout 20 "${proxy[@]}" "$bwrap" --ro-bind / / --tmpfs /tmp --bind "$PWD/build/bionic-fixture" /tmp/fixture --proc /proc --dev /dev /bin/cat /tmp/fixture/fixture >build/bionic-fixture.out 2>build/bionic-fixture.log
 rg -qx mount-ok build/bionic-fixture.out
 printf 'PASS staged bionic bwrap -> host glibc root and fixture payloads\n'
+
+mkdir -p build/flatpak-bwrap/app
+cc -O2 -Wall -Wextra -Werror tests/filter-check.c -o build/flatpak-bwrap/app/filter-check
+python3 tests/flatpak-bwrap-host.py

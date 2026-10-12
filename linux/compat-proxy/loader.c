@@ -141,6 +141,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     vfs_free(av);vfs_free(ev);image->entry=entry;image->stack=sp;return 0;
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
+    proxy_log_bwrap_args(path,argv);
     int r=load_inner(path,argv,env,image,0);if(!r)vfs_executable(path);return r;
 }
 #ifndef PROXY_LIBRARY

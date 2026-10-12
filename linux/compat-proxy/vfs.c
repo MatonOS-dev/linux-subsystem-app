@@ -111,6 +111,13 @@ restart:;
          * pathname root. They are not ordinary payload absolute symlinks. */
         if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
             int magic=0;for(size_t j=0;host[j];j++)if(host[j]=='/' && host[j+1]=='f' && host[j+2]=='d' && host[j+3]=='/')magic=1;
+            if(magic && !input[i] && follow==VFS_FOLLOW_LINK_SOURCE){
+                /* Keep the proc magic link itself. readlink text for O_TMPFILE
+                 * is a nonexistent "#inode (deleted)" name, not the inode. */
+                if(identity){char *name=vfs_proc_fd_name(out);char *global=name?(root?join(root,name):dupstr(name)):NULL;
+                    *identity=global?lookup(global):NULL;vfs_free(global);vfs_free(name);}
+                vfs_free(target);vfs_free(input);vfs_free(out);return host;
+            }
             if(magic){char *answer=join(target,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);if(!answer)*error=-ENOMEM;return answer;}
         }
         vfs_free(host);

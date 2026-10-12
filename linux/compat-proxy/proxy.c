@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "proxy.h"
 #include "vfs.h"
+#include "net.h"
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
@@ -79,6 +80,17 @@ static int app_allowed(long nr) {
     return 0;
 }
 static unsigned long namespaces;
+static long namespace_clone_parent;
+static unsigned long namespace_clone_flags;
+static unsigned userns_remaining=~0U;
+struct sysctl_fd {int fd;struct sysctl_fd *next;};
+static struct sysctl_fd *sysctl_fds;
+static int sysctl_tracked(int fd){for(struct sysctl_fd *p=sysctl_fds;p;p=p->next)if(p->fd==fd)return 1;return 0;}
+static void sysctl_close(int fd){struct sysctl_fd **p=&sysctl_fds;while(*p){struct sysctl_fd *d=*p;if(d->fd==fd){*p=d->next;vfs_free(d);return;}p=&d->next;}}
+static void sysctl_dup(int from,int to){if(from==to)return;int tracked=sysctl_tracked(from);sysctl_close(to);if(tracked){struct sysctl_fd *p=vfs_alloc(sizeof(*p));if(p){*p=(struct sysctl_fd){to,sysctl_fds};sysctl_fds=p;}}}
+static long sysctl_open(int cloexec){long fd=RAW(SYS_memfd_create,"v3-userns-limit",cloexec?1:0,0,0,0,0);if(fd<0)return fd;struct sysctl_fd *p=vfs_alloc(sizeof(*p));if(!p){RAW(SYS_close,fd,0,0,0,0,0);return -ENOMEM;}*p=(struct sysctl_fd){(int)fd,sysctl_fds};sysctl_fds=p;return fd;}
+static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)return -EINVAL;unsigned limit=0;size_t k=0;for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10)return -ERANGE;limit=limit*10+digit;}if(!k || (k<len && !(k+1==len && buf[k]=='\n')))return -EINVAL;long r=RAW(SYS_write,fd,buf,len,0,0,0);if(r>=0)userns_remaining=limit;return r;}
+
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
 static long path_call(long nr,long *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
@@ -86,10 +98,22 @@ static long path_call(long nr,long *a,int one,int two) {
     int fd=at?(int)a[one-1]:AT_FDCWD;
     int follow=nr!=SYS_readlinkat && nr!=SYS_readlink && nr!=SYS_unlinkat && nr!=SYS_renameat && nr!=SYS_renameat2 && nr!=SYS_symlinkat && nr!=SYS_mkdirat && nr!=SYS_mknodat;
     if(nr==SYS_newfstatat || nr==SYS_fchownat || nr==SYS_utimensat || nr==SYS_faccessat2)follow=!(a[nr==SYS_fchownat?4:3]&AT_SYMLINK_NOFOLLOW);
-    if(nr==SYS_linkat)follow=(a[4]&AT_SYMLINK_FOLLOW)!=0;
+    if(nr==SYS_linkat)follow=(a[4]&AT_SYMLINK_FOLLOW)?VFS_FOLLOW_LINK_SOURCE:0;
     if(nr==SYS_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==SYS_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
-    /* AT_EMPTY_PATH operates on the original descriptor, without path resolution. */
+    /* Publish an unnamed inode via procfs: AT_EMPTY_PATH otherwise requires
+     * CAP_DAC_READ_SEARCH. Resolve the destination and mount policy normally. */
+    char empty_link[64];
+    if(nr==SYS_linkat && a[1] && !*(char *)a[1] && (a[4]&AT_EMPTY_PATH)){
+        char digits[24];size_t k=14;unsigned d=0;unsigned long n=(unsigned)fd;
+        p_copy(empty_link,"/proc/self/fd/",14);
+        do{digits[d++]=(char)('0'+n%10);n/=10;}while(n);
+        while(d)empty_link[k++]=digits[--d];
+        empty_link[k]=0;
+        a[1]=(long)empty_link;a[0]=AT_FDCWD;fd=AT_FDCWD;
+        a[4]=(a[4]&~AT_EMPTY_PATH)|AT_SYMLINK_FOLLOW;follow=VFS_FOLLOW_LINK_SOURCE;
+    }
+    /* Other empty-path operations act on the original descriptor. */
     if(a[one] && !*(char *)a[one] && at)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     const char *original_path=(void *)a[one];
     if(nr==SYS_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
@@ -100,6 +124,7 @@ static long path_call(long nr,long *a,int one,int two) {
     int writing=nr==SYS_mkdirat || nr==SYS_unlinkat || nr==SYS_renameat || nr==SYS_renameat2 || nr==SYS_linkat || nr==SYS_symlinkat || nr==SYS_fchmodat || nr==SYS_fchownat || nr==SYS_utimensat || nr==SYS_mknodat || (nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
     if(nr==SYS_mkdirat){struct stat existing;if(!RAW(SYS_newfstatat,AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW,0,0)){e=-EEXIST;goto done;}}
     if(writing && ((e=vfs_mount_readonly(pm)) || (q && (e=vfs_mount_readonly(qm)))))goto done;
+    if((namespaces&CLONE_NEWUSER) && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
     if(namespaces && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR))){
         size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
         if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(SYS_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);goto done;}
@@ -121,6 +146,27 @@ done:vfs_free(p);vfs_free(q);return e;
 }
 /* Translate before path dispatch so forbidden legacy instructions are never
  * replayed under the inherited Android filter. x86_64 stat layouts match. */
+/* Flatpak verbose output does not include the sealed --args bundle in this
+ * build. Log it without changing the fd offset or its seals. */
+void proxy_log_bwrap_args(const char *path,char *const *argv){
+    const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
+    if(!p_equal(base,"matonos-bwrap") && !p_equal(base,"bwrap"))return;
+    for(size_t i=0;argv && argv[i];i++){
+        RAW(SYS_write,2,"v3 bwrap argv ",14,0,0,0);
+        RAW(SYS_write,2,argv[i],p_len(argv[i]),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);
+        if(!p_equal(argv[i],"--args") || !argv[i+1])continue;
+        const char *n=argv[i+1];unsigned fd=0;int valid=*n!=0;
+        for(;*n;n++){if(*n<'0'||*n>'9'||fd>(2147483647U-(unsigned)(*n-'0'))/10){valid=0;break;}fd=fd*10+(*n-'0');}
+        if(!valid)continue;
+        RAW(SYS_write,2,"v3 bwrap bundle begin\n",sizeof("v3 bwrap bundle begin\n")-1,0,0,0);
+        char bytes[4096];long offset=0,count;
+        while((count=RAW(SYS_pread64,fd,bytes,sizeof(bytes),offset,0,0))>0){
+            for(long j=0;j<count;j++)if(!bytes[j])bytes[j]='\n';
+            RAW(SYS_write,2,bytes,count,0,0,0);offset+=count;
+        }
+        RAW(SYS_write,2,"v3 bwrap bundle end\n",sizeof("v3 bwrap bundle end\n")-1,0,0,0);
+    }
+}
 static long modernize(long nr,long *a,long *answer) {
     switch(nr){
     case SYS_access:a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_faccessat;
@@ -172,7 +218,8 @@ static long modernize(long nr,long *a,long *answer) {
 }
 static int ours(long n) {
     switch(n) {
-    case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
+    case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_setsockopt:case SYS_getsockopt:
+    case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
     case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
     case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
     case SYS_prctl:case SYS_execve:case SYS_execveat:case SYS_rt_sigaction:case SYS_rt_sigprocmask:
@@ -207,7 +254,7 @@ static void exec_close_fds(void){
     char *buf=vfs_alloc(8192);if(!buf){RAW(SYS_close,fd,0,0,0,0,0);return;}
     for(;;){long n=RAW(SYS_getdents64,fd,buf,8192,0,0,0);if(n<=0)break;
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
-            if(valid && v!=fd){long flags=RAW(SYS_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(SYS_close,v,0,0,0,0,0);vfs_fd_close((int)v);}}off+=len;
+            if(valid && v!=fd){long flags=RAW(SYS_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(SYS_close,v,0,0,0,0,0);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
         }
     }
     vfs_free(buf);RAW(SYS_close,fd,0,0,0,0,0);
@@ -217,6 +264,15 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     volatile unsigned char *selector=dispatch_selector;
     unsigned char saved=0;
     if(selector) {saved=*selector;*selector=SYSCALL_DISPATCH_FILTER_ALLOW;}
+    /* The retried clone inherits this pending record. Only its child adopts
+     * new namespace flags; the parent's monitor keeps the original namespace. */
+    if(namespace_clone_parent){
+        if(RAW(SYS_getpid,0,0,0,0,0,0)!=namespace_clone_parent){
+            namespaces|=namespace_clone_flags;
+            if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;
+        }
+        namespace_clone_parent=0;namespace_clone_flags=0;
+    }
     struct thread_state *thread=thread_state();
     if(info->si_code!=SYS_SECCOMP) {
         /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
@@ -242,12 +298,19 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
+    int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
+    if(net_handled)goto finish;
+    result=-ENOSYS;
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     switch(nr) {
-    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result)vfs_fd_close((int)a[0]);break;
+    case SYS_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
+    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result){vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case SYS_dup:case SYS_dup3:case SYS_fcntl:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))vfs_fd_dup((int)a[0],(int)result);
+        if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+        break;
+    case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_setsockopt:case SYS_getsockopt:
+        if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         break;
     case SYS_prctl:
         if(a[0]==PR_CAPBSET_DROP || a[0]==PR_CAP_AMBIENT || a[0]==PR_SET_KEEPCAPS) {result=0;break;}
@@ -308,7 +371,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(a[0]) thread->app_stack=next;
         result=0;break;
     }
-    case SYS_unshare:result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;if(!result)namespaces|=a[0];break;
+    case SYS_unshare:
+        result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;
+        if(!result && (a[0]&CLONE_NEWUSER) && !userns_remaining)result=-EPERM;
+        if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+        break;
     case SYS_mount:result=vfs_mount((char *)a[0],(char *)a[1],(char *)a[2],(unsigned long)a[3]);break;
     case SYS_umount2:result=vfs_unmount((char *)a[0]);break;
     case SYS_pivot_root:result=vfs_pivot((char *)a[0],(char *)a[1]);break;
@@ -328,7 +395,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* A raw clone must return on the application's stack, not this handler's.
          * Rewind the syscall after removing namespace flags; filter allows clean clone. */
         if((a[0]&NS_FLAGS) && (a[0]&CLONE_VM)){result=-ENOTSUP;break;}
-        namespaces|=a[0]&NS_FLAGS;
+        if((a[0]&CLONE_NEWUSER) && !userns_remaining){result=-EPERM;break;}
+        namespace_clone_parent=RAW(SYS_getpid,0,0,0,0,0,0);namespace_clone_flags=a[0]&NS_FLAGS;
         uc->uc_mcontext.gregs[REG_RSI]=a[1];uc->uc_mcontext.gregs[REG_RDX]=a[2];
         uc->uc_mcontext.gregs[REG_R10]=a[3];uc->uc_mcontext.gregs[REG_R8]=a[4];
         uc->uc_mcontext.gregs[REG_RDI]=a[0]&~(long)(NS_FLAGS|CLONE_VFORK|((a[0]&CLONE_VFORK)?CLONE_VM:0));
