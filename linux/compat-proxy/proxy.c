@@ -1,0 +1,417 @@
+/* Linux layer v3. Resident state is inherited by fork; this is a spike,
+ * NOT a security boundary. The original Android filter remains authoritative. */
+#define _GNU_SOURCE
+#include "proxy.h"
+#include "vfs.h"
+#include <sys/time.h>
+#include <sys/stat.h>
+#include <sys/mount.h>
+#include <linux/capability.h>
+#include <signal.h>
+#include <ucontext.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
+#include <sys/mman.h>
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <linux/audit.h>
+#include <linux/sched.h>
+#include <linux/prctl.h>
+#include <stddef.h>
+#include <fcntl.h>
+#include <errno.h>
+#include "build/app-policy.h"
+#ifndef SYS_SECCOMP
+#define SYS_SECCOMP 1
+#endif
+#ifndef SYS_USER_DISPATCH
+#define SYS_USER_DISPATCH 2
+#endif
+#define SIGSYS_BIT (1UL << (SIGSYS-1))
+#define SA_RESTORER 0x04000000
+#define NS_FLAGS (CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET)
+struct kernel_action { uintptr_t handler,flags,restorer; unsigned long mask; };
+static struct kernel_action chained;
+/* Spike supports a single user-dispatch owner; configuration is per-thread. */
+static volatile unsigned char *dispatch_selector;
+static long dispatch_owner;
+struct thread_state { long tid; stack_t app_stack; };
+struct thread_node {struct thread_state state;struct thread_node *next;};
+static struct thread_node *threads;
+static struct thread_state *thread_state(void) {
+    long tid=RAW(SYS_gettid,0,0,0,0,0,0);
+    for(struct thread_node *p=threads;p;p=p->next) if(p->state.tid==tid)return &p->state;
+    struct thread_node *p=vfs_alloc(sizeof(*p));if(!p)return NULL;
+    p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
+    stack_t current;
+    if(!RAW(SYS_sigaltstack,0,&current,0,0,0,0) && !(current.ss_flags&SS_ONSTACK)) {
+        long area=RAW(SYS_mmap,0,1<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        if((unsigned long)area>=(unsigned long)-4095){vfs_free(p);return NULL;}
+        stack_t own={.ss_sp=(void *)area,.ss_size=1<<20};
+        if(RAW(SYS_sigaltstack,&own,0,0,0,0,0)){RAW(SYS_munmap,area,1<<20,0,0,0,0);vfs_free(p);return NULL;}
+    }
+    do {p->next=__atomic_load_n(&threads,__ATOMIC_ACQUIRE);}
+    while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
+    return &p->state;
+}
+const char *proxy_tmpdir="/tmp";
+static void emit(const char *s) { RAW(SYS_write,2,s,p_len(s),0,0,0); }
+void proxy_log(const char *kind,long nr,long result) {
+    char line[128]; size_t n=0;
+    const char *prefix="v3 trap "; while(*prefix) line[n++]=*prefix++;
+    while(*kind) line[n++]=*kind++;
+    line[n++]=' '; long values[2]={nr,result};
+    for(int i=0;i<2;i++) {
+        unsigned long v=values[i]<0?(unsigned long)(-(values[i]+1))+1:(unsigned long)values[i];
+        if(values[i]<0) line[n++]='-';
+        char digits[24];int d=0; do {digits[d++]=(char)('0'+v%10);v/=10;} while(v);
+        while(d) line[n++]=digits[--d];
+        line[n++]=i?'\n':' ';
+    }
+    RAW(SYS_write,2,line,n,0,0,0);
+}
+static int app_allowed(long nr) {
+    for(unsigned i=0;i<sizeof(android_allowed)/sizeof(android_allowed[0]);i++)
+        if(android_allowed[i]==nr) return 1;
+    return 0;
+}
+static unsigned long namespaces;
+static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
+static long path_call(long nr,long *a,int one,int two) {
+    if(!app_allowed(nr))return -ENOSYS;
+    int at=one==1 || (nr==SYS_symlinkat && one==2);
+    int fd=at?(int)a[one-1]:AT_FDCWD;
+    int follow=nr!=SYS_readlinkat && nr!=SYS_readlink && nr!=SYS_unlinkat && nr!=SYS_renameat && nr!=SYS_renameat2 && nr!=SYS_symlinkat && nr!=SYS_mkdirat && nr!=SYS_mknodat;
+    if(nr==SYS_newfstatat || nr==SYS_fchownat || nr==SYS_utimensat || nr==SYS_faccessat2)follow=!(a[nr==SYS_fchownat?4:3]&AT_SYMLINK_NOFOLLOW);
+    if(nr==SYS_linkat)follow=(a[4]&AT_SYMLINK_FOLLOW)!=0;
+    if(nr==SYS_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
+    if(nr==SYS_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
+    /* AT_EMPTY_PATH operates on the original descriptor, without path resolution. */
+    if(a[one] && !*(char *)a[one] && at)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p)return e;
+    char *q=NULL;
+    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
+    if(nr==SYS_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
+    int writing=nr==SYS_mkdirat || nr==SYS_unlinkat || nr==SYS_renameat || nr==SYS_renameat2 || nr==SYS_linkat || nr==SYS_symlinkat || nr==SYS_fchmodat || nr==SYS_fchownat || nr==SYS_utimensat || nr==SYS_mknodat || (nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
+    if(writing && ((e=vfs_mount_readonly(pm)) || (q && (e=vfs_mount_readonly(qm)))))goto done;
+    if(namespaces && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR))){
+        size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
+        if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(SYS_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);goto done;}
+    }
+    a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
+    if(nr==SYS_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
+    e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(e>=0 && nr==SYS_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)a[2],(size_t)e);raw[e]=0;
+        /* Only proc magic links expose backing names. Ordinary symlink targets
+         * retain their stored text, as required by readlink. */
+        if(p_len(p)>=6 && p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/' && raw[0]=='/'){
+            char *rev=vfs_reverse(raw);if(rev){size_t n=p_len(rev);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],rev,n);e=(long)n;vfs_free(rev);}}
+        vfs_free(raw);
+    }
+done:vfs_free(p);vfs_free(q);return e;
+}
+/* Translate before path dispatch so forbidden legacy instructions are never
+ * replayed under the inherited Android filter. x86_64 stat layouts match. */
+static long modernize(long nr,long *a,long *answer) {
+    switch(nr){
+    case SYS_access:a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_faccessat;
+    case SYS_open:a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_openat;
+    case SYS_creat:a[3]=a[1];a[2]=O_CREAT|O_WRONLY|O_TRUNC;a[1]=a[0];a[0]=AT_FDCWD;return SYS_openat;
+    case SYS_stat:case SYS_lstat:a[3]=nr==SYS_lstat?AT_SYMLINK_NOFOLLOW:0;a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_newfstatat;
+    case SYS_mkdir:a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_mkdirat;
+    case SYS_rmdir:case SYS_unlink:a[2]=nr==SYS_rmdir?AT_REMOVEDIR:0;a[1]=a[0];a[0]=AT_FDCWD;return SYS_unlinkat;
+    case SYS_rename:case SYS_link:a[3]=a[1];a[1]=a[0];a[0]=a[2]=AT_FDCWD;a[4]=0;return nr==SYS_link?SYS_linkat:SYS_renameat;
+    case SYS_symlink:a[2]=a[1];a[1]=AT_FDCWD;return SYS_symlinkat;
+    case SYS_readlink:a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_readlinkat;
+    case SYS_chmod:a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_fchmodat;
+    case SYS_chown:case SYS_lchown:a[4]=nr==SYS_lchown?AT_SYMLINK_NOFOLLOW:0;a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_fchownat;
+    case SYS_mknod:a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return SYS_mknodat;
+    case SYS_io_pgetevents:{
+        struct aio_mask {unsigned long *mask;size_t size;};struct aio_mask *m=(void *)a[5];unsigned long old=0;
+        if(m && m->mask){if(m->size!=8){*answer=-EINVAL;return -1;}unsigned long next=*m->mask&~SIGSYS_BIT;*answer=RAW(SYS_rt_sigprocmask,SIG_SETMASK,&next,&old,8,0,0);if(*answer)return -1;}
+        *answer=RAW(SYS_io_getevents,a[0],a[1],a[2],a[3],a[4],0);
+        if(m && m->mask)RAW(SYS_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
+        return -1;
+    }
+    case SYS_accept:a[3]=0;return SYS_accept4;
+    case SYS_pause:*answer=RAW(SYS_ppoll,0,0,0,0,8,0);return -1;
+    case SYS_futimesat:{struct timespec times[2],*tp=NULL;if(a[2]){struct timeval *tv=(void *)a[2];tp=times;for(int i=0;i<2;i++){times[i].tv_sec=tv[i].tv_sec;times[i].tv_nsec=tv[i].tv_usec*1000;}}long b[6]={a[0],a[1],(long)tp,0,0,0};*answer=path_call(SYS_utimensat,b,1,-1);return -1;}
+    case SYS_poll:{struct timespec ts,*t=NULL;if((int)a[2]>=0){ts.tv_sec=(int)a[2]/1000;ts.tv_nsec=((int)a[2]%1000)*1000000;t=&ts;}*answer=RAW(SYS_ppoll,a[0],a[1],t,0,8,0);return -1;}
+    case SYS_select:{struct timespec ts,*t=NULL;struct timeval *tv=(void *)a[4];if(tv){ts.tv_sec=tv->tv_sec;ts.tv_nsec=tv->tv_usec*1000;t=&ts;}*answer=RAW(SYS_pselect6,a[0],a[1],a[2],a[3],t,0);if(tv){tv->tv_sec=ts.tv_sec;tv->tv_usec=ts.tv_nsec/1000;}return -1;}
+    case SYS_alarm:{struct itimerval next={0},old;next.it_value.tv_sec=(unsigned)a[0];*answer=RAW(SYS_setitimer,ITIMER_REAL,&next,&old,0,0,0);if(!*answer)*answer=old.it_value.tv_sec+(old.it_value.tv_usec!=0);return -1;}
+    case SYS_utime:case SYS_utimes:{struct timespec times[2],*tp=NULL;if(a[1]){tp=times;if(nr==SYS_utime){long *v=(void *)a[1];for(int i=0;i<2;i++){times[i].tv_sec=v[i];times[i].tv_nsec=0;}}else {struct timeval *v=(void *)a[1];for(int i=0;i<2;i++){times[i].tv_sec=v[i].tv_sec;times[i].tv_nsec=v[i].tv_usec*1000;}}}long b[6]={AT_FDCWD,a[0],(long)tp,0,0,0};*answer=path_call(SYS_utimensat,b,1,-1);return -1;}
+    case SYS_getdents:{
+        /* linux_dirent64 -> legacy x86_64 linux_dirent, including d_type
+         * in the last byte. Consume at most caller capacity, no dropped entries. */
+        void *buf=vfs_alloc((size_t)a[2]);if(!buf){*answer=-ENOMEM;return -1;}long n=RAW(SYS_getdents64,a[0],buf,a[2],0,0,0);long used=0;
+        if(n>0)for(long off=0;off<n;){unsigned char *p=(unsigned char *)buf+off;unsigned short len=*(unsigned short *)(p+16);if(len<20 || off+len>n){n=-EIO;break;}unsigned char *q=(unsigned char *)a[1]+used;p_copy(q,p,18);size_t name=p_len((char *)p+19)+1;p_copy(q+18,p+19,name);for(size_t k=18+name;k<len;k++)q[k]=0;q[len-1]=p[18];used+=len;off+=len;}
+        *answer=n<0?n:used;vfs_free(buf);return -1;
+    }
+    case SYS_pipe:a[1]=0;return SYS_pipe2;
+    case SYS_dup2:
+        if(a[0]==a[1]){*answer=RAW(SYS_fcntl,a[0],F_GETFD,0,0,0,0);if(*answer>=0)*answer=a[0];return -1;}a[2]=0;return SYS_dup3;
+    case SYS_getpgrp:a[0]=0;return SYS_getpgid;
+    case SYS_epoll_create:if(a[0]<=0){*answer=-EINVAL;return -1;}a[0]=0;return SYS_epoll_create1;
+    case SYS_epoll_wait:a[4]=0;a[5]=8;return SYS_epoll_pwait;
+    case SYS_inotify_init:a[0]=0;return SYS_inotify_init1;
+    case SYS_eventfd:a[1]=0;return SYS_eventfd2;
+    case SYS_signalfd:a[3]=0;return SYS_signalfd4;
+    case SYS_fork:a[0]=SIGCHLD;a[1]=a[2]=a[3]=a[4]=0;return SYS_clone;
+    case SYS_time:{struct timespec ts;*answer=RAW(SYS_clock_gettime,0,&ts,0,0,0,0);if(!*answer){*answer=ts.tv_sec;if(a[0])*(long *)a[0]=ts.tv_sec;}return -1;}
+    default:return nr;
+    }
+}
+static int ours(long n) {
+    switch(n) {
+    case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
+    case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
+    case SYS_prctl:case SYS_execve:case SYS_execveat:case SYS_rt_sigaction:case SYS_rt_sigprocmask:
+    case SYS_sigaltstack:case SYS_unshare:case SYS_mount:case SYS_umount2:case SYS_pivot_root:
+    case SYS_vfork:case SYS_clone:case SYS_clone3:case SYS_io_uring_setup:case SYS_io_uring_enter:case SYS_io_uring_register:
+    case SYS_open:case SYS_openat:case SYS_openat2:case SYS_stat:case SYS_lstat:case SYS_newfstatat:
+    case SYS_statx:case SYS_access:case SYS_faccessat:case SYS_faccessat2:case SYS_readlink:case SYS_readlinkat:
+    case SYS_fchdir:case SYS_chdir:case SYS_getcwd:case SYS_mkdir:case SYS_mkdirat:case SYS_unlink:case SYS_unlinkat:
+    case SYS_rename:case SYS_renameat:case SYS_renameat2:case SYS_link:case SYS_linkat:
+    case SYS_symlink:case SYS_symlinkat:case SYS_chmod:case SYS_fchmodat:case SYS_chown:case SYS_lchown:
+    case SYS_fchownat:case SYS_utimensat:case SYS_statfs:case SYS_chroot:return 1;
+    default:return 0;
+    }
+}
+static void dispatch_app(int sig,siginfo_t *info,void *ctx) {
+    struct kernel_action action=chained;
+    if(action.handler==1 && info->si_code<=0) return;
+    if(action.handler<=1) { /* SIGSYS default is fatal, including ignored synchronous SIGSYS. */
+        RAW(SYS_exit_group,128+sig,0,0,0,0,0);return;
+    }
+    if(action.flags&SA_RESETHAND) chained.handler=0;
+    /* Keep SIGSYS deliverable even during app chaining. Do not implement SA_ONSTACK
+     * by switching stacks here; the proxy never depends on an app-owned altstack. */
+    unsigned long old=0,mask=action.mask&~SIGSYS_BIT;
+    RAW(SYS_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
+    if(action.flags&SA_SIGINFO) ((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
+    else ((void (*)(int))action.handler)(sig);
+    old&=~SIGSYS_BIT;RAW(SYS_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
+}
+static void exec_close_fds(void){
+    long fd=RAW(SYS_openat,AT_FDCWD,"/proc/self/fd",O_DIRECTORY|O_RDONLY|O_CLOEXEC,0,0,0);if(fd<0)return;
+    char *buf=vfs_alloc(8192);if(!buf){RAW(SYS_close,fd,0,0,0,0,0);return;}
+    for(;;){long n=RAW(SYS_getdents64,fd,buf,8192,0,0,0);if(n<=0)break;
+        for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
+            if(valid && v!=fd){long flags=RAW(SYS_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC))RAW(SYS_close,v,0,0,0,0,0);}off+=len;
+        }
+    }
+    vfs_free(buf);RAW(SYS_close,fd,0,0,0,0,0);
+}
+static void handler(int sig,siginfo_t *info,void *opaque) {
+    ucontext_t *uc=opaque;
+    volatile unsigned char *selector=dispatch_selector;
+    unsigned char saved=0;
+    if(selector) {saved=*selector;*selector=SYSCALL_DISPATCH_FILTER_ALLOW;}
+    struct thread_state *thread=thread_state();
+    if(info->si_code!=SYS_SECCOMP) {
+        /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
+        dispatch_app(sig,info,opaque);uc->uc_sigmask.__val[0]&=~SIGSYS_BIT;
+        RAW(SYS_sigaltstack,0,&uc->uc_stack,0,0,0,0);
+        uc->uc_stack.ss_flags&=~SS_ONSTACK;
+        if(selector && dispatch_selector==selector) *selector=saved;
+        return;
+    }
+    long nr=info->si_syscall,original=nr;
+    long a[6]={uc->uc_mcontext.gregs[REG_RDI],uc->uc_mcontext.gregs[REG_RSI],
+        uc->uc_mcontext.gregs[REG_RDX],uc->uc_mcontext.gregs[REG_R10],
+        uc->uc_mcontext.gregs[REG_R8],uc->uc_mcontext.gregs[REG_R9]};
+    long result=-ENOSYS;
+    /* signalfd readiness is evaluated against the thread's signal state.
+     * Infinite poll must wait outside the SIGSYS frame, with the application's
+     * mask restored, rather than nesting the wait in a signal handler. */
+    if(nr==SYS_poll && (int)a[2]<0){
+        uc->uc_mcontext.gregs[REG_RAX]=SYS_ppoll;
+        uc->uc_mcontext.gregs[REG_RDX]=0;uc->uc_mcontext.gregs[REG_R10]=0;
+        uc->uc_mcontext.gregs[REG_R8]=8;uc->uc_mcontext.gregs[REG_RIP]-=2;
+        proxy_log("android-poll-retry",nr,0);goto clean_mask;
+    }
+    nr=modernize(nr,a,&result);
+    if(nr<0)goto finish;
+    if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
+    switch(nr) {
+    case SYS_prctl:
+        if(a[0]==PR_CAPBSET_DROP || a[0]==PR_CAP_AMBIENT || a[0]==PR_SET_KEEPCAPS) {result=0;break;}
+        if(a[0]==PR_CAPBSET_READ){result=0;break;}
+        if(a[0]==PR_SET_SYSCALL_USER_DISPATCH) {
+            long tid=RAW(SYS_gettid,0,0,0,0,0,0);
+            if(a[1]==PR_SYS_DISPATCH_ON) {
+                uintptr_t restore=(uintptr_t)proxy_restore;
+                /* The kernel may dispatch sigreturn itself. Reject an interval
+                 * that would trap our restorer; never silently widen app policy. */
+                if(!a[4] || (dispatch_owner && dispatch_owner!=tid) ||
+                   restore<(uintptr_t)a[2] || restore+16>=(uintptr_t)a[2]+(uintptr_t)a[3]) {
+                    result=-ENOTSUP;break;
+                }
+                volatile unsigned char *next=(volatile unsigned char *)a[4];
+                unsigned char previous=*next;*next=SYSCALL_DISPATCH_FILTER_ALLOW;
+                result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);
+                if(!result) {dispatch_selector=next;dispatch_owner=tid;
+                    if(!selector) {selector=next;saved=previous;}
+                } else *next=previous;
+            } else if(a[1]==PR_SYS_DISPATCH_OFF) {
+                result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);
+                if(!result && dispatch_owner==tid) {dispatch_selector=NULL;dispatch_owner=0;}
+            } else result=-EINVAL;
+        } else result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        break;
+    case SYS_rt_sigaction:
+        if(a[0]==SIGSYS) {
+            if(a[3]!=8) {result=-EINVAL;break;}
+            struct kernel_action next=chained;
+            if(a[1]) p_copy(&next,(void *)a[1],sizeof(next));
+            if(a[2]) p_copy((void *)a[2],&chained,sizeof(chained));
+            if(a[1]) {next.mask&=~SIGSYS_BIT;chained=next;}result=0;
+        } else {
+            struct kernel_action action;
+            if(a[1]) {p_copy(&action,(void *)a[1],sizeof(action));action.mask&=~SIGSYS_BIT;a[1]=(long)&action;}
+            result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
+        }break;
+    case SYS_rt_sigprocmask: {
+        if(a[3]!=8) {result=-EINVAL;break;}
+        unsigned long mask;
+        if(a[1]) {p_copy(&mask,(void *)a[1],8);mask&=~SIGSYS_BIT;a[1]=(long)&mask;}
+        result=RAW(nr,a[0],a[1],a[2],8,0,0);
+        if(!result && a[1])RAW(SYS_rt_sigprocmask,SIG_SETMASK,0,&uc->uc_sigmask.__val[0],8,0,0);
+        break;
+    }
+    case SYS_sigaltstack: {
+        /* App altstack changes are virtual: the kernel retains our private stack.
+         * The chained app handler's SA_ONSTACK is currently unsupported. */
+        if(!thread) {result=-ENOMEM;break;}
+        stack_t next=thread->app_stack;
+        if(a[0]) {
+            p_copy(&next,(void *)a[0],sizeof(next));
+            if(next.ss_flags & ~(SS_DISABLE|(1U<<31))) {result=-EINVAL;break;}
+            if(!(next.ss_flags&SS_DISABLE) && next.ss_size<2048) {result=-ENOMEM;break;}
+        }
+        if(a[1]) p_copy((void *)a[1],&thread->app_stack,sizeof(stack_t));
+        if(a[0]) thread->app_stack=next;
+        result=0;break;
+    }
+    case SYS_unshare:result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;if(!result)namespaces|=a[0];break;
+    case SYS_mount:result=vfs_mount((char *)a[0],(char *)a[1],(char *)a[2],(unsigned long)a[3]);break;
+    case SYS_umount2:result=vfs_unmount((char *)a[0]);break;
+    case SYS_pivot_root:result=vfs_pivot((char *)a[0],(char *)a[1]);break;
+    case SYS_chroot:result=vfs_root((char *)a[0]);break;
+    case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:result=0;break;
+    case SYS_capset:result=0;break;
+    case SYS_capget:{struct __user_cap_header_struct *h=(void *)a[0];if(!h){result=-EFAULT;break;}
+        unsigned count=h->version==_LINUX_CAPABILITY_VERSION_1?1:2;
+        if(h->version!=_LINUX_CAPABILITY_VERSION_1 && h->version!=_LINUX_CAPABILITY_VERSION_2 && h->version!=_LINUX_CAPABILITY_VERSION_3){h->version=_LINUX_CAPABILITY_VERSION_3;result=-EINVAL;break;}
+        if(a[1]){struct __user_cap_data_struct *d=(void *)a[1];for(unsigned i=0;i<count;i++)d[i]=(struct __user_cap_data_struct){0};}result=0;break;
+    }
+    case SYS_vfork:
+        /* Fork-like clone is safe inside the handler only with no child stack;
+         * preserve libc vfork's nonstandard return-address registers. */
+        result=RAW(SYS_clone,SIGCHLD,0,0,0,0,0);break;
+    case SYS_clone:
+        /* A raw clone must return on the application's stack, not this handler's.
+         * Rewind the syscall after removing namespace flags; filter allows clean clone. */
+        namespaces|=a[0]&NS_FLAGS;
+        uc->uc_mcontext.gregs[REG_RSI]=a[1];uc->uc_mcontext.gregs[REG_RDX]=a[2];
+        uc->uc_mcontext.gregs[REG_R10]=a[3];uc->uc_mcontext.gregs[REG_R8]=a[4];
+        uc->uc_mcontext.gregs[REG_RDI]=a[0]&~(long)(NS_FLAGS|CLONE_VFORK|((a[0]&CLONE_VFORK)?CLONE_VM:0));
+        uc->uc_mcontext.gregs[REG_RAX]=nr;uc->uc_mcontext.gregs[REG_RIP]-=2;
+        proxy_log("ours-clone-retry",nr,0);goto clean_mask;
+    case SYS_clone3:result=-ENOSYS;break; /* libc falls back to clone. */
+    case SYS_execve:case SYS_execveat: {
+        const char *path=(const char *)a[nr==SYS_execve?0:1];
+        if(nr==SYS_execveat && (a[0]!=AT_FDCWD || a[4])) {result=-ENOSYS;break;}
+        if(!thread) {result=-ENOMEM;break;}
+        struct image image;
+        result=proxy_load(path,(char *const *)a[nr==SYS_execve?1:2],(char *const *)a[nr==SYS_execve?2:3],&image);
+        if(!result) {
+            exec_close_fds();
+            proxy_log("ours-exec",nr,0);
+            /* A real exec resets caught signal actions. Our resident action stays. */
+            if(chained.handler!=1) chained.handler=0;
+            if(dispatch_selector) {
+                RAW(SYS_prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_OFF,0,0,0,0);
+                dispatch_selector=NULL;dispatch_owner=0;
+            }
+            if(thread) thread->app_stack.ss_flags=SS_DISABLE;
+            uc->uc_mcontext.gregs[REG_RIP]=image.entry;uc->uc_mcontext.gregs[REG_RSP]=image.stack;
+            uc->uc_mcontext.gregs[REG_RDX]=0;
+        }break;
+    }
+    case SYS_chdir:result=vfs_chdir(AT_FDCWD,(char *)a[0]);break;
+    case SYS_fchdir:result=vfs_chdir((int)a[0],NULL);break;
+    case SYS_open:case SYS_stat:case SYS_lstat:case SYS_access:case SYS_readlink:
+    case SYS_mkdir:case SYS_unlink:case SYS_chmod:case SYS_chown:case SYS_lchown:case SYS_statfs:
+        result=path_call(nr,a,0,-1);break;
+    case SYS_openat:case SYS_openat2:case SYS_newfstatat:case SYS_statx:case SYS_faccessat:case SYS_faccessat2:
+    case SYS_mknodat:case SYS_readlinkat:case SYS_mkdirat:case SYS_unlinkat:case SYS_fchmodat:case SYS_fchownat:case SYS_utimensat:
+        result=path_call(nr,a,1,-1);break;
+    case SYS_link:case SYS_rename:result=path_call(nr,a,0,1);break;
+    case SYS_linkat:case SYS_renameat:case SYS_renameat2:result=path_call(nr,a,1,3);break;
+    case SYS_symlink:result=path_call(nr,a,1,-1);break;
+    case SYS_symlinkat:result=path_call(nr,a,2,-1);break;
+    case SYS_getcwd:{long e=0;char *rev=vfs_getcwd(&e);result=e;
+        if(rev){size_t k=p_len(rev)+1;if(k>(size_t)a[1])result=-ERANGE;else {p_copy((void *)a[0],rev,k);result=(long)k;}vfs_free(rev);}break;
+    }
+    default:break;
+    }
+finish:
+    uc->uc_mcontext.gregs[REG_RAX]=result;
+    proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
+clean_mask:
+    /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
+    uc->uc_sigmask.__val[0]&=~SIGSYS_BIT;
+    RAW(SYS_sigaltstack,0,&uc->uc_stack,0,0,0,0);
+    uc->uc_stack.ss_flags&=~SS_ONSTACK;
+    if(selector && dispatch_selector==selector) *selector=saved;
+}
+static int app_install(void) {
+    struct sock_filter bpf[1024];unsigned n=0;
+#define ADD(code,jt,jf,k) do {bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,AUDIT_ARCH_X86_64);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    for(unsigned i=0;i<sizeof(android_allowed)/sizeof(android_allowed[0]);i++) {
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,android_allowed[i]);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    }
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    struct sock_fprog prog={(unsigned short)n,bpf};
+    return (int)RAW(SYS_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+}
+int proxy_install(int android) {
+    if(!thread_state()) return -ENOMEM;
+    struct kernel_action action={(uintptr_t)handler,SA_SIGINFO|SA_RESTORER|SA_NODEFER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+    long r=RAW(SYS_rt_sigaction,SIGSYS,&action,0,8,0,0);if(r) return (int)r;
+    unsigned long mask=SIGSYS_BIT;r=RAW(SYS_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);if(r) return (int)r;
+    r=RAW(SYS_prctl,PR_SET_NO_NEW_PRIVS,1,0,0,0,0);if(r) return (int)r;
+    if(android) {emit("v3 installing android filter\n");r=app_install();if(r) return (int)r;emit("v3 android filter installed\n");}
+    struct sock_filter bpf[1024];unsigned n=0;
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,AUDIT_ARCH_X86_64);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
+    uintptr_t ip=(uintptr_t)proxy_raw;
+    /* Symbol immediately after the syscall: no instruction-size assumptions. */
+    extern char proxy_raw_after[];
+    ip=(uintptr_t)proxy_raw_after;
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    /* clone is only trapped when it requests a namespace. */
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,4,SYS_clone);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+    ADD(BPF_JMP|BPF_JSET|BPF_K,1,0,NS_FLAGS|CLONE_VFORK);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    for(long nr=0;nr<512;nr++) if(ours(nr) && nr!=SYS_clone) {
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    }
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    struct sock_fprog prog={(unsigned short)n,bpf};
+    return (int)RAW(SYS_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+}
