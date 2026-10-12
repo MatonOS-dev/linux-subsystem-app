@@ -1,6 +1,7 @@
 package org.matonos.systembridge;
 
 import org.matonos.systembridge.ILinuxdListener;
+import org.matonos.systembridge.ILinuxdIdentity;
 
 interface ILinuxd {
     /** Bridge-only management: metadata, desktop_entry, icon, uninstall,
@@ -14,7 +15,8 @@ interface ILinuxd {
     String launchGraphical(String ref, String dnsServers, in @nullable android.os.ParcelFileDescriptor x11Directory, @nullable String x11Display, boolean gameControllers, int stubUid, int stubPid, in android.os.ParcelFileDescriptor lifeline);
     /** Called by a generated stub itself ("install me" / "update me") with its
      * own package name: linuxd checks the package belongs to the binder caller
-     * and is signed with the stub key, then reads ref and remote from it. */
+     * and is signed with the stub key via the live System Bridge identity provider,
+     * which returns ref and remote from PackageManager metadata. */
     String installSelf(String packageName, String operationId);
     String updateSelf(String packageName, String operationId);
     /** Called by a generated stub itself: linuxd creates the stub's fixed
@@ -24,4 +26,6 @@ interface ILinuxd {
     /** Self-only, verified like prepareRuntime. No caller-supplied paths. */
     String downloadsRequest(String packageName);
     String answerDownloads(String packageName, String request, boolean allow);
+    /** Bridge-only live PackageManager identity provider. Append-only transaction. */
+    void registerIdentity(ILinuxdIdentity identity);
 }
