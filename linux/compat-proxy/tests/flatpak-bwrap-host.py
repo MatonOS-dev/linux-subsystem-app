@@ -175,5 +175,6 @@ def phase(name, payload=False):
     finally:
         if payload and block_write>=0:os.close(block_write)
         for fd in opened:os.close(fd)
-phase('ldconfig')
-phase('payload',True)
+if __name__ == '__main__':
+    phase('ldconfig')
+    phase('payload',True)

@@ -31,6 +31,11 @@ int main(int argc,char **argv){
  errno=0;CHECK(rename("/virtual-v3/fixture","/virtual-v3/nested/elsewhere")==-1 && errno==EXDEV);
  errno=0;CHECK(linkat(AT_FDCWD,"/virtual-v3/fixture",AT_FDCWD,"/virtual-v3/nested/elsewhere",0)==-1 && errno==EXDEV);
  CHECK(mount(NULL,"/virtual-v3",NULL,MS_BIND|MS_REMOUNT|MS_RDONLY,NULL)==0);errno=0;CHECK(open("/virtual-v3/new",O_CREAT|O_WRONLY,0600)==-1 && errno==EROFS);
+ /* Mount-point probes must return EEXIST without writing the bound source. */
+ errno=0;CHECK(openat(AT_FDCWD,"/virtual-v3/fixture",O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0600)==-1 && errno==EEXIST);
+ errno=0;CHECK(open("/virtual-v3/absolute",O_CREAT|O_EXCL|O_WRONLY,0600)==-1 && errno==EEXIST);
+ errno=0;CHECK(open("/virtual-v3/new",O_CREAT|O_EXCL|O_WRONLY,0600)==-1 && errno==EROFS);
+ errno=0;CHECK(open("/virtual-v3/fixture",O_WRONLY|O_TRUNC)==-1 && errno==EROFS);
  CHECK(mount("tmpfs","/private-v3","tmpfs",0,NULL)==0);f=open("/private-v3/file",O_CREAT|O_RDWR,0600);CHECK(f>=0);close(f);
  CHECK(mount("proc","/proc-v3","proc",0,NULL)==0);f=open("/proc-v3/self/status",O_RDONLY);CHECK(f>=0);close(f);
  CHECK(mount("devpts","/pts-v3","devpts",0,NULL)==0);CHECK(mount("mqueue","/mq-v3","mqueue",0,NULL)==0);

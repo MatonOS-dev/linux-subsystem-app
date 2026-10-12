@@ -186,3 +186,21 @@ expanded bundle and no app-launch invocation, so this does not reproduce
 all VM deployments, metadata, extensions or permissions. Instance files,
 locks, status/lifetime fds and actual seccomp installation are exercised by
 the offline payload phase. No storage layout is hard-coded into the proxy.
+
+Round-6 offline app-launch replay (after `tests/bionic-host.sh` prepares the
+Android linker/APEX fixture):
+
+```sh
+COMPAT_STAGE2_LOG=/mnt/data/aosp/out/pc-logs/agents/v3-round5-vm-logs/stage2.log \
+COMPAT_HOST_RUNTIME=/home/hanro50/.local/share/flatpak/runtime/org.freedesktop.Platform/x86_64/26.08/active/files \
+  python3 linux/compat-proxy/tests/logged-bwrap-host.py
+```
+
+This replays the full logged app bundle in order, with host-backed source
+paths/fds and inert extension fixtures; the logged destinations, environment
+and bash command are retained. It adds status/block/sync fds and `--cap-drop
+ALL`, checks successful payload/monitor completion and hashes runtime `/etc`
+before/after. `build/logged-bwrap/argv.json` records both the original bundle
+and adapted host arguments; `out`, `log`, `info.json` and `status.json` hold
+execution evidence. This does not execute a real installed Flatpak application
+or establish Android app-domain containment.

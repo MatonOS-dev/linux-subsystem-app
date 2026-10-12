@@ -123,6 +123,13 @@ static long path_call(long nr,long *a,int one,int two) {
     if(nr==SYS_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
     int writing=nr==SYS_mkdirat || nr==SYS_unlinkat || nr==SYS_renameat || nr==SYS_renameat2 || nr==SYS_linkat || nr==SYS_symlinkat || nr==SYS_fchmodat || nr==SYS_fchownat || nr==SYS_utimensat || nr==SYS_mknodat || (nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
     if(nr==SYS_mkdirat){struct stat existing;if(!RAW(SYS_newfstatat,AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW,0,0)){e=-EEXIST;goto done;}}
+    /* Exclusive creation checks existence before mount write permission.
+     * bwrap probes an already bound file this way before mounting a new
+     * source over it. Never open/truncate the read-only backing inode. */
+    if(nr==SYS_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL)){
+        struct stat existing;
+        if(!RAW(SYS_newfstatat,AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW,0,0)){e=-EEXIST;goto done;}
+    }
     if(writing && ((e=vfs_mount_readonly(pm)) || (q && (e=vfs_mount_readonly(qm)))))goto done;
     if((namespaces&CLONE_NEWUSER) && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
     if(namespaces && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR))){
