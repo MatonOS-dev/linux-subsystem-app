@@ -51,7 +51,7 @@ eventfds, and bwrap/Flatpak seccomp installs remain real; stacked filters
 also apply to the handler's raw syscalls.
 
 CLI `--root` accepts the coordinator's symlink scaffold: its existing
-usr/bin/lib/lib64/etc/sbin/proc/dev/data endpoints are resolved through the
+usr/bin/lib/lib64/etc/sbin/proc/dev/data/system/apex endpoints are resolved through the
 host kernel and pinned as explicit mounts before payload symlink semantics
 begin. This distinguishes bootstrap scaffold links from payload links.
 
@@ -62,14 +62,33 @@ stack grows for larger argv/env; PT_INTERP follows Linux's 4096-byte pathname
 limit and script parsing uses Linux's 256-byte header size. Thread records
 are dynamic; the previous 128-slot cap is gone.
 
-**Bionic exec is not implemented.** PT_INTERP `/system/bin/linker64` is
-explicitly rejected with ENOTSUP before mapping the main image. A real kernel
-exec retains seccomp but resets caught signal actions and replaces proxy
-memory. Thus it does not inherit the resident proxy merely by preserving a
-mount table or environment variable. Bionic needs an entry/reentry design
-that installs the handler before any trapped syscall, with Android linker
-and TLS validation. Host bwrap tests use the installed glibc bwrap 0.9.0;
-staged 0.13.0 sources were inspected, but its bionic binary was not executed.
+Bionic ELF uses the resident loader too: `/system/bin/linker64` is mapped as
+PT_INTERP, with PHDR/PHNUM/ENTRY/BASE/RANDOM/SECURE/PAGESZ/EXECFN plus inherited
+HWCAP/HWCAP2/SYSINFO_EHDR auxv. In-process exec resets FS TLS before entering
+the next linker. Android's debuggerd SIGSYS registration goes through the
+same handler-chaining guard as glibc registrations. No native kernel exec
+is used. `/proc/self/exe` stat follows the loaded image, as does readlink.
+
+On Android, start bionic tools without `--root`: the initial payload mount
+table is empty and `/system`, `/apex`, `/data` retain their Android meanings.
+Only bwrap's setup/pivot supplies the Linux payload root. The table, root,
+cwd and fd names are inherited in process memory through fork (copy on
+write), retained across resident exec, and private to the child after
+namespace changes. Threads share the table; clone requesting both a new
+namespace and CLONE_VM is rejected with ENOTSUP rather than sharing namespace
+mutations. Thread-local unshare namespaces and CLONE_FS semantics remain a
+spike limitation. Initial host fixtures use `--root` to supply Android's
+filesystem; `--map SOURCE TARGET` overlays Android paths on the real host root
+for the glibc bwrap payload tests.
+
+`tests/bionic-host.sh` copies the staged runtime/Flatpak APEX files into build/
+and verifies bwrap 0.13.0 and Flatpak 1.19.2 versions under --android-filter,
+then runs staged bwrap with the two host glibc payloads. Set COMPAT_PRODUCT_OUT
+to use different artifacts. fd names are recorded across opens, close, dup
+and fcntl duplication so fd mount targets preserve their opening aliases.
+Pivot preserves the old root's submounts. openat2 returns ENOSYS: current
+bwrap uses its checked openat fallback, avoiding incorrect RESOLVE_IN_ROOT
+semantics. Traps carry pid=; every mount has an adjacent mount-owner record.
 
 SIGSYS remains deliverable across rt_sigaction/sigprocmask, sigreturn and
 app altstack changes. The proxy preserves changes to other signal-mask bits
@@ -80,8 +99,8 @@ user-dispatch owners remain unsupported. Thread records/private stacks are
 not reclaimed after thread exit.
 
 Remaining constraints: user pointers are not EFAULT-safe; mount/cache/cwd
-mutations are not synchronized for concurrent pathname calls; reverse fd
-mapping is ambiguous when multiple aliases share one backing path; mountinfo
+mutations are not synchronized for concurrent pathname calls; reverse mapping for descriptors not opened/duplicated through the proxy
+is ambiguous when multiple aliases share one backing path; mountinfo
 is a minimal setup snapshot (duplicate IDs, rw flags, no escaping), not a
 full proc implementation; tmpfs backing directories are not cleaned up;
 virtual read-only checks cover intercepted pathname mutations, not writes
@@ -95,6 +114,14 @@ Coordinator VM runner: `tests/vm-stage.sh` pushes only to
 /data/local/tmp/compat-proxy and pulls stdout/stderr/status. Set
 ANDROID_SERIAL and COMPAT_RUNTIME_ROOT; the root should expose /data,
 /proc and /dev. Optional COMPAT_BWRAP must name an existing **glibc** bwrap.
+Set COMPAT_STAGE2=1 and COMPAT_RUNTIME_UID to the installed
+org.matonos.linuxruntimes UID to run Stage 2 as root: the bionic Flatpak CLI
+uses user-0 app UID 10115's DE install and the runtime app's DE install,
+linuxd's global CLI HOME/XDG directories, and CE home for the bwrap shim.
+TMPDIR/download tmp are deliberately confined to the test staging directory.
+The bionic CLI gets no --root. stdout, pid-tagged trap/mount logs and status
+are pulled even when Flatpak fails. This executes existing deployments; it
+does not represent production launch identity/portal integration.
 It requires no Soong/Gradle/image build and performs no VM reboot or policy
 change. VM tests were not run in this sandbox. Result report:
-`/mnt/data/aosp/out/pc-logs/agents/compat-proxy-2-result.md`.
+`/mnt/data/aosp/out/pc-logs/agents/compat-proxy-3-result.md`.

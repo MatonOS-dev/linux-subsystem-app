@@ -66,8 +66,11 @@ void proxy_log(const char *kind,long nr,long result) {
         if(values[i]<0) line[n++]='-';
         char digits[24];int d=0; do {digits[d++]=(char)('0'+v%10);v/=10;} while(v);
         while(d) line[n++]=digits[--d];
-        line[n++]=i?'\n':' ';
+        line[n++]=' ';
     }
+    const char *label="pid=";while(*label)line[n++]=*label++;
+    unsigned long pid=(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0);char digits[24];unsigned d=0;
+    do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)line[n++]=digits[--d];line[n++]='\n';
     RAW(SYS_write,2,line,n,0,0,0);
 }
 static int app_allowed(long nr) {
@@ -88,19 +91,25 @@ static long path_call(long nr,long *a,int one,int two) {
     if(nr==SYS_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
     /* AT_EMPTY_PATH operates on the original descriptor, without path resolution. */
     if(a[one] && !*(char *)a[one] && at)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    const char *original_path=(void *)a[one];
+    if(nr==SYS_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
     long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p)return e;
     char *q=NULL;
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==SYS_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
     int writing=nr==SYS_mkdirat || nr==SYS_unlinkat || nr==SYS_renameat || nr==SYS_renameat2 || nr==SYS_linkat || nr==SYS_symlinkat || nr==SYS_fchmodat || nr==SYS_fchownat || nr==SYS_utimensat || nr==SYS_mknodat || (nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
+    if(nr==SYS_mkdirat){struct stat existing;if(!RAW(SYS_newfstatat,AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW,0,0)){e=-EEXIST;goto done;}}
     if(writing && ((e=vfs_mount_readonly(pm)) || (q && (e=vfs_mount_readonly(qm)))))goto done;
     if(namespaces && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR))){
         size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
         if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(SYS_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);goto done;}
     }
+    RAW(SYS_write,2,"v3 path ",8,0,0,0);RAW(SYS_write,2,p,p_len(p),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
+    if(nr==SYS_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==SYS_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
     e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(e>=0 && nr==SYS_openat)vfs_fd_record((int)e,fd,original_path);
     if(e>=0 && nr==SYS_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */
@@ -163,6 +172,7 @@ static long modernize(long nr,long *a,long *answer) {
 }
 static int ours(long n) {
     switch(n) {
+    case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
     case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
     case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
     case SYS_prctl:case SYS_execve:case SYS_execveat:case SYS_rt_sigaction:case SYS_rt_sigprocmask:
@@ -197,7 +207,7 @@ static void exec_close_fds(void){
     char *buf=vfs_alloc(8192);if(!buf){RAW(SYS_close,fd,0,0,0,0,0);return;}
     for(;;){long n=RAW(SYS_getdents64,fd,buf,8192,0,0,0);if(n<=0)break;
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
-            if(valid && v!=fd){long flags=RAW(SYS_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC))RAW(SYS_close,v,0,0,0,0,0);}off+=len;
+            if(valid && v!=fd){long flags=RAW(SYS_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(SYS_close,v,0,0,0,0,0);vfs_fd_close((int)v);}}off+=len;
         }
     }
     vfs_free(buf);RAW(SYS_close,fd,0,0,0,0,0);
@@ -234,6 +244,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(nr<0)goto finish;
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     switch(nr) {
+    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result)vfs_fd_close((int)a[0]);break;
+    case SYS_dup:case SYS_dup3:case SYS_fcntl:
+        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))vfs_fd_dup((int)a[0],(int)result);
+        break;
     case SYS_prctl:
         if(a[0]==PR_CAPBSET_DROP || a[0]==PR_CAP_AMBIENT || a[0]==PR_SET_KEEPCAPS) {result=0;break;}
         if(a[0]==PR_CAPBSET_READ){result=0;break;}
@@ -312,6 +327,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case SYS_clone:
         /* A raw clone must return on the application's stack, not this handler's.
          * Rewind the syscall after removing namespace flags; filter allows clean clone. */
+        if((a[0]&NS_FLAGS) && (a[0]&CLONE_VM)){result=-ENOTSUP;break;}
         namespaces|=a[0]&NS_FLAGS;
         uc->uc_mcontext.gregs[REG_RSI]=a[1];uc->uc_mcontext.gregs[REG_RDX]=a[2];
         uc->uc_mcontext.gregs[REG_R10]=a[3];uc->uc_mcontext.gregs[REG_R8]=a[4];
@@ -327,6 +343,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         result=proxy_load(path,(char *const *)a[nr==SYS_execve?1:2],(char *const *)a[nr==SYS_execve?2:3],&image);
         if(!result) {
             exec_close_fds();
+            /* exec starts the new linker without the previous libc TLS. */
+            RAW(SYS_arch_prctl,0x1002,0,0,0,0,0);
             proxy_log("ours-exec",nr,0);
             /* A real exec resets caught signal actions. Our resident action stays. */
             if(chained.handler!=1) chained.handler=0;
@@ -344,7 +362,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case SYS_open:case SYS_stat:case SYS_lstat:case SYS_access:case SYS_readlink:
     case SYS_mkdir:case SYS_unlink:case SYS_chmod:case SYS_chown:case SYS_lchown:case SYS_statfs:
         result=path_call(nr,a,0,-1);break;
-    case SYS_openat:case SYS_openat2:case SYS_newfstatat:case SYS_statx:case SYS_faccessat:case SYS_faccessat2:
+    case SYS_openat2:result=-ENOSYS;break; /* bwrap uses its checked openat fallback. */
+    case SYS_openat:case SYS_newfstatat:case SYS_statx:case SYS_faccessat:case SYS_faccessat2:
     case SYS_mknodat:case SYS_readlinkat:case SYS_mkdirat:case SYS_unlinkat:case SYS_fchmodat:case SYS_fchownat:case SYS_utimensat:
         result=path_call(nr,a,1,-1);break;
     case SYS_link:case SYS_rename:result=path_call(nr,a,0,1);break;

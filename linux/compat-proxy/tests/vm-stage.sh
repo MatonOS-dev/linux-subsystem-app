@@ -17,7 +17,7 @@ root=${COMPAT_RUNTIME_ROOT:?Set COMPAT_RUNTIME_ROOT to the existing runtime syml
 run_stage() {
     local name=$1
     shift
-    adb -s "$serial" shell "TMPDIR='$stage/tmp' '$stage/linux-layer-v3' --android-filter --root '$root' $* >'$stage/$name.out' 2>'$stage/$name.log'; code=\$?; echo \$code >'$stage/$name.status'"
+    adb -s "$serial" shell "env -i PATH=/usr/bin:/bin HOME='$stage' TMPDIR='$stage/tmp' '$stage/linux-layer-v3' --android-filter --root '$root' $* >'$stage/$name.out' 2>'$stage/$name.log'; code=\$?; echo \$code >'$stage/$name.status'"
     adb -s "$serial" pull "$stage/$name.out" "$stage/$name.log" "$stage/$name.status" "$logs/"
     test "$(tr -d '\r\n' <"$logs/$name.status")" = 0
 }
@@ -25,10 +25,21 @@ run_stage() {
 run_stage legacy "'$stage/legacy' '$stage/legacy-fixture'"
 run_stage paths "'$stage/paths' '$stage/fixture' '$stage/nested'"
 run_stage bash "/bin/bash -c 'printf pipe-ok | /bin/cat; ls /; cat /etc/os-release'"
-# Optional existing glibc bwrap inside the runtime. The staged MatonOS bwrap is
-# bionic-linked; do not label this test native-bionic support (see README).
+# Optional existing glibc bwrap inside the runtime.
 if [[ -n ${COMPAT_BWRAP:-} ]]; then
     run_stage bwrap "'$COMPAT_BWRAP' --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev /bin/true"
     run_stage bwrap-fixture "'$COMPAT_BWRAP' --ro-bind / / --tmpfs /tmp --bind '$stage/fixture' /tmp/fixture --proc /proc --dev /dev /bin/cat /tmp/fixture/fixture"
 fi
-printf 'VM logs: %s\n' "$logs"
+if [[ ${COMPAT_STAGE2:-0} == 1 ]]; then
+    # Android tools execute with an empty payload mount table. bwrap alone
+    # establishes the runtime root; never give the bionic CLI --root "$root".
+    # The coordinator supplies the Runtimes UID from this device's package list.
+    runtime_uid=${COMPAT_RUNTIME_UID:?Set COMPAT_RUNTIME_UID to org.matonos.linuxruntimes UID}
+    [[ $runtime_uid =~ ^[0-9]+$ ]] && (( runtime_uid >= 10000 && runtime_uid < 20000 ))
+    test "$(adb -s "$serial" shell id -u | tr -d '\r\n')" = 0
+    command="env -i PATH=/apex/com.matonos.flatpak/bin:/system/bin:/system/xbin HOME=/data/matonos/linux/flatpak-data XDG_DATA_HOME=/data/matonos/linux/flatpak-data/.local/share XDG_CONFIG_HOME=/data/matonos/linux/flatpak-data/.config XDG_CACHE_HOME=/data/matonos/linux/cache XDG_RUNTIME_DIR=/data/matonos/linux/run TMPDIR='$stage/tmp' FLATPAK_SYSTEM_CACHE_DIR=/data/matonos/linux/cache FLATPAK_DOWNLOAD_TMPDIR='$stage/tmp' FLATPAK_USER_DIR=/data/misc_de/0/matonos-linux/install/10115 FLATPAK_SYSTEM_DIR=/data/misc_de/0/matonos-linux/runtime/$runtime_uid FLATPAK_BWRAP=/apex/com.matonos.flatpak/bin/matonos-bwrap MATON_APP_HOME_DIR=/data/misc_ce/0/matonos-linux/home/10115 LD_LIBRARY_PATH=/apex/com.matonos.flatpak/lib64:/system/lib64 '$stage/linux-layer-v3' --android-filter /apex/com.matonos.flatpak/bin/matonos-flatpak --user run --command=bash net.sourceforge.ExtremeTuxRacer -c 'ls /app /usr; head -2 /etc/os-release'"
+    adb -s "$serial" shell "$command >'$stage/stage2.out' 2>'$stage/stage2.log'; code=\$?; echo \$code >'$stage/stage2.status'"
+    adb -s "$serial" pull "$stage/stage2.out" "$stage/stage2.log" "$stage/stage2.status" "$logs/"
+    test "$(tr -d '\r\n' <"$logs/stage2.status")" = 0
+fi
+printf 'VM logs: %s\n'  "$logs"

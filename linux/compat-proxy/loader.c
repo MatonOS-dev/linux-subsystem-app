@@ -15,6 +15,8 @@ struct mapped { uintptr_t entry, phdr, base; unsigned phnum; char interp[4096]; 
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
+static uintptr_t inherited_aux[64];
+uintptr_t proxy_aux(unsigned type){return type<64?inherited_aux[type]:0;}
 static int bad(long n) { return (unsigned long)n >= (unsigned long)-4095; }
 static int map_elf(const char *path,struct mapped *out) {
     Elf64_Ehdr eh; Elf64_Phdr *ph=NULL;
@@ -29,14 +31,6 @@ static int map_elf(const char *path,struct mapped *out) {
     size_t bytes=eh.e_phnum*sizeof(Elf64_Phdr);
     ph=vfs_alloc(bytes);if(!ph){error=-ENOMEM;goto done;}
     if(RAW(SYS_pread64,fd,ph,bytes,eh.e_phoff,0,0)!=(long)bytes) goto done;
-    for(unsigned i=0;i<eh.e_phnum;i++)if(ph[i].p_type==PT_INTERP){
-        char name[4096];size_t n=(size_t)ph[i].p_filesz;
-        if(!n || n>sizeof(name)){error=-ENOEXEC;goto done;}
-        if(RAW(SYS_pread64,fd,name,n,ph[i].p_offset,0,0)!=(long)n || name[n-1])goto done;
-        /* Kernel exec discards the resident handler while retaining TRAP
-         * filters. Reject native bionic explicitly until a reentry design exists. */
-        if(p_equal(name,"/system/bin/linker64")){error=-ENOTSUP;goto done;}
-    }
     uintptr_t low=UINTPTR_MAX,high=0;
     for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD) {
         if(ph[i].p_filesz>ph[i].p_memsz || ph[i].p_vaddr+ph[i].p_memsz<ph[i].p_vaddr) goto done;
@@ -57,7 +51,7 @@ static int map_elf(const char *path,struct mapped *out) {
         if(p->p_type==PT_INTERP) {
             if(p->p_filesz>=sizeof(out->interp) || !p->p_filesz) goto done;
             if(RAW(SYS_pread64,fd,out->interp,p->p_filesz,p->p_offset,0,0)!=(long)p->p_filesz) goto done;
-            out->interp[p->p_filesz-1]=0;
+            if(out->interp[p->p_filesz-1])goto done;
         }
         if(p->p_type==PT_PHDR) out->phdr=bias+p->p_vaddr;
         if(p->p_type!=PT_LOAD || !p->p_memsz) continue;
@@ -137,7 +131,8 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         {AT_UID,{RAW(SYS_getuid,0,0,0,0,0,0)}},{AT_EUID,{RAW(SYS_geteuid,0,0,0,0,0,0)}},
         {AT_GID,{RAW(SYS_getgid,0,0,0,0,0,0)}},{AT_EGID,{RAW(SYS_getegid,0,0,0,0,0,0)}},
         {AT_SECURE,{0}},{AT_RANDOM,{random}},{AT_EXECFN,{execfn}},{AT_PLATFORM,{platform}},
-        {AT_CLKTCK,{100}},{AT_NULL,{0}}};
+        {AT_HWCAP,{proxy_aux(AT_HWCAP)}},{AT_HWCAP2,{proxy_aux(AT_HWCAP2)}},
+        {AT_SYSINFO_EHDR,{proxy_aux(AT_SYSINFO_EHDR)}},{AT_CLKTCK,{100}},{AT_NULL,{0}}};
     size_t words=1+ac+1+ec+1+sizeof(aux)/(sizeof(uintptr_t));
     uintptr_t sp=(cur-words*sizeof(uintptr_t))&~15UL,*v=(uintptr_t *)sp;
     *v++=ac; for(unsigned i=0;i<ac;i++) *v++=av[i]; *v++=0;
@@ -150,11 +145,15 @@ int proxy_load(const char *path,char *const *argv,char *const *env,struct image 
 }
 #ifndef PROXY_LIBRARY
 int main(int argc,char **argv,char **environ) {
+    char **end=environ;while(*end)end++;
+    Elf64_auxv_t *original=(void *)(end+1);
+    for(;original->a_type;original++)if(original->a_type<64)inherited_aux[original->a_type]=original->a_un.a_val;
     extern const char *proxy_tmpdir;
     for(unsigned e=0;environ[e];e++){const char *s=environ[e];if(s[0]=='T' && s[1]=='M' && s[2]=='P' && s[3]=='D' && s[4]=='I' && s[5]=='R' && s[6]=='=')proxy_tmpdir=s+7;}
     int android=0,i=1;
     while(i<argc && argv[i][0]=='-') {
         if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
+        else if(p_equal(argv[i],"--map") && i+2<argc) {if(proxy_mount(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--root") && i+1<argc) {if(vfs_bootstrap_root(argv[i+1])) return 2;i+=2;}
         else {proxy_log("usage",0,-EINVAL);return 2;}
     }

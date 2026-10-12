@@ -51,3 +51,10 @@ done
 timeout 15 build/linux-layer-v3 --android-filter --root "$PWD/build/root-scaffold" /bin/bash -c 'printf root-pipe-ok | cat' >build/root-scaffold.out 2>build/root-scaffold.log
 rg -qx root-pipe-ok build/root-scaffold.out
 printf 'PASS --root host-side symlink scaffold\n'
+
+mkdir -p build/process-parent build/process-child
+printf 'parent\n' >build/process-parent/fixture
+printf 'child\n' >build/process-child/fixture
+cc -no-pie -O2 -Wall -Wextra -Werror tests/process.c -o build/process
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/process" "$PWD/build/process-parent" "$PWD/build/process-child" >build/process.out 2>build/process.log
+cat build/process.out
