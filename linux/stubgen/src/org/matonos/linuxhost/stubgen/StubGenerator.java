@@ -443,7 +443,7 @@ public final class StubGenerator {
             startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE")));
             startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE_DATA_SYNC")));
             startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE_SPECIAL_USE")));
-            // The stub holds the portal Inhibit wake lock in its own uid.
+            // The stub holds portal Inhibit and install/update wake locks in its own UID.
             startEnd("uses-permission",attrs(a("name","android.permission.WAKE_LOCK")));
             // "install me" downloads as the stub's UID (netd DNS + sockets need it).
             startEnd("uses-permission",attrs(a("name","android.permission.INTERNET")));
