@@ -57,6 +57,8 @@ static struct thread_state *thread_state(void) {
     return &p->state;
 }
 const char *proxy_tmpdir="/tmp";
+/* --trace: log every trapped call and translated path (stderr = app output). */
+int proxy_trace;
 static void emit(const char *s) { RAW(SYS_write,2,s,p_len(s),0,0,0); }
 void proxy_log(const char *kind,long nr,long result) {
     char line[128]; size_t n=0;
@@ -137,7 +139,7 @@ static long path_call(long nr,long *a,int one,int two) {
         size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
         if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(SYS_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);goto done;}
     }
-    RAW(SYS_write,2,"v3 path ",8,0,0,0);RAW(SYS_write,2,p,p_len(p),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);
+    if(proxy_trace){RAW(SYS_write,2,"v3 path ",8,0,0,0);RAW(SYS_write,2,p,p_len(p),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);}
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==SYS_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==SYS_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
@@ -453,7 +455,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
 finish:
     uc->uc_mcontext.gregs[REG_RAX]=result;
-    proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
+    if(proxy_trace)proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
 clean_mask:
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
     (*(unsigned long *)&uc->uc_sigmask)&=~SIGSYS_BIT;
