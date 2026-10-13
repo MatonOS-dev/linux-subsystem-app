@@ -220,3 +220,16 @@ python3 tests/lifetime.py /mnt/data/aosp/out/matonos/compat-proxy/libmatonos-v3-
 See ../compositor/V3-LAUNCH.md for the production spec, paths, retirement and
 remaining image checks. Historical bionic replay fixtures reference old staged
 APEX helpers and do not prove the new production path.
+
+Round 8 DNS: `--dns-forwarder 127.x.y.z:5353` configures one exact IPv4
+forwarder. connect and explicit-destination sendto/sendmsg/sendmmsg rewrite
+that address's port 53; getpeername reports 53 for translated connections.
+connect/getpeername are trapped, sendto only with a non-null address, and all
+sendmsg/sendmmsg calls are trapped because BPF cannot dereference msg_name.
+Unrelated destinations and destination-free sends retain native behavior.
+The production stub owns both listeners; linuxd and Binder carry no DNS fds.
+`tests/run.sh` includes production mocked-kernel translation tests;
+`python3 tests/dns-host.py` requires loopback socket permission and exercises
+real glibc UDP/TCP resolution plus musl-style sendto and message destinations.
+See ../compositor/DNS-FORWARDER.md for port choice, peer/descriptor limitations
+and fresh-image verification.

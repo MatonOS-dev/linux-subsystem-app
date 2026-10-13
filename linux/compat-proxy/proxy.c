@@ -5,6 +5,8 @@
 #include "vfs.h"
 #include "net.h"
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
 #include <linux/capability.h>
@@ -226,9 +228,108 @@ static long modernize(long nr,long *a,long *answer) {
     default:return nr;
     }
 }
+/* One exact IPv4 endpoint, inherited across fork and resident exec. */
+static struct sockaddr_in dns_endpoint;
+struct dns_fd {int fd;struct dns_fd *next;};
+static struct dns_fd *dns_fds;
+static int dns_tracked(int fd) {for(struct dns_fd *p=dns_fds;p;p=p->next)if(p->fd==fd)return 1;return 0;}
+static void dns_close(int fd) {
+    struct dns_fd **link=&dns_fds;
+    while(*link){if((*link)->fd==fd){struct dns_fd *old=*link;*link=old->next;vfs_free(old);return;}link=&(*link)->next;}
+}
+static int dns_track(int fd) {
+    if(dns_tracked(fd))return 0;
+    struct dns_fd *p=vfs_alloc(sizeof(*p));if(!p)return -ENOMEM;
+    p->fd=fd;p->next=dns_fds;dns_fds=p;return 0;
+}
+static void dns_dup(int from,int to) {int tracked=dns_tracked(from);dns_close(to);if(tracked)dns_track(to);}
+static unsigned short dns_swap(unsigned short n) { return (unsigned short)((n<<8)|(n>>8)); }
+int proxy_dns_forwarder(const char *text) {
+    unsigned char bytes[4];
+    for (unsigned i=0;i<4;i++) {
+        unsigned n=0,digits=0;
+        while(*text>='0' && *text<='9') {n=n*10+*text++-'0';if(n>255)return -EINVAL;digits++;}
+        if(!digits || *text++!=(i==3?':':'.'))return -EINVAL;
+        bytes[i]=(unsigned char)n;
+    }
+    unsigned port=0,digits=0;
+    while(*text>='0' && *text<='9') {port=port*10+*text++-'0';if(port>65535)return -EINVAL;digits++;}
+    if(*text || !digits || port<1024 || bytes[0]!=127)return -EINVAL;
+    dns_endpoint.sin_family=AF_INET;
+    dns_endpoint.sin_port=dns_swap((unsigned short)port);
+    p_copy(&dns_endpoint.sin_addr,bytes,4);
+    return 0;
+}
+static int dns_address(const void *address, unsigned long length, struct sockaddr_in *out) {
+    if(!dns_endpoint.sin_port || !address || length<sizeof(*out))return 0;
+    p_copy(out,address,sizeof(*out));
+    if(out->sin_family!=AF_INET || out->sin_port!=dns_swap(53) ||
+       out->sin_addr.s_addr!=dns_endpoint.sin_addr.s_addr)return 0;
+    out->sin_port=dns_endpoint.sin_port;return 1;
+}
+static long dns_call(long nr, long a[6]) {
+    struct sockaddr_in address;
+    if(nr==SYS_connect || nr==SYS_sendto) {
+        unsigned slot=nr==SYS_connect?1:4;
+        if(dns_address((void *)a[slot],a[slot+1],&address)) {
+            long copy[6];p_copy(copy,a,sizeof(copy));copy[slot]=(long)&address;copy[slot+1]=sizeof(address);
+            /* Reserve tracking before connect so allocation failure cannot
+             * leave a successfully connected socket with an unvirtualized peer. */
+            int previous=dns_tracked((int)a[0]);
+            if(nr==SYS_connect && dns_track((int)a[0]))return -ENOMEM;
+            long result=RAW(nr,copy[0],copy[1],copy[2],copy[3],copy[4],copy[5]);
+            if(nr==SYS_connect && result<0 && result!=-EINPROGRESS && !previous)dns_close((int)a[0]);
+            return result;
+        }
+    } else if(nr==SYS_sendmsg && a[1]) {
+        struct msghdr message; p_copy(&message,(void *)a[1],sizeof(message));
+        if(dns_address(message.msg_name,message.msg_namelen,&address)) {
+            message.msg_name=&address;message.msg_namelen=sizeof(address);
+            return RAW(nr,a[0],&message,a[2],0,0,0);
+        }
+    } else if(nr==SYS_sendmmsg && a[1] && a[2]>0) {
+        /* Copy dynamically: no new message-count limit. Kernel validates vlen. */
+        size_t count=(unsigned int)a[2];
+        int translated=0;
+        for(size_t i=0;i<count;i++) {
+            struct msghdr *message=&((struct mmsghdr *)a[1])[i].msg_hdr;
+            if(dns_address(message->msg_name,message->msg_namelen,&address)){translated=1;break;}
+        }
+        if(!translated)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(count>SIZE_MAX/sizeof(struct mmsghdr) || count>SIZE_MAX/sizeof(address))return -EINVAL;
+        struct mmsghdr *messages=vfs_alloc(count*sizeof(*messages));
+        struct sockaddr_in *addresses=vfs_alloc(count*sizeof(*addresses));
+        if(!messages || !addresses){vfs_free(messages);vfs_free(addresses);return -ENOMEM;}
+        p_copy(messages,(void *)a[1],count*sizeof(*messages));
+        for(size_t i=0;i<count;i++)if(dns_address(messages[i].msg_hdr.msg_name,messages[i].msg_hdr.msg_namelen,&addresses[i])) {
+            messages[i].msg_hdr.msg_name=&addresses[i];messages[i].msg_hdr.msg_namelen=sizeof(address);
+        }
+        long result=RAW(nr,a[0],messages,a[2],a[3],0,0);
+        if(result>0)for(long i=0;i<result;i++)((struct mmsghdr *)a[1])[i].msg_len=messages[i].msg_len;
+        vfs_free(messages);vfs_free(addresses);return result;
+    }
+    if(nr==SYS_getpeername && dns_tracked((int)a[0])) {
+        /* Inspect full peer independently of caller's possibly truncated buffer. */
+        unsigned int length=sizeof(address);
+        long result=RAW(nr,a[0],&address,&length,0,0,0);
+        if(result<0)return result;
+        if(length==sizeof(address) && address.sin_family==AF_INET &&
+           address.sin_addr.s_addr==dns_endpoint.sin_addr.s_addr && address.sin_port==dns_endpoint.sin_port) {
+            address.sin_port=dns_swap(53);
+            if(!a[1] || !a[2])return -EFAULT;
+            unsigned int capacity=*(unsigned int *)a[2];
+            p_copy((void *)a[1],&address,capacity<length?capacity:length);
+            *(unsigned int *)a[2]=length;return 0;
+        }
+    }
+    long result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(nr==SYS_connect && (result==0 || result==-EINPROGRESS))dns_close((int)a[0]);
+    if(nr==SYS_socket && result>=0)dns_close((int)result);
+    return result;
+}
 static int ours(long n) {
     switch(n) {
-    case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_setsockopt:case SYS_getsockopt:
+    case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
     case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
     case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
     case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
@@ -314,13 +415,13 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     switch(nr) {
     case SYS_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
-    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result){vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
+    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case SYS_dup:case SYS_dup3:case SYS_fcntl:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+        if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){dns_dup((int)a[0],(int)result);vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;
-    case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_setsockopt:case SYS_getsockopt:
-        if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
+        if(app_allowed(nr))result=dns_call(nr,a);
         break;
     case SYS_prctl:
         if(a[0]==PR_CAPBSET_DROP || a[0]==PR_CAP_AMBIENT || a[0]==PR_SET_KEEPCAPS) {result=0;break;}
@@ -522,7 +623,15 @@ int proxy_install(int android) {
     ADD(BPF_JMP|BPF_JSET|BPF_K,1,0,NS_FLAGS|CLONE_VFORK);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    for(long nr=0;nr<512;nr++) if(ours(nr) && nr!=SYS_clone) {
+    /* sendto without a destination stays native (both pointer halves). */
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,6,SYS_sendto);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4])+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    for(long nr=0;nr<512;nr++) if(ours(nr) && nr!=SYS_clone && nr!=SYS_sendto) {
         ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     }
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);

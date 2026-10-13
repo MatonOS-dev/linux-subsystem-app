@@ -68,3 +68,7 @@ mkdir -p build/publication-a build/publication-b
 rm -f build/publication-a/{run-environ,empty,new,different}
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/publication" "$PWD/build/publication-a" "$PWD/build/publication-b" >build/publication.out 2>build/publication.log
 cat build/publication.out
+
+cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-translation.c -o build/dns-translation
+build/dns-translation
+# Real loopback tests require AF_INET socket permission: python3 tests/dns-host.py
