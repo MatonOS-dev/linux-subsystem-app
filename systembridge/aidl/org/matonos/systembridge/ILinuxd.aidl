@@ -11,8 +11,6 @@ interface ILinuxd {
     String call(String command, String jsonArgs);
     void subscribe(String topic, ILinuxdListener listener);
     void unsubscribe(String topic, ILinuxdListener listener);
-    /** Returns {ok, argv, env, root, installation, runtimeInstallation}; no spawn or delegated fds. */
-    String launchSpec(String ref, String dnsServers, in @nullable android.os.ParcelFileDescriptor x11Directory, @nullable String x11Display, boolean gameControllers, int stubUid, int stubPid, in android.os.ParcelFileDescriptor lifeline);
     /** Called by a generated stub itself ("install me" / "update me") with its
      * own package name: linuxd checks the package belongs to the binder caller
      * and is signed with the stub key via the live System Bridge identity provider,

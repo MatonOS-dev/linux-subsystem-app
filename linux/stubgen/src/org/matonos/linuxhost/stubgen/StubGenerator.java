@@ -36,7 +36,7 @@ public final class StubGenerator {
     public static final int FORMAT_VERSION = 1;
     // Reconcile older launchers to recover installed display names and icons.
     // v14 adds bridge visibility for self-task Linux window capabilities.
-    public static final int STUB_VERSION_CODE = 14;
+    public static final int STUB_VERSION_CODE = 15;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.compositor.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.compositor.stub.StubService";
@@ -449,11 +449,14 @@ public final class StubGenerator {
             startEnd("uses-permission",attrs(a("name","android.permission.INTERNET")));
             start("queries",null,attrs());
             startEnd("package",attrs(a("name","org.matonos.compositor")));
+            startEnd("package",attrs(a("name","org.matonos.linuxruntimes")));
             startEnd("package",attrs(a("name","org.matonos.systembridge")));
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), a("appComponentFactory", HOST_LOADER), new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
+            startEnd("provider", attrs(a("name", "org.matonos.compositor.PortalFiles"),
+                    a("authorities", pkg + ".portal.files"), ab("exported", false), ab("grantUriPermissions", true)));
             start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", false), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             startEnd("meta-data", attrs(a("name", REMOTE_META), a("value", remote)));
@@ -552,13 +555,15 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
         }
         private int resourceId(String name) {
             switch (name) {
+                case "authorities": return android.R.attr.authorities;
+                case "grantUriPermissions": return android.R.attr.grantUriPermissions;
                 case "version": return 0x01010519;
                 case "certDigest": return 0x01010548;
                 case "theme": return 0x01010000;

@@ -43,6 +43,11 @@ public final class ForegroundManifestTest {
             throw new AssertionError("Missing self-task bridge package visibility query\n"+xml);
         if (xml.contains("org.matonos.permission.SYSTEM_BRIDGE"))
             throw new AssertionError("A generated stub must not request the general bridge permission");
+        if (!xml.contains("authorities(0x01010018)=\"flatpak.org.example.Test.portal.files\"")
+                || !xml.contains("grantUriPermissions(0x0101001b)="))
+            throw new AssertionError("Missing per-stub portal provider capability declaration\n"+xml);
+        if (!xml.contains("org.matonos.linuxruntimes"))
+            throw new AssertionError("Missing runtime package query\n"+xml);
         System.out.println("PASS: AOSP parses foreground-service type IDs, install dataSync, runtime specialUse and the host StubLoader factory");
     }
 }
