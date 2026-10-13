@@ -17,7 +17,9 @@ names = merge_names(base, a, b)
 required = {'write', 'openat', 'pread64', 'close', 'mmap', 'mprotect', 'munmap',
             'getrandom', 'getuid', 'geteuid', 'getgid', 'getegid', 'gettid',
             'clone', 'rt_sigaction', 'rt_sigprocmask', 'sigaltstack',
-            'rt_sigreturn', 'prctl', 'seccomp', 'arch_prctl', 'exit_group'}
+            'rt_sigreturn', 'prctl', 'seccomp', 'arch_prctl', 'exit_group',
+            'read', 'fstat', 'newfstatat', 'fchmod', 'utimensat',
+            'faccessat', 'unlinkat', 'renameat2', 'flock', 'symlinkat', 'getdents64', 'mkdirat'}
 if required - names:
     raise SystemExit(f'Handler syscall(s) blocked by app policy: {required - names}')
 missing = names - numbers.keys()

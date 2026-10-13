@@ -176,7 +176,8 @@ resolution, virtual mount identity and read-only checks still apply. Other
 proc-fd resolution (especially bind-mount sources) keeps its existing backing
 path behavior. `O_TMPFILE` and `renameat2` flags pass to the kernel after
 virtual path checks; `tests/publication.c` covers publication/replacement,
-fd duplication, NOREPLACE/EXCHANGE, EXDEV and EROFS.
+fd duplication, NOREPLACE/EXCHANGE, EXDEV and EROFS. Round 13 below
+replaces the kernel O_TMPFILE/linkat replay described here.
 
 Bwrap loads now log outer argv and NUL-separated `--args` bundles through
 pread without consuming or changing the fd. `tests/flatpak-bwrap-host.py`
@@ -233,3 +234,96 @@ The production stub owns both listeners; linuxd and Binder carry no DNS fds.
 real glibc UDP/TCP resolution plus musl-style sendto and message destinations.
 See ../compositor/DNS-FORWARDER.md for port choice, peer/descriptor limitations
 and fresh-image verification.
+
+Round 13 hard links on app-domain storage: `O_TMPFILE` now creates a unique
+`.matonos-tmp-<pid>-<counter>` file in the requested directory with `O_EXCL`
+and the requested mode (subject to the normal umask). It never asks the kernel
+to hard-link an app file. The hidden inode has a shared reference/publication
+record and a process-local fd table. `dup`, `dup2`/`dup3`, fcntl duplication,
+fork/vfork/posix_spawn, resident exec and CLOEXEC closure preserve that record.
+The last intercepted close, CLOEXEC closure or `exit_group` removes an
+unpublished file. Fork reserves child references before cloning and rolls
+back on failure. A small assembly clone retry preserves supplied child stacks;
+ordinary thread clones retain the existing native path.
+
+`linkat` following `/proc/self/fd/N` or `/proc/<pid>/fd/N`, and `AT_EMPTY_PATH`,
+publishes a tracked temporary inode with `renameat2(RENAME_NOREPLACE)`.
+Existing destinations return EEXIST and leave the hidden file available for
+retry. The open fd still refers to the same inode, and proc fd names reflect
+publication, including in an inheriting process. Re-publication through the fd
+returns EPERM, so it cannot move an already published inode. `O_TMPFILE|O_EXCL`
+remains unpublishable. Virtual mount EXDEV and read-only EROFS checks still
+precede the backing operation. Another pid's proc fd must be accessible and
+refer to a temporary inode tracked by the calling process (normally inherited
+across fork); there is no general cross-process fd-registration protocol.
+
+Round 14 replaces the named-file copy fallback with a hidden inode store.
+On the first named link, the regular file moves atomically into
+`<private-tree>/.v3-inodes/i-<128-bit-random-id>` and both names become
+symlinks to that same backing file. Subsequent links add another name.
+The store lives in the highest ancestor on the same filesystem owned by the
+caller, writable/searchable by its owner, and without group/other write bits.
+Both names must share such a private directory. Source ownership remains
+required. Filesystem and virtual-mount boundaries return EXDEV; read-only
+virtual mounts retain EROFS. Ordinary symlinks without AT_SYMLINK_FOLLOW and
+nonregular sources retain EPERM. No app/host path is hard-coded.
+
+Path resolution preserves store names instead of interpreting their backing
+absolute symlinks in the virtual root. stat/lstat/statx and fstat report the
+backing regular inode and persistent logical link count; readlink returns
+EINVAL, O_NOFOLLOW opens the regular backing file, and metadata changes affect
+that file. Directory enumeration hides `.v3-inodes` and reports its names as
+DT_REG. Payload path resolution rejects the reserved store component.
+Rename/unlink operate on the name; renaming one name over another name of the
+same inode is a no-op. The final unlink removes the backing file and count
+sidecar; already-open descriptors continue to work and report nlink zero.
+
+Each store has a kernel flock lock, independent of proxy memory, so fork/exec
+and independently launched proxies share the same serialization. Count
+sidecars avoid a name-count ceiling and avoid traversing the tree for clean
+metadata reads. A dirty marker precedes name mutations; interrupted mutations
+recompute counts from names under the lock. A conversion journal records the
+original name before its backing rename, allowing an interrupted conversion
+to restore that name. Store entries lacking count metadata are checked for
+orphans on the next path/listing access and removed if unreferenced. Recounts
+traverse same-filesystem directories without following ordinary symlinks;
+mutations currently recount all store objects (an optimization opportunity).
+This protects against process death, rather than promising power-loss
+transactions; the journal and directory updates are not fsync-ordered.
+
+Store-root rename carries a relocation journal with the directory and repairs
+absolute store targets under its existing lock. Repair is idempotent after
+process death, and cwd identity is rechecked so relative paths follow a moved
+working directory. Store-root RENAME_EXCHANGE is currently ENOTSUP; ordinary
+file-name exchange continues through the kernel and count reconciliation.
+
+Remaining limits: all same-filesystem subdirectories of a tree must remain readable during recount;
+permission-denied recovery fails closed. Raw/unintercepted changes to names
+are outside the protocol. The first conversion has a rename-to-symlink gap
+for raw observers; proxied open/metadata/listing operations serialize against
+it. Pre-existing native hard links are not imported as extra logical names.
+These are compatibility limits; the proxy is not a security boundary.
+
+Round-13 temporary-file limits remain: `.matonos-tmp-*` files are discoverable
+and report physical nlink 1 before publication. Abrupt death, direct SYS_exit,
+untracked fd transfers/manipulation, and moving a containing directory can
+leave temporary files/shared reference records. Descriptor-table mutation and
+fork continuation remain unsynchronized. CLONE_FILES without CLONE_VM returns
+ENOTSUP; existing thread/CLONE_FS limits remain. Cleanup is best effort when
+kernel permissions deny unlink.
+
+`tests/run.sh` runs both publication fixtures under the copied app filter and
+a preceding kernel filter returning EACCES for every linkat. The denial wrapper
+first proves a raw linkat gets EACCES before launching the proxy. Tests cover
+Flatpak-style proc-fd publication, AT_EMPTY_PATH, EEXIST/retry, rejection of a
+second publication, duplicate-last-close cleanup, O_EXCL, child-first and
+parent-first closure, resident exec/CLOEXEC, exit cleanup, failed clone rollback,
+posix_spawn, shared named inodes with timestamps/mode/data, outside-tree and
+symlink rejection, EXDEV, EROFS and renameat2 behavior. `tests/hardlinks.c`
+adds shared-write, O_NOFOLLOW, statx/lstat/fstat/nlink, hidden-listing,
+same-inode rename, last-unlink/open-fd lifetime, fork/exec concurrency and
+independent loader-process tests, plus a store-root move and move-back.
+Host-created interrupted transactions verify conversion restoration, orphan
+collection, and interrupted store relocation on the next access. Host tests do not
+reproduce SELinux. Combined round-13/14 host suite and the NDK r30/API-36 freestanding
+loader build passed; no adb/device/image test was performed.

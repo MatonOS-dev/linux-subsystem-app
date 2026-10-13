@@ -3,6 +3,7 @@
  * every backing operation. No real mount or namespace is created. */
 #include "proxy.h"
 #include "vfs.h"
+#include "links.h"
 #include <sys/syscall.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
@@ -61,7 +62,7 @@ struct fd_name {struct fd_name *next;int fd;char *path;};
 static struct fd_name *fd_names;
 void vfs_fd_close(int fd){struct fd_name **p=&fd_names;while(*p && (*p)->fd!=fd)p=&(*p)->next;if(*p){struct fd_name *old=*p;*p=old->next;vfs_free(old->path);vfs_free(old);}}
 void vfs_fd_dup(int from,int to){char *name=vfs_fd_name(from);vfs_fd_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
-char *vfs_fd_name(int fd){for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==fd){
+char *vfs_fd_name(int fd){char *published=links_fd_name(fd);if(published)return published;for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==fd){
     if(!root)return dupstr(p->path);
     if(!prefix(p->path,root))return NULL;
     const char *name=p->path+p_len(root);return dupstr(*name?name:"/");
@@ -85,7 +86,7 @@ char *vfs_proc_fd_name(const char *path){
     }
 return NULL;
 }
-static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd)return dupstr(cwd);size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(SYS_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
+static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct stat named,actual;int valid=host && !RAW(SYS_newfstatat,AT_FDCWD,host,&named,0,0,0) && !RAW(SYS_newfstatat,AT_FDCWD,".",&actual,0,0,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(SYS_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
     char *tracked=vfs_fd_name(fd);if(tracked)return tracked;
     struct stat st;long status=RAW(SYS_fstat,fd,&st,0,0,0,0);if(status<0){*error=status;return NULL;}if(!S_ISDIR(st.st_mode)){*error=-ENOTDIR;return NULL;}
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
@@ -104,9 +105,11 @@ restart:;
         if(len==2 && input[start]=='.' && input[start+1]=='.'){while(used>1 && out[used-1]!='/')used--;if(used>1)used--;out[used]=0;continue;}
         if(used>1)out[used++]='/';
         p_copy(out+used,input+start,len);used+=len;out[used]=0;
+        if(p_equal(out+used-len,".v3-inodes")){*error=-ENOENT;goto fail;}
         size_t next=i;while(input[next]=='/')next++;
         if(!follow && !input[next] && input[i]!='/' )continue;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
+        links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);
         if(!target && input[i]=='/'){struct stat st;long status=RAW(SYS_newfstatat,AT_FDCWD,host,&st,0,0,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
         /* proc fd magic links point to backing objects, outside a pivoted
@@ -116,11 +119,16 @@ restart:;
             if(magic && !input[i] && follow==VFS_FOLLOW_LINK_SOURCE){
                 /* Keep the proc magic link itself. readlink text for O_TMPFILE
                  * is a nonexistent "#inode (deleted)" name, not the inode. */
-                if(identity){char *name=vfs_proc_fd_name(out);char *global=name?(root?join(root,name):dupstr(name)):NULL;
+                if(identity){char *name=vfs_proc_fd_name(out);if(!name)name=vfs_reverse(target);char *global=name?(root?join(root,name):dupstr(name)):NULL;
                     *identity=global?lookup(global):NULL;vfs_free(global);vfs_free(name);}
                 vfs_free(target);vfs_free(input);vfs_free(out);return host;
             }
             if(magic){char *answer=join(target,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);if(!answer)*error=-ENOMEM;return answer;}
+        }
+        if(target && links_hidden(target)){
+            char internal[4096];int valid=links_target(host,internal);
+            vfs_free(target);target=NULL;e=-EINVAL;
+            if(!valid){vfs_free(host);*error=-ENOENT;goto fail;}
         }
         vfs_free(host);
         if(target && self_proc(out) && used>=4 && p_equal(out+used-4,"/exe") && executable){vfs_free(target);target=dupstr(executable);}

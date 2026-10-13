@@ -4,6 +4,7 @@
 #include "proxy.h"
 #include "vfs.h"
 #include "net.h"
+#include "links.h"
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -20,6 +21,8 @@
 #include <linux/audit.h>
 #include <linux/dma-buf.h>
 #include <linux/sched.h>
+#include <linux/stat.h>
+#include <linux/limits.h>
 #include <linux/prctl.h>
 #include <stddef.h>
 #include <fcntl.h>
@@ -87,6 +90,8 @@ static int app_allowed(long nr) {
 static unsigned long namespaces;
 static long namespace_clone_parent;
 static unsigned long namespace_clone_flags;
+uintptr_t proxy_clone_resume;
+extern char proxy_clone_entry[],proxy_clone_after[];
 static unsigned userns_remaining=~0U;
 struct sysctl_fd {int fd;struct sysctl_fd *next;};
 static struct sysctl_fd *sysctl_fds;
@@ -119,7 +124,7 @@ static long path_call(long nr,long *a,int one,int two) {
         a[4]=(a[4]&~AT_EMPTY_PATH)|AT_SYMLINK_FOLLOW;follow=VFS_FOLLOW_LINK_SOURCE;
     }
     /* Other empty-path operations act on the original descriptor. */
-    if(a[one] && !*(char *)a[one] && at)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(a[one] && !*(char *)a[one] && at){long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==SYS_newfstatat)links_fd_stat(fd,(void *)a[2]);if(!r && nr==SYS_statx){struct stat st;if(!RAW(SYS_fstat,fd,&st,0,0,0,0)){links_fd_stat(fd,&st);((struct statx *)a[4])->stx_nlink=st.st_nlink;}}return r;}
     const char *original_path=(void *)a[one];
     if(nr==SYS_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
     long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p)return e;
@@ -152,7 +157,11 @@ static long path_call(long nr,long *a,int one,int two) {
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==SYS_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==SYS_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
-    e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(nr==SYS_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=links_open(p,a[2],a[3]);
+    else if(nr==SYS_linkat)e=links_publish(p,q,a[4]);
+    else if(nr==SYS_unlinkat || nr==SYS_renameat || nr==SYS_renameat2)e=links_name_call(nr,a,p,q);
+    else if(nr==SYS_symlinkat || nr==SYS_mkdirat || nr==SYS_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    else e=links_path_call(nr,a,p);
     if(e>=0 && nr==SYS_openat)vfs_fd_record((int)e,fd,original_path);
     if(e>=0 && nr==SYS_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
@@ -217,7 +226,7 @@ static long modernize(long nr,long *a,long *answer) {
     case SYS_getdents:{
         /* linux_dirent64 -> legacy x86_64 linux_dirent, including d_type
          * in the last byte. Consume at most caller capacity, no dropped entries. */
-        void *buf=vfs_alloc((size_t)a[2]);if(!buf){*answer=-ENOMEM;return -1;}long n=RAW(SYS_getdents64,a[0],buf,a[2],0,0,0);long used=0;
+        void *buf=vfs_alloc((size_t)a[2]);if(!buf){*answer=-ENOMEM;return -1;}long n=links_dents(a[0],buf,a[2]);long used=0;
         if(n>0)for(long off=0;off<n;){unsigned char *p=(unsigned char *)buf+off;unsigned short len=*(unsigned short *)(p+16);if(len<20 || off+len>n){n=-EIO;break;}unsigned char *q=(unsigned char *)a[1]+used;p_copy(q,p,18);size_t name=p_len((char *)p+19)+1;p_copy(q+18,p+19,name);for(size_t k=18+name;k<len;k++)q[k]=0;q[len-1]=p[18];used+=len;off+=len;}
         *answer=n<0?n:used;vfs_free(buf);return -1;
     }
@@ -337,7 +346,7 @@ static long dns_call(long nr, long a[6]) {
 static int ours(long n) {
     switch(n) {
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
-    case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
+    case SYS_fstat:case SYS_getdents64:case SYS_exit_group:case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
     case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
     case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
     case SYS_prctl:case SYS_execve:case SYS_execveat:case SYS_rt_sigaction:case SYS_rt_sigprocmask:
@@ -372,7 +381,7 @@ static void exec_close_fds(void){
     char *buf=vfs_alloc(8192);if(!buf){RAW(SYS_close,fd,0,0,0,0,0);return;}
     for(;;){long n=RAW(SYS_getdents64,fd,buf,8192,0,0,0);if(n<=0)break;
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
-            if(valid && v!=fd){long flags=RAW(SYS_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(SYS_close,v,0,0,0,0,0);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
+            if(valid && v!=fd){long flags=RAW(SYS_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(SYS_close,v,0,0,0,0,0);links_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
         }
     }
     vfs_free(buf);RAW(SYS_close,fd,0,0,0,0,0);
@@ -421,11 +430,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     result=-ENOSYS;
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     switch(nr) {
+    case SYS_getdents64:result=links_dents(a[0],(void *)a[1],a[2]);break;
+    case SYS_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_fd_stat((int)a[0],(void *)a[1]);break;
+    case SYS_exit_group:links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case SYS_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
-    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
+    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case SYS_dup:case SYS_dup3:case SYS_fcntl:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){dns_dup((int)a[0],(int)result);vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+        if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=links_dup((int)a[0],(int)result);if(tracked<0){RAW(SYS_close,result,0,0,0,0,0);links_close((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
         if(app_allowed(nr))result=dns_call(nr,a);
@@ -508,17 +520,29 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case SYS_vfork:
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
-        result=RAW(SYS_clone,SIGCHLD,0,0,0,0,0);break;
+        links_fork(1);result=RAW(SYS_clone,SIGCHLD,0,0,0,0,0);if(result<0)links_fork(-1);break;
     case SYS_clone:
-        /* A raw clone must return on the application's stack, not this handler's.
-         * Rewind the syscall after removing namespace flags; filter allows clean clone. */
+        /* Stackless forks can clone inside this handler. A supplied child
+         * stack needs the assembly retry gateway to preserve its continuation. */
         if((a[0]&NS_FLAGS) && (a[0]&CLONE_VM)){result=-ENOTSUP;break;}
         if((a[0]&CLONE_NEWUSER) && !userns_remaining){result=-EPERM;break;}
+        if(!(a[0]&CLONE_VM)){
+            if(a[0]&CLONE_FILES){result=-ENOTSUP;break;}
+            if(a[1])goto clone_retry;
+            unsigned long ns=a[0]&NS_FLAGS;links_fork(1);
+            result=RAW(SYS_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
+            if(result<0)links_fork(-1);
+            if(!result){namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+            break;
+        }
+clone_retry:
+        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK))links_fork(1);
         namespace_clone_parent=RAW(SYS_getpid,0,0,0,0,0,0);namespace_clone_flags=a[0]&NS_FLAGS;
         uc->uc_mcontext.gregs[REG_RSI]=a[1];uc->uc_mcontext.gregs[REG_RDX]=a[2];
         uc->uc_mcontext.gregs[REG_R10]=a[3];uc->uc_mcontext.gregs[REG_R8]=a[4];
         uc->uc_mcontext.gregs[REG_RDI]=a[0]&~(long)(NS_FLAGS|CLONE_VFORK|((a[0]&CLONE_VFORK)?CLONE_VM:0));
-        uc->uc_mcontext.gregs[REG_RAX]=nr;uc->uc_mcontext.gregs[REG_RIP]-=2;
+        proxy_clone_resume=uc->uc_mcontext.gregs[REG_RIP];
+        uc->uc_mcontext.gregs[REG_RAX]=nr;uc->uc_mcontext.gregs[REG_RIP]=(uintptr_t)proxy_clone_entry;
         proxy_log("ours-clone-retry",nr,0);goto clean_mask;
     case SYS_clone3:result=-ENOSYS;break; /* libc falls back to clone. */
     case SYS_execve:case SYS_execveat: {
@@ -623,11 +647,18 @@ int proxy_install(int android) {
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ip=(uintptr_t)proxy_clone_after;
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    /* clone is only trapped when it requests a namespace. */
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,4,SYS_clone);
+    /* Forks must account for inherited temporary descriptors. Threads retry natively. */
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,SYS_clone);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
-    ADD(BPF_JMP|BPF_JSET|BPF_K,1,0,NS_FLAGS|CLONE_VFORK);
+    ADD(BPF_JMP|BPF_JSET|BPF_K,2,0,NS_FLAGS|CLONE_VFORK);
+    ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,CLONE_VM);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     /* sendto without a destination stays native (both pointer halves). */

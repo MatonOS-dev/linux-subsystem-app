@@ -17,7 +17,8 @@ int main(int argc,char **argv){
  CHECK(linkat(AT_FDCWD,proc,dir,"run-environ",AT_SYMLINK_FOLLOW)==0);
  int named=open("/pub/run-environ",O_RDONLY);char buf[8]={0};CHECK(named>=0 && read(named,buf,7)==7 && !strcmp(buf,"environ"));close(named);
  int alias=dup(fd);CHECK(alias>=0);
- CHECK(linkat(alias,"",dir,"empty",AT_EMPTY_PATH)==0);close(alias);
+ errno=0;CHECK(linkat(alias,"",dir,"empty",AT_EMPTY_PATH)==-1 && errno==EPERM);close(alias);
+ CHECK(linkat(dir,"run-environ",dir,"empty",0)==0);
  /* glnx replace: publish to a temporary name, then rename to run-environ. */
  int replacement=openat(dir,".",O_TMPFILE|O_RDWR,0400);CHECK(replacement>=0);
  CHECK(write(replacement,"updated",7)==7);snprintf(proc,sizeof(proc),"/proc/self/fd/%d",replacement);
