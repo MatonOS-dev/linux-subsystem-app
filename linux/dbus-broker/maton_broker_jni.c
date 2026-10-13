@@ -10,7 +10,6 @@
  * protocol is unchanged.
  */
 #include "broker.h"
-#include "sysvipc-host.h"
 
 #include <jni.h>
 #include <pthread.h>
@@ -70,17 +69,12 @@ static char *dup_string(JNIEnv *env, jstring value) {
 static void *run_broker(void *data) {
     struct start_args *a = data;
     GError *error = NULL;
-    /* SysV IPC for the app's Linux sessions (kernel has no CONFIG_SYSVIPC).
-     * Bind its socket before the bus-control socket appears: the stub
-     * reports the session ready on that, and the portal child hands over its
-     * listener immediately. */
-    int sysvipc = maton_sysvipc_host_start(a->socket);
     Broker *broker = broker_new(a->socket, a->policy, &error);
     int backend = broker ? connect_portal(a->portal, a->secret) : -1;
     /* JNI runs in the authenticated stub itself. Its UID is the session
      * identity; the old executable's environment is absent in an app process. */
-    if (broker && backend >= 0 && broker_enable_host_session_for_uid(broker, geteuid(), &error) &&
-            broker_register_session_services(broker, NULL, backend, &error)) {
+    if (broker && backend >= 0 &&
+            broker_register_session_services(broker, backend, &error)) {
         pthread_mutex_lock(&g_lock);
         g_broker = broker;
         g_running = 1;
@@ -90,7 +84,6 @@ static void *run_broker(void *data) {
         if (backend >= 0) close(backend);
         broker_free(broker);
     }
-    if (!sysvipc) maton_sysvipc_host_stop();
     if (error) g_warning("Per-app session broker: %s", error->message);
     g_clear_error(&error);
     pthread_mutex_lock(&g_lock);

@@ -19,8 +19,8 @@ cc_prebuilt_binary {
     check_elf_files: false,
 }
 
-// The launch-chain helpers are all stripped static-musl prebuilts staged by
-// stage-static-musl.sh. Source and artifact hashes are in prebuilt/static/SOURCE.
+// Management and applet-dispatch helpers are bionic NDK prebuilts rebuilt by
+// tools/build-flatpak-helpers.sh. Hashes are in prebuilt/static/SOURCE.
 
 cc_prebuilt_binary {
     name: "matonos-flatpak-launcher-static-prebuilt",
@@ -85,25 +85,6 @@ cc_prebuilt_binary {
         none: true,
     },
     check_elf_files: false,
-}
-
-// SysV shm LD_PRELOAD helper (linux/sysvipc/shm-helper.c), freestanding
-// builds for each glibc ABI from tools/build-flatpak-helpers.sh. v3 injection
-// remains pending until the in-process IPC work lands.
-prebuilt_etc {
-    name: "matonos-flatpak-shm-helper-x86_64",
-    src: "prebuilt/static/x86_64/libmaton-shm-x86_64.so",
-    filename: "libmaton-shm-x86_64.so",
-    sub_dir: "sysvipc",
-    installable: false,
-}
-
-prebuilt_etc {
-    name: "matonos-flatpak-shm-helper-i386",
-    src: "prebuilt/static/x86_64/libmaton-shm-i386.so",
-    filename: "libmaton-shm-i386.so",
-    sub_dir: "sysvipc",
-    installable: false,
 }
 
 prebuilt_etc {
@@ -370,8 +351,6 @@ apex {
         "matonos-app-bwrap-prebuilt",
     ],
     prebuilts: [
-        "matonos-flatpak-shm-helper-x86_64",
-        "matonos-flatpak-shm-helper-i386",
         "matonos-flatpak-flathub-key",
         "matonos-flatpak-flathub-remote",
         "matonos-flatpak-license-dullpgp-txt",

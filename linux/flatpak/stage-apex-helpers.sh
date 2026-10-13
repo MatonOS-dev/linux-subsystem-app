@@ -20,15 +20,10 @@ branch=$(git -C "$TREE" branch --show-current)
 
 helpers="$APEX_REPO/flatpak/helpers"
 sync() { mkdir -p "$(dirname "$helpers/$2")"; install -m644 "$TREE/$1" "$helpers/$2"; }
-# Sources and every header they include, at the include paths they use.
-sync install/linuxd/MatonMls.h MatonMls.h
+# Management helper sources and the shared canonical path header.
 sync linux/flatpak/linux-paths.h linux-paths.h
-sync linux/flatpak/controller-access.h controller-access.h
-for f in flatpak-env-wrapper.c machine-id.h linux-paths.h; do
-    sync "linux/flatpak/$f" "linux/flatpak/$f"
-done
-sync linux/dbus-broker/session-control.h linux/dbus-broker/session-control.h
-for f in DownloadsGrant.h DownloadsUserDirs.h GtkSettings.h SafePath.h MatonMls.h FlatpakStore.c FlatpakStore.h; do
+sync linux/flatpak/linux-paths.h linux/flatpak/linux-paths.h
+for f in SafePath.h FlatpakStore.c FlatpakStore.h; do
     sync "install/linuxd/$f" "install/linuxd/$f"
 done
 (

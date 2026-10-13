@@ -36,7 +36,7 @@ public final class StubGenerator {
     public static final int FORMAT_VERSION = 1;
     // Reconcile older launchers to recover installed display names and icons.
     // v14 adds bridge visibility for self-task Linux window capabilities.
-    public static final int STUB_VERSION_CODE = 15;
+    public static final int STUB_VERSION_CODE = 16;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.compositor.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.compositor.stub.StubService";
@@ -449,7 +449,6 @@ public final class StubGenerator {
             startEnd("uses-permission",attrs(a("name","android.permission.INTERNET")));
             start("queries",null,attrs());
             startEnd("package",attrs(a("name","org.matonos.compositor")));
-            startEnd("package",attrs(a("name","org.matonos.linuxruntimes")));
             startEnd("package",attrs(a("name","org.matonos.systembridge")));
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));

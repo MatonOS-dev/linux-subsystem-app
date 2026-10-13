@@ -13,11 +13,7 @@ gboolean broker_add_service(Broker *broker, const char *name,
                             gpointer user_data, GError **error);
 Broker *broker_new(const char *socket_path, const char *config_path,
                    GError **error);
-gboolean broker_enable_host_session(Broker *broker, GError **error);
-gboolean broker_enable_host_session_for_uid(Broker *broker, uid_t uid, GError **error);
-const char* broker_monitor_path(Broker *broker);
-void broker_set_monitor_path(Broker *broker, const char *path);
-gboolean broker_register_session_services(Broker *broker, const char *monitor, int backend_fd, GError **error);
+gboolean broker_register_session_services(Broker *broker, int backend_fd, GError **error);
 gboolean broker_run(Broker *broker, GError **error);
 void broker_free(Broker *broker);
 void broker_stop(Broker *broker);

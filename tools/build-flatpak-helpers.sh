@@ -5,10 +5,8 @@
 # because its prebuilt inputs changed. build.sh runs this before the AOSP
 # build; MATON_FORCE_HELPERS=1 rebuilds unconditionally.
 #
-# Also builds the SysV shm LD_PRELOAD helper (linux/sysvipc/shm-helper.c) for
-# each glibc ABI the APEX serves; v3 preload integration is pending.
-# The Flatpak/OSTree multicall, the portal and
-# matonos-flatpak-store come from MatonOS_apexs and are not rebuilt here.
+# The Flatpak/OSTree multicall and portal come from MatonOS_apexs;
+# the in-tree staging helper is rebuilt here with the shared path header.
 set -Eeuo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -29,12 +27,22 @@ STAMPS=$STAGE/HELPERS.sha256
 # source -> installed names (one binary may be installed under several).
 declare -A HELPERS=(
   [flatpak-env-wrapper]="flatpak-env-wrapper"
+  [matonos-flatpak-store]="matonos-flatpak-store"
   [matonos-app-tool]="matonos-app-flatpak matonos-app-bwrap"
 )
 
+source_file() {
+  if [[ $1 == matonos-flatpak-store ]]; then
+    printf '%s\n' "$DEVICE_DIR/install/linuxd/FlatpakStore.c"
+  else
+    printf '%s\n' "$SRC/$1.c"
+  fi
+}
+
 # Fingerprint: compiler, flags, and every source/header the compiler reads.
 fingerprint() {
-  local src=$SRC/$1.c
+  local src
+  src=$(source_file "$1")
   {
     "$CC" --version | head -1
     printf '%s\n' "${CFLAGS[@]}"
@@ -56,27 +64,8 @@ for name in $(printf '%s\n' "${!HELPERS[@]}" | sort); do
     continue
   fi
   info "Flatpak helper $name (sources changed)"
-  "$CC" "${CFLAGS[@]}" "$SRC/$name.c" -o "$tmp/$name"
+  "$CC" "${CFLAGS[@]}" "$(source_file "$name")" -o "$tmp/$name"
   for out in ${HELPERS[$name]}; do install -m755 "$tmp/$name" "$STAGE/$out"; done
-  { grep -v "  $name\$" "$STAMPS" || true; echo "$fp  $name"; } | sort -k2 > "$tmp/stamps"
-  cp "$tmp/stamps" "$STAMPS"
-  changed=1
-done
-# Freestanding glibc preload libraries: no libc headers, so one clang builds
-# every ABI; symbols bind to the runtime's glibc at load time.
-CLANG=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang
-PRELOAD_FLAGS=(-O2 -fPIC -shared -ffreestanding -nostdlib -fuse-ld=lld -Wall -Wextra -Werror)
-SHM_SRC=$DEVICE_DIR/linux/sysvipc
-for pair in x86_64:x86_64-linux-gnu i386:i686-linux-gnu; do
-  name=libmaton-shm-${pair%%:*}.so target=${pair#*:}
-  fp=$({ "$CLANG" --version | head -1; printf '%s\n' "$target" "${PRELOAD_FLAGS[@]}"
-         sha256sum "$SHM_SRC/shm-helper.c" "$SHM_SRC/sysvipc.h" | awk '{print $1}'; } | sha256sum | awk '{print $1}')
-  if [[ -z ${MATON_FORCE_HELPERS:-} && -s $STAGE/$name ]] && grep -qx "$fp  $name" "$STAMPS"; then
-    continue
-  fi
-  info "SysV shm helper $name (sources changed)"
-  "$CLANG" --target="$target" "${PRELOAD_FLAGS[@]}" "$SHM_SRC/shm-helper.c" -o "$tmp/$name"
-  install -m644 "$tmp/$name" "$STAGE/$name"
   { grep -v "  $name\$" "$STAMPS" || true; echo "$fp  $name"; } | sort -k2 > "$tmp/stamps"
   cp "$tmp/stamps" "$STAMPS"
   changed=1

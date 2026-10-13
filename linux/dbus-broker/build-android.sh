@@ -20,16 +20,7 @@ for path in "$TOOLCHAIN/x86_64-linux-android35-clang" "$GLIB_SRC/meson.build" \
 done
 [[ $JOBS =~ ^[0-9]+$ && $JOBS -ge 1 && $JOBS -le 16 ]] || { echo "MATON_BUILD_JOBS must be between 1 and 16" >&2; exit 1; }
 
-# Read the generated configuration of the same Flatpak build staged in the
-# image. Do not use a host distro Flatpak or an independently numbered protocol.
-FLATPAK_CONFIG=${MATON_FLATPAK_BUILD_CONFIG:-$FLATPAK_NDK/flatpak/build/config.h}
-FLATPAK_VERSION=$(sed -n 's/^#define PACKAGE_VERSION "\([0-9][0-9.]*\)"$/\1/p' "$FLATPAK_CONFIG")
-[[ $FLATPAK_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-  echo "Cannot determine image Flatpak version from $FLATPAK_CONFIG" >&2; exit 1;
-}
 mkdir -p "$OUT"
-printf '#define MATON_BROKER_BUILT_FLATPAK_VERSION "%s"\n' "$FLATPAK_VERSION" > "$OUT/flatpak-build-version.h"
-printf '%s\n' "$FLATPAK_VERSION" > "$OUT/flatpak-build-version.txt"
 
 GLIB_BUILD=$WORK/glib-build
 GLIB_PREFIX=$WORK/prefix
@@ -86,26 +77,18 @@ mkdir -p "$OUT"
 INCLUDES=(-I"$GLIB_PREFIX/include/glib-2.0" \
   -I"$GLIB_PREFIX/lib64/glib-2.0/include" -I"$GLIB_PREFIX/include" \
   -I"$GLIB_PREFIX/include/gio-unix-2.0")
-CFLAGS=(-O2 -g -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror -include "$OUT/flatpak-build-version.h")
-for source in main broker example portals maton_broker_jni sysvipc-host test-client session-test-client; do
+CFLAGS=(-O2 -g -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror)
+for source in broker portals maton_broker_jni; do
   "$TOOLCHAIN/x86_64-linux-android35-clang" "${CFLAGS[@]}" "${INCLUDES[@]}" \
     -c "$DEVICE_DIR/linux/dbus-broker/$source.c" -o "$OUT/$source.o"
 done
-# Per-app SysV IPC supervisor (linux/sysvipc), served from the stub.
-"$TOOLCHAIN/x86_64-linux-android35-clang" -O2 -g -std=c11 -Wall -Wextra -Werror \
-  -c "$DEVICE_DIR/linux/sysvipc/sysvipc.c" -o "$OUT/sysvipc.o"
-
 STATIC_LIBS=("$GLIB_PREFIX/lib64/libgio-2.0.a" \
   "$GLIB_PREFIX/lib64/libgobject-2.0.a" "$GLIB_PREFIX/lib64/libgmodule-2.0.a" \
   "$GLIB_PREFIX/lib64/libglib-2.0.a" "$PCRE_BUILD/libpcre2-8.a" \
   "$FFI_BUILD/libffi.a" "$GLIB_PREFIX/lib64/libintl.a" -lz -ldl -lm)
 # Per-app bus: a JNI library loaded into the app's own process, not an executable.
 "$TOOLCHAIN/x86_64-linux-android35-clang" -shared -o "$OUT/libmatonos-dbus-broker.so" \
-  "$OUT/maton_broker_jni.o" "$OUT/broker.o" "$OUT/example.o" "$OUT/portals.o" \
-  "$OUT/sysvipc-host.o" "$OUT/sysvipc.o" "${STATIC_LIBS[@]}"
-"$TOOLCHAIN/x86_64-linux-android35-clang" -o "$OUT/matonos-dbus-test-client" \
-  "$OUT/test-client.o" "${STATIC_LIBS[@]}"
-"$TOOLCHAIN/x86_64-linux-android35-clang" -o "$OUT/matonos-dbus-session-test" \
-  "$OUT/session-test-client.o" "${STATIC_LIBS[@]}"
-"$TOOLCHAIN/llvm-strip" "$OUT/libmatonos-dbus-broker.so" "$OUT/matonos-dbus-test-client" "$OUT/matonos-dbus-session-test"
-echo "Built static-GIO bionic binaries in $OUT"
+  "$OUT/maton_broker_jni.o" "$OUT/broker.o" "$OUT/portals.o" \
+  "${STATIC_LIBS[@]}"
+"$TOOLCHAIN/llvm-strip" "$OUT/libmatonos-dbus-broker.so"
+echo "Built per-app JNI broker in $OUT"

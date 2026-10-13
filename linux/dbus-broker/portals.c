@@ -174,18 +174,14 @@ void broker_session_services_free(Broker* b) {
 static void helper_call(GDBusConnection* c,const char* sender,const char* path,const char* iface,const char* method,
         GVariant* args,GDBusMethodInvocation* inv,void* data) {
     (void)c;(void)sender;(void)path;(void)iface;(void)method;(void)args;
-    const char* monitor=broker_monitor_path(data);
-    if(!monitor[0]){g_dbus_method_invocation_return_error(inv,G_IO_ERROR,G_IO_ERROR_NOT_INITIALIZED,"Session portal is not ready");return;}
-    GVariantBuilder result;g_variant_builder_init(&result,G_VARIANT_TYPE_VARDICT);
-    g_variant_builder_add(&result,"{sv}","path",g_variant_new_string(monitor));
-    g_dbus_method_invocation_return_value(inv,g_variant_new("(a{sv})",&result));
+    (void)data;
+    g_dbus_method_invocation_return_error(inv,G_IO_ERROR,G_IO_ERROR_NOT_INITIALIZED,"Session portal is not ready");
 }
 static GVariant* helper_property(GDBusConnection* c,const char* sender,const char* path,const char* iface,const char* name,GError** error,void* data) {
     (void)c;(void)sender;(void)path;(void)iface;(void)error;(void)data;
     return g_str_equal(name,"version")?g_variant_new_uint32(1):NULL;
 }
-gboolean broker_register_session_services(Broker* b,const char* monitor,int backend_fd,GError** error) {
-    broker_set_monitor_path(b,monitor);
+gboolean broker_register_session_services(Broker* b,int backend_fd,GError** error) {
     Backend* p=g_new0(Backend,1);p->broker=b;p->fd=backend_fd;p->refs=1;
     p->input=g_byte_array_new();p->pending=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,call_free);
     broker_set_session_data(b,p);

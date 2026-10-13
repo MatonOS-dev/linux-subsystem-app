@@ -17,13 +17,6 @@ interface ILinuxd {
      * which returns ref and remote from PackageManager metadata. */
     String installSelf(String packageName, String operationId);
     String updateSelf(String packageName, String operationId);
-    /** Called by a generated stub itself: linuxd creates the stub's fixed
-     * per-app runtime dir /data/matonos/linux/tmp/<uid> (owned by the caller,
-     * labelled, no app can squat it) before the stub binds its sockets. */
-    String prepareRuntime(String packageName);
-    /** Self-only, verified like prepareRuntime. No caller-supplied paths. */
-    String downloadsRequest(String packageName);
-    String answerDownloads(String packageName, String request, boolean allow);
-    /** Bridge-only live PackageManager identity provider. Append-only transaction. */
+    /** Bridge-only live PackageManager identity provider.  */
     void registerIdentity(ILinuxdIdentity identity);
 }

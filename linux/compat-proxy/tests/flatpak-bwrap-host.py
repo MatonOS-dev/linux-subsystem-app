@@ -11,7 +11,7 @@ fixture = build / 'flatpak-bwrap'
 fixture.mkdir(exist_ok=True)
 proxy = [str(build/'linux-layer-v3'), '--android-filter', '--map', str(root/'system'), '/system', '--map', str(root/'apex'), '/apex']
 runtime = pathlib.Path(os.environ.get('COMPAT_HOST_RUNTIME', '/usr'))
-bwrap = '/apex/com.matonos.flatpak/bin/matonos-bwrap'
+bwrap = '/apex/com.matonos.flatpak/bin/matonos-app-bwrap'
 # The VM log exposes the outer command, but not the contents of --args.
 # Replay the actual ldconfig payload when supplied, retaining source-derived
 # host fd bundles: VM backing files and memfds cannot be read offline.
@@ -19,7 +19,7 @@ stage2_log = os.environ.get('COMPAT_STAGE2_LOG')
 ldconfig_command = ['ldconfig','-X','-C','/run/ld-so-cache-dir/cache']
 if stage2_log:
     log = pathlib.Path(stage2_log).read_text()
-    matches = re.findall(r"F: Running: '([^\n]*matonos-bwrap --args [^\n]*)'", log)
+    matches = re.findall(r"F: Running: '([^\n]*matonos-app-bwrap --args [^\n]*)'", log)
     commands = [shlex.split(line) for line in matches]
     commands = [args[3:] for args in commands if args[3:4] == ['ldconfig']]
     if len(commands) != 1: raise RuntimeError('expected one logged ldconfig invocation')

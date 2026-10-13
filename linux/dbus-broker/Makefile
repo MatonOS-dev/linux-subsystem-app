@@ -6,18 +6,12 @@ CPPFLAGS += -D_GNU_SOURCE
 CFLAGS += -std=c11 -Wall -Wextra -Werror $(shell $(PKG_CONFIG) --cflags gio-2.0)
 LDLIBS += $(shell $(PKG_CONFIG) --libs gio-2.0)
 
-all: $(OUT)/matonos-dbus-broker
+all: test
 
-test: $(OUT)/broker-test $(OUT)/inhibit-test $(OUT)/portal-credentials-test $(OUT)/flatpak-version-test $(OUT)/native-bus-test $(OUT)/portal-wire-test $(OUT)/policy-wildcard-test
+test: $(OUT)/inhibit-test $(OUT)/portal-wire-test $(OUT)/policy-wildcard-test
 
-$(OUT)/matonos-dbus-broker: $(OUT)/main.o $(OUT)/broker.o $(OUT)/example.o $(OUT)/portals.o
-	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-
-$(OUT)/%.o: %.c broker.h session-control.h flatpak-compat.h | $(OUT)
+$(OUT)/%.o: %.c broker.h | $(OUT)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
-
-$(OUT)/broker-test: test-client.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDLIBS)
 
 clean:
 	rm -rf $(OUT)
@@ -38,30 +32,6 @@ check-inhibit: $(OUT)/inhibit-test check-java-portals
 
 .PHONY: check-inhibit
 
-$(OUT)/portal-credentials-test: portal-credentials-test.c broker.c broker.h session-control.h flatpak-compat.h $(OUT)/portals.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ portal-credentials-test.c $(OUT)/portals.o $(LDLIBS)
-
-check-portal-credentials: $(OUT)/portal-credentials-test
-	$<
-
-.PHONY: check-portal-credentials
-
-$(OUT)/flatpak-version-test: flatpak-version-test.c flatpak-compat.h | $(OUT)
-	$(CC) -std=c11 -Wall -Wextra -Werror -o $@ $<
-
-check-flatpak-version: $(OUT)/flatpak-version-test
-	$<
-
-.PHONY: check-flatpak-version
-
-$(OUT)/native-bus-test: native-bus-test.c broker.c broker.h session-control.h flatpak-compat.h $(OUT)/portals.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ native-bus-test.c $(OUT)/portals.o $(LDLIBS)
-
-check-native-bus: $(OUT)/native-bus-test
-	$<
-
-.PHONY: check-native-bus
-
 $(OUT)/portal-wire-test: portal-wire-test.c portals.c broker.h $(OUT)/broker.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ portal-wire-test.c $(OUT)/broker.o $(LDLIBS)
 
@@ -70,7 +40,7 @@ check-portal-wire: $(OUT)/portal-wire-test check-java-portals
 
 .PHONY: check-java-portals check-portal-wire
 
-$(OUT)/policy-wildcard-test: policy-wildcard-test.c broker.c broker.h session-control.h flatpak-compat.h $(OUT)/portals.o
+$(OUT)/policy-wildcard-test: policy-wildcard-test.c broker.c broker.h $(OUT)/portals.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ policy-wildcard-test.c $(OUT)/portals.o $(LDLIBS)
 
 check-policy-wildcard: $(OUT)/policy-wildcard-test

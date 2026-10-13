@@ -29,7 +29,7 @@ done
 mkdir -p build/bionic-fixture
 printf 'mount-ok\n' >build/bionic-fixture/fixture
 proxy=(build/linux-layer-v3 --android-filter --map "$root/system" /system --map "$root/apex" /apex)
-bwrap=/apex/com.matonos.flatpak/bin/matonos-bwrap
+bwrap=/apex/com.matonos.flatpak/bin/matonos-app-bwrap
 timeout 20 "${proxy[@]}" "$bwrap" --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev /bin/true >build/bionic-root.out 2>build/bionic-root.log
 timeout 20 "${proxy[@]}" "$bwrap" --ro-bind / / --tmpfs /tmp --bind "$PWD/build/bionic-fixture" /tmp/fixture --proc /proc --dev /dev /bin/cat /tmp/fixture/fixture >build/bionic-fixture.out 2>build/bionic-fixture.log
 grep -qx mount-ok build/bionic-fixture.out

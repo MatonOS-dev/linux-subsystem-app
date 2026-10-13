@@ -112,7 +112,7 @@ int main(void) {
     pid_t pid=fork();g_assert_cmpint(pid,>=,0);
     if(pid==0) {
         close(fds[0]);Broker* b=broker_new(socket_path,policy,&error);
-        if(!b || !broker_register_session_services(b,dir,fds[1],&error))_exit(1);
+        if(!b || !broker_register_session_services(b,fds[1],&error))_exit(1);
         for(unsigned i=0;i<2;i++)close(peers[i][0]);
         TestServer server={.broker=b,.fds={peers[0][1],peers[1][1]}};
         g_thread_new("bus-test-accept",test_server,&server);

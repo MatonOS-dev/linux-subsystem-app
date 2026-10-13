@@ -162,7 +162,7 @@ done:vfs_free(p);vfs_free(q);return e;
  * build. Log it without changing the fd offset or its seals. */
 void proxy_log_bwrap_args(const char *path,char *const *argv){
     const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
-    if(!p_equal(base,"matonos-bwrap") && !p_equal(base,"bwrap"))return;
+    if(!p_equal(base,"matonos-app-bwrap") && !p_equal(base,"bwrap"))return;
     for(size_t i=0;argv && argv[i];i++){
         RAW(SYS_write,2,"v3 bwrap argv ",14,0,0,0);
         RAW(SYS_write,2,argv[i],p_len(argv[i]),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);
