@@ -137,6 +137,13 @@ static long path_call(long nr,long *a,int one,int two) {
     }
     if(writing && ((e=vfs_mount_readonly(pm)) || (q && (e=vfs_mount_readonly(qm)))))goto done;
     if((namespaces&CLONE_NEWUSER) && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
+    /* bwrap reads the overflow IDs for its uid maps; Android's policy denies
+     * apps the generic proc_sysctl file. Serve the kernel default (65534). */
+    if(nr==SYS_openat && !(a[2]&(O_WRONLY|O_RDWR)) && (p_equal(p,"/proc/sys/kernel/overflowuid") || p_equal(p,"/proc/sys/kernel/overflowgid"))){
+        long fd=RAW(SYS_memfd_create,"v3-overflowid",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);
+        if(fd>=0 && (RAW(SYS_write,fd,"65534\n",6,0,0,0)!=6 || RAW(SYS_lseek,fd,0,SEEK_SET,0,0,0)!=0)){RAW(SYS_close,fd,0,0,0,0,0);fd=-EIO;}
+        e=fd;goto done;
+    }
     if(namespaces && nr==SYS_openat && (a[2]&(O_WRONLY|O_RDWR))){
         size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
         if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(SYS_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);goto done;}
