@@ -32,7 +32,7 @@ proxy=(build/linux-layer-v3 --android-filter --map "$root/system" /system --map 
 bwrap=/apex/com.matonos.flatpak/bin/matonos-bwrap
 timeout 20 "${proxy[@]}" "$bwrap" --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev /bin/true >build/bionic-root.out 2>build/bionic-root.log
 timeout 20 "${proxy[@]}" "$bwrap" --ro-bind / / --tmpfs /tmp --bind "$PWD/build/bionic-fixture" /tmp/fixture --proc /proc --dev /dev /bin/cat /tmp/fixture/fixture >build/bionic-fixture.out 2>build/bionic-fixture.log
-rg -qx mount-ok build/bionic-fixture.out
+grep -qx mount-ok build/bionic-fixture.out
 printf 'PASS staged bionic bwrap -> host glibc root and fixture payloads\n'
 
 mkdir -p build/flatpak-bwrap/app
