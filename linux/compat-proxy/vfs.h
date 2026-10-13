@@ -7,6 +7,7 @@ char *vfs_resolve(int, const char *, int, long *);
 #define VFS_FOLLOW_LINK_SOURCE 2
 char *vfs_resolve_mount(int,const char *,int,long *,void **);
 long vfs_mount_readonly(void *);
+int vfs_is_mount_source(const char *);
 void vfs_fd_close(int);
 void vfs_fd_dup(int,int);
 char *vfs_fd_name(int);

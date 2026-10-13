@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
 #include <linux/capability.h>
@@ -127,7 +128,7 @@ static long path_call(long nr,long *a,int one,int two) {
     if(a[one] && !*(char *)a[one] && at){long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==SYS_newfstatat)links_fd_stat(fd,(void *)a[2]);if(!r && nr==SYS_statx){struct stat st;if(!RAW(SYS_fstat,fd,&st,0,0,0,0)){links_fd_stat(fd,&st);((struct statx *)a[4])->stx_nlink=st.st_nlink;}}return r;}
     const char *original_path=(void *)a[one];
     if(nr==SYS_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
-    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p)return e;
+    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)a[one];RAW(SYS_write,2,"v3 unresolved ",14,0,0,0);RAW(SYS_write,2,in,p_len(in),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);}return e;}
     char *q=NULL;
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==SYS_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
@@ -153,6 +154,19 @@ static long path_call(long nr,long *a,int one,int two) {
         size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
         if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(SYS_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);goto done;}
     }
+    /* bwrap unlinks --bind-data/--ro-bind-data temp files right after binding;
+     * a real mount keeps the inode, our virtual one needs the name. */
+    if(nr==SYS_unlinkat && !(a[2]&AT_REMOVEDIR) && vfs_is_mount_source(p)){e=0;goto done;}
+    /* bwrap --dev needs /dev/full, which Android apps may not open: serve
+     * /dev/zero (reads identical; writes succeed instead of ENOSPC). */
+    if(p_equal(p,"/dev/full")) {
+        struct stat probe;
+        if(RAW(SYS_newfstatat,AT_FDCWD,"/dev/full",&probe,0,0,0)==-EACCES) {
+            char *zero=vfs_alloc(10);
+            if(!zero){e=-ENOMEM;goto done;}
+            p_copy(zero,"/dev/zero",10);vfs_free(p);p=zero;
+        }
+    }
     if(proxy_trace){RAW(SYS_write,2,"v3 path ",8,0,0,0);RAW(SYS_write,2,p,p_len(p),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);}
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==SYS_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
@@ -170,7 +184,27 @@ static long path_call(long nr,long *a,int one,int two) {
             char *rev=vfs_reverse(raw);if(rev){size_t n=p_len(rev);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],rev,n);e=(long)n;vfs_free(rev);}}
         vfs_free(raw);
     }
-done:vfs_free(p);vfs_free(q);return e;
+done:
+    /* Hardware passthrough is "where convenient": a host /dev node the app's
+     * sandbox may not use is reported absent, so bwrap/Flatpak *-try binds and
+     * device probes skip it instead of failing on EACCES. */
+    if(p && p[0]=='/' && p[1]=='d' && p[2]=='e' && p[3]=='v' && p[4]=='/') {
+        if(e==-EACCES && (nr==SYS_newfstatat || nr==SYS_statx || nr==SYS_faccessat2 || nr==SYS_faccessat ||
+                (nr==SYS_openat && (a[2]&O_PATH))))e=-ENOENT;
+        /* O_PATH opens need no permission, so the denial would only surface at
+         * the caller's fstat (bwrap's bind source check): probe it here. */
+        if(e>=0 && nr==SYS_openat && (a[2]&O_PATH)) {
+            struct stat probe;
+            if(RAW(SYS_fstat,e,&probe,0,0,0,0)==-EACCES){RAW(SYS_close,e,0,0,0,0,0);e=-ENOENT;}
+        }
+        /* Existence checks (access F_OK) need no permission either; Flatpak
+         * uses them to pick a mandatory --dev-bind, so answer consistently. */
+        if(e==0 && (nr==SYS_faccessat || nr==SYS_faccessat2)) {
+            struct stat probe;
+            if(RAW(SYS_newfstatat,AT_FDCWD,p,&probe,0,0,0)==-EACCES)e=-ENOENT;
+        }
+    }
+    vfs_free(p);vfs_free(q);return e;
 }
 /* Translate before path dispatch so forbidden legacy instructions are never
  * replayed under the inherited Android filter. x86_64 stat layouts match. */
@@ -283,7 +317,42 @@ static int dns_address(const void *address, unsigned long length, struct sockadd
        out->sin_addr.s_addr!=dns_endpoint.sin_addr.s_addr)return 0;
     out->sin_port=dns_endpoint.sin_port;return 1;
 }
+/* Filesystem AF_UNIX addresses are paths: translate them through the virtual
+ * mount table like any path call (Wayland, X11, PulseAudio, D-Bus sockets).
+ * Abstract and unnamed addresses pass through. Returns 1 when handled. */
+static int unix_call(long nr,long a[6],long *result) {
+    if(nr!=SYS_connect && nr!=SYS_bind)return 0;
+    const struct sockaddr_un *in=(const void *)a[1];
+    long len=a[2];
+    if(!in || len<=(long)offsetof(struct sockaddr_un,sun_path) || len>(long)sizeof(*in) || in->sun_family!=AF_UNIX || !in->sun_path[0])return 0;
+    char given[sizeof(in->sun_path)+1];size_t n=(size_t)len-offsetof(struct sockaddr_un,sun_path);
+    p_copy(given,in->sun_path,n);given[n]=0;
+    long e=0;char *real=vfs_resolve(AT_FDCWD,given,nr==SYS_connect,&e);
+    if(!real){*result=e;return 1;}
+    if(p_equal(real,given)){vfs_free(real);return 0;}
+    struct sockaddr_un out;p_copy(&out,in,offsetof(struct sockaddr_un,sun_path));out.sun_family=AF_UNIX;
+    size_t k=p_len(real);long dir=-1;
+    if(k<sizeof(out.sun_path)) {
+        p_copy(out.sun_path,real,k+1);
+    } else {
+        /* Too long for sun_path: reach it through an O_PATH handle on its dir. */
+        char *slash=real+k;while(slash>real && *slash!='/')slash--;
+        if(slash==real){vfs_free(real);*result=-ENAMETOOLONG;return 1;}
+        *slash=0;dir=RAW(SYS_openat,AT_FDCWD,real,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);*slash='/';
+        if(dir<0){vfs_free(real);*result=dir;return 1;}
+        char via[sizeof(out.sun_path)];size_t m=0;const char *pre="/proc/self/fd/";while(*pre)via[m++]=*pre++;
+        char digits[24];int d=0;unsigned long v=(unsigned long)dir;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)via[m++]=digits[--d];
+        size_t tail=p_len(slash);
+        if(m+tail>=sizeof(via)){RAW(SYS_close,dir,0,0,0,0,0);vfs_free(real);*result=-ENAMETOOLONG;return 1;}
+        p_copy(via+m,slash,tail+1);p_copy(out.sun_path,via,m+tail+1);k=m+tail;
+    }
+    vfs_free(real);
+    *result=RAW(nr,a[0],(long)&out,(long)(offsetof(struct sockaddr_un,sun_path)+k+1),0,0,0);
+    if(dir>=0)RAW(SYS_close,dir,0,0,0,0,0);
+    return 1;
+}
 static long dns_call(long nr, long a[6]) {
+    {long translated;if(unix_call(nr,a,&translated))return translated;}
     struct sockaddr_in address;
     if(nr==SYS_connect || nr==SYS_sendto) {
         unsigned slot=nr==SYS_connect?1:4;

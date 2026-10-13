@@ -10,6 +10,10 @@ static struct sockaddr_in kernel_peer;
 void *vfs_alloc(size_t n){return malloc(n);}
 void vfs_free(void *p){free(p);}
 void p_copy(void *out,const void *in,size_t n){memcpy(out,in,n);}
+/* AF_UNIX translation helpers: identity resolution keeps these tests on DNS. */
+size_t p_len(const char *s){return strlen(s);}
+int p_equal(const char *x,const char *y){return strcmp(x,y)==0;}
+char *vfs_resolve(int fd,const char *path,int follow,long *e){(void)fd;(void)follow;(void)e;return strdup(path);}
 static void destination(const void *pointer,unsigned long length) {
  assert(length==sizeof(struct sockaddr_in));
  const struct sockaddr_in *address=pointer;
