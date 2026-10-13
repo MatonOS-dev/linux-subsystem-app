@@ -6,8 +6,8 @@
 # build; MATON_FORCE_HELPERS=1 rebuilds unconditionally.
 #
 # Also builds the SysV shm LD_PRELOAD helper (linux/sysvipc/shm-helper.c) for
-# each glibc ABI the APEX serves; matonos-bwrap injects it into app sandboxes.
-# The Flatpak/OSTree multicall, the portal, matonos-app-exec and
+# each glibc ABI the APEX serves; v3 preload integration is pending.
+# The Flatpak/OSTree multicall, the portal and
 # matonos-flatpak-store come from MatonOS_apexs and are not rebuilt here.
 set -Eeuo pipefail
 
@@ -29,7 +29,6 @@ STAMPS=$STAGE/HELPERS.sha256
 # source -> installed names (one binary may be installed under several).
 declare -A HELPERS=(
   [flatpak-env-wrapper]="flatpak-env-wrapper"
-  [matonos-bwrap]="matonos-bwrap"
   [matonos-app-tool]="matonos-app-flatpak matonos-app-bwrap"
 )
 

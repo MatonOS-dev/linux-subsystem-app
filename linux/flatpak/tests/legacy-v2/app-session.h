@@ -5,8 +5,8 @@
  * portal's immutable environment, not the caller-supplied Spawn environment. */
 #include <grp.h>
 #include <poll.h>
-#include "../../install/linuxd/GtkSettings.h"
-#include "../../install/linuxd/MatonMls.h"
+#include "../../../../install/linuxd/GtkSettings.h"
+#include "../../../../install/linuxd/MatonMls.h"
 #include <stddef.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
@@ -16,7 +16,7 @@
 #include <sys/xattr.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include "linux-paths.h"
+#include "../../linux-paths.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

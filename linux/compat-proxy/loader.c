@@ -6,6 +6,8 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <errno.h>
+#include <sys/prctl.h>
+#include <signal.h>
 
 #define PAGE 4096UL
 #define DOWN(x) ((x)&~(PAGE-1))
@@ -151,9 +153,17 @@ int main(int argc,char **argv,char **environ) {
     for(;original->a_type;original++)if(original->a_type<64)inherited_aux[original->a_type]=original->a_un.a_val;
     extern const char *proxy_tmpdir;
     for(unsigned e=0;environ[e];e++){const char *s=environ[e];if(s[0]=='T' && s[1]=='M' && s[2]=='P' && s[3]=='D' && s[4]=='I' && s[5]=='R' && s[6]=='=')proxy_tmpdir=s+7;}
-    int android=0,i=1;
+    int android=0,i=1; long parent=0;
     while(i<argc && argv[i][0]=='-') {
-        if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
+        if(p_equal(argv[i],"--parent-pid") && i+1<argc) {
+            const char *number=argv[i+1];
+            if(!*number)return 2;
+            for(;*number;number++) {if(*number<'0'||*number>'9'||parent>214748364)return 2;parent=parent*10+*number-'0';}
+            if(parent<=0 || RAW(SYS_prctl,PR_SET_PDEATHSIG,SIGKILL,0,0,0,0)<0 ||
+                    RAW(SYS_getppid,0,0,0,0,0,0)!=parent)return 2;
+            i+=2;
+        }
+        else if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
         else if(p_equal(argv[i],"--map") && i+2<argc) {if(proxy_mount(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--root") && i+1<argc) {if(vfs_bootstrap_root(argv[i+1])) return 2;i+=2;}
         else {proxy_log("usage",0,-EINVAL);return 2;}
@@ -167,3 +177,10 @@ int main(int argc,char **argv,char **environ) {
 }
 
 #endif
+
+/* Clang may emit this helper for aggregate initialization even with -fno-builtin. */
+void *memset(void *destination, int value, size_t count) {
+    unsigned char *bytes = destination;
+    for (size_t i = 0; i < count; ++i) bytes[i] = (unsigned char)value;
+    return destination;
+}

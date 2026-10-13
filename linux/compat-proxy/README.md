@@ -204,3 +204,19 @@ before/after. `build/logged-bwrap/argv.json` records both the original bundle
 and adapted host arguments; `out`, `log`, `info.json` and `status.json` hold
 execution evidence. This does not execute a real installed Flatpak application
 or establish Android app-domain containment.
+
+
+Round 7 packaging: `bash build-android.sh` builds the freestanding x86_64
+`libmatonos-v3-loader.so` with NDK r30/API 36 into
+`${MATON_V3_ANDROID_OUT:-/mnt/data/aosp/out/matonos/compat-proxy}`. Gradle packages
+it in the compositor host APK. The stub passes no --android-filter; its filter
+is inherited. `--parent-pid <pid>` sets SIGKILL parent-death handling and rejects
+a stale parent. Host lifecycle validation:
+
+```sh
+python3 tests/lifetime.py /mnt/data/aosp/out/matonos/compat-proxy/libmatonos-v3-loader.so
+```
+
+See ../compositor/V3-LAUNCH.md for the production spec, paths, retirement and
+remaining image checks. Historical bionic replay fixtures reference old staged
+APEX helpers and do not prove the new production path.

@@ -1,9 +1,8 @@
 #!/bin/sh
-# Sync the in-tree helper sources that MatonOS_apexs builds (matonos-app-exec,
-# matonos-flatpak-store) into its flatpak/helpers tree, build them there with
+# Sync the in-tree helper sources that MatonOS_apexs builds (matonos-flatpak-store) into its flatpak/helpers tree, build them there with
 # the pinned NDK (bionic; the Alpine/musl recipe is retired), and install the
 # two binaries into prebuilt/static/<arch>. flatpak-env-wrapper and
-# matonos-bwrap are built in-tree by tools/build-flatpak-helpers.sh; the
+# matonos-app-tool are built in-tree by tools/build-flatpak-helpers.sh; the
 # Flatpak multicall, portal and SOURCE come from MatonOS_apexs flatpak/build.sh.
 # Commit the synced helpers in MatonOS_apexs together with this tree.
 set -eu
@@ -22,12 +21,10 @@ branch=$(git -C "$TREE" branch --show-current)
 helpers="$APEX_REPO/flatpak/helpers"
 sync() { mkdir -p "$(dirname "$helpers/$2")"; install -m644 "$TREE/$1" "$helpers/$2"; }
 # Sources and every header they include, at the include paths they use.
-sync linux/flatpak/matonos-bwrap.c matonos-bwrap.c
-sync linux/flatpak/matonos-app-exec.c matonos-app-exec.c
 sync install/linuxd/MatonMls.h MatonMls.h
 sync linux/flatpak/linux-paths.h linux-paths.h
 sync linux/flatpak/controller-access.h controller-access.h
-for f in flatpak-env-wrapper.c machine-id.h linux-paths.h app-session.h session-binder-filter.h socket-relay.h; do
+for f in flatpak-env-wrapper.c machine-id.h linux-paths.h; do
     sync "linux/flatpak/$f" "linux/flatpak/$f"
 done
 sync linux/dbus-broker/session-control.h linux/dbus-broker/session-control.h
@@ -44,7 +41,7 @@ trap 'rm -rf "$out"' EXIT
 ANDROID_NDK=$NDK OUT_DIR=$out sh "$APEX_REPO/flatpak/build-helpers.sh"
 
 stage="$TREE/linux/flatpak/prebuilt/static/$ARCH"
-for name in matonos-app-exec matonos-flatpak-store; do
+for name in matonos-flatpak-store; do
     install -m755 "$out/$name" "$stage/$name"
     printf '%s %s bytes\n' "$name" "$(wc -c < "$stage/$name" | tr -d ' ')"
 done

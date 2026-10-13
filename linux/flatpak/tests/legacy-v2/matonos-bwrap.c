@@ -15,8 +15,8 @@
  * /tmp/.X11-unix tmpfs flatpak mounts and restore DISPLAY,
  * then hand the real bwrap the extended argv.
  */
-#include "controller-access.h"
-#include "linux-paths.h"
+#include "../../controller-access.h"
+#include "../../linux-paths.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -65,8 +65,8 @@
 #define SHM_HELPER_HOST MATON_FLATPAK_ETC "/sysvipc/libmaton-shm-"
 #define SHM_HELPER_PRELOAD "/run/matonos/$LIB/libmaton-shm.so"
 #define APP_LABEL_ENV "MATON_APP_LABEL"
-#if __has_include("../../install/linuxd/DownloadsGrant.h")
-#include "../../install/linuxd/DownloadsGrant.h"
+#if __has_include("../../../../install/linuxd/DownloadsGrant.h")
+#include "../../../../install/linuxd/DownloadsGrant.h"
 #else
 #include "install/linuxd/DownloadsGrant.h"
 #endif

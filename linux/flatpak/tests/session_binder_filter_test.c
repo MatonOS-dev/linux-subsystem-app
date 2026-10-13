@@ -1,6 +1,6 @@
 /* Actual kernel seccomp check: Binder transaction/control commands return EPERM;
  * allowed DMA-BUF commands reach the kernel and return EBADF for fd -1. */
-#include "../session-binder-filter.h"
+#include "legacy-v2/session-binder-filter.h"
 #include <linux/android/binder.h>
 #include <stdio.h>
 #include <sys/ioctl.h>

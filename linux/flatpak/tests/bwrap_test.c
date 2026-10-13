@@ -1,6 +1,6 @@
 #define execv capture_execv
 #define main shim_main
-#include "../matonos-bwrap.c"
+#include "legacy-v2/matonos-bwrap.c"
 #undef main
 #undef execv
 #include <assert.h>

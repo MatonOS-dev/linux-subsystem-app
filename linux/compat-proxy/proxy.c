@@ -16,6 +16,7 @@
 #include <linux/seccomp.h>
 #include <linux/filter.h>
 #include <linux/audit.h>
+#include <linux/dma-buf.h>
 #include <linux/sched.h>
 #include <linux/prctl.h>
 #include <stddef.h>
@@ -283,7 +284,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     struct thread_state *thread=thread_state();
     if(info->si_code!=SYS_SECCOMP) {
         /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
-        dispatch_app(sig,info,opaque);uc->uc_sigmask.__val[0]&=~SIGSYS_BIT;
+        dispatch_app(sig,info,opaque);(*(unsigned long *)&uc->uc_sigmask)&=~SIGSYS_BIT;
         RAW(SYS_sigaltstack,0,&uc->uc_stack,0,0,0,0);
         uc->uc_stack.ss_flags&=~SS_ONSTACK;
         if(selector && dispatch_selector==selector) *selector=saved;
@@ -361,7 +362,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         unsigned long mask;
         if(a[1]) {p_copy(&mask,(void *)a[1],8);mask&=~SIGSYS_BIT;a[1]=(long)&mask;}
         result=RAW(nr,a[0],a[1],a[2],8,0,0);
-        if(!result && a[1])RAW(SYS_rt_sigprocmask,SIG_SETMASK,0,&uc->uc_sigmask.__val[0],8,0,0);
+        if(!result && a[1])RAW(SYS_rt_sigprocmask,SIG_SETMASK,0,&(*(unsigned long *)&uc->uc_sigmask),8,0,0);
         break;
     }
     case SYS_sigaltstack: {
@@ -455,7 +456,7 @@ finish:
     proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
 clean_mask:
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
-    uc->uc_sigmask.__val[0]&=~SIGSYS_BIT;
+    (*(unsigned long *)&uc->uc_sigmask)&=~SIGSYS_BIT;
     RAW(SYS_sigaltstack,0,&uc->uc_stack,0,0,0,0);
     uc->uc_stack.ss_flags&=~SS_ONSTACK;
     if(selector && dispatch_selector==selector) *selector=saved;
@@ -485,6 +486,23 @@ int proxy_install(int android) {
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,AUDIT_ARCH_X86_64);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    /* Linux payloads never get Binder, even though their Android stub does.
+     * Put this kernel-enforced check BEFORE the raw-IP exemption: neither
+     * translated ioctl nor a jump into proxy_raw may bypass it. DMA-BUF uses
+     * the same type byte; preserve only its exact sync/fence encodings (the
+     * IMPORT_SYNC_FILE collision is legacy Binder idle-timeout, not IPC). */
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    /* x32 is unsupported, and must not skip the native ioctl guard. */
+    ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,0x40000000);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,7,SYS_ioctl);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,5,0,DMA_BUF_IOCTL_SYNC);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,4,0,DMA_BUF_IOCTL_EXPORT_SYNC_FILE);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,3,0,DMA_BUF_IOCTL_IMPORT_SYNC_FILE);
+    ADD(BPF_ALU|BPF_AND|BPF_K,0,0,0xff00);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
     /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
     uintptr_t ip=(uintptr_t)proxy_raw;
     /* Symbol immediately after the syscall: no instruction-size assumptions. */

@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 /* Unprivileged applet entry for the per-app stock portal. Every process
- * remains at the app UID, in matonos_linux_app, with its inherited seccomp
+ * remains at the app UID, in untrusted_app, with its inherited seccomp
  * filter. This entry never uses linuxd's privileged launch wrapper. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,17 +19,9 @@ int main(int argc, char** argv) {
      * FLATPAK_BWRAP. Pin the unprivileged applet for its nested run here. */
     if(!bwrap && setenv("FLATPAK_BWRAP",
             "/apex/com.matonos.flatpak/bin/matonos-app-bwrap",1))return 127;
-    /* Nested sandboxes (portal Spawn, e.g. Steam's subsandbox check) take
-     * the same shim as the main launch, so they get the per-app X11 socket
-     * and DISPLAY, generated identity files, /dev/shm, machine-id, udev and
-     * the app domain. The shim runs at the app UID and execs the multicall
-     * bwrap applet itself. */
-    if(bwrap) {
-        argv[0]="matonos-bwrap";
-        execv("/apex/com.matonos.flatpak/bin/matonos-bwrap",argv);
-    } else {
-        argv[0]="flatpak";
-        execv("/apex/com.matonos.flatpak/bin/matonos-flatpak",argv);
-    }
+    /* exec is intercepted by the resident v3 loader; no SELinux transition,
+     * identity switch or privileged shim is involved. */
+    argv[0]=bwrap?"bwrap":"flatpak";
+    execv("/apex/com.matonos.flatpak/bin/matonos-flatpak",argv);
     perror("matonos-app-tool: exec");return 127;
 }

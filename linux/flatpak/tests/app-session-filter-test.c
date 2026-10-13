@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
-#include "../app-session.h"
+#include "legacy-v2/app-session.h"
 
 static int check(void) {
     errno=0;

@@ -37,7 +37,7 @@ else
     -DMATON_FLATPAK_BIN="\"$TMP/bin\"" \
     -DMATON_MACHINE_ID_PATH="\"$TMP/machine-id\"" \
     -DMATON_UDEV_DB_PATH="\"$TMP/udev\"" \
-    "$WORKTREE/linux/flatpak/matonos-bwrap.c" -o "$TMP/matonos-bwrap"
+    "$WORKTREE/linux/flatpak/tests/legacy-v2/matonos-bwrap.c" -o "$TMP/matonos-bwrap"
 fi
 cc -std=c11 -Wall -Wextra -Werror \
   "$WORKTREE/linux/flatpak/tests/fake-bus-listener.c" -o "$TMP/fake-bus-listener"

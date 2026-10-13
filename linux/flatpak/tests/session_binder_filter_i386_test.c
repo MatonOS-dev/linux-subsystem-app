@@ -6,7 +6,7 @@
  *   cc -DPARENT -O2 -o i386-parent session_binder_filter_i386_test.c
  *   ./i386-parent ./i386-child && echo PASS */
 #ifdef PARENT
-#include "../session-binder-filter.h"
+#include "legacy-v2/session-binder-filter.h"
 #include <stdio.h>
 #include <unistd.h>
 int main(int argc,char** argv) {

@@ -65,7 +65,8 @@ char *vfs_fd_name(int fd){for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==f
     if(!root)return dupstr(p->path);
     if(!prefix(p->path,root))return NULL;
     const char *name=p->path+p_len(root);return dupstr(*name?name:"/");
-}return NULL;}
+}
+return NULL;}
 static int self_proc(const char *path){
     if(prefix(path,"/proc/self"))return 1;
     char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;
@@ -81,7 +82,8 @@ char *vfs_proc_fd_name(const char *path){
         while(*n>='0' && *n<='9'){if(fd>214748364U)return NULL;fd=fd*10+(*n++-'0');}
         if(*n)return NULL;
         return vfs_fd_name((int)fd);
-    }return NULL;
+    }
+return NULL;
 }
 static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd)return dupstr(cwd);size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(SYS_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
     char *tracked=vfs_fd_name(fd);if(tracked)return tracked;

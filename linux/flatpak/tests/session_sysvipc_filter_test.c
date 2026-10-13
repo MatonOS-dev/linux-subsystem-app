@@ -7,7 +7,7 @@
  *   cc -DPARENT -O2 -o sysv-parent session_sysvipc_filter_test.c
  *   ./sysv-parent ./sysv-child64 && ./sysv-parent ./sysv-child32 && echo PASS */
 #ifdef PARENT
-#include "../session-binder-filter.h"
+#include "legacy-v2/session-binder-filter.h"
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
