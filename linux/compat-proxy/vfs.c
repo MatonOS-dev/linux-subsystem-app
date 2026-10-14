@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <stdint.h>
+#include <signal.h>
 #include <sys/stat.h>
 struct allocation {size_t size;};
 void *vfs_alloc(size_t n) {
@@ -95,15 +96,16 @@ static char *root,*executable,*cwd;
 static int stacked_oldroot;
 void vfs_executable(const char *path){vfs_free(executable);executable=dupstr(path);}
 char *vfs_exe(void){return executable?dupstr(executable):NULL;}
-/* Cache only mount lookup, never filesystem existence or symlink contents.
- * Entries own their keys; mutations invalidate them before freeing mounts. */
-struct cached {char *path;struct mount *mount;};
-static struct cached cache[16];static unsigned cursor;
-static void invalidate(void){for(unsigned i=0;i<16;i++){vfs_free(cache[i].path);cache[i].path=NULL;cache[i].mount=NULL;}}
-
+/* Worker SIGSYS handlers resolve paths concurrently. A shared cache cannot
+ * free/replace keys while another thread reads them, or publish a key before
+ * its mount identity. Walk the small mount list instead; no per-call shared
+ * writes, locks in a signal handler, or TLS dependency. */
 static int prefix(const char *p,const char *s){size_t n=p_len(s);size_t i=0;while(i<n && p[i]==s[i])i++;return i==n && (n==1 || !p[n] || p[n]=='/');}
-static struct mount *lookup(const char *path){for(unsigned i=0;i<16;i++)if(cache[i].path && p_equal(cache[i].path,path))return cache[i].mount;
-    struct mount *best=NULL;size_t n=0;for(struct mount *m=table;m;m=m->next){size_t k=p_len(m->target);if(prefix(path,m->target)&&k>n){n=k;best=m;}}unsigned slot=cursor++%16;vfs_free(cache[slot].path);cache[slot].path=dupstr(path);cache[slot].mount=best;return best;}
+static struct mount *lookup(const char *path){
+    struct mount *best=NULL;size_t n=0;
+    for(struct mount *m=table;m;m=m->next){size_t k=p_len(m->target);if(prefix(path,m->target)&&k>n){n=k;best=m;}}
+    return best;
+}
 static char *physical(const char *path){struct mount *m=lookup(path);if(!m)return dupstr(path);return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));}
 char *vfs_reverse(const char *path){
     struct mount *best=NULL;size_t n=0;
@@ -121,14 +123,40 @@ char *vfs_reverse(const char *path){
 static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(SYS_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
 struct fd_name {struct fd_name *next;int fd;char *path;};
 static struct fd_name *fd_names;
-void vfs_fd_close(int fd){struct fd_name **p=&fd_names;while(*p && (*p)->fd!=fd)p=&(*p)->next;if(*p){struct fd_name *old=*p;*p=old->next;vfs_free(old->path);vfs_free(old);}}
-void vfs_fd_dup(int from,int to){char *name=vfs_fd_name(from);vfs_fd_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
-char *vfs_fd_name(int fd){char *published=links_fd_name(fd);if(published)return published;for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==fd){
-    if(!root)return dupstr(p->path);
-    if(!prefix(p->path,root))return NULL;
-    const char *name=p->path+p_len(root);return dupstr(*name?name:"/");
+/* Only protect the fd-name bookkeeping, never a payload syscall (flock may
+ * block). Block signals during the short critical section so an app handler
+ * cannot reenter it. A fork child may discard an inherited parent's owner. */
+static unsigned long fd_names_owner;
+static unsigned long fd_names_lock(void){
+    unsigned long all=~0UL,mask=0;
+    RAW(SYS_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
+    unsigned long pid=(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0);
+    for(;;){unsigned long owner=__atomic_load_n(&fd_names_owner,__ATOMIC_RELAXED);
+        if(!owner || owner!=pid){if(__atomic_compare_exchange_n(&fd_names_owner,&owner,pid,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return mask;}
+        __asm__ volatile("pause");
+    }
 }
-return NULL;}
+static void fd_names_unlock(unsigned long mask){
+    __atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
+    RAW(SYS_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+}
+void vfs_fd_close(int fd){
+    unsigned long mask=fd_names_lock();
+    struct fd_name **p=&fd_names;while(*p && (*p)->fd!=fd)p=&(*p)->next;
+    if(*p){struct fd_name *old=*p;*p=old->next;vfs_free(old->path);vfs_free(old);}
+    fd_names_unlock(mask);
+}
+void vfs_fd_dup(int from,int to){char *name=vfs_fd_name(from);vfs_fd_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
+char *vfs_fd_name(int fd){
+    char *published=links_fd_name(fd);if(published)return published;
+    unsigned long mask=fd_names_lock();char *name=NULL;
+    for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==fd){
+        if(!root)name=dupstr(p->path);
+        else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
+        break;
+    }
+    fd_names_unlock(mask);return name;
+}
 static int self_proc(const char *path){
     if(prefix(path,"/proc/self"))return 1;
     char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;
@@ -214,7 +242,7 @@ char *vfs_resolve(int fd,const char *path,int follow,long *error){return vfs_res
  * (Linux keeps the inode alive after bwrap unlinks its bind-data temp file). */
 int vfs_is_mount_source(const char *path){for(struct mount *m=table;m;m=m->next)if(p_equal(m->source,path))return 1;return 0;}
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
-int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;invalidate();m->next=table;table=m;
+int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
     proxy_log("mount-owner",SYS_mount,0);
     RAW(SYS_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(SYS_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
 const char *proxy_path(const char *path,char *buffer,size_t size){long e;char *p=vfs_resolve(AT_FDCWD,path,1,&e);if(!p)return NULL;size_t n=p_len(p);if(n>=size){vfs_free(p);return NULL;}p_copy(buffer,p,n+1);vfs_free(p);return buffer;}
@@ -238,9 +266,10 @@ void vfs_fd_record(int fd,int dirfd,const char *path){
     }
     if(!global)return;
     char *logical=global;
+    unsigned long mask=fd_names_lock();
     struct fd_name *p=fd_names;while(p && p->fd!=fd)p=p->next;
-    if(!p){p=vfs_alloc(sizeof(*p));if(!p){vfs_free(logical);return;}p->fd=fd;p->path=NULL;p->next=fd_names;fd_names=p;}
-    vfs_free(p->path);p->path=logical;
+    if(!p){p=vfs_alloc(sizeof(*p));if(!p){fd_names_unlock(mask);vfs_free(logical);return;}p->fd=fd;p->path=NULL;p->next=fd_names;fd_names=p;}
+    vfs_free(p->path);p->path=logical;fd_names_unlock(mask);
 }
 long vfs_mount(const char *source,const char *target,const char *type,unsigned long flags){
     if(flags&(MS_PRIVATE|MS_SLAVE|MS_SHARED|MS_UNBINDABLE))return 0;
@@ -281,8 +310,8 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
         vfs_free(virtual_source);
     }vfs_free(src);vfs_free(dest);return e;
 }
-long vfs_unmount(const char *target){RAW(SYS_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;invalidate();struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
-long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(SYS_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(SYS_close,fd,0,0,0,0,0);invalidate();vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;}
+long vfs_unmount(const char *target){RAW(SYS_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
+long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(SYS_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(SYS_close,fd,0,0,0,0,0);vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;}
 long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(SYS_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);
     stacked_oldroot=p_equal(target,old);
     if(!p_equal(target,old)){char *oldhost=physical(root?root:"/");char *dest=global_target(old,&e);if(!dest || !oldhost){vfs_free(next);vfs_free(dest);vfs_free(oldhost);return -ENOMEM;}struct mount *prior=table;
@@ -295,7 +324,7 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
             e=proxy_mount(m->source,alias);vfs_free(alias);if(e)break;table->flags=m->flags;
         }
         vfs_free(dest);vfs_free(oldhost);if(e){vfs_free(next);return e;}}
-    invalidate();vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;
+    vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;
 }
 long vfs_proc_open(const char *path){size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
     long fd=RAW(SYS_memfd_create,"v3-mountinfo",1,0,0,0,0);if(fd<0)return fd;
@@ -472,7 +501,7 @@ void vfs_gpu_init(void){
             if(!e && i>=2){vfs_free(gpu_poll_sources[i-2]);gpu_poll_sources[i-2]=dupstr(src);}
             vfs_free(src);vfs_free(dst);if(e)break;
         }
-        if(e){invalidate();while(table!=prior){struct mount *old=table;table=old->next;vfs_free(old->source);vfs_free(old->target);vfs_free(old);}for(unsigned i=0;i<2;i++){vfs_free(gpu_poll_sources[i]);gpu_poll_sources[i]=NULL;}}
+        if(e){while(table!=prior){struct mount *old=table;table=old->next;vfs_free(old->source);vfs_free(old->target);vfs_free(old);}for(unsigned i=0;i<2;i++){vfs_free(gpu_poll_sources[i]);gpu_poll_sources[i]=NULL;}}
 
     }
     vfs_free(base);
