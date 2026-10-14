@@ -507,3 +507,121 @@ fresh image, trace Rio and inspect the child's `tty-ioctl`, `v3 exec`,
 home rc files only if exec succeeds. Full device steps and evidence are in
 `out/pc-logs/agents/v3-term-result.md`. No AOSP or kernel changes are needed
 for the fixes here; no per-app changes were made.
+
+### Round 23: native SysV IPC in the resident proxy
+
+`sysvipc.c/.h` implement the x86_64 semaphore, shared-memory and message-queue
+calls in SIGSYS. They issue no native SysV IPC syscalls and need neither
+CONFIG_SYSVIPC, seccomp notification, process_vm transport nor an LD_PRELOAD
+shmat helper. The implementation is original Apache-2.0 C; the public Linux
+UAPI definitions supply the wire structures. The ported Apache-2.0 workload
+and edge fixtures come from the earlier `linux/sysvipc` implementation.
+
+Each initial loader creates a private namespace inherited by its forked
+processes and resident execs. Separate initial loader invocations do not
+join it, even with the same UID. Production app/session coordination would
+need an explicit namespace handoff to join independently started loaders.
+This does not add IPC or Binder access between apps.
+
+Metadata lives in a shared, dynamically growing file mapping. Stored links
+are offsets; callers map the current size while holding a process-shared
+futex mutex. The mutex contains the owner's TID and start-time token. Dead
+owners are detected through raw proc reads and timed futex waits. A before-
+image journal rolls back interrupted metadata transactions before another
+caller enters. An unreadable/corrupt recovery journal poisons the namespace
+and returns EIO rather than continuing with partial metadata. This recovers
+process death; it is not power-loss durability. Semaphore buffers, object
+slots, process records and message buffers are reused; the arena retains its
+allocated pages until namespace cache collection rather than shrinking.
+
+Segment contents are **per-segment private-cache files, not memfds**. This is
+a deliberate implementation deviation from the requested backing mechanism:
+a sibling forked before segment creation must be able to open the segment
+after its creator dies, without an FD broker or pidfd_getfd. A memfd alone
+cannot provide that lifetime/discovery. Each shmat opens the segment and
+maps it MAP_SHARED at a chosen/requested address, then closes the descriptor.
+The file remains until the final detach following IPC_RMID. This retains
+file-cache/disk accounting rather than anonymous memfd accounting. A future
+memfd implementation needs a surviving FD owner and an FD handoff protocol.
+
+The arena, journal and segments use the existing locked 0700 tmpfs-cache
+helper and collector (`vfs_temp_create` was extracted from vfs_mount).
+Its reserved ownership FD survives fork, resident exec and payload FD sweeps;
+stale directories are collected at a later loader start after every holder
+exits. Put TMPDIR under the app's private cache on device. Creation failure
+leaves normal payload startup available and IPC calls return the error.
+
+Fork preparation reserves inherited attachments before clone. An inherited
+flock ticket retains those reservations if the parent dies before the child
+runs; the clone continuation registers ownership before returning to app code.
+
+Semaphores support atomic multi-op/duplicate-op batches, GET/SETVAL and ALL,
+wait counts and pids, IPC_STAT/SET/RMID, indexed STAT/STAT_ANY, IPC_INFO and
+SEM_INFO, SEM_UNDO, and monotonic semtimedop deadlines. Blocking requests wait
+on a shared sequence futex and periodically reap dead processes, including
+zombies and reused PID numbers. SEM_UNDO belongs to the process, survives
+exec, is not copied by fork and applies at exit_group, the last thread's
+exit, or the next access after an unobserved death. A zombie thread-group
+leader with other live threads does not prematurely release its undo.
+Input operation/message buffers are copied before blocking. Kernel pipe
+user-copy checks supply EFAULT handling without dereferencing app buffers.
+
+Shared memory supports permissions, STAT/INFO, requested addresses, SHM_RND,
+SHM_RDONLY, SHM_EXEC, whole-attachment SHM_REMAP, fork attachments, exec
+detachment and removal at last detach. Message queues support typed,
+negative-type and MSG_EXCEPT selection, zero-size messages, MSG_NOERROR,
+queue-byte limits, blocking sends/receives, STAT/SET/INFO and removal wakes.
+A receive with EFAULT consumes its selected message, as Linux does.
+The reported configurable limits are Linux defaults: SEMMSL/SEMMNI 32000,
+SEMMNS 1024000000, SEMOPM 500, SEMVMX/SEMAEM 32767, SHMMNI 4096,
+SHMMAX/SHMALL ULONG_MAX-(1<<24), MSGMAX 8192, MSGMNB 16384 and MSGMNI 32000.
+Backing-file offset/size and allocator arithmetic are overflow checked; normal
+address-space, descriptor and cache-space exhaustion can still fail calls.
+
+Remaining compatibility gaps:
+
+- The loader accepts ELFCLASS64/EM_X86_64 only, and its filter kills other
+  syscall architectures. **This does not make Steam's 32-bit client work.**
+  i386 needs an ELF32 loader, 32-bit signal/register and raw-syscall gateways,
+  a copied i386 policy and IPC ABI translations. Those translations include
+  ipc(117), semget/semctl(393/394), shmget/shmctl/shmat/shmdt(395–398),
+  msgget/msgsnd/msgrcv/msgctl(399–402), and semtimedop_time64(420), as well as
+  old multiplexer argument/structure/time layouts. Merely adding numbers
+  to the present x86_64 dispatch is insufficient. x32 is also unsupported.
+- SHM_LOCK/SHM_UNLOCK return ENOSYS, SHM_HUGETLB returns EOPNOTSUPP, MSG_COPY
+  returns ENOSYS. SHM_INFO reports allocated pages and object count but does
+  not reproduce resident/swap statistics.
+- Partial overlap with another attachment in SHM_REMAP returns EOPNOTSUPP.
+  Direct munmap/MAP_FIXED/mremap of an attached region is not reflected in
+  attachment accounting. Use shmdt for the supported detach path.
+- Undo sharing for process clones with CLONE_SYSVSEM, thread-local credential
+  changes, supplementary-group/capability permission overrides, kernel wait
+  fairness and full signal/restart semantics are not implemented. Permission
+  checks use the real effective UID/GID; the proxy's virtual setup setters
+  do not confer real credentials or capabilities. Nonlocal jumps/cancellation
+  out of a nested app signal handler during an IPC transaction are unsupported.
+- Journal snapshots traverse current metadata on each call. This favors
+  simple crash recovery over high-object-count throughput. Recovery I/O failure
+  is fail-closed; cache storage must remain accessible to the app.
+
+Run `bash tests/sysvipc-host.sh` after build.sh, or `bash tests/run.sh` for the
+full suite. Workload, edge, lifecycle and limit/ABI tests execute the real
+proxy under the copied Android filter. They cover multi-process waits,
+200-round semaphore ping-pong, killed undo owner/waiter, process/thread exit,
+exec detachment and undo retention, objects created after fork, shared data,
+last-detach removal, message queues, permissions, invalid pointers and a full
+32000-semaphore set. A separate white-box recovery test kills a writer after
+partial metadata mutations and checks rollback of values, arena growth,
+object publication and records; that test runs without the copied filter.
+Host tests and NDK r30/API-36 compilation pass. No adb, image build, VM,
+Steam or enforcing device-policy validation is claimed.
+
+For a coordinator-built fresh image on the Ryzen PC, Surface Pro 3 or ProDesk:
+run the four standalone workload binaries through the packaged loader with
+the app UID and a private TMPDIR, omit --android-filter when the process
+already inherits that filter, and collect stdout/stderr. Check that normal
+Flatpak startup still works, sibling processes observe newly created objects,
+SIGKILL releases undo on the next operation, and relaunch collects abandoned
+cache directories. Test native x86_64 clients first; a 32-bit Steam launch is
+not a valid success criterion until the separate i386 loader work lands.
+No kernel configuration or AOSP change is required for the x86_64 path.

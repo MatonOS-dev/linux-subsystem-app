@@ -147,3 +147,5 @@ build/temp-gc "$temp_fixture"
 rm -r "$temp_fixture"
 
 python3 tests/pty-host.py
+
+bash tests/sysvipc-host.sh

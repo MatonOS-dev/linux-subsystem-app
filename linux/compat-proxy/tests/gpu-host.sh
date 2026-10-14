@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 if [[ ${COMPAT_GPU_SKIP_BUILD:-0} != 1 ]]; then ./build.sh; fi
 cc -no-pie -O2 -Wall -Wextra -Werror tests/gpu-sysfs.c build/liblinux-layer-v3.a -o build/gpu-sysfs
 sed 's/\<proxy_raw\>/gpu_test_raw/g' raw.S >build/gpu-raw.S
-cc -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror loader.c proxy.c vfs.c links.c net.c tests/gpu-raw.c build/gpu-raw.S entry.S -o build/gpu-loader
+cc -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror loader.c proxy.c vfs.c links.c net.c sysvipc.c tests/gpu-raw.c build/gpu-raw.S entry.S -o build/gpu-loader
 fixture=$(mktemp -d /mnt/data/aosp/out/gpusys-test.XXXXXX)
 trap 'rm -rf "$fixture"' EXIT
 mkdir "$fixture/dri" "$fixture/tmp" "$fixture/props"

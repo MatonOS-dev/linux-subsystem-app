@@ -25,6 +25,7 @@ long vfs_bootstrap_root(const char *);
 long vfs_chdir(int,const char *);
 char *vfs_getcwd(long *);
 void vfs_temp_gc(void);
+char *vfs_temp_create(long *);
 int vfs_private_fd(int);
 void vfs_gpu_init(void);
 long vfs_gpu_publish(const char *,const char *,const char *,const char *,const char *,unsigned,const char *,unsigned);

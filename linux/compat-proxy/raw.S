@@ -39,9 +39,8 @@ proxy_clone_entry:
     syscall
 .global proxy_clone_after
 proxy_clone_after:
-    test %rax,%rax
-    jns 1f
-    /* Failed fork: undo reserved references; preserve the app red zone. */
+    /* Complete IPC inheritance before either continuation reaches app code.
+     * Preserve syscall registers and the compiler's SSE/x87 scratch state. */
     lea -128(%rsp),%rsp
     push %rax
     push %rcx
@@ -55,8 +54,16 @@ proxy_clone_after:
     push %rbp
     mov %rsp,%rbp
     and $-16,%rsp
+    sub $512,%rsp
+    fxsave64 (%rsp)
+    mov 72(%rbp),%rdi
+    call ipc_fork_result
+    cmpq $0,72(%rbp)
+    jge 1f
     mov $-1,%rdi
     call links_fork
+1:
+    fxrstor64 (%rsp)
     mov %rbp,%rsp
     pop %rbp
     pop %r11
@@ -69,6 +76,5 @@ proxy_clone_after:
     pop %rcx
     pop %rax
     lea 128(%rsp),%rsp
-1:
     jmp *proxy_clone_resume(%rip)
 .section .note.GNU-stack,"",@progbits
