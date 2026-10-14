@@ -30,6 +30,7 @@ static char *join(const char *a,const char *b) {
 static char *dupstr(const char *s){size_t n=p_len(s);char *p=vfs_alloc(n+1);if(p)p_copy(p,s,n+1);return p;}
 struct mount {struct mount *next;char *source,*target;unsigned long flags;};
 static struct mount *table;
+static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
 static int stacked_oldroot;
 void vfs_executable(const char *path){vfs_free(executable);executable=dupstr(path);}
@@ -94,6 +95,14 @@ static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd){char *global=
 }
 char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **identity){
     *error=0;if(!path){*error=-EFAULT;return NULL;}if(!*path){*error=-ENOENT;return NULL;}
+    /* Polling roots are immutable generated directories. Re-check the current
+     * mount source so an unmount/overmount cannot reuse a stale fast answer. */
+    if(p_equal(path,"/sys/bus") || p_equal(path,"/sys/class")){
+        unsigned slot=p_equal(path,"/sys/class");
+        if(gpu_poll_sources[slot]){char *global=root?join(root,path):dupstr(path);struct mount *m=global?lookup(global):NULL;
+            int hit=m && p_equal(m->target,global) && p_equal(m->source,gpu_poll_sources[slot]);vfs_free(global);
+            if(hit){if(identity)*identity=m;char *answer=dupstr(m->source);if(!answer)*error=-ENOMEM;return answer;}}
+    }
     char *input;
     if(path[0]=='/')input=dupstr(path);else {char *base=basepath(fd,error);if(!base)return NULL;input=join(base,path);vfs_free(base);}
     if(!input){*error=-ENOMEM;return NULL;}
@@ -259,4 +268,142 @@ long vfs_bootstrap_root(const char *directory){
     if(!error)error=proxy_mount(directory,"/");
     for(unsigned i=0;i<11;i++){if(!error && sources[i]){char *target=join("/",names[i]);if(!target)error=-ENOMEM;else error=proxy_mount(sources[i],target);vfs_free(target);}vfs_free(sources[i]);}
     return error;
+}
+/* GPU identity comes only from pc-gpu-detect's property snapshot, never PCI
+ * sysfs. A private read-only virtual mount uses the existing VFS resolver for
+ * all path, stat, readlink and directory operations (including relative fds).
+ * Bionic's v0xfc6ed0ab property area ABI: 128-byte header, offset trie,
+ * 96-byte short prop_info. Fail closed on unknown formats/dirty snapshots. */
+static uint32_t gpu_u32(const char *p){return __atomic_load_n((const uint32_t *)p,__ATOMIC_ACQUIRE);}
+static int gpu_property(const char *area,size_t size,const char *name,char value[92]){
+    if(size<148 || gpu_u32(area+8)!=0x504f5250 || gpu_u32(area+12)!=0xfc6ed0ab)return 0;
+    const char *data=area+128;size_t bytes=size-128;uint32_t node=0;
+    const char *token=name;
+    for(size_t budget=bytes/20;budget;){
+        if(node>bytes-20 || (node&3))return 0;
+        uint32_t offset=gpu_u32(data+node+16);size_t len=0;while(token[len] && token[len]!='.')len++;
+        while(offset){
+            if(!budget || offset>bytes-21 || (offset&3))return 0;
+            budget--;
+            uint32_t n=gpu_u32(data+offset);if(n>bytes-offset-21 || data[offset+20+n])return 0;
+            int cmp=len<n?-1:len>n?1:0;
+            if(!cmp)for(size_t j=0;j<len;j++)if(token[j]!=data[offset+20+j]){cmp=(unsigned char)token[j]-(unsigned char)data[offset+20+j];break;}
+            if(!cmp)break;
+            offset=gpu_u32(data+offset+(cmp<0?8:12));
+        }
+        if(!offset)return 0;
+        node=offset;token+=len;
+        if(*token=='.'){token++;continue;}
+        offset=gpu_u32(data+node+4);
+        size_t namelen=p_len(name);
+        if(!offset || (offset&3) || offset>bytes || bytes-offset<97+namelen)return 0;
+        for(size_t j=0;j<=namelen;j++)if(data[offset+96+j]!=name[j])return 0;
+        uint32_t serial=gpu_u32(data+offset);unsigned n=serial>>24;
+        if((serial&0x10001) || n>=92)return 0;
+        p_copy(value,data+offset+4,n);value[n]=0;
+        return serial==gpu_u32(data+offset);
+    }
+    return 0;
+}
+static size_t gpu_number(char *out,unsigned long number){char rev[24];size_t n=0,k=0;do{rev[n++]=(char)('0'+number%10);number/=10;}while(number);while(n)out[k++]=rev[--n];out[k]=0;return k;}
+static long gpu_dir(const char *base,const char *name){char *p=join(base,name);if(!p)return -ENOMEM;long r=RAW(SYS_mkdirat,AT_FDCWD,p,0700,0,0,0);vfs_free(p);return r;}
+static long gpu_file(const char *base,const char *name,const char *value){char *p=join(base,name);if(!p)return -ENOMEM;long fd=RAW(SYS_openat,AT_FDCWD,p,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0400,0,0);vfs_free(p);if(fd<0)return fd;size_t n=p_len(value);long r=RAW(SYS_write,fd,value,n,0,0,0);RAW(SYS_close,fd,0,0,0,0,0);return r==(long)n?0:r<0?r:-EIO;}
+static long gpu_link(const char *base,const char *name,const char *target){char *p=join(base,name);if(!p)return -ENOMEM;long r=RAW(SYS_symlinkat,target,AT_FDCWD,p,0,0,0);vfs_free(p);return r;}
+static int gpu_hex(const char *p){if(p_len(p)!=6 || p[0]!='0' || p[1]!='x')return 0;for(unsigned i=2;i<6;i++)if(!((p[i]>='0'&&p[i]<='9')||(p[i]>='a'&&p[i]<='f')||(p[i]>='A'&&p[i]<='F')))return 0;return 1;}
+static void gpu_append(char *dst,const char *src){p_copy(dst+p_len(dst),src,p_len(src)+1);}
+static long gpu_node(const char *base,const char *name,unsigned minor){
+    char child[128]="devices/pci0000:00/0000:00:00.0/drm/";p_copy(child+p_len(child),name,p_len(name)+1);
+    long r=gpu_dir(base,child);if(r)return r;
+    char *dir=join(base,child);if(!dir)return -ENOMEM;
+    char number[24];gpu_number(number,minor);char event[160]="MAJOR=226\nMINOR=";
+    gpu_append(event,number);gpu_append(event,"\nDEVNAME=dri/");gpu_append(event,name);gpu_append(event,"\n");
+    r=gpu_file(dir,"uevent",event);if(!r)r=gpu_link(dir,"device","../..");if(!r)r=gpu_link(dir,"subsystem","../../../../../class/drm");vfs_free(dir);if(r)return r;
+    char alias[64]="dev/char/226:";p_copy(alias+p_len(alias),number,p_len(number)+1);
+    char target[160]="../../devices/pci0000:00/0000:00:00.0/drm/";p_copy(target+p_len(target),name,p_len(name)+1);
+    return gpu_link(base,alias,target);
+}
+/* Separate entry point also lets host fixtures exercise precisely the tree
+ * publication code without requiring a host GPU or Android property service. */
+long vfs_gpu_publish(const char *base,const char *vendor,const char *device,const char *driver,const char *render,unsigned render_minor,const char *card,unsigned card_minor){
+    const char *dirs[]={"dev","dev/char","devices","devices/pci0000:00","devices/pci0000:00/0000:00:00.0","devices/pci0000:00/0000:00:00.0/drm","bus","bus/pci","class","class/drm"};
+    long r=0;for(unsigned i=0;i<sizeof(dirs)/sizeof(*dirs);i++)if((r=gpu_dir(base,dirs[i])))return r;
+    char *pci=join(base,"devices/pci0000:00/0000:00:00.0");if(!pci)return -ENOMEM;
+    const char *names[]={"vendor","device","subsystem_vendor","subsystem_device","revision","class"};
+    const char *values[]={vendor,device,"0x0000","0x0000","0x00","0x030000"};
+    for(unsigned i=0;i<6 && !r;i++){char line[16];p_copy(line,values[i],p_len(values[i]));p_copy(line+p_len(values[i]),"\n",2);r=gpu_file(pci,names[i],line);}
+    char event[256]="DRIVER=",id[5];gpu_append(event,driver);gpu_append(event,"\nPCI_ID=");
+    p_copy(id,vendor+2,4);id[4]=0;gpu_append(event,id);gpu_append(event,":");
+    p_copy(id,device+2,4);gpu_append(event,id);gpu_append(event,"\nPCI_SLOT_NAME=0000:00:00.0\n");
+    if(!r)r=gpu_file(pci,"uevent",event);
+    if(!r)r=gpu_link(pci,"subsystem","../../../bus/pci");
+    vfs_free(pci);
+    if(!r)r=gpu_node(base,render,render_minor);
+    if(!r && card)r=gpu_node(base,card,card_minor);
+    return r;
+}
+void vfs_gpu_init(void){
+    long e=0;char *path=vfs_resolve(AT_FDCWD,"/dev/__properties__/u:object_r:vendor_maton_graphics_prop:s0",1,&e);if(!path)return;
+    long fd=RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
+    struct stat st;if(RAW(SYS_fstat,fd,&st,0,0,0,0) || st.st_size<148){RAW(SYS_close,fd,0,0,0,0,0);return;}
+    char *area=(void *)RAW(SYS_mmap,0,st.st_size,PROT_READ,MAP_SHARED,fd,0);RAW(SYS_close,fd,0,0,0,0,0);if((unsigned long)area>=(unsigned long)-4095)return;
+    char vendor[92],device[92],driver[92],render[92],mode[92];
+    int ok=gpu_property(area,st.st_size,"vendor.maton.graphics.vendor",vendor)&&gpu_property(area,st.st_size,"vendor.maton.graphics.device",device)&&gpu_property(area,st.st_size,"vendor.maton.graphics.driver",driver)&&gpu_property(area,st.st_size,"vendor.maton.graphics.render_node",render)&&gpu_property(area,st.st_size,"vendor.maton.graphics.mode",mode);
+    RAW(SYS_munmap,area,st.st_size,0,0,0,0);
+    if(!ok || !p_equal(mode,"hardware") || !gpu_hex(vendor) || !gpu_hex(device) || !driver[0] || p_equal(driver,"unknown") || p_len(render)<17)return;
+    for(size_t i=0;driver[i];i++)if(!((driver[i]>='a'&&driver[i]<='z')||(driver[i]>='0'&&driver[i]<='9')||driver[i]=='_'))return;
+    const char *prefix="/dev/dri/renderD";for(unsigned i=0;i<16;i++)if(render[i]!=prefix[i])return;
+    for(unsigned i=16;render[i];i++)if(render[i]<'0'||render[i]>'9')return;
+    path=vfs_resolve(AT_FDCWD,render,1,&e);if(!path)return;
+    fd=RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
+    e=RAW(SYS_fstat,fd,&st,0,0,0,0);RAW(SYS_close,fd,0,0,0,0,0);
+    if(e)return;
+    unsigned maj=(st.st_rdev>>8)&0xfff,min=(st.st_rdev&255)|((st.st_rdev>>12)&0xfffff00);
+    if(!S_ISCHR(st.st_mode) || maj!=226 || min<128)return;
+    /* Only publish a card when /dev/dri has exactly one primary and one render node. The
+     * detector does not export its card identity; render/card indices are
+     * not necessarily paired. Never invent a multi-GPU association. */
+    char card[64]={0};unsigned card_minor=0,count=0,render_count=0;
+    path=vfs_resolve(AT_FDCWD,"/dev/dri",1,&e);
+    long dri=path?RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0):-ENOENT;vfs_free(path);
+    if(dri>=0){
+        char buf[4096];long n;
+        while((n=RAW(SYS_getdents64,dri,buf,sizeof(buf),0,0,0))>0){
+            for(long off=0;off<n;){
+                unsigned short len=*(unsigned short *)(buf+off+16);
+                if(len<20 || len>n-off)break;
+                const char *name=buf+off+19;
+                int primary=name[0]=='c'&&name[1]=='a'&&name[2]=='r'&&name[3]=='d';
+                int rendering=name[0]=='r'&&name[1]=='e'&&name[2]=='n'&&name[3]=='d';
+                if((primary || rendering) && p_len(name)<sizeof(card)){
+                    long c=RAW(SYS_openat,dri,name,O_RDONLY|O_CLOEXEC,0,0,0);struct stat cs;
+                    if(c>=0){
+                        if(!RAW(SYS_fstat,c,&cs,0,0,0,0) && S_ISCHR(cs.st_mode) && ((cs.st_rdev>>8)&0xfff)==226){
+                            unsigned cm=(cs.st_rdev&255)|((cs.st_rdev>>12)&0xfffff00);
+                            if(primary && cm<64){count++;p_copy(card,name,p_len(name)+1);card_minor=cm;}
+                            else if(rendering && cm>=128)render_count++;
+                        }
+                        RAW(SYS_close,c,0,0,0,0,0);
+                    }
+                }
+                off+=len;
+            }
+        }
+        if(n<0){count=0;render_count=0;}
+        RAW(SYS_close,dri,0,0,0,0,0);
+    }
+    extern const char *proxy_tmpdir;char suffix[80]="v3-gpu-",number[24];gpu_number(number,RAW(SYS_getpid,0,0,0,0,0,0));p_copy(suffix+7,number,p_len(number)+1);unsigned long random=0;if(RAW(SYS_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return;size_t k=p_len(suffix);suffix[k++]='-';gpu_number(suffix+k,random);
+    char *base=join(proxy_tmpdir,suffix);if(!base)return;
+    if(!RAW(SYS_mkdirat,AT_FDCWD,base,0700,0,0,0) && !vfs_gpu_publish(base,vendor,device,driver,render+9,min,count==1 && render_count==1?card:NULL,card_minor)){
+        struct mount *prior=table;
+        const char *trees[]={"dev","devices","bus","class"};
+        for(unsigned i=0;i<4;i++){
+            char *src=join(base,trees[i]),*dst=join("/sys",trees[i]);
+            e=src&&dst?vfs_mount(src,dst,NULL,MS_BIND|MS_RDONLY):-ENOMEM;
+            if(!e && i>=2){vfs_free(gpu_poll_sources[i-2]);gpu_poll_sources[i-2]=dupstr(src);}
+            vfs_free(src);vfs_free(dst);if(e)break;
+        }
+        if(e){invalidate();while(table!=prior){struct mount *old=table;table=old->next;vfs_free(old->source);vfs_free(old->target);vfs_free(old);}for(unsigned i=0;i<2;i++){vfs_free(gpu_poll_sources[i]);gpu_poll_sources[i]=NULL;}}
+
+    }
+    vfs_free(base);
 }

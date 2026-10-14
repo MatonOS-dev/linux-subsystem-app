@@ -138,3 +138,5 @@ timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/bu
 test ! -e "$move_fixture/.v3-inodes/move"
 printf 'PASS interrupted store-root rename recovery\n'
 rm -r "$move_fixture"
+
+COMPAT_GPU_SKIP_BUILD=1 bash tests/gpu-host.sh

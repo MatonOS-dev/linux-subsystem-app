@@ -171,6 +171,7 @@ int main(int argc,char **argv,char **environ) {
         else {proxy_log("usage",0,-EINVAL);return 2;}
     }
     if(i==argc) return 2;
+    vfs_gpu_init();
     struct image image; int r=proxy_load(argv[i],argv+i,environ,&image);
     if(r) {proxy_log("load-error",0,r);return 1;}
     r=proxy_install(android);
@@ -186,3 +187,5 @@ void *memset(void *destination, int value, size_t count) {
     for (size_t i = 0; i < count; ++i) bytes[i] = (unsigned char)value;
     return destination;
 }
+
+void *memcpy(void *destination,const void *source,size_t count){p_copy(destination,source,count);return destination;}

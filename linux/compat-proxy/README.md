@@ -327,3 +327,79 @@ Host-created interrupted transactions verify conversion restoration, orphan
 collection, and interrupted store relocation on the next access. Host tests do not
 reproduce SELinux. Combined round-13/14 host suite and the NDK r30/API-36 freestanding
 loader build passed; no adb/device/image test was performed.
+
+Round 15 GPU sysfs: at startup the freestanding loader reads the five
+`vendor.maton.graphics.{vendor,device,driver,render_node,mode}` properties
+from bionic's `vendor_maton_graphics_prop` area (readable by every domain). It validates the area version, trie
+bounds, property names and short-value serials. Missing, dirty, malformed,
+software-mode or unusable render-node snapshots leave paths unchanged. No
+PCI sysfs is read. The published render node's actual character-device
+major/minor comes from opening and fstat'ing `/dev/dri`; a primary node is
+included only when that directory contains exactly one primary and one
+render node. Multi-GPU card association requires the detector to publish
+more identity; render and card indices are not assumed to match.
+
+A private 0700 tree below the inherited TMPDIR supplies read-only virtual
+mounts at `/sys/{dev,devices,bus,class}` using the existing tmpfs/bind-backed
+VFS approach. This reuses the resolver and real backing directory/file
+operations rather than adding separate syscall-specific fabricated stat and
+getdents results. It is a virtual mount only; no real mount is performed.
+The generated PCI directory supplies vendor/device, zero subsystem IDs,
+revision `0x00`, class `0x030000`, driver/PCI-ID/slot uevent, subsystem link
+to `/sys/bus/pci`, and DRM children with device/subsystem links and
+major/minor/devname uevents. PCI slot `0000:00:00.0`, revision and subsystem
+IDs are synthetic because the detector publishes no corresponding fields.
+They must not be used as physical topology or board identity.
+
+Source sequence checked against `external/libdrm/xf86drm.c`:
+`drmParseSubsystemType` reads the subsystem link; `get_pci_path` uses
+realpath; `drmParsePciBusInfo` reads PCI_SLOT_NAME from uevent;
+`parse_separate_sysfs_files` reads the five numeric identity files;
+`drmGetDevice2` lists the DRM children. Mesa's `src/loader/loader.c` uses
+`drmGetDevice2` and reads the same vendor/device paths. The synthetic device
+is reported as PCI, including a virtio GPU's exported PCI identity.
+
+`/sys/bus` exposes only an empty `pci` directory, and `/sys/class` only an
+empty `drm` directory: this is not general udev/device enumeration. Their
+exact absolute paths use a fast resolver answer only while the current
+mount source still matches the generated tree, including after a recursive
+bind/pivot. Other sysfs branches keep normal behavior. On this host, 40,000
+opens under the copied app filter took 4.758 seconds before the fast path
+and 2.354–2.358 seconds afterward. This measures the generated-tree fixture,
+not ETR or Android SELinux performance. Existing namespace/thread mutation
+limits apply. Generated directories share the existing tmpfs backing
+cleanup limitation and survive until the app cache is cleaned.
+
+Run `bash tests/gpu-host.sh` (also included by `tests/run.sh`). Its startup
+fixture constructs the actual bionic property-area ABI and substitutes only
+raw fstat identities for two ordinary fixture files; all remaining syscalls
+reach the host kernel. Payload checks run under the copied Android app
+filter: both render/card paths, realpath, lstat/readlink, relative openat,
+PCI reads, statx, subsystem target inode, DRM getdents and write rejection.
+Software, missing/partial properties, malformed header/trie and dirty serial
+cases retain normal paths. Missing render-node and ambiguous-card cases are
+covered; the generated tree also survives host bwrap recursive bind/pivot. Host suite and NDK r30/API-36 loader build passed.
+No adb, image build or hardware test was performed.
+
+Policy: `vendor.maton.graphics.*` is labelled `vendor_maton_graphics_prop`,
+which every domain may read; apps get no read of the wider `vendor_maton_prop`.
+
+Fresh-image hardware validation for the coordinator/user:
+1. Apply the property read grant, package this NDK loader and boot a fresh
+   image; keep the VM idle-suspend timeout disabled for VM tests.
+2. On the Ryzen/RX6600 PC, Surface Pro 3 and Haswell ProDesk, launch an
+   ordinary Flatpak stub and check the detector's vendor/device/driver/node
+   properties against the GPU reported by glxinfo and vulkaninfo/vkcube
+   (where Vulkan is supported). Confirm iris/crocus/radeonsi/RADV selection
+   and absence of the Mesa device-information warning.
+3. Repeat with software rendering or an absent render node: boot and app
+   startup must still succeed through the existing software path.
+4. On a multi-GPU PC, verify the selected render identity and that unrelated
+   primary cards are not falsely advertised. Full card topology is deferred
+   until the detector exports an unambiguous card/slot identity. The detector
+   currently reads IDs from its primary PCI adapter but may pick a different
+   first supported render node; multi-GPU snapshots need that association
+   corrected in the detector before relying on them.
+5. Run ETR and compare `/sys/bus`/`/sys/class` polling time/count with prior
+   logs; check controller behavior separately because this subtree does not
+   enumerate controller hardware. No kernel or AOSP changes are required.
