@@ -403,3 +403,30 @@ Fresh-image hardware validation for the coordinator/user:
 5. Run ETR and compare `/sys/bus`/`/sys/class` polling time/count with prior
    logs; check controller behavior separately because this subtree does not
    enumerate controller hardware. No kernel or AOSP changes are required.
+
+### Round 17: tmpfs cache garbage collection
+
+Loader startup collects stale `compat-proxy-<pid>-*` directories in TMPDIR.
+New backing directories carry `.v3-owner` and an exclusive directory flock
+held by a reserved proxy descriptor. Forked children inherit the same lock,
+and resident exec retains it, so a parent's exit cannot collect bind-data
+still used by its descendants. Payload close sweeps cannot release these
+reserved descriptors; dup/fcntl attempts involving them fail with EBADF.
+Collection uses an independent open file description and a nonblocking flock,
+which identifies lifetime without relying on a reusable numeric PID. Creation
+and collection serialize briefly on the cache directory flock. Legacy dirs
+without a marker are retained whenever the named PID exists or proc lookup
+fails for reasons other than ENOENT. Recursive removal uses directory FDs
+and O_NOFOLLOW, and never follows symlinks out of the cache subtree.
+
+`tests/run.sh` now includes temp-gc.c: active inherited lock, dead owner,
+unlocked marked directory whose numeric PID is live, legacy live PID and
+symlink containment. The full host suite and the freestanding NDK/API 36
+loader build passed. This collector targets tmpfs backing dirs; the separate
+`v3-gpu-*` synthetic sysfs cache has not been added to its scope.
+
+Fresh-image check: record the app's cache directory names, launch/quit/relaunch
+several Flatpak apps, and verify stale compat-proxy dirs disappear on the next
+loader start while the current launch's bind-data files remain readable.
+Repeat with a child process still alive after its parent exits. No cache
+or installed app data should be removed outside these backing directories.

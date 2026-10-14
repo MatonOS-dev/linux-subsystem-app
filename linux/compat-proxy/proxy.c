@@ -415,7 +415,7 @@ static long dns_call(long nr, long a[6]) {
 static int ours(long n) {
     switch(n) {
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
-    case SYS_fstat:case SYS_getdents64:case SYS_exit_group:case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
+    case SYS_flock:case SYS_fstat:case SYS_getdents64:case SYS_exit_group:case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
     case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
     case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
     case SYS_prctl:case SYS_execve:case SYS_execveat:case SYS_rt_sigaction:case SYS_rt_sigprocmask:
@@ -499,12 +499,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     result=-ENOSYS;
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     switch(nr) {
+    case SYS_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
     case SYS_getdents64:result=links_dents(a[0],(void *)a[1],a[2]);break;
     case SYS_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_fd_stat((int)a[0],(void *)a[1]);break;
     case SYS_exit_group:links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case SYS_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
-    case SYS_close:result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
+    case SYS_close:if(vfs_private_fd((int)a[0])){result=0;break;}result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case SYS_dup:case SYS_dup3:case SYS_fcntl:
+        if(vfs_private_fd((int)a[0])||(nr==SYS_dup3&&vfs_private_fd((int)a[1]))){result=-EBADF;break;}
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=links_dup((int)a[0],(int)result);if(tracked<0){RAW(SYS_close,result,0,0,0,0,0);links_close((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;

@@ -140,3 +140,8 @@ printf 'PASS interrupted store-root rename recovery\n'
 rm -r "$move_fixture"
 
 COMPAT_GPU_SKIP_BUILD=1 bash tests/gpu-host.sh
+
+cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/temp-gc.c -o build/temp-gc
+temp_fixture=$(mktemp -d "$PWD/build/temp-gc.XXXXXX")
+build/temp-gc "$temp_fixture"
+rm -r "$temp_fixture"

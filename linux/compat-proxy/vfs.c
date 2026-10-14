@@ -27,6 +27,65 @@ static char *join(const char *a,const char *b) {
     else if(y && x && s[x-1]!='/' && b[0]!='/')s[x++]='/';
     p_copy(s+x,b,y+1);return s;
 }
+/* Directory flocks survive fork and resident exec. Reserve their descriptors
+ * from payload close/dup/fcntl so bwrap's fd sweep cannot release ownership. */
+#include <sys/file.h>
+struct temp_lock { int fd; struct temp_lock *next; };
+static struct temp_lock *temp_locks;
+int vfs_private_fd(int fd){for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
+static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(SYS_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
+static int temp_own(const char *path){
+    int fd=(int)RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
+    struct temp_lock *l=vfs_alloc(sizeof(*l));if(!l){RAW(SYS_close,fd,0,0,0,0,0);return -ENOMEM;}
+    long e=RAW(SYS_flock,fd,LOCK_EX|LOCK_NB,0,0,0,0);
+    if(e){vfs_free(l);RAW(SYS_close,fd,0,0,0,0,0);return (int)e;}
+    /* Distinguish new locked directories from legacy PID-only directories. */
+    long marker=RAW(SYS_openat,fd,".v3-owner",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600,0,0);
+    if(marker<0){vfs_free(l);RAW(SYS_close,fd,0,0,0,0,0);return (int)marker;}
+    RAW(SYS_close,marker,0,0,0,0,0);l->fd=fd;l->next=temp_locks;temp_locks=l;return 0;
+}
+static int temp_remove_contents(int fd,unsigned depth){
+    if(depth>64)return 0;
+    char buf[4096];long n;
+    while((n=RAW(SYS_getdents64,fd,buf,sizeof(buf),0,0,0))>0){
+        for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20||off+len>n)return 0;
+            char *name=buf+off+19;off+=len;if(p_equal(name,".")||p_equal(name,".."))continue;
+            long child=RAW(SYS_openat,fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
+            if(child>=0){int ok=temp_remove_contents((int)child,depth+1);RAW(SYS_close,child,0,0,0,0,0);if(!ok)return 0;RAW(SYS_unlinkat,fd,name,AT_REMOVEDIR,0,0,0);}
+            else RAW(SYS_unlinkat,fd,name,0,0,0,0);
+        }
+    }return n==0;
+}
+void vfs_temp_gc(void){
+    int parent=temp_parent();if(parent<0)return;
+    if(RAW(SYS_flock,parent,LOCK_EX,0,0,0,0)<0){RAW(SYS_close,parent,0,0,0,0,0);return;}
+    char buf[4096];long n;
+    while((n=RAW(SYS_getdents64,parent,buf,sizeof(buf),0,0,0))>0){
+        for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20||off+len>n)break;char *name=buf+off+19;off+=len;
+            const char *tag="compat-proxy-";unsigned k=0;while(tag[k]&&name[k]==tag[k])k++;if(tag[k])continue;
+            long pid=0;unsigned start=k;for(;name[k]>='0'&&name[k]<='9'&&pid<2147483647;k++)pid=pid*10+name[k]-'0';
+            if(k==start||name[k]!='-'||pid<=0||pid>2147483647)continue;
+            int dir=(int)RAW(SYS_openat,parent,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(dir<0)continue;
+            if(RAW(SYS_flock,dir,LOCK_EX|LOCK_NB,0,0,0,0)<0){RAW(SYS_close,dir,0,0,0,0,0);continue;}
+            long marker=RAW(SYS_openat,dir,".v3-owner",O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
+            int stale=marker>=0;
+            if(marker>=0)RAW(SYS_close,marker,0,0,0,0,0);
+            else if(marker==-ENOENT){
+                /* Legacy names have no birth token. Keep them if this PID
+                 * exists (including reuse); only ENOENT proves them stale. */
+                char proc[40]="/proc/",digits[24];unsigned count=0;unsigned long value=(unsigned long)pid;
+                do{digits[count++]=(char)('0'+value%10);value/=10;}while(value);
+                unsigned p=6;while(count)proc[p++]=digits[--count];proc[p]=0;
+                long live=RAW(SYS_openat,AT_FDCWD,proc,O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
+                stale=live==-ENOENT;if(live>=0)RAW(SYS_close,live,0,0,0,0,0);
+            }
+            if(stale&&temp_remove_contents(dir,0))RAW(SYS_unlinkat,parent,name,AT_REMOVEDIR,0,0,0);
+            RAW(SYS_close,dir,0,0,0,0,0);
+        }
+    }
+    RAW(SYS_close,parent,0,0,0,0,0);
+}
+
 static char *dupstr(const char *s){size_t n=p_len(s);char *p=vfs_alloc(n+1);if(p)p_copy(p,s,n+1);return p;}
 struct mount {struct mount *next;char *source,*target;unsigned long flags;};
 static struct mount *table;
@@ -200,7 +259,15 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     else if(type && p_equal(type,"tmpfs")){
         /* mkdtemp equivalent using pid + monotonic local counter; cache path is
          * inherited TMPDIR in the loader, falling back to /tmp on host. */
-        extern const char *proxy_tmpdir;static unsigned long sequence;char suffix[80]="compat-proxy-";size_t k=13;unsigned long values[2]={(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0),(unsigned long)0};RAW(SYS_getrandom,&values[1],sizeof(values[1]),0,0,0,0);values[1]^=++sequence;for(unsigned j=0;j<2;j++){char d[24];unsigned n=0;do{d[n++]=(char)('0'+values[j]%10);values[j]/=10;}while(values[j]);while(n)suffix[k++]=d[--n];suffix[k++]=j?0:'-';}src=join(proxy_tmpdir,suffix);if(src)e=RAW(SYS_mkdirat,AT_FDCWD,src,0700,0,0,0);
+        extern const char *proxy_tmpdir;static unsigned long sequence;char suffix[80]="compat-proxy-";size_t k=13;unsigned long values[2]={(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0),(unsigned long)0};RAW(SYS_getrandom,&values[1],sizeof(values[1]),0,0,0,0);values[1]^=++sequence;for(unsigned j=0;j<2;j++){char d[24];unsigned n=0;do{d[n++]=(char)('0'+values[j]%10);values[j]/=10;}while(values[j]);while(n)suffix[k++]=d[--n];suffix[k++]=j?0:'-';}src=join(proxy_tmpdir,suffix);
+        int parent=temp_parent();
+        if(parent<0)e=parent;
+        else {
+            e=RAW(SYS_flock,parent,LOCK_EX,0,0,0,0);
+            if(!e&&src)e=RAW(SYS_mkdirat,AT_FDCWD,src,0700,0,0,0);
+            if(!e&&src)e=temp_own(src);
+            RAW(SYS_close,parent,0,0,0,0,0);
+        }
     }else e=-ENOSYS;
     if(!e && !src)e=-ENOMEM;
     if(!e){
