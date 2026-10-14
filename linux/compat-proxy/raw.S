@@ -57,6 +57,8 @@ proxy_clone_after:
     sub $512,%rsp
     fxsave64 (%rsp)
     mov 72(%rbp),%rdi
+    call dns_fork_result
+    mov 72(%rbp),%rdi
     call ipc_fork_result
     cmpq $0,72(%rbp)
     jge 1f
@@ -77,4 +79,9 @@ proxy_clone_after:
     pop %rax
     lea 128(%rsp),%rsp
     jmp *proxy_clone_resume(%rip)
+/* raw.S is also linked by standalone IPC tests with no proxy DNS state. */
+.weak dns_fork_result
+.type dns_fork_result,@function
+dns_fork_result:
+    ret
 .section .note.GNU-stack,"",@progbits

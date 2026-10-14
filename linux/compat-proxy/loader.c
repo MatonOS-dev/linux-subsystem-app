@@ -170,6 +170,7 @@ int main(int argc,char **argv,char **environ) {
         else if(p_equal(argv[i],"--host-command-fd") && i+1<argc) {extern int proxy_host_test(int);int fd=0;for(char *s=argv[i+1];*s;s++){if(*s<'0'||*s>'9')return 2;fd=fd*10+*s-'0';}proxy_host_test(fd);i+=2;}
 #endif
         else if(p_equal(argv[i],"--host-command") && i+1<argc) {if(proxy_host_command(argv[i+1]))return 2;i+=2;}
+        else if(p_equal(argv[i],"--dns-socket") && i+1<argc) {if(proxy_dns_socket(argv[i+1]))return 2;i+=2;}
         else if(p_equal(argv[i],"--dns-forwarder") && i+1<argc) {if(proxy_dns_forwarder(argv[i+1]))return 2;i+=2;}
         else if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}

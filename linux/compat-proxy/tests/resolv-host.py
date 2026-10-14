@@ -27,19 +27,27 @@ if '--offline' in sys.argv:
             assert result.returncode==0,result.stderr
             print(result.stdout.strip())
     sys.exit(0)
-server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-server.bind(('127.10.42.99', 0))
+dns_tmp = tempfile.TemporaryDirectory(prefix='v3-resolv-dns-',dir='/tmp')
+dns_path = str(pathlib.Path(dns_tmp.name)/'forwarder')
+server = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+server.bind(dns_path + '.udp');server.listen(32)
 queries = []
+def dns_client(client):
+    with client:
+        try:
+            while True:
+                data = client.recv(65535)
+                if not data:return
+                queries.append(data)
+                reply = data[:2]+b'\x81\x80'+data[4:6]+b'\x00\x01\x00\x00\x00\x00'+data[12:]+b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\xc0\x00\x02\x01'
+                client.send(reply)
+        except OSError:return
 def dns():
     while True:
         try:
-            data, peer = server.recvfrom(65535)
-            queries.append(data)
-            # getent ahostsv4 asks A; return one documentation-range address.
-            reply = data[:2]+b'\x81\x80'+data[4:6]+b'\x00\x01\x00\x00\x00\x00'+data[12:]+b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\xc0\x00\x02\x01'
-            server.sendto(reply, peer)
-        except OSError:
-            return
+            client,_ = server.accept()
+            threading.Thread(target=dns_client,args=(client,),daemon=True).start()
+        except OSError:return
 threading.Thread(target=dns, daemon=True).start()
 def integer(s):
     data=b''
@@ -66,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix='v3-resolv-',dir='/mnt/data/aosp/out') a
     (scaffold/'etc').symlink_to('/system/etc')
     resolv=d/'resolv.conf';resolv.write_text('nameserver 127.10.42.99\noptions timeout:1 attempts:1\n')
     info=d/'info';info.write_text('[Application]\nname=test\n')
-    base=[loader,'--android-filter','--root',str(scaffold),'--map','/mnt','/mnt','--dns-forwarder',f'127.10.42.99:{server.getsockname()[1]}','--map',str(resolv),'/etc/resolv.conf']
+    base=[loader,'--android-filter','--root',str(scaffold),'--map','/mnt','/mnt','--dns-forwarder','127.10.42.99:53','--dns-socket',dns_path,'--map',str(resolv),'/etc/resolv.conf']
     # Reproduce the host existence test used by add_monitor_path_args().
     assert subprocess.run(base+['/bin/sh','-c','test -e /etc/resolv.conf'],stderr=subprocess.DEVNULL).returncode==1
     base+=['--map',str(resolv),'/system/etc/resolv.conf']
@@ -97,7 +105,8 @@ with tempfile.TemporaryDirectory(prefix='v3-resolv-',dir='/mnt/data/aosp/out') a
                 p.terminate();p.wait(timeout=5)
                 text=(d/'log').read_text()
                 if not isolated:assert '192.0.2.1' in text,text
-                print('PASS', 'no-network resolver hidden and DNS denied' if isolated else 'app and HostCommand getaddrinfo use mapped resolver and rewritten DNS port')
+                print('PASS', 'no-network resolver hidden and DNS denied' if isolated else 'app and HostCommand getaddrinfo use mapped resolver and Unix DNS transport')
             finally:
                 if p.poll() is None:p.kill();p.wait()
 server.close()
+dns_tmp.cleanup()

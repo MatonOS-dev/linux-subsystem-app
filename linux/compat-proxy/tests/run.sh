@@ -73,7 +73,8 @@ cat build/publication.out
 
 cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-translation.c -o build/dns-translation
 build/dns-translation
-# Real loopback tests require AF_INET socket permission: python3 tests/dns-host.py
+# Real Unix tests run when the host permits socket bind.
+python3 tests/dns-host.py --skip-unavailable
 
 cc -no-pie -O2 -Wall -Wextra -Werror tests/links.c -o build/links-test
 links_fixture=$(mktemp -d "$PWD/build/links-fixture.XXXXXX")

@@ -222,18 +222,38 @@ See ../compositor/V3-LAUNCH.md for the production spec, paths, retirement and
 remaining image checks. Historical bionic replay fixtures reference old staged
 APEX helpers and do not prove the new production path.
 
-Round 8 DNS: `--dns-forwarder 127.x.y.z:5353` configures one exact IPv4
-forwarder. connect and explicit-destination sendto/sendmsg/sendmmsg rewrite
-that address's port 53; getpeername reports 53 for translated connections.
-connect/getpeername are trapped, sendto only with a non-null address, and all
-sendmsg/sendmmsg calls are trapped because BPF cannot dereference msg_name.
-Unrelated destinations and destination-free sends retain native behavior.
-The production stub owns both listeners; linuxd and Binder carry no DNS fds.
-`tests/run.sh` includes production mocked-kernel translation tests;
-`python3 tests/dns-host.py` requires loopback socket permission and exercises
-real glibc UDP/TCP resolution plus musl-style sendto and message destinations.
-See ../compositor/DNS-FORWARDER.md for port choice, peer/descriptor limitations
-and fresh-image verification.
+Round 26 DNS: `--dns-forwarder 127.x.y.z:53 --dns-socket /private/runtime/dns/forwarder`
+configures an exact app-visible IPv4 resolver and its Unix transport base.
+The stub listens on `<base>.udp` (SOCK_SEQPACKET) and `<base>.tcp`
+(SOCK_STREAM), in an app-owned mode-0700 directory with mode-0600 sockets.
+Both sides check the kernel's SO_PEERCRED UID against their own UID. There
+are no UDP/TCP Internet listeners and no NETLINK_SOCK_DIAG calls.
+
+On the first DNS connect/send, the proxy replaces the Internet socket's open
+file description with the appropriate Unix socket while keeping all tracked
+fd aliases, CLOEXEC, nonblocking flags, timeout/buffer options, and epoll
+registrations. Kernel queues continue to supply poll/epoll readiness and
+packet boundaries. A poll started before first DNS I/O rechecks unconverted
+Internet fds in 10 ms slices, so it follows concurrent conversion. recvfrom/recvmsg and getpeername synthesize the original
+IPv4 server at port 53. DNS TCP uses its ordinary two-byte framing and supports
+persistent connections; truncated UDP responses trigger normal glibc TCP
+fallback. Other Internet sockets stay native. The copied app filter remains
+in force. NEWNET sockets cannot be converted, and a direct Unix connect to
+the DNS path is also denied from NEWNET. V3Launcher does not start/configure a
+forwarder without the stub's INTERNET permission. DNS remains a per-stub
+public-API Java service using DnsResolver/netd as the app UID; linuxd/Binder
+carry no DNS fds. UDP query tasks use bounded concurrency so one slow answer
+does not stall other queries on the same channel.
+
+`tests/run.sh` includes mocked-kernel production transport tests and attempts
+`tests/dns-host.py` (explicit SKIP when this host forbids Unix socket bind).
+Run `python3 tests/dns-host.py` directly to require real glibc UDP/TCP lookup,
+automatic truncation fallback, parallel threads, timeouts, aliases, source
+addresses, poll/epoll and sendmsg/sendmmsg. `tests/resolv-host.py` covers mapped
+resolv.conf, getaddrinfo/getent, HostCommand and the no-network Flatpak case.
+The Java DnsForwarderTest checks the exact UID predicate, not real kernel
+credentials. Fresh enforcing-device testing must still confirm app-to-app
+Unix socket access under stock SELinux and real netd responses.
 
 Round 13 hard links on app-domain storage: `O_TMPFILE` now creates a unique
 `.matonos-tmp-<pid>-<counter>` file in the requested directory with `O_EXCL`
