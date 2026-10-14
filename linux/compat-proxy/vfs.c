@@ -32,7 +32,8 @@ static char *join(const char *a,const char *b) {
 #include <sys/file.h>
 struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
-int vfs_private_fd(int fd){for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
+int proxy_diagnostic_fd=2;
+int vfs_private_fd(int fd){if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
 static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(SYS_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
     int fd=(int)RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
@@ -215,7 +216,7 @@ int vfs_is_mount_source(const char *path){for(struct mount *m=table;m;m=m->next)
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
 int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;invalidate();m->next=table;table=m;
     proxy_log("mount-owner",SYS_mount,0);
-    RAW(SYS_write,2,"v3 mount ",9,0,0,0);RAW(SYS_write,2,source,p_len(source),0,0,0);RAW(SYS_write,2," -> ",4,0,0,0);RAW(SYS_write,2,target,p_len(target),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);return 0;}
+    RAW(SYS_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(SYS_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
 const char *proxy_path(const char *path,char *buffer,size_t size){long e;char *p=vfs_resolve(AT_FDCWD,path,1,&e);if(!p)return NULL;size_t n=p_len(p);if(n>=size){vfs_free(p);return NULL;}p_copy(buffer,p,n+1);vfs_free(p);return buffer;}
 static char *global_target(const char *target,long *error){
     char *virtual;
@@ -280,9 +281,9 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
         vfs_free(virtual_source);
     }vfs_free(src);vfs_free(dest);return e;
 }
-long vfs_unmount(const char *target){RAW(SYS_write,2,"v3 unmount ",11,0,0,0);RAW(SYS_write,2,target,p_len(target),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;invalidate();struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
+long vfs_unmount(const char *target){RAW(SYS_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;invalidate();struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
 long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(SYS_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(SYS_close,fd,0,0,0,0,0);invalidate();vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;}
-long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(SYS_write,2,"v3 pivot ",9,0,0,0);RAW(SYS_write,2,next,p_len(next),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);
+long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(SYS_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);
     stacked_oldroot=p_equal(target,old);
     if(!p_equal(target,old)){char *oldhost=physical(root?root:"/");char *dest=global_target(old,&e);if(!dest || !oldhost){vfs_free(next);vfs_free(dest);vfs_free(oldhost);return -ENOMEM;}struct mount *prior=table;
         e=proxy_mount(oldhost,dest);

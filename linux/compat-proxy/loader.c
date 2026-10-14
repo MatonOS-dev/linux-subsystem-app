@@ -154,6 +154,7 @@ int main(int argc,char **argv,char **environ) {
     for(;original->a_type;original++)if(original->a_type<64)inherited_aux[original->a_type]=original->a_un.a_val;
     extern const char *proxy_tmpdir;
     for(unsigned e=0;environ[e];e++){const char *s=environ[e];if(s[0]=='T' && s[1]=='M' && s[2]=='P' && s[3]=='D' && s[4]=='I' && s[5]=='R' && s[6]=='=')proxy_tmpdir=s+7;}
+    if(proxy_diagnostics_init())return 1;
     vfs_temp_gc();
     int android=0,i=1; long parent=0;
     while(i<argc && argv[i][0]=='-') {

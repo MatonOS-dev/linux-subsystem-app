@@ -40,14 +40,22 @@
 #define NS_FLAGS (CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET)
 struct kernel_action { uintptr_t handler,flags,restorer; unsigned long mask; };
 static struct kernel_action chained;
+int proxy_diagnostics_init(void) {
+    if(proxy_diagnostic_fd!=2)return 0;
+    /* F_DUPFD keeps the original sink through resident exec, without CLOEXEC.
+     * The VFS private-fd guard protects it from the payload's fd sweeps. */
+    long fd=RAW(SYS_fcntl,2,F_DUPFD,256,0,0,0);
+    if(fd<0)return (int)fd;
+    proxy_diagnostic_fd=(int)fd;return 0;
+}
 /* Resident exec must discard libc handlers: bionic debuggerd uses bionic
  * TLS, which is no longer valid after entering a glibc image. */
 static void crash_hex(uintptr_t value) {
     char out[18]="0x";static const char digits[]="0123456789abcdef";
     for(unsigned i=0;i<16;i++)out[2+i]=digits[(value>>(60-4*i))&15];
-    RAW(SYS_write,2,out,sizeof(out),0,0,0);
+    RAW(SYS_write,proxy_diagnostic_fd,out,sizeof(out),0,0,0);
 }
-static void crash_text(const char *s){RAW(SYS_write,2,s,p_len(s),0,0,0);}
+static void crash_text(const char *s){RAW(SYS_write,proxy_diagnostic_fd,s,p_len(s),0,0,0);}
 static uintptr_t maps_hex(const char **p){uintptr_t v=0;for(;;){unsigned c=(unsigned char)**p,d;if(c>='0'&&c<='9')d=c-'0';else if(c>='a'&&c<='f')d=c-'a'+10;else break;v=(v<<4)|d;(*p)++;}return v;}
 struct image_map {uintptr_t lo,hi,offset;char *path;struct image_map *next;};
 static struct image_map *image_maps;
@@ -117,9 +125,9 @@ static struct thread_state *thread_state(void) {
     return &p->state;
 }
 const char *proxy_tmpdir="/tmp";
-/* --trace: log every trapped call and translated path (stderr = app output). */
+/* --trace: log to the original diagnostic sink, independently of app stdio. */
 int proxy_trace;
-static void emit(const char *s) { RAW(SYS_write,2,s,p_len(s),0,0,0); }
+static void emit(const char *s) { RAW(SYS_write,proxy_diagnostic_fd,s,p_len(s),0,0,0); }
 void proxy_log(const char *kind,long nr,long result) {
     char line[128]; size_t n=0;
     const char *prefix="v3 trap "; while(*prefix) line[n++]=*prefix++;
@@ -135,7 +143,7 @@ void proxy_log(const char *kind,long nr,long result) {
     const char *label="pid=";while(*label)line[n++]=*label++;
     unsigned long pid=(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0);char digits[24];unsigned d=0;
     do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)line[n++]=digits[--d];line[n++]='\n';
-    RAW(SYS_write,2,line,n,0,0,0);
+    RAW(SYS_write,proxy_diagnostic_fd,line,n,0,0,0);
 }
 static int app_allowed(long nr) {
     for(unsigned i=0;i<sizeof(android_allowed)/sizeof(android_allowed[0]);i++)
@@ -182,7 +190,7 @@ static long path_call(long nr,long *a,int one,int two) {
     if(a[one] && !*(char *)a[one] && at){long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==SYS_newfstatat)links_fd_stat(fd,(void *)a[2]);if(!r && nr==SYS_statx){struct stat st;if(!RAW(SYS_fstat,fd,&st,0,0,0,0)){links_fd_stat(fd,&st);((struct statx *)a[4])->stx_nlink=st.st_nlink;}}return r;}
     const char *original_path=(void *)a[one];
     if(nr==SYS_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
-    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)a[one];RAW(SYS_write,2,"v3 unresolved ",14,0,0,0);RAW(SYS_write,2,in,p_len(in),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);}return e;}
+    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)a[one];RAW(SYS_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
     char *q=NULL;
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==SYS_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
@@ -232,7 +240,7 @@ static long path_call(long nr,long *a,int one,int two) {
             p_copy(ptmx,"/dev/ptmx",10);vfs_free(p);p=ptmx;
         }
     }
-    if(proxy_trace){RAW(SYS_write,2,"v3 path ",8,0,0,0);RAW(SYS_write,2,p,p_len(p),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);}
+    if(proxy_trace){RAW(SYS_write,proxy_diagnostic_fd,"v3 path ",8,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,p,p_len(p),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);}
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==SYS_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==SYS_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
@@ -279,19 +287,19 @@ void proxy_log_bwrap_args(const char *path,char *const *argv){
     const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
     if(!p_equal(base,"matonos-app-bwrap") && !p_equal(base,"bwrap"))return;
     for(size_t i=0;argv && argv[i];i++){
-        RAW(SYS_write,2,"v3 bwrap argv ",14,0,0,0);
-        RAW(SYS_write,2,argv[i],p_len(argv[i]),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);
+        RAW(SYS_write,proxy_diagnostic_fd,"v3 bwrap argv ",14,0,0,0);
+        RAW(SYS_write,proxy_diagnostic_fd,argv[i],p_len(argv[i]),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);
         if(!p_equal(argv[i],"--args") || !argv[i+1])continue;
         const char *n=argv[i+1];unsigned fd=0;int valid=*n!=0;
         for(;*n;n++){if(*n<'0'||*n>'9'||fd>(2147483647U-(unsigned)(*n-'0'))/10){valid=0;break;}fd=fd*10+(*n-'0');}
         if(!valid)continue;
-        RAW(SYS_write,2,"v3 bwrap bundle begin\n",sizeof("v3 bwrap bundle begin\n")-1,0,0,0);
+        RAW(SYS_write,proxy_diagnostic_fd,"v3 bwrap bundle begin\n",sizeof("v3 bwrap bundle begin\n")-1,0,0,0);
         char bytes[4096];long offset=0,count;
         while((count=RAW(SYS_pread64,fd,bytes,sizeof(bytes),offset,0,0))>0){
             for(long j=0;j<count;j++)if(!bytes[j])bytes[j]='\n';
-            RAW(SYS_write,2,bytes,count,0,0,0);offset+=count;
+            RAW(SYS_write,proxy_diagnostic_fd,bytes,count,0,0,0);offset+=count;
         }
-        RAW(SYS_write,2,"v3 bwrap bundle end\n",sizeof("v3 bwrap bundle end\n")-1,0,0,0);
+        RAW(SYS_write,proxy_diagnostic_fd,"v3 bwrap bundle end\n",sizeof("v3 bwrap bundle end\n")-1,0,0,0);
     }
 }
 static long modernize(long nr,long *a,long *answer) {
@@ -394,14 +402,14 @@ static int unix_call(long nr,long a[6],long *result) {
         crash_text("v3 unix ");
         if(in->sun_path[0]) {
             size_t n=0;while(n<limit && in->sun_path[n])n++;
-            RAW(SYS_write,2,in->sun_path,n,0,0,0);
+            RAW(SYS_write,proxy_diagnostic_fd,in->sun_path,n,0,0,0);
         } else {
             /* Abstract names are binary, including embedded/trailing NULs. */
             static const char hex[]="0123456789abcdef";
             for(size_t n=0;n<limit;n++) {
                 unsigned char c=(unsigned char)in->sun_path[n];
                 char escaped[4]={'\\','x',hex[c>>4],hex[c&15]};
-                RAW(SYS_write,2,escaped,sizeof(escaped),0,0,0);
+                RAW(SYS_write,proxy_diagnostic_fd,escaped,sizeof(escaped),0,0,0);
             }
         }
         crash_text("\n");
@@ -503,24 +511,58 @@ static long dns_call(long nr, long a[6]) {
 #define V3_TCSETSW2 0x402c542cul
 #define V3_TCSETSF2 0x402c542dul
 struct v3_termios2 { unsigned c_iflag,c_oflag,c_cflag,c_lflag; unsigned char c_line,c_cc[19]; unsigned c_ispeed,c_ospeed; };
+/* No existing fault-safe pointer helper exists. Let pipe copy_{from,to}_user
+ * check both ends; unlike /proc/self/mem this respects read-only mappings.
+ * A termios2 fits atomically in an empty pipe; nonblocking avoids any wait. */
+static long checked_copy(void *dst,const void *src,size_t size) {
+    int fd[2];long r=RAW(SYS_pipe2,fd,O_CLOEXEC|O_NONBLOCK,0,0,0,0);
+    if(r<0)return r;
+    r=RAW(SYS_write,fd[1],src,size,0,0,0);
+    if(r==(long)size)r=RAW(SYS_read,fd[0],dst,size,0,0,0);
+    RAW(SYS_close,fd[0],0,0,0,0,0);RAW(SYS_close,fd[1],0,0,0,0,0);
+    return r==(long)size?0:r<0?r:-EFAULT;
+}
 static int termios2_call(long *a,long *result) {
     unsigned long cmd=(unsigned long)a[1]&0xffffffffu;
-    struct v3_termios2 *t=(void *)a[2];
+    struct v3_termios2 copy={0};
     if(cmd==V3_TCGETS2){
-        long r=RAW(SYS_ioctl,a[0],0x5401,a[2],0,0,0);
-        if(!r){unsigned speed=t->c_cflag&0010017;t->c_ispeed=t->c_ospeed=speed==0?0:38400;}
+        long r=RAW(SYS_ioctl,a[0],0x5401,&copy,0,0,0);
+        if(!r){unsigned speed=copy.c_cflag&0010017;copy.c_ispeed=copy.c_ospeed=speed==0?0:38400;
+            r=checked_copy((void *)a[2],&copy,sizeof(copy));}
         *result=r;return 1;
     }
     if(cmd!=V3_TCSETS2 && cmd!=V3_TCSETSW2 && cmd!=V3_TCSETSF2)return 0;
-    struct v3_termios2 copy=*t;
+    *result=checked_copy(&copy,(void *)a[2],sizeof(copy));if(*result)return 1;
     if((copy.c_cflag&0010017)==0010000)copy.c_cflag=(copy.c_cflag&~0010017u)|0000017;
     *result=RAW(SYS_ioctl,a[0],cmd==V3_TCSETS2?0x5402:cmd==V3_TCSETSW2?0x5403:0x5404,(long)&copy,0,0,0);
     return 1;
 }
+/* close_range is present in the app filter: intercept it as well as close.
+ * Enumerating proc avoids a UINT_MAX loop and preserves private descriptors. */
+static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
+    if(first>last || (flags&~6u))return -EINVAL;
+    if(flags&2u)return -ENOSYS; /* let libc retry without CLOSE_RANGE_UNSHARE */
+    long fd=RAW(SYS_openat,AT_FDCWD,"/proc/self/fd",O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
+    if(fd<0)return fd;
+    char buf[4096];long n;
+    while((n=RAW(SYS_getdents64,fd,buf,sizeof(buf),0,0,0))>0){
+        for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);
+            if(len<20 || off+len>n){n=-EIO;goto done;}
+            const char *p=buf+off+19;off+=len;unsigned value=0;
+            if(*p<'0'||*p>'9')continue;
+            while(*p>='0'&&*p<='9'){value=value*10+(*p++-'0');}
+            if(*p || value<first || value>last || value==(unsigned)fd || vfs_private_fd((int)value))continue;
+            if(flags&4u)RAW(SYS_fcntl,value,F_SETFD,FD_CLOEXEC,0,0,0);
+            else {RAW(SYS_close,value,0,0,0,0,0);dns_close(value);links_close(value);vfs_fd_close(value);net_close(value);sysctl_close(value);}
+        }
+    }
+done:
+    RAW(SYS_close,fd,0,0,0,0,0);return n<0?n:0;
+}
 static int ours(long n) {
     switch(n) {
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
-    case SYS_flock:case SYS_fstat:case SYS_getdents64:case SYS_exit_group:case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
+    case SYS_close_range:case SYS_flock:case SYS_fstat:case SYS_getdents64:case SYS_exit_group:case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
     case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
     case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
     case SYS_prctl:case SYS_execve:case SYS_execveat:case SYS_rt_sigaction:case SYS_rt_sigprocmask:
@@ -607,8 +649,9 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case SYS_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
     case SYS_getdents64:result=links_dents(a[0],(void *)a[1],a[2]);break;
     case SYS_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_fd_stat((int)a[0],(void *)a[1]);break;
-    case SYS_exit_group:links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case SYS_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case SYS_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
+    case SYS_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case SYS_close:if(vfs_private_fd((int)a[0])){result=0;break;}result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case SYS_dup:case SYS_dup3:case SYS_fcntl:
         if(vfs_private_fd((int)a[0])||(nr==SYS_dup3&&vfs_private_fd((int)a[1]))){result=-EBADF;break;}
@@ -616,8 +659,10 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=links_dup((int)a[0],(int)result);if(tracked<0){RAW(SYS_close,result,0,0,0,0,0);links_close((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
-        if(nr==SYS_ioctl && termios2_call(a,&result))break;
+        if(nr==SYS_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
+        if(nr==SYS_ioctl && termios2_call(a,&result)){if(proxy_trace)proxy_log("tty-ioctl",a[1],result);break;}
         if(app_allowed(nr))result=dns_call(nr,a);
+        if(nr==SYS_ioctl && proxy_trace)proxy_log("tty-ioctl",a[1],result);
         break;
     case SYS_prctl:
         if(a[0]==PR_CAPBSET_DROP || a[0]==PR_CAP_AMBIENT || a[0]==PR_SET_KEEPCAPS) {result=0;break;}
@@ -726,6 +771,7 @@ clone_retry:
         const char *path=(const char *)a[nr==SYS_execve?0:1];
         if(nr==SYS_execveat && (a[0]!=AT_FDCWD || a[4])) {result=-ENOSYS;break;}
         if(!thread) {result=-ENOMEM;break;}
+        if(proxy_trace){emit("v3 exec ");emit(path);emit("\n");}
         struct image image;
         result=proxy_load(path,(char *const *)a[nr==SYS_execve?1:2],(char *const *)a[nr==SYS_execve?2:3],&image);
         if(!result) {
@@ -788,6 +834,7 @@ static int app_install(void) {
     return (int)RAW(SYS_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
 }
 int proxy_install(int android) {
+    int diagnostics=proxy_diagnostics_init();if(diagnostics)return diagnostics;
     if(!thread_state()) return -ENOMEM;
     exec_signals();
     struct kernel_action action={(uintptr_t)handler,SA_SIGINFO|SA_RESTORER|SA_NODEFER|SA_ONSTACK,(uintptr_t)proxy_restore,0};

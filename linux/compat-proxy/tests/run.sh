@@ -145,3 +145,5 @@ cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sectio
 temp_fixture=$(mktemp -d "$PWD/build/temp-gc.XXXXXX")
 build/temp-gc "$temp_fixture"
 rm -r "$temp_fixture"
+
+python3 tests/pty-host.py

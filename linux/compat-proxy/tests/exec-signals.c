@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <signal.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,7 @@ int main(int argc,char **argv){
         struct sigaction sa={.sa_handler=stale};
         sigaction(SIGUSR1,&sa,NULL);sigaction(SIGSEGV,&sa,NULL);
         signal(SIGUSR2,SIG_IGN);
+        int sink=open("/dev/null",O_WRONLY);if(sink<0||dup2(sink,2)!=2)return 8;close(sink);
         execl(argv[0],argv[0],"check",NULL);return 2;
     }
     if(!strcmp(argv[1],"check")){

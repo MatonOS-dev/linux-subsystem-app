@@ -462,3 +462,48 @@ retains the absent-device, malformed-property and ambiguous-card cases.
 addresses preserve all addrlen bytes as hex escapes. Both pass; the full
 proxy host suite and NDK r30/API 36 loader compilation pass. Round 19 made
 no device changes; the coordinator must verify the next fresh image.
+
+### Terminal diagnostics and host regression (round 21)
+
+The loader saves its original stderr with `F_DUPFD` at fd 256 or above before
+loading the payload. The existing private-fd guards protect that descriptor;
+`close_range` now also preserves private descriptors (including directory
+ownership locks), and its CLOEXEC mode leaves them inheritable. UNSHARE mode
+returns ENOSYS because the inherited app filter prevents a real files-table
+unshare. All proxy trace and fatal output uses this sink, including after a
+shell replaces stdio with its pty. Trace includes ioctl request numbers,
+exec paths, and exit_group status. This is diagnostic plumbing, not a new
+security boundary.
+
+Termios2 copies pass through a small nonblocking pipe so kernel user-copy
+checks return EFAULT for inaccessible input/output or read-only output, rather
+than dereferencing payload pointers inside SIGSYS. The existing classic ioctl
+translation and BOTHER fallback remain. Android's `unpriv_tty_ioctls` already
+allows TIOCSCTTY, TIOCSPGRP/TIOCGPGRP, TCGETS/TCSETS*, window sizes and TCFLSH;
+there is no reason to fake controlling-terminal or job-control state.
+Optional tty calls outside that list (TIOCGSID, TIOCNOTTY, TCXONC, TCSBRK,
+legacy TCGETA/TCSETA*, line-discipline controls) still depend on the actual
+SELinux policy; no permission-bypassing success is fabricated.
+
+Run `bash build.sh`, `python3 tests/pty-host.py`, and
+`python3 tests/exec-signals-host.py`. The normal `tests/run.sh` includes the
+pty regression. The test opens `/dev/pts/ptmx`, tests classic and termios2
+attributes and invalid buffers, establishes a controlling tty after setsid,
+sets/gets its foreground process group, opens `/dev/tty`, replaces stdio,
+exercises fd guards and close_range modes, execs `/bin/sh -c 'echo ok'`, and
+reads its output from the master. Fatal diagnostics are separately checked
+after stderr redirection and resident exec. These pass with the copied app
+syscall filter and also with the pty test inside host bwrap's virtual /dev.
+Host tests cannot reproduce enforcing device SELinux xperms or ptmxmode=000.
+
+Rio's immediate shell exit remains unconfirmed on device. Its old trace stops
+before shell exec and cannot identify SHELL, the generated passwd shell, or
+login rc behavior. The proxy does not override NSS/getpwuid: glibc reads the
+sandbox's nsswitch.conf and generated /etc/passwd. Verify those values inside
+the same sandbox, not via the device's root shell. After a coordinator-built
+fresh image, trace Rio and inspect the child's `tty-ioctl`, `v3 exec`,
+`exit-status` and fatal messages. Compare a clean non-login `/bin/sh -c
+'echo ok'` launch with the configured login shell; inspect /etc/profile and
+home rc files only if exec succeeds. Full device steps and evidence are in
+`out/pc-logs/agents/v3-term-result.md`. No AOSP or kernel changes are needed
+for the fixes here; no per-app changes were made.

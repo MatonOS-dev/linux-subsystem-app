@@ -10,6 +10,8 @@ struct image { uintptr_t entry, stack; };
 void proxy_image_map(uintptr_t,uintptr_t,uintptr_t,const char *);
 int proxy_load(const char *, char *const *, char *const *, struct image *);
 int proxy_install(int);
+extern int proxy_diagnostic_fd;
+int proxy_diagnostics_init(void);
 int proxy_dns_forwarder(const char *);
 int proxy_mount(const char *, const char *);
 const char *proxy_path(const char *, char *, size_t);
