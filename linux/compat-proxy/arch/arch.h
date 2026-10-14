@@ -6,10 +6,21 @@
 #define PROXY_ARCH_H
 #include <stdint.h>
 #include "syscalls.h"
+/* Six signed 64-bit canonical words. Pointers enter through uintptr_t;
+ * backends sign-extend scalar compat arguments during decode. */
+typedef int64_t proxy_arg_t;
+typedef proxy_arg_t proxy_args[6];
+typedef uint64_t proxy_ptr_t;
+typedef uint64_t proxy_sigmask_t;
 enum arch_slot { ARCH_RESULT, ARCH_PC, ARCH_STACK, ARCH_ARG0, ARCH_ARG1,
                  ARCH_ARG2, ARCH_ARG3, ARCH_ARG4, ARCH_ARG5 };
 #ifndef PROXY_ARCH_BACKEND
 #define PROXY_ARCH_BACKEND "x86_64/backend.h"
 #endif
+/* Decode retains any wire variant until arch_finish_call fixes its result.
+ * Multiplexer tables and user-buffer layouts belong entirely in the backend. */
+struct arch_call { long id,error; unsigned variant; uintptr_t output; };
+long proxy_copy(void *,const void *,__SIZE_TYPE__);
+long proxy_raw(long,long,long,long,long,long,long);
 #include PROXY_ARCH_BACKEND
 #endif

@@ -30,14 +30,14 @@
 #include <stddef.h>
 #include <fcntl.h>
 #include <errno.h>
-#include "build/app-policy.h"
+#include ARCH_POLICY_HEADER
 #ifndef SYS_SECCOMP
 #define SYS_SECCOMP 1
 #endif
 #ifndef SYS_USER_DISPATCH
 #define SYS_USER_DISPATCH 2
 #endif
-#define SIGSYS_BIT (1UL << (SIGSYS-1))
+#define SIGSYS_BIT (UINT64_C(1) << (SIGSYS-1))
 #define SA_RESTORER 0x04000000
 #define NS_FLAGS (CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET)
 #ifdef HOST_COMMAND_TEST
@@ -60,7 +60,7 @@ int proxy_diagnostics_init(void) {
 }
 /* Resident exec must discard libc handlers: bionic debuggerd uses bionic
  * TLS, which is no longer valid after entering a glibc image. */
-static void crash_hex(uintptr_t value) {
+static void crash_hex(uint64_t value) {
     char out[18]="0x";static const char digits[]="0123456789abcdef";
     for(unsigned i=0;i<16;i++)out[2+i]=digits[(value>>(60-4*i))&15];
     RAW(PROXY_SC_write,proxy_diagnostic_fd,out,sizeof(out),0,0,0);
@@ -97,7 +97,7 @@ static void crash_report(int sig,siginfo_t *info,void *context) {
         }RAW(PROXY_SC_close,fd,0,0,0,0,0);
     }
     struct kernel_action action={0};RAW(PROXY_SC_rt_sigaction,sig,&action,0,8,0,0);
-    unsigned long mask=1UL<<(sig-1);RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);
+    proxy_sigmask_t mask=UINT64_C(1)<<(sig-1);RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);
     RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),RAW(PROXY_SC_gettid,0,0,0,0,0,0),sig,0,0,0);
     RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);
 }
@@ -175,7 +175,7 @@ static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-usern
 static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)return -EINVAL;unsigned limit=0;size_t k=0;for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10)return -ERANGE;limit=limit*10+digit;}if(!k || (k<len && !(k+1==len && buf[k]=='\n')))return -EINVAL;long r=RAW(PROXY_SC_write,fd,buf,len,0,0,0);if(r>=0)userns_remaining=limit;return r;}
 
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
-static long path_call(long nr,long *a,int one,int two) {
+static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
     int at=one==1 || (nr==PROXY_SC_symlinkat && one==2);
     int fd=at?(int)a[one-1]:AT_FDCWD;
@@ -187,7 +187,7 @@ static long path_call(long nr,long *a,int one,int two) {
     /* Publish an unnamed inode via procfs: AT_EMPTY_PATH otherwise requires
      * CAP_DAC_READ_SEARCH. Resolve the destination and mount policy normally. */
     char empty_link[64];
-    if(nr==PROXY_SC_linkat && a[1] && !*(char *)a[1] && (a[4]&AT_EMPTY_PATH)){
+    if(nr==PROXY_SC_linkat && a[1] && !*(char *)(uintptr_t)a[1] && (a[4]&AT_EMPTY_PATH)){
         char digits[24];size_t k=14;unsigned d=0;unsigned long n=(unsigned)fd;
         p_copy(empty_link,"/proc/self/fd/",14);
         do{digits[d++]=(char)('0'+n%10);n/=10;}while(n);
@@ -197,21 +197,21 @@ static long path_call(long nr,long *a,int one,int two) {
         a[4]=(a[4]&~AT_EMPTY_PATH)|AT_SYMLINK_FOLLOW;follow=VFS_FOLLOW_LINK_SOURCE;
     }
     /* Other empty-path operations act on the original descriptor. */
-    if(a[one] && !*(char *)a[one] && at){long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_fd_stat(fd,(void *)a[2]);if(!r && nr==PROXY_SC_statx){struct stat st;if(!RAW(PROXY_SC_fstat,fd,&st,0,0,0,0)){links_fd_stat(fd,&st);((struct statx *)a[4])->stx_nlink=st.st_nlink;}}return r;}
-    const char *original_path=(void *)a[one];
+    if(a[one] && !*(char *)(uintptr_t)a[one] && at){long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
+    const char *original_path=(void *)(uintptr_t)a[one];
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
-    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
+    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
     char *q=NULL;
-    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
+    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
     int writing=nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
-    if(nr==PROXY_SC_mkdirat){struct stat existing;if(!RAW(PROXY_SC_newfstatat,AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW,0,0)){e=-EEXIST;goto done;}}
+    if(nr==PROXY_SC_mkdirat){struct proxy_stat existing;if(!arch_stat_at(AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW)){e=-EEXIST;goto done;}}
     /* Exclusive creation checks existence before mount write permission.
      * bwrap probes an already bound file this way before mounting a new
      * source over it. Never open/truncate the read-only backing inode. */
     if(nr==PROXY_SC_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL)){
-        struct stat existing;
-        if(!RAW(PROXY_SC_newfstatat,AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW,0,0)){e=-EEXIST;goto done;}
+        struct proxy_stat existing;
+        if(!arch_stat_at(AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW)){e=-EEXIST;goto done;}
     }
     if(writing && ((e=vfs_mount_readonly(pm)) || (q && (e=vfs_mount_readonly(qm)))))goto done;
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
@@ -232,8 +232,8 @@ static long path_call(long nr,long *a,int one,int two) {
     /* bwrap --dev needs /dev/full, which Android apps may not open: serve
      * /dev/zero (reads identical; writes succeed instead of ENOSPC). */
     if(p_equal(p,"/dev/full")) {
-        struct stat probe;
-        if(RAW(PROXY_SC_newfstatat,AT_FDCWD,"/dev/full",&probe,0,0,0)==-EACCES) {
+        struct proxy_stat probe;
+        if(arch_stat_at(AT_FDCWD,"/dev/full",&probe,0)==-EACCES) {
             char *zero=vfs_alloc(10);
             if(!zero){e=-ENOMEM;goto done;}
             p_copy(zero,"/dev/zero",10);vfs_free(p);p=zero;
@@ -243,8 +243,8 @@ static long path_call(long nr,long *a,int one,int two) {
      * multiplexer for this devpts instance. bwrap links /dev/ptmx to
      * pts/ptmx, so serve opens of that node from /dev/ptmx. */
     if(nr==PROXY_SC_openat && p_equal(p,"/dev/pts/ptmx")) {
-        struct stat probe;
-        if(!RAW(PROXY_SC_newfstatat,AT_FDCWD,"/dev/pts/ptmx",&probe,0,0,0) && !(probe.st_mode&0777)) {
+        struct proxy_stat probe;
+        if(!arch_stat_at(AT_FDCWD,"/dev/pts/ptmx",&probe,0) && !(probe.st_mode&0777)) {
             char *ptmx=vfs_alloc(10);
             if(!ptmx){e=-ENOMEM;goto done;}
             p_copy(ptmx,"/dev/ptmx",10);vfs_free(p);p=ptmx;
@@ -252,19 +252,19 @@ static long path_call(long nr,long *a,int one,int two) {
     }
     if(proxy_trace){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 path ",8,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,p,p_len(p),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
-    if(nr==PROXY_SC_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
-    if(nr==PROXY_SC_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
+    if(nr==PROXY_SC_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
+    if(nr==PROXY_SC_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
     if(nr==PROXY_SC_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=links_open(p,a[2],a[3]);
     else if(nr==PROXY_SC_linkat)e=links_publish(p,q,a[4]);
     else if(nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2)e=links_name_call(nr,a,p,q);
     else if(nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     else e=links_path_call(nr,a,p);
     if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record((int)e,fd,original_path);
-    if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)a[2],(size_t)e);raw[e]=0;
+    if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */
         if(p_len(p)>=6 && p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/' && raw[0]=='/'){
-            char *rev=vfs_reverse(raw);if(rev){size_t n=p_len(rev);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],rev,n);e=(long)n;vfs_free(rev);}}
+            char *rev=vfs_reverse(raw);if(rev){size_t n=p_len(rev);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],rev,n);e=(long)n;vfs_free(rev);}}
         vfs_free(raw);
     }
 done:
@@ -277,14 +277,14 @@ done:
         /* O_PATH opens need no permission, so the denial would only surface at
          * the caller's fstat (bwrap's bind source check): probe it here. */
         if(e>=0 && nr==PROXY_SC_openat && (a[2]&O_PATH)) {
-            struct stat probe;
-            if(RAW(PROXY_SC_fstat,e,&probe,0,0,0,0)==-EACCES){RAW(PROXY_SC_close,e,0,0,0,0,0);e=-ENOENT;}
+            struct proxy_stat probe;
+            if(arch_stat_fd(e,&probe)==-EACCES){RAW(PROXY_SC_close,e,0,0,0,0,0);e=-ENOENT;}
         }
         /* Existence checks (access F_OK) need no permission either; Flatpak
          * uses them to pick a mandatory --dev-bind, so answer consistently. */
         if(e==0 && (nr==PROXY_SC_faccessat || nr==PROXY_SC_faccessat2)) {
-            struct stat probe;
-            if(RAW(PROXY_SC_newfstatat,AT_FDCWD,p,&probe,0,0,0)==-EACCES)e=-ENOENT;
+            struct proxy_stat probe;
+            if(arch_stat_at(AT_FDCWD,p,&probe,0)==-EACCES)e=-ENOENT;
         }
     }
     vfs_free(p);vfs_free(q);return e;
@@ -313,7 +313,7 @@ void proxy_log_bwrap_args(const char *path,char *const *argv){
     }
 }
 static long dns_poll(void *,unsigned long,struct timespec *,const void *,unsigned long);
-static long modernize(long nr,long *a,long *answer) {
+static long modernize(long nr,proxy_arg_t *a,long *answer) {
     switch(nr){
     case PROXY_SC_access:a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return PROXY_SC_faccessat;
     case PROXY_SC_open:a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return PROXY_SC_openat;
@@ -328,19 +328,19 @@ static long modernize(long nr,long *a,long *answer) {
     case PROXY_SC_chown:case PROXY_SC_lchown:a[4]=nr==PROXY_SC_lchown?AT_SYMLINK_NOFOLLOW:0;a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return PROXY_SC_fchownat;
     case PROXY_SC_mknod:a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;return PROXY_SC_mknodat;
     case PROXY_SC_io_pgetevents:{
-        struct aio_mask {unsigned long *mask;size_t size;};struct aio_mask *m=(void *)a[5];unsigned long old=0;
-        if(m && m->mask){if(m->size!=8){*answer=-EINVAL;return -1;}unsigned long next=*m->mask&~SIGSYS_BIT;*answer=RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&next,&old,8,0,0);if(*answer)return -1;}
+        struct aio_mask {proxy_sigmask_t *mask;size_t size;};struct aio_mask *m=(void *)(uintptr_t)a[5];proxy_sigmask_t old=0;
+        if(m && m->mask){if(m->size!=8){*answer=-EINVAL;return -1;}proxy_sigmask_t next=*m->mask&~SIGSYS_BIT;*answer=RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&next,&old,8,0,0);if(*answer)return -1;}
         *answer=RAW(PROXY_SC_io_getevents,a[0],a[1],a[2],a[3],a[4],0);
         if(m && m->mask)RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
         return -1;
     }
     case PROXY_SC_accept:a[3]=0;return PROXY_SC_accept4;
     case PROXY_SC_pause:*answer=RAW(PROXY_SC_ppoll,0,0,0,0,8,0);return -1;
-    case PROXY_SC_futimesat:{struct timespec times[2],*tp=NULL;if(a[2]){struct timeval *tv=(void *)a[2];tp=times;for(int i=0;i<2;i++){times[i].tv_sec=tv[i].tv_sec;times[i].tv_nsec=tv[i].tv_usec*1000;}}long b[6]={a[0],a[1],(long)tp,0,0,0};*answer=path_call(PROXY_SC_utimensat,b,1,-1);return -1;}
-    case PROXY_SC_poll:{struct timespec ts,*t=NULL;if((int)a[2]>=0){ts.tv_sec=(int)a[2]/1000;ts.tv_nsec=((int)a[2]%1000)*1000000;t=&ts;}*answer=dns_poll((void *)a[0],a[1],t,NULL,8);return -1;}
-    case PROXY_SC_select:{struct timespec ts,*t=NULL;struct timeval *tv=(void *)a[4];if(tv){ts.tv_sec=tv->tv_sec;ts.tv_nsec=tv->tv_usec*1000;t=&ts;}*answer=RAW(PROXY_SC_pselect6,a[0],a[1],a[2],a[3],t,0);if(tv){tv->tv_sec=ts.tv_sec;tv->tv_usec=ts.tv_nsec/1000;}return -1;}
+    case PROXY_SC_futimesat:{struct timespec times[2],*tp=NULL;if(a[2]){struct timeval *tv=(void *)(uintptr_t)a[2];tp=times;for(int i=0;i<2;i++){times[i].tv_sec=tv[i].tv_sec;times[i].tv_nsec=tv[i].tv_usec*1000;}}proxy_arg_t b[6]={a[0],a[1],(long)tp,0,0,0};*answer=path_call(PROXY_SC_utimensat,b,1,-1);return -1;}
+    case PROXY_SC_poll:{struct timespec ts,*t=NULL;if((int)a[2]>=0){ts.tv_sec=(int)a[2]/1000;ts.tv_nsec=((int)a[2]%1000)*1000000;t=&ts;}*answer=dns_poll((void *)(uintptr_t)a[0],a[1],t,NULL,8);return -1;}
+    case PROXY_SC_select:{struct timespec ts,*t=NULL;struct timeval *tv=(void *)(uintptr_t)a[4];if(tv){ts.tv_sec=tv->tv_sec;ts.tv_nsec=tv->tv_usec*1000;t=&ts;}*answer=RAW(PROXY_SC_pselect6,a[0],a[1],a[2],a[3],t,0);if(tv){tv->tv_sec=ts.tv_sec;tv->tv_usec=ts.tv_nsec/1000;}return -1;}
     case PROXY_SC_alarm:{struct itimerval next={0},old;next.it_value.tv_sec=(unsigned)a[0];*answer=RAW(PROXY_SC_setitimer,ITIMER_REAL,&next,&old,0,0,0);if(!*answer)*answer=old.it_value.tv_sec+(old.it_value.tv_usec!=0);return -1;}
-    case PROXY_SC_utime:case PROXY_SC_utimes:{struct timespec times[2],*tp=NULL;if(a[1]){tp=times;if(nr==PROXY_SC_utime){long *v=(void *)a[1];for(int i=0;i<2;i++){times[i].tv_sec=v[i];times[i].tv_nsec=0;}}else {struct timeval *v=(void *)a[1];for(int i=0;i<2;i++){times[i].tv_sec=v[i].tv_sec;times[i].tv_nsec=v[i].tv_usec*1000;}}}long b[6]={AT_FDCWD,a[0],(long)tp,0,0,0};*answer=path_call(PROXY_SC_utimensat,b,1,-1);return -1;}
+    case PROXY_SC_utime:case PROXY_SC_utimes:{struct timespec times[2],*tp=NULL;if(a[1]){tp=times;if(nr==PROXY_SC_utime){long *v=(void *)(uintptr_t)a[1];for(int i=0;i<2;i++){times[i].tv_sec=v[i];times[i].tv_nsec=0;}}else {struct timeval *v=(void *)(uintptr_t)a[1];for(int i=0;i<2;i++){times[i].tv_sec=v[i].tv_sec;times[i].tv_nsec=v[i].tv_usec*1000;}}}proxy_arg_t b[6]={AT_FDCWD,a[0],(long)tp,0,0,0};*answer=path_call(PROXY_SC_utimensat,b,1,-1);return -1;}
     case PROXY_SC_getdents:{
         /* linux_dirent64 -> legacy x86_64 linux_dirent, including d_type
          * in the last byte. Consume at most caller capacity, no dropped entries. */
@@ -358,7 +358,7 @@ static long modernize(long nr,long *a,long *answer) {
     case PROXY_SC_eventfd:a[1]=0;return PROXY_SC_eventfd2;
     case PROXY_SC_signalfd:a[3]=0;return PROXY_SC_signalfd4;
     case PROXY_SC_fork:a[0]=SIGCHLD;a[1]=a[2]=a[3]=a[4]=0;return PROXY_SC_clone;
-    case PROXY_SC_time:{struct timespec ts;*answer=RAW(PROXY_SC_clock_gettime,0,&ts,0,0,0,0);if(!*answer){*answer=ts.tv_sec;if(a[0])*(long *)a[0]=ts.tv_sec;}return -1;}
+    case PROXY_SC_time:{struct timespec ts;*answer=RAW(PROXY_SC_clock_gettime,0,&ts,0,0,0,0);if(!*answer){*answer=ts.tv_sec;if(a[0])*(long *)(uintptr_t)a[0]=ts.tv_sec;}return -1;}
     default:return nr;
     }
 }
@@ -367,7 +367,7 @@ static long modernize(long nr,long *a,long *answer) {
 /* Filesystem AF_UNIX addresses are paths: translate them through the virtual
  * mount table like any path call (Wayland, X11, PulseAudio, D-Bus sockets).
  * Abstract and unnamed addresses pass through. Returns 1 when handled. */
-static int unix_call(long nr,long a[6],long *result) {
+static int unix_call(long nr,proxy_arg_t a[6],long *result) {
     if(nr!=PROXY_SC_connect && nr!=PROXY_SC_bind)return 0;
     const struct sockaddr_un *in=(const void *)a[1];
     long len=a[2];
@@ -426,15 +426,11 @@ static int unix_call(long nr,long a[6],long *result) {
  * Android's app policy does not allow on ptys (unpriv_tty_ioctls). termios2 is
  * termios plus two trailing speed fields; serve them with the classic calls.
  * Arbitrary speeds (BOTHER) mean nothing on a pty; they become B38400. */
-#define V3_TCGETS2 0x802c542aul
-#define V3_TCSETS2 0x402c542bul
-#define V3_TCSETSW2 0x402c542cul
-#define V3_TCSETSF2 0x402c542dul
-struct v3_termios2 { unsigned c_iflag,c_oflag,c_cflag,c_lflag; unsigned char c_line,c_cc[19]; unsigned c_ispeed,c_ospeed; };
+#include "arch/termios.h"
 /* No existing fault-safe pointer helper exists. Let pipe copy_{from,to}_user
  * check both ends; unlike /proc/self/mem this respects read-only mappings.
  * A termios2 fits atomically in an empty pipe; nonblocking avoids any wait. */
-static long checked_copy(void *dst,const void *src,size_t size) {
+long proxy_copy(void *dst,const void *src,size_t size) {
     int fd[2];long r=RAW(PROXY_SC_pipe2,fd,O_CLOEXEC|O_NONBLOCK,0,0,0,0);
     if(r<0)return r;
     r=RAW(PROXY_SC_write,fd[1],src,size,0,0,0);
@@ -442,17 +438,17 @@ static long checked_copy(void *dst,const void *src,size_t size) {
     RAW(PROXY_SC_close,fd[0],0,0,0,0,0);RAW(PROXY_SC_close,fd[1],0,0,0,0,0);
     return r==(long)size?0:r<0?r:-EFAULT;
 }
-static int termios2_call(long *a,long *result) {
+static int termios2_call(proxy_arg_t *a,long *result) {
     unsigned long cmd=(unsigned long)a[1]&0xffffffffu;
-    struct v3_termios2 copy={0};
+    struct proxy_termios2 copy={0};
     if(cmd==V3_TCGETS2){
         long r=RAW(PROXY_SC_ioctl,a[0],0x5401,&copy,0,0,0);
         if(!r){unsigned speed=copy.c_cflag&0010017;copy.c_ispeed=copy.c_ospeed=speed==0?0:38400;
-            r=checked_copy((void *)a[2],&copy,sizeof(copy));}
+            r=proxy_copy((void *)(uintptr_t)a[2],&copy,sizeof(copy));}
         *result=r;return 1;
     }
     if(cmd!=V3_TCSETS2 && cmd!=V3_TCSETSW2 && cmd!=V3_TCSETSF2)return 0;
-    *result=checked_copy(&copy,(void *)a[2],sizeof(copy));if(*result)return 1;
+    *result=proxy_copy(&copy,(void *)(uintptr_t)a[2],sizeof(copy));if(*result)return 1;
     if((copy.c_cflag&0010017)==0010000)copy.c_cflag=(copy.c_cflag&~0010017u)|0000017;
     *result=RAW(PROXY_SC_ioctl,a[0],cmd==V3_TCSETS2?0x5402:cmd==V3_TCSETSW2?0x5403:0x5404,(long)&copy,0,0,0);
     return 1;
@@ -508,7 +504,7 @@ static void dispatch_app(int sig,siginfo_t *info,void *ctx) {
     if(action.flags&SA_RESETHAND) chained.handler=0;
     /* Keep SIGSYS deliverable even during app chaining. Do not implement SA_ONSTACK
      * by switching stacks here; the proxy never depends on an app-owned altstack. */
-    unsigned long old=0,mask=action.mask&~SIGSYS_BIT;
+    proxy_sigmask_t old=0,mask=action.mask&~SIGSYS_BIT;
     RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
     if(action.flags&SA_SIGINFO) ((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
     else ((void (*)(int))action.handler)(sig);
@@ -544,17 +540,20 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     struct thread_state *thread=thread_state();
     if(info->si_code!=SYS_SECCOMP) {
         /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
-        dispatch_app(sig,info,opaque);(*(unsigned long *)&uc->uc_sigmask)&=~SIGSYS_BIT;
-        RAW(PROXY_SC_sigaltstack,0,&uc->uc_stack,0,0,0,0);
-        uc->uc_stack.ss_flags&=~SS_ONSTACK;
+        dispatch_app(sig,info,opaque);(*arch_signal_mask(uc))&=~SIGSYS_BIT;
+        RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
+        arch_signal_stack_ready(uc);
         if(selector && dispatch_selector==selector) *selector=saved;
         return;
     }
-    long nr=arch_decode_syscall(info->si_syscall),original=nr;
-    long a[6]={ARCH_CONTEXT(uc,ARCH_ARG0),ARCH_CONTEXT(uc,ARCH_ARG1),
+    long nr,original;
+    proxy_arg_t a[6]={ARCH_CONTEXT(uc,ARCH_ARG0),ARCH_CONTEXT(uc,ARCH_ARG1),
         ARCH_CONTEXT(uc,ARCH_ARG2),ARCH_CONTEXT(uc,ARCH_ARG3),
         ARCH_CONTEXT(uc,ARCH_ARG4),ARCH_CONTEXT(uc,ARCH_ARG5)};
+    struct arch_call call=arch_decode_call(info->si_syscall,a);
+    nr=original=call.id;
     long result=-ENOSYS;
+    if(call.error){result=call.error;goto finish;}
     /* signalfd readiness is evaluated against the thread's signal state.
      * Infinite poll must wait outside the SIGSYS frame, with the application's
      * mask restored, rather than nesting the wait in a signal handler. */
@@ -572,13 +571,13 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     result=-ENOSYS;
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     switch(nr) {
-    case PROXY_SC_ppoll:if(app_allowed(nr))result=dns_poll((void *)a[0],a[1],(void *)a[2],(void *)a[3],a[4]);break;
+    case PROXY_SC_ppoll:if(app_allowed(nr))result=dns_poll((void *)(uintptr_t)a[0],a[1],(void *)(uintptr_t)a[2],(void *)(uintptr_t)a[3],a[4]);break;
     case PROXY_SC_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
-    case PROXY_SC_getdents64:result=links_dents(a[0],(void *)a[1],a[2]);break;
-    case PROXY_SC_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_fd_stat((int)a[0],(void *)a[1]);break;
+    case PROXY_SC_getdents64:result=links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);break;
+    case PROXY_SC_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_payload_fd_stat((int)a[0],(void *)(uintptr_t)a[1]);break;
     case PROXY_SC_exit:ipc_thread_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
+    case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
@@ -621,20 +620,20 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(a[0]==SIGSYS) {
             if(a[3]!=8) {result=-EINVAL;break;}
             struct kernel_action next=chained;
-            if(a[1]) p_copy(&next,(void *)a[1],sizeof(next));
-            if(a[2]) p_copy((void *)a[2],&chained,sizeof(chained));
+            if(a[1]) p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
+            if(a[2]) p_copy((void *)(uintptr_t)a[2],&chained,sizeof(chained));
             if(a[1]) {next.mask&=~SIGSYS_BIT;chained=next;}result=0;
         } else {
             struct kernel_action action;
-            if(a[1]) {p_copy(&action,(void *)a[1],sizeof(action));action.mask&=~SIGSYS_BIT;a[1]=(long)&action;}
+            if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));action.mask&=~SIGSYS_BIT;a[1]=(long)&action;}
             result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
         }break;
     case PROXY_SC_rt_sigprocmask: {
         if(a[3]!=8) {result=-EINVAL;break;}
-        unsigned long mask;
-        if(a[1]) {p_copy(&mask,(void *)a[1],8);mask&=~SIGSYS_BIT;a[1]=(long)&mask;}
+        proxy_sigmask_t mask;
+        if(a[1]) {p_copy(&mask,(void *)(uintptr_t)a[1],8);mask&=~SIGSYS_BIT;a[1]=(long)&mask;}
         result=RAW(nr,a[0],a[1],a[2],8,0,0);
-        if(!result && a[1])RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&(*(unsigned long *)&uc->uc_sigmask),8,0,0);
+        if(!result && a[1])RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&(*arch_signal_mask(uc)),8,0,0);
         break;
     }
     case PROXY_SC_sigaltstack: {
@@ -643,11 +642,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(!thread) {result=-ENOMEM;break;}
         stack_t next=thread->app_stack;
         if(a[0]) {
-            p_copy(&next,(void *)a[0],sizeof(next));
+            p_copy(&next,(void *)(uintptr_t)a[0],sizeof(next));
             if(next.ss_flags & ~(SS_DISABLE|(1U<<31))) {result=-EINVAL;break;}
             if(!(next.ss_flags&SS_DISABLE) && next.ss_size<2048) {result=-ENOMEM;break;}
         }
-        if(a[1]) p_copy((void *)a[1],&thread->app_stack,sizeof(stack_t));
+        if(a[1]) p_copy((void *)(uintptr_t)a[1],&thread->app_stack,sizeof(stack_t));
         if(a[0]) thread->app_stack=next;
         result=0;break;
     }
@@ -656,16 +655,16 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(!result && (a[0]&CLONE_NEWUSER) && !userns_remaining)result=-EPERM;
         if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
         break;
-    case PROXY_SC_mount:result=vfs_mount((char *)a[0],(char *)a[1],(char *)a[2],(unsigned long)a[3]);break;
-    case PROXY_SC_umount2:result=vfs_unmount((char *)a[0]);break;
-    case PROXY_SC_pivot_root:result=vfs_pivot((char *)a[0],(char *)a[1]);break;
-    case PROXY_SC_chroot:result=vfs_root((char *)a[0]);break;
+    case PROXY_SC_mount:result=vfs_mount((char *)(uintptr_t)a[0],(char *)(uintptr_t)a[1],(char *)(uintptr_t)a[2],(unsigned long)a[3]);break;
+    case PROXY_SC_umount2:result=vfs_unmount((char *)(uintptr_t)a[0]);break;
+    case PROXY_SC_pivot_root:result=vfs_pivot((char *)(uintptr_t)a[0],(char *)(uintptr_t)a[1]);break;
+    case PROXY_SC_chroot:result=vfs_root((char *)(uintptr_t)a[0]);break;
     case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:result=0;break;
     case PROXY_SC_capset:result=0;break;
-    case PROXY_SC_capget:{struct __user_cap_header_struct *h=(void *)a[0];if(!h){result=-EFAULT;break;}
+    case PROXY_SC_capget:{struct __user_cap_header_struct *h=(void *)(uintptr_t)a[0];if(!h){result=-EFAULT;break;}
         unsigned count=h->version==_LINUX_CAPABILITY_VERSION_1?1:2;
         if(h->version!=_LINUX_CAPABILITY_VERSION_1 && h->version!=_LINUX_CAPABILITY_VERSION_2 && h->version!=_LINUX_CAPABILITY_VERSION_3){h->version=_LINUX_CAPABILITY_VERSION_3;result=-EINVAL;break;}
-        if(a[1]){struct __user_cap_data_struct *d=(void *)a[1];for(unsigned i=0;i<count;i++)d[i]=(struct __user_cap_data_struct){0};}result=0;break;
+        if(a[1]){struct __user_cap_data_struct *d=(void *)(uintptr_t)a[1];for(unsigned i=0;i<count;i++)d[i]=(struct __user_cap_data_struct){0};}result=0;break;
     }
     case PROXY_SC_vfork:
         /* Fork-like clone is safe inside the handler only with no child stack;
@@ -689,7 +688,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             break;
         }
 clone_retry:
-        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;links_fork(1);dns_fork_prepare();(*(unsigned long *)&uc->uc_sigmask)=~SIGSYS_BIT;}
+        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;links_fork(1);dns_fork_prepare();(*arch_signal_mask(uc))=~SIGSYS_BIT;}
         namespace_clone_parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0);namespace_clone_flags=a[0]&NS_FLAGS;
         ARCH_CONTEXT(uc,ARCH_ARG1)=a[1];ARCH_CONTEXT(uc,ARCH_ARG2)=a[2];
         ARCH_CONTEXT(uc,ARCH_ARG3)=a[3];ARCH_CONTEXT(uc,ARCH_ARG4)=a[4];
@@ -699,16 +698,16 @@ clone_retry:
         proxy_log("ours-clone-retry",nr,0);goto clean_mask;
     case PROXY_SC_clone3:result=-ENOSYS;break; /* libc falls back to clone. */
     case PROXY_SC_execve:case PROXY_SC_execveat: {
-        const char *path=(const char *)a[nr==PROXY_SC_execve?0:1];
+        const char *path=(const char *)(uintptr_t)a[nr==PROXY_SC_execve?0:1];
         if(nr==PROXY_SC_execveat && (a[0]!=AT_FDCWD || a[4])) {result=-ENOSYS;break;}
         if(!thread) {result=-ENOMEM;break;}
         if(proxy_trace){emit("v3 exec ");emit(path);emit("\n");}
         struct image image;
-        result=proxy_load(path,(char *const *)a[nr==PROXY_SC_execve?1:2],(char *const *)a[nr==PROXY_SC_execve?2:3],&image);
+        result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {
             vfs_network_payload((namespaces&CLONE_NEWNET)!=0);
             if(namespaces&CLONE_NEWNET)dns_network_payload();
-            proxy_host_snapshot((char *const *)a[nr==PROXY_SC_execve?2:3]);
+            proxy_host_snapshot((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3]);
             ipc_exec();
             exec_close_fds();
             exec_signals();
@@ -723,10 +722,10 @@ clone_retry:
             }
             if(thread) thread->app_stack.ss_flags=SS_DISABLE;
             ARCH_CONTEXT(uc,ARCH_PC)=image.entry;ARCH_CONTEXT(uc,ARCH_STACK)=image.stack;
-            ARCH_CONTEXT(uc,ARCH_ARG2)=0;
+            arch_exec_context(uc);
         }break;
     }
-    case PROXY_SC_chdir:result=vfs_chdir(AT_FDCWD,(char *)a[0]);break;
+    case PROXY_SC_chdir:result=vfs_chdir(AT_FDCWD,(char *)(uintptr_t)a[0]);break;
     case PROXY_SC_fchdir:result=vfs_chdir((int)a[0],NULL);break;
     case PROXY_SC_open:case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_access:case PROXY_SC_readlink:
     case PROXY_SC_mkdir:case PROXY_SC_unlink:case PROXY_SC_chmod:case PROXY_SC_chown:case PROXY_SC_lchown:case PROXY_SC_statfs:
@@ -740,18 +739,18 @@ clone_retry:
     case PROXY_SC_symlink:result=path_call(nr,a,1,-1);break;
     case PROXY_SC_symlinkat:result=path_call(nr,a,2,-1);break;
     case PROXY_SC_getcwd:{long e=0;char *rev=vfs_getcwd(&e);result=e;
-        if(rev){size_t k=p_len(rev)+1;if(k>(size_t)a[1])result=-ERANGE;else {p_copy((void *)a[0],rev,k);result=(long)k;}vfs_free(rev);}break;
+        if(rev){size_t k=p_len(rev)+1;if(k>(size_t)a[1])result=-ERANGE;else {p_copy((void *)(uintptr_t)a[0],rev,k);result=(long)k;}vfs_free(rev);}break;
     }
     default:break;
     }
 finish:
-    ARCH_CONTEXT(uc,ARCH_RESULT)=result;
+    ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace)proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
 clean_mask:
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
-    (*(unsigned long *)&uc->uc_sigmask)&=~SIGSYS_BIT;
-    RAW(PROXY_SC_sigaltstack,0,&uc->uc_stack,0,0,0,0);
-    uc->uc_stack.ss_flags&=~SS_ONSTACK;
+    (*arch_signal_mask(uc))&=~SIGSYS_BIT;
+    RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
+    arch_signal_stack_ready(uc);
     if(selector && dispatch_selector==selector) *selector=saved;
 }
 static int app_install(void) {
@@ -775,7 +774,7 @@ int proxy_install(int android) {
     exec_signals();
     struct kernel_action action={(uintptr_t)handler,SA_SIGINFO|SA_RESTORER|SA_NODEFER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
     long r=RAW(PROXY_SC_rt_sigaction,SIGSYS,&action,0,8,0,0);if(r) return (int)r;
-    unsigned long mask=SIGSYS_BIT;r=RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);if(r) return (int)r;
+    proxy_sigmask_t mask=SIGSYS_BIT;r=RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);if(r) return (int)r;
     r=RAW(PROXY_SC_prctl,PR_SET_NO_NEW_PRIVS,1,0,0,0,0);if(r) return (int)r;
     if(android) {emit("v3 installing android filter\n");r=app_install();if(r) return (int)r;emit("v3 android filter installed\n");}
     struct sock_filter bpf[1024];unsigned n=0;
@@ -800,16 +799,14 @@ int proxy_install(int android) {
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
     /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
-    uintptr_t ip=(uintptr_t)proxy_raw;
+    uint64_t ip=arch_gateway_pc(0);
     /* Symbol immediately after the syscall: no instruction-size assumptions. */
-    extern char proxy_raw_after[];
-    ip=(uintptr_t)proxy_raw_after;
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    ip=(uintptr_t)proxy_clone_after;
+    ip=arch_gateway_pc(1);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
@@ -831,7 +828,7 @@ int proxy_install(int android) {
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    for(long nr=0;nr<512;nr++) if(ours(arch_decode_syscall(nr)) && nr!=arch_encode_syscall(PROXY_SC_clone) && nr!=arch_encode_syscall(PROXY_SC_sendto)) {
+    for(long nr=0;nr<512;nr++) if((ours(arch_decode_syscall(nr)) || arch_trap_number(nr)) && nr!=arch_encode_syscall(PROXY_SC_clone) && nr!=arch_encode_syscall(PROXY_SC_sendto)) {
         ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     }
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);

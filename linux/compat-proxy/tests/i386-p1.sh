@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deliberately a failing phase gate until an actual i386 loader exists.
+# ELF32 static VFS regression under the copied x86 app policy.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/i386-p1
@@ -26,10 +26,10 @@ if (( native_result != 0 )); then
     exit 1
 fi
 cmp build/i386-p1/fixture build/i386-p1/native.out
-loader=${MATON_V3_I386_LOADER:-$PWD/build/linux-layer-v3}
+loader=${MATON_V3_I386_LOADER:-$PWD/build/linux-layer-v3-i386}
 set +e
 timeout 10 "$loader" --android-filter \
-    --map /i386-p1-fixture "$PWD/build/i386-p1/fixture" \
+    --map "$PWD/build/i386-p1/fixture" /i386-p1-fixture \
     "$PWD/build/i386-p1/hello" /i386-p1-fixture \
     >build/i386-p1/proxy.out 2>build/i386-p1/proxy.log
 result=$?

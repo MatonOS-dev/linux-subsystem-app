@@ -13,3 +13,5 @@ python3 "$source_dir/gen-policy.py"
   "$source_dir"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c} \
   "$source_dir"/arch/x86_64/{raw.S,entry.S} \
   -o "$output/libmatonos-v3-loader.so"
+
+bash "$source_dir/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"

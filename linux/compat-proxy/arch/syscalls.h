@@ -385,5 +385,6 @@ enum proxy_syscall {
     PROXY_SC_waitid,
     PROXY_SC_write,
     PROXY_SC_writev,
+    PROXY_SC_semtimedop_time64,
     PROXY_SC_count
 };

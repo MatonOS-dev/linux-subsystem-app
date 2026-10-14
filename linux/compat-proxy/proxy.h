@@ -6,7 +6,10 @@
 long proxy_raw(long, long, long, long, long, long, long);
 void proxy_restore(void);
 _Noreturn void proxy_enter(uintptr_t, uintptr_t);
-#define RAW(n,a,b,c,d,e,f) proxy_raw(arch_encode_syscall(n),(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
+#define RAW(n,a,b,c,d,e,f) arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f))
+#include "arch/stat.h"
+#include "arch/statx.h"
+#include "arch/socket.h"
 struct image { uintptr_t entry, stack; };
 void proxy_image_map(uintptr_t,uintptr_t,uintptr_t,const char *);
 int proxy_load(const char *, char *const *, char *const *, struct image *);

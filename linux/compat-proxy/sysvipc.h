@@ -1,9 +1,10 @@
+#include "arch/arch.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 #ifndef PROXY_SYSVIPC_H
 #define PROXY_SYSVIPC_H
 int ipc_init(void);
 int ipc_ours(long);
-long ipc_call(long,long *);
+long ipc_call(long,proxy_arg_t *);
 void ipc_exit(void);
 void ipc_thread_exit(void);
 void ipc_exec(void);

@@ -18,24 +18,26 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <time.h>
+#include "arch/ipc.h"
+#include "arch/time.h"
 #define R(n, a, b, c, d, e, f) RAW(PROXY_SC_##n, a, b, c, d, e, f)
 #define PAGE 4096UL
 #define MAXSEM 32767
 #define AGAIN (-4096L)
 typedef uint64_t off;
 struct head {
-  uint64_t mutex;
-  unsigned seq;
-  off size, objects, records, free_messages, fork_sequence;
+  _Alignas(8) uint64_t mutex;
+  uint32_t seq, format;
+  _Alignas(8) off size, objects, records, free_messages, fork_sequence;
   int nextid;
   unsigned transaction, poisoned;
 };
 struct obj {
-  off next, data, messages;
+  _Alignas(8) off next, data, messages;
   int id, kind, key, removed, index;
-  struct ipc64_perm perm;
-  unsigned long count, size, bytes, qbytes;
-  long ctime, atime, dtime;
+  struct proxy_ipc_perm perm;
+  _Alignas(8) uint64_t count, size, bytes, qbytes;
+  int64_t ctime, atime, dtime;
   int cpid, lpid;
 };
 struct cell {
@@ -43,17 +45,21 @@ struct cell {
 };
 /* type 1: undo; type 2: attachment; type 3: wait counter */
 struct rec {
-  off next;
+  _Alignas(8) off next;
   int type, pid, id, index;
   uint64_t birth;
-  long value;
-  unsigned long addr, len;
+  int64_t value;
+  uint64_t addr, len;
 };
 struct msg {
-  off next;
-  long type;
-  size_t len, capacity;
+  _Alignas(8) off next;
+  int64_t type;
+  uint64_t len, capacity;
 };
+_Static_assert(sizeof(struct head)==72,"shared IPC v2 header");
+_Static_assert(sizeof(struct obj)==144,"shared IPC v2 object");
+_Static_assert(sizeof(struct rec)==56,"shared IPC v2 record");
+_Static_assert(sizeof(struct msg)==32,"shared IPC v2 message");
 struct ctx {
   int fd;
   unsigned char *base;
@@ -65,7 +71,7 @@ static int recover(void);
 static long init_error;
 struct local_attach {
   struct local_attach *next;
-  unsigned long addr, len;
+  uint64_t addr, len;
   int id;
 };
 static struct local_attach *attached;
@@ -90,11 +96,11 @@ static unsigned long decimal(char *p, unsigned long n) {
     p[i++] = b[--k];
   return i;
 }
-static long now(int clock) {
-  struct timespec t;
-  if (R(clock_gettime, clock, &t, 0, 0, 0, 0))
+static int64_t now(int clock) {
+  struct proxy_timespec t;
+  if (arch_clock_time(clock,&t))
     return 0;
-  return t.tv_sec * 1000000000L + t.tv_nsec;
+  return t.sec * INT64_C(1000000000) + t.nsec;
 }
 /* /proc start time prevents a reused numeric PID from inheriting undo or
  * holding a dead writer's lock forever. Unknown proc failures are live. */
@@ -193,11 +199,13 @@ int ipc_init(void) {
   long r = R(ftruncate, fd, PAGE, 0, 0, 0, 0);
   if (!r) {
     r = R(mmap, 0, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (r >= 0) {
+    if ((unsigned long)r < (unsigned long)-4095) {
       shared = (void *)r;
+      shared->format = 2;
       shared->size = PAGE;
       shared->nextid = 1;
       local_pid = (int)R(getpid, 0, 0, 0, 0, 0, 0);
+      r = 0;
     }
   }
   R(close, fd, 0, 0, 0, 0, 0);
@@ -238,7 +246,7 @@ static void *ptr(struct ctx *c, off o) { return c->base + o; }
 static long remap(struct ctx *c) {
   size_t size = shared->size;
   long p = R(mmap, 0, size, PROT_READ | PROT_WRITE, MAP_SHARED, c->fd, 0);
-  if (p < 0)
+  if ((unsigned long)p >= (unsigned long)-4095)
     return p;
   if (c->base)
     R(munmap, c->base, c->size, 0, 0, 0, 0);
@@ -247,7 +255,7 @@ static long remap(struct ctx *c) {
   return 0;
 }
 static off alloc(struct ctx *c, size_t n) {
-  if (n > SIZE_MAX - PAGE || shared->size > INT64_MAX - n - PAGE)
+  if (n > SIZE_MAX - PAGE || shared->size > SIZE_MAX - n - PAGE)
     return 0;
   off o = shared->size;
   size_t end = (o + n + PAGE - 1) & ~(PAGE - 1);
@@ -335,13 +343,13 @@ static int recover(void) {
   int fd = (int)R(openat, AT_FDCWD, arena_path, O_RDWR | O_CLOEXEC | O_NOFOLLOW,
                   0, 0, 0);
   long r = fd < 0 ? fd : 0;
-  struct stat st;
+  struct proxy_stat st;
   if (!r)
-    r = R(fstat, j, &st, 0, 0, 0, 0);
+    r = arch_stat_fd( j,&st);
   long mapped = -1;
   if (!r) {
     mapped = R(mmap, 0, st.st_size, PROT_READ, MAP_PRIVATE, j, 0);
-    if (mapped < 0)
+    if ((unsigned long)mapped >= (unsigned long)-4095)
       r = mapped;
   }
   size_t at = 0;
@@ -365,7 +373,7 @@ static int recover(void) {
     }
     at += e->length;
   }
-  if (mapped >= 0)
+  if ((unsigned long)mapped < (unsigned long)-4095)
     R(munmap, mapped, st.st_size, 0, 0, 0, 0);
   if (fd >= 0)
     R(close, fd, 0, 0, 0, 0, 0);
@@ -598,7 +606,7 @@ static long get(struct ctx *c, int kind, int key, unsigned long size,
   p->size = kind == 1 && reusable ? reused_capacity : size;
   p->qbytes = 16384;
   if (kind == 2) {
-    if (size > INT64_MAX - 4095)
+    if ((uint64_t)size + 4095 > (uint64_t)INT64_MAX)
       return -ENOMEM;
     char path[4096];
     segment_path(path, p->id);
@@ -686,24 +694,11 @@ static long ctl(struct ctx *c, struct obj *p, int cmd, int num,
     int r = owner(p);
     if (r)
       return r;
-    struct ipc64_perm perm;
-    unsigned long qbytes = 0;
-    if (p->kind == 1) {
-      struct semid64_ds d;
-      r = (int)copy(&d, (void *)arg, sizeof(d));
-      perm = d.sem_perm;
-    } else if (p->kind == 2) {
-      struct shmid64_ds d;
-      r = (int)copy(&d, (void *)arg, sizeof(d));
-      perm = d.shm_perm;
-    } else {
-      struct msqid64_ds d;
-      r = (int)copy(&d, (void *)arg, sizeof(d));
-      perm = d.msg_perm;
-      qbytes = d.msg_qbytes;
-      if (qbytes > 16384)
-        return -EPERM;
-    }
+    struct proxy_ipc_ds d;
+    r=(int)arch_ipc_ds_read(p->kind,(void *)arg,&d,copy);
+    struct proxy_ipc_perm perm=d.perm;
+    uint64_t qbytes=d.qbytes;
+    if(p->kind==3 && qbytes>16384)return -EPERM;
     if (r)
       return r;
     if (perm.uid == UINT_MAX || perm.gid == UINT_MAX)
@@ -729,42 +724,12 @@ static long ctl(struct ctx *c, struct obj *p, int cmd, int num,
   if (r)
     return r;
   if (cmd == IPC_STAT) {
-    if (p->kind == 1) {
-      struct semid64_ds d = {0};
-      d.sem_perm = p->perm;
-      d.sem_nsems = p->count;
-      d.sem_otime = p->atime;
-      d.sem_ctime = p->ctime;
-      long copied = copy((void *)arg, &d, sizeof(d));
-      return copied ? copied : indexed ? p->id : 0;
-    }
-    if (p->kind == 2) {
-      struct shmid64_ds d = {0};
-      d.shm_perm = p->perm;
-      if (p->removed)
-        d.shm_perm.mode |= 01000;
-      d.shm_segsz = p->size;
-      d.shm_nattch = p->count;
-      d.shm_cpid = p->cpid;
-      d.shm_lpid = p->lpid;
-      d.shm_atime = p->atime;
-      d.shm_dtime = p->dtime;
-      d.shm_ctime = p->ctime;
-      long copied = copy((void *)arg, &d, sizeof(d));
-      return copied ? copied : indexed ? p->id : 0;
-    }
-    struct msqid64_ds d = {0};
-    d.msg_perm = p->perm;
-    d.msg_qnum = p->count;
-    d.msg_qbytes = p->qbytes;
-    d.msg_cbytes = p->bytes;
-    d.msg_stime = p->atime;
-    d.msg_rtime = p->dtime;
-    d.msg_ctime = p->ctime;
-    d.msg_lspid = p->cpid;
-    d.msg_lrpid = p->lpid;
-    long copied = copy((void *)arg, &d, sizeof(d));
-    return copied ? copied : indexed ? p->id : 0;
+    struct proxy_ipc_ds d={.perm=p->perm,.count=p->count,.size=p->size,
+      .bytes=p->bytes,.qbytes=p->qbytes,.ctime=p->ctime,.atime=p->atime,
+      .dtime=p->dtime,.cpid=p->cpid,.lpid=p->lpid};
+    if(p->kind==2 && p->removed)d.perm.mode|=01000;
+    long copied=arch_ipc_ds_write(p->kind,(void *)arg,&d,copy);
+    return copied?copied:indexed?p->id:0;
   }
   if (p->kind == 2 && (cmd == SHM_LOCK || cmd == SHM_UNLOCK))
     return -ENOSYS;
@@ -821,7 +786,7 @@ static long ctl(struct ctx *c, struct obj *p, int cmd, int num,
   wake();
   return 0;
 }
-static long semops(struct ctx *c, struct obj *p, long *a, off *waitrec) {
+static long semops(struct ctx *c, struct obj *p, proxy_arg_t *a, off *waitrec) {
   unsigned long n = a[2];
   if (!n)
     return -EINVAL;
@@ -829,7 +794,7 @@ static long semops(struct ctx *c, struct obj *p, long *a, off *waitrec) {
     return -E2BIG;
   struct sembuf ops[500];
   int trial[32000];
-  long r = copy(ops, (void *)a[1], n * sizeof(*ops));
+  long r = copy(ops, (void *)(uintptr_t)a[1], n * sizeof(*ops));
   if (r)
     return r;
   int mode = 4;
@@ -961,7 +926,7 @@ static long info(struct ctx *c, int kind, int cmd, void *out) {
   }
   return r ? r : high;
 }
-static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
+static long dispatch(struct ctx *c, long nr, proxy_arg_t *a, off *wr) {
   if (nr == PROXY_SC_semget)
     return get(c, 1, (int)a[0], a[1], (int)a[2]);
   if (nr == PROXY_SC_shmget) {
@@ -1011,7 +976,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
   if (nr == PROXY_SC_semctl || nr == PROXY_SC_shmctl || nr == PROXY_SC_msgctl) {
     if (cmd == IPC_INFO || (kind == 1 && cmd == SEM_INFO) ||
         (kind == 2 && cmd == SHM_INFO) || (kind == 3 && cmd == MSG_INFO))
-      return info(c, kind, cmd, (void *)a[kind == 1 ? 3 : 2]);
+      return info(c, kind, cmd, (void *)(uintptr_t)a[kind == 1 ? 3 : 2]);
   }
   struct obj *p = 0;
   int indexed =
@@ -1078,7 +1043,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
                     : 0),
           segment, 0);
     R(close, segment, 0, 0, 0, 0, 0);
-    if (mapped < 0)
+    if ((unsigned long)mapped >= (unsigned long)-4095)
       return mapped;
     if (flags & SHM_REMAP) {
       struct local_attach **link = &attached;
@@ -1118,7 +1083,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     q->pid = (int)R(getpid, 0, 0, 0, 0, 0, 0);
     q->birth = identity(q->pid, 1);
     q->id = id;
-    q->addr = mapped;
+    q->addr = (uintptr_t)mapped;
     q->len = len;
     p = ptr(c, o);
     p->count++;
@@ -1131,7 +1096,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
       R(munmap, mapped, len, 0, 0, 0, 0);
       return -ENOMEM;
     }
-    la->addr = mapped;
+    la->addr = (uintptr_t)mapped;
     la->len = len;
     la->id = id;
     la->next = attached;
@@ -1142,7 +1107,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     if ((unsigned long)a[2] > 8192)
       return -EINVAL;
     long type;
-    long r = copy(&type, (void *)a[1], sizeof(type));
+    long r = copy(&type, (void *)(uintptr_t)a[1], sizeof(type));
     if (r)
       return r;
     if (type <= 0)
@@ -1175,7 +1140,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     q->len = a[2];
     if (!reused)
       q->capacity = a[2];
-    r = copy(q + 1, (char *)a[1] + sizeof(long), a[2]);
+    r = copy(q + 1, (char *)(uintptr_t)a[1] + sizeof(long), a[2]);
     if (r) {
       q->next = shared->free_messages;
       shared->free_messages = m;
@@ -1202,13 +1167,13 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     if (a[4] & 040000)
       return -ENOSYS;
     off selected = 0, *link = &p->messages, *chosen = 0;
-    long wanted = a[3], best = LONG_MAX;
+    int64_t wanted = a[3], best = INT64_MAX;
     for (off m = *link; m;) {
       struct msg *q = ptr(c, m);
       int match = wanted == 0 ||
                   (wanted > 0 ? ((a[4] & MSG_EXCEPT) ? q->type != wanted
                                                      : q->type == wanted)
-                              : ((wanted == LONG_MIN || q->type <= -wanted) &&
+                              : ((wanted == INT64_MIN || q->type <= -wanted) &&
                                  q->type < best));
       if (match) {
         selected = m;
@@ -1228,9 +1193,11 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     size_t n = q->len;
     if (n > (unsigned long)a[2])
       n = a[2];
-    r = (int)copy((void *)a[1], &q->type, sizeof(long));
+    if(q->type>LONG_MAX)return -EOVERFLOW;
+    long wire_type=q->type;
+    r = (int)copy((void *)(uintptr_t)a[1], &wire_type, sizeof(wire_type));
     if (!r)
-      r = (int)copy((char *)a[1] + sizeof(long), q + 1, n);
+      r = (int)copy((char *)(uintptr_t)a[1] + sizeof(long), q + 1, n);
     *chosen = q->next;
     q->next = shared->free_messages;
     shared->free_messages = selected;
@@ -1248,6 +1215,7 @@ int ipc_ours(long n) {
   case PROXY_SC_semget:
   case PROXY_SC_semop:
   case PROXY_SC_semtimedop:
+  case PROXY_SC_semtimedop_time64:
   case PROXY_SC_semctl:
   case PROXY_SC_shmget:
   case PROXY_SC_shmat:
@@ -1262,10 +1230,12 @@ int ipc_ours(long n) {
     return 0;
   }
 }
-long ipc_call(long nr, long *input) {
-  long args[6];
+long ipc_call(long nr, proxy_arg_t *input) {
+  int time64=nr==PROXY_SC_semtimedop_time64;
+  if(time64)nr=PROXY_SC_semtimedop;
+  proxy_arg_t args[6];
   p_copy(args, input, sizeof(args));
-  long *a = args;
+  proxy_arg_t *a = args;
   struct sembuf operations[500];
   unsigned char message[sizeof(long) + 8192];
   if (nr == PROXY_SC_semop || nr == PROXY_SC_semtimedop) {
@@ -1273,7 +1243,7 @@ long ipc_call(long nr, long *input) {
       return a[2] ? -E2BIG : -EINVAL;
     if (a[2] > 500)
       return -E2BIG;
-    long r = copy(operations, (void *)a[1], a[2] * sizeof(*operations));
+    long r = copy(operations, (void *)(uintptr_t)a[1], a[2] * sizeof(*operations));
     if (r)
       return r;
     a[1] = (long)operations;
@@ -1281,7 +1251,7 @@ long ipc_call(long nr, long *input) {
   if (nr == PROXY_SC_msgsnd) {
     if ((unsigned long)a[2] > 8192)
       return -EINVAL;
-    long r = copy(message, (void *)a[1], sizeof(long) + a[2]);
+    long r = copy(message, (void *)(uintptr_t)a[1], sizeof(long) + a[2]);
     if (r)
       return r;
     a[1] = (long)message;
@@ -1289,18 +1259,18 @@ long ipc_call(long nr, long *input) {
   ipc_fork();
   if (!shared)
     return init_error ? init_error : -ENOSYS;
-  long deadline = 0;
+  int64_t deadline = 0;
   if (nr == PROXY_SC_semtimedop && a[3]) {
-    struct timespec t;
-    long r = copy(&t, (void *)a[3], sizeof(t));
+    struct proxy_timespec t;
+    long r = arch_timeout_read((void *)(uintptr_t)a[3],time64,&t,copy);
     if (r)
       return r;
-    if (t.tv_sec < 0 || t.tv_nsec < 0 || t.tv_nsec >= 1000000000)
+    if (t.sec < 0 || t.nsec < 0 || t.nsec >= 1000000000)
       return -EINVAL;
-    long start = now(CLOCK_MONOTONIC);
-    deadline = t.tv_sec > (LONG_MAX - start - t.tv_nsec) / 1000000000L
-                   ? LONG_MAX
-                   : start + t.tv_sec * 1000000000L + t.tv_nsec;
+    int64_t start = now(CLOCK_MONOTONIC);
+    deadline = t.sec > (INT64_MAX - start - t.nsec) / 1000000000L
+                   ? INT64_MAX
+                   : start + t.sec * 1000000000L + t.nsec;
   }
   int waited = 0;
   for (;;) {
@@ -1331,7 +1301,7 @@ long ipc_call(long nr, long *input) {
     if (result != AGAIN)
       return result;
     waited = 1;
-    long remaining = deadline ? deadline - now(CLOCK_MONOTONIC) : 10000000L;
+    int64_t remaining = deadline ? deadline - now(CLOCK_MONOTONIC) : 10000000L;
     long waitresult = 0;
     if (remaining > 0) {
       if (remaining > 10000000)
@@ -1425,7 +1395,7 @@ void ipc_fork(void) {
 void ipc_exec(void) {
   ipc_fork();
   while (attached) {
-    long a[6] = {(long)attached->addr, 0, 0, 0, 0, 0};
+    proxy_arg_t a[6] = {(long)attached->addr, 0, 0, 0, 0, 0};
     if (ipc_call(PROXY_SC_shmdt, a) < 0)
       break;
   }

@@ -55,3 +55,22 @@ for name, number in sorted(numbers.items(), key=lambda pair: pair[1]):
 (out.parent / 'trapped-syscalls.md').write_text(
     '# Android app-policy complement (generated)\n\n| Number | Syscall | Handler | Equivalent |\n|---:|---|---|---|\n' +
     ''.join(f"| {r['number']} | {r['name']} | {r['status']} | {r['equivalent']} |\n" for r in rows))
+
+# The compat loader uses the distinct x86 app allowlist from the same inputs.
+compat_base = load_syscall_names_from_file(root / 'SYSCALLS.TXT', 'x86')
+compat_allow, compat_block = set(), set()
+for name in inputs[1:]:
+    (compat_block if 'BLOCKLIST' in name else compat_allow).update(
+        load_syscall_names_from_file(root / name, 'x86'))
+compat_names = merge_names(compat_base, compat_allow, compat_block)
+compat_table = root / 'kernel/uapi/asm-x86/asm/unistd_32.h'
+compat_numbers = {name: int(number) for name, number in re.findall(
+    r'^#define __NR_(\w+)\s+(\d+)$', compat_table.read_text(), re.M)}
+if compat_names - compat_numbers.keys():
+    raise SystemExit(f'Unknown i386 numbers: {compat_names - compat_numbers.keys()}')
+(out.parent / 'app-policy-i386.h').write_text(
+    '/* Generated x86 app policy from checked-out AOSP. */\n'
+    'static const int android_allowed[] = {\n' +
+    ','.join(str(compat_numbers[n]) for n in sorted(compat_names)) + '\n};\n')
+with (out.parent / 'policy-inputs.sha256').open('a') as hashes:
+    hashes.write(f'{hashlib.sha256(compat_table.read_bytes()).hexdigest()}  {compat_table}\n')

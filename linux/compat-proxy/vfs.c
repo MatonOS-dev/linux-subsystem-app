@@ -99,8 +99,8 @@ static int hide_resolver;
 void vfs_network_payload(int isolated){
     if(!isolated || hide_resolver || !root)return;
     long e=0;char *info=vfs_resolve(AT_FDCWD,"/.flatpak-info",1,&e);
-    struct stat st;
-    if(info && !RAW(PROXY_SC_newfstatat,AT_FDCWD,info,&st,0,0,0))hide_resolver=1;
+    struct proxy_stat st;
+    if(info && !arch_stat_at(AT_FDCWD,info,&st,0))hide_resolver=1;
     vfs_free(info);
 }
 void vfs_executable(const char *path){vfs_free(executable);executable=dupstr(path);}
@@ -136,8 +136,8 @@ static struct fd_name *fd_names;
  * block). Block signals during the short critical section so an app handler
  * cannot reenter it. A fork child may discard an inherited parent's owner. */
 static unsigned long fd_names_owner;
-static unsigned long fd_names_lock(void){
-    unsigned long all=~0UL,mask=0;
+static proxy_sigmask_t fd_names_lock(void){
+    proxy_sigmask_t all=~UINT64_C(0),mask=0;
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
     unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     for(;;){unsigned long owner=__atomic_load_n(&fd_names_owner,__ATOMIC_RELAXED);
@@ -145,12 +145,12 @@ static unsigned long fd_names_lock(void){
         __asm__ volatile("pause");
     }
 }
-static void fd_names_unlock(unsigned long mask){
+static void fd_names_unlock(proxy_sigmask_t mask){
     __atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
 }
 void vfs_fd_close(int fd){
-    unsigned long mask=fd_names_lock();
+    proxy_sigmask_t mask=fd_names_lock();
     struct fd_name **p=&fd_names;while(*p && (*p)->fd!=fd)p=&(*p)->next;
     if(*p){struct fd_name *old=*p;*p=old->next;vfs_free(old->path);vfs_free(old);}
     fd_names_unlock(mask);
@@ -158,7 +158,7 @@ void vfs_fd_close(int fd){
 void vfs_fd_dup(int from,int to){char *name=vfs_fd_name(from);vfs_fd_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
 char *vfs_fd_name(int fd){
     char *published=links_fd_name(fd);if(published)return published;
-    unsigned long mask=fd_names_lock();char *name=NULL;
+    proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
     for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==fd){
         if(!root)name=dupstr(p->path);
         else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
@@ -184,9 +184,9 @@ char *vfs_proc_fd_name(const char *path){
     }
 return NULL;
 }
-static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct stat named,actual;int valid=host && !RAW(PROXY_SC_newfstatat,AT_FDCWD,host,&named,0,0,0) && !RAW(PROXY_SC_newfstatat,AT_FDCWD,".",&actual,0,0,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
+static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct proxy_stat named,actual;int valid=host && !arch_stat_at(AT_FDCWD,host,&named,0) && !arch_stat_at(AT_FDCWD,".",&actual,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
     char *tracked=vfs_fd_name(fd);if(tracked)return tracked;
-    struct stat st;long status=RAW(PROXY_SC_fstat,fd,&st,0,0,0,0);if(status<0){*error=status;return NULL;}if(!S_ISDIR(st.st_mode)){*error=-ENOTDIR;return NULL;}
+    struct proxy_stat st;long status=arch_stat_fd(fd,&st);if(status<0){*error=status;return NULL;}if(!S_ISDIR(st.st_mode)){*error=-ENOTDIR;return NULL;}
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
     char *s=readlink_dynamic(p,error);if(!s)return NULL;char *q=vfs_reverse(s);vfs_free(s);return q;
 }
@@ -222,7 +222,7 @@ restart:;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);
-        if(!target && input[i]=='/'){struct stat st;long status=RAW(PROXY_SC_newfstatat,AT_FDCWD,host,&st,0,0,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
+        if(!target && input[i]=='/'){struct proxy_stat st;long status=arch_stat_at(AT_FDCWD,host,&st,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
         /* proc fd magic links point to backing objects, outside a pivoted
          * pathname root. They are not ordinary payload absolute symlinks. */
         if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
@@ -280,7 +280,7 @@ void vfs_fd_record(int fd,int dirfd,const char *path){
     }
     if(!global)return;
     char *logical=global;
-    unsigned long mask=fd_names_lock();
+    proxy_sigmask_t mask=fd_names_lock();
     struct fd_name *p=fd_names;while(p && p->fd!=fd)p=p->next;
     if(!p){p=vfs_alloc(sizeof(*p));if(!p){fd_names_unlock(mask);vfs_free(logical);return;}p->fd=fd;p->path=NULL;p->next=fd_names;fd_names=p;}
     vfs_free(p->path);p->path=logical;fd_names_unlock(mask);
@@ -459,7 +459,7 @@ long vfs_gpu_publish(const char *base,const char *vendor,const char *device,cons
 void vfs_gpu_init(void){
     long e=0;char *path=vfs_resolve(AT_FDCWD,"/dev/__properties__/u:object_r:vendor_maton_graphics_prop:s0",1,&e);if(!path)return;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
-    struct stat st;if(RAW(PROXY_SC_fstat,fd,&st,0,0,0,0) || st.st_size<148){RAW(PROXY_SC_close,fd,0,0,0,0,0);return;}
+    struct proxy_stat st;if(arch_stat_fd(fd,&st) || st.st_size<148){RAW(PROXY_SC_close,fd,0,0,0,0,0);return;}
     char *area=(void *)RAW(PROXY_SC_mmap,0,st.st_size,PROT_READ,MAP_SHARED,fd,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);if((unsigned long)area>=(unsigned long)-4095)return;
     char vendor[92],device[92],driver[92],render[92],mode[92];
     int ok=gpu_property(area,st.st_size,"vendor.maton.graphics.vendor",vendor)&&gpu_property(area,st.st_size,"vendor.maton.graphics.device",device)&&gpu_property(area,st.st_size,"vendor.maton.graphics.driver",driver)&&gpu_property(area,st.st_size,"vendor.maton.graphics.render_node",render)&&gpu_property(area,st.st_size,"vendor.maton.graphics.mode",mode);
@@ -470,7 +470,7 @@ void vfs_gpu_init(void){
     for(unsigned i=16;render[i];i++)if(render[i]<'0'||render[i]>'9')return;
     path=vfs_resolve(AT_FDCWD,render,1,&e);if(!path)return;
     fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
-    e=RAW(PROXY_SC_fstat,fd,&st,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
+    e=arch_stat_fd(fd,&st);RAW(PROXY_SC_close,fd,0,0,0,0,0);
     if(e)return;
     unsigned maj=(st.st_rdev>>8)&0xfff,min=(st.st_rdev&255)|((st.st_rdev>>12)&0xfffff00);
     if(!S_ISCHR(st.st_mode) || maj!=226 || min<128)return;
@@ -490,9 +490,9 @@ void vfs_gpu_init(void){
                 int primary=name[0]=='c'&&name[1]=='a'&&name[2]=='r'&&name[3]=='d';
                 int rendering=name[0]=='r'&&name[1]=='e'&&name[2]=='n'&&name[3]=='d';
                 if((primary || rendering) && p_len(name)<sizeof(card)){
-                    long c=RAW(PROXY_SC_openat,dri,name,O_RDONLY|O_CLOEXEC,0,0,0);struct stat cs;
+                    long c=RAW(PROXY_SC_openat,dri,name,O_RDONLY|O_CLOEXEC,0,0,0);struct proxy_stat cs;
                     if(c>=0){
-                        if(!RAW(PROXY_SC_fstat,c,&cs,0,0,0,0) && S_ISCHR(cs.st_mode) && ((cs.st_rdev>>8)&0xfff)==226){
+                        if(!arch_stat_fd(c,&cs) && S_ISCHR(cs.st_mode) && ((cs.st_rdev>>8)&0xfff)==226){
                             unsigned cm=(cs.st_rdev&255)|((cs.st_rdev>>12)&0xfffff00);
                             if(primary && cm<64){count++;p_copy(card,name,p_len(name)+1);card_minor=cm;}
                             else if(rendering && cm>=128)render_count++;

@@ -12,3 +12,5 @@ cc -mcmodel=large -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror -c
 cc -mcmodel=large -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror -c links.c -o build/links.o
 cc -mcmodel=large -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror -c sysvipc.c -o build/sysvipc.o
 ar rcs build/liblinux-layer-v3.a build/sysvipc.o build/links.o build/net.o build/vfs.o build/loader.o build/proxy.o build/raw.o
+
+bash ./build-i386.sh

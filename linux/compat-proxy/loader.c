@@ -35,7 +35,8 @@ static int map_elf(const char *path,struct mapped *out) {
     if(RAW(PROXY_SC_pread64,fd,ph,bytes,eh.e_phoff,0,0)!=(long)bytes) goto done;
     uintptr_t low=UINTPTR_MAX,high=0;
     for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD) {
-        if(ph[i].p_filesz>ph[i].p_memsz || ph[i].p_vaddr+ph[i].p_memsz<ph[i].p_vaddr) goto done;
+        if(ph[i].p_filesz>ph[i].p_memsz ||
+           (uint64_t)ph[i].p_vaddr+ph[i].p_memsz>UINTPTR_MAX-(PAGE-1)) goto done;
         if(DOWN(ph[i].p_vaddr)<low) low=DOWN(ph[i].p_vaddr);
         if(UP(ph[i].p_vaddr+ph[i].p_memsz)>high) high=UP(ph[i].p_vaddr+ph[i].p_memsz);
     }
@@ -65,7 +66,7 @@ static int map_elf(const char *path,struct mapped *out) {
         r=RAW(PROXY_SC_mprotect,start,end-start,prot,0,0,0);
         if(bad(r)) {error=(int)r;goto done;}
         proxy_image_map(start,end,DOWN(p->p_vaddr),path);
-        if(!out->phdr && eh.e_phoff>=p->p_offset && eh.e_phoff+bytes<=p->p_offset+p->p_filesz)
+        if(!out->phdr && eh.e_phoff>=p->p_offset && (uint64_t)eh.e_phoff+bytes<=(uint64_t)p->p_offset+p->p_filesz)
             out->phdr=bias+p->p_vaddr+eh.e_phoff-p->p_offset;
     }
     error=out->phdr?0:-ENOEXEC;
@@ -135,7 +136,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         {AT_GID,{RAW(PROXY_SC_getgid,0,0,0,0,0,0)}},{AT_EGID,{RAW(PROXY_SC_getegid,0,0,0,0,0,0)}},
         {AT_SECURE,{0}},{AT_RANDOM,{random}},{AT_EXECFN,{execfn}},{AT_PLATFORM,{platform}},
         {AT_HWCAP,{proxy_aux(AT_HWCAP)}},{AT_HWCAP2,{proxy_aux(AT_HWCAP2)}},
-        {AT_SYSINFO_EHDR,{proxy_aux(AT_SYSINFO_EHDR)}},{AT_CLKTCK,{100}},{AT_NULL,{0}}};
+        {ARCH_AUX_SYSINFO,{proxy_aux(ARCH_AUX_SYSINFO)}},{AT_SYSINFO_EHDR,{proxy_aux(AT_SYSINFO_EHDR)}},{AT_CLKTCK,{100}},{AT_NULL,{0}}};
     size_t words=1+ac+1+ec+1+sizeof(aux)/(sizeof(uintptr_t));
     uintptr_t sp=(cur-words*sizeof(uintptr_t))&~15UL,*v=(uintptr_t *)sp;
     *v++=ac; for(unsigned i=0;i<ac;i++) *v++=av[i]; *v++=0;

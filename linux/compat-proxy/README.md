@@ -936,3 +936,88 @@ The build scripts still produce only the x86_64 proxy, and APK packaging is
 unchanged. A future backend must implement these remaining interfaces before
 its native static/dynamic and inherited-filter exec gates can pass. The
 original P0 design and acceptance order above still apply.
+
+### Round 30 run 3: ELF32 resident loader and compat fixtures
+
+This supersedes the earlier P1 ENOEXEC result. `build.sh` now produces
+`build/linux-layer-v3-i386`; `build-android.sh` also produces
+`libmatonos-v3-loader-i386.so`. Both are freestanding ELF32/EM_386 binaries
+without a libc interpreter. `build-i386.sh` uses NDK r30/API 36 with `-m32`;
+the NDK supplies headers on hosts without multilib development headers and
+compiler builtins for signed 64-bit division. No upstream source is vendored.
+The host's glibc 2.39 i386 runtime is used only by dynamic test payloads.
+
+The selected i386 backend owns raw int-0x80/entry/rt-sigreturn/clone assembly,
+ELF32 headers and stack words, its 0x70000000 resident range, ucontext slots,
+GS reset across resident exec, and syscall mappings. The loader preserves
+AT_SYSINFO and AT_SYSINFO_EHDR: actual glibc vDSO calls, infinite-poll retry,
+TLS (`set_thread_area`), pthread/futex operations and signals are tested.
+A six-word `proxy_arg_t` array is always signed 64-bit. Kernel replay converts
+mmap byte offsets to mmap2 page units, splits pread64/pwrite64/ftruncate64
+arguments, and uses _llseek for internal seeks. Compat socketcall(102) and
+ipc(117) decode in the backend before entering common algorithms. `ipc(117)`
+handles semctl's indirect union argument, version-zero msgrcv's kludge, and
+shmat's output pointer. Direct IPC control commands strip IPC_64, and syscall
+420 reaches the common semaphore engine with an explicit time64 timeout.
+
+VFS/inode/IPC internal metadata now uses `proxy_stat`. stat/statx,
+msghdr/iovec/cmsg/message batches, timeouts and IPC control wire access is in
+`arch/` adapters; size/offset assertions verify the selected compiler layouts.
+Termios2 uses a fixed-width 44-byte x86 wire type. Kernel signal masks are
+always eight bytes, including short bookkeeping locks; context masks and
+altstack operations use backend hooks. Raw/clone BPF PCs are supplied by
+backend hooks rather than shifting a 32-bit uintptr_t by 32 in the core.
+Shared IPC v2 header/object/record/message sizes are explicitly asserted as
+72/144/56/32 bytes on both builds. Those records use fixed-width fields,
+64-bit message types and times, and explicit eight-byte alignment. User IPC
+control buffers still use the selected kernel wire form and split time highs.
+
+Verification commands:
+
+```sh
+bash tests/run.sh --i386-p1
+bash tests/run.sh --i386-p2
+bash tests/run.sh
+MATON_V3_ANDROID_OUT="$PWD/build/android" bash build-android.sh
+```
+
+The default suite includes the compat fixtures. P1 passes mapped static
+stat64/open/read/write. Dynamic fixtures pass actual glibc startup, twelve
+thread cycles before and after same-class resident exec, TLS isolation,
+futex waits, infinite poll, getdents64, signals, sockets and SCM_RIGHTS, and
+DNS sendmsg/recvmsg conversion over a real Unix transport. Additional compat
+fixtures pass pty/termios2, ipc(117) semaphores/shared memory, direct semget/
+semctl IPC_STAT, and a syscall-420 timeout. Native fixture execution is checked
+separately; SysV fixtures remove the host kernel objects they create.
+`MATON_V3_I386_LIBC` and `MATON_V3_I386_INTERPRETER` select another existing
+compat glibc runtime. No downloading, package installation, adb, image build,
+APK update, or device-policy validation is involved.
+
+**P3 is not implemented.** A cross-class resident exec still returns ENOEXEC.
+Each copied app filter and proxy filter accepts its selected architecture
+only. A dual-architecture inherited filter with stable bootstrap/raw gateways
+and a private authenticated, versioned FD handoff still must be implemented
+and tested. No mount/fd/DNS/inode/IPC namespace serializer or peer-loader path
+is present. Fixed-width IPC records alone do not connect independently
+started loaders to the same namespace. No second loader was packaged into
+linux/compositor/host: ship it alongside the trusted extracted loader only
+once that selection/handoff protocol works. This is missing implementation,
+not an external blocker, and does not establish Steam/Wine support.
+
+The full portability contract is also unfinished: legacy stat(106)/lstat(107)/
+fstat(108), old mmap argument blocks, remaining legacy/time64 structure
+translations and IPC info-buffer adapters need coverage. Some common legacy
+conversions still use native timespec/timeval/fd-set structures. The time64
+adapter currently covers semaphore deadlines, not every time64 operation.
+DNS integration covers message conversion, not complete i386 getaddrinfo/TCP/
+timeout/resolver behavior. IPC message queues, fork/exec namespace inheritance
+and full compat signal/FP-frame edge cases need broader actual-binary tests.
+Keep arm64/riscv64 work behind the same backend interfaces; do not infer that
+matching syscall tables alone makes either supported.
+
+Device acceptance remains pending. After completing P3, the coordinator must
+package both loaders and build a fresh image. On Ryzen/RX 6600, Surface Pro 3
+and ProDesk, launch the static/dynamic fixtures as the actual app UID without
+--android-filter, verify inherited seccomp and both exec directions, check
+VFS/private/diagnostic descriptors and a shared mixed-class IPC namespace,
+then exercise real Steam/Wine workloads. No kernel or AOSP change is requested.

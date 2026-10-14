@@ -1,8 +1,9 @@
+#include <signal.h>
 #include <ucontext.h>
 #include <elf.h>
 #include <linux/audit.h>
 #include "syscalls.h"
-struct kernel_action { uintptr_t handler,flags,restorer; unsigned long mask; };
+struct kernel_action { uintptr_t handler,flags,restorer; uint64_t mask; };
 #define ARCH_CLEAR_TLS() RAW(PROXY_SC_arch_prctl,0x1002,0,0,0,0,0)
 #define ARCH_AUDIT AUDIT_ARCH_X86_64
 #define ARCH_ELF_CLASS ELFCLASS64
@@ -24,4 +25,56 @@ static inline void arch_restart_syscall(void *context) {
     ARCH_CONTEXT(context,ARCH_PC)-=2; /* x86_64 syscall instruction */
 }
 
+static inline void arch_exec_context(void *context){
+ ARCH_CONTEXT(context,ARCH_ARG2)=0;
+}
+/* The kernel restores this mask and altstack at rt_sigreturn. */
+static inline uint64_t *arch_signal_mask(void *context) {
+    return (uint64_t *)&((ucontext_t *)context)->uc_sigmask;
+}
+static inline void *arch_signal_stack(void *context) {
+    return &((ucontext_t *)context)->uc_stack;
+}
+static inline void arch_signal_stack_ready(void *context) {
+    ((ucontext_t *)context)->uc_stack.ss_flags &= ~SS_ONSTACK;
+}
 #endif
+
+/* BPF matches the kernel-reported return PC, not a guessed opcode length. */
+static inline uint64_t arch_gateway_pc(unsigned which) {
+    extern char proxy_raw_after[], proxy_clone_after[];
+    return (uintptr_t)(which ? proxy_clone_after : proxy_raw_after);
+}
+
+#define ARCH_POLICY_HEADER "build/app-policy.h"
+
+#include <sys/stat.h>
+_Static_assert(sizeof(struct stat)==144,"kernel stat wire size");
+_Static_assert(__builtin_offsetof(struct stat,st_ino)==8,"kernel stat inode offset");
+
+static inline int arch_trap_number(long nr){(void)nr;return 0;}
+static inline struct arch_call arch_decode_call(long nr,proxy_arg_t *a){
+ (void)a;return (struct arch_call){.id=arch_decode_syscall(nr)};
+}
+static inline long arch_finish_call(struct arch_call call,long result){
+ (void)call;return result;
+}
+
+static inline long arch_raw_call(long id,proxy_arg_t a,proxy_arg_t b,proxy_arg_t c,
+ proxy_arg_t d,proxy_arg_t e,proxy_arg_t f){
+ return proxy_raw(arch_encode_syscall(id),a,b,c,d,e,f);
+}
+
+#define ARCH_IPC_SEM_TIMES(w,a,c) do { (w).sem_otime=(a); (w).sem_ctime=(c); } while(0)
+
+#define ARCH_IPC_SHM_TIMES(w,a,d,c) do { (w).shm_atime=(a); (w).shm_dtime=(d); (w).shm_ctime=(c); } while(0)
+
+#define ARCH_IPC_MSG_TIMES(w,a,d,c) do { (w).msg_stime=(a); (w).msg_rtime=(d); (w).msg_ctime=(c); } while(0)
+
+#include <sys/socket.h>
+#include <sys/uio.h>
+_Static_assert(sizeof(struct msghdr)==56,"msghdr wire size");
+_Static_assert(sizeof(struct iovec)==16,"iovec wire size");
+_Static_assert(sizeof(struct cmsghdr)==16,"cmsg wire size");
+
+#define ARCH_AUX_SYSINFO 32

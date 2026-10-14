@@ -4,6 +4,10 @@ cd "$(dirname "$0")/.."
 ./build.sh
 cc -O2 -Wall -Wextra -Werror tests/arch-map.c -o build/arch-map
 build/arch-map
+if [[ ${1:-} == --i386-p2 ]]; then
+    bash tests/i386-p1.sh
+    exec bash tests/i386-dynamic.sh
+fi
 if [[ ${1:-} == --i386-p1 ]]; then
     exec bash tests/i386-p1.sh
 fi
@@ -158,3 +162,6 @@ python3 tests/host-command-pair.py
 bash tests/sysvipc-host.sh
 
 python3 tests/host-command-threads.py
+
+bash tests/i386-p1.sh
+bash tests/i386-dynamic.sh
