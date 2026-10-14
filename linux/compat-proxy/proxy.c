@@ -5,6 +5,7 @@
 #include "vfs.h"
 #include "net.h"
 #include "links.h"
+#include "sysvipc.h"
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -569,9 +570,10 @@ done:
     RAW(SYS_close,fd,0,0,0,0,0);return n<0?n:0;
 }
 static int ours(long n) {
+    if(ipc_ours(n))return 1;
     switch(n) {
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
-    case SYS_close_range:case SYS_flock:case SYS_fstat:case SYS_getdents64:case SYS_exit_group:case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
+    case SYS_close_range:case SYS_flock:case SYS_fstat:case SYS_getdents64:case SYS_exit:case SYS_exit_group:case SYS_write:case SYS_close:case SYS_dup:case SYS_dup3:case SYS_fcntl:
     case SYS_capget:case SYS_capset:case SYS_setreuid:case SYS_setregid:case SYS_setfsuid:case SYS_setfsgid:case SYS_setgroups:case SYS_setuid:case SYS_setgid:case SYS_setresuid:case SYS_setresgid:
     case SYS_utime:case SYS_utimes:case SYS_creat:case SYS_rmdir:case SYS_mknod:case SYS_mknodat:
     case SYS_prctl:case SYS_execve:case SYS_execveat:case SYS_rt_sigaction:case SYS_rt_sigprocmask:
@@ -622,6 +624,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
      * new namespace flags; the parent's monitor keeps the original namespace. */
     if(namespace_clone_parent){
         if(RAW(SYS_getpid,0,0,0,0,0,0)!=namespace_clone_parent){
+            ipc_fork();
             namespaces|=namespace_clone_flags;
             if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;
         }
@@ -652,6 +655,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
+    if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
     if(net_handled)goto finish;
     result=-ENOSYS;
@@ -660,7 +664,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case SYS_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
     case SYS_getdents64:result=links_dents(a[0],(void *)a[1],a[2]);break;
     case SYS_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_fd_stat((int)a[0],(void *)a[1]);break;
-    case SYS_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case SYS_exit:ipc_thread_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case SYS_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case SYS_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case SYS_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case SYS_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
@@ -753,7 +758,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case SYS_vfork:
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
-        links_fork(1);result=RAW(SYS_clone,SIGCHLD,0,0,0,0,0);if(result<0)links_fork(-1);break;
+        result=ipc_fork_prepare();if(result)break;
+        links_fork(1);result=RAW(SYS_clone,SIGCHLD,0,0,0,0,0);ipc_fork_result(result);if(result<0)links_fork(-1);if(!result)ipc_fork();break;
     case SYS_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -762,14 +768,15 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(!(a[0]&CLONE_VM)){
             if(a[0]&CLONE_FILES){result=-ENOTSUP;break;}
             if(a[1])goto clone_retry;
-            unsigned long ns=a[0]&NS_FLAGS;links_fork(1);
+            unsigned long ns=a[0]&NS_FLAGS;result=ipc_fork_prepare();if(result)break;links_fork(1);
             result=RAW(SYS_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
+            ipc_fork_result(result);
             if(result<0)links_fork(-1);
-            if(!result){namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+            if(!result){ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
-        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK))links_fork(1);
+        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;links_fork(1);}
         namespace_clone_parent=RAW(SYS_getpid,0,0,0,0,0,0);namespace_clone_flags=a[0]&NS_FLAGS;
         uc->uc_mcontext.gregs[REG_RSI]=a[1];uc->uc_mcontext.gregs[REG_RDX]=a[2];
         uc->uc_mcontext.gregs[REG_R10]=a[3];uc->uc_mcontext.gregs[REG_R8]=a[4];
@@ -787,6 +794,7 @@ clone_retry:
         result=proxy_load(path,(char *const *)a[nr==SYS_execve?1:2],(char *const *)a[nr==SYS_execve?2:3],&image);
         if(!result) {
             proxy_host_snapshot((char *const *)a[nr==SYS_execve?2:3]);
+            ipc_exec();
             exec_close_fds();
             exec_signals();
             /* exec starts the new linker without the previous libc TLS. */
@@ -846,6 +854,7 @@ static int app_install(void) {
     return (int)RAW(SYS_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
 }
 int proxy_install(int android) {
+    ipc_init(); /* IPC failure must never prevent payload startup. */
     int diagnostics=proxy_diagnostics_init();if(diagnostics)return diagnostics;
     if(!thread_state()) return -ENOMEM;
     exec_signals();

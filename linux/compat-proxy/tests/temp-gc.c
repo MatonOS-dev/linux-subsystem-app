@@ -8,6 +8,8 @@
 #include <sys/wait.h>
 #include "../proxy.h"
 const char *proxy_tmpdir;
+/* This VFS-only fixture has no in-flight IPC fork descriptors. */
+int ipc_private_fd(int fd){(void)fd;return 0;}
 size_t p_len(const char *s){return strlen(s);}
 void p_copy(void *d,const void *s,size_t n){memcpy(d,s,n);}
 int p_equal(const char *a,const char *b){return !strcmp(a,b);}

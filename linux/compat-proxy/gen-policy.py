@@ -19,7 +19,7 @@ required = {'write', 'openat', 'pread64', 'close', 'mmap', 'mprotect', 'munmap',
             'clone', 'rt_sigaction', 'rt_sigprocmask', 'sigaltstack',
             'rt_sigreturn', 'prctl', 'seccomp', 'arch_prctl', 'exit_group',
             'read', 'fstat', 'newfstatat', 'fchmod', 'utimensat',
-            'faccessat', 'unlinkat', 'renameat2', 'flock', 'symlinkat', 'getdents64', 'mkdirat'}
+            'faccessat', 'unlinkat', 'renameat2', 'flock', 'symlinkat', 'getdents64', 'mkdirat', 'pipe2', 'ftruncate', 'pwrite64', 'futex', 'clock_gettime', 'getpid'}
 if required - names:
     raise SystemExit(f'Handler syscall(s) blocked by app policy: {required - names}')
 missing = names - numbers.keys()
@@ -43,7 +43,7 @@ translations = {
  'futimesat':'utimensat', 'signalfd':'signalfd4', 'eventfd':'eventfd2',
 }
 emulated = {'setuid','setgid','setreuid','setregid','setgroups','setresgid',
-            'setfsuid','setfsgid','chroot','mount','umount2'}
+            'setfsuid','setfsgid','chroot','mount','umount2','semget','semop','semctl','semtimedop','shmget','shmat','shmdt','shmctl','msgget','msgsnd','msgrcv','msgctl'}
 import json
 rows = []
 for name, number in sorted(numbers.items(), key=lambda pair: pair[1]):

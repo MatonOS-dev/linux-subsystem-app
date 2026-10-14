@@ -4,6 +4,7 @@
 #include "proxy.h"
 #include "vfs.h"
 #include "links.h"
+#include "sysvipc.h"
 #include <sys/syscall.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
@@ -33,7 +34,7 @@ static char *join(const char *a,const char *b) {
 struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
 int proxy_diagnostic_fd=2;
-int vfs_private_fd(int fd){if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
+int vfs_private_fd(int fd){if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
 static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(SYS_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
     int fd=(int)RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
@@ -242,6 +243,18 @@ void vfs_fd_record(int fd,int dirfd,const char *path){
     if(!p){p=vfs_alloc(sizeof(*p));if(!p){vfs_free(logical);return;}p->fd=fd;p->path=NULL;p->next=fd_names;fd_names=p;}
     vfs_free(p->path);p->path=logical;
 }
+char *vfs_temp_create(long *error){
+    extern const char *proxy_tmpdir;
+    static unsigned long sequence;
+    char suffix[80]="compat-proxy-";size_t k=13;
+    unsigned long values[2]={(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0),0};
+    RAW(SYS_getrandom,&values[1],sizeof(values[1]),0,0,0,0);values[1]^=++sequence;
+    for(unsigned j=0;j<2;j++){char d[24];unsigned n=0;do{d[n++]=(char)('0'+values[j]%10);values[j]/=10;}while(values[j]);while(n)suffix[k++]=d[--n];suffix[k++]=j?0:'-';}
+    char *src=join(proxy_tmpdir,suffix);if(!src){*error=-ENOMEM;return NULL;}
+    int parent=temp_parent();if(parent<0)*error=parent;
+    else{*error=RAW(SYS_flock,parent,LOCK_EX,0,0,0,0);if(!*error)*error=RAW(SYS_mkdirat,AT_FDCWD,src,0700,0,0,0);if(!*error)*error=temp_own(src);RAW(SYS_close,parent,0,0,0,0,0);}
+    if(*error){vfs_free(src);return NULL;}return src;
+}
 long vfs_mount(const char *source,const char *target,const char *type,unsigned long flags){
     if(flags&(MS_PRIVATE|MS_SLAVE|MS_SHARED|MS_UNBINDABLE))return 0;
     long e=0;char *canonical=NULL;
@@ -258,17 +271,7 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     else if(type && p_equal(type,"devpts"))src=dupstr("/dev/pts");
     else if(type && p_equal(type,"mqueue"))src=dupstr("/dev/mqueue");
     else if(type && p_equal(type,"tmpfs")){
-        /* mkdtemp equivalent using pid + monotonic local counter; cache path is
-         * inherited TMPDIR in the loader, falling back to /tmp on host. */
-        extern const char *proxy_tmpdir;static unsigned long sequence;char suffix[80]="compat-proxy-";size_t k=13;unsigned long values[2]={(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0),(unsigned long)0};RAW(SYS_getrandom,&values[1],sizeof(values[1]),0,0,0,0);values[1]^=++sequence;for(unsigned j=0;j<2;j++){char d[24];unsigned n=0;do{d[n++]=(char)('0'+values[j]%10);values[j]/=10;}while(values[j]);while(n)suffix[k++]=d[--n];suffix[k++]=j?0:'-';}src=join(proxy_tmpdir,suffix);
-        int parent=temp_parent();
-        if(parent<0)e=parent;
-        else {
-            e=RAW(SYS_flock,parent,LOCK_EX,0,0,0,0);
-            if(!e&&src)e=RAW(SYS_mkdirat,AT_FDCWD,src,0700,0,0,0);
-            if(!e&&src)e=temp_own(src);
-            RAW(SYS_close,parent,0,0,0,0,0);
-        }
+        src=vfs_temp_create(&e);
     }else e=-ENOSYS;
     if(!e && !src)e=-ENOMEM;
     if(!e){
