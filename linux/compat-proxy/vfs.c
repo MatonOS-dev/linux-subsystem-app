@@ -95,6 +95,14 @@ static struct mount *table;
 static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
 static int stacked_oldroot;
+static int hide_resolver;
+void vfs_network_payload(int isolated){
+    if(!isolated || hide_resolver || !root)return;
+    long e=0;char *info=vfs_resolve(AT_FDCWD,"/.flatpak-info",1,&e);
+    struct stat st;
+    if(info && !RAW(SYS_newfstatat,AT_FDCWD,info,&st,0,0,0))hide_resolver=1;
+    vfs_free(info);
+}
 void vfs_executable(const char *path){vfs_free(executable);executable=dupstr(path);}
 char *vfs_exe(void){return executable?dupstr(executable):NULL;}
 /* Worker SIGSYS handlers resolve paths concurrently. A shared cache cannot
@@ -203,6 +211,11 @@ restart:;
         if(len==2 && input[start]=='.' && input[start+1]=='.'){while(used>1 && out[used-1]!='/')used--;if(used>1)used--;out[used]=0;continue;}
         if(used>1)out[used++]='/';
         p_copy(out+used,input+start,len);used+=len;out[used]=0;
+        /* Flatpak prepares host resolver binds even with --unshare-net.
+         * Hide them only after sandbox construction, at payload exec; bwrap
+         * must still be able to resolve its bind sources while setting up. */
+        if(hide_resolver && (p_equal(out,"/etc/resolv.conf") ||
+                p_equal(out,"/run/host/monitor/resolv.conf"))){*error=-ENOENT;goto fail;}
         if(p_equal(out+used-len,".v3-inodes")){*error=-ENOENT;goto fail;}
         size_t next=i;while(input[next]=='/')next++;
         if(!follow && !input[next] && input[i]!='/' )continue;

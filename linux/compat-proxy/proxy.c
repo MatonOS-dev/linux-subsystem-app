@@ -793,6 +793,7 @@ clone_retry:
         struct image image;
         result=proxy_load(path,(char *const *)a[nr==SYS_execve?1:2],(char *const *)a[nr==SYS_execve?2:3],&image);
         if(!result) {
+            vfs_network_payload((namespaces&CLONE_NEWNET)!=0);
             proxy_host_snapshot((char *const *)a[nr==SYS_execve?2:3]);
             ipc_exec();
             exec_close_fds();

@@ -684,3 +684,29 @@ check that it stays alive and its terminal commands work. Check ETR as well.
 No shared-file, AOSP, compositor or kernel changes are required. This fixes
 startup file traffic; concurrent mount/root mutation and other proxy state
 are outside this regression's coverage.
+
+Round 25 resolver: the stub maps its per-app resolver at both
+`/etc/resolv.conf` and `/system/etc/resolv.conf`. On the based-on-AOSP host,
+`/etc` points to `/system/etc`; the VFS follows ancestor symlinks before
+selecting leaf mounts. The old first map alone was invisible to Flatpak's
+`g_file_test` fallback after the broker rejected SessionHelper RequestSession.
+Stock Flatpak now finds and read-only binds the file; no Flatpak patch or
+SessionHelper emulation is needed. HostCommand forks the completed app root,
+including its resolver bind and DNS translation state.
+
+Stock Flatpak constructs resolver binds even with `--unshare-net`. At a
+successful payload exec in a Flatpak root (`/.flatpak-info`), the proxy hides
+`/etc/resolv.conf` and `/run/host/monitor/resolv.conf` for virtual NEWNET.
+Construction is unaffected; the existing network filter continues to deny
+connections. This state also reaches HostCommand children.
+
+Validation: `tests/resolv-host.py --offline` reproduces the old missing map,
+checks the canonical-map fallback decision and glibc resolver configuration
+(127.x, port 53), and tests both direct-bind and monitor-symlink layouts with
+and without NEWNET. Host/NDK builds and `tests/run.sh` pass. SDK-36 javac
+compilation of V3Launcher with dependency fixtures passes. The full socket
+variant `python3 tests/resolv-host.py` checks actual getaddrinfo queries at an
+ephemeral forwarder port from both payload and HostCommand, but cannot run
+in a sandbox forbidding host sockets. Device validation is pending: see
+`out/pc-logs/agents/v3-resolv-result.md` for fresh-image steps. No kernel,
+SELinux or shared-file changes are required.

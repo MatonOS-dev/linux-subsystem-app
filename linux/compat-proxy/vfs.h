@@ -28,5 +28,6 @@ void vfs_temp_gc(void);
 char *vfs_temp_create(long *);
 int vfs_private_fd(int);
 void vfs_gpu_init(void);
+void vfs_network_payload(int);
 long vfs_gpu_publish(const char *,const char *,const char *,const char *,const char *,unsigned,const char *,unsigned);
 #endif
