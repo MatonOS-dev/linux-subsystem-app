@@ -139,3 +139,13 @@ _Static_assert(sizeof(struct iovec)==8,"iovec wire size");
 _Static_assert(sizeof(struct cmsghdr)==12,"cmsg wire size");
 
 #define ARCH_AUX_SYSINFO 32
+
+#define ARCH_PEER_SYSCALLS "x86_64/syscalls.h"
+
+#define ARCH_FILTER_HEADER "arch/x86-filter.h"
+
+#define ARCH_PEER_ELF_CLASS ELFCLASS64
+#define ARCH_PEER_ELF_MACHINE EM_X86_64
+#define ARCH_PEER_LOADER "libmatonos-v3-loader.so"
+#define ARCH_PEER_HOST_LOADER "linux-layer-v3"
+#include "../exec.h"

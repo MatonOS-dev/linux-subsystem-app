@@ -1536,3 +1536,38 @@ void ipc_fork_result(long result) {
 int ipc_private_fd(int fd) {
   return pending.owner && (fd == pending.ticket_fd || fd == pending.context.fd);
 }
+
+#include "state.h"
+void ipc_state(struct state *s){
+ uint64_t present=state_word(s,shared!=NULL);if(!present)return;
+ state_bytes(s,arena_path,sizeof(arena_path));state_bytes(s,journal_path,sizeof(journal_path));
+ if(arena_path[sizeof(arena_path)-1]||journal_path[sizeof(journal_path)-1]){s->error=-EINVAL;return;}
+ if(!s->reading)return;
+ long fd=R(openat,AT_FDCWD,arena_path,O_RDWR|O_NOFOLLOW|O_CLOEXEC,0,0,0);
+ if(fd<0){s->error=fd;return;}
+ long m=R(mmap,0,PAGE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);R(close,fd,0,0,0,0,0);
+ if((unsigned long)m>=(unsigned long)-4095){s->error=m;return;}
+ shared=(void *)m;if(shared->format!=2){s->error=-EPROTO;return;}
+ /* The kernel PID/birth identity retains SEM_UNDO records. Kernel exec
+  * unmapped attachments; import below removes their accounting records. */
+ local_pid=R(getpid,0,0,0,0,0,0);
+ /* Kernel exec already unmapped attachments. Remove accounting records without
+  * munmap of old addresses (which could now belong to the new loader). */
+ lock();
+ struct ctx c={.fd=(int)R(openat,AT_FDCWD,arena_path,O_RDWR|O_CLOEXEC|O_NOFOLLOW,0,0,0)};
+ long result=c.fd<0?c.fd:remap(&c);
+ if(result>=0 && (result=begin(&c))>=0){
+  uint64_t token=identity(local_pid,1);
+  for(off o=shared->records;o;){struct rec *q=ptr(&c,o);o=q->next;
+   if(q->type==2 && q->pid==local_pid && q->birth==token){struct obj *p=find(&c,q->id);if(p){
+    if(p->count)p->count--;
+    p->dtime=now(CLOCK_REALTIME)/1000000000L;p->lpid=local_pid;
+    if(p->removed && !p->count)p->removed=2;
+   }q->type=0;}
+  }
+  commit();cleanup_segments(&c);
+ }
+ if(c.base)R(munmap,c.base,c.size,0,0,0,0);
+ if(c.fd>=0)R(close,c.fd,0,0,0,0,0);
+ unlock();if(result<0)s->error=result;
+}

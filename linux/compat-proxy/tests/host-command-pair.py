@@ -2,7 +2,7 @@
 """Same resident worker over inherited socketpair (runner disallows connect)."""
 import array, os, pathlib, socket, struct, subprocess, tempfile, time, pty, select
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-subprocess.run(['cc','-DHOST_COMMAND_TEST','-nostdlib','-static','-no-pie','-mcmodel=large','-Wl,-Ttext-segment=0x600000000000','-O2','-fno-stack-protector','-fno-builtin','-Wall','-Wextra','-Werror',*[str(ROOT/s) for s in ['loader.c','proxy.c','vfs.c','links.c','net.c','sysvipc.c','raw.S','entry.S']],'-o',str(ROOT/'build/host-command-loader')],check=True)
+subprocess.run(['cc','-DHOST_COMMAND_TEST','-nostdlib','-static','-no-pie','-mcmodel=large','-Wl,-Ttext-segment=0x600000000000','-O2','-fno-stack-protector','-fno-builtin','-Wall','-Wextra','-Werror',*[str(ROOT/s) for s in ['loader.c','proxy.c','vfs.c','links.c','net.c','sysvipc.c', 'state.c','raw.S','entry.S']],'-o',str(ROOT/'build/host-command-loader')],check=True)
 def read_int(s):
     b=b''
     while len(b)<4:

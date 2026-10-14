@@ -8,5 +8,5 @@ for test in workload edge lifecycle info; do
   cc -no-pie -O2 -Wall -Wextra -Werror -pthread "tests/sysvipc-$test.c" -o "build/sysvipc-$test"
   timeout 45 build/linux-layer-v3 --android-filter "$PWD/build/sysvipc-$test"
 done
-cc -no-pie -O2 -Wall -Wextra -Werror tests/sysvipc-recovery.c raw.S -o build/sysvipc-recovery
+cc -no-pie -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/sysvipc-recovery.c raw.S -o build/sysvipc-recovery
 timeout 15 build/sysvipc-recovery

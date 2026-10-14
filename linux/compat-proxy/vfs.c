@@ -5,6 +5,7 @@
 #include "vfs.h"
 #include "links.h"
 #include "sysvipc.h"
+#include "state.h"
 #include <sys/syscall.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
@@ -35,7 +36,7 @@ static char *join(const char *a,const char *b) {
 struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
 int proxy_diagnostic_fd=2;
-int vfs_private_fd(int fd){if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
+int vfs_private_fd(int fd){if(state_private_fd(fd)||links_private_fd(fd))return 1;if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
 static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(PROXY_SC_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
     int fd=(int)RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
@@ -521,4 +522,32 @@ void vfs_gpu_init(void){
 
     }
     vfs_free(base);
+}
+
+#include "state.h"
+void vfs_state(struct state *s){
+ state_string(s,&root);state_string(s,&cwd);state_string(s,&executable);
+ stacked_oldroot=state_word(s,stacked_oldroot);hide_resolver=state_word(s,hide_resolver);
+ for(unsigned i=0;i<2;i++)state_string(s,&gpu_poll_sources[i]);
+ uint64_t count=0;for(struct mount *m=table;m;m=m->next)count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ struct mount **tail=&table;
+ for(uint64_t i=0;i<count&&!s->error;i++){
+  struct mount *m=s->reading?vfs_alloc(sizeof(*m)):*tail;
+  if(!m){s->error=-ENOMEM;return;}if(s->reading){*tail=m;m->next=NULL;m->source=m->target=NULL;}
+  state_string(s,&m->source);state_string(s,&m->target);m->flags=state_word(s,m->flags);tail=&m->next;
+ }
+ count=0;for(struct fd_name *d=fd_names;d;d=d->next)if(state_live(d->fd))count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ if(s->reading)for(uint64_t i=0;i<count&&!s->error;i++){
+  struct fd_name *d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}
+  d->fd=state_word(s,0);d->path=NULL;state_string(s,&d->path);d->next=fd_names;fd_names=d;
+  if(!state_live(d->fd))s->error=-EBADF;
+ }else for(struct fd_name *d=fd_names;d;d=d->next)if(state_live(d->fd)){state_word(s,d->fd);state_string(s,&d->path);}
+ count=0;for(struct temp_lock *l=temp_locks;l;l=l->next)count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ if(s->reading)for(uint64_t i=0;i<count&&!s->error;i++){
+  struct temp_lock *l=vfs_alloc(sizeof(*l));if(!l){s->error=-ENOMEM;return;}
+  l->fd=state_word(s,0);l->next=temp_locks;temp_locks=l;if(!state_live(l->fd))s->error=-EBADF;
+ }else for(struct temp_lock *l=temp_locks;l;l=l->next)state_word(s,l->fd);
 }

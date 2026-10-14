@@ -1,0 +1,97 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * x86 family dual-ABI BPF implementation. The core supplies its common-ID
+ * trap predicate; this backend alone chooses audit IDs, numbers and gateways. */
+/* Both branches survive kernel exec. Never interpret a compat number using
+ * the native table. JA (32-bit offset) avoids classic BPF's 8-bit branch limit. */
+static int arch_app_install(void) {
+    struct sock_filter bpf[2048];unsigned n=0;
+#define ADD(code,jt,jf,k) do {bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,AUDIT_ARCH_X86_64);
+    unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,AUDIT_ARCH_I386);
+    unsigned compat_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    for(unsigned branch=0;branch<2;branch++) {
+        unsigned jump=branch?compat_jump:native_jump;bpf[jump].k=n-jump-1;
+        const int *allowed=branch?android_i386_allowed:android_x86_64_allowed;
+        unsigned count=branch?sizeof(android_i386_allowed)/sizeof(int):sizeof(android_x86_64_allowed)/sizeof(int);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+        for(unsigned i=0;i<count;i++) {
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,allowed[i]);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    }
+    struct sock_fprog prog={(unsigned short)n,bpf};
+    return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+}
+static int arch_filter_install(void) {
+    struct sock_filter bpf[2048];unsigned n=0;
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT);
+    unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT==AUDIT_ARCH_I386?AUDIT_ARCH_X86_64:AUDIT_ARCH_I386);
+    unsigned peer_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    for(unsigned peer=0;peer<2;peer++) {
+        unsigned jump=peer?peer_jump:native_jump;bpf[jump].k=n-jump-1;
+        long (*encode)(long)=peer?arch_peer_encode_syscall:arch_encode_syscall;
+        long (*decode)(long)=peer?arch_peer_decode_syscall:arch_decode_syscall;
+        unsigned audit=peer?(ARCH_AUDIT==AUDIT_ARCH_I386?AUDIT_ARCH_X86_64:AUDIT_ARCH_I386):ARCH_AUDIT;
+        uint64_t gateway=audit==AUDIT_ARCH_I386?UINT64_C(0x70300000):UINT64_C(0x600000300000);
+    /* Linux payloads never get Binder, even though their Android stub does.
+     * Put this kernel-enforced check BEFORE the raw-IP exemption: neither
+     * translated ioctl nor a jump into proxy_raw may bypass it. DMA-BUF uses
+     * the same type byte; preserve only its exact sync/fence encodings (the
+     * IMPORT_SYNC_FILE collision is legacy Binder idle-timeout, not IPC). */
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    /* x32 is unsupported, and must not skip the native ioctl guard. */
+    ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,0x40000000);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,7,encode(PROXY_SC_ioctl));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,5,0,DMA_BUF_IOCTL_SYNC);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,4,0,DMA_BUF_IOCTL_EXPORT_SYNC_FILE);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,3,0,DMA_BUF_IOCTL_IMPORT_SYNC_FILE);
+    ADD(BPF_ALU|BPF_AND|BPF_K,0,0,0xff00);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
+    /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
+    uint64_t ip=peer?gateway+0x42:arch_gateway_pc(0);
+    /* Symbol immediately after the syscall: no instruction-size assumptions. */
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ip=peer?gateway+0x102:arch_gateway_pc(1);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    /* Forks must account for inherited temporary descriptors. Threads retry natively. */
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,encode(PROXY_SC_clone));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+    ADD(BPF_JMP|BPF_JSET|BPF_K,2,0,NS_FLAGS|CLONE_VFORK);
+    ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,CLONE_VM);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    /* sendto without a destination stays native (both pointer halves). */
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,6,encode(PROXY_SC_sendto));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4])+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    for(long nr=0;nr<512;nr++) if((ours(decode(nr)) || (audit==AUDIT_ARCH_I386 && (nr==102 || nr==117))) && nr!=encode(PROXY_SC_clone) && nr!=encode(PROXY_SC_sendto)) {
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    }
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    }
+    struct sock_fprog prog={(unsigned short)n,bpf};
+    return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+}
+#undef ADD

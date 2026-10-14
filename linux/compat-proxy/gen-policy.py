@@ -74,3 +74,7 @@ if compat_names - compat_numbers.keys():
     ','.join(str(compat_numbers[n]) for n in sorted(compat_names)) + '\n};\n')
 with (out.parent / 'policy-inputs.sha256').open('a') as hashes:
     hashes.write(f'{hashlib.sha256(compat_table.read_bytes()).hexdigest()}  {compat_table}\n')
+
+(out.parent / "app-policy-dual.h").write_text("/* Both AOSP app allowlists; generated. */\n" +
+ "static const int android_x86_64_allowed[] = {" + ",".join(str(numbers[n]) for n in sorted(names)) + "};\n" +
+ "static const int android_i386_allowed[] = {" + ",".join(str(compat_numbers[n]) for n in sorted(compat_names)) + "};\n")

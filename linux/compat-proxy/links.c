@@ -19,6 +19,7 @@
  * One shared mapping per inode per process; dup aliases do not own new maps. */
 struct temporary {
     unsigned refs;
+    int backing;
     int published, exclusive; /* 0: hidden, -1: publishing, 1: named */
     char path[PATH_MAX];
 };
@@ -52,7 +53,7 @@ void links_close(int fd) {
         int local=0;
         for(struct descriptor *alias=descriptors;alias;alias=alias->next)
             if(alias->tmp==d->tmp)local=1;
-        if(!local)RAW(PROXY_SC_munmap,d->tmp,sizeof(*d->tmp),0,0,0,0);
+        if(!local){RAW(PROXY_SC_close,d->tmp->backing,0,0,0,0,0);RAW(PROXY_SC_munmap,d->tmp,sizeof(*d->tmp),0,0,0,0);}
         vfs_free(d);
         return;
     }
@@ -87,12 +88,16 @@ long links_open(const char *dir,long flags,long mode){
  struct proxy_stat st;long r=arch_stat_at(AT_FDCWD,dir,&st,0);if(r<0)return r;if(!S_ISDIR(st.st_mode))return -ENOTDIR;
  size_t n=p_len(dir);if(n+70>=PATH_MAX)return -ENAMETOOLONG;
  struct descriptor *d=vfs_alloc(sizeof(*d));if(!d)return -ENOMEM;
- long m=RAW(PROXY_SC_mmap,0,sizeof(struct temporary),PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);
- if((unsigned long)m>=(unsigned long)-4095){vfs_free(d);return m;}struct temporary *t=(void *)m;t->refs=1;t->exclusive=(flags&O_EXCL)!=0;
+ long backing=RAW(PROXY_SC_memfd_create,"v3-inode-ownership",0,0,0,0,0);
+ if(backing<0){vfs_free(d);return backing;}
+ long e=RAW(PROXY_SC_ftruncate,backing,sizeof(struct temporary),0,0,0,0);
+ if(e){RAW(PROXY_SC_close,backing,0,0,0,0,0);vfs_free(d);return e;}
+ long m=RAW(PROXY_SC_mmap,0,sizeof(struct temporary),PROT_READ|PROT_WRITE,MAP_SHARED,backing,0);
+ if((unsigned long)m>=(unsigned long)-4095){RAW(PROXY_SC_close,backing,0,0,0,0,0);vfs_free(d);return m;}struct temporary *t=(void *)m;t->backing=backing;t->refs=1;t->exclusive=(flags&O_EXCL)!=0;
  p_copy(t->path,dir,n);if(n && t->path[n-1]!='/')t->path[n++]='/';p_copy(t->path+n,".matonos-tmp-",13);n+=13;n+=number(t->path+n,RAW(PROXY_SC_getpid,0,0,0,0,0,0));t->path[n++]='-';
  for(unsigned attempt=0;attempt<128;attempt++){size_t end=n+number(t->path+n,__atomic_add_fetch(&serial,1,__ATOMIC_RELAXED));t->path[end]=0;
  r=RAW(PROXY_SC_openat,AT_FDCWD,t->path,(flags&~(O_TMPFILE|O_EXCL))|O_CREAT|O_EXCL,mode,0,0);if(r!=-EEXIST)break;}
- if(r<0){RAW(PROXY_SC_munmap,t,sizeof(*t),0,0,0,0);vfs_free(d);return r;}
+ if(r<0){RAW(PROXY_SC_close,backing,0,0,0,0,0);RAW(PROXY_SC_munmap,t,sizeof(*t),0,0,0,0);vfs_free(d);return r;}
  *d=(struct descriptor){descriptors,(int)r,t};descriptors=d;return r;
 }
 /* Proc magic links may name any pid: match the underlying inode against our
@@ -134,8 +139,8 @@ static long count_names(const char *dir,const char *object,dev_t dev,unsigned lo
  if(n<0)r=n;
 end:RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;
 }
-static long write_count(const char *object,unsigned long n){char meta[PATH_MAX];size_t k=p_len(object);if(k+7>=PATH_MAX)return -ENAMETOOLONG;p_copy(meta,object,k);p_copy(meta+k,".count",7);long fd=RAW(PROXY_SC_openat,AT_FDCWD,meta,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;long r=RAW(PROXY_SC_write,fd,&n,sizeof(n),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);return r==sizeof(n)?0:r<0?r:-EIO;}
-static unsigned long read_count(const char *object){char meta[PATH_MAX];size_t k=p_len(object);unsigned long n=0;if(k+7>=PATH_MAX)return n;p_copy(meta,object,k);p_copy(meta+k,".count",7);long fd=RAW(PROXY_SC_openat,AT_FDCWD,meta,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd>=0){RAW(PROXY_SC_read,fd,&n,sizeof(n),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}return n;}
+static long write_count(const char *object,uint64_t n){char meta[PATH_MAX];size_t k=p_len(object);if(k+7>=PATH_MAX)return -ENAMETOOLONG;p_copy(meta,object,k);p_copy(meta+k,".count",7);long fd=RAW(PROXY_SC_openat,AT_FDCWD,meta,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;long r=RAW(PROXY_SC_write,fd,&n,sizeof(n),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);return r==sizeof(n)?0:r<0?r:-EIO;}
+static unsigned long read_count(const char *object){char meta[PATH_MAX];size_t k=p_len(object);uint64_t n=0;if(k+7>=PATH_MAX)return n;p_copy(meta,object,k);p_copy(meta+k,".count",7);long fd=RAW(PROXY_SC_openat,AT_FDCWD,meta,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd>=0){RAW(PROXY_SC_read,fd,&n,sizeof(n),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}return n;}
 static long dirty(const char *store){char path[PATH_MAX];if(!catpath(path,store,"dirty"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;RAW(PROXY_SC_close,fd,0,0,0,0,0);return 0;}
 /* A store-root rename carries a journal inside the renamed directory.
  * Rewriting absolute targets is idempotent, including after process death. */
@@ -262,3 +267,20 @@ long links_publish(const char *source,const char *target,long flags){
 }
 
 void links_payload_fd_stat(int fd,void *wire){struct proxy_stat s;arch_stat_decode(&s,wire);links_fd_stat(fd,&s);arch_stat_nlink(wire,s.st_nlink);}
+
+#include "state.h"
+int links_private_fd(int fd){for(struct descriptor *d=descriptors;d;d=d->next)if(d->tmp->backing==fd)return 1;return 0;}
+void links_state(struct state *s){
+ serial=state_word(s,serial);
+ uint64_t count=0;for(struct descriptor *d=descriptors;d;d=d->next)count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ if(!s->reading){for(struct descriptor *d=descriptors;d;d=d->next){state_word(s,d->fd);state_word(s,d->tmp->backing);}return;}
+ for(uint64_t i=0;i<count&&!s->error;i++){
+  int fd=state_word(s,0),backing=state_word(s,0);struct temporary *tmp=NULL;
+  if(!state_live(backing)){s->error=-EBADF;return;}
+  for(struct descriptor *d=descriptors;d;d=d->next)if(d->tmp->backing==backing)tmp=d->tmp;
+  if(!tmp){long m=RAW(PROXY_SC_mmap,0,sizeof(*tmp),PROT_READ|PROT_WRITE,MAP_SHARED,backing,0);if((unsigned long)m>=(unsigned long)-4095){s->error=m;return;}tmp=(void *)m;}
+  struct descriptor *d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}*d=(struct descriptor){descriptors,fd,tmp};descriptors=d;
+ }
+ struct descriptor *d=descriptors;while(d){struct descriptor *next=d->next;if(!state_live(d->fd))links_close(d->fd);d=next;}
+}

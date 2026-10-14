@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #define ARCH_WITH_CONTEXT
 #include "proxy.h"
+#include "state.h"
 #include "vfs.h"
 #include "net.h"
 #include "links.h"
@@ -31,6 +32,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include ARCH_POLICY_HEADER
+#include "build/app-policy-dual.h"
 #ifndef SYS_SECCOMP
 #define SYS_SECCOMP 1
 #endif
@@ -480,6 +482,7 @@ static int ours(long n) {
     if(n==PROXY_SC_ppoll)return dns_path[0]!=0;
     switch(n) {
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
+    case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
     case PROXY_SC_close_range:case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_close:case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
     case PROXY_SC_capget:case PROXY_SC_capset:case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
@@ -563,6 +566,15 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_ARG4)=8;arch_restart_syscall(uc);
         proxy_log("android-poll-retry",nr,0);goto clean_mask;
     }
+    /* Metadata/ownership descriptors are capabilities, never payload I/O. */
+    switch(nr){
+    case PROXY_SC_mmap:if(a[4]>=0 && vfs_private_fd(a[4])){result=-EBADF;goto finish;}break;
+    case PROXY_SC_read:case PROXY_SC_write:case PROXY_SC_pread64:case PROXY_SC_pwrite64:
+    case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
+    case PROXY_SC_fstat:case PROXY_SC_getdents64:
+        if(vfs_private_fd(a[0])){result=-EBADF;goto finish;}break;
+    default:break;
+    }
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
@@ -571,6 +583,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     result=-ENOSYS;
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     switch(nr) {
+    case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
+        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
     case PROXY_SC_ppoll:if(app_allowed(nr))result=dns_poll((void *)(uintptr_t)a[0],a[1],(void *)(uintptr_t)a[2],(void *)(uintptr_t)a[3],a[4]);break;
     case PROXY_SC_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
     case PROXY_SC_getdents64:result=links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);break;
@@ -753,20 +767,7 @@ clean_mask:
     arch_signal_stack_ready(uc);
     if(selector && dispatch_selector==selector) *selector=saved;
 }
-static int app_install(void) {
-    struct sock_filter bpf[1024];unsigned n=0;
-#define ADD(code,jt,jf,k) do {bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,ARCH_AUDIT);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    for(unsigned i=0;i<sizeof(android_allowed)/sizeof(android_allowed[0]);i++) {
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,android_allowed[i]);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    }
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    struct sock_fprog prog={(unsigned short)n,bpf};
-    return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
-}
+#include ARCH_FILTER_HEADER
 int proxy_install(int android) {
     ipc_init(); /* IPC failure must never prevent payload startup. */
     int diagnostics=proxy_diagnostics_init();if(diagnostics)return diagnostics;
@@ -776,62 +777,44 @@ int proxy_install(int android) {
     long r=RAW(PROXY_SC_rt_sigaction,SIGSYS,&action,0,8,0,0);if(r) return (int)r;
     proxy_sigmask_t mask=SIGSYS_BIT;r=RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);if(r) return (int)r;
     r=RAW(PROXY_SC_prctl,PR_SET_NO_NEW_PRIVS,1,0,0,0,0);if(r) return (int)r;
-    if(android) {emit("v3 installing android filter\n");r=app_install();if(r) return (int)r;emit("v3 android filter installed\n");}
-    struct sock_filter bpf[1024];unsigned n=0;
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,ARCH_AUDIT);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
-    /* Linux payloads never get Binder, even though their Android stub does.
-     * Put this kernel-enforced check BEFORE the raw-IP exemption: neither
-     * translated ioctl nor a jump into proxy_raw may bypass it. DMA-BUF uses
-     * the same type byte; preserve only its exact sync/fence encodings (the
-     * IMPORT_SYNC_FILE collision is legacy Binder idle-timeout, not IPC). */
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    /* x32 is unsupported, and must not skip the native ioctl guard. */
-    ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,0x40000000);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,7,arch_encode_syscall(PROXY_SC_ioctl));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,5,0,DMA_BUF_IOCTL_SYNC);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,4,0,DMA_BUF_IOCTL_EXPORT_SYNC_FILE);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,3,0,DMA_BUF_IOCTL_IMPORT_SYNC_FILE);
-    ADD(BPF_ALU|BPF_AND|BPF_K,0,0,0xff00);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
-    /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
-    uint64_t ip=arch_gateway_pc(0);
-    /* Symbol immediately after the syscall: no instruction-size assumptions. */
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    ip=arch_gateway_pc(1);
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    /* Forks must account for inherited temporary descriptors. Threads retry natively. */
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,arch_encode_syscall(PROXY_SC_clone));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
-    ADD(BPF_JMP|BPF_JSET|BPF_K,2,0,NS_FLAGS|CLONE_VFORK);
-    ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,CLONE_VM);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    /* sendto without a destination stays native (both pointer halves). */
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,6,arch_encode_syscall(PROXY_SC_sendto));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4]));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4])+4);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    for(long nr=0;nr<512;nr++) if((ours(arch_decode_syscall(nr)) || arch_trap_number(nr)) && nr!=arch_encode_syscall(PROXY_SC_clone) && nr!=arch_encode_syscall(PROXY_SC_sendto)) {
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    }
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    struct sock_fprog prog={(unsigned short)n,bpf};
-    return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+    if(android) {emit("v3 installing android filter\n");r=arch_app_install();if(r) return (int)r;emit("v3 android filter installed\n");}
+    return arch_filter_install();
+}
+
+
+void proxy_state(struct state *s){
+ extern const char *proxy_tmpdir;
+ chained.handler=state_word(s,chained.handler==1?1:0);
+ proxy_trace=state_word(s,proxy_trace);proxy_diagnostic_fd=state_word(s,proxy_diagnostic_fd);
+ namespaces=state_word(s,namespaces);userns_remaining=state_word(s,userns_remaining);
+ state_string(s,(char **)&proxy_tmpdir);
+ state_bytes(s,&dns_endpoint,sizeof(dns_endpoint));state_bytes(s,dns_path,sizeof(dns_path));
+ state_string(s,(char **)&host_command_socket);host_command_started=state_word(s,host_command_started);
+ uint64_t count=0;for(struct dns_fd *d=dns_fds;d;d=d->next)if(state_live(d->fd))count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ if(!s->reading){
+  for(struct dns_fd *d=dns_fds;d;d=d->next)if(state_live(d->fd)){
+   int alias=-1;for(struct dns_fd *p=dns_fds;p!=d;p=p->next)if(p->socket==d->socket&&state_live(p->fd)){alias=p->fd;break;}
+   state_word(s,d->fd);state_word(s,(int64_t)alias);
+   if(alias<0){state_word(s,d->socket->type);state_word(s,d->socket->active);state_word(s,d->socket->connected);state_bytes(s,&d->socket->local,sizeof(d->socket->local));}
+  }
+ }else for(uint64_t i=0;i<count&&!s->error;i++){
+  int fd=state_word(s,0),alias=state_word(s,0);
+  if(alias>=0){dns_dup(alias,fd);if(!dns_lookup(fd))s->error=-EINVAL;continue;}
+  struct dns_fd *d=vfs_alloc(sizeof(*d));struct dns_socket *socket=vfs_alloc(sizeof(*socket));
+  if(!d||!socket){s->error=-ENOMEM;return;}
+  socket->refs=1;socket->type=state_word(s,0);socket->active=state_word(s,0);socket->connected=state_word(s,0);state_bytes(s,&socket->local,sizeof(socket->local));
+  *d=(struct dns_fd){fd,socket,dns_fds};dns_fds=d;
+ }
+ count=0;for(struct dns_watch *w=dns_watches;w;w=w->next)if(state_live(w->fd)&&state_live(w->epoll))count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ if(!s->reading){for(struct dns_watch *w=dns_watches;w;w=w->next)if(state_live(w->fd)&&state_live(w->epoll)){state_word(s,w->fd);state_word(s,w->epoll);state_word(s,w->event.events);state_word(s,w->event.data.u64);}}
+ else for(uint64_t i=0;i<count&&!s->error;i++){
+  struct dns_watch *w=vfs_alloc(sizeof(*w));if(!w){s->error=-ENOMEM;return;}
+  w->fd=state_word(s,0);w->epoll=state_word(s,0);w->event.events=state_word(s,0);w->event.data.u64=state_word(s,0);w->next=dns_watches;dns_watches=w;
+ }
+ count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ if(!s->reading){for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))state_word(s,d->fd);}
+ else for(uint64_t i=0;i<count&&!s->error;i++){struct sysctl_fd *d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->fd=state_word(s,0);d->next=sysctl_fds;sysctl_fds=d;}
 }

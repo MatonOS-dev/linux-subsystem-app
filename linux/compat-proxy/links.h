@@ -20,3 +20,5 @@ long links_path_call(long,proxy_arg_t *,const char *);
 long links_name_call(long,proxy_arg_t *,const char *,const char *);
 long links_dents(long,void *,long);
 #endif
+
+int links_private_fd(int);

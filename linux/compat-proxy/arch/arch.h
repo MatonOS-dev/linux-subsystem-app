@@ -1,7 +1,10 @@
 /* Build-selected architecture boundary. Internal IDs must be encoded before
  * kernel entry or BPF comparisons. Context slots expose payload argument,
  * result, PC and stack words; only the backend knows REG_* indices.
- * This initial interface does not yet normalize kernel wire structures. */
+ * Wire adapters in arch/{stat,socket,time,ipc}.h normalize the supported ABI
+ * variants; legacy variants still listed in README require additional hooks.
+ * ARCH_FILTER_HEADER owns inherited multi-ABI BPF/gateways; exec.h owns
+ * validated peer class selection. Core state streams never serialize pointers. */
 #ifndef PROXY_ARCH_H
 #define PROXY_ARCH_H
 #include <stdint.h>
@@ -23,4 +26,9 @@ struct arch_call { long id,error; unsigned variant; uintptr_t output; };
 long proxy_copy(void *,const void *,__SIZE_TYPE__);
 long proxy_raw(long,long,long,long,long,long,long);
 #include PROXY_ARCH_BACKEND
+#define arch_encode_syscall arch_peer_encode_syscall
+#define arch_decode_syscall arch_peer_decode_syscall
+#include ARCH_PEER_SYSCALLS
+#undef arch_encode_syscall
+#undef arch_decode_syscall
 #endif

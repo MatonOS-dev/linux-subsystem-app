@@ -1,4 +1,4 @@
-.text
+.section .proxy_gateway,"ax",@progbits
 .global proxy_raw
 .type proxy_raw,@function
 proxy_raw:
@@ -13,6 +13,7 @@ proxy_raw:
  mov 36(%esp),%esi
  mov 40(%esp),%edi
  mov 44(%esp),%ebp
+ .org 0x40,0x90
  int $0x80
 .global proxy_raw_after
 proxy_raw_after:
@@ -36,6 +37,7 @@ proxy_enter:
  xor %eax,%eax
  mov %ax,%gs
  jmp *%ecx
+.org 0x100
 .global proxy_clone_entry
 proxy_clone_entry:
  int $0x80

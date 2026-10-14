@@ -1,4 +1,4 @@
-.text
+.section .proxy_gateway,"ax",@progbits
 .global proxy_raw
 .type proxy_raw,@function
 proxy_raw:
@@ -9,6 +9,7 @@ proxy_raw:
     mov %r8,%r10
     mov %r9,%r8
     mov 8(%rsp),%r9
+    .org 0x40,0x90
     syscall
 .global proxy_raw_after
 proxy_raw_after:
@@ -33,6 +34,7 @@ proxy_enter:
     jmp *%r12
 /* Retry clone on the application's stack, retaining its continuation even
  * when the kernel switches to a posix_spawn child stack. */
+.org 0x100
 .global proxy_clone_entry
 .type proxy_clone_entry,@function
 proxy_clone_entry:

@@ -22,6 +22,14 @@ int main(int argc,char **argv,char **env){
  long direct=syscall(393,0,1,0600);if(direct<0)return 60;
  struct semid64_ds stat;if(syscall(394,direct,0,0x102,&stat)<0 || stat.sem_nsems!=1){syscall(394,direct,0,0,0);return 61;}
  if(syscall(394,direct,0,0,0))return 62;
+ long queue=syscall(117,13,0,0600,0,0,0);if(queue<0)return 63;
+ struct {int32_t type;char text[8];} message={7,"message"},received={0};
+ if(syscall(117,11,queue,8,0,&message,0))return 64;
+ if(syscall(117,(1<<16)|12,queue,4,04000,&received,7)!=-1 || *__errno_location()!=7)return 65;
+ struct {uint32_t pointer;int32_t type;} old={(uintptr_t)&received,7};
+ if(syscall(117,12,queue,8,04000,&old,0)!=8 || received.type!=7 || received.text[0]!='m')return 66;
+ if(syscall(117,(1<<16)|12,queue,8,04000,&received,7)!=-1 || *__errno_location()!=42)return 67;
+ if(syscall(117,14,queue,0,0,0,0))return 68;
  static const char ok[]="PASS i386 ipc(117) semget/ctl/op and shmat output-pointer ABI\n";
  write(1,ok,sizeof(ok)-1);return 0;
 }

@@ -1,5 +1,6 @@
 /* Linux layer v3: resident x86_64 ELF loader. No libc calls after entry. */
 #include "proxy.h"
+#include "state.h"
 #include "vfs.h"
 #include <elf.h>
 #include <fcntl.h>
@@ -104,6 +105,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         args[n]=NULL;
         int r=load_inner(interpreter,args,env,image,depth+1);vfs_free(args);return r;
     }
+    int handoff=state_exec(path,argv,env);if(handoff)return handoff;
     size_t ac=0,ec=0,total=65536;
     while(argv && argv[ac]){size_t n=p_len(argv[ac]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)return -E2BIG;total+=n+1+sizeof(uintptr_t);ac++;}
     while(env && env[ec]){size_t n=p_len(env[ec]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)return -E2BIG;total+=n+1+sizeof(uintptr_t);ec++;}
@@ -155,9 +157,16 @@ int main(int argc,char **argv,char **environ) {
     for(;original->a_type;original++)if(original->a_type<64)inherited_aux[original->a_type]=original->a_un.a_val;
     extern const char *proxy_tmpdir;
     for(unsigned e=0;environ[e];e++){const char *s=environ[e];if(s[0]=='T' && s[1]=='M' && s[2]=='P' && s[3]=='D' && s[4]=='I' && s[5]=='R' && s[6]=='=')proxy_tmpdir=s+7;}
+    int resumed=argc>4 && p_equal(argv[1],"--resident-state");
+    if(resumed){
+        if(state_import(argv[2],argv[3]))return 2;
+        /* Do not leave the bearer token in the kernel's original cmdline after
+         * payload entry. Import closed the private state FD already. */
+        for(unsigned j=2;j<4;j++)for(char *p=argv[j];*p;p++)*p=0;
+    }
     if(proxy_diagnostics_init())return 1;
     vfs_temp_gc();
-    int android=0,i=1; long parent=0;
+    int android=0,i=resumed?4:1; long parent=0;
     while(i<argc && argv[i][0]=='-') {
         if(p_equal(argv[i],"--parent-pid") && i+1<argc) {
             const char *number=argv[i+1];
@@ -180,8 +189,9 @@ int main(int argc,char **argv,char **environ) {
         else {proxy_log("usage",0,-EINVAL);return 2;}
     }
     if(i==argc) return 2;
+    if(resumed)android=state_android;else state_android=android;
     vfs_gpu_init();
-    struct image image; int r=proxy_load(argv[i],argv+i,environ,&image);
+    struct image image; int r=proxy_load(argv[i],argv+i+(resumed?1:0),environ,&image);
     if(r) {proxy_log("load-error",0,r);return 1;}
     r=proxy_install(android);
     if(r) {proxy_log("filter-error",0,r);return 1;}

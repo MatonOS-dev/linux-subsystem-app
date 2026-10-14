@@ -122,3 +122,33 @@ long net_call(long nr,proxy_arg_t *a,int newnet,int *handled) {
     default:return 0;
     }
 }
+
+#include "state.h"
+void net_state(struct state *s){
+ uint64_t count=0;for(struct descriptor *d=fds;d;d=d->next)if(state_live(d->fd))count++;
+ count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ struct descriptor *d=fds;
+ for(uint64_t i=0;i<count&&!s->error;i++){
+  if(s->reading){d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->ep=vfs_alloc(sizeof(*d->ep));if(!d->ep){s->error=-ENOMEM;return;}d->ep->refs=1;d->ep->first=d->ep->last=NULL;d->next=fds;fds=d;}
+  else while(d&&!state_live(d->fd))d=d->next;
+  d->fd=state_word(s,d->fd);
+  int alias=-1;
+  if(!s->reading)for(struct descriptor *p=fds;p!=d;p=p->next)if(p->ep==d->ep&&state_live(p->fd)){alias=p->fd;break;}
+  alias=state_word(s,(int64_t)alias);
+  if(alias>=0){
+   if(s->reading){struct endpoint *ep=lookup(alias);if(!ep){s->error=-EINVAL;return;}vfs_free(d->ep);d->ep=ep;ep->refs++;}
+   else d=d->next;
+   continue;
+  }
+  d->ep->port=state_word(s,d->ep->port);d->ep->route=state_word(s,d->ep->route);
+  uint64_t replies=0;for(struct reply *r=d->ep->first;r;r=r->next)replies++;
+  replies=state_word(s,replies);if(replies>65536){s->error=-E2BIG;return;}
+  struct reply **tail=&d->ep->first;
+  for(uint64_t j=0;j<replies&&!s->error;j++){
+   struct reply *r=s->reading?vfs_alloc(sizeof(*r)):*tail;if(!r){s->error=-ENOMEM;return;}
+   if(s->reading){r->next=NULL;*tail=r;d->ep->last=r;}
+   state_bytes(s,&r->header,sizeof(r->header));state_bytes(s,&r->error,sizeof(r->error));tail=&r->next;
+  }
+  if(!s->reading)d=d->next;
+ }
+}

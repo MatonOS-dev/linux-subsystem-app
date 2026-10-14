@@ -11,13 +11,13 @@ if [[ ! -f "$libc" || ! -f "$interpreter" ]]; then
 fi
 mkdir -p build/i386-p1
 cc -m32 -c tests/i386-entry.S -o build/i386-p1/entry.o
-for test in dynamic sockets dns ipc pty; do
+for test in dynamic sockets dns ipc pty fp resolver; do
     "$compiler" -c -O2 -fno-stack-protector -Wall -Wextra -Werror \
         "tests/i386-$test.c" -o "build/i386-p1/$test.o"
     ld -m elf_i386 -o "build/i386-p1/$test" --dynamic-linker "$interpreter" \
         build/i386-p1/entry.o "build/i386-p1/$test.o" "$libc"
 done
-for test in dynamic sockets ipc pty; do
+for test in dynamic sockets ipc pty fp; do
     timeout 15 "build/i386-p1/$test" >"build/i386-p1/$test-native.out"
     timeout 15 build/linux-layer-v3-i386 --android-filter "$PWD/build/i386-p1/$test" \
         >"build/i386-p1/$test.out" 2>"build/i386-p1/$test.log"
@@ -25,3 +25,5 @@ for test in dynamic sockets ipc pty; do
     cat "build/i386-p1/$test.out"
 done
 python3 tests/i386-dns.py
+
+python3 tests/i386-resolver.py
