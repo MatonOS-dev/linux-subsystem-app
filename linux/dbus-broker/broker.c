@@ -488,6 +488,8 @@ static gboolean internal_service_has_talk_access(Broker *b, GDBusMessage *messag
     if(path && (g_str_equal(path,"/org/freedesktop/portal/desktop") ||
                 g_str_has_prefix(path,"/org/freedesktop/portal/desktop/")) &&
             (access_for(b,"org.freedesktop.portal.Desktop") & ACCESS_TALK))return TRUE;
+    if(g_strcmp0(path,"/org/freedesktop/Flatpak/Development")==0 &&
+            (access_for(b,"org.freedesktop.Flatpak") & ACCESS_TALK))return TRUE;
     for (guint i = 0; i < b->services->len; i++) {
         Service *service = g_ptr_array_index(b->services, i);
         if (g_strcmp0(path, service->path) == 0 &&
@@ -506,6 +508,12 @@ static gboolean denied_call(GDBusMessage *m) {
             (g_strcmp0(iface,"org.freedesktop.Flatpak.SessionHelper")==0 ||
              g_strcmp0(iface,"org.freedesktop.DBus.Properties")==0 ||
              g_strcmp0(iface,"org.freedesktop.DBus.Introspectable")==0)) return FALSE;
+    /* MatonOS Development runs inside this app sandbox, via Java. */
+    if(g_str_equal(dest,"org.freedesktop.Flatpak") &&
+            g_strcmp0(g_dbus_message_get_path(m),"/org/freedesktop/Flatpak/Development")==0 &&
+            (g_strcmp0(iface,"org.freedesktop.Flatpak.Development")==0 ||
+             g_strcmp0(iface,"org.freedesktop.DBus.Properties")==0 ||
+             g_strcmp0(iface,"org.freedesktop.DBus.Introspectable")==0))return FALSE;
     if (name_is_denied(dest)) return TRUE;
     if ((g_str_equal(dest, "org.freedesktop.PackageKit") || g_str_has_prefix(dest, "org.freedesktop.PackageKit.")) &&
         member != NULL && (g_strrstr(member, "Install") != NULL || g_strrstr(member, "Remove") != NULL)) return TRUE;
@@ -617,7 +625,8 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
                 "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
             send_raw(c, err); g_object_unref(err); return NULL;
         }
-        if (g_str_equal(dest,"org.freedesktop.portal.Desktop") && broker_portal_forward(b,connection,message,c->unique)) return NULL;
+        if ((g_str_equal(dest,"org.freedesktop.portal.Desktop") ||
+                g_str_equal(dest,"org.freedesktop.Flatpak")) && broker_portal_forward(b,connection,message,c->unique)) return NULL;
         return message;
     }
     if (g_str_equal(dest, ":1.0") && b->services->len != 0) {

@@ -166,6 +166,10 @@ int main(int argc,char **argv,char **environ) {
                     RAW(SYS_getppid,0,0,0,0,0,0)!=parent)return 2;
             i+=2;
         }
+#ifdef HOST_COMMAND_TEST
+        else if(p_equal(argv[i],"--host-command-fd") && i+1<argc) {extern int proxy_host_test(int);int fd=0;for(char *s=argv[i+1];*s;s++){if(*s<'0'||*s>'9')return 2;fd=fd*10+*s-'0';}proxy_host_test(fd);i+=2;}
+#endif
+        else if(p_equal(argv[i],"--host-command") && i+1<argc) {if(proxy_host_command(argv[i+1]))return 2;i+=2;}
         else if(p_equal(argv[i],"--dns-forwarder") && i+1<argc) {if(proxy_dns_forwarder(argv[i+1]))return 2;i+=2;}
         else if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}
@@ -179,6 +183,7 @@ int main(int argc,char **argv,char **environ) {
     if(r) {proxy_log("load-error",0,r);return 1;}
     r=proxy_install(android);
     if(r) {proxy_log("filter-error",0,r);return 1;}
+    proxy_host_snapshot(environ);
     proxy_enter(image.entry,image.stack);
 }
 

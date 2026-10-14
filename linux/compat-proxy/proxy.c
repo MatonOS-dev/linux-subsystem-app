@@ -38,6 +38,15 @@
 #define SIGSYS_BIT (1UL << (SIGSYS-1))
 #define SA_RESTORER 0x04000000
 #define NS_FLAGS (CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET)
+#ifdef HOST_COMMAND_TEST
+static int hc_test_fd=-1;
+#endif
+static int private_close_fd(int fd){
+#ifdef HOST_COMMAND_TEST
+    if(fd==hc_test_fd)return 1;
+#endif
+    return vfs_private_fd(fd);
+}
 struct kernel_action { uintptr_t handler,flags,restorer; unsigned long mask; };
 static struct kernel_action chained;
 int proxy_diagnostics_init(void) {
@@ -551,7 +560,7 @@ static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
             const char *p=buf+off+19;off+=len;unsigned value=0;
             if(*p<'0'||*p>'9')continue;
             while(*p>='0'&&*p<='9'){value=value*10+(*p++-'0');}
-            if(*p || value<first || value>last || value==(unsigned)fd || vfs_private_fd((int)value))continue;
+            if(*p || value<first || value>last || value==(unsigned)fd || private_close_fd((int)value))continue;
             if(flags&4u)RAW(SYS_fcntl,value,F_SETFD,FD_CLOEXEC,0,0,0);
             else {RAW(SYS_close,value,0,0,0,0,0);dns_close(value);links_close(value);vfs_fd_close(value);net_close(value);sysctl_close(value);}
         }
@@ -602,6 +611,8 @@ static void exec_close_fds(void){
     }
     vfs_free(buf);RAW(SYS_close,fd,0,0,0,0,0);
 }
+#include "host-command.c"
+
 static void handler(int sig,siginfo_t *info,void *opaque) {
     ucontext_t *uc=opaque;
     volatile unsigned char *selector=dispatch_selector;
@@ -652,7 +663,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case SYS_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case SYS_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case SYS_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
-    case SYS_close:if(vfs_private_fd((int)a[0])){result=0;break;}result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
+    case SYS_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case SYS_dup:case SYS_dup3:case SYS_fcntl:
         if(vfs_private_fd((int)a[0])||(nr==SYS_dup3&&vfs_private_fd((int)a[1]))){result=-EBADF;break;}
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
@@ -775,6 +786,7 @@ clone_retry:
         struct image image;
         result=proxy_load(path,(char *const *)a[nr==SYS_execve?1:2],(char *const *)a[nr==SYS_execve?2:3],&image);
         if(!result) {
+            proxy_host_snapshot((char *const *)a[nr==SYS_execve?2:3]);
             exec_close_fds();
             exec_signals();
             /* exec starts the new linker without the previous libc TLS. */

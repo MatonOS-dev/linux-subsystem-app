@@ -141,7 +141,8 @@ gboolean broker_portal_forward(Broker* b,GDBusConnection* connection,GDBusMessag
     const char* path=g_dbus_message_get_path(message);
     if(g_strcmp0(g_dbus_message_get_interface(message),"org.freedesktop.DBus.Peer")==0)return FALSE;
     if(!broker_session_data(b)||!path || !(g_str_equal(path,"/org/freedesktop/portal/desktop") ||
-            g_str_has_prefix(path,"/org/freedesktop/portal/desktop/")))return FALSE;
+            g_str_has_prefix(path,"/org/freedesktop/portal/desktop/") ||
+            g_str_equal(path,"/org/freedesktop/Flatpak/Development")))return FALSE;
     Backend* p=broker_session_data(b);
     if(g_atomic_int_add(&p->queued,1)>=MAX_CALLS) {
         g_atomic_int_add(&p->queued,-1);

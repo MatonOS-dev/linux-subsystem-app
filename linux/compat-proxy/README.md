@@ -507,3 +507,20 @@ fresh image, trace Rio and inspect the child's `tty-ioctl`, `v3 exec`,
 home rc files only if exec succeeds. Full device steps and evidence are in
 `out/pc-logs/agents/v3-term-result.md`. No AOSP or kernel changes are needed
 for the fixes here; no per-app changes were made.
+
+### Round 22: Development.HostCommand
+
+`--host-command /absolute/private/socket` snapshots the completed app root at
+its first exec with `/.flatpak-info`. Commands received with SCM_RIGHTS fork
+from that resident snapshot and use the same loader, UID, filters, mounts and
+app environment. No host exec or namespace reconstruction is used. The per-app
+Java portal supplies Development v1, caller ownership and WATCH_BUS; resident
+subreapers handle command descendants, including detached sessions, and runtime
+shutdown. See [HOST-COMMAND.md](../compositor/HOST-COMMAND.md) for protocol,
+limits, source spec, integration requirement and fresh-image device steps.
+Run `tests/host-command-pair.py` for bwrap/snapshot/pty/lifecycle tests under the
+copied filter. The actual listener test `tests/host-command.py` requires Unix
+pathname connect permission, unavailable in the agent runner. The required
+broker routing change is prepared outside the source tree and listed in the
+compositor SHARED-CHANGES.md; this worktree's authorized source scope excludes
+linux/dbus-broker, so the live bus cannot expose the method until it is applied.
