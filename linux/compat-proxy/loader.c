@@ -64,6 +64,7 @@ static int map_elf(const char *path,struct mapped *out) {
         if(p->p_filesz && RAW(SYS_pread64,fd,bias+p->p_vaddr,p->p_filesz,p->p_offset,0,0)!=(long)p->p_filesz) goto done;
         r=RAW(SYS_mprotect,start,end-start,prot,0,0,0);
         if(bad(r)) {error=(int)r;goto done;}
+        proxy_image_map(start,end,DOWN(p->p_vaddr),path);
         if(!out->phdr && eh.e_phoff>=p->p_offset && eh.e_phoff+bytes<=p->p_offset+p->p_filesz)
             out->phdr=bias+p->p_vaddr+eh.e_phoff-p->p_offset;
     }

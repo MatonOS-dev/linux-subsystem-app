@@ -403,3 +403,20 @@ Fresh-image hardware validation for the coordinator/user:
 5. Run ETR and compare `/sys/bus`/`/sys/class` polling time/count with prior
    logs; check controller behavior separately because this subtree does not
    enumerate controller hardware. No kernel or AOSP changes are required.
+
+Round 18 crash reporting: resident exec now resets caught signal actions (all
+except the resident SIGSYS action), preserving SIG_IGN as kernel exec does.
+This prevents bionic debuggerd handlers from using glibc TLS after a Linux
+payload starts. Default fatal actions report signal/code, real pid/tid, fault
+address, PC and the raw maps entry to stderr (forwarded by the stub to
+MatonV3), then re-raise the original signal. Resident ELF segments also report
+their source path and ELF virtual offset because they are anonymous mappings.
+App-installed fatal handlers may replace this default reporter. Trace mode
+logs AF_UNIX addresses, including abstract names, before path translation.
+
+Host regression: compile `tests/exec-signals.c` with host cc, run it through
+`build/linux-layer-v3 --android-filter`: it checks caught/ignored actions over
+two execs and deliberately segfaults; expect signal 11 and `v3 fatal image=`.
+The existing full host suite and the NDK loader build passed. Rio itself has
+not been reproduced here: the old device trace lacks a fault PC, so its
+original platform fault remains unresolved until a new diagnostic launch.

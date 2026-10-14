@@ -7,6 +7,7 @@ void proxy_restore(void);
 _Noreturn void proxy_enter(uintptr_t, uintptr_t);
 #define RAW(n,a,b,c,d,e,f) proxy_raw((n),(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
 struct image { uintptr_t entry, stack; };
+void proxy_image_map(uintptr_t,uintptr_t,uintptr_t,const char *);
 int proxy_load(const char *, char *const *, char *const *, struct image *);
 int proxy_install(int);
 int proxy_dns_forwarder(const char *);
