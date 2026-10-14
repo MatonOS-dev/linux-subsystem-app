@@ -350,7 +350,7 @@ void vfs_gpu_init(void){
     int ok=gpu_property(area,st.st_size,"vendor.maton.graphics.vendor",vendor)&&gpu_property(area,st.st_size,"vendor.maton.graphics.device",device)&&gpu_property(area,st.st_size,"vendor.maton.graphics.driver",driver)&&gpu_property(area,st.st_size,"vendor.maton.graphics.render_node",render)&&gpu_property(area,st.st_size,"vendor.maton.graphics.mode",mode);
     RAW(SYS_munmap,area,st.st_size,0,0,0,0);
     if(!ok || !p_equal(mode,"hardware") || !gpu_hex(vendor) || !gpu_hex(device) || !driver[0] || p_equal(driver,"unknown") || p_len(render)<17)return;
-    for(size_t i=0;driver[i];i++)if(!((driver[i]>='a'&&driver[i]<='z')||(driver[i]>='0'&&driver[i]<='9')||driver[i]=='_'))return;
+    for(size_t i=0;driver[i];i++)if(!((driver[i]>='a'&&driver[i]<='z')||(driver[i]>='0'&&driver[i]<='9')||driver[i]=='_'||driver[i]=='-'))return;
     const char *prefix="/dev/dri/renderD";for(unsigned i=0;i<16;i++)if(render[i]!=prefix[i])return;
     for(unsigned i=16;render[i];i++)if(render[i]<'0'||render[i]>'9')return;
     path=vfs_resolve(AT_FDCWD,render,1,&e);if(!path)return;
