@@ -221,6 +221,17 @@ static long path_call(long nr,long *a,int one,int two) {
             p_copy(zero,"/dev/zero",10);vfs_free(p);p=zero;
         }
     }
+    /* Android mounts devpts with ptmxmode=000: apps use /dev/ptmx, the same
+     * multiplexer for this devpts instance. bwrap links /dev/ptmx to
+     * pts/ptmx, so serve opens of that node from /dev/ptmx. */
+    if(nr==SYS_openat && p_equal(p,"/dev/pts/ptmx")) {
+        struct stat probe;
+        if(!RAW(SYS_newfstatat,AT_FDCWD,"/dev/pts/ptmx",&probe,0,0,0) && !(probe.st_mode&0777)) {
+            char *ptmx=vfs_alloc(10);
+            if(!ptmx){e=-ENOMEM;goto done;}
+            p_copy(ptmx,"/dev/ptmx",10);vfs_free(p);p=ptmx;
+        }
+    }
     if(proxy_trace){RAW(SYS_write,2,"v3 path ",8,0,0,0);RAW(SYS_write,2,p,p_len(p),0,0,0);RAW(SYS_write,2,"\n",1,0,0,0);}
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==SYS_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
@@ -483,6 +494,29 @@ static long dns_call(long nr, long a[6]) {
     if(nr==SYS_socket && result>=0)dns_close((int)result);
     return result;
 }
+/* glibc >= 2.42 sets terminal attributes with the termios2 ioctls, which
+ * Android's app policy does not allow on ptys (unpriv_tty_ioctls). termios2 is
+ * termios plus two trailing speed fields; serve them with the classic calls.
+ * Arbitrary speeds (BOTHER) mean nothing on a pty; they become B38400. */
+#define V3_TCGETS2 0x802c542aul
+#define V3_TCSETS2 0x402c542bul
+#define V3_TCSETSW2 0x402c542cul
+#define V3_TCSETSF2 0x402c542dul
+struct v3_termios2 { unsigned c_iflag,c_oflag,c_cflag,c_lflag; unsigned char c_line,c_cc[19]; unsigned c_ispeed,c_ospeed; };
+static int termios2_call(long *a,long *result) {
+    unsigned long cmd=(unsigned long)a[1]&0xffffffffu;
+    struct v3_termios2 *t=(void *)a[2];
+    if(cmd==V3_TCGETS2){
+        long r=RAW(SYS_ioctl,a[0],0x5401,a[2],0,0,0);
+        if(!r){unsigned speed=t->c_cflag&0010017;t->c_ispeed=t->c_ospeed=speed==0?0:38400;}
+        *result=r;return 1;
+    }
+    if(cmd!=V3_TCSETS2 && cmd!=V3_TCSETSW2 && cmd!=V3_TCSETSF2)return 0;
+    struct v3_termios2 copy=*t;
+    if((copy.c_cflag&0010017)==0010000)copy.c_cflag=(copy.c_cflag&~0010017u)|0000017;
+    *result=RAW(SYS_ioctl,a[0],cmd==V3_TCSETS2?0x5402:cmd==V3_TCSETSW2?0x5403:0x5404,(long)&copy,0,0,0);
+    return 1;
+}
 static int ours(long n) {
     switch(n) {
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
@@ -582,6 +616,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(result>=0 && (nr!=SYS_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=links_dup((int)a[0],(int)result);if(tracked<0){RAW(SYS_close,result,0,0,0,0,0);links_close((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;
     case SYS_ioctl:case SYS_socket:case SYS_bind:case SYS_getsockname:case SYS_sendto:case SYS_sendmsg:case SYS_recvfrom:case SYS_recvmsg:case SYS_connect:case SYS_getpeername:case SYS_sendmmsg:case SYS_setsockopt:case SYS_getsockopt:
+        if(nr==SYS_ioctl && termios2_call(a,&result))break;
         if(app_allowed(nr))result=dns_call(nr,a);
         break;
     case SYS_prctl:
