@@ -24,7 +24,7 @@ subprocess.run([compiler, '-DHOST_COMMAND_TEST', '-nostdlib', '-static',
                 '-mcmodel=large', *flags, '-O2', '-fno-stack-protector',
                 '-fno-builtin', '-Wall', '-Wextra', '-Werror',
                 *[str(ROOT / s) for s in ['loader.c', 'proxy.c', 'vfs.c',
-                                           'links.c', 'net.c', 'raw.S', 'entry.S']],
+                                           'links.c', 'net.c', 'sysvipc.c', 'raw.S', 'entry.S']],
                 '-o', str(loader)], check=True)
 with tempfile.TemporaryDirectory(prefix='hc-threads-', dir='/mnt/data/aosp/out') as tmp:
     d = pathlib.Path(tmp)
