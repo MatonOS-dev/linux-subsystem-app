@@ -17,11 +17,11 @@ struct allocation {size_t size;};
 void *vfs_alloc(size_t n) {
     if(n>SIZE_MAX-sizeof(struct allocation)-4095) return NULL;
     size_t bytes=(n+sizeof(struct allocation)+4095)&~(size_t)4095;
-    long p=RAW(SYS_mmap,0,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    long p=RAW(PROXY_SC_mmap,0,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if((unsigned long)p>=(unsigned long)-4095) return NULL;
     struct allocation *a=(void *)p;a->size=bytes;return a+1;
 }
-void vfs_free(void *p) {if(p){struct allocation *a=(struct allocation *)p-1;RAW(SYS_munmap,a,a->size,0,0,0,0);}}
+void vfs_free(void *p) {if(p){struct allocation *a=(struct allocation *)p-1;RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
 static char *join(const char *a,const char *b) {
     size_t x=p_len(a),y=p_len(b);if(x>SIZE_MAX-y-2) return NULL;
     char *s=vfs_alloc(x+y+2);if(!s)return NULL;
@@ -36,57 +36,57 @@ struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
 int proxy_diagnostic_fd=2;
 int vfs_private_fd(int fd){if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
-static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(SYS_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
+static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(PROXY_SC_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
-    int fd=(int)RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
-    struct temp_lock *l=vfs_alloc(sizeof(*l));if(!l){RAW(SYS_close,fd,0,0,0,0,0);return -ENOMEM;}
-    long e=RAW(SYS_flock,fd,LOCK_EX|LOCK_NB,0,0,0,0);
-    if(e){vfs_free(l);RAW(SYS_close,fd,0,0,0,0,0);return (int)e;}
+    int fd=(int)RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
+    struct temp_lock *l=vfs_alloc(sizeof(*l));if(!l){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
+    long e=RAW(PROXY_SC_flock,fd,LOCK_EX|LOCK_NB,0,0,0,0);
+    if(e){vfs_free(l);RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)e;}
     /* Distinguish new locked directories from legacy PID-only directories. */
-    long marker=RAW(SYS_openat,fd,".v3-owner",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600,0,0);
-    if(marker<0){vfs_free(l);RAW(SYS_close,fd,0,0,0,0,0);return (int)marker;}
-    RAW(SYS_close,marker,0,0,0,0,0);l->fd=fd;l->next=temp_locks;temp_locks=l;return 0;
+    long marker=RAW(PROXY_SC_openat,fd,".v3-owner",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600,0,0);
+    if(marker<0){vfs_free(l);RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)marker;}
+    RAW(PROXY_SC_close,marker,0,0,0,0,0);l->fd=fd;l->next=temp_locks;temp_locks=l;return 0;
 }
 static int temp_remove_contents(int fd,unsigned depth){
     if(depth>64)return 0;
     char buf[4096];long n;
-    while((n=RAW(SYS_getdents64,fd,buf,sizeof(buf),0,0,0))>0){
+    while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(buf),0,0,0))>0){
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20||off+len>n)return 0;
             char *name=buf+off+19;off+=len;if(p_equal(name,".")||p_equal(name,".."))continue;
-            long child=RAW(SYS_openat,fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
-            if(child>=0){int ok=temp_remove_contents((int)child,depth+1);RAW(SYS_close,child,0,0,0,0,0);if(!ok)return 0;RAW(SYS_unlinkat,fd,name,AT_REMOVEDIR,0,0,0);}
-            else RAW(SYS_unlinkat,fd,name,0,0,0,0);
+            long child=RAW(PROXY_SC_openat,fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
+            if(child>=0){int ok=temp_remove_contents((int)child,depth+1);RAW(PROXY_SC_close,child,0,0,0,0,0);if(!ok)return 0;RAW(PROXY_SC_unlinkat,fd,name,AT_REMOVEDIR,0,0,0);}
+            else RAW(PROXY_SC_unlinkat,fd,name,0,0,0,0);
         }
     }return n==0;
 }
 void vfs_temp_gc(void){
     int parent=temp_parent();if(parent<0)return;
-    if(RAW(SYS_flock,parent,LOCK_EX,0,0,0,0)<0){RAW(SYS_close,parent,0,0,0,0,0);return;}
+    if(RAW(PROXY_SC_flock,parent,LOCK_EX,0,0,0,0)<0){RAW(PROXY_SC_close,parent,0,0,0,0,0);return;}
     char buf[4096];long n;
-    while((n=RAW(SYS_getdents64,parent,buf,sizeof(buf),0,0,0))>0){
+    while((n=RAW(PROXY_SC_getdents64,parent,buf,sizeof(buf),0,0,0))>0){
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20||off+len>n)break;char *name=buf+off+19;off+=len;
             const char *tag="compat-proxy-";unsigned k=0;while(tag[k]&&name[k]==tag[k])k++;if(tag[k])continue;
             long pid=0;unsigned start=k;for(;name[k]>='0'&&name[k]<='9'&&pid<2147483647;k++)pid=pid*10+name[k]-'0';
             if(k==start||name[k]!='-'||pid<=0||pid>2147483647)continue;
-            int dir=(int)RAW(SYS_openat,parent,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(dir<0)continue;
-            if(RAW(SYS_flock,dir,LOCK_EX|LOCK_NB,0,0,0,0)<0){RAW(SYS_close,dir,0,0,0,0,0);continue;}
-            long marker=RAW(SYS_openat,dir,".v3-owner",O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
+            int dir=(int)RAW(PROXY_SC_openat,parent,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(dir<0)continue;
+            if(RAW(PROXY_SC_flock,dir,LOCK_EX|LOCK_NB,0,0,0,0)<0){RAW(PROXY_SC_close,dir,0,0,0,0,0);continue;}
+            long marker=RAW(PROXY_SC_openat,dir,".v3-owner",O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
             int stale=marker>=0;
-            if(marker>=0)RAW(SYS_close,marker,0,0,0,0,0);
+            if(marker>=0)RAW(PROXY_SC_close,marker,0,0,0,0,0);
             else if(marker==-ENOENT){
                 /* Legacy names have no birth token. Keep them if this PID
                  * exists (including reuse); only ENOENT proves them stale. */
                 char proc[40]="/proc/",digits[24];unsigned count=0;unsigned long value=(unsigned long)pid;
                 do{digits[count++]=(char)('0'+value%10);value/=10;}while(value);
                 unsigned p=6;while(count)proc[p++]=digits[--count];proc[p]=0;
-                long live=RAW(SYS_openat,AT_FDCWD,proc,O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
-                stale=live==-ENOENT;if(live>=0)RAW(SYS_close,live,0,0,0,0,0);
+                long live=RAW(PROXY_SC_openat,AT_FDCWD,proc,O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
+                stale=live==-ENOENT;if(live>=0)RAW(PROXY_SC_close,live,0,0,0,0,0);
             }
-            if(stale&&temp_remove_contents(dir,0))RAW(SYS_unlinkat,parent,name,AT_REMOVEDIR,0,0,0);
-            RAW(SYS_close,dir,0,0,0,0,0);
+            if(stale&&temp_remove_contents(dir,0))RAW(PROXY_SC_unlinkat,parent,name,AT_REMOVEDIR,0,0,0);
+            RAW(PROXY_SC_close,dir,0,0,0,0,0);
         }
     }
-    RAW(SYS_close,parent,0,0,0,0,0);
+    RAW(PROXY_SC_close,parent,0,0,0,0,0);
 }
 
 static char *dupstr(const char *s){size_t n=p_len(s);char *p=vfs_alloc(n+1);if(p)p_copy(p,s,n+1);return p;}
@@ -100,7 +100,7 @@ void vfs_network_payload(int isolated){
     if(!isolated || hide_resolver || !root)return;
     long e=0;char *info=vfs_resolve(AT_FDCWD,"/.flatpak-info",1,&e);
     struct stat st;
-    if(info && !RAW(SYS_newfstatat,AT_FDCWD,info,&st,0,0,0))hide_resolver=1;
+    if(info && !RAW(PROXY_SC_newfstatat,AT_FDCWD,info,&st,0,0,0))hide_resolver=1;
     vfs_free(info);
 }
 void vfs_executable(const char *path){vfs_free(executable);executable=dupstr(path);}
@@ -129,7 +129,7 @@ char *vfs_reverse(const char *path){
     if(p && root && prefix(p,root)){char *q=dupstr(p+p_len(root));vfs_free(p);p=q;if(p && !*p){vfs_free(p);p=dupstr("/");}}
     return p;
 }
-static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(SYS_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
+static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
 struct fd_name {struct fd_name *next;int fd;char *path;};
 static struct fd_name *fd_names;
 /* Only protect the fd-name bookkeeping, never a payload syscall (flock may
@@ -138,8 +138,8 @@ static struct fd_name *fd_names;
 static unsigned long fd_names_owner;
 static unsigned long fd_names_lock(void){
     unsigned long all=~0UL,mask=0;
-    RAW(SYS_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
-    unsigned long pid=(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0);
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
+    unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     for(;;){unsigned long owner=__atomic_load_n(&fd_names_owner,__ATOMIC_RELAXED);
         if(!owner || owner!=pid){if(__atomic_compare_exchange_n(&fd_names_owner,&owner,pid,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return mask;}
         __asm__ volatile("pause");
@@ -147,7 +147,7 @@ static unsigned long fd_names_lock(void){
 }
 static void fd_names_unlock(unsigned long mask){
     __atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
-    RAW(SYS_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
 }
 void vfs_fd_close(int fd){
     unsigned long mask=fd_names_lock();
@@ -169,7 +169,7 @@ char *vfs_fd_name(int fd){
 static int self_proc(const char *path){
     if(prefix(path,"/proc/self"))return 1;
     char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;
-    unsigned long pid=(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0);
+    unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);
     while(d)name[k++]=digits[--d];
     name[k]=0;return prefix(path,name);
@@ -184,9 +184,9 @@ char *vfs_proc_fd_name(const char *path){
     }
 return NULL;
 }
-static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct stat named,actual;int valid=host && !RAW(SYS_newfstatat,AT_FDCWD,host,&named,0,0,0) && !RAW(SYS_newfstatat,AT_FDCWD,".",&actual,0,0,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(SYS_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
+static char *basepath(int fd,long *error){if(fd==AT_FDCWD){if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct stat named,actual;int valid=host && !RAW(PROXY_SC_newfstatat,AT_FDCWD,host,&named,0,0,0) && !RAW(PROXY_SC_newfstatat,AT_FDCWD,".",&actual,0,0,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
     char *tracked=vfs_fd_name(fd);if(tracked)return tracked;
-    struct stat st;long status=RAW(SYS_fstat,fd,&st,0,0,0,0);if(status<0){*error=status;return NULL;}if(!S_ISDIR(st.st_mode)){*error=-ENOTDIR;return NULL;}
+    struct stat st;long status=RAW(PROXY_SC_fstat,fd,&st,0,0,0,0);if(status<0){*error=status;return NULL;}if(!S_ISDIR(st.st_mode)){*error=-ENOTDIR;return NULL;}
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
     char *s=readlink_dynamic(p,error);if(!s)return NULL;char *q=vfs_reverse(s);vfs_free(s);return q;
 }
@@ -222,7 +222,7 @@ restart:;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);
-        if(!target && input[i]=='/'){struct stat st;long status=RAW(SYS_newfstatat,AT_FDCWD,host,&st,0,0,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
+        if(!target && input[i]=='/'){struct stat st;long status=RAW(PROXY_SC_newfstatat,AT_FDCWD,host,&st,0,0,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
         /* proc fd magic links point to backing objects, outside a pivoted
          * pathname root. They are not ordinary payload absolute symlinks. */
         if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
@@ -257,8 +257,8 @@ char *vfs_resolve(int fd,const char *path,int follow,long *error){return vfs_res
 int vfs_is_mount_source(const char *path){for(struct mount *m=table;m;m=m->next)if(p_equal(m->source,path))return 1;return 0;}
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
 int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
-    proxy_log("mount-owner",SYS_mount,0);
-    RAW(SYS_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(SYS_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
+    proxy_log("mount-owner",PROXY_SC_mount,0);
+    RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
 const char *proxy_path(const char *path,char *buffer,size_t size){long e;char *p=vfs_resolve(AT_FDCWD,path,1,&e);if(!p)return NULL;size_t n=p_len(p);if(n>=size){vfs_free(p);return NULL;}p_copy(buffer,p,n+1);vfs_free(p);return buffer;}
 static char *global_target(const char *target,long *error){
     char *virtual;
@@ -289,12 +289,12 @@ char *vfs_temp_create(long *error){
     extern const char *proxy_tmpdir;
     static unsigned long sequence;
     char suffix[80]="compat-proxy-";size_t k=13;
-    unsigned long values[2]={(unsigned long)RAW(SYS_getpid,0,0,0,0,0,0),0};
-    RAW(SYS_getrandom,&values[1],sizeof(values[1]),0,0,0,0);values[1]^=++sequence;
+    unsigned long values[2]={(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0),0};
+    RAW(PROXY_SC_getrandom,&values[1],sizeof(values[1]),0,0,0,0);values[1]^=++sequence;
     for(unsigned j=0;j<2;j++){char d[24];unsigned n=0;do{d[n++]=(char)('0'+values[j]%10);values[j]/=10;}while(values[j]);while(n)suffix[k++]=d[--n];suffix[k++]=j?0:'-';}
     char *src=join(proxy_tmpdir,suffix);if(!src){*error=-ENOMEM;return NULL;}
     int parent=temp_parent();if(parent<0)*error=parent;
-    else{*error=RAW(SYS_flock,parent,LOCK_EX,0,0,0,0);if(!*error)*error=RAW(SYS_mkdirat,AT_FDCWD,src,0700,0,0,0);if(!*error)*error=temp_own(src);RAW(SYS_close,parent,0,0,0,0,0);}
+    else{*error=RAW(PROXY_SC_flock,parent,LOCK_EX,0,0,0,0);if(!*error)*error=RAW(PROXY_SC_mkdirat,AT_FDCWD,src,0700,0,0,0);if(!*error)*error=temp_own(src);RAW(PROXY_SC_close,parent,0,0,0,0,0);}
     if(*error){vfs_free(src);return NULL;}return src;
 }
 long vfs_mount(const char *source,const char *target,const char *type,unsigned long flags){
@@ -326,9 +326,9 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
         vfs_free(virtual_source);
     }vfs_free(src);vfs_free(dest);return e;
 }
-long vfs_unmount(const char *target){RAW(SYS_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
-long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(SYS_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(SYS_close,fd,0,0,0,0,0);vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;}
-long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(SYS_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(SYS_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(SYS_write,proxy_diagnostic_fd,"\n",1,0,0,0);
+long vfs_unmount(const char *target){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
+long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(PROXY_SC_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;}
+long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
     stacked_oldroot=p_equal(target,old);
     if(!p_equal(target,old)){char *oldhost=physical(root?root:"/");char *dest=global_target(old,&e);if(!dest || !oldhost){vfs_free(next);vfs_free(dest);vfs_free(oldhost);return -ENOMEM;}struct mount *prior=table;
         e=proxy_mount(oldhost,dest);
@@ -343,7 +343,7 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
     vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;
 }
 long vfs_proc_open(const char *path){size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
-    long fd=RAW(SYS_memfd_create,"v3-mountinfo",1,0,0,0,0);if(fd<0)return fd;
+    long fd=RAW(PROXY_SC_memfd_create,"v3-mountinfo",1,0,0,0,0);if(fd<0)return fd;
     const char *header="1 0 0:1 / ",*middle=" rw,nosuid - tmpfs compat-proxy rw\n";
     /* Virtual view required by bwrap's post-bind verification. Stable IDs are
      * not yet exposed: this is a setup-time snapshot. */
@@ -351,15 +351,15 @@ long vfs_proc_open(const char *path){size_t n=p_len(path);if(n<10 || !p_equal(pa
         if(root && !prefix(t,root))continue;
         if(root)t+=p_len(root);
         if(!*t)t="/";
-        RAW(SYS_write,fd,header,p_len(header),0,0,0);RAW(SYS_write,fd,t,p_len(t),0,0,0);RAW(SYS_write,fd,middle,p_len(middle),0,0,0);
+        RAW(PROXY_SC_write,fd,header,p_len(header),0,0,0);RAW(PROXY_SC_write,fd,t,p_len(t),0,0,0);RAW(PROXY_SC_write,fd,middle,p_len(middle),0,0,0);
     }
-    RAW(SYS_lseek,fd,0,0,0,0,0);return fd;
+    RAW(PROXY_SC_lseek,fd,0,0,0,0,0);return fd;
 }
 long vfs_chdir(int fd,const char *path){long e=0;void *identity=NULL;char *host;
     if(path)host=vfs_resolve_mount(fd,path,1,&e,&identity);
     else {char proc[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)proc[k++]=digits[--d];proc[k]=0;host=readlink_dynamic(proc,&e);}
     if(!host)return e;
-    e=path?RAW(SYS_chdir,host,0,0,0,0,0):RAW(SYS_fchdir,fd,0,0,0,0,0);
+    e=path?RAW(PROXY_SC_chdir,host,0,0,0,0,0):RAW(PROXY_SC_fchdir,fd,0,0,0,0,0);
     if(!e){struct mount *m=identity;char *logical=!path?vfs_fd_name(fd):NULL;if(!logical)logical=m?join(m->target,host+(p_len(m->source)==1?0:p_len(m->source))):vfs_reverse(host);
         if(logical && m && root && prefix(logical,root)){char *q=dupstr(logical+p_len(root));vfs_free(logical);logical=q;if(logical && !*logical){vfs_free(logical);logical=dupstr("/");}}
         if(!logical)e=-ENOMEM;else {vfs_free(cwd);cwd=logical;}}
@@ -373,10 +373,10 @@ long vfs_bootstrap_root(const char *directory){
     char *sources[11]={0};long error=0;
     for(unsigned i=0;i<11;i++){
         char *path=join(directory,names[i]);if(!path){error=-ENOMEM;break;}
-        long fd=RAW(SYS_openat,AT_FDCWD,path,O_PATH|O_CLOEXEC,0,0,0);vfs_free(path);
+        long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_PATH|O_CLOEXEC,0,0,0);vfs_free(path);
         if(fd<0){if(fd!=-ENOENT)error=fd;continue;}
         char proc[64]="/proc/self/fd/",digits[24];unsigned d=0;size_t k=14;unsigned long v=(unsigned long)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)proc[k++]=digits[--d];proc[k]=0;
-        sources[i]=readlink_dynamic(proc,&error);RAW(SYS_close,fd,0,0,0,0,0);if(!sources[i])break;
+        sources[i]=readlink_dynamic(proc,&error);RAW(PROXY_SC_close,fd,0,0,0,0,0);if(!sources[i])break;
     }
     if(!error)error=proxy_mount(directory,"/");
     for(unsigned i=0;i<11;i++){if(!error && sources[i]){char *target=join("/",names[i]);if(!target)error=-ENOMEM;else error=proxy_mount(sources[i],target);vfs_free(target);}vfs_free(sources[i]);}
@@ -419,9 +419,9 @@ static int gpu_property(const char *area,size_t size,const char *name,char value
     return 0;
 }
 static size_t gpu_number(char *out,unsigned long number){char rev[24];size_t n=0,k=0;do{rev[n++]=(char)('0'+number%10);number/=10;}while(number);while(n)out[k++]=rev[--n];out[k]=0;return k;}
-static long gpu_dir(const char *base,const char *name){char *p=join(base,name);if(!p)return -ENOMEM;long r=RAW(SYS_mkdirat,AT_FDCWD,p,0700,0,0,0);vfs_free(p);return r;}
-static long gpu_file(const char *base,const char *name,const char *value){char *p=join(base,name);if(!p)return -ENOMEM;long fd=RAW(SYS_openat,AT_FDCWD,p,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0400,0,0);vfs_free(p);if(fd<0)return fd;size_t n=p_len(value);long r=RAW(SYS_write,fd,value,n,0,0,0);RAW(SYS_close,fd,0,0,0,0,0);return r==(long)n?0:r<0?r:-EIO;}
-static long gpu_link(const char *base,const char *name,const char *target){char *p=join(base,name);if(!p)return -ENOMEM;long r=RAW(SYS_symlinkat,target,AT_FDCWD,p,0,0,0);vfs_free(p);return r;}
+static long gpu_dir(const char *base,const char *name){char *p=join(base,name);if(!p)return -ENOMEM;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,p,0700,0,0,0);vfs_free(p);return r;}
+static long gpu_file(const char *base,const char *name,const char *value){char *p=join(base,name);if(!p)return -ENOMEM;long fd=RAW(PROXY_SC_openat,AT_FDCWD,p,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0400,0,0);vfs_free(p);if(fd<0)return fd;size_t n=p_len(value);long r=RAW(PROXY_SC_write,fd,value,n,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);return r==(long)n?0:r<0?r:-EIO;}
+static long gpu_link(const char *base,const char *name,const char *target){char *p=join(base,name);if(!p)return -ENOMEM;long r=RAW(PROXY_SC_symlinkat,target,AT_FDCWD,p,0,0,0);vfs_free(p);return r;}
 static int gpu_hex(const char *p){if(p_len(p)!=6 || p[0]!='0' || p[1]!='x')return 0;for(unsigned i=2;i<6;i++)if(!((p[i]>='0'&&p[i]<='9')||(p[i]>='a'&&p[i]<='f')||(p[i]>='A'&&p[i]<='F')))return 0;return 1;}
 static void gpu_append(char *dst,const char *src){p_copy(dst+p_len(dst),src,p_len(src)+1);}
 static long gpu_node(const char *base,const char *name,unsigned minor){
@@ -458,19 +458,19 @@ long vfs_gpu_publish(const char *base,const char *vendor,const char *device,cons
 }
 void vfs_gpu_init(void){
     long e=0;char *path=vfs_resolve(AT_FDCWD,"/dev/__properties__/u:object_r:vendor_maton_graphics_prop:s0",1,&e);if(!path)return;
-    long fd=RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
-    struct stat st;if(RAW(SYS_fstat,fd,&st,0,0,0,0) || st.st_size<148){RAW(SYS_close,fd,0,0,0,0,0);return;}
-    char *area=(void *)RAW(SYS_mmap,0,st.st_size,PROT_READ,MAP_SHARED,fd,0);RAW(SYS_close,fd,0,0,0,0,0);if((unsigned long)area>=(unsigned long)-4095)return;
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
+    struct stat st;if(RAW(PROXY_SC_fstat,fd,&st,0,0,0,0) || st.st_size<148){RAW(PROXY_SC_close,fd,0,0,0,0,0);return;}
+    char *area=(void *)RAW(PROXY_SC_mmap,0,st.st_size,PROT_READ,MAP_SHARED,fd,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);if((unsigned long)area>=(unsigned long)-4095)return;
     char vendor[92],device[92],driver[92],render[92],mode[92];
     int ok=gpu_property(area,st.st_size,"vendor.maton.graphics.vendor",vendor)&&gpu_property(area,st.st_size,"vendor.maton.graphics.device",device)&&gpu_property(area,st.st_size,"vendor.maton.graphics.driver",driver)&&gpu_property(area,st.st_size,"vendor.maton.graphics.render_node",render)&&gpu_property(area,st.st_size,"vendor.maton.graphics.mode",mode);
-    RAW(SYS_munmap,area,st.st_size,0,0,0,0);
+    RAW(PROXY_SC_munmap,area,st.st_size,0,0,0,0);
     if(!ok || !p_equal(mode,"hardware") || !gpu_hex(vendor) || !gpu_hex(device) || !driver[0] || p_equal(driver,"unknown") || p_len(render)<17)return;
     for(size_t i=0;driver[i];i++)if(!((driver[i]>='a'&&driver[i]<='z')||(driver[i]>='0'&&driver[i]<='9')||driver[i]=='_'||driver[i]=='-'))return;
     const char *prefix="/dev/dri/renderD";for(unsigned i=0;i<16;i++)if(render[i]!=prefix[i])return;
     for(unsigned i=16;render[i];i++)if(render[i]<'0'||render[i]>'9')return;
     path=vfs_resolve(AT_FDCWD,render,1,&e);if(!path)return;
-    fd=RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
-    e=RAW(SYS_fstat,fd,&st,0,0,0,0);RAW(SYS_close,fd,0,0,0,0,0);
+    fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(path);if(fd<0)return;
+    e=RAW(PROXY_SC_fstat,fd,&st,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
     if(e)return;
     unsigned maj=(st.st_rdev>>8)&0xfff,min=(st.st_rdev&255)|((st.st_rdev>>12)&0xfffff00);
     if(!S_ISCHR(st.st_mode) || maj!=226 || min<128)return;
@@ -479,10 +479,10 @@ void vfs_gpu_init(void){
      * not necessarily paired. Never invent a multi-GPU association. */
     char card[64]={0};unsigned card_minor=0,count=0,render_count=0;
     path=vfs_resolve(AT_FDCWD,"/dev/dri",1,&e);
-    long dri=path?RAW(SYS_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0):-ENOENT;vfs_free(path);
+    long dri=path?RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0):-ENOENT;vfs_free(path);
     if(dri>=0){
         char buf[4096];long n;
-        while((n=RAW(SYS_getdents64,dri,buf,sizeof(buf),0,0,0))>0){
+        while((n=RAW(PROXY_SC_getdents64,dri,buf,sizeof(buf),0,0,0))>0){
             for(long off=0;off<n;){
                 unsigned short len=*(unsigned short *)(buf+off+16);
                 if(len<20 || len>n-off)break;
@@ -490,25 +490,25 @@ void vfs_gpu_init(void){
                 int primary=name[0]=='c'&&name[1]=='a'&&name[2]=='r'&&name[3]=='d';
                 int rendering=name[0]=='r'&&name[1]=='e'&&name[2]=='n'&&name[3]=='d';
                 if((primary || rendering) && p_len(name)<sizeof(card)){
-                    long c=RAW(SYS_openat,dri,name,O_RDONLY|O_CLOEXEC,0,0,0);struct stat cs;
+                    long c=RAW(PROXY_SC_openat,dri,name,O_RDONLY|O_CLOEXEC,0,0,0);struct stat cs;
                     if(c>=0){
-                        if(!RAW(SYS_fstat,c,&cs,0,0,0,0) && S_ISCHR(cs.st_mode) && ((cs.st_rdev>>8)&0xfff)==226){
+                        if(!RAW(PROXY_SC_fstat,c,&cs,0,0,0,0) && S_ISCHR(cs.st_mode) && ((cs.st_rdev>>8)&0xfff)==226){
                             unsigned cm=(cs.st_rdev&255)|((cs.st_rdev>>12)&0xfffff00);
                             if(primary && cm<64){count++;p_copy(card,name,p_len(name)+1);card_minor=cm;}
                             else if(rendering && cm>=128)render_count++;
                         }
-                        RAW(SYS_close,c,0,0,0,0,0);
+                        RAW(PROXY_SC_close,c,0,0,0,0,0);
                     }
                 }
                 off+=len;
             }
         }
         if(n<0){count=0;render_count=0;}
-        RAW(SYS_close,dri,0,0,0,0,0);
+        RAW(PROXY_SC_close,dri,0,0,0,0,0);
     }
-    extern const char *proxy_tmpdir;char suffix[80]="v3-gpu-",number[24];gpu_number(number,RAW(SYS_getpid,0,0,0,0,0,0));p_copy(suffix+7,number,p_len(number)+1);unsigned long random=0;if(RAW(SYS_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return;size_t k=p_len(suffix);suffix[k++]='-';gpu_number(suffix+k,random);
+    extern const char *proxy_tmpdir;char suffix[80]="v3-gpu-",number[24];gpu_number(number,RAW(PROXY_SC_getpid,0,0,0,0,0,0));p_copy(suffix+7,number,p_len(number)+1);unsigned long random=0;if(RAW(PROXY_SC_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return;size_t k=p_len(suffix);suffix[k++]='-';gpu_number(suffix+k,random);
     char *base=join(proxy_tmpdir,suffix);if(!base)return;
-    if(!RAW(SYS_mkdirat,AT_FDCWD,base,0700,0,0,0) && !vfs_gpu_publish(base,vendor,device,driver,render+9,min,count==1 && render_count==1?card:NULL,card_minor)){
+    if(!RAW(PROXY_SC_mkdirat,AT_FDCWD,base,0700,0,0,0) && !vfs_gpu_publish(base,vendor,device,driver,render+9,min,count==1 && render_count==1?card:NULL,card_minor)){
         struct mount *prior=table;
         const char *trees[]={"dev","devices","bus","class"};
         for(unsigned i=0;i<4;i++){

@@ -38,7 +38,7 @@ long proxy_raw(long nr,long a,long b,long c,long d,long e,long f){
  if(nr==SYS_recvmsg){struct msghdr *m=(void *)b;assert(!m->msg_name);m->msg_flags=MSG_EOR|MSG_TRUNC;m->msg_controllen=0;return 7;}
  assert(0);return -1;
 }
-static int create(int type){long a[6]={AF_INET,type,0};return (int)dns_call(SYS_socket,a);}
+static int create(int type){long a[6]={AF_INET,type,0};return (int)dns_call(PROXY_SC_socket,a);}
 int main(void){
  assert(!proxy_dns_forwarder("127.10.42.99:53"));assert(!proxy_dns_socket("/tmp/dns"));
  int fd=create(SOCK_DGRAM);
@@ -46,28 +46,28 @@ int main(void){
  assert(dns_poll(&wait,1,&duration,NULL,8)==1 && polls==2);
  dns_dup(fd,50);assert(dns_lookup(fd)==dns_lookup(50));
  event=(struct epoll_event){.events=EPOLLIN|EPOLLET,.data.u64=0xabcdef};
- long args[6]={100,EPOLL_CTL_ADD,fd,(long)&event};assert(!dns_call(SYS_epoll_ctl,args));
+ long args[6]={100,EPOLL_CTL_ADD,fd,(long)&event};assert(!dns_call(PROXY_SC_epoll_ctl,args));
  struct sockaddr_in address=dns_endpoint;
  args[0]=fd;args[1]=(long)&address;args[2]=sizeof(address);args[3]=0;
- assert(!dns_call(SYS_connect,args));assert(unix_connects==1 && duplicates==2 && watches==2 && options==5);
+ assert(!dns_call(PROXY_SC_connect,args));assert(unix_connects==1 && duplicates==2 && watches==2 && options==5);
  assert(dns_lookup(fd)->active && dns_lookup(fd)->connected);
  struct sockaddr_in peer={0};unsigned length=sizeof(peer);
- args[0]=50;args[1]=(long)&peer;args[2]=(long)&length;assert(!dns_call(SYS_getpeername,args));assert(!memcmp(&peer,&address,sizeof(peer)));
- length=3;memset(&peer,0,sizeof(peer));assert(!dns_call(SYS_getpeername,args) && length==sizeof(peer));assert(((char *)&peer)[3]==0);
+ args[0]=50;args[1]=(long)&peer;args[2]=(long)&length;assert(!dns_call(PROXY_SC_getpeername,args));assert(!memcmp(&peer,&address,sizeof(peer)));
+ length=3;memset(&peer,0,sizeof(peer));assert(!dns_call(PROXY_SC_getpeername,args) && length==sizeof(peer));assert(((char *)&peer)[3]==0);
  char query[7]={0};args[1]=(long)query;args[2]=7;args[3]=0;args[4]=(long)&address;args[5]=sizeof(address);
- assert(dns_call(SYS_sendto,args)==7);
+ assert(dns_call(PROXY_SC_sendto,args)==7);
  struct iovec iov={query,sizeof(query)};struct mmsghdr messages[2]={0};
  for(int i=0;i<2;i++)messages[i].msg_hdr=(struct msghdr){.msg_name=&address,.msg_namelen=sizeof(address),.msg_iov=&iov,.msg_iovlen=1};
- args[1]=(long)&messages[0].msg_hdr;args[2]=0;assert(dns_call(SYS_sendmsg,args)==7);
- args[1]=(long)messages;args[2]=2;assert(dns_call(SYS_sendmmsg,args)==2 && messages[1].msg_len==7);assert(messages[0].msg_hdr.msg_name==&address);
- args[1]=(long)query;args[2]=7;length=sizeof(peer);args[4]=(long)&peer;args[5]=(long)&length;assert(dns_call(SYS_recvfrom,args)==7);assert(!memcmp(&peer,&address,sizeof(peer)));
- messages[0].msg_hdr.msg_name=&peer;messages[0].msg_hdr.msg_namelen=sizeof(peer);args[1]=(long)&messages[0].msg_hdr;args[2]=0;assert(dns_call(SYS_recvmsg,args)==7);assert(messages[0].msg_hdr.msg_flags==MSG_TRUNC && !memcmp(&peer,&address,sizeof(peer)));
- int stream=create(SOCK_STREAM);args[0]=stream;args[1]=(long)&address;args[2]=sizeof(address);assert(!dns_call(SYS_connect,args) && kind==SOCK_STREAM);
- int rejected=create(SOCK_DGRAM);args[0]=rejected;bad_peer=1;assert(dns_call(SYS_connect,args)==-EACCES && !dns_lookup(rejected)->active);bad_peer=0;
- namespaces=CLONE_NEWNET;assert(dns_call(SYS_connect,args)==-EACCES);
+ args[1]=(long)&messages[0].msg_hdr;args[2]=0;assert(dns_call(PROXY_SC_sendmsg,args)==7);
+ args[1]=(long)messages;args[2]=2;assert(dns_call(PROXY_SC_sendmmsg,args)==2 && messages[1].msg_len==7);assert(messages[0].msg_hdr.msg_name==&address);
+ args[1]=(long)query;args[2]=7;length=sizeof(peer);args[4]=(long)&peer;args[5]=(long)&length;assert(dns_call(PROXY_SC_recvfrom,args)==7);assert(!memcmp(&peer,&address,sizeof(peer)));
+ messages[0].msg_hdr.msg_name=&peer;messages[0].msg_hdr.msg_namelen=sizeof(peer);args[1]=(long)&messages[0].msg_hdr;args[2]=0;assert(dns_call(PROXY_SC_recvmsg,args)==7);assert(messages[0].msg_hdr.msg_flags==MSG_TRUNC && !memcmp(&peer,&address,sizeof(peer)));
+ int stream=create(SOCK_STREAM);args[0]=stream;args[1]=(long)&address;args[2]=sizeof(address);assert(!dns_call(PROXY_SC_connect,args) && kind==SOCK_STREAM);
+ int rejected=create(SOCK_DGRAM);args[0]=rejected;bad_peer=1;assert(dns_call(PROXY_SC_connect,args)==-EACCES && !dns_lookup(rejected)->active);bad_peer=0;
+ namespaces=CLONE_NEWNET;assert(dns_call(PROXY_SC_connect,args)==-EACCES);
  struct sockaddr_un unix_address={.sun_family=AF_UNIX};strcpy(unix_address.sun_path,"/tmp/dns.udp");
  args[1]=(long)&unix_address;args[2]=offsetof(struct sockaddr_un,sun_path)+strlen(unix_address.sun_path)+1;
- assert(dns_call(SYS_connect,args)==-EACCES);
+ assert(dns_call(PROXY_SC_connect,args)==-EACCES);
  namespaces=0;
  dns_close(fd);assert(dns_lookup(50)->active);dns_close(50);assert(!dns_lookup(50));namespaces=CLONE_NEWNET;dns_network_payload();assert(!dns_lookup(stream));namespaces=0;dns_close(stream);dns_close(rejected);dns_close(100);
  const char *invalid[]={"1.2.3.4:53","127.1.2.3:5353","127.1.2.999:53","127.1.2.3:","127.1.2.3:53junk"};

@@ -18,7 +18,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <time.h>
-#define R(n, a, b, c, d, e, f) RAW(SYS_##n, a, b, c, d, e, f)
+#define R(n, a, b, c, d, e, f) RAW(PROXY_SC_##n, a, b, c, d, e, f)
 #define PAGE 4096UL
 #define MAXSEM 32767
 #define AGAIN (-4096L)
@@ -456,7 +456,7 @@ static off new_record(struct ctx *c) {
   return r;
 }
 static off record(struct ctx *c, int type, int id, int index) {
-  int pid = (int)RAW(type == 3 ? SYS_gettid : SYS_getpid, 0, 0, 0, 0, 0, 0);
+  int pid = (int)RAW(type == 3 ? PROXY_SC_gettid : PROXY_SC_getpid, 0, 0, 0, 0, 0, 0);
   for (off r = shared->records; r;) {
     struct rec *q = ptr(c, r);
     if (q->type == type && q->pid == pid && q->id == id && q->index == index)
@@ -962,16 +962,16 @@ static long info(struct ctx *c, int kind, int cmd, void *out) {
   return r ? r : high;
 }
 static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
-  if (nr == SYS_semget)
+  if (nr == PROXY_SC_semget)
     return get(c, 1, (int)a[0], a[1], (int)a[2]);
-  if (nr == SYS_shmget) {
+  if (nr == PROXY_SC_shmget) {
     if (a[2] & SHM_HUGETLB)
       return -EOPNOTSUPP;
     return get(c, 2, (int)a[0], a[1], (int)a[2]);
   }
-  if (nr == SYS_msgget)
+  if (nr == PROXY_SC_msgget)
     return get(c, 3, (int)a[0], 0, (int)a[1]);
-  if (nr == SYS_shmdt) {
+  if (nr == PROXY_SC_shmdt) {
     int pid = (int)R(getpid, 0, 0, 0, 0, 0, 0);
     for (off o = shared->records; o;) {
       struct rec *q = ptr(c, o);
@@ -1004,20 +1004,20 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     }
     return -EINVAL;
   }
-  int kind = nr == SYS_semop || nr == SYS_semtimedop || nr == SYS_semctl ? 1
-             : nr == SYS_shmat || nr == SYS_shmctl                       ? 2
+  int kind = nr == PROXY_SC_semop || nr == PROXY_SC_semtimedop || nr == PROXY_SC_semctl ? 1
+             : nr == PROXY_SC_shmat || nr == PROXY_SC_shmctl                       ? 2
                                                                          : 3;
   int cmd = (int)a[kind == 1 ? 2 : 1];
-  if (nr == SYS_semctl || nr == SYS_shmctl || nr == SYS_msgctl) {
+  if (nr == PROXY_SC_semctl || nr == PROXY_SC_shmctl || nr == PROXY_SC_msgctl) {
     if (cmd == IPC_INFO || (kind == 1 && cmd == SEM_INFO) ||
         (kind == 2 && cmd == SHM_INFO) || (kind == 3 && cmd == MSG_INFO))
       return info(c, kind, cmd, (void *)a[kind == 1 ? 3 : 2]);
   }
   struct obj *p = 0;
   int indexed =
-      (nr == SYS_semctl && (cmd == SEM_STAT || cmd == SEM_STAT_ANY)) ||
-      (nr == SYS_shmctl && (cmd == SHM_STAT || cmd == SHM_STAT_ANY)) ||
-      (nr == SYS_msgctl && (cmd == MSG_STAT || cmd == MSG_STAT_ANY));
+      (nr == PROXY_SC_semctl && (cmd == SEM_STAT || cmd == SEM_STAT_ANY)) ||
+      (nr == PROXY_SC_shmctl && (cmd == SHM_STAT || cmd == SHM_STAT_ANY)) ||
+      (nr == PROXY_SC_msgctl && (cmd == MSG_STAT || cmd == MSG_STAT_ANY));
   if (indexed) {
     for (off o = shared->objects; o;) {
       struct obj *q = ptr(c, o);
@@ -1031,11 +1031,11 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     p = find(c, (int)a[0]);
   if (!p || p->kind != kind)
     return -EINVAL;
-  if (nr == SYS_semop || nr == SYS_semtimedop)
+  if (nr == PROXY_SC_semop || nr == PROXY_SC_semtimedop)
     return semops(c, p, a, wr);
-  if (nr == SYS_semctl || nr == SYS_shmctl || nr == SYS_msgctl)
+  if (nr == PROXY_SC_semctl || nr == PROXY_SC_shmctl || nr == PROXY_SC_msgctl)
     return ctl(c, p, cmd, (int)a[1], a[kind == 1 ? 3 : 2]);
-  if (nr == SYS_shmat) {
+  if (nr == PROXY_SC_shmat) {
     int flags = (int)a[2];
     long addr = a[1];
     if (flags & ~(SHM_RDONLY | SHM_RND | SHM_REMAP | SHM_EXEC))
@@ -1138,7 +1138,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     attached = la;
     return mapped;
   }
-  if (nr == SYS_msgsnd) {
+  if (nr == PROXY_SC_msgsnd) {
     if ((unsigned long)a[2] > 8192)
       return -EINVAL;
     long type;
@@ -1193,7 +1193,7 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
     wake();
     return 0;
   }
-  if (nr == SYS_msgrcv) {
+  if (nr == PROXY_SC_msgrcv) {
     if (a[2] < 0)
       return -EINVAL;
     int r = access_obj(p, 4);
@@ -1245,18 +1245,18 @@ static long dispatch(struct ctx *c, long nr, long *a, off *wr) {
 }
 int ipc_ours(long n) {
   switch (n) {
-  case SYS_semget:
-  case SYS_semop:
-  case SYS_semtimedop:
-  case SYS_semctl:
-  case SYS_shmget:
-  case SYS_shmat:
-  case SYS_shmdt:
-  case SYS_shmctl:
-  case SYS_msgget:
-  case SYS_msgsnd:
-  case SYS_msgrcv:
-  case SYS_msgctl:
+  case PROXY_SC_semget:
+  case PROXY_SC_semop:
+  case PROXY_SC_semtimedop:
+  case PROXY_SC_semctl:
+  case PROXY_SC_shmget:
+  case PROXY_SC_shmat:
+  case PROXY_SC_shmdt:
+  case PROXY_SC_shmctl:
+  case PROXY_SC_msgget:
+  case PROXY_SC_msgsnd:
+  case PROXY_SC_msgrcv:
+  case PROXY_SC_msgctl:
     return 1;
   default:
     return 0;
@@ -1268,7 +1268,7 @@ long ipc_call(long nr, long *input) {
   long *a = args;
   struct sembuf operations[500];
   unsigned char message[sizeof(long) + 8192];
-  if (nr == SYS_semop || nr == SYS_semtimedop) {
+  if (nr == PROXY_SC_semop || nr == PROXY_SC_semtimedop) {
     if (a[2] <= 0)
       return a[2] ? -E2BIG : -EINVAL;
     if (a[2] > 500)
@@ -1278,7 +1278,7 @@ long ipc_call(long nr, long *input) {
       return r;
     a[1] = (long)operations;
   }
-  if (nr == SYS_msgsnd) {
+  if (nr == PROXY_SC_msgsnd) {
     if ((unsigned long)a[2] > 8192)
       return -EINVAL;
     long r = copy(message, (void *)a[1], sizeof(long) + a[2]);
@@ -1290,7 +1290,7 @@ long ipc_call(long nr, long *input) {
   if (!shared)
     return init_error ? init_error : -ENOSYS;
   long deadline = 0;
-  if (nr == SYS_semtimedop && a[3]) {
+  if (nr == PROXY_SC_semtimedop && a[3]) {
     struct timespec t;
     long r = copy(&t, (void *)a[3], sizeof(t));
     if (r)
@@ -1426,7 +1426,7 @@ void ipc_exec(void) {
   ipc_fork();
   while (attached) {
     long a[6] = {(long)attached->addr, 0, 0, 0, 0, 0};
-    if (ipc_call(SYS_shmdt, a) < 0)
+    if (ipc_call(PROXY_SC_shmdt, a) < 0)
       break;
   }
 }

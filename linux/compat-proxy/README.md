@@ -730,3 +730,209 @@ ephemeral forwarder port from both payload and HostCommand, but cannot run
 in a sandbox forbidding host sockets. Device validation is pending: see
 `out/pc-logs/agents/v3-resolv-result.md` for fresh-image steps. No kernel,
 SELinux or shared-file changes are required.
+
+### Round 30: i386 design and P1 gate (support not implemented)
+
+P0 chooses a separate freestanding ELF32/EM_386 resident proxy, sharing C
+algorithms with the ELF64 build through explicit ABI adapters. Build it with
+host `-m32` and NDK `i686-linux-android36-clang`, without a libc dependency.
+The resident loader must use Elf32 headers/program headers/auxv, 32-bit stack
+words, an i686 platform string and a reserved low-address resident region.
+Reject segment overflow, proxy/stack collisions and invalid interpreter
+class/machine. An address must fit in 32 bits before converting it. The
+existing 0x600000000000 placement and large code model cannot be reused.
+
+Option (b), merely dispatching i386 syscall numbers in the existing 64-bit
+handler, is ruled out for this implementation: it does not enter compat code,
+build compat signal frames, supply TLS or fix pointers. This is not a claim
+that mixed-mode x86 execution is physically impossible: a 64-bit executable
+can issue int 0x80, and deliberate mode-switch machinery is a different,
+substantially more complicated design. Kernel exec of an ELF32 proxy gives
+normal compat process startup, signal frames and a compat vDSO.
+
+Two filters must be considered independently. The checked-out
+`bionic/libc/seccomp/seccomp_policy.cpp` selects AUDIT_ARCH_X86_64 and
+AUDIT_ARCH_I386 with separate app allowlists. Our host `--android-filter`
+currently copies only x86_64 and kills other architectures; it is **not** a
+correct dual-architecture reproduction. Generate an x86 allowlist from the
+same AOSP inputs and unistd_32.h, retain input hashes, and test both branches.
+The proxy's own filter also currently kills I386. It must dispatch by arch
+before interpreting numbers, retain Binder ioctl denial in both branches
+before any gateway exemption, and reject x32. Trap payload operations needing
+VFS/IPC/socket conversion; handler replay must use only calls allowed by the
+inherited policy. An ALLOW in our filter cannot override Android's TRAP.
+
+For i386 raw calls use EAX for the number and EBX/ECX/EDX/ESI/EDI/EBP for
+arguments. Preserve callee-saved registers. A separate int 0x80 gateway and
+clone continuation are required. The i386 rt_sigaction wire structure needs
+an eight-byte kernel signal mask (a single 32-bit unsigned long is too small).
+Use i386 ucontext REG_EAX/EBX/ECX/EDX/ESI/EDI/EBP, REG_EIP and REG_ESP;
+rt_sigreturn is syscall 173, not x86_64's 15. Restore the complete compat
+signal/FP state and handle nested signals/alternate stacks. Do not assume
+that every trapped entry ends in a two-byte instruction to rewind. int 0x80
+and the compat vDSO __kernel_vsyscall sysenter path both need tests: the
+latter has its own saved-stack/return convention. Omitting AT_SYSINFO is an
+initial int-0x80-only strategy, not evidence that sysenter works.
+
+set_thread_area manages compat TLS descriptors (struct user_desc) and glibc
+uses GS. Do not substitute arch_prctl or clear the application's TLS on
+handler entry. The handler must remain freestanding and not use compiler TLS.
+clone(CLONE_SETTLS) passes an i386 descriptor pointer; clone argument order
+and child-stack continuation need their own gateway. Test pthread creation,
+futexes, robust lists, signal delivery and fork while TLS is active in P2.
+
+ABI adapters are mandatory, including for internal raw syscalls:
+
+- mmap2 uses 4096-byte offset units; byte offsets must be aligned and checked
+  before shifting. Old mmap(90) takes an argument block, not six registers.
+  i386 pread64/pwrite64 split 64-bit offsets across words. ftruncate64 and
+  other wide arguments likewise cannot use the current long-only wrapper.
+- stat/stat64/fstatat64 need explicit kernel wire layouts. NDK bionic
+  `struct stat` is not automatically the i386 kernel stat64 buffer. statx
+  uses fixed-width fields but still needs size/offset assertions and careful
+  payload copies. Internal VFS and link bookkeeping need canonical metadata.
+- sockaddr layouts generally share fixed fields, but msghdr, iovec and cmsghdr
+  have 32-bit pointers/size words/alignment. socketcall(102) decodes an
+  argument-word array; direct socket calls must use the same DNS translation.
+  Convert cmsg lengths/alignment and preserve SCM_RIGHTS private-fd guards.
+- Legacy timespec/timeval have 32-bit seconds; time64 syscalls use 64-bit
+  seconds and nanoseconds in their kernel structures. Convert explicitly,
+  range-check legacy outputs and cover futex/ppoll/pselect/clock and timeout
+  variants. Native bionic time_t width is not a wire-layout specification.
+- Classic termios and termios2 require verified wire sizes/ioctl encodings;
+  reuse the safe kernel-mediated copy and existing BOTHER behavior, not a
+  fabricated tty result.
+- ipc(117) needs operation/version decoding, IPC_64 command handling, the old
+  msgrcv argument block and shmat result through its output pointer. Direct
+  calls 393–402 and semtimedop_time64(420) use the same emulated namespace.
+  Convert semid64_ds/shmid64_ds/msqid64_ds, info structures, message long types
+  and high/low time fields; validate narrowing and inaccessible pointers.
+
+Cross-class exec is a P3 requirement, not an automatic consequence of having
+two binaries. Existing VFS lists and private-fd/trace state reside in pointers;
+kernel exec destroys them. Serialize into an authenticated private inherited
+FD using fixed-width records/offsets, bounds checks and a version. Carry root,
+cwd, mounts, fd names, link/temp ownership, DNS/network state, diagnostics and
+IPC namespace identity; preserve payload CLOEXEC semantics and reclaim failed
+handoffs. Deserialize before payload loading and reinstall compat signal
+handlers. IPC shared arena records currently contain unsigned long, long,
+size_t and architecture-dependent ipc64_perm: these need a fixed-width common
+format before the two loaders can safely share a namespace. Carry attachment
+cleanup and SEM_UNDO process identity through exec, not just the arena fd.
+
+Seccomp filters survive kernel exec and cannot be loosened. Therefore a
+cross-class handoff cannot start with today's architecture-killing proxy
+filter and then install a new one. Both arch branches and bootstrap/raw
+instruction locations must be designed into the initial filter; simply
+stacking new per-loader IP exceptions leaves the older filter trapping them.
+A fixed-address bootstrap with a stable, explicitly permitted gateway is one
+candidate, but needs an actual inherited-filter test before acceptance. Exec
+must not expose a payload bypass around Binder or private-fd checks.
+See [seccomp semantics](https://man7.org/linux/man-pages/man2/seccomp.2.html)
+and [x86 kernel entries](https://www.kernel.org/doc/html/v5.10/x86/entry_64.html).
+No kernel implementation code is used here.
+
+P1 is **failed**, so P2/P3 were not attempted. `bash tests/run.sh --i386-p1`
+builds an original static ELF32 fixture and first requires native compat
+execution. In this agent runner that prerequisite dies with SIGSYS (even a
+separate int-0x80 exit-only ELF32 probe dies with SIGSYS). Native fixture
+execution therefore has not passed. On a compat-capable unrestricted host
+the next gate requires stat64/open/read/write through a virtual leaf map
+with `--android-filter`. Separately invoking the current proxy with this
+ELF32 fixture returns ENOEXEC before filter installation. This is a failure
+gate, not a passing i386 regression. Normal
+`tests/run.sh` remains the x86_64 suite. `MATON_V3_I386_LOADER` can select a
+future standalone ELF32 loader for the same gate. A direct NDK i686 build
+probe also fails on the current architecture-specific source; changing the
+compiler target is insufficient. Neither build script produces an i386
+proxy, and no second loader was packaged into the APK. Future packaging must
+place the compat loader alongside the extracted x86_64 loader (the host APK
+remains x86_64); class handoff must use that trusted installed path, not an
+unverified environment-provided executable. Do not use Steam as a success
+criterion until P1–P3 actually pass.
+
+#### Portability contract for the next implementation
+
+This is a design contract, **not an implemented arch abstraction**. The
+existing core still uses native SYS_* numbers and native libc/kernel
+structures. Moving raw.S alone would not satisfy the portability requirement.
+The current runner fails the native ELF32 prerequisite, so no unverified
+backend or partially converted core is introduced in this round.
+
+Before implementing i386, refactor and verify x86_64 with this boundary:
+
+- `arch/arch.h` documents a common syscall enum independent of kernel
+  numbers, six normalized argument words, canonical signed/unsigned 64-bit
+  values, and an explicit payload pointer type. Decode a payload number into
+  a common operation plus a wire-ABI variant; encode an internal raw operation
+  into the selected kernel ABI. Unknown calls remain distinguishable from
+  known emulated operations and receive the existing ENOSYS policy.
+- Build selection chooses `arch/x86_64/` or `arch/i386/`; each supplies the
+  number mapping, raw/entry/sigreturn/clone assembly, ELF class/machine and
+  auxv/stack construction, resident address bounds, audit architecture,
+  gateway addresses, signal-context get/set hooks, TLS setup/reset hooks and
+  trap restart handling. Core code must not index REG_* or select arch macros.
+  Bootstrap and inherited seccomp policy are part of this boundary, including
+  cross-class exec gateways; they cannot be repaired after filter installation.
+- Wire adapters decode/encode stat, signal actions/masks, socket messages,
+  ancillary data, iovecs, legacy/time64 timeouts, termios and IPC structures.
+  Native headers may describe a backend wire format only after size/offset
+  assertions. Core VFS/link/DNS/IPC routines operate on canonical values;
+  payload buffer copies retain EFAULT handling and reject narrowing overflow.
+  IPC message types use signed canonical values, never a host-sized long.
+- Shared IPC arena and exec-state formats use fixed-width fields and offsets,
+  an explicit format version, bounds checks and no process pointers. Preserve
+  the namespace, SEM_UNDO identity, ownership/private descriptors, fd aliases,
+  CLOEXEC semantics, diagnostics, root/cwd/mount state and network state.
+  The existing shared arena is not yet safe for mixed-class processes.
+
+To add arm64 or riscv64 later, implement those same backend hooks and tables,
+select them in both build scripts, generate their checked-out AOSP app policy,
+and add native static/dynamic, signals/TLS/thread, wire-layout, VFS/socket/IPC
+and inherited-filter exec tests. Do not implement either backend now. Mapping
+syscall names is insufficient where an architecture has a different calling
+convention, a multiplexer or a different structure representation.
+
+Acceptance order remains: all existing x86_64 tests after its full interface
+refactor; i386 P1 static VFS under the copied policy; P2 dynamic runtime and
+threads/signals/socket conversions; P3 bidirectional resident exec and shared
+IPC state. Tests must exercise actual binaries, not only mapping tables.
+The phase-stop prerequisite failure does not waive the x86_64 refactor or any
+of those gates for a future implementation.
+
+
+### Round 30 unrestricted rerun: partial architecture extraction
+
+The earlier runner failure above is superseded: native ELF32 exit and
+stat64/open/read/write fixtures now pass without the Codex sandbox. The P1
+proxy gate still fails with ENOEXEC. No i386 loader is implemented; P2 and P3
+have not been attempted. This is partial work, not i386 payload support.
+
+The x86_64 loader now dispatches common `PROXY_SC_*` operation IDs rather
+than native `SYS_*` numbers. `arch/arch.h` selects `arch/x86_64/backend.h`;
+`arch/x86_64/syscalls.h` maps between those IDs and kernel numbers. `RAW`
+encodes once at kernel entry. SIGSYS decodes before core dispatch. Seccomp
+comparisons and copied-policy lookups explicitly encode their operands.
+Unknown numbers and x32 do not become known internal operations. These IDs
+are process-local and are not an exec-state or shared-memory format.
+`gen-arch-syscalls.py` regenerates the checked-in tables from the local AOSP
+UAPI specification. It does not copy kernel implementation code.
+
+The backend also owns ucontext register indices, syscall restart instruction
+size, kernel signal-action layout, TLS clearing, ELF types/class/machine,
+platform string, resident address bounds, audit architecture and assembly.
+The top-level assembly files retain include wrappers for existing fixture
+builds; production build scripts compile the backend files directly.
+`tests/arch-map.c` verifies the mapping boundary, while the full actual
+x86_64 payload suite verifies behavior, including real AF_UNIX DNS binds.
+
+The mandatory portability refactor is **not complete**: stat and socket
+message layouts, time structures, termios conversion, IPC wire structures,
+shared IPC records, signal-frame handling beyond register access, and
+seccomp gateway construction still need backend adapters and fixed-width
+canonical representations. Core syscall arguments are still native `long`.
+Do not select an i386 compiler and treat the extracted hooks as sufficient.
+The build scripts still produce only the x86_64 proxy, and APK packaging is
+unchanged. A future backend must implement these remaining interfaces before
+its native static/dynamic and inherited-filter exec gates can pass. The
+original P0 design and acceptance order above still apply.

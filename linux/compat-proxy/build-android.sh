@@ -10,5 +10,6 @@ mkdir -p "$output"
 python3 "$source_dir/gen-policy.py"
 "$compiler" -nostdlib -static -Wl,-no-pie -mcmodel=large -Wl,--image-base=0x600000000000 \
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
-  "$source_dir"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,raw.S,entry.S} \
+  "$source_dir"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c} \
+  "$source_dir"/arch/x86_64/{raw.S,entry.S} \
   -o "$output/libmatonos-v3-loader.so"

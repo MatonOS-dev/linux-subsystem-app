@@ -2,6 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+cc -O2 -Wall -Wextra -Werror tests/arch-map.c -o build/arch-map
+build/arch-map
+if [[ ${1:-} == --i386-p1 ]]; then
+    exec bash tests/i386-p1.sh
+fi
 for test in signals threads spawn binder; do
     cc -no-pie -O2 -Wall -Wextra -Werror -pthread "tests/$test.c" -o "build/$test"
     timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/$test" >"build/$test.out" 2>"build/$test.log"
