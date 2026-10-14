@@ -48,6 +48,7 @@ static int staging_directory_uid(const char* path, unsigned* result) {
 }
 static int install_directory_uid(const char* path, unsigned* result) {
     if(path && !strcmp(path,MATON_RUNTIME_DIR)){*result=1000;return 1;}
+    if(geteuid()==1000 && maton_parse_pending_path(path)){*result=1000;return 1;}
     return maton_parse_install_path(path,result);
 }
 

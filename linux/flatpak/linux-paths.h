@@ -49,6 +49,16 @@ static inline int maton_parse_install_path(const char* path,unsigned* uid) {
     }
     *uid=(unsigned)value;return 1;
 }
+/* Unpublished app version created by linuxd: install/.pending-<appId>-XXXXXX. */
+static inline int maton_parse_pending_path(const char* path) {
+    const char* prefix=MATON_INSTALL_ROOT "/.pending-";
+    if(!path || strncmp(path,prefix,strlen(prefix)))return 0;
+    const char* name=path+strlen(prefix);size_t len=strlen(name);
+    if(len<8 || len>230 || name[len-7]!='-')return 0;
+    for(size_t i=len-6;i<len;i++){char c=name[i];if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')))return 0;}
+    for(size_t i=0;i<len-7;i++){char c=name[i];if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-'||c=='.'))return 0;}
+    return name[0]!='.' && !strstr(name,"..");
+}
 static inline int maton_parse_staging_owner(const char* path,unsigned* uid) {
     unsigned value;char tail,expected[128];
     if(!path || sscanf(path,MATON_STAGING_ROOT "/%u%c",&value,&tail)!=1 || value!=MATON_FPINSTALL_UID)return 0;
