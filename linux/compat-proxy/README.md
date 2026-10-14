@@ -641,3 +641,46 @@ SIGKILL releases undo on the next operation, and relaunch collects abandoned
 cache directories. Test native x86_64 clients first; a 32-bit Steam launch is
 not a valid success criterion until the separate i386 loader work lands.
 No kernel configuration or AOSP change is required for the x86_64 path.
+
+### Round 24: Rio worker-thread startup crash
+
+The merged loader reproduces Rio's exact `pc=0x600000009940` fault in a
+host worker-thread stress test. In the **matching** `bea4eb9` NDK binary this
+is `p_equal`, in `.ltext`, reading a freed VFS cache key. Comparing that PC
+with a subsequently rebuilt loader misidentifies it as outside text. The
+shared output binary can be replaced by other builds; use an isolated
+`MATON_V3_ANDROID_OUT` when diagnosing addresses.
+
+The 16-entry mount cache had unsynchronized readers, key replacement/free,
+and separate publication of key and mount identity. Worker SIGSYS handlers
+could read unmapped strings or receive a different mount identity (`EXDEV`,
+or even `EROFS` on a writable bind). The cache is removed; resolution walks
+the small mount list. The same stress also exposed freed fd-name list nodes;
+short signal-masked critical sections now protect fd-name lookup/copy,
+publication and removal. They never span a payload syscall or blocking flock,
+and a fork child can discard the inherited parent's lock owner.
+
+This is an existing race exposed during the HostCommand merge, not evidence
+of bad HostCommand fd remapping, TLS, or server setup: the pre-merge
+`fd37033` loader also crashes in `p_equal` under concurrent stress, and the
+merged loader with HostCommand disabled also returns wrong mount errors.
+The exact timing change that made Rio trigger it has not been isolated.
+
+`tests/host-command-threads.py` runs eight workers through 8,000 explicit
+openat(O_CREAT)/ENOENT, openat, rename, flock, close and unlink sequences
+under the copied Android filter, after bwrap's first resident exec with
+`/.flatpak-info` present. An idle socketpair-backed HostCommand worker proves
+the snapshot ran; no command is requested. The test is part of `tests/run.sh`.
+To check Android code generation on the host, pass
+`--android-compiler <NDK>/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android36-clang`.
+
+Validation: full `tests/run.sh` and `build-android.sh` passed. Repeated NDK
+stress and production-listener runs passed; original merged production runs
+crashed at the exact Rio PC four times, and pre-merge runs also crashed.
+No adb or image build was used. Device confirmation remains: build/package
+this loader in the host APK and a fresh image, boot normally on each target
+PC, launch Rio repeatedly, exercise new tabs and shader-cache creation, and
+check that it stays alive and its terminal commands work. Check ETR as well.
+No shared-file, AOSP, compositor or kernel changes are required. This fixes
+startup file traffic; concurrent mount/root mutation and other proxy state
+are outside this regression's coverage.
