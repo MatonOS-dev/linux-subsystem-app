@@ -42,7 +42,6 @@ Flatpak fork base: a1a11b2451edfff78e2d1f8b034d4d5beae6d6ca + local changes belo
 Toolchain: NDK r30, x86_64-linux-android36; Bionic helpers and multicall, stripped.
 
 Portal payload retained from the Bionic recipe (2026-10-08):
-d94e7f79a6291c4ac53f5187d9c7d725bbbf0a0aad4ea6da89014e683b5beef9  linux/flatpak/prebuilt/static/x86_64/matonos-flatpak-portal
 
 In-tree management/app-shim refresh (rounds 10+11):
 b472e5e394602d6b7685d140cd7a4399da4291ffb795eaac0149bf9877aed968  linux/flatpak/flatpak-env-wrapper.c

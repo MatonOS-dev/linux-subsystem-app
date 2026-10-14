@@ -7,6 +7,7 @@ matonos-app-flatpak and matonos-app-bwrap). HELPERS.sha256 fingerprints their
 compiler, flags and included sources. SOURCE records upstream multicall/portal
 provenance; later in-tree artifact hashes supersede the original helper hashes.
 
-MatonOS_apexs produces matonos-flatpak and matonos-flatpak-portal.
-The old bwrap/app-exec binaries and SysV preload libraries are deleted.
+MatonOS_apexs produces matonos-flatpak.
+The old bwrap/app-exec binaries, the Flatpak portal (v1/v2) and the SysV
+preload libraries are deleted.
 No fallback launch artifacts are shipped.
