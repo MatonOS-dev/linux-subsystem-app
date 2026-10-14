@@ -430,3 +430,19 @@ several Flatpak apps, and verify stale compat-proxy dirs disappear on the next
 loader start while the current launch's bind-data files remain readable.
 Repeat with a child process still alive after its parent exits. No cache
 or installed app data should be removed outside these backing directories.
+Round 18 crash reporting: resident exec now resets caught signal actions (all
+except the resident SIGSYS action), preserving SIG_IGN as kernel exec does.
+This prevents bionic debuggerd handlers from using glibc TLS after a Linux
+payload starts. Default fatal actions report signal/code, real pid/tid, fault
+address, PC and the raw maps entry to stderr (forwarded by the stub to
+MatonV3), then re-raise the original signal. Resident ELF segments also report
+their source path and ELF virtual offset because they are anonymous mappings.
+App-installed fatal handlers may replace this default reporter. Trace mode
+logs AF_UNIX addresses, including abstract names, before path translation.
+
+Host regression: compile `tests/exec-signals.c` with host cc, run it through
+`build/linux-layer-v3 --android-filter`: it checks caught/ignored actions over
+two execs and deliberately segfaults; expect signal 11 and `v3 fatal image=`.
+The existing full host suite and the NDK loader build passed. Rio itself has
+not been reproduced here: the old device trace lacks a fault PC, so its
+original platform fault remains unresolved until a new diagnostic launch.

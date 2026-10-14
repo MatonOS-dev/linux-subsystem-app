@@ -40,6 +40,60 @@
 #define NS_FLAGS (CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET)
 struct kernel_action { uintptr_t handler,flags,restorer; unsigned long mask; };
 static struct kernel_action chained;
+/* Resident exec must discard libc handlers: bionic debuggerd uses bionic
+ * TLS, which is no longer valid after entering a glibc image. */
+static void crash_hex(uintptr_t value) {
+    char out[18]="0x";static const char digits[]="0123456789abcdef";
+    for(unsigned i=0;i<16;i++)out[2+i]=digits[(value>>(60-4*i))&15];
+    RAW(SYS_write,2,out,sizeof(out),0,0,0);
+}
+static void crash_text(const char *s){RAW(SYS_write,2,s,p_len(s),0,0,0);}
+static uintptr_t maps_hex(const char **p){uintptr_t v=0;for(;;){unsigned c=(unsigned char)**p,d;if(c>='0'&&c<='9')d=c-'0';else if(c>='a'&&c<='f')d=c-'a'+10;else break;v=(v<<4)|d;(*p)++;}return v;}
+struct image_map {uintptr_t lo,hi,offset;char *path;struct image_map *next;};
+static struct image_map *image_maps;
+void proxy_image_map(uintptr_t lo,uintptr_t hi,uintptr_t offset,const char *path){
+    struct image_map *m=vfs_alloc(sizeof(*m));if(!m)return;
+    m->path=vfs_alloc(p_len(path)+1);if(!m->path){vfs_free(m);return;}
+    p_copy(m->path,path,p_len(path)+1);m->lo=lo;m->hi=hi;m->offset=offset;
+    m->next=image_maps;image_maps=m;
+}
+static void crash_report(int sig,siginfo_t *info,void *context) {
+    ucontext_t *uc=context;uintptr_t pc=uc->uc_mcontext.gregs[REG_RIP];
+    crash_text("v3 fatal signal=");crash_hex(sig);
+    crash_text(" pid=");crash_hex(RAW(SYS_getpid,0,0,0,0,0,0));
+    crash_text(" tid=");crash_hex(RAW(SYS_gettid,0,0,0,0,0,0));
+    crash_text(" code=");crash_hex(info->si_code);
+    crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);
+    crash_text(" pc=");crash_hex(pc);crash_text("\n");
+    for(struct image_map *m=image_maps;m;m=m->next)if(pc>=m->lo && pc<m->hi){
+        crash_text("v3 fatal image=");crash_text(m->path);crash_text(" elf-offset=");crash_hex(pc-m->lo+m->offset);crash_text("\n");break;
+    }
+    /* Raw maps: bypass virtual proc paths; no libc/TLS/allocation in a crash. */
+    long fd=RAW(SYS_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd>=0){char line[1024];size_t n=0;char c;
+        while(RAW(SYS_read,fd,&c,1,0,0,0)==1){
+            if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
+            line[n]=0;const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;
+            if(*p=='-'){p++;hi=maps_hex(&p);}
+            if(pc>=lo && pc<hi){crash_text("v3 fatal map=");crash_text(line);crash_text(" offset=");crash_hex(pc-lo);crash_text("\n");break;}n=0;
+        }RAW(SYS_close,fd,0,0,0,0,0);
+    }
+    struct kernel_action action={0};RAW(SYS_rt_sigaction,sig,&action,0,8,0,0);
+    unsigned long mask=1UL<<(sig-1);RAW(SYS_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);
+    RAW(SYS_tgkill,RAW(SYS_getpid,0,0,0,0,0,0),RAW(SYS_gettid,0,0,0,0,0,0),sig,0,0,0);
+    RAW(SYS_exit_group,128+sig,0,0,0,0,0);
+}
+static void exec_signals(void) {
+    for(int sig=1;sig<=64;sig++){
+        if(sig==SIGKILL || sig==SIGSTOP || sig==SIGSYS)continue;
+        struct kernel_action old={0},next={0};
+        if(RAW(SYS_rt_sigaction,sig,0,&old,8,0,0)<0)continue;
+        if(old.handler==1)continue; /* SIG_IGN survives exec. */
+        if(sig==SIGSEGV || sig==SIGBUS || sig==SIGILL || sig==SIGFPE || sig==SIGABRT)
+            next=(struct kernel_action){(uintptr_t)crash_report,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+        RAW(SYS_rt_sigaction,sig,&next,0,8,0,0);
+    }
+}
 /* Spike supports a single user-dispatch owner; configuration is per-thread. */
 static volatile unsigned char *dispatch_selector;
 static long dispatch_owner;
@@ -324,6 +378,9 @@ static int unix_call(long nr,long a[6],long *result) {
     if(nr!=SYS_connect && nr!=SYS_bind)return 0;
     const struct sockaddr_un *in=(const void *)a[1];
     long len=a[2];
+    if(proxy_trace && in && len>2 && len<=(long)sizeof(*in) && in->sun_family==AF_UNIX){
+        crash_text("v3 unix ");RAW(SYS_write,2,in->sun_path,(size_t)len-2,0,0,0);crash_text("\n");
+    }
     if(!in || len<=(long)offsetof(struct sockaddr_un,sun_path) || len>(long)sizeof(*in) || in->sun_family!=AF_UNIX || !in->sun_path[0])return 0;
     char given[sizeof(in->sun_path)+1];size_t n=(size_t)len-offsetof(struct sockaddr_un,sun_path);
     p_copy(given,in->sun_path,n);given[n]=0;
@@ -624,6 +681,7 @@ clone_retry:
         result=proxy_load(path,(char *const *)a[nr==SYS_execve?1:2],(char *const *)a[nr==SYS_execve?2:3],&image);
         if(!result) {
             exec_close_fds();
+            exec_signals();
             /* exec starts the new linker without the previous libc TLS. */
             RAW(SYS_arch_prctl,0x1002,0,0,0,0,0);
             proxy_log("ours-exec",nr,0);
@@ -682,6 +740,7 @@ static int app_install(void) {
 }
 int proxy_install(int android) {
     if(!thread_state()) return -ENOMEM;
+    exec_signals();
     struct kernel_action action={(uintptr_t)handler,SA_SIGINFO|SA_RESTORER|SA_NODEFER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
     long r=RAW(SYS_rt_sigaction,SIGSYS,&action,0,8,0,0);if(r) return (int)r;
     unsigned long mask=SIGSYS_BIT;r=RAW(SYS_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);if(r) return (int)r;
