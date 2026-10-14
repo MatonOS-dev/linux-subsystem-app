@@ -54,7 +54,7 @@ static int install_directory_uid(const char* path, unsigned* result) {
 static int installer_staging_valid(const char* path) {
     char prefix[96];
     uid_t uid=geteuid();
-    if(uid<10000 || uid%100000<10000 || uid%100000>19999)return 0;
+    if(uid!=MATON_FPINSTALL_UID)return 0;
     int n=snprintf(prefix,sizeof(prefix),MATON_STAGING_ROOT "/%u/", (unsigned)uid);
     if(n<0 || n>=(int)sizeof(prefix) || strncmp(path,prefix,(size_t)n))return 0;
     const char* op=path+n;
