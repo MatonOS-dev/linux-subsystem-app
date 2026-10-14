@@ -379,7 +379,21 @@ static int unix_call(long nr,long a[6],long *result) {
     const struct sockaddr_un *in=(const void *)a[1];
     long len=a[2];
     if(proxy_trace && in && len>2 && len<=(long)sizeof(*in) && in->sun_family==AF_UNIX){
-        crash_text("v3 unix ");RAW(SYS_write,2,in->sun_path,(size_t)len-2,0,0,0);crash_text("\n");
+        size_t limit=(size_t)len-offsetof(struct sockaddr_un,sun_path);
+        crash_text("v3 unix ");
+        if(in->sun_path[0]) {
+            size_t n=0;while(n<limit && in->sun_path[n])n++;
+            RAW(SYS_write,2,in->sun_path,n,0,0,0);
+        } else {
+            /* Abstract names are binary, including embedded/trailing NULs. */
+            static const char hex[]="0123456789abcdef";
+            for(size_t n=0;n<limit;n++) {
+                unsigned char c=(unsigned char)in->sun_path[n];
+                char escaped[4]={'\\','x',hex[c>>4],hex[c&15]};
+                RAW(SYS_write,2,escaped,sizeof(escaped),0,0,0);
+            }
+        }
+        crash_text("\n");
     }
     if(!in || len<=(long)offsetof(struct sockaddr_un,sun_path) || len>(long)sizeof(*in) || in->sun_family!=AF_UNIX || !in->sun_path[0])return 0;
     char given[sizeof(in->sun_path)+1];size_t n=(size_t)len-offsetof(struct sockaddr_un,sun_path);

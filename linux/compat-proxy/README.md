@@ -446,3 +446,19 @@ two execs and deliberately segfaults; expect signal 11 and `v3 fatal image=`.
 The existing full host suite and the NDK loader build passed. Rio itself has
 not been reproduced here: the old device trace lacks a fault PC, so its
 original platform fault remains unresolved until a new diagnostic launch.
+
+### DRM class and socket trace checks (round 19)
+
+The synthetic GPU tree now exposes class/drm links for exactly the render
+and unambiguously associated primary nodes already published under dev/char.
+It preserves real node names: card1 remains card1. It does not invent card0,
+boot_vga or PCI config bytes. Mesa's device-select boot-VGA scan may therefore
+return no preference; that is a normal selection fallback, not a WSI wait.
+The detector does not supply the real boot-VGA identity needed to publish it.
+
+`tests/gpu-host.sh` checks class/dev aliases resolve to identical inodes and
+retains the absent-device, malformed-property and ambiguous-card cases.
+`tests/unix-trace-host.py` checks padded pathnames stop at NUL and abstract
+addresses preserve all addrlen bytes as hex escapes. Both pass; the full
+proxy host suite and NDK r30/API 36 loader compilation pass. Round 19 made
+no device changes; the coordinator must verify the next fresh image.

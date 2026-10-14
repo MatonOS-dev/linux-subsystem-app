@@ -17,7 +17,13 @@ int main(int argc,char **argv){
 
     char path[256],link[256];struct stat a,b;
     const char *nodes[]={"226:129","226:2"};
+    const char *classes[]={"renderD129","card2"};
     for(unsigned i=0;i<2;i++){
+        snprintf(path,sizeof(path),"/sys/class/drm/%s",classes[i]);
+        CHECK(!lstat(path,&a) && S_ISLNK(a.st_mode));
+        CHECK(!stat(path,&a));
+        snprintf(path,sizeof(path),"/sys/dev/char/%s",nodes[i]);
+        CHECK(!stat(path,&b) && a.st_ino==b.st_ino);
         snprintf(path,sizeof(path),"/sys/dev/char/%s",nodes[i]);
         CHECK(!lstat(path,&a) && S_ISLNK(a.st_mode));ssize_t alias=readlink(path,link,sizeof(link)-1);CHECK(alias>0);link[alias]=0;CHECK(strstr(link,"../../devices/pci0000:00/0000:00:00.0/drm/")==link);
         snprintf(path,sizeof(path),"/sys/dev/char/%s/device",nodes[i]);char *real=realpath(path,NULL);CHECK(real);CHECK(!strcmp(real,"/sys/devices/pci0000:00/0000:00:00.0"));free(real);

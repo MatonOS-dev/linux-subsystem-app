@@ -387,7 +387,9 @@ static long gpu_node(const char *base,const char *name,unsigned minor){
     r=gpu_file(dir,"uevent",event);if(!r)r=gpu_link(dir,"device","../..");if(!r)r=gpu_link(dir,"subsystem","../../../../../class/drm");vfs_free(dir);if(r)return r;
     char alias[64]="dev/char/226:";p_copy(alias+p_len(alias),number,p_len(number)+1);
     char target[160]="../../devices/pci0000:00/0000:00:00.0/drm/";p_copy(target+p_len(target),name,p_len(name)+1);
-    return gpu_link(base,alias,target);
+    r=gpu_link(base,alias,target);if(r)return r;
+    char cls[128]="class/drm/";gpu_append(cls,name);
+    return gpu_link(base,cls,target);
 }
 /* Separate entry point also lets host fixtures exercise precisely the tree
  * publication code without requiring a host GPU or Android property service. */
