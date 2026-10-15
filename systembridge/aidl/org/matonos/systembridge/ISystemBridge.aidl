@@ -15,9 +15,6 @@ interface ISystemBridge {
     boolean moveTaskToFront(int taskId);
     boolean setTaskFullscreen(int taskId);
     boolean removeRecentTask(int taskId);
-    /** Flatpak management resolves a ref to a signed stub in the calling user.
-     * Optional concrete userId requires cross-user permission when different;
-     * raw installation UIDs are never accepted from apps. */
     String call(String target, String command, String jsonArgs);
     void subscribe(String target, String topic, IMatonosListener listener);
     void unsubscribe(String target, String topic, IMatonosListener listener);
@@ -27,6 +24,4 @@ interface ISystemBridge {
     byte[] getRecentTaskThumbnail(int taskId);
     // The provider is preset to Shelf but disabled until a user selects it.
     String getNavigationBarProviderState();
-    // Verified stub commit info: returns JSON with appCommit, runtimeRef, runtimeCommit
-    String getFlatpakStubCommits(int uid, String ref);
 }
