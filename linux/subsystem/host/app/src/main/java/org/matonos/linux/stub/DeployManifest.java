@@ -20,7 +20,7 @@ import java.util.List;
  * comes from Flatpak's own {@code deploy} GVariant (type
  * {@code (ssasta{sv})}) rather than a truncated CLI listing.
  */
-final class DeployManifest {
+public final class DeployManifest {
     private static final String APP = "app";
     private static final String RUNTIME = "runtime";
 
@@ -58,6 +58,27 @@ final class DeployManifest {
         return new JSONObject().put("version", 1).put("operationId", operationId)
                 .put("appRef", appRef).put("appCommit", appCommit).put("remote", remote)
                 .put("deployments", list);
+    }
+
+    /** Read stub-generation inputs directly from this app's private staged tree. */
+    public static String[] stagedDetails(File installation, JSONObject manifest) throws Exception {
+        String ref = manifest.getString("appRef");
+        String[] fields = ref.split("/", -1);
+        if (fields.length != 4 || !APP.equals(fields[0])) throw new IOException("Invalid staged app ref");
+        String commit = manifest.getString("appCommit");
+        if (!commit.matches("[0-9a-f]{64}")) throw new IOException("Invalid staged app commit");
+        File deploy = new File(installation, "app/" + fields[1] + "/" + fields[2] + "/" + fields[3] + "/" + commit + "/deploy");
+        File metadataFile = new File(deploy, "metadata");
+        File desktopFile = new File(deploy, "export/share/applications/" + fields[1] + ".desktop");
+        String root = installation.getCanonicalPath() + File.separator;
+        if (!metadataFile.getCanonicalPath().startsWith(root) || !desktopFile.getCanonicalPath().startsWith(root)
+                || Files.isSymbolicLink(metadataFile.toPath()) || Files.isSymbolicLink(desktopFile.toPath()))
+            throw new IOException("Staged app details escape the private installation");
+        byte[] metadata = Files.readAllBytes(metadataFile.toPath());
+        byte[] desktop = Files.readAllBytes(desktopFile.toPath());
+        if (metadata.length == 0 || metadata.length > 128 * 1024 || desktop.length == 0 || desktop.length > 128 * 1024)
+            throw new IOException("Staged app details are empty or too large");
+        return new String[] { new String(metadata, StandardCharsets.UTF_8), new String(desktop, StandardCharsets.UTF_8) };
     }
 
     /**

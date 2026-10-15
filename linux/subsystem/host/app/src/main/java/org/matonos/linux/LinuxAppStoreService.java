@@ -46,6 +46,7 @@ public final class LinuxAppStoreService extends Service {
         final ILinuxAppStoreCallback callback;
         volatile boolean cancelled;
         volatile InstallTransaction transaction;
+        volatile String stagedMetadata, stagedDesktop;
         final AtomicBoolean completed=new AtomicBoolean();
         Operation(int uid, String id, String kind, String ref, String remote, String name, String url,
                 ILinuxAppStoreCallback callback) {
@@ -65,7 +66,7 @@ public final class LinuxAppStoreService extends Service {
             submit("uninstall", ref, null, null, null, id, cb);
         }
         @Override public String listInstalled() { enforceQuery(); return call("list_installed", args("userId", android.os.UserHandle.myUserId())); }
-        @Override public String listRemotes() { enforceQuery(); return call("list_remotes", new JSONObject()); }
+        @Override public String listRemotes() { enforceQuery(); return remoteList(); }
         @Override public void addRemote(String name, String url, String id, ILinuxAppStoreCallback cb) {
             submit("addRemote", null, null, name, url, id, cb);
         }
@@ -128,24 +129,32 @@ public final class LinuxAppStoreService extends Service {
     private void execute(String id, Operation op) {
         try {
             if(op.cancelled) return;
-            JSONObject args=new JSONObject(); String command;
             switch(op.kind) {
                 case "install": case "update": runStagedInstall(id,op); return;
                 case "uninstall": uninstallStub(op); return;
                 case "addRemote":
                     if(!"flathub".equals(op.name) || (op.url!=null && !op.url.isEmpty() && !"https://dl.flathub.org/repo/flathub.flatpakrepo".equals(op.url)))
                         throw new IllegalArgumentException("Only the configured Flathub remote is supported");
-                    command="add_flathub"; break;
-                case "removeRemote": command="remove_repo"; put(args,"remote",op.name); break;
+                    getSharedPreferences("flatpak-remotes",MODE_PRIVATE).edit().putBoolean("flathub",true).apply();
+                    result(op,true,null); return;
+                case "removeRemote":
+                    getSharedPreferences("flatpak-remotes",MODE_PRIVATE).edit().remove(op.name).apply();
+                    result(op,true,null); return;
                 default: throw new IllegalArgumentException("Unknown operation");
             }
-            JSONObject reply=new JSONObject(linuxd().call(command,args.toString()));
-            boolean ok=reply.optBoolean("ok",false);
-            result(op,ok,ok?null:reply.optString("error","Store operation failed"));
         } catch(Exception error) {
             Log.w(TAG,"Store operation failed",error);
             result(op,false,error.getMessage()==null?error.toString():error.getMessage());
         }
+    }
+
+    private String remoteList() {
+        JSONObject result=new JSONObject();
+        try {
+            boolean enabled=getSharedPreferences("flatpak-remotes",MODE_PRIVATE).getBoolean("flathub",true);
+            result.put("ok",true).put("output",enabled?"flathub":"");
+            return result.toString();
+        } catch(Exception error) { return "{\"ok\":false,\"error\":\"Cannot read remote preferences\"}"; }
     }
 
     private void runStagedInstall(String id, Operation op) throws Exception {
@@ -162,8 +171,14 @@ public final class LinuxAppStoreService extends Service {
             }
             @Override public void onComplete(String operationId,String manifest) {
                 try {
+                    JSONObject staged = new JSONObject(manifest);
+                    String[] details = org.matonos.linux.stub.DeployManifest.stagedDetails(
+                            new File(new File("/data/linux-app/staging", Integer.toString(android.os.Process.myUid())),
+                                    operationId + "/installation"), staged);
+                    op.stagedMetadata = details[0];
+                    op.stagedDesktop = details[1];
                     JSONObject args=new JSONObject(); put(args,"operationId",operationId);
-                    args.put("manifest",new JSONObject(manifest));
+                    args.put("manifest",staged);
                     JSONObject reply=new JSONObject(linuxd().call("verify_staged_install",args.toString()));
                     if(!reply.optBoolean("ok",false)) throw new IllegalStateException(reply.optString("error","Staged install verification failed"));
                     installFinalStub(op);
@@ -222,19 +237,14 @@ public final class LinuxAppStoreService extends Service {
 
     private void installFinalStub(Operation op) throws Exception {
         String pkg=packageFor(op.ref), remote="install".equals(op.kind)?op.remote:remoteFor(op.ref);
-        JSONObject handoff=new JSONObject(); put(handoff,"ref",op.ref); put(handoff,"remote",remote); put(handoff,"operationId",op.id);
-        JSONObject meta=new JSONObject(linuxd().call("pending_metadata",handoff.toString()));
-        JSONObject entry=new JSONObject(linuxd().call("pending_desktop",handoff.toString()));
-        if(!meta.optBoolean("ok")||!entry.optBoolean("ok")) throw new IllegalStateException("Staged Flatpak metadata unavailable");
-        JSONObject iconReply=new JSONObject(linuxd().call("pending_icon",handoff.toString()));
-        byte[] icon=null;
-        if(iconReply.optBoolean("ok")) try { icon=android.util.Base64.decode(iconReply.optString("output"),android.util.Base64.DEFAULT); } catch(Exception ignored) { }
-        if(icon==null||icon.length==0) icon=fallbackIcon();
+        if(op.stagedMetadata==null || op.stagedDesktop==null)
+            throw new IllegalStateException("Staged Flatpak metadata unavailable");
+        byte[] icon=fallbackIcon();
         File work=new File(getCacheDir(),"flatpak-stubs"); if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create stub scratch directory");
         File desktop=new File(work,pkg+".desktop"), apk=new File(work,pkg+".apk");
         try {
-            try(FileOutputStream out=new FileOutputStream(desktop)){out.write(entry.getString("output").getBytes(StandardCharsets.UTF_8));}
-            StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(meta.getString("output")),pkg,apk,null,null);
+            try(FileOutputStream out=new FileOutputStream(desktop)){out.write(op.stagedDesktop.getBytes(StandardCharsets.UTF_8));}
+            StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,apk,null,null);
             PackageInstaller installer=getPackageManager().getPackageInstaller();
             PackageInstaller.SessionParams params=new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
             params.setAppPackageName(pkg); params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
