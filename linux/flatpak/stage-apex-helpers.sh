@@ -1,5 +1,5 @@
 #!/bin/sh
-# Sync the in-tree helper sources that MatonOS_apexs builds (matonos-flatpak-store) into its flatpak/helpers tree and check they build there with
+# Sync the in-tree helper sources that MatonOS_apexs builds into its flatpak/helpers tree and check they build there with
 # the pinned NDK (bionic; the Alpine/musl recipe is retired), and install the
 # two binaries into prebuilt/static/<arch>. flatpak-env-wrapper and
 # matonos-app-tool are built in-tree by tools/build-flatpak-helpers.sh; the
@@ -23,7 +23,7 @@ sync() { mkdir -p "$(dirname "$helpers/$2")"; install -m644 "$TREE/$1" "$helpers
 # Management helper sources and the shared canonical path header.
 sync linux/flatpak/linux-paths.h linux-paths.h
 sync linux/flatpak/linux-paths.h linux/flatpak/linux-paths.h
-for f in SafePath.h FlatpakStore.c FlatpakStore.h FlatpakPublish.h; do
+for f in SafePath.h FlatpakPublish.h; do
     sync "install/linuxd/$f" "install/linuxd/$f"
 done
 (
@@ -38,4 +38,3 @@ ANDROID_NDK=$NDK OUT_DIR=$out sh "$APEX_REPO/flatpak/build-helpers.sh"
 # The device tree's prebuilt comes from tools/build-flatpak-helpers.sh (it
 # owns HELPERS.sha256); this build only proves the synced sources compile in
 # MatonOS_apexs for its own provenance manifest.
-printf 'matonos-flatpak-store %s bytes (MatonOS_apexs build check)\n' "$(wc -c < "$out/matonos-flatpak-store" | tr -d ' ')"

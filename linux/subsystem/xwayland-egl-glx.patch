@@ -1,0 +1,85 @@
+From: MatonOS <dev@matonos.local>
+Subject: [PATCH] Xwayland 24.1.13: use EGL/epoxy server GLX without DRI modules
+
+Android's vendor Mesa provides EGL/GLES but no client libGL or *_dri.so.
+Enabling GLX alone still links direct desktop GL symbols from the indirect
+protocol handlers and glXGetProcAddressARB from the unconditional swrast
+fallback. There is no Meson option to disable that fallback or select epoxy
+for those handlers in this release.
+
+Use epoxy dispatch for GLX handlers, omit the swrast/DRI loader, and start
+with an empty provider stack. xwl_glamor_init registers glamor_provider,
+which mirrors the existing EGL display's configs even under -glamor es.
+Keep the default -iglx: glamor does not implement indirect contexts.
+Remove the now-unused DRI headers/path dependency. This adds neither a
+second Mesa nor a client-side libGL/GLX library; libepoxy stays glx=no.
+
+Scoped to the pinned standalone Xwayland Android build. Recheck on upgrades.
+---
+--- a/glx/meson.build
++++ b/glx/meson.build
+@@ -13,8 +13,6 @@
+     'glxcmds.c',
+     'glxcmdsswap.c',
+     'glxext.c',
+-    'glxdriswrast.c',
+-    'glxdricommon.c',
+     'glxscreens.c',
+     'render2.c',
+     'render2swap.c',
+@@ -38,12 +36,14 @@
+         dependencies: [
+             common_dep,
+             dl_dep,
+-            dri_dep,
+             dependency('glproto', version: '>= 1.4.17'),
+             dependency('gl', version: '>= 1.2'),
++            dependency('epoxy'),
+         ],
+         c_args: [
+             glx_align64,
++            # Dispatch server GL through EGL/epoxy; no client libGL on Android.
++            '-include', 'epoxy/gl.h',
+             # XXX: generated code includes an unused function
+             '-Wno-unused-function',
+         ]
+@@ -76,6 +76,7 @@
+             dl_dep,
+             dependency('glproto', version: '>= 1.4.17'),
+             dependency('gl', version: '>= 1.2'),
++            dependency('epoxy'),
+         ],
+     )
+ endif
+--- a/glx/glxext.c
++++ b/glx/glxext.c
+@@ -271,7 +271,8 @@
+ 
+ /************************************************************************/
+ 
+-static __GLXprovider *__glXProviderStack = &__glXDRISWRastProvider;
++/* Android has no loadable DRI drivers; glamor registers its EGL provider. */
++static __GLXprovider *__glXProviderStack;
+ 
+ void
+ GlxPushProvider(__GLXprovider * provider)
+--- a/include/meson.build
++++ b/include/meson.build
+@@ -6,7 +6,6 @@
+ # convert to the old-style 1.x.y version scheme used up to 1.20.x for backwards compatibility
+ release = 1 * 10000000 + major * 100000 + minor * 1000 + patch
+ 
+-dri_dep = dependency('dri', required: build_glx)
+ 
+ conf_data = configuration_data()
+ conf_data.set('_DIX_CONFIG_H_', '1')
+@@ -203,9 +202,6 @@
+ conf_data.set('DBE', '1')
+ conf_data.set('DPMSExtension', build_dpms ? '1' : false)
+ conf_data.set('DRI3', build_dri3 ? '1' : false)
+-if build_glx
+-    conf_data.set_quoted('DRI_DRIVER_PATH', dri_dep.get_variable(pkgconfig : 'dridriverdir'))
+-endif
+ conf_data.set('MITSHM', build_mitshm ? '1' : false)
+ conf_data.set('PANORAMIX', build_xinerama ? '1' : false)
+ conf_data.set('PRESENT', '1')

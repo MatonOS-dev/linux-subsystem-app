@@ -26,7 +26,7 @@ int main(void) {
     const char* classes=g_getenv("MATON_PORTAL_TEST_CLASSPATH");g_assert_nonnull(classes);
     int pair[2];g_assert_cmpint(socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,pair),==,0);
     Backend backend={.fd=pair[0]};GError* error=NULL;GPid child;int input,output;
-    char* argv[]={"java","-cp",(char*)classes,"org.matonos.compositor.PortalTestPeer",NULL};
+    char* argv[]={"java","-cp",(char*)classes,"org.matonos.linux.PortalTestPeer",NULL};
     g_assert_true(g_spawn_async_with_pipes(NULL,argv,NULL,G_SPAWN_SEARCH_PATH|G_SPAWN_DO_NOT_REAP_CHILD,NULL,NULL,&child,&input,&output,NULL,&error));g_assert_no_error(error);
     for(unsigned endian=0;endian<2;endian++) {
         GDBusMessage* call=method("org.freedesktop.portal.Settings","Read",g_variant_new("(ss)","org.freedesktop.appearance","color-scheme"),1+endian);

@@ -1,0 +1,22 @@
+Popen: drop group/user ids only when they differ from the effective ids.
+
+An Android app's seccomp filter traps setgid/setuid even when they would be
+no-ops, so xkbcomp's Popen child died with SIGSYS and Xwayland aborted with
+"Failed to activate virtual core keyboard" when started from a MatonOS app.
+
+--- a/os/utils.c	2026-10-13 22:09:37.442739741 +0200
++++ b/os/utils.c	2026-10-13 22:09:37.456533312 +0200
+@@ -1343,9 +1343,11 @@
+ #endif
+         return NULL;
+     case 0:                    /* child */
+-        if (setgid(getgid()) == -1)
++        /* Drop ids only when they differ (setuid server). An Android app's
++         * seccomp filter kills setgid/setuid even as no-ops (MatonOS). */
++        if (getgid() != getegid() && setgid(getgid()) == -1)
+             _exit(127);
+-        if (setuid(getuid()) == -1)
++        if (getuid() != geteuid() && setuid(getuid()) == -1)
+             _exit(127);
+         if (*type == 'r') {
+             if (pdes[1] != 1) {

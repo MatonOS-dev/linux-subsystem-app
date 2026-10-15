@@ -1,0 +1,323 @@
+Make the Xwayland socket directory overridable and the abstract-namespace bind optional.
+
+Android has no writable /tmp and MatonOS runs the compositor inside an app
+process, so the hardcoded /tmp/.X11-unix paths cannot be used. Honor
+WLR_XWAYLAND_SOCKET_DIR for both the socket directory and the lock file
+(inside the directory; the default stays /tmp/.X11-unix). Honor
+WLR_XWAYLAND_NO_ABSTRACT=1 to skip the abstract-namespace bind: abstract
+sockets have no filesystem permissions, so per-display servers can then
+isolate clients through filesystem socket ownership alone. Server startup,
+argv construction and teardown handle a missing first listen fd.
+
+Honor WLR_XWAYLAND_GLAMOR=<api> to pass -glamor <api> (MatonOS: "es"; Mesa's
+Android build has no desktop GL, and libepoxy aborts probing it).
+
+Honor WLR_XWAYLAND_NO_ACCESS_CONTROL=1 to start Xwayland with -ac. Xwayland
+only admits clients with its own UID; MatonOS clients reach the server
+through a relay as a different user, and the socket is reachable only via
+the compositor's private directory, so filesystem access is the gate.
+--- a/xwayland/sockets.c
++++ b/xwayland/sockets.c
+@@ -7,6 +7,8 @@
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <limits.h>
++#include <string.h>
+ #include <sys/socket.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+@@ -16,12 +18,29 @@
+ #include "sockets.h"
+ #include "util/fd.h"
+ 
+-static const char lock_fmt[] = "/tmp/.X%d-lock";
+-static const char socket_dir[] = "/tmp/.X11-unix";
+-static const char socket_fmt[] = "/tmp/.X11-unix/X%d";
+-#ifndef __linux__
+-static const char socket_fmt2[] = "/tmp/.X11-unix/X%d_";
+-#endif
++/* Android has no writable /tmp and our compositor runs inside an app
++ * process, so the X11 socket directory is overridable through the
++ * environment. The default stays the traditional /tmp/.X11-unix; with an
++ * override the lock file lives inside the directory (the traditional
++ * location is the parent directory, /tmp/.X%d-lock).
++ *
++ * WLR_XWAYLAND_NO_ABSTRACT=1 skips the abstract-namespace bind. Abstract
++ * sockets have no filesystem permissions, so skipping it lets a per-display
++ * server rely on the ownership of the filesystem socket alone. */
++#define SOCKET_DIR_DEFAULT "/tmp/.X11-unix"
++
++static const char *socket_dir(void) {
++	const char *dir = getenv("WLR_XWAYLAND_SOCKET_DIR");
++	if (dir != NULL && dir[0] != '\0') {
++		return dir;
++	}
++	return SOCKET_DIR_DEFAULT;
++}
++
++static bool abstract_sockets_disabled(void) {
++	const char *flag = getenv("WLR_XWAYLAND_NO_ABSTRACT");
++	return flag != NULL && flag[0] != '\0' && strcmp(flag, "0") != 0;
++}
+ 
+ static int open_socket(struct sockaddr_un *addr, size_t path_size) {
+ 	int fd, rc;
+@@ -70,24 +89,25 @@
+ 
+ static bool check_socket_dir(void) {
+ 	struct stat buf;
++	const char *dir = socket_dir();
+ 
+-	if (lstat(socket_dir, &buf)) {
+-		wlr_log_errno(WLR_ERROR, "Failed to stat %s", socket_dir);
++	if (lstat(dir, &buf)) {
++		wlr_log_errno(WLR_ERROR, "Failed to stat %s", dir);
+ 		return false;
+ 	}
+ 	if (!(buf.st_mode & S_IFDIR)) {
+-		wlr_log(WLR_ERROR, "%s is not a directory", socket_dir);
++		wlr_log(WLR_ERROR, "%s is not a directory", dir);
+ 		return false;
+ 	}
+ 	if (!((buf.st_uid == 0) || (buf.st_uid == getuid()))) {
+-		wlr_log(WLR_ERROR, "%s not owned by root or us", socket_dir);
++		wlr_log(WLR_ERROR, "%s not owned by root or us", socket_dir());
+ 		return false;
+ 	}
+ 	if (!(buf.st_mode & S_ISVTX)) {
+ 		/* we can deal with no sticky bit... */
+ 		if ((buf.st_mode & (S_IWGRP | S_IWOTH))) {
+ 			/* but not if other users can mess with our sockets */
+-			wlr_log(WLR_ERROR, "sticky bit not set on %s", socket_dir);
++			wlr_log(WLR_ERROR, "sticky bit not set on %s", socket_dir());
+ 			return false;
+ 		}
+ 	}
+@@ -97,34 +117,59 @@
+ static bool open_sockets(int socks[2], int display) {
+ 	struct sockaddr_un addr = { .sun_family = AF_UNIX };
+ 	size_t path_size;
++	const char *dir = socket_dir();
++	char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
+ 
+-	if (mkdir(socket_dir, 0755) == 0) {
++	if (mkdir(dir, 0755) == 0) {
+ 		wlr_log(WLR_INFO, "Created %s ourselves -- other users will "
+-			"be unable to create X11 UNIX sockets of their own",
+-			socket_dir);
++			"be unable to create X11 UNIX sockets of their own", dir);
+ 	} else if (errno != EEXIST) {
+-		wlr_log_errno(WLR_ERROR, "Unable to mkdir %s", socket_dir);
++		wlr_log_errno(WLR_ERROR, "Unable to mkdir %s", dir);
+ 		return false;
+ 	} else if (!check_socket_dir()) {
+ 		return false;
+ 	}
+ 
+ #ifdef __linux__
+-	addr.sun_path[0] = 0;
+-	path_size = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, socket_fmt, display);
++	if (!abstract_sockets_disabled()) {
++		addr.sun_path[0] = 0;
++		path_size = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1,
++			"%s/X%d", dir, display);
++		if (path_size >= sizeof(addr.sun_path) - 1) {
++			wlr_log(WLR_ERROR, "Socket path %s/X%d is too long", dir, display);
++			return false;
++		}
++		socks[0] = open_socket(&addr, path_size);
++		if (socks[0] < 0) {
++			return false;
++		}
++	} else {
++		socks[0] = -1;
++	}
+ #else
+-	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt2, display);
++	(void)abstract_sockets_disabled;
++	socks[0] = -1;
++#endif
++	if (snprintf(socket_path, sizeof(socket_path), "%s/X%d", dir, display)
++			>= (int)sizeof(socket_path)) {
++		wlr_log(WLR_ERROR, "Socket path %s/X%d is too long", dir, display);
++#ifdef __linux__
++		if (socks[0] >= 0) {
++			close(socks[0]);
++			socks[0] = -1;
++		}
+ #endif
+-	socks[0] = open_socket(&addr, path_size);
+-	if (socks[0] < 0) {
+ 		return false;
+ 	}
+-
+-	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt, display);
++	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socket_path);
+ 	socks[1] = open_socket(&addr, path_size);
+ 	if (socks[1] < 0) {
+-		close(socks[0]);
+-		socks[0] = -1;
++#ifdef __linux__
++		if (socks[0] >= 0) {
++			close(socks[0]);
++			socks[0] = -1;
++		}
++#endif
+ 		return false;
+ 	}
+ 
+@@ -133,25 +178,27 @@
+ 
+ void unlink_display_sockets(int display) {
+-	char sun_path[64];
++	char sun_path[PATH_MAX]; /* the dir override can be a long app data path */
++	const char *dir = socket_dir();
+ 
+-	snprintf(sun_path, sizeof(sun_path), socket_fmt, display);
++	snprintf(sun_path, sizeof(sun_path), "%s/X%d", dir, display);
+ 	unlink(sun_path);
+ 
+ #ifndef __linux__
+-	snprintf(sun_path, sizeof(sun_path), socket_fmt2, display);
++	snprintf(sun_path, sizeof(sun_path), "%s/X%d_", dir, display);
+ 	unlink(sun_path);
+ #endif
+ 
+-	snprintf(sun_path, sizeof(sun_path), lock_fmt, display);
++	snprintf(sun_path, sizeof(sun_path), "%s/.X%d-lock", dir, display);
+ 	unlink(sun_path);
+ }
+ 
+ int open_display_sockets(int socks[2]) {
+ 	int lock_fd, display;
+-	char lock_name[64];
++	char lock_name[PATH_MAX];
++	const char *dir = socket_dir();
+ 
+ 	for (display = 0; display <= 32; display++) {
+-		snprintf(lock_name, sizeof(lock_name), lock_fmt, display);
++		snprintf(lock_name, sizeof(lock_name), "%s/.X%d-lock", dir, display);
+ 		if ((lock_fd = open(lock_name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444)) >= 0) {
+ 			if (!open_sockets(socks, display)) {
+ 				unlink(lock_name);
+--- a/xwayland/server.c
++++ b/xwayland/server.c
+@@ -6,6 +6,7 @@
+ #include <stdlib.h>
+ #include <stdlib.h>
+ #include <stdnoreturn.h>
++#include <string.h>
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
+@@ -26,7 +27,7 @@
+ 
+ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+ 		int notify_fd) {
+-	if (!set_cloexec(server->x_fd[0], false) ||
++	if ((server->x_fd[0] >= 0 && !set_cloexec(server->x_fd[0], false)) ||
+ 			!set_cloexec(server->x_fd[1], false) ||
+ 			!set_cloexec(server->wl_fd[1], false)) {
+ 		wlr_log(WLR_ERROR, "Failed to unset CLOEXEC on FD");
+@@ -61,18 +62,35 @@
+ #endif
+ 
+ #if HAVE_XWAYLAND_LISTENFD
+-	argv[i++] = "-listenfd";
+-	argv[i++] = listenfd0;
+-	argv[i++] = "-listenfd";
+-	argv[i++] = listenfd1;
++	if (server->x_fd[0] >= 0) {
++		argv[i++] = "-listenfd";
++		argv[i++] = listenfd0;
++	}
++	if (server->x_fd[1] >= 0) {
++		argv[i++] = "-listenfd";
++		argv[i++] = listenfd1;
++	}
+ #else
+-	argv[i++] = "-listen";
+-	argv[i++] = listenfd0;
+-	argv[i++] = "-listen";
+-	argv[i++] = listenfd1;
++	if (server->x_fd[0] >= 0) {
++		argv[i++] = "-listen";
++		argv[i++] = listenfd0;
++	}
++	if (server->x_fd[1] >= 0) {
++		argv[i++] = "-listen";
++		argv[i++] = listenfd1;
++	}
+ #endif
+ 	argv[i++] = "-displayfd";
+ 	argv[i++] = displayfd;
++	const char *no_access_control = getenv("WLR_XWAYLAND_NO_ACCESS_CONTROL");
++	if (no_access_control != NULL && strcmp(no_access_control, "1") == 0) {
++		argv[i++] = "-ac";
++	}
++	const char *glamor = getenv("WLR_XWAYLAND_GLAMOR");
++	if (glamor != NULL && glamor[0] != '\0') {
++		argv[i++] = "-glamor";
++		argv[i++] = (char *)glamor;
++	}
+ 
+ 	char wmfd[16];
+ 	if (server->options.enable_wm) {
+@@ -144,9 +157,11 @@
+ 
+ 	if (server->x_fd_read_event[0]) {
+ 		wl_event_source_remove(server->x_fd_read_event[0]);
++		server->x_fd_read_event[0] = NULL;
++	}
++	if (server->x_fd_read_event[1]) {
+ 		wl_event_source_remove(server->x_fd_read_event[1]);
+-
+-		server->x_fd_read_event[0] = server->x_fd_read_event[1] = NULL;
++		server->x_fd_read_event[1] = NULL;
+ 	}
+ 
+ 	if (server->client) {
+@@ -413,9 +428,15 @@
+ static int xwayland_socket_connected(int fd, uint32_t mask, void *data) {
+ 	struct wlr_xwayland_server *server = data;
+ 
+-	wl_event_source_remove(server->x_fd_read_event[0]);
+-	wl_event_source_remove(server->x_fd_read_event[1]);
+-	server->x_fd_read_event[0] = server->x_fd_read_event[1] = NULL;
++	(void)fd; (void)mask;
++	if (server->x_fd_read_event[0]) {
++		wl_event_source_remove(server->x_fd_read_event[0]);
++		server->x_fd_read_event[0] = NULL;
++	}
++	if (server->x_fd_read_event[1]) {
++		wl_event_source_remove(server->x_fd_read_event[1]);
++		server->x_fd_read_event[1] = NULL;
++	}
+ 
+ 	server_start(server);
+ 
+@@ -425,15 +446,19 @@
+ static bool server_start_lazy(struct wlr_xwayland_server *server) {
+ 	struct wl_event_loop *loop = wl_display_get_event_loop(server->wl_display);
+ 
+-	if (!(server->x_fd_read_event[0] = wl_event_loop_add_fd(loop, server->x_fd[0],
++	if (server->x_fd[0] >= 0 && !(server->x_fd_read_event[0] =
++			wl_event_loop_add_fd(loop, server->x_fd[0],
+ 				WL_EVENT_READABLE, xwayland_socket_connected, server))) {
+ 		return false;
+ 	}
+ 
+-	if (!(server->x_fd_read_event[1] = wl_event_loop_add_fd(loop, server->x_fd[1],
++	if (server->x_fd[1] >= 0 && !(server->x_fd_read_event[1] =
++			wl_event_loop_add_fd(loop, server->x_fd[1],
+ 				WL_EVENT_READABLE, xwayland_socket_connected, server))) {
+-		wl_event_source_remove(server->x_fd_read_event[0]);
+-		server->x_fd_read_event[0] = NULL;
++		if (server->x_fd_read_event[0]) {
++			wl_event_source_remove(server->x_fd_read_event[0]);
++			server->x_fd_read_event[0] = NULL;
++		}
+ 		return false;
+ 	}
+ 

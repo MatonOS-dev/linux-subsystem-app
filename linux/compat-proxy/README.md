@@ -218,7 +218,7 @@ a stale parent. Host lifecycle validation:
 python3 tests/lifetime.py /mnt/data/aosp/out/matonos/compat-proxy/libmatonos-v3-loader.so
 ```
 
-See ../compositor/V3-LAUNCH.md for the production spec, paths, retirement and
+See ../subsystem/V3-LAUNCH.md for the production spec, paths, retirement and
 remaining image checks. Historical bionic replay fixtures reference old staged
 APEX helpers and do not prove the new production path.
 
@@ -536,7 +536,7 @@ from that resident snapshot and use the same loader, UID, filters, mounts and
 app environment. No host exec or namespace reconstruction is used. The per-app
 Java portal supplies Development v1, caller ownership and WATCH_BUS; resident
 subreapers handle command descendants, including detached sessions, and runtime
-shutdown. See [HOST-COMMAND.md](../compositor/HOST-COMMAND.md) for protocol,
+shutdown. See [HOST-COMMAND.md](../subsystem/HOST-COMMAND.md) for protocol,
 limits, source spec, integration requirement and fresh-image device steps.
 Run `tests/host-command-pair.py` for bwrap/snapshot/pty/lifecycle tests under the
 copied filter. The actual listener test `tests/host-command.py` requires Unix
@@ -1000,7 +1000,7 @@ and a private authenticated, versioned FD handoff still must be implemented
 and tested. No mount/fd/DNS/inode/IPC namespace serializer or peer-loader path
 is present. Fixed-width IPC records alone do not connect independently
 started loaders to the same namespace. No second loader was packaged into
-linux/compositor/host: ship it alongside the trusted extracted loader only
+linux/subsystem/host: ship it alongside the trusted extracted loader only
 once that selection/handoff protocol works. This is missing implementation,
 not an external blocker, and does not establish Steam/Wine support.
 

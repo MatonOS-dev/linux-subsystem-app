@@ -27,16 +27,11 @@ STAMPS=$STAGE/HELPERS.sha256
 # source -> installed names (one binary may be installed under several).
 declare -A HELPERS=(
   [flatpak-env-wrapper]="flatpak-env-wrapper"
-  [matonos-flatpak-store]="matonos-flatpak-store"
   [matonos-app-tool]="matonos-app-flatpak matonos-app-bwrap"
 )
 
 source_file() {
-  if [[ $1 == matonos-flatpak-store ]]; then
-    printf '%s\n' "$DEVICE_DIR/install/linuxd/FlatpakStore.c"
-  else
-    printf '%s\n' "$SRC/$1.c"
-  fi
+  printf '%s\n' "$SRC/$1.c"
 }
 
 # Fingerprint: compiler, flags, and every source/header the compiler reads.

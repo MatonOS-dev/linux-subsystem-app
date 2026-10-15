@@ -13,7 +13,7 @@ static guint responses, states, inhibited;
 static char* session_handle;
 static gpointer java_peer(gpointer data) {
     int fd=GPOINTER_TO_INT(data);GError* error=NULL;GPid child;int input,output;
-    char* argv[]={"java","-cp",(char*)g_getenv("MATON_PORTAL_TEST_CLASSPATH"),"org.matonos.compositor.PortalTestPeer",NULL};
+    char* argv[]={"java","-cp",(char*)g_getenv("MATON_PORTAL_TEST_CLASSPATH"),"org.matonos.linux.PortalTestPeer",NULL};
     g_assert_true(g_spawn_async_with_pipes(NULL,argv,NULL,G_SPAWN_SEARCH_PATH|G_SPAWN_DO_NOT_REAP_CHILD,NULL,NULL,&child,&input,&output,NULL,&error));
     g_assert_no_error(error);
     struct pollfd p[2]={{.fd=fd,.events=POLLIN},{.fd=output,.events=POLLIN}};

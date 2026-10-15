@@ -15,10 +15,6 @@
 #define MATON_RUNTIME_DIR MATON_LINUX_ROOT "/runtime"
 #define MATON_INSTALL_ROOT MATON_LINUX_ROOT "/install"
 #define MATON_STAGING_ROOT MATON_LINUX_ROOT "/staging"
-/* AID_VENDOR_MATONOS_FPINSTALL (config.fs): sole owner of install staging. */
-#ifndef MATON_FPINSTALL_UID
-#define MATON_FPINSTALL_UID 2902
-#endif
 static inline unsigned maton_user_of(unsigned uid) { return uid / 100000; }
 static inline unsigned maton_app_id(unsigned uid) { return uid % 100000; }
 static inline int maton_path_uid_valid(unsigned uid) {
@@ -32,7 +28,7 @@ static inline int maton_install_dir(char* out,size_t size,unsigned uid) {
 }
 static inline int maton_staging_owner(char* out,size_t size,unsigned uid) {
     int n=snprintf(out,size,MATON_STAGING_ROOT "/%u",uid);
-    return uid==MATON_FPINSTALL_UID && n>=0 && (size_t)n<size ? 0 : -1;
+    return maton_path_uid_valid(uid) && n>=0 && (size_t)n<size ? 0 : -1;
 }
 /* Strict canonical current-pointer or versioned deployment path. */
 static inline int maton_parse_install_path(const char* path,unsigned* uid) {
@@ -61,7 +57,7 @@ static inline int maton_parse_pending_path(const char* path) {
 }
 static inline int maton_parse_staging_owner(const char* path,unsigned* uid) {
     unsigned value;char tail,expected[128];
-    if(!path || sscanf(path,MATON_STAGING_ROOT "/%u%c",&value,&tail)!=1 || value!=MATON_FPINSTALL_UID)return 0;
+    if(!path || sscanf(path,MATON_STAGING_ROOT "/%u%c",&value,&tail)!=1 || !maton_path_uid_valid(value))return 0;
     maton_staging_owner(expected,sizeof(expected),value);
     if(strcmp(path,expected))return 0;
     *uid=value;return 1;
@@ -83,7 +79,7 @@ static inline int maton_scan_next(MatonPathScan* scan,unsigned* uid) {
         char* end;errno=0;unsigned long value=strtoul(e->d_name,&end,10);char canonical[32];
         snprintf(canonical,sizeof(canonical),"%lu",value);
         if(errno || *end || strcmp(canonical,e->d_name) || value>INT_MAX ||
-                (!strcmp(scan->kind,"staging")?value!=MATON_FPINSTALL_UID:!maton_path_uid_valid((unsigned)value)))continue;
+                !maton_path_uid_valid((unsigned)value))continue;
         struct stat st;
         if(fstatat(dirfd(scan->entries),e->d_name,&st,AT_SYMLINK_NOFOLLOW))continue;
         if(!strcmp(scan->kind,"staging")?!S_ISDIR(st.st_mode):!S_ISLNK(st.st_mode))continue;

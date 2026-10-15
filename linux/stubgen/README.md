@@ -2,7 +2,7 @@
 
 Generated stubs carry no native code. They declare `<uses-library
 org.matonos.linuxhost>` (host resources and package visibility) and name the
-host's `org.matonos.compositor.stub.StubLoader` as their
+host's `org.matonos.linux.stub.StubLoader` as their
 `android:appComponentFactory`. The platform builds a stub's shared-library
 class loader from the image copy of the host even after the host is updated;
 StubLoader replaces it with a loader over the host APK PackageManager lists

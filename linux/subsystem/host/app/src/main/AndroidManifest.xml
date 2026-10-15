@@ -1,0 +1,37 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="org.matonos.permission.INSTALL_LINUX_APPS"
+        android:protectionLevel="signature|privileged" />
+    <permission android:name="org.matonos.permission.QUERY_LINUX_APPS"
+        android:protectionLevel="normal" />
+    <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.DELETE_PACKAGES" />
+    <uses-permission android:name="android.permission.HIDE_NON_SYSTEM_OVERLAY_WINDOWS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+    <application android:label="Linux Subsystem" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:multiArch="true" android:extractNativeLibs="true" android:allowClearUserData="false">
+        <provider android:name=".PortalFiles" android:authorities="org.matonos.linux.portal.files"
+            android:exported="false" android:grantUriPermissions="true" />
+        <library android:name="org.matonos.linuxhost" />
+        <activity android:name=".WindowActivity" android:exported="false" android:resizeableActivity="true"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
+        <activity android:name=".ConfirmInstallActivity" android:exported="false" />
+        <activity android:name=".stub.StubActivity" android:exported="true" />
+        <activity android:name=".stub.InstallActivity" android:exported="true" />
+        <service android:name=".stub.StubService" android:exported="false" />
+        <!-- Private worker endpoint owned by the subsystem app itself. -->
+        <service android:name=".stub.CompositorInstallService" android:exported="true"
+            android:foregroundServiceType="dataSync" />
+        <service android:name=".LinuxAppStoreService" android:exported="true" />
+        <!-- Internal support UI; Linux apps have their own launcher entries. -->
+        <activity android:name=".MainActivity" android:exported="false" />
+    </application>
+</manifest>

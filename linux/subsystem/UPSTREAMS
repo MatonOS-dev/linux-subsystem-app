@@ -1,0 +1,123 @@
+# Clean-room compositor source inputs
+#
+# No GPL sources are used. Upstream source trees, archives and build products
+# are kept in /mnt/data/aosp/out/matonos/compositor, not in the device tree.
+# Pinned sources and build products stay under /mnt/data/aosp/out, outside the
+# device tree. They are built for bionic x86_64 by build-compositor.sh.
+# Do not replace the supplied wlroots source with Xtr126 or labwc.
+
+wlroots 0.20.2 (latest stable release selected 2026-09-29)
+  source: https://gitlab.freedesktop.org/wlroots/wlroots/-/archive/0.20.2/wlroots-0.20.2.tar.gz
+  archive SHA-256: 972c7ac44b17828f4702bfae7cd8347346a3fb5b2c1076cfa2c3fcedac5ec343
+  license: MIT (upstream LICENSE)
+  archive size: 700,802 bytes
+  unpacked source size: 3,537,798 bytes (472 files)
+
+wayland 1.24.0
+  source: https://gitlab.freedesktop.org/wayland/wayland/-/archive/1.24.0/wayland-1.24.0.tar.gz
+  SHA-256: 7800858844751fc7113d7df3678dc6b58b26a056176a65c49a059763045bffd5
+  license: MIT; archive 375,087 bytes; unpacked 1,646,186 bytes
+
+wayland-protocols 1.48
+  source: https://gitlab.freedesktop.org/wayland/wayland-protocols/-/archive/1.48/wayland-protocols-1.48.tar.gz
+  SHA-256: c563af8e2e784f9599fe23819a3fc5e7d946e76db9f90a2e3ba6c9a869a52911
+  license: MIT/Expat; archive 237,481 bytes; unpacked source 1,087,168 bytes
+
+pixman 0.46.0
+  source: https://gitlab.freedesktop.org/pixman/pixman/-/archive/pixman-0.46.0/pixman-pixman-0.46.0.tar.gz
+  SHA-256: 92c1b08db747ff17f9028da3e63168c8ac23204ce62b1a0437607847c8ad6c36
+  license: MIT; archive 828,858 bytes; unpacked 3,109,638 bytes
+
+libxkbcommon 1.8.0
+  source: https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.8.0.tar.gz
+  SHA-256: 025c53032776ed850fbfb92683a703048cd70256df4ac1a1ec41ed3455d5d39c
+  license: MIT; archive 995,648 bytes; unpacked 5,799,288 bytes
+
+libdrm 2.4.134
+  source: https://gitlab.freedesktop.org/mesa/drm/-/archive/libdrm-2.4.134/drm-libdrm-2.4.134.tar.gz
+  SHA-256: 6b18e4834b0c061232cb5c11e98a6ecdc72ebc6bc282d124406b7a9d4e089ce2
+  license: MIT; archive 601,504 bytes; unpacked 2,945,856 bytes
+
+libffi 3.4.8 (static build dependency of wayland-server)
+  source: https://github.com/libffi/libffi/releases/download/v3.4.8/libffi-3.4.8.tar.gz
+  SHA-256: bc9842a18898bfacb0ed1252c4febcc7e78fa139fd27fdc7a3e30d9d9356119b
+  license: MIT; archive 1,397,992 bytes; unpacked source 5,517,940 bytes
+
+minigbm (AOSP external/minigbm, cros-gralloc handle ABI)
+  source: AOSP in-tree source; the allocator only consumes the cros-gralloc
+  handle layout and does not replace the normal AOSP gralloc module
+  license: BSD-3-Clause; AOSP source tree 989,002 bytes; only the in-tree
+  handle field layout is mirrored in C (the upstream declaration is C++)
+
+xkeyboard-config 2.41
+  source: host xkb-data 2.41-2ubuntu1.1; generated US keymap embedded in
+  assets/us-keymap.xkb and native/us_keymap.h
+  license: permissive XKB/X.Org notices in assets/XKB-LICENSE; generated map
+  61,032 bytes; embedded header 61,117 bytes
+
+NDK r30/API 35 bionic x86_64 ELF sizes from the successful local build
+(`stat -c %s`, bytes; 2026-09-29):
+  libwlroots-0.20.so       948,368 (MIT)
+  libwayland-server.so     132,872 (MIT; libffi 3.4.8 is statically linked)
+  libwayland-client.so     114,384 (MIT)
+  libpixman-1.so           790,168 (MIT)
+  libxkbcommon.so          312,208 (MIT)
+  libdrm.so                103,016 (MIT)
+  libwayland-cursor.so      31,592 (MIT; staged but not a direct NEEDED dependency)
+  libwayland-egl.so          5,952 (MIT; staged but not a direct NEEDED dependency)
+  libmaton_compositor.so   286,168 (our code, MIT)
+The Wayland-protocols package is build-time XML/headers only, not a runtime
+library. APK size remains to be recorded after Gradle completes.
+
+## X11/Xwayland stack (built by build-xwayland.sh, 2026-10-02)
+
+All sources are pinned under sources/downloads and verified by SHA-256 in
+build-xwayland.sh. They build for bionic x86_64 with NDK r30/API 35 into
+xstage/x86_64; nothing upstream is patched (bionic gaps are handled by
+build glue: an empty libpthread archive, a values.h shim, and pkg-config
+mirroring of libgcrypt). Licenses are MIT/HPND-style per project; freetype
+is used under its FTL (BSD-style) license option.
+
+xorgproto 2025.1 (all X protocol headers, incl. xwaylandproto)
+  source: https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2025.1.tar.xz
+  SHA-256: 56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8
+xtrans 1.6.0 (transport headers)
+  source: https://xorg.freedesktop.org/archive/individual/lib/xtrans-1.6.0.tar.xz
+  SHA-256: faafea166bf2451a173d9d593352940ec6404145c5d1da5c213423ce4d359e92
+util-macros 1.20.2 (X.Org autotools macros)
+  source: https://xorg.freedesktop.org/archive/individual/util/util-macros-1.20.2.tar.xz
+  SHA-256: 9ac269eba24f672d7d7b3574e4be5f333d13f04a7712303b1821b2a51ac82e8e
+libpthread-stubs 0.5 (pc file only; bionic has pthreads in libc)
+  source: https://xorg.freedesktop.org/archive/individual/lib/libpthread-stubs-0.5.tar.xz
+  SHA-256: 59da566decceba7c2a7970a4a03b48d9905f1262ff94410a649224e33d2442bc
+libXau 1.0.12, libXdmcp 1.1.5 (X connection auth helpers)
+  SHA-256: 74d0e4dfa3d39ad8939e99bda37f5967aba528211076828464d2777d477fc0fb,
+  d8a5222828c3adab70adf69a5583f1d32eb5ece04304f7f8392b6a353aa2228c
+xcb-proto 1.17.0 and libxcb 1.17.0 (all extension libs wlroots' xwm needs:
+composite, render, res, xfixes, xkb, ...)
+  SHA-256: 2c1bacd2110f4799f74de6ebb714b94cf6f80fb112316b1219480fd22562148c,
+  599ebf9996710fea71622e6e184f3a8ad5b43d0e5fa8c4e407123c88a59a6d55
+xcb-util-wm 0.4.2 (icccm + ewmh) and xcb-util-errors 1.0.1
+  SHA-256: 62c34e21d06264687faea7edbf63632c9f04d55e72114aa4a57bb95e4f888a0b,
+  5628c87b984259ad927bacd8a42958319c36bdf4b065887803c9d820fb80f357
+libX11 1.8.13 (Xlib for Flatpak applications)
+  SHA-256: 69606f485c2c07c14ef64f75b7bb326d48587af33795d9ab3e607c0b5f94f11c
+libxkbfile 1.2.0, libxshmfence 1.3.3, libxcvt 0.1.3, libfontenc 1.1.0
+  SHA-256: 7f71884e5faf56fb0e823f3848599cf9b5a9afce51c90982baeb64f635233ebf,
+  d4a4df096aba96fea02c029ee3a44e11a47eb7f7213c1a729be83e85ec3fde10,
+  a929998a8767de7dfa36d6da4751cdbeef34ed630714f2f4a767b351f2442e01,
+  8597e761b7e3624fbf8de4b4f19b9927822f24eeaf15524dc5dbbaf6ae7d8dd1
+freetype 2.14.1 (required by libXfont2; FTL license, PNG/Bzip2/Brotli off)
+  source: https://download.savannah.gnu.org/releases/freetype/freetype-2.14.1.tar.xz
+  SHA-256: 32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc
+libXfont2 2.0.9 (Xwayland font backend)
+  SHA-256: f042a370666815e7b941e9b7019024755bd1c6c2954afbfa515af378251799e2
+Xwayland 24.1.13 (standalone X server; built with GLX/glamor/DRI3/Xv off,
+SHA1 from the bionic libgcrypt the Flatpak stack already ships)
+  source: https://www.x.org/releases/individual/xserver/xwayland-24.1.13.tar.xz
+  SHA-256: 173aea3d6f79609164c04528e1c8e4c9b60fcd59391c3c9dad4667297d727fb6
+  binary: xstage/x86_64/bin/Xwayland, 1,882,896 bytes bionic x86_64 ELF
+
+wlroots 0.20.2 now builds with -Dxwayland=enabled; its xcb dependencies and
+the xwayland.pc dependency (with have_* feature variables) resolve from
+xstage/x86_64.
