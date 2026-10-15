@@ -272,12 +272,6 @@
         "version": "1.5.7-r2"
       }
     ],
-    "matonos-flatpak-store": [
-      {
-        "chosen_license": "MIT",
-        "license_terms": [
-          "MIT"
-        ],
         "name": "musl",
         "spdx_license": "MIT",
         "upstream_license": "MIT",

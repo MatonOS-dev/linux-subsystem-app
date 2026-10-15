@@ -11,7 +11,7 @@ two-root convention; see [storage](../../install/linuxd/STORAGE-LAYOUT.md).
 V3Launcher uses matonos-app-flatpak through the compat-proxy loader, at the
 stub UID. The shim pins matonos-app-bwrap for nested applet exec and never
 changes identity. It is live v3 code. flatpak-env-wrapper accepts management
-operations only and rejects run. matonos-flatpak-store performs stage/selftest
+operations only and rejects run.
 only. Both management helpers and the applet shim build in-tree through
 tools/build-flatpak-helpers.sh, with fingerprints in HELPERS.sha256.
 
