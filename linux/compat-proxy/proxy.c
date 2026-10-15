@@ -204,6 +204,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
     long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
     char *q=NULL;
+    int packed=0;e=pack_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
     int writing=nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
@@ -578,6 +579,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
+    int packed=0;result=pack_call(nr,a,&packed);if(packed)goto finish;
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
     if(net_handled)goto finish;

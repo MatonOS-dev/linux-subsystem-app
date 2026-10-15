@@ -36,7 +36,7 @@ static char *join(const char *a,const char *b) {
 struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
 int proxy_diagnostic_fd=2;
-int vfs_private_fd(int fd){if(state_private_fd(fd)||links_private_fd(fd))return 1;if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
+int vfs_private_fd(int fd){if(pack_private(fd)||state_private_fd(fd)||links_private_fd(fd))return 1;if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
 static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(PROXY_SC_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
     int fd=(int)RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
@@ -130,7 +130,7 @@ char *vfs_reverse(const char *path){
     if(p && root && prefix(p,root)){char *q=dupstr(p+p_len(root));vfs_free(p);p=q;if(p && !*p){vfs_free(p);p=dupstr("/");}}
     return p;
 }
-static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
+static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}int handled=0;long pe=0;char *packed=pack_link(path,&pe,&handled);if(handled){vfs_free(s);*error=pe;return packed;}long r=RAW(PROXY_SC_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
 struct fd_name {struct fd_name *next;int fd;char *path;};
 static struct fd_name *fd_names;
 /* Only protect the fd-name bookkeeping, never a payload syscall (flock may
@@ -151,12 +151,13 @@ static void fd_names_unlock(proxy_sigmask_t mask){
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
 }
 void vfs_fd_close(int fd){
+    pack_close(fd);
     proxy_sigmask_t mask=fd_names_lock();
     struct fd_name **p=&fd_names;while(*p && (*p)->fd!=fd)p=&(*p)->next;
     if(*p){struct fd_name *old=*p;*p=old->next;vfs_free(old->path);vfs_free(old);}
     fd_names_unlock(mask);
 }
-void vfs_fd_dup(int from,int to){char *name=vfs_fd_name(from);vfs_fd_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
+void vfs_fd_dup(int from,int to){if(from==to)return;pack_dup(from,to);char *name=vfs_fd_name(from);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
 char *vfs_fd_name(int fd){
     char *published=links_fd_name(fd);if(published)return published;
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
@@ -223,7 +224,7 @@ restart:;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);
-        if(!target && input[i]=='/'){struct proxy_stat st;long status=arch_stat_at(AT_FDCWD,host,&st,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
+        if(!target && input[i]=='/'){struct proxy_stat st;long status=pack_stat(host,&st);if(status==-ENOSYS)status=arch_stat_at(AT_FDCWD,host,&st,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
         /* proc fd magic links point to backing objects, outside a pivoted
          * pathname root. They are not ordinary payload absolute symlinks. */
         if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
@@ -551,3 +552,5 @@ void vfs_state(struct state *s){
   l->fd=state_word(s,0);l->next=temp_locks;temp_locks=l;if(!state_live(l->fd))s->error=-EBADF;
  }else for(struct temp_lock *l=temp_locks;l;l=l->next)state_word(s,l->fd);
 }
+
+#include "pack-vfd.c"

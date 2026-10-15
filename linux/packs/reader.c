@@ -5,8 +5,10 @@
 #include <string.h>
 
 struct mtp_index { mtp_object *items; size_t count; void *storage; mtp_alloc_fn alloc; mtp_free_fn dealloc; void *context; int owns_storage; };
+#ifndef MTP_FREESTANDING
 static void *heap_alloc(void *unused,size_t n){(void)unused;return malloc(n);}
 static void heap_free(void *unused,void *p){(void)unused;free(p);}
+#endif
 static uint32_t u32(const unsigned char *p) { return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24; }
 static uint64_t u64(const unsigned char *p) { return (uint64_t)u32(p)|(uint64_t)u32(p+4)<<32; }
 static int take(const unsigned char **p, const unsigned char *end, size_t n, const unsigned char **out) {
@@ -45,6 +47,7 @@ int mtp_index_open_buffer(const void *bytes,size_t length,mtp_index **out,mtp_al
     *out=idx;return 0;
 fail: mtp_index_close(idx);return -1;
 }
+#ifndef MTP_FREESTANDING
 int mtp_index_open(const char *filename, mtp_index **out) {
     FILE *f=fopen(filename,"rb"); if(!f)return -1;
     if(fseek(f,0,SEEK_END)){fclose(f);return -1;} long z=ftell(f);
@@ -54,6 +57,7 @@ int mtp_index_open(const char *filename, mtp_index **out) {
     int r=mtp_index_open_buffer(b,(size_t)z,out,heap_alloc,heap_free,NULL);
     if(r){free(b);return -1;}(*out)->owns_storage=1;return 0;
 }
+#endif
 void mtp_index_close(mtp_index *i) { if(!i)return; for(size_t n=0;n<i->count;n++){i->dealloc(i->context,(void*)i->items[n].path);i->dealloc(i->context,(void*)i->items[n].checksum);i->dealloc(i->context,(void*)i->items[n].pack);i->dealloc(i->context,(void*)i->items[n].kind);i->dealloc(i->context,(void*)i->items[n].target);}i->dealloc(i->context,i->items);if(i->owns_storage)i->dealloc(i->context,i->storage);i->dealloc(i->context,i); }
 size_t mtp_index_count(const mtp_index *i){return i?i->count:0;}
 int mtp_normalize_path(const char *input,char *output,size_t size) {
