@@ -43,6 +43,18 @@ public class SourceHarness {
         assert actual==expected,(label,[(k,len(v),len(actual.get(k,b''))) for k,v in expected.items() if actual.get(k)!=v])
         return packed,jout
     check('original',commit)
+    # Force four-byte GVariant framing in a real >64KiB dirtree.
+    wide=base/'wide';wide.mkdir()
+    for n in range(280):(wide/(str(n).zfill(4)+'x'*235)).write_bytes(b'shared')
+    wide_commit=run('ostree','commit','--repo='+str(repo),'-b','wide','--tree=dir='+str(wide),'-m','wide')
+    check('wide',wide_commit)
+    # Real phase-C staging is bare-user-only, including real symlink objects.
+    only=base/'only';only.mkdir();(only/'file').write_bytes(b'ordinary');(only/'link').symlink_to('file')
+    only_repo=base/'only-repo';run('ostree','init','--repo='+str(only_repo),'--mode=bare-user-only')
+    only_commit=run('ostree','commit','--repo='+str(only_repo),'-b','test','--tree=dir='+str(only),'-m','only')
+    original_repo=repo;repo=only_repo
+    check('bare-user-only',only_commit)
+    repo=original_repo
     # Represents deployment files AFTER apply_extra (not upstream commit files).
     (src/'extra').mkdir();(src/'extra/downloaded').write_bytes(b'post apply_extra')
     new,out=check('extra',commit,src)

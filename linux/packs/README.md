@@ -63,14 +63,14 @@ and heap callbacks; hosted reader users keep the existing filename API.
 `../compat-proxy/tests/pack-host.py` exercises real index/ZIP mounts without
 extracting the payloads, including execution and dynamic shared-library mmap.
 
-## Java writer and APK integration building blocks (task 4a, partial)
+## Java writer and APK integration
 
 `linux/stubgen/src/org/matonos/linuxhost/stubgen/ObjectPacks.java` is a
 Java-only writer for the same index, metadata and deterministic content ZIP
 format. `initial` and `update` consume canonical records with readable source
 files; `update` takes a dead-byte threshold (use `0.5` for the default policy).
 Sources for unchanged objects must remain available for repacking. The current
-writer rejects ZIP64-sized packs explicitly. It does not read an OSTree repo.
+writer rejects ZIP64-sized packs explicitly. `OstreePacks` supplies records from an on-device OSTree repo.
 Run `python3 linux/packs/tests/java-writer.py` to compare all output bytes,
 including raw metadata, with `pack.py` over three actual bare-user commits and
 four update thresholds. That test obtains canonical records through host
@@ -94,11 +94,54 @@ interface then opens and pins real APK carriers. No content is extracted.
 V3Launcher adds these arguments when the base contains the pack index; legacy
 bases retain their current launch path. The shared runtime setup is unchanged.
 
-This is not an integrated pack installer yet. LinuxAppStoreService does not
-call these generator APIs, no on-device canonical OSTree reader is shipped,
-and PackageInstaller still uses its existing full-base session. In particular,
-`apply_extra` output is not yet packed; a safe extra-tree representation and
-its relationship to linuxd's sanitized verification result still need wiring.
+Task 4b adds `OstreePacks` and `StagedPacks`. The reader resolves a revision
+with stock `ostree rev-parse`, walks checksum-verified binary commit/dirtree/
+dirmeta GVariants, and reads payloads directly from repository object files.
+It supports bare-user and the real staging repo's bare-user-only format
+(including the latter's real symlink objects). File ownership, mode and xattrs
+come from per-path `ostree ls --dironly --checksum --xattrs`; only its fixed
+header and restricted GLib byte-array/bytestring grammar are parsed. Paths
+come from binary dirtrees, so spaces, newlines, quotes and Unicode do not
+require interpreting the CLI's unescaped path/target suffix. Directory xattrs
+remain in raw dirmeta objects, as in pack.py. This uses one CLI process per
+file; batching is a future performance improvement. No new APEX helper exists.
+
+On device, local CLI calls run the same packaged v3 loader as phase-C installs,
+with `--parent-pid`, then `/apex/com.matonos.flatpak/bin/matonos-flatpak ostree`.
+The explicit selector is important: multicall.c shifts argv so ostree receives
+its expected argv[0]. Local commands need no DNS transport.
+
+After phase-C Flatpak completes (including apply_extra), the store reads the
+real installation repo's app commit, then commits the deployment's **files/**
+root, including **extra/**, to a new local bare-user repo at
+`<staging>/<host-uid>/<operation>/pack-repo`. This separate staging repository
+is intentional: the real download repo is bare-user-only; changing its mode
+would invalidate linuxd's assumptions. The private ref is
+`matonos/private/deployed-files`, scoped by the operation directory, with no
+parent or remote. It never gets published or uploaded. The local commit is
+packed, so index paths are relative to /app (there is no /files prefix).
+Upstream app/runtime pins and the verification manifest keep their original
+signed identities. The private repo is removed by normal staging cleanup.
+
+Packing runs before `verify_staged_install` takes staging away. After successful
+verification, LinuxAppStoreService invokes StubGenerator to create and log
+`base.apk` plus `pack_<hash>.apk` artifacts under a unique
+`<host-cache>/flatpak-pack-artifacts/stage-*` directory. Raw index, metadata and
+ZIPs live in its `objects/` subdirectory. Artifacts remain in cache for task 4c
+inspection. PackageInstaller still installs a separately generated legacy
+base only: split sessions, incremental update selection and artifact retention/
+cleanup policy are deliberately not wired yet.
+
+This is not an integrated pack installer yet. In particular, linuxd separately
+reconstructs and sanitizes its verified published deployment; the packed
+phase-C files are not claimed to be byte-equivalent to that sanitized tree.
+Before enabling split sessions, review that trust/sanitization boundary and
+validate apply_extra and absolute symlink behavior on device.
 App-tree publication remains necessary for existing installs and Flatpak's
 installation metadata/dependency lookup, and has not been removed. Do not
 interpret host writer/signer/argument tests as a successful device install.
+
+Run `python3 linux/packs/tests/java-source.py` for the actual stock-CLI reader
+against host bare-user and bare-user-only repositories, byte equality with
+pack.py, framing widths through four bytes, binary/text xattrs, unusual names,
+and a final files/extra commit fixture. This does not run apply_extra itself.
