@@ -63,13 +63,11 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private static final int STATE_FULLSCREEN_ON = 1, STATE_FULLSCREEN_OFF = 2, STATE_MINIMIZE = 3;
     private void applyState(int state) {
         if (destroyed) return;
-        if (state >= 16 && state <= 31) { beginGeometry(state - 16); return; }
         if (state == 4 || state == 5) {
             if (view != null) { if (state == 4 && hasWindowFocus()) view.requestPointerCapture(); else view.releasePointerCapture(); }
             if (state == 4 && !hasWindowFocus()) org.matonos.linux.runtime.NativeCompositor.nativeCaptureLost(window);
             return;
         }
-        if (state == 6 || state == 7) { clientDecorated = state == 6; applyCaption(); return; }
         if (state == STATE_MINIMIZE) { moveTaskToBack(true); return; }
         boolean on = state == STATE_FULLSCREEN_ON;
         android.view.WindowInsetsController bars = getWindow().getInsetsController();
@@ -110,64 +108,8 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         return delta == 0 && event.isFromSource(android.view.InputDevice.SOURCE_MOUSE_RELATIVE)
                 ? event.getAxisValue(position) : delta;
     }
-    private LinuxWindowClient linuxWindow;
-    private boolean geometryActive, geometryFramePending, pointerDown;
-    private float pointerX, pointerY, geometryX, geometryY, geometryDx, geometryDy;
-    private long pointerTime;
-    private void beginGeometry(int edges) {
-        if (destroyed || geometryActive || view == null || linuxWindow == null
-                || !hasWindowFocus() || !pointerDown || view.hasPointerCapture()
-                || android.os.SystemClock.uptimeMillis() - pointerTime > 1000) return;
-        if (!linuxWindow.begin(edges)) return;
-        geometryActive=true; geometryX=pointerX; geometryY=pointerY; geometryDx=geometryDy=0;
-        // Clear the Linux seat's button/focus; subsequent motion belongs to Android.
-        org.matonos.linux.runtime.NativeCompositor.nativeCaptureLost(window);
-        view.requestPointerCapture();
-    }
-    private void geometryFrame() {
-        if (geometryFramePending || view == null) return;
-        geometryFramePending=true;
-        view.postOnAnimation(() -> {
-            geometryFramePending=false;
-            if (geometryActive && !linuxWindow.update(geometryDx, geometryDy)) endGeometry();
-        });
-    }
-    private void endGeometry() {
-        if (!geometryActive) return;
-        geometryActive=false;
-        if (linuxWindow != null) { linuxWindow.update(geometryDx, geometryDy); linuxWindow.end(); }
-        if (view != null && view.hasPointerCapture()) view.releasePointerCapture();
-        pointerDown=false;
-    }
-    private boolean geometryMotion(MotionEvent event, boolean relative) {
-        if (!geometryActive) return false;
-        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) { endGeometry(); return true; }
-        if (relative) {
-            geometryDx+=capturedDelta(event, MotionEvent.AXIS_RELATIVE_X, MotionEvent.AXIS_X);
-            geometryDy+=capturedDelta(event, MotionEvent.AXIS_RELATIVE_Y, MotionEvent.AXIS_Y);
-        } else {
-            geometryDx=event.getRawX()-geometryX; geometryDy=event.getRawY()-geometryY;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL
-                || event.getActionMasked() == MotionEvent.ACTION_UP
-                || (event.getButtonState() & MotionEvent.BUTTON_PRIMARY) == 0) endGeometry();
-        else geometryFrame();
-        return true;
-    }
-    private boolean clientDecorated;
-    private void applyCaption() {
-        android.view.WindowInsetsController bars = getWindow().getInsetsController();
-        boolean custom = clientDecorated && isInMultiWindowMode();
-        if (bars != null) bars.setSystemBarsAppearance(custom ? android.view.WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND : 0,
-                android.view.WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
-        getWindow().setDecorFitsSystemWindows(!custom);
-    }
-    @Override public void onMultiWindowModeChanged(boolean multi, android.content.res.Configuration config) {
-        super.onMultiWindowModeChanged(multi, config); applyCaption();
-    }
     @Override public void onWindowFocusChanged(boolean focus) {
         super.onWindowFocusChanged(focus);
-        if (!focus) endGeometry();
         if (!focus && window != 0) org.matonos.linux.runtime.NativeCompositor.nativeCaptureLost(window);
     }
     private SurfaceView view;
@@ -245,7 +187,6 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             if(info.metaData!=null){ref=info.metaData.getString(HostContract.META_FLATPAK_REF);minimum=info.metaData.getInt(HostContract.META_MIN_INTERFACE,1);}
         } catch(Exception e){failure("Cannot read application reference",e);return;}
         if(ref==null||ref.trim().isEmpty()){message("This launcher has no application reference.");return;}
-        linuxWindow = new LinuxWindowClient(this, ref, () -> { endGeometry(); applyCaption(); });
         if(minimum>HostContract.getInterfaceVersion()){message("Update the Linux host to launch this application.");return;}
         // Start the per-app runtime (session bus + portal) in THIS process/UID.
         startRuntimeAndConnect();
@@ -279,11 +220,9 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         view=new SurfaceView(this) {
             @Override public void onPointerCaptureChange(boolean captured) {
                 super.onPointerCaptureChange(captured);
-                if (!captured) endGeometry();
                 if (!captured) org.matonos.linux.runtime.NativeCompositor.nativeCaptureLost(window);
             }
             @Override public boolean onCapturedPointerEvent(MotionEvent event) {
-                if (geometryMotion(event, true)) return true;
                 org.matonos.linux.runtime.NativeCompositor.nativeRelative(window,
                         capturedDelta(event, MotionEvent.AXIS_RELATIVE_X, MotionEvent.AXIS_X), capturedDelta(event, MotionEvent.AXIS_RELATIVE_Y, MotionEvent.AXIS_Y),
                         event.getAxisValue(MotionEvent.AXIS_VSCROLL), event.getAxisValue(MotionEvent.AXIS_HSCROLL),
@@ -340,19 +279,14 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     }
     private boolean motion(MotionEvent event){
         if(runtime==null||window==0)return false;
-        if (geometryMotion(event, false)) return true;
-        pointerX=event.getRawX(); pointerY=event.getRawY(); pointerTime=event.getEventTime();
-        pointerDown=(event.getButtonState() & MotionEvent.BUTTON_PRIMARY) != 0;
         try{runtime.motion(window,event.getX(),event.getY(),event.getAxisValue(MotionEvent.AXIS_VSCROLL),event.getAxisValue(MotionEvent.AXIS_HSCROLL),event.getActionMasked(),org.matonos.linux.PointerInput.buttons(event.getActionMasked(),event.getButtonState(),event.isFromSource(android.view.InputDevice.SOURCE_TOUCHSCREEN)),event.getEventTime()*1000000L);}
         catch(Exception e){failure("Cannot send pointer input",e);}
         return true;
     }
     @Override protected void onSaveInstanceState(Bundle state){state.putInt(WINDOW,window);super.onSaveInstanceState(state);}
     @Override protected void onResume() { super.onResume(); foreground = true; }
-    @Override protected void onPause() { endGeometry(); foreground = false; super.onPause(); }
+    @Override protected void onPause() { foreground = false; super.onPause(); }
     @Override protected void onDestroy(){
-        endGeometry();
-        if (linuxWindow != null) linuxWindow.close();
         destroyed=true;
         if(window!=0)SHOWING.remove(window,this);
         if(runtime!=null)runtime.clearWindowHost(this);
