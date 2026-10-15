@@ -1,5 +1,6 @@
 #ifndef VFS_H
 #define VFS_H
+#include "proxy.h"
 void *vfs_alloc(size_t);
 void vfs_free(void *);
 char *vfs_resolve(int, const char *, int, long *);
