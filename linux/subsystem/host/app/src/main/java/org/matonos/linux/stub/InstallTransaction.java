@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * When the worker exits it closes everything it opened into staging, reports
  * the deployment manifest, and lets linuxd verify and publish.
  */
-final class InstallTransaction {
+public final class InstallTransaction {
     private static final String TAG = "MatonInstall";
     /** Linuxd-owned staging root; the per-UID parent is not ours to write. */
     private static final String STAGING_ROOT = "/data/linux-app/staging";
@@ -34,7 +34,7 @@ final class InstallTransaction {
     private static final int MAX_LINE = 2048;
 
     /** Notified exactly once, on the worker thread, after the worker is done. */
-    interface Completion { void workerFinished(); }
+    public interface Completion { void workerFinished(); }
 
     private final Context context;
     private final ICompositorInstallCallback callback;
@@ -54,7 +54,7 @@ final class InstallTransaction {
     }
 
     /** Validates everything the bridge may pass before any staging is touched. */
-    static InstallTransaction create(Context context, ICompositorInstallCallback callback,
+    public static InstallTransaction create(Context context, ICompositorInstallCallback callback,
             String operationId, String appRef, String remote) {
         if (operationId == null || !OPERATION_ID.matcher(operationId).matches())
             throw new IllegalArgumentException("Invalid operation ID");
@@ -70,7 +70,7 @@ final class InstallTransaction {
 
     String operation() { return operationId; }
 
-    void start(Completion completion) {
+    public void start(Completion completion) {
         Thread worker = new Thread(() -> {
             try { install(); }
             finally { completion.workerFinished(); }
@@ -80,12 +80,12 @@ final class InstallTransaction {
     }
 
     /** Stops this operation's worker. Descendants are reaped with the compositor. */
-    void cancel(String operation) {
+    public void cancel(String operation) {
         if (operationId.equals(operation)) cancel();
     }
 
     /** Stops this operation's worker regardless of how it is addressed. */
-    void cancel() {
+    public void cancel() {
         cancelled.set(true);
         Process child = process;
         if (child != null) child.destroyForcibly();

@@ -22,12 +22,14 @@
         <library android:name="org.matonos.linuxhost" />
         <activity android:name=".WindowActivity" android:exported="false" android:resizeableActivity="true"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
+        <activity android:name=".ConfirmInstallActivity" android:exported="false" />
         <activity android:name=".stub.StubActivity" android:exported="true" />
         <activity android:name=".stub.InstallActivity" android:exported="true" />
         <service android:name=".stub.StubService" android:exported="false" />
         <!-- Private worker endpoint owned by the subsystem app itself. -->
         <service android:name=".stub.CompositorInstallService" android:exported="true"
             android:foregroundServiceType="dataSync" />
+        <service android:name=".LinuxAppStoreService" android:exported="true" />
         <!-- Internal support UI; Linux apps have their own launcher entries. -->
         <activity android:name=".MainActivity" android:exported="false" />
     </application>
