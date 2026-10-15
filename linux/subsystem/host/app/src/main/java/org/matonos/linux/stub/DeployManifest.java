@@ -62,14 +62,9 @@ public final class DeployManifest {
 
     /** Read stub-generation inputs directly from this app's private staged tree. */
     public static String[] stagedDetails(File installation, JSONObject manifest) throws Exception {
-        String ref = manifest.getString("appRef");
-        String[] fields = ref.split("/", -1);
-        if (fields.length != 4 || !APP.equals(fields[0])) throw new IOException("Invalid staged app ref");
-        String commit = manifest.getString("appCommit");
-        if (!commit.matches("[0-9a-f]{64}")) throw new IOException("Invalid staged app commit");
-        File deploy = new File(installation, "app/" + fields[1] + "/" + fields[2] + "/" + fields[3] + "/" + commit + "/deploy");
+        File deploy = stagedDeployment(installation, manifest);
         File metadataFile = new File(deploy, "metadata");
-        File desktopFile = new File(deploy, "export/share/applications/" + fields[1] + ".desktop");
+        File desktopFile = new File(deploy, "export/share/applications/" + manifest.getString("appRef").split("/", -1)[1] + ".desktop");
         String root = installation.getCanonicalPath() + File.separator;
         if (!metadataFile.getCanonicalPath().startsWith(root) || !desktopFile.getCanonicalPath().startsWith(root)
                 || Files.isSymbolicLink(metadataFile.toPath()) || Files.isSymbolicLink(desktopFile.toPath()))
@@ -79,6 +74,18 @@ public final class DeployManifest {
         if (metadata.length == 0 || metadata.length > 128 * 1024 || desktop.length == 0 || desktop.length > 128 * 1024)
             throw new IOException("Staged app details are empty or too large");
         return new String[] { new String(metadata, StandardCharsets.UTF_8), new String(desktop, StandardCharsets.UTF_8) };
+    }
+
+    /** The deployment directory contains deploy (a file), metadata and files/. */
+    public static File stagedDeployment(File installation, JSONObject manifest) throws Exception {
+        String ref=manifest.getString("appRef"), commit=manifest.getString("appCommit");
+        if(!validRef(ref) || !ref.startsWith("app/") || !commit.matches("[0-9a-f]{64}"))
+            throw new IOException("Invalid staged app identity");
+        File deployment=new File(installation,ref+"/"+commit);
+        if(!deployment.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)
+                || Files.isSymbolicLink(deployment.toPath()) || !deployment.isDirectory())
+            throw new IOException("Invalid staged app deployment");
+        return deployment;
     }
 
     /**

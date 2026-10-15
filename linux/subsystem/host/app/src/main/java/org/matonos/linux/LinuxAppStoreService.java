@@ -47,6 +47,7 @@ public final class LinuxAppStoreService extends Service {
         volatile boolean cancelled;
         volatile InstallTransaction transaction;
         volatile String stagedMetadata, stagedDesktop;
+        volatile File packArtifacts;
         final AtomicBoolean completed=new AtomicBoolean();
         Operation(int uid, String id, String kind, String ref, String remote, String name, String url,
                 ILinuxAppStoreCallback callback) {
@@ -172,11 +173,17 @@ public final class LinuxAppStoreService extends Service {
             @Override public void onComplete(String operationId,String manifest) {
                 try {
                     JSONObject staged = new JSONObject(manifest);
-                    String[] details = org.matonos.linux.stub.DeployManifest.stagedDetails(
-                            new File(new File("/data/linux-app/staging", Integer.toString(android.os.Process.myUid())),
-                                    operationId + "/installation"), staged);
+                    File installation=new File(new File("/data/linux-app/staging", Integer.toString(android.os.Process.myUid())),
+                            operationId + "/installation");
+                    String[] details = org.matonos.linux.stub.DeployManifest.stagedDetails(installation, staged);
                     op.stagedMetadata = details[0];
                     op.stagedDesktop = details[1];
+                    File scratch=new File(getCacheDir(),"flatpak-pack-artifacts");
+                    if(!scratch.isDirectory()&&!scratch.mkdirs())throw new java.io.IOException("Cannot create pack scratch");
+                    op.packArtifacts=java.nio.file.Files.createTempDirectory(scratch.toPath(),"stage-").toFile();
+                    org.matonos.linux.stub.StagedPacks.build(LinuxAppStoreService.this,installation,staged,
+                            new File(op.packArtifacts,"objects"),()->op.cancelled);
+                    if(op.cancelled)throw new java.io.IOException("Install cancelled");
                     JSONObject args=new JSONObject(); put(args,"operationId",operationId);
                     args.put("manifest",staged);
                     JSONObject reply=new JSONObject(linuxd().call("verify_staged_install",args.toString()));
@@ -244,6 +251,22 @@ public final class LinuxAppStoreService extends Service {
         File desktop=new File(work,pkg+".desktop"), apk=new File(work,pkg+".apk");
         try {
             try(FileOutputStream out=new FileOutputStream(desktop)){out.write(op.stagedDesktop.getBytes(StandardCharsets.UTF_8));}
+            // Task 4b produces a complete reviewable set. Task 4c will switch
+            // the PackageInstaller session below to these base + split files.
+            if(op.packArtifacts==null)throw new IllegalStateException("Staged object packs unavailable");
+            File objects=new File(op.packArtifacts,"objects");
+            File packBase=new File(op.packArtifacts,"base.apk");
+            StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,packBase,null,null,objects);
+            Log.i(TAG,"Pack artifact base: "+packBase);
+            File[] packs=objects.listFiles((dir,name)->name.matches("pack-[0-9a-f]{64}\\.zip"));
+            if(packs==null)throw new java.io.IOException("Missing object pack directory");
+            java.util.Arrays.sort(packs,java.util.Comparator.comparing(File::getName));
+            for(File pack:packs) {
+                if(op.cancelled)throw new java.io.IOException("Install cancelled");
+                File split=new File(op.packArtifacts,"pack_"+pack.getName().substring(5,69)+".apk");
+                StubGenerator.generatePack(work,pkg,pack,split);
+                Log.i(TAG,"Pack artifact split: "+split);
+            }
             StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,apk,null,null);
             PackageInstaller installer=getPackageManager().getPackageInstaller();
             PackageInstaller.SessionParams params=new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
