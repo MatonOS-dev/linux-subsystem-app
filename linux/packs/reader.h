@@ -11,6 +11,13 @@ typedef struct {
     uint32_t xattrs_length;
 } mtp_object;
 int mtp_index_open(const char *filename, mtp_index **out);
+/* Freestanding loader entry point. Input bytes remain caller-owned for the
+ * lifetime of the index. All metadata allocations use the supplied arena. */
+typedef void *(*mtp_alloc_fn)(void *context, size_t bytes);
+typedef void (*mtp_free_fn)(void *context, void *pointer);
+int mtp_index_open_buffer(const void *bytes, size_t length, mtp_index **out,
+                          mtp_alloc_fn alloc, mtp_free_fn dealloc,
+                          void *context);
 void mtp_index_close(mtp_index *index);
 size_t mtp_index_count(const mtp_index *index);
 int mtp_lookup(const mtp_index *index, const char *path, mtp_object *out);

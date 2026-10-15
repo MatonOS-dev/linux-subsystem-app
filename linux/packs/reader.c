@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct mtp_index { mtp_object *items; size_t count; void *storage; };
+struct mtp_index { mtp_object *items; size_t count; void *storage; mtp_alloc_fn alloc; mtp_free_fn dealloc; void *context; int owns_storage; };
+static void *heap_alloc(void *unused,size_t n){(void)unused;return malloc(n);}
+static void heap_free(void *unused,void *p){(void)unused;free(p);}
 static uint32_t u32(const unsigned char *p) { return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24; }
 static uint64_t u64(const unsigned char *p) { return (uint64_t)u32(p)|(uint64_t)u32(p+4)<<32; }
 static int take(const unsigned char **p, const unsigned char *end, size_t n, const unsigned char **out) {
@@ -13,12 +15,35 @@ static int take(const unsigned char **p, const unsigned char *end, size_t n, con
     *p+=n;
     return 0;
 }
-static int string(const unsigned char **p,const unsigned char *end,const char **out) {
+static int string(const unsigned char **p,const unsigned char *end,const char **out,mtp_index *idx) {
     const unsigned char *q; if(take(p,end,4,&q))return -1; uint32_t n=u32(q);
     if(take(p,end,n,&q))return -1;
-    char *s=malloc((size_t)n+1);
+    char *s=idx->alloc(idx->context,(size_t)n+1);
     if(!s)return -1;
     memcpy(s,q,n);s[n]=0;*out=s;return 0;
+}
+int mtp_index_open_buffer(const void *bytes,size_t length,mtp_index **out,mtp_alloc_fn alloc,mtp_free_fn dealloc,void *context) {
+    if(!bytes||!out||!alloc||!dealloc||length<12)return -1;
+    const unsigned char *b=bytes;size_t z=length;
+    if(memcmp(b,"MTPKIDX1",8))return -1;
+    uint32_t n=u32(b+8);if((size_t)n>((z-12)/40)||(n&&sizeof(mtp_object)>SIZE_MAX/(size_t)n))return -1;
+    mtp_index *idx=alloc(context,sizeof(*idx));if(!idx)return -1;
+    memset(idx,0,sizeof(*idx));idx->alloc=alloc;idx->dealloc=dealloc;idx->context=context;
+    idx->items=alloc(context,(n?n:1)*sizeof(*idx->items));
+    if(!idx->items){dealloc(context,idx);return -1;}
+    memset(idx->items,0,(n?n:1)*sizeof(*idx->items));idx->count=n;idx->storage=(void*)bytes;
+    const unsigned char *p=b+12,*end=b+z;
+    for(uint32_t i=0;i<n;i++){
+        mtp_object *o=&idx->items[i];const unsigned char *q;
+        if(string(&p,end,&o->path,idx)||string(&p,end,&o->checksum,idx)||string(&p,end,&o->pack,idx)||string(&p,end,&o->kind,idx)||string(&p,end,&o->target,idx)||take(&p,end,4,&q))goto fail;
+        o->xattrs_length=u32(q);if(take(&p,end,o->xattrs_length,&q))goto fail;o->xattrs=q;
+        if(take(&p,end,28,&q))goto fail;
+        o->offset=u64(q);o->length=u64(q+8);o->uid=u32(q+16);o->gid=u32(q+20);o->mode=u32(q+24);
+        if(o->offset>UINT64_MAX-o->length)goto fail;
+    }
+    if(p!=end)goto fail;
+    *out=idx;return 0;
+fail: mtp_index_close(idx);return -1;
 }
 int mtp_index_open(const char *filename, mtp_index **out) {
     FILE *f=fopen(filename,"rb"); if(!f)return -1;
@@ -26,24 +51,10 @@ int mtp_index_open(const char *filename, mtp_index **out) {
     if(z<12 || fseek(f,0,SEEK_SET)){fclose(f);return -1;}
     unsigned char *b=malloc((size_t)z); if(!b){fclose(f);return -1;}
     if(fread(b,1,(size_t)z,f)!=(size_t)z){free(b);fclose(f);return -1;} fclose(f);
-    if(memcmp(b,"MTPKIDX1",8)){free(b);return -1;}
-    uint32_t n=u32(b+8); if((size_t)n > ((size_t)z-12)/40){free(b);return -1;}
-    mtp_index *idx=calloc(1,sizeof(*idx)); if(!idx){free(b);return -1;}
-    idx->items=calloc(n?n:1,sizeof(*idx->items)); if(!idx->items){free(idx);free(b);return -1;}
-    idx->count=n;idx->storage=b; const unsigned char *p=b+12,*end=b+z;
-    for(uint32_t i=0;i<n;i++) {
-        mtp_object *o=&idx->items[i]; const unsigned char *q;
-        if(string(&p,end,&o->path)||string(&p,end,&o->checksum)||string(&p,end,&o->pack)||string(&p,end,&o->kind)||string(&p,end,&o->target)||take(&p,end,4,&q))goto fail;
-        o->xattrs_length=u32(q);if(take(&p,end,o->xattrs_length,&q))goto fail;o->xattrs=q;
-        if(take(&p,end,28,&q))goto fail;
-        o->offset=u64(q);o->length=u64(q+8);o->uid=u32(q+16);o->gid=u32(q+20);o->mode=u32(q+24);
-    }
-    if(p!=end)goto fail;
-    *out=idx;
-    return 0;
-fail: mtp_index_close(idx);return -1;
+    int r=mtp_index_open_buffer(b,(size_t)z,out,heap_alloc,heap_free,NULL);
+    if(r){free(b);return -1;}(*out)->owns_storage=1;return 0;
 }
-void mtp_index_close(mtp_index *i) { if(!i)return; for(size_t n=0;n<i->count;n++){free((void*)i->items[n].path);free((void*)i->items[n].checksum);free((void*)i->items[n].pack);free((void*)i->items[n].kind);free((void*)i->items[n].target);}free(i->items);free(i->storage);free(i); }
+void mtp_index_close(mtp_index *i) { if(!i)return; for(size_t n=0;n<i->count;n++){i->dealloc(i->context,(void*)i->items[n].path);i->dealloc(i->context,(void*)i->items[n].checksum);i->dealloc(i->context,(void*)i->items[n].pack);i->dealloc(i->context,(void*)i->items[n].kind);i->dealloc(i->context,(void*)i->items[n].target);}i->dealloc(i->context,i->items);if(i->owns_storage)i->dealloc(i->context,i->storage);i->dealloc(i->context,i); }
 size_t mtp_index_count(const mtp_index *i){return i?i->count:0;}
 int mtp_normalize_path(const char *input,char *output,size_t size) {
     if(!input||!output||!size)return -1;
