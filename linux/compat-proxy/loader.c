@@ -21,6 +21,32 @@ void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
 static long loader_open(const char *path){long fd=pack_open(path,O_RDONLY|O_CLOEXEC);return fd==-ENOSYS?RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0):fd;}
 static void loader_close(int fd){pack_close(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
+/* File mappings retain page-cache sharing. Only permission refusals permit the
+ * private copy fallback; pack_call translates carrier offsets before mmap. */
+long proxy_file_mmap(proxy_arg_t *a) {
+    int handled=0;
+    long r=pack_call(PROXY_SC_mmap,a,&handled);
+    if(!handled)r=RAW(PROXY_SC_mmap,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(r!=-EACCES && r!=-EPERM)return r;
+    if((a[3]&MAP_SHARED) || !(a[3]&MAP_PRIVATE))return r;
+    long area=RAW(PROXY_SC_mmap,a[0],a[1],PROT_READ|PROT_WRITE,
+                  a[3]|MAP_ANONYMOUS,-1,0);
+    if((unsigned long)area>=(unsigned long)-4095)return area;
+    size_t done=0;
+    while(done<(size_t)a[1]){
+        long n=pack_pread(a[4],(void *)((uintptr_t)area+done),a[1]-done,(uint64_t)a[5]+done);
+        if(n==-EINTR)continue;
+        if(n<0){r=n;goto failed;}
+        if(!n)break;
+        done+=n;
+    }
+    r=RAW(PROXY_SC_mprotect,area,a[1],a[2],0,0,0);
+    if(r<0)goto failed;
+    proxy_log("exec-mmap-copy",a[4],0);
+    return area;
+failed:
+    RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;
+}
 static uintptr_t inherited_aux[64];
 uintptr_t proxy_aux(unsigned type){return type<64?inherited_aux[type]:0;}
 static int bad(long n) { return (unsigned long)n >= (unsigned long)-4095; }
@@ -130,11 +156,34 @@ static int map_elf(const char *path,struct mapped *out) {
         if(p->p_type!=PT_LOAD || !p->p_memsz) continue;
         int prot=((p->p_flags&PF_R)?PROT_READ:0)|((p->p_flags&PF_W)?PROT_WRITE:0)|((p->p_flags&PF_X)?PROT_EXEC:0);
         uintptr_t start=bias+DOWN(p->p_vaddr),end=bias+UP(p->p_vaddr+p->p_memsz);
-        long r=RAW(PROXY_SC_mmap,start,end-start,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
-        if(bad(r)) {error=(int)r;goto done;}
-        if(p->p_filesz && pack_pread(fd,(void *)(bias+p->p_vaddr),p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
-        r=RAW(PROXY_SC_mprotect,start,end-start,prot,0,0,0);
-        if(bad(r)) {error=(int)r;goto done;}
+        long r;
+        uintptr_t file_end=bias+UP(p->p_vaddr+p->p_filesz);
+        int congruent=(p->p_offset&(PAGE-1))==(p->p_vaddr&(PAGE-1));
+        if(p->p_filesz && congruent){
+            proxy_arg_t args[]={start,file_end-start,prot,MAP_PRIVATE|MAP_FIXED,fd,DOWN(p->p_offset)};
+            r=proxy_file_mmap(args);
+            if(bad(r)){error=(int)r;goto done;}
+            /* Only the last file page needs COW zeroing. Never dirty text
+             * pages without BSS (including bytes beyond p_filesz). */
+            if(p->p_memsz>p->p_filesz && file_end>bias+p->p_vaddr+p->p_filesz){
+                uintptr_t tail=bias+p->p_vaddr+p->p_filesz;
+                r=RAW(PROXY_SC_mprotect,DOWN(tail),PAGE,PROT_READ|PROT_WRITE,0,0,0);
+                if(bad(r)){error=(int)r;goto done;}
+                for(uintptr_t z=tail;z<file_end;z++)*(unsigned char *)z=0;
+                r=RAW(PROXY_SC_mprotect,DOWN(tail),PAGE,prot,0,0,0);
+                if(bad(r)){error=(int)r;goto done;}
+            }
+            if(end>file_end){
+                r=RAW(PROXY_SC_mmap,file_end,end-file_end,prot,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
+                if(bad(r)){error=(int)r;goto done;}
+            }
+        }else{
+            r=RAW(PROXY_SC_mmap,start,end-start,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
+            if(bad(r)){error=(int)r;goto done;}
+            if(p->p_filesz && pack_pread(fd,(void *)(bias+p->p_vaddr),p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
+            r=RAW(PROXY_SC_mprotect,start,end-start,prot,0,0,0);
+            if(bad(r)){error=(int)r;goto done;}
+        }
         proxy_image_map(out->target+start-out->area,out->target+end-out->area,DOWN(p->p_vaddr),path);
         if(!out->phdr && eh.e_phoff>=p->p_offset && (uint64_t)eh.e_phoff+bytes<=(uint64_t)p->p_offset+p->p_filesz)
             out->phdr=bias+p->p_vaddr+eh.e_phoff-p->p_offset;

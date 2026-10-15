@@ -585,6 +585,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
        ((nr==PROXY_SC_copy_file_range||nr==PROXY_SC_splice) && (vfs_private_fd(a[0])||vfs_private_fd(a[2])))){result=-EBADF;goto finish;}
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
+    if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
     int packed=0;result=pack_call(nr,a,&packed);if(packed)goto finish;
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);

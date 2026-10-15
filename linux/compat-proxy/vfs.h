@@ -43,3 +43,5 @@ long pack_call(long,proxy_arg_t *,int *);
 char *pack_link(const char *,long *,int *);
 int pack_stat(const char *,struct proxy_stat *);
 #endif
+
+long proxy_file_mmap(proxy_arg_t *);
