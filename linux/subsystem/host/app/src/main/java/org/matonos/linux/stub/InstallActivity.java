@@ -6,14 +6,14 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.util.Log;
-import org.matonos.systembridge.ILinuxd;
+import org.matonos.linux.ILinuxAppStore;
+import org.matonos.linux.ILinuxAppStoreCallback;
 
 /** Compatibility action for an already installed, device-signed stub. New
  * installs are owned by the bridge and create this APK after deployment.
  * linuxd authenticates this package and uses FPINSTALL for network staging. */
 public class InstallActivity extends Activity {
     private static final String TAG = "MatonStubInstall";
-    private static final String LINUXD = "org.matonos.systembridge.ILinuxd/default";
     /** Optional operation ID from the store, so it can follow progress. */
     public static final String EXTRA_OPERATION_ID = "org.matonos.linuxhost.OPERATION_ID";
 
@@ -24,32 +24,29 @@ public class InstallActivity extends Activity {
         String operation = getIntent().getStringExtra(EXTRA_OPERATION_ID);
         final String operationId = operation == null ? "" : operation;
         final String pkg = getPackageName();
-        final Intent download = new Intent(this, InstallService.class);
-        final PowerManager.WakeLock wakeLock = getSystemService(PowerManager.class)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MatonOS:FlatpakInstall");
-        wakeLock.acquire();
-        try { startForegroundService(download); }
-        catch (RuntimeException | Error error) { wakeLock.release(); throw error; }
-        try { new Thread(() -> {
-            try {
-                // ServiceManager is hidden API; this lookup is the stub's only use of it.
-                IBinder binder = (IBinder) Class.forName("android.os.ServiceManager")
-                        .getMethod("checkService", String.class).invoke(null, LINUXD);
-                ILinuxd linuxd = ILinuxd.Stub.asInterface(binder);
-                if (linuxd == null) throw new IllegalStateException("linuxd unavailable");
-                String result = update() ? linuxd.updateSelf(pkg, operationId) : linuxd.installSelf(pkg, operationId);
-                Log.i(TAG, (update() ? "update me: " : "install me: ") + result);
-            } catch (Exception error) { Log.e(TAG, "Cannot start the Flatpak install", error); }
-            finally {
-                try { stopService(download); }
-                finally { wakeLock.release(); }
+        Intent store = new Intent().setClassName("org.matonos.linux", "org.matonos.linux.LinuxAppStoreService");
+        bindService(store, new android.content.ServiceConnection() {
+            @Override public void onServiceConnected(android.content.ComponentName name, IBinder service) {
+                try {
+                    ILinuxAppStore api=ILinuxAppStore.Stub.asInterface(service);
+                    android.content.pm.ActivityInfo activity=getPackageManager().getActivityInfo(
+                            new android.content.ComponentName(pkg,"org.matonos.linux.stub.StubActivity"),
+                            android.content.pm.PackageManager.GET_META_DATA | android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS);
+                    String ref=activity.metaData.getString("org.matonos.linux.FLATPAK_REF");
+                    if(ref==null)throw new IllegalStateException("Stub has no Flatpak ref");
+                    ILinuxAppStoreCallback callback=new ILinuxAppStoreCallback.Stub() {
+                        @Override public void onProgress(String id,String phase,int percent,long done,long total) { }
+                        @Override public void onResult(String id,boolean ok,String error) {
+                            Log.i(TAG, (update()?"update":"install")+" me: "+(ok?"complete":error));
+                            unbindService(thisConnectionHolder[0]); finish();
+                        }
+                    };
+                    if(update())api.update(ref,operationId.isEmpty()?"self-update":operationId,callback);
+                    else api.install(ref, "flathub", operationId.isEmpty()?"self-install":operationId,callback);
+                } catch(Exception error) { Log.e(TAG,"Cannot request Flatpak install",error); finish(); }
             }
-            runOnUiThread(this::finish);
-        }).start(); }
-        catch (RuntimeException | Error error) {
-            try { stopService(download); }
-            finally { wakeLock.release(); }
-            throw error;
-        }
+            final android.content.ServiceConnection[] thisConnectionHolder={this};
+            @Override public void onServiceDisconnected(android.content.ComponentName name) { finish(); }
+        }, BIND_AUTO_CREATE);
     }
 }
