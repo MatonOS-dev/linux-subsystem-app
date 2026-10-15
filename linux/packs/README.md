@@ -145,3 +145,32 @@ Run `python3 linux/packs/tests/java-source.py` for the actual stock-CLI reader
 against host bare-user and bare-user-only repositories, byte equality with
 pack.py, framing widths through four bytes, binary/text xattrs, unusual names,
 and a final files/extra commit fixture. This does not run apply_extra itself.
+
+## Session planning constraints (task 4c)
+
+`PackSessionPlan` is an Android-independent planner with a fake installer seam.
+It plans base + all desired content splits for a first install, and a new base
++ missing splits + removed split names for an inherited update. Desired split
+names must come from the new index, installed names from PackageManager.
+Repacked content receives a different hash/name. An existing content name is
+immutable and inherited. The planner is not connected to LinuxAppStoreService.
+The host stub test runner covers planning, rejected versions, commit/write/remove
+failures and cancellation before and during a session.
+
+Stock Android imposes two constraints that the install policy must resolve:
+
+- `PackageInstallerSession` checks an inherited session's version against the
+  existing package even if every split is replaced. Increasing versionCode
+  requires MODE_FULL_INSTALL with every carrier regenerated to match the new
+  base version. Inheriting unchanged carriers requires a fixed versionCode.
+  An increasing base revisionCode is a possible separate update counter; it is
+  not an increasing versionCode and is not implemented by this planner.
+- Supplying a base clears INSTALL_DONT_KILL_APP in both session modes. Since
+  objects.index is in base, pack index updates restart the Android app. The
+  planner requests dontKillApp only for an inherited session without a base;
+  the current pack format never uses that case for an index change.
+
+Source evidence in this checkout: frameworks/base/services/core/java/com/android/
+server/pm/PackageInstallerSession.java, assertPackageConsistentLocked and the
+MODE_INHERIT_EXISTING validation branch (Existing version check, base replacement
+clears setDontKillApp). Do not patch AOSP to bypass these checks.
