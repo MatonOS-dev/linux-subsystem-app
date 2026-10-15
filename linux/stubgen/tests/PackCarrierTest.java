@@ -43,6 +43,20 @@ public final class PackCarrierTest {
   Process p=new ProcessBuilder(args[1],"dump","xmltree",signed.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String xml=new String(p.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(p.waitFor()!=0 || !xml.contains("split=\""+split+"\"") || !xml.contains("hasCode(0x0101000c)=false"))throw new AssertionError(xml);
+  File index=new File(dir,"objects.index");ObjectPacks.writeIndex(index,Collections.singletonList(row));
+  File base=new File(dir,"pack-base.apk");
+  try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(base))) {
+   ZipEntry entry=new ZipEntry("assets/matonos/objects.index");zip.putNextEntry(entry);zip.write(Files.readAllBytes(index.toPath()));zip.closeEntry();
+  }
+  List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split},new String[]{signed.getAbsolutePath()},new File(dir,"cache"));
+  if(command.size()!=4||!command.get(0).equals("--pack-mount")||!command.get(1).equals("/app"))throw new AssertionError(command);
+  if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
+  if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");
+  try {
+   org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,null,null,new File(dir,"cache"));
+   throw new AssertionError("Missing split accepted");
+  } catch(IOException expected) { }
+  System.out.println("PASS launcher resolves PackageManager split names/paths, index and /app arguments; missing split rejected");
   System.out.println("PASS signed code-free pack manifest, content hash name, STORED 4096 alignment and indexed slice");
  }
 }

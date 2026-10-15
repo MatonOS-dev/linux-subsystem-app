@@ -85,6 +85,9 @@ final class V3Launcher {
         if (x11.isDirectory()) {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
         }
+        android.content.pm.ApplicationInfo installed=context.getApplicationInfo();
+        command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.arguments(
+                new File(installed.sourceDir),installed.splitNames,installed.splitSourceDirs,cache));
         java.util.Collections.addAll(command,
                 "/apex/com.matonos.flatpak/bin/matonos-app-flatpak",
                 "--user", "run", "--socket=wayland", "--socket=x11", "--no-documents-portal",
