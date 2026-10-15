@@ -80,7 +80,18 @@ int mtp_normalize_path(const char *input,char *output,size_t size) {
 }
 int mtp_lookup(const mtp_index *i,const char *path,mtp_object *out) {
     if(!i||!path||!out)return -1;
-    for(size_t n=0;n<i->count;n++)if(!strcmp(i->items[n].path,path)){*out=i->items[n];return 0;}
+    /* Match the path rules used by the proxy resolver. Linux pathname
+     * arguments are bounded by PATH_MAX, so this stack buffer covers every
+     * path the kernel can pass while keeping this entry point freestanding. */
+    char normalized[4096];
+    if(mtp_normalize_path(path,normalized,sizeof(normalized)))return -1;
+    const char *key=*normalized?normalized:"/";
+    for(size_t n=0;n<i->count;n++) {
+        const char *stored=i->items[n].path;
+        if(!strcmp(stored,key) || (*normalized && stored[0]=='/' && !strcmp(stored+1,normalized))) {
+            *out=i->items[n];return 0;
+        }
+    }
     return 1;
 }
 int mtp_stat(const mtp_index *i,const char *path,mtp_object *out) { return mtp_lookup(i,path,out); }
