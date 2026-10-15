@@ -151,6 +151,17 @@ public final class StubGenerator {
     public static File generate(File workDir, String ref, String remote, File desktopFile,
             byte[] iconPng, List<String> permissions, String packageName, File output,
             CommitInfo commitInfo, Integer minInterfaceVersion) throws Exception {
+        return generate(workDir,ref,remote,desktopFile,iconPng,permissions,packageName,output,
+                commitInfo,minInterfaceVersion,null);
+    }
+
+    /** Pack-enabled base; only the small index/metadata live here, payloads are splits. */
+    public static File generate(File workDir, String ref, String remote, File desktopFile,
+            byte[] iconPng, List<String> permissions, String packageName, File output,
+            CommitInfo commitInfo, Integer minInterfaceVersion, File packDirectory) throws Exception {
+        if (packDirectory != null && (!new File(packDirectory,"objects.index").isFile()
+                || !new File(packDirectory,"objects.ostree").isFile()))
+            throw new IOException("Missing pack index or metadata");
         if (workDir == null || desktopFile == null || !desktopFile.isFile())
             throw new IllegalArgumentException("Private work directory and readable .desktop file are required");
         if (desktopFile.length() > MAX_DESKTOP_BYTES) throw new IllegalArgumentException("Desktop entry is too large");
@@ -170,13 +181,29 @@ public final class StubGenerator {
         File unsigned = File.createTempFile("matonos-stub-", ".unsigned.apk", workDir);
         try {
             writeUnsigned(unsigned, packageName, entry, ref, remote, iconPng, permissions, commitInfo,
-                    minInterfaceVersion != null ? minInterfaceVersion : 2);
+                    minInterfaceVersion != null ? minInterfaceVersion : 2, packDirectory);
             sign(unsigned, output, getOrCreateKey());
             return output;
         } finally {
             //noinspection ResultOfMethodCallIgnored
             unsigned.delete();
         }
+    }
+
+    /** Builds a code-free split named for the immutable content ZIP hash.
+     * Indexed offsets survive manifest insertion and v2/v3 signing. */
+    public static File generatePack(File workDir, String packageName, File pack, File output) throws Exception {
+        if(!packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
+            throw new IllegalArgumentException("Invalid package name");
+        String name=pack.getName();
+        if(!name.matches("pack-[0-9a-f]{64}\\.zip"))throw new IllegalArgumentException("Invalid pack name");
+        String split="pack_"+name.substring(5,69);
+        BinaryManifest encoder=new BinaryManifest(packageName,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
+        File unsigned=File.createTempFile("matonos-pack-",".apk",workDir);
+        try {
+            ObjectPacks.carrier(pack,unsigned,encoder.packManifest(split));
+            sign(unsigned,output,getOrCreateKey());return output;
+        } finally {unsigned.delete();}
     }
 
     /** Legacy compatibility: no commit info, no images. */
@@ -260,7 +287,8 @@ public final class StubGenerator {
     }
 
     private static void writeUnsigned(File file, String pkg, DesktopEntry entry, String ref, String remote,
-            byte[] icon, List<String> permissions, CommitInfo commitInfo, int minInterfaceVersion) throws IOException {
+            byte[] icon, List<String> permissions, CommitInfo commitInfo, int minInterfaceVersion,
+            File packDirectory) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
             if (cleanPermissions.size() >= 128 || (p != null && p.length() > 255)) throw new IllegalArgumentException("Too many or oversized Android permissions");
@@ -283,6 +311,10 @@ public final class StubGenerator {
         byte[] manifest = encoder.encode();
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);
+            if(packDirectory!=null) {
+                put(zip,"assets/matonos/objects.index",java.nio.file.Files.readAllBytes(new File(packDirectory,"objects.index").toPath()));
+                put(zip,"assets/matonos/objects.ostree",java.nio.file.Files.readAllBytes(new File(packDirectory,"objects.ostree").toPath()));
+            }
             // Supply a real drawable resource so Android launchers can resolve the app icon.
             put(zip, "resources.arsc", iconResourceTable(pkg));
             put(zip, "classes.dex", emptyDex());
@@ -400,7 +432,7 @@ public final class StubGenerator {
         new ApkSigner.Builder(Collections.singletonList(signer)).setInputApk(input).setOutputApk(output)
                 // Stubs require API 30; v2/v3 cover their supported Android versions.
                 .setV1SigningEnabled(false).setV2SigningEnabled(true).setV3SigningEnabled(true)
-                .setV4SigningEnabled(false).setAlignmentPreserved(false).build().sign();
+                .setV4SigningEnabled(false).setAlignmentPreserved(true).build().sign();
     }
 
     private static final class KeyMaterial {
@@ -505,6 +537,13 @@ public final class StubGenerator {
                     ab("exported", false), ai("foregroundServiceType", 1)));
             end("application"); end("manifest"); namespace(false);
             return finish();
+        }
+        byte[] packManifest(String split) throws IOException {
+            namespace(true);
+            start("manifest",null,attrs(a("package",pkg),a("split",split),ai("versionCode",STUB_VERSION_CODE)));
+            startEnd("uses-sdk",attrs(ai("minSdkVersion",30),ai("targetSdkVersion",36)));
+            startEnd("application",attrs(ab("hasCode",false)));
+            end("manifest");namespace(false);return finish();
         }
         private byte[] finish() throws IOException {
             ByteArrayOutputStream body = new ByteArrayOutputStream();
