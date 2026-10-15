@@ -49,4 +49,8 @@ def ls_rows(text):
  return result
 assert ls_rows(listing)==ls_rows(real),(ls_rows(listing),ls_rows(real))
 print('ls -lnR modes/uid/gid/file sizes/symlinks vs real checkout PASS',flush=True)
+scaffold=root/'scaffold';scaffold.mkdir()
+for name in ('usr','bin','lib','lib64','etc','sbin','proc','dev'):(scaffold/name).symlink_to('/'+name)
+assert b'static pack ELF PASS' in output(base/'build/linux-layer-v3','--android-filter','--root',scaffold,'--pack-mount','/packed',bundle/'objects.index',bundle,'/packed/static')
+print('pack mount overlays an existing --root scaffold PASS',flush=True)
 print('ALL pack host checks PASS',flush=True)
