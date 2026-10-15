@@ -37,6 +37,7 @@ long pack_pread(int,void *,size_t,int64_t);
 void pack_close(int);
 void pack_dup(int,int);
 int pack_private(int);
+int pack_is_directory(int);
 long pack_path(long,proxy_arg_t *,const char *,int *);
 long pack_call(long,proxy_arg_t *,int *);
 char *pack_link(const char *,long *,int *);
