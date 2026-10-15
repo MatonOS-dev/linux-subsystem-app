@@ -19,4 +19,7 @@ int mtp_stat(const mtp_index *index, const char *path, mtp_object *out);
 /* Return the ordinal of the next immediate child; cursor starts at zero. */
 int mtp_readdir(const mtp_index *index, const char *directory, size_t *cursor,
                 const char **name, mtp_object *object);
+/* Validate and normalize an index path. Accepts an absolute virtual path or
+ * a path relative to the pack root; returns 0 on success. */
+int mtp_normalize_path(const char *input, char *output, size_t output_size);
 #endif

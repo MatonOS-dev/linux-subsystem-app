@@ -45,6 +45,28 @@ fail: mtp_index_close(idx);return -1;
 }
 void mtp_index_close(mtp_index *i) { if(!i)return; for(size_t n=0;n<i->count;n++){free((void*)i->items[n].path);free((void*)i->items[n].checksum);free((void*)i->items[n].pack);free((void*)i->items[n].kind);free((void*)i->items[n].target);}free(i->items);free(i->storage);free(i); }
 size_t mtp_index_count(const mtp_index *i){return i?i->count:0;}
+int mtp_normalize_path(const char *input,char *output,size_t size) {
+    if(!input||!output||!size)return -1;
+    const unsigned char *p=(const unsigned char *)input;size_t used=0;
+    while(*p=='/')p++;
+    while(*p) {
+        const unsigned char *start=p;while(*p&&*p!='/') {
+            if(*p<0x20||*p==0x7f)return -1;
+            p++;
+        }
+        size_t n=(size_t)(p-start);
+        if(n==1&&start[0]=='.') { while(*p=='/')p++;continue; }
+        if(n==2&&start[0]=='.'&&start[1]=='.')return -1;
+        if(n) {
+            if(used && used+1>=size)return -1;
+            if(used)output[used++]='/';
+            if(n>=size-used)return -1;
+            memcpy(output+used,start,n);used+=n;
+        }
+        while(*p=='/')p++;
+    }
+    output[used]=0;return 0;
+}
 int mtp_lookup(const mtp_index *i,const char *path,mtp_object *out) {
     if(!i||!path||!out)return -1;
     for(size_t n=0;n<i->count;n++)if(!strcmp(i->items[n].path,path)){*out=i->items[n];return 0;}
