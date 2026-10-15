@@ -18,8 +18,9 @@ static char *pack_chr(const char *s,int c){do{if(*s==c)return (char *)s;}while(*
 #undef strcmp
 #undef memcmp
 #undef strchr
+typedef uint64_t pack_lock_word __attribute__((aligned(8)));
 struct pack_file {struct pack_file *next;char *name;int fd;};
-struct pack_mount {struct pack_mount *next;char *target;mtp_index *index;void *blob;size_t size;struct pack_file *files;int directory;};
+struct pack_mount {struct pack_mount *next;int io_fd;pack_lock_word *io_owner;char *target;mtp_index *index;void *blob;size_t size;struct pack_file *files;int directory;};
 struct pack_fd {struct pack_fd *next;int fd;struct pack_mount *mount;mtp_object object;};
 static struct pack_mount *pack_mounts;
 static struct pack_fd *pack_fds;
@@ -27,7 +28,7 @@ static void *pack_alloc(void *c,size_t n){(void)c;return vfs_alloc(n);}
 static void pack_free(void *c,void *p){(void)c;vfs_free(p);}
 static struct pack_fd *pack_find(int fd){for(struct pack_fd *f=pack_fds;f;f=f->next)if(f->fd==fd)return f;return NULL;}
 int pack_is_directory(int fd){struct pack_fd *f=pack_find(fd);return f?p_equal(f->object.kind,"dir"):-1;}
-int pack_private(int fd){for(struct pack_mount *m=pack_mounts;m;m=m->next){if(m->directory==fd)return 1;for(struct pack_file *p=m->files;p;p=p->next)if(p->fd==fd)return 1;}return 0;}
+int pack_private(int fd){for(struct pack_mount *m=pack_mounts;m;m=m->next){if(m->directory==fd||m->io_fd==fd)return 1;for(struct pack_file *p=m->files;p;p=p->next)if(p->fd==fd)return 1;}return 0;}
 static struct pack_mount *pack_lookup(const char *path){struct pack_mount *best=NULL;for(struct pack_mount *m=pack_mounts;m;m=m->next)if(prefix(path,m->target)&&(!best||p_len(m->target)>p_len(best->target)))best=m;return best;}
 static int pack_object(struct pack_mount *m,const char *path,mtp_object *o){const char *key=path+p_len(m->target);return mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;}
 static uint64_t pack_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;for(const char *p=o->checksum;*p;p++)v=(v^(unsigned char)*p)*1099511628211ULL;return v;}
@@ -42,7 +43,7 @@ long pack_mount(const char *target,const char *index,const char *directory){
  if(!target||target[0]!='/')return -EINVAL;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,index,O_RDONLY|O_CLOEXEC,0,0,0);if(fd<0)return fd;
  struct proxy_stat st;long e=arch_stat_fd(fd,&st);if(e||st.st_size<12||(uint64_t)st.st_size>SIZE_MAX){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -EINVAL;}
- struct pack_mount *m=vfs_alloc(sizeof(*m));if(!m){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*m=(struct pack_mount){.directory=-1};m->size=st.st_size;m->blob=vfs_alloc(m->size);m->target=global_target(target,&e);
+ struct pack_mount *m=vfs_alloc(sizeof(*m));if(!m){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*m=(struct pack_mount){.directory=-1,.io_fd=-1};m->size=st.st_size;m->blob=vfs_alloc(m->size);m->target=global_target(target,&e);
  if(!m->blob||!m->target)e=-ENOMEM;
  if(!e && RAW(PROXY_SC_pread64,fd,m->blob,m->size,0,0,0)!=(long)m->size)e=-EIO;
  RAW(PROXY_SC_close,fd,0,0,0,0,0);
@@ -54,6 +55,12 @@ long pack_mount(const char *target,const char *index,const char *directory){
   if(!e){m->directory=RAW(PROXY_SC_openat,AT_FDCWD,empty,O_RDONLY|O_DIRECTORY,0,0,0);if(m->directory<0)e=m->directory;RAW(PROXY_SC_unlinkat,AT_FDCWD,empty,AT_REMOVEDIR,0,0,0);}
   vfs_free(empty);
  }
+ if(!e){
+  m->io_fd=RAW(PROXY_SC_memfd_create,"pack-position-lock",0,0,0,0,0);
+  if(m->io_fd<0)e=m->io_fd;
+  if(!e)e=RAW(PROXY_SC_ftruncate,m->io_fd,4096,0,0,0,0);
+  if(!e){long area=RAW(PROXY_SC_mmap,0,4096,PROT_READ|PROT_WRITE,MAP_SHARED,m->io_fd,0);if((unsigned long)area>=(unsigned long)-4095)e=area;else m->io_owner=(void *)area;}
+ }
  for(size_t i=0;!e&&i<mtp_index_count(m->index);i++){
   mtp_object *o=&m->index->items[i];if(!p_equal(o->kind,"file"))continue;
   if(o->offset>INT64_MAX||o->length>INT64_MAX-o->offset){e=-EOVERFLOW;break;}
@@ -61,7 +68,7 @@ long pack_mount(const char *target,const char *index,const char *directory){
   if(!p){char *path=join(directory,o->pack);if(!path){e=-ENOMEM;break;}fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY,0,0,0);vfs_free(path);if(fd<0){e=fd;break;}p=vfs_alloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);e=-ENOMEM;break;}*p=(struct pack_file){m->files,dupstr(o->pack),fd};m->files=p;if(!p->name){e=-ENOMEM;break;}}
   if(arch_stat_fd(p->fd,&st)||(uint64_t)st.st_size<o->offset+o->length)e=-EINVAL;
  }
- if(e){while(m->files){struct pack_file *p=m->files;m->files=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p->name);vfs_free(p);}if(m->directory>=0)RAW(PROXY_SC_close,m->directory,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m);return e;}
+ if(e){if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);while(m->files){struct pack_file *p=m->files;m->files=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p->name);vfs_free(p);}if(m->directory>=0)RAW(PROXY_SC_close,m->directory,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m);return e;}
  m->next=pack_mounts;pack_mounts=m;return 0;
 }
 void pack_close(int fd){struct pack_fd **p=&pack_fds;while(*p&&(*p)->fd!=fd)p=&(*p)->next;if(*p){struct pack_fd *old=*p;*p=old->next;vfs_free(old);}}
@@ -128,13 +135,13 @@ static long pack_transfer(long nr,proxy_arg_t *a,int *handled){
   if(!w)break;
   total+=w;off+=w;count-=w;
   if(ip){if(nr==PROXY_SC_sendfile)arch_sendfile_result(ip,off);else *(int64_t *)ip=off;}
-  else RAW(PROXY_SC_lseek,in,f->object.offset+off,SEEK_SET,0,0,0);
+  else {proxy_arg_t seek[6]={in,off,SEEK_SET};int h;pack_call(PROXY_SC_lseek,seek,&h);}
   if(op)*(int64_t *)op+=w;
   if(w<r)break;
  }
  return total;
 }
-long pack_call(long nr,proxy_arg_t *a,int *handled){
+static long pack_call_unlocked(long nr,proxy_arg_t *a,int *handled){
  if(nr==PROXY_SC_sendfile||nr==PROXY_SC_copy_file_range||nr==PROXY_SC_splice)return pack_transfer(nr,a,handled);
  int fd=nr==PROXY_SC_mmap?a[4]:a[0];struct pack_fd *f=pack_find(fd);*handled=0;if(!f)return 0;
  uint64_t start=f->object.offset,len=f->object.length;int dir=p_equal(f->object.kind,"dir");long r;*handled=1;
@@ -187,6 +194,26 @@ long pack_call(long nr,proxy_arg_t *a,int *handled){
  }
  *handled=0;return 0;
 }
+/* Serialize the position snapshot plus clamped kernel read. The small shared
+ * record is per mount (not a substitute open-file description); the kernel
+ * still owns every fd position. Fork and peer exec retain the same record.
+ * Block app signals while held, and recover a dead process/thread owner. */
+long pack_call(long nr,proxy_arg_t *a,int *handled){
+ struct pack_fd *f=pack_find(a[0]);
+ int position=nr==PROXY_SC_read||nr==PROXY_SC_readv||nr==PROXY_SC_preadv2||nr==PROXY_SC_lseek||nr==PROXY_SC_getdents64;
+ if(!f||!position)return pack_call_unlocked(nr,a,handled);
+ proxy_sigmask_t all=~UINT64_C(0),mask=0;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
+ uint64_t owner=((uint64_t)(uint32_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)<<32)|(uint32_t)RAW(PROXY_SC_gettid,0,0,0,0,0,0);
+ pack_lock_word *word=f->mount->io_owner;
+ for(;;){
+  uint64_t expected=0;if(__atomic_compare_exchange_n(word,&expected,owner,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))break;
+  long live=RAW(PROXY_SC_tgkill,expected>>32,(uint32_t)expected,0,0,0,0);
+  if(live==-ESRCH)__atomic_compare_exchange_n(word,&expected,0,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED);
+  else RAW(PROXY_SC_sched_yield,0,0,0,0,0,0);
+ }
+ long r=pack_call_unlocked(nr,a,handled);
+ __atomic_store_n(word,0,__ATOMIC_RELEASE);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);return r;
+}
 /* Real descriptors provide fork/dup position sharing; only the slice identity
  * and trusted mount index need to cross a peer-loader exec. */
 static void pack_state(struct state *s){
@@ -199,6 +226,9 @@ static void pack_state(struct state *s){
   if(s->reading){if(m->size>s->size-s->pos){s->error=-EINVAL;return;}m->blob=vfs_alloc(m->size);if(!m->blob){s->error=-ENOMEM;return;}}
   state_bytes(s,m->blob,m->size);
   if(s->reading&&mtp_index_open_buffer(m->blob,m->size,&m->index,pack_alloc,pack_free,NULL)){s->error=-EINVAL;return;}
+  m->io_fd=state_word(s,m->io_fd);
+  if(!state_live(m->io_fd)){s->error=-EBADF;return;}
+  if(s->reading){long area=RAW(PROXY_SC_mmap,0,4096,PROT_READ|PROT_WRITE,MAP_SHARED,m->io_fd,0);if((unsigned long)area>=(unsigned long)-4095){s->error=area;return;}m->io_owner=(void *)area;}
   m->directory=state_word(s,m->directory);if(!state_live(m->directory)){s->error=-EBADF;return;}
   uint64_t k=0;for(struct pack_file *p=m->files;p;p=p->next)k++;k=state_word(s,k);struct pack_file **pt=&m->files;
   for(uint64_t j=0;j<k&&!s->error;j++){struct pack_file *p=s->reading?vfs_alloc(sizeof(*p)):*pt;if(!p){s->error=-ENOMEM;return;}if(s->reading){*p=(struct pack_file){0};*pt=p;}state_string(s,&p->name);p->fd=state_word(s,p->fd);if(!state_live(p->fd))s->error=-EBADF;pt=&p->next;}

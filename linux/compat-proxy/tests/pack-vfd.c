@@ -32,6 +32,12 @@ int main(int argc,char **argv){
  char linkbuf[256],proc[64];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",fd);int n=readlink(proc,linkbuf,sizeof(linkbuf));assert(n==12&&!memcmp(linkbuf,"/packed/data",12));snprintf(proc,sizeof(proc),"/proc/%ld/fd/%d",(long)getpid(),fd);assert(readlink(proc,linkbuf,sizeof(linkbuf))==12);
  int child=fork();assert(child>=0);if(!child){char number[32];snprintf(number,sizeof(number),"%d",alias);execl("/packed/probe","probe",number,NULL);perror("exec");_exit(1);}int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));assert(lseek(fd,0,SEEK_CUR)==6);
  assert(lseek(fd,5,SEEK_SET)==5);child=fork();assert(child>=0);if(!child){assert(dup2(fd,90)==90);assert(dup3(fd,91,O_CLOEXEC)==91);assert(dup2(fd,92)==92);assert(!syscall(SYS_close_range,92,92,4));execl("/packed/peer","peer",NULL);perror("peer exec");_exit(1);}assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));assert(lseek(fd,0,SEEK_CUR)==6);puts("x86_64 -> i386 -> x86_64 pack state + CLOEXEC PASS");
+ for(int round=0;round<40;round++){
+  assert(!lseek(fd,0,SEEK_SET));int results[2],go[2];assert(!pipe(results)&&!pipe(go));
+  child=fork();assert(child>=0);if(!child){close(go[1]);close(results[0]);char x;assert(read(go[0],&x,1)==1);long n=read(fd,buf,sizeof(buf));assert(write(results[1],&n,sizeof(n))==sizeof(n));_exit(0);}
+  close(go[0]);close(results[1]);assert(write(go[1],"x",1)==1);long parent_read=read(fd,buf,sizeof(buf)),child_read=-1;assert(read(results[0],&child_read,sizeof(child_read))==sizeof(child_read));assert(parent_read>=0&&child_read>=0&&parent_read+child_read==16);assert(lseek(fd,0,SEEK_CUR)==16);assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));close(go[1]);close(results[0]);
+ }
+ assert(lseek(fd,6,SEEK_SET)==6);puts("concurrent fork aliases stop at slice EOF PASS");
  int clo=fcntl(fd,F_DUPFD_CLOEXEC,100);assert(clo>=100);assert(!syscall(SYS_close_range,clo,clo,0));ro(fstat(clo,&st),EBADF);
  int dir=open("/packed/nested",O_RDONLY|O_DIRECTORY);assert(dir>=0);
  int saved=open(".",O_RDONLY|O_DIRECTORY);assert(saved>=0);assert(!chdir("/packed/nested"));char cwd[256];assert(getcwd(cwd,sizeof(cwd))&&!strcmp(cwd,"/packed/nested"));int leaf=open("leaf",O_RDONLY);assert(leaf>=0);close(leaf);assert(!fchdir(dir));assert(getcwd(cwd,sizeof(cwd))&&!strcmp(cwd,"/packed/nested"));assert(!fchdir(saved));close(saved);

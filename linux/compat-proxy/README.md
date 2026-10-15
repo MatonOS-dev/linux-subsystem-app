@@ -1185,8 +1185,10 @@ index bytes, private carrier descriptors and surviving slice identities in
 the sealed version-2 state stream; payload CLOEXEC aliases are omitted.
 Both trusted siblings must be rebuilt together after this stream change.
 The existing VFS concurrency, user-pointer and containment limitations above
-also apply here. In particular, compound position/clamp operations are not a
-concurrent-I/O synchronization mechanism.
+also apply here. A small shared per-mount lock serializes each position
+snapshot/clamp/read or seek across threads, fork and peer exec, so simultaneous
+alias reads cannot run into the next APK entry. Kernel descriptors continue
+to own position sharing; this is not a general virtual-fd implementation.
 
 **SCM_RIGHTS of pack descriptors is out of scope.** The real kernel descriptor
 can be transferred, but its index/slice metadata is not registered in the
