@@ -1,0 +1,32 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="org.matonos.permission.SYSTEM_BRIDGE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- Resolve the System Bridge UID that authorizes install requests. -->
+        <package android:name="org.matonos.systembridge" />
+    </queries>
+    <application android:label="Linux Subsystem" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:multiArch="true" android:extractNativeLibs="true">
+        <provider android:name=".PortalFiles" android:authorities="org.matonos.linux.portal.files"
+            android:exported="false" android:grantUriPermissions="true" />
+        <library android:name="org.matonos.linuxhost" />
+        <activity android:name=".WindowActivity" android:exported="false" android:resizeableActivity="true"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
+        <activity android:name=".stub.StubActivity" android:exported="true" />
+        <activity android:name=".stub.InstallActivity" android:exported="true" />
+        <service android:name=".stub.StubService" android:exported="false" />
+        <!-- Bridge-only Flatpak installer; see CompositorInstallService. -->
+        <service android:name=".stub.CompositorInstallService" android:exported="true"
+            android:permission="org.matonos.permission.SYSTEM_BRIDGE"
+            android:foregroundServiceType="dataSync" />
+        <!-- Internal support UI; Linux apps have their own launcher entries. -->
+        <activity android:name=".MainActivity" android:exported="false" />
+    </application>
+</manifest>

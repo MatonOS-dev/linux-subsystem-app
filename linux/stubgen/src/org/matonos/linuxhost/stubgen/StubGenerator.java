@@ -38,16 +38,16 @@ public final class StubGenerator {
     // v14 adds bridge visibility for self-task Linux window capabilities.
     public static final int STUB_VERSION_CODE = 16;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
-    public static final String HOST_ACTIVITY = "org.matonos.compositor.stub.StubActivity";
-    public static final String HOST_SERVICE = "org.matonos.compositor.stub.StubService";
+    public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
+    public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
     /** Host-side AppComponentFactory: loads the stub's components from the current host APK. */
-    public static final String HOST_LOADER = "org.matonos.compositor.stub.StubLoader";
+    public static final String HOST_LOADER = "org.matonos.linux.stub.StubLoader";
     /** Unprivileged entry point (the store uses it): asks the bridge to install this stub's Flatpak; no-op when installed. */
-    public static final String INSTALL_ACTIVITY = "org.matonos.compositor.stub.InstallActivity";
+    public static final String INSTALL_ACTIVITY = "org.matonos.linux.stub.InstallActivity";
     /** Action the store resolves (by its FLATPAK_REF metadata) to find a new stub's install activity. */
     public static final String INSTALL_ACTION = "org.matonos.linuxhost.INSTALL";
     /** "Update me": same lookup as INSTALL_ACTION. */
-    public static final String UPDATE_ACTIVITY = "org.matonos.compositor.stub.UpdateActivity";
+    public static final String UPDATE_ACTIVITY = "org.matonos.linux.stub.UpdateActivity";
     public static final String UPDATE_ACTION = "org.matonos.linuxhost.UPDATE";
     public static final String REF_META = "org.matonos.linuxhost.FLATPAK_REF";
     public static final String REMOTE_META = "org.matonos.linuxhost.FLATPAK_REMOTE";
@@ -426,7 +426,7 @@ public final class StubGenerator {
         CommitInfo commitInfo;
         int minInterfaceVersion = 2;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.compositor.stub.StubActivity", "org.matonos.compositor.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             for (String mime : mimes) str(mime);
             // Pre-intern commit info values if present
@@ -448,13 +448,13 @@ public final class StubGenerator {
             // "install me" downloads as the stub's UID (netd DNS + sockets need it).
             startEnd("uses-permission",attrs(a("name","android.permission.INTERNET")));
             start("queries",null,attrs());
-            startEnd("package",attrs(a("name","org.matonos.compositor")));
+            startEnd("package",attrs(a("name","org.matonos.linux")));
             startEnd("package",attrs(a("name","org.matonos.systembridge")));
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), a("appComponentFactory", HOST_LOADER), new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
-            startEnd("provider", attrs(a("name", "org.matonos.compositor.PortalFiles"),
+            startEnd("provider", attrs(a("name", "org.matonos.linux.PortalFiles"),
                     a("authorities", pkg + ".portal.files"), ab("exported", false), ab("grantUriPermissions", true)));
             start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", false), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
@@ -501,7 +501,7 @@ public final class StubGenerator {
                     a("value", "Owns the Linux application runtime and its background network operations")));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             end("service");
-            startEnd("service", attrs(a("name", "org.matonos.compositor.stub.InstallService"),
+            startEnd("service", attrs(a("name", "org.matonos.linux.stub.InstallService"),
                     ab("exported", false), ai("foregroundServiceType", 1)));
             end("application"); end("manifest"); namespace(false);
             return finish();

@@ -25,7 +25,7 @@ $(OUT)/inhibit-test: inhibit-test.c broker.c broker.h $(OUT)/portals.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ inhibit-test.c $(OUT)/portals.o $(LDLIBS)
 
 check-java-portals:
-	../compositor/host/test-portals.sh $(OUT)/java-portals
+	../subsystem/host/test-portals.sh $(OUT)/java-portals
 
 check-inhibit: $(OUT)/inhibit-test check-java-portals
 	MATON_PORTAL_TEST_CLASSPATH=$(OUT)/java-portals $(OUT)/inhibit-test

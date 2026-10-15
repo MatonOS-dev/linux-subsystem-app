@@ -1,0 +1,112 @@
+plugins { id 'com.android.application' }
+
+dependencies {
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+}
+
+// A PIE executable named as a JNI library so updates extract it with executable
+// permissions. The image extracts its copy from this same APK (buildinfra).
+def brokerRoot = file('../../../dbus-broker')
+def brokerOutput = System.getenv('MATON_DBUS_ANDROID_OUT') ?: layout.buildDirectory.dir('broker/android').get().asFile.absolutePath
+def aospRoot = System.getenv('MATON_AOSP_ROOT') ?: file('../../../../../../..').absolutePath
+def brokerJni = new File(layout.buildDirectory.get().asFile, 'generated/brokerJni')
+def buildSessionBroker = tasks.register('buildSessionBroker', Exec) {
+    inputs.dir brokerRoot
+    outputs.dir brokerOutput
+    // build-android.sh also tracks the external static dependency builds.
+    outputs.upToDateWhen { false }
+    environment 'MATON_DBUS_ANDROID_OUT', brokerOutput
+    environment 'MATON_AOSP_ROOT', aospRoot
+    if (System.getenv('MATON_NDK')) environment 'MATON_ANDROID_NDK', System.getenv('MATON_NDK')
+    commandLine 'bash', new File(brokerRoot, 'build-android.sh').absolutePath
+}
+def packageSessionBroker = tasks.register('packageSessionBroker', Copy) {
+    dependsOn buildSessionBroker
+    from(new File(brokerOutput, 'libmatonos-dbus-broker.so'))
+    into new File(brokerJni, 'x86_64')
+}
+tasks.named('preBuild').configure { dependsOn packageSessionBroker }
+
+def v3Root = file('../../../compat-proxy')
+def v3Output = System.getenv('MATON_V3_ANDROID_OUT') ?: "$aospRoot/out/matonos/compat-proxy"
+def v3Jni = new File(layout.buildDirectory.get().asFile, 'generated/v3Jni')
+def buildV3Loader = tasks.register('buildV3Loader', Exec) {
+    // Sources only: build/ holds host test scaffolds (device nodes, symlinks).
+    inputs.files fileTree(v3Root) { exclude "build/**", "__pycache__/**" }
+    outputs.file new File(v3Output, 'libmatonos-v3-loader.so')
+    outputs.file new File(v3Output, 'libmatonos-v3-loader-i386.so')
+    environment 'MATON_AOSP_ROOT', aospRoot
+    environment 'MATON_V3_ANDROID_OUT', v3Output
+    if (System.getenv('MATON_NDK')) environment 'MATON_ANDROID_NDK', System.getenv('MATON_NDK')
+    commandLine 'bash', new File(v3Root, 'build-android.sh').absolutePath
+}
+def packageV3Loader = tasks.register('packageV3Loader', Copy) {
+    dependsOn buildV3Loader
+    from new File(v3Output, 'libmatonos-v3-loader.so'), new File(v3Output, 'libmatonos-v3-loader-i386.so')
+    into new File(v3Jni, 'x86_64')
+}
+tasks.named('preBuild').configure { dependsOn packageV3Loader }
+
+def pipewireRoot = file('../../../pipewire')
+def pipewireOutput = System.getenv('MATON_PIPEWIRE_BUILD') ?: "$aospRoot/out/matonos/pipewire"
+def buildPipeWire = tasks.register('buildPipeWire', Exec) {
+    inputs.dir pipewireRoot
+    outputs.dir new File(pipewireOutput, 'jniLibs')
+    environment 'MATON_AOSP_ROOT', aospRoot
+    environment 'MATON_PIPEWIRE_BUILD', pipewireOutput
+    commandLine 'bash', new File(pipewireRoot, 'build-android.sh').absolutePath
+}
+def pipewireAssets = layout.buildDirectory.dir('generated/pipewireAssets').get().asFile
+def packagePipeWireNotices = tasks.register('packagePipeWireNotices', Copy) {
+    dependsOn buildPipeWire
+    from new File(pipewireOutput, 'COPYING'), new File(pipewireOutput, 'SOURCE')
+    into new File(pipewireAssets, 'pipewire')
+}
+tasks.named('preBuild').configure { dependsOn packagePipeWireNotices }
+
+android {
+    namespace 'org.matonos.linux'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'org.matonos.linux'; minSdk 36; targetSdk 36; versionCode 1; versionName '1.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        ndk { abiFilters 'x86_64' }
+        externalNativeBuild { cmake { arguments '-DMATON_COMPOSITOR_ROOT=' + projectDir.absolutePath + '/../..', '-DMATON_AOSP_ROOT=' + aospRoot, '-DMATON_COMPOSITOR_BUILD=' + (System.getenv('MATON_COMPOSITOR_BUILD') ?: "$aospRoot/out/matonos/compositor"), '-DMATON_PIPEWIRE_BUILD=' + pipewireOutput } }
+    }
+    buildFeatures { aidl true }
+    packaging {
+        jniLibs {
+            // Keep extractNativeLibs=true for the broker in adb-installed updates.
+            // build-apps.sh stores/page-aligns JNI before signing the staged APK
+            // so the preinstalled copy can also load JNI directly from the ZIP.
+            useLegacyPackaging = true
+            // Preserve the executable ELF, rather than treating it as a DSO.
+            keepDebugSymbols += '**/libmatonos-dbus-broker.so'
+            keepDebugSymbols += '**/libmatonos-v3-loader.so'
+            keepDebugSymbols += '**/libmatonos-v3-loader-i386.so'
+        }
+    }
+    signingConfigs {
+        release {
+            storeFile file(System.getenv('MATON_SIGNING_STORE_FILE'))
+            storePassword System.getenv('MATON_SIGNING_STORE_PASSWORD')
+            keyAlias System.getenv('MATON_SIGNING_KEY_ALIAS')
+            keyPassword System.getenv('MATON_SIGNING_KEY_PASSWORD')
+        }
+    }
+    buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false } }
+    externalNativeBuild { cmake { path '../../native/CMakeLists.txt' } }
+    ndkVersion '30.0.16248370'
+    ndkPath System.getenv('MATON_NDK') ?: "${System.getProperty('user.home')}/Documents/android-ndk-r30"
+    sourceSets {
+        main {
+            aidl.srcDirs += file("$rootDir/../../../systembridge/aidl")
+            jniLibs.srcDirs += file(System.getenv('MATON_COMPOSITOR_JNI_LIBS') ?: "$aospRoot/out/matonos/compositor/jniLibs")
+            jniLibs.srcDir brokerJni
+            jniLibs.srcDir v3Jni
+            jniLibs.srcDir new File(pipewireOutput, 'jniLibs')
+            assets.srcDir pipewireAssets
+        }
+    }
+}

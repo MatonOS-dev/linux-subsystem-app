@@ -95,7 +95,7 @@ static void *run_broker(void *data) {
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_matonos_compositor_runtime_NativeBroker_nativeStart(JNIEnv *env, jclass clazz,
+Java_org_matonos_linux_runtime_NativeBroker_nativeStart(JNIEnv *env, jclass clazz,
         jstring socket, jstring policy, jstring portal, jstring secret) {
     (void)clazz;
     pthread_mutex_lock(&g_lock);
@@ -121,7 +121,7 @@ Java_org_matonos_compositor_runtime_NativeBroker_nativeStart(JNIEnv *env, jclass
 }
 
 JNIEXPORT void JNICALL
-Java_org_matonos_compositor_runtime_NativeBroker_nativeStop(JNIEnv *env, jclass clazz) {
+Java_org_matonos_linux_runtime_NativeBroker_nativeStop(JNIEnv *env, jclass clazz) {
     (void)env;
     (void)clazz;
     pthread_mutex_lock(&g_lock);

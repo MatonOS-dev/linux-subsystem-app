@@ -27,7 +27,7 @@ public final class ForegroundManifestTest {
         if(!xml.contains("foregroundServiceType(0x01010599)="))throw new AssertionError("Missing framework resource ID for service type\n"+xml);
         if(!xml.contains("FOREGROUND_SERVICE_SPECIAL_USE")||!xml.contains("PROPERTY_SPECIAL_USE_FGS_SUBTYPE"))throw new AssertionError("Missing runtime foreground-service declaration");
         for(String service:new String[]{"StubService","InstallService"}) {
-            int name=xml.indexOf("org.matonos.compositor.stub."+service);
+            int name=xml.indexOf("org.matonos.linux.stub."+service);
             int begin=xml.lastIndexOf("E: service",name);
             int end=xml.indexOf("E: service",begin+1);
             String block=xml.substring(begin,end<0?xml.length():end);
@@ -36,7 +36,7 @@ public final class ForegroundManifestTest {
         }
         // The host loader replaces the shared-library class loader; the ABI
         // marker and extractNativeLibs are gone with it.
-        if(!xml.contains("appComponentFactory(0x0101057a)=\"org.matonos.compositor.stub.StubLoader\""))throw new AssertionError("Missing host StubLoader factory\n"+xml);
+        if(!xml.contains("appComponentFactory(0x0101057a)=\"org.matonos.linux.stub.StubLoader\""))throw new AssertionError("Missing host StubLoader factory\n"+xml);
         if(xml.contains("extractNativeLibs"))throw new AssertionError("extractNativeLibs must not be set\n"+xml);
         if(!xml.contains("org.matonos.linuxhost"))throw new AssertionError("Missing host uses-library\n"+xml);
         if (!xml.contains("org.matonos.systembridge"))

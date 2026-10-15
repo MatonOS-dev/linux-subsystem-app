@@ -32,5 +32,5 @@ if [[ -n ${COMPAT_BWRAP:-} ]]; then
 fi
 # App-stage validation now runs through the ordinary stub launcher so its
 # private HOME/cache, inherited app filter and deployment lease stay intact.
-# See linux/compositor/V3-LAUNCH.md; do not construct a root-owned app launch here.
+# See linux/subsystem/V3-LAUNCH.md; do not construct a root-owned app launch here.
 printf 'VM logs: %s\n'  "$logs"
