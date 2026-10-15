@@ -3,6 +3,8 @@ package org.matonos.linux;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageInfo;
+import android.content.ComponentName;
 import android.content.pm.PackageInstaller;
 import android.content.IntentSender;
 import android.graphics.Bitmap;
@@ -95,6 +97,10 @@ public final class LinuxAppStoreService extends Service {
         if (id==null || !id.matches("[A-Za-z0-9_-]{1,64}") || callback==null)
             throw new IllegalArgumentException("Invalid operation request");
         boolean privileged=checkCallingPermission(INSTALL)==PackageManager.PERMISSION_GRANTED;
+        if (!privileged && (kind.equals("install") || kind.equals("update"))) {
+            ref=authenticateStubRef(uid);
+            if (kind.equals("install")) remote="flathub";
+        }
         Operation op=new Operation(uid,id,kind,ref,remote,name,url,callback);
         String key=operationKey(uid,id);
         if(operations.putIfAbsent(key,op)!=null) throw new IllegalArgumentException("Operation ID already active for caller");
@@ -185,6 +191,31 @@ public final class LinuxAppStoreService extends Service {
 
     private int stubUid(String ref) throws Exception {
         return getPackageManager().getApplicationInfo(packageFor(ref),0).uid;
+    }
+
+    private String authenticateStubRef(int uid) {
+        try {
+            PackageManager manager=getPackageManager();
+            String[] packages=manager.getPackagesForUid(uid);
+            if (packages==null || packages.length!=1) throw new SecurityException("Stub UID must own exactly one package");
+            PackageInfo info=manager.getPackageInfo(packages[0],PackageManager.GET_SIGNING_CERTIFICATES);
+            if (info.applicationInfo==null || info.signingInfo==null || info.signingInfo.hasMultipleSigners())
+                throw new SecurityException("Stub must have exactly one signing certificate");
+            android.content.pm.Signature[] signers=info.signingInfo.getApkContentsSigners();
+            byte[] expected=org.matonos.linuxhost.stubgen.StubGenerator.getExistingSigningCertificate();
+            byte[][] encoded=signers==null?null:new byte[signers.length][];
+            if(encoded!=null) for(int i=0;i<signers.length;i++) encoded[i]=signers[i].toByteArray();
+            if(!StubSelfInstallIdentity.matches(uid,info.applicationInfo.uid,packages,encoded,expected))
+                throw new SecurityException("Caller is not a stub signed by this subsystem");
+            android.content.pm.ActivityInfo activity=manager.getActivityInfo(
+                    new ComponentName(packages[0],org.matonos.linuxhost.stubgen.StubGenerator.HOST_ACTIVITY),
+                    PackageManager.GET_META_DATA | PackageManager.MATCH_DISABLED_COMPONENTS);
+            String ref=activity.metaData==null?null:activity.metaData.getString(
+                    org.matonos.linuxhost.stubgen.StubGenerator.REF_META);
+            if(!StubSelfInstallIdentity.validRef(ref)) throw new SecurityException("Stub has no valid Flatpak ref");
+            return ref;
+        } catch(SecurityException error) { throw error; }
+        catch(Exception error) { throw new SecurityException("Cannot authenticate stub install request",error); }
     }
 
     private static String operationKey(int uid,String id) { return uid+":"+id; }

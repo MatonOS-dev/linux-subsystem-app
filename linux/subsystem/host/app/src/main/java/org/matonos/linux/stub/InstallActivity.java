@@ -23,17 +23,11 @@ public class InstallActivity extends Activity {
         super.onCreate(state);
         String operation = getIntent().getStringExtra(EXTRA_OPERATION_ID);
         final String operationId = operation == null ? "" : operation;
-        final String pkg = getPackageName();
         Intent store = new Intent().setClassName("org.matonos.linux", "org.matonos.linux.LinuxAppStoreService");
         bindService(store, new android.content.ServiceConnection() {
             @Override public void onServiceConnected(android.content.ComponentName name, IBinder service) {
                 try {
                     ILinuxAppStore api=ILinuxAppStore.Stub.asInterface(service);
-                    android.content.pm.ActivityInfo activity=getPackageManager().getActivityInfo(
-                            new android.content.ComponentName(pkg,"org.matonos.linux.stub.StubActivity"),
-                            android.content.pm.PackageManager.GET_META_DATA | android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS);
-                    String ref=activity.metaData.getString("org.matonos.linux.FLATPAK_REF");
-                    if(ref==null)throw new IllegalStateException("Stub has no Flatpak ref");
                     ILinuxAppStoreCallback callback=new ILinuxAppStoreCallback.Stub() {
                         @Override public void onProgress(String id,String phase,int percent,long done,long total) { }
                         @Override public void onResult(String id,boolean ok,String error) {
