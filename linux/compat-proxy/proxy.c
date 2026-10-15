@@ -564,7 +564,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_encode_syscall(PROXY_SC_ppoll);
         ARCH_CONTEXT(uc,ARCH_ARG2)=0;ARCH_CONTEXT(uc,ARCH_ARG3)=0;
         ARCH_CONTEXT(uc,ARCH_ARG4)=8;arch_restart_syscall(uc);
-        proxy_log("android-poll-retry",nr,0);goto clean_mask;
+        if(proxy_trace)proxy_log("android-poll-retry",nr,0);
+        goto clean_mask;
     }
     /* Metadata/ownership descriptors are capabilities, never payload I/O. */
     switch(nr){
@@ -709,7 +710,8 @@ clone_retry:
         ARCH_CONTEXT(uc,ARCH_ARG0)=a[0]&~(long)(NS_FLAGS|CLONE_VFORK|((a[0]&CLONE_VFORK)?CLONE_VM:0));
         proxy_clone_resume=ARCH_CONTEXT(uc,ARCH_PC);
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_encode_syscall(nr);ARCH_CONTEXT(uc,ARCH_PC)=(uintptr_t)proxy_clone_entry;
-        proxy_log("ours-clone-retry",nr,0);goto clean_mask;
+        if(proxy_trace)proxy_log("ours-clone-retry",nr,0);
+        goto clean_mask;
     case PROXY_SC_clone3:result=-ENOSYS;break; /* libc falls back to clone. */
     case PROXY_SC_execve:case PROXY_SC_execveat: {
         const char *path=(const char *)(uintptr_t)a[nr==PROXY_SC_execve?0:1];

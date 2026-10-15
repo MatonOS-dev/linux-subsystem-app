@@ -23,6 +23,7 @@ int proxy_dns_socket(const char *);
 int proxy_mount(const char *, const char *);
 const char *proxy_path(const char *, char *, size_t);
 void proxy_log(const char *, long, long);
+extern int proxy_trace;
 size_t p_len(const char *);
 void p_copy(void *, const void *, size_t);
 int p_equal(const char *,const char *);
