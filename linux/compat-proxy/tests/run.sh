@@ -170,3 +170,5 @@ bash tests/cross-exec.sh
 
 MATON_V3_ANDROID_OUT="$PWD/build/android-test" bash build-android.sh
 python3 tests/packaging.py
+
+bash tests/exec-errors.sh

@@ -1091,7 +1091,10 @@ TLS and raw entry ABI; the core remains common-ID C.
 
 To add another architecture, implement its number tables, raw/entry/clone/
 sigreturn gateways, ELF/ucontext/TLS and wire adapters, peer class/name hooks
-(`arch/exec.h`), and an inherited filter backend selected through
+(`arch/exec.h`): declare `ARCH_ELF_CLASS`/`ARCH_ELF_MACHINE` and
+`ARCH_PEER_ELF_CLASS`/`ARCH_PEER_ELF_MACHINE` in the backend, with the peer
+loader names. `arch_exec_class()` in `arch/exec.h` classifies these pairs for
+both exec preflight and handoff. Also implement an inherited filter backend selected through
 `ARCH_FILTER_HEADER`. Add both AOSP policy branches and stable gateway PCs
 before permitting class handoff. Extend both build scripts and actual static,
 dynamic, signals/FP/TLS, fd/VFS, socket/IPC and bidirectional exec fixtures.
