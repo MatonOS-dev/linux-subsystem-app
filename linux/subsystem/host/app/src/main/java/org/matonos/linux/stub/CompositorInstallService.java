@@ -15,11 +15,10 @@ import org.matonos.systembridge.ICompositorInstall;
 import org.matonos.systembridge.ICompositorInstallCallback;
 
 /**
- * The System Bridge's install endpoint inside the compositor.
+ * The subsystem's install worker endpoint.
  *
- * <p>Only the authenticated bridge may drive this service: the caller UID must
- * be the bridge's own PackageManager UID, and the manifest additionally
- * requires {@code org.matonos.permission.SYSTEM_BRIDGE}. The service owns at
+ * <p>Only this app's own store coordinator may drive this service: the caller
+ * UID must match the app UID resolved through PackageManager. The service owns at
  * most one transaction, keeps a wake lock and the progress notification for its
  * lifetime, and never sees a caller-supplied path, loader flag or final
  * identity. Everything else lives in {@link InstallTransaction}.
@@ -28,7 +27,7 @@ public final class CompositorInstallService extends Service {
     private static final String TAG = "MatonInstall";
     private static final String CHANNEL = "linux-install";
     private static final int NOTIFICATION_ID = 3;
-    private static final String BRIDGE_PACKAGE = "org.matonos.systembridge";
+    private static final String SUBSYSTEM_PACKAGE = "org.matonos.linux";
     private static final String WAKE_LOCK = "MatonOS:CompositorInstall";
 
     private final Object lock = new Object();
@@ -38,7 +37,7 @@ public final class CompositorInstallService extends Service {
     private final ICompositorInstall.Stub binder = new ICompositorInstall.Stub() {
         @Override public void startInstall(ICompositorInstallCallback callback, String operationId,
                 String appRef, String remote) {
-            requireBridge();
+            requireSubsystem();
             InstallTransaction transaction = InstallTransaction.create(
                     CompositorInstallService.this, callback, operationId, appRef, remote);
             synchronized (lock) {
@@ -57,7 +56,7 @@ public final class CompositorInstallService extends Service {
         }
 
         @Override public void cancelInstall(String operationId) {
-            requireBridge();
+            requireSubsystem();
             InstallTransaction transaction;
             synchronized (lock) { transaction = active; }
             if (transaction != null) transaction.cancel(operationId);
@@ -76,16 +75,16 @@ public final class CompositorInstallService extends Service {
         super.onDestroy();
     }
 
-    /** The bridge's UID is authoritative; the permission only narrows the set. */
-    private void requireBridge() {
-        int bridge;
+    /** PackageManager, not caller supplied metadata, owns the service identity. */
+    private void requireSubsystem() {
+        int subsystem;
         try {
-            bridge = getPackageManager().getApplicationInfo(BRIDGE_PACKAGE, 0).uid;
+            subsystem = getPackageManager().getApplicationInfo(SUBSYSTEM_PACKAGE, 0).uid;
         } catch (PackageManager.NameNotFoundException missing) {
-            throw new SecurityException("System bridge is not installed");
+            throw new SecurityException("Linux Subsystem app is not installed");
         }
-        if (Binder.getCallingUid() != bridge)
-            throw new SecurityException("Only the System Bridge may install Linux applications");
+        if (Binder.getCallingUid() != subsystem)
+            throw new SecurityException("Only the Linux Subsystem app may run the installer");
     }
 
     private void beginForeground() {
