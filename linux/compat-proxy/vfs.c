@@ -150,14 +150,14 @@ static void fd_names_unlock(proxy_sigmask_t mask){
     __atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
 }
-void vfs_fd_close(int fd){
-    pack_close(fd);
+static void fd_name_close(int fd){
     proxy_sigmask_t mask=fd_names_lock();
     struct fd_name **p=&fd_names;while(*p && (*p)->fd!=fd)p=&(*p)->next;
     if(*p){struct fd_name *old=*p;*p=old->next;vfs_free(old->path);vfs_free(old);}
     fd_names_unlock(mask);
 }
-void vfs_fd_dup(int from,int to){if(from==to)return;pack_dup(from,to);char *name=vfs_fd_name(from);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
+void vfs_fd_close(int fd){pack_close(fd);fd_name_close(fd);}
+void vfs_fd_dup(int from,int to){if(from==to)return;pack_dup(from,to);char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
 char *vfs_fd_name(int fd){
     char *published=links_fd_name(fd);if(published)return published;
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
@@ -526,7 +526,9 @@ void vfs_gpu_init(void){
 }
 
 #include "state.h"
+static void pack_state(struct state *);
 void vfs_state(struct state *s){
+ pack_state(s);
  state_string(s,&root);state_string(s,&cwd);state_string(s,&executable);
  stacked_oldroot=state_word(s,stacked_oldroot);hide_resolver=state_word(s,hide_resolver);
  for(unsigned i=0;i<2;i++)state_string(s,&gpu_poll_sources[i]);

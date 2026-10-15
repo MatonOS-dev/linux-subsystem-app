@@ -34,9 +34,10 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
     long fd=loader_open(resolved);
     if(fd<0){vfs_free(resolved);return fd;}
     struct proxy_stat st;
-    error=arch_stat_fd(fd,&st);
+    error=pack_stat(resolved,&st);
+    if(error==-ENOSYS)error=arch_stat_fd(fd,&st);
     if(!error && (!S_ISREG(st.st_mode) || !(st.st_mode&0111)))error=-EACCES;
-    if(!error)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
+    if(!error && pack_stat(resolved,&st)==-ENOSYS)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
     vfs_free(resolved);
     Elf64_Ehdr h={0};Elf32_Ehdr h32;
     if(error)goto done;
@@ -164,10 +165,12 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     char *resolved=vfs_resolve(AT_FDCWD,path,1,&path_error);
     if(!resolved)return (int)path_error;
     long fd=loader_open(resolved);
+    struct proxy_stat packed;int packed_status=pack_stat(resolved,&packed);
     vfs_free(resolved);
     if(bad(fd)) return (int)fd;
     struct proxy_stat executable;
-    int permission=arch_stat_fd(fd,&executable);
+    int permission=packed_status==-ENOSYS?arch_stat_fd(fd,&executable):packed_status;
+    if(!packed_status)executable=packed;
     if(!permission && (!S_ISREG(executable.st_mode) || !(executable.st_mode&0111)))permission=-EACCES;
     if(permission){loader_close(fd);return permission;}
     long got=pack_pread(fd,header,sizeof(header)-1,0);

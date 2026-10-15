@@ -29,4 +29,9 @@ static inline long arch_stat_fd(int fd,struct proxy_stat *out){
  if(!r)arch_stat_decode(out,&wire);
  return r;
 }
+static inline void arch_stat_synthesize(void *wire,uint32_t mode,uint32_t uid,uint32_t gid,uint64_t size,uint64_t ino){
+ struct stat *s=wire;*s=(struct stat){0};s->st_mode=mode;s->st_uid=uid;s->st_gid=gid;s->st_size=size;s->st_ino=ino;s->st_nlink=1;s->st_blksize=4096;
+}
+static inline int64_t arch_sendfile_offset(const void *wire){return *(const long *)wire;}
+static inline void arch_sendfile_result(void *wire,int64_t value){*(long *)wire=value;}
 #endif
