@@ -1,6 +1,7 @@
 plugins { id 'com.android.application' }
 
 dependencies {
+    implementation files('../../../stubgen/prebuilt/apksig.jar')
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test:runner:1.7.0'
     androidTestImplementation 'androidx.test.ext:junit:1.3.0'
@@ -102,6 +103,7 @@ android {
     ndkPath System.getenv('MATON_NDK') ?: "${System.getProperty('user.home')}/Documents/android-ndk-r30"
     sourceSets {
         main {
+            java.srcDirs += file('../../../stubgen/src')
             aidl.srcDirs += file("$rootDir/../../../systembridge/aidl")
             jniLibs.srcDirs += file(System.getenv('MATON_COMPOSITOR_JNI_LIBS') ?: "$aospRoot/out/matonos/compositor/jniLibs")
             jniLibs.srcDir brokerJni

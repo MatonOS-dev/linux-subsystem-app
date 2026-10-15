@@ -8,6 +8,7 @@ import android.os.Bundle;
 public final class ConfirmInstallActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_HIDES_OVERLAY_WINDOWS);
         String kind=getIntent().getStringExtra("kind");
         String ref=getIntent().getStringExtra("ref");
         String remote=getIntent().getStringExtra("remote");
@@ -20,16 +21,22 @@ public final class ConfirmInstallActivity extends Activity {
         }
         String item=(displayRef!=null?displayRef:(name==null?"remote":name))+(remote==null?"":" from "+remote);
         String action=(kind==null?"change":kind).replace("Remote"," remote");
-        new AlertDialog.Builder(this).setTitle("Allow Linux app store request?")
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Allow Linux app store request?")
                 .setMessage(caller+" wants to "+action+" "+item+".")
                 .setNegativeButton("Decline",(dialog,which)->finishRequest(false))
                 .setPositiveButton("Accept",(dialog,which)->finishRequest(true))
-                .setOnCancelListener(dialog->finishRequest(false)).show();
+                .setOnCancelListener(dialog->finishRequest(false)).create();
+        dialog.setOnShowListener(ignored->{
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setFilterTouchesWhenObscured(true);
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setFilterTouchesWhenObscured(true);
+            dialog.getWindow().getDecorView().setFilterTouchesWhenObscured(true);
+        });
+        dialog.show();
     }
 
     private void finishRequest(boolean accepted) {
         String id=getIntent().getStringExtra("operationId");
-        LinuxAppStoreService.confirmPending(id,accepted);
+        LinuxAppStoreService.confirmPending(getIntent().getIntExtra("callerUid",-1),id,accepted);
         finish();
     }
 }

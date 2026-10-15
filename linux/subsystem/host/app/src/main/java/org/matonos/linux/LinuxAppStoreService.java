@@ -3,6 +3,12 @@ package org.matonos.linux;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageInstaller;
+import android.content.IntentSender;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
@@ -10,6 +16,10 @@ import org.json.JSONObject;
 import org.matonos.systembridge.ICompositorInstallCallback;
 import org.matonos.systembridge.ILinuxd;
 import org.matonos.linux.stub.InstallTransaction;
+import org.matonos.linuxhost.stubgen.StubGenerator;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Map;
@@ -61,7 +71,7 @@ public final class LinuxAppStoreService extends Service {
             submit("removeRemote", null, null, name, null, id, cb);
         }
         @Override public void cancel(String id) {
-            int uid=Binder.getCallingUid(); Operation op=operations.get(id);
+            int uid=Binder.getCallingUid(); Operation op=operations.get(operationKey(uid,id));
             if(op==null || !StorePermissionPolicy.ownsOperation(op.uid,uid))
                 throw new SecurityException("Operation is not owned by caller");
             op.cancelled=true;
@@ -74,9 +84,9 @@ public final class LinuxAppStoreService extends Service {
 
     @Override public void onCreate() { super.onCreate(); instance=this; }
 
-    static void confirmPending(String id, boolean accepted) {
+    static void confirmPending(int uid, String id, boolean accepted) {
         LinuxAppStoreService service=instance;
-        if(service!=null) service.confirm(id,accepted);
+        if(service!=null) service.confirm(uid,id,accepted);
     }
 
     private void submit(String kind, String ref, String remote, String name, String url,
@@ -86,23 +96,24 @@ public final class LinuxAppStoreService extends Service {
             throw new IllegalArgumentException("Invalid operation request");
         boolean privileged=checkCallingPermission(INSTALL)==PackageManager.PERMISSION_GRANTED;
         Operation op=new Operation(uid,id,kind,ref,remote,name,url,callback);
-        if(operations.putIfAbsent(id,op)!=null) throw new IllegalArgumentException("Operation ID already active");
+        String key=operationKey(uid,id);
+        if(operations.putIfAbsent(key,op)!=null) throw new IllegalArgumentException("Operation ID already active for caller");
         boolean needsConfirm=kind.equals("addRemote") || kind.equals("removeRemote")
                 ? StorePermissionPolicy.remoteMutation(privileged)==StorePermissionPolicy.Decision.CONFIRM
                 : StorePermissionPolicy.packageOperation(privileged)==StorePermissionPolicy.Decision.CONFIRM;
         if(needsConfirm) {
-            pending.put(id,op);
+            pending.put(key,op);
             Intent intent=new Intent(this,ConfirmInstallActivity.class)
                     .putExtra("operationId",id).putExtra("kind",kind).putExtra("ref",ref)
                     .putExtra("remote",remote).putExtra("name",name).putExtra("url",url)
-                    .putExtra("caller",callerLabel(uid)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    .putExtra("caller",callerLabel(uid)).putExtra("callerUid",uid).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
         } else worker.execute(()->execute(id,op));
     }
 
     /** Called only by the non-exported confirmation activity after explicit consent. */
-    void confirm(String id, boolean accepted) {
-        Operation op=pending.remove(id);
+    void confirm(int uid, String id, boolean accepted) {
+        Operation op=pending.remove(operationKey(uid,id));
         if(op==null) return;
         if(!accepted) { result(op,false,"Request declined"); return; }
         worker.execute(()->execute(id,op));
@@ -114,7 +125,7 @@ public final class LinuxAppStoreService extends Service {
             JSONObject args=new JSONObject(); String command;
             switch(op.kind) {
                 case "install": case "update": runStagedInstall(id,op); return;
-                case "uninstall": command="uninstall"; put(args,"ref",op.ref); put(args,"uid",stubUid(op.ref)); put(args,"deleteData",false); put(args,"operationId",id); break;
+                case "uninstall": uninstallStub(op); return;
                 case "addRemote":
                     if(!"flathub".equals(op.name) || (op.url!=null && !op.url.isEmpty() && !"https://dl.flathub.org/repo/flathub.flatpakrepo".equals(op.url)))
                         throw new IllegalArgumentException("Only the configured Flathub remote is supported");
@@ -148,8 +159,8 @@ public final class LinuxAppStoreService extends Service {
                     JSONObject args=new JSONObject(); put(args,"operationId",operationId);
                     args.put("manifest",new JSONObject(manifest));
                     JSONObject reply=new JSONObject(linuxd().call("verify_staged_install",args.toString()));
-                    boolean ok=reply.optBoolean("ok",false);
-                    result(op,ok,ok?null:reply.optString("error","Staged install verification failed"));
+                    if(!reply.optBoolean("ok",false)) throw new IllegalStateException(reply.optString("error","Staged install verification failed"));
+                    installFinalStub(op);
                 } catch(Exception e) { result(op,false,e.getMessage()); }
             }
             @Override public void onFailed(String operationId,String error) {
@@ -174,6 +185,73 @@ public final class LinuxAppStoreService extends Service {
 
     private int stubUid(String ref) throws Exception {
         return getPackageManager().getApplicationInfo(packageFor(ref),0).uid;
+    }
+
+    private static String operationKey(int uid,String id) { return uid+":"+id; }
+
+    private void installFinalStub(Operation op) throws Exception {
+        String pkg=packageFor(op.ref), remote="install".equals(op.kind)?op.remote:remoteFor(op.ref);
+        JSONObject handoff=new JSONObject(); put(handoff,"ref",op.ref); put(handoff,"remote",remote); put(handoff,"operationId",op.id);
+        JSONObject meta=new JSONObject(linuxd().call("pending_metadata",handoff.toString()));
+        JSONObject entry=new JSONObject(linuxd().call("pending_desktop",handoff.toString()));
+        if(!meta.optBoolean("ok")||!entry.optBoolean("ok")) throw new IllegalStateException("Staged Flatpak metadata unavailable");
+        JSONObject iconReply=new JSONObject(linuxd().call("pending_icon",handoff.toString()));
+        byte[] icon=null;
+        if(iconReply.optBoolean("ok")) try { icon=android.util.Base64.decode(iconReply.optString("output"),android.util.Base64.DEFAULT); } catch(Exception ignored) { }
+        if(icon==null||icon.length==0) icon=fallbackIcon();
+        File work=new File(getCacheDir(),"flatpak-stubs"); if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create stub scratch directory");
+        File desktop=new File(work,pkg+".desktop"), apk=new File(work,pkg+".apk");
+        try {
+            try(FileOutputStream out=new FileOutputStream(desktop)){out.write(entry.getString("output").getBytes(StandardCharsets.UTF_8));}
+            StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(meta.getString("output")),pkg,apk,null,null);
+            PackageInstaller installer=getPackageManager().getPackageInstaller();
+            PackageInstaller.SessionParams params=new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+            params.setAppPackageName(pkg); params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+            int sessionId=installer.createSession(params);
+            try(PackageInstaller.Session session=installer.openSession(sessionId)) {
+                try(FileInputStream input=new FileInputStream(apk); java.io.OutputStream output=session.openWrite("base.apk",0,apk.length())) {
+                    byte[] buffer=new byte[32768]; int count; while((count=input.read(buffer))!=-1)output.write(buffer,0,count); session.fsync(output);
+                }
+                session.commit(new IntentSender((android.content.IIntentSender)new android.content.IIntentSender.Stub(){
+                    @Override public void send(int code,Intent intent,String type,IBinder token,android.content.IIntentReceiver receiver,String permission,android.os.Bundle options) { worker.execute(()->finishStubInstall(op,remote,pkg,intent)); }
+                }));
+            } catch(Exception e){installer.abandonSession(sessionId); throw e;}
+        } finally { desktop.delete(); apk.delete(); }
+    }
+
+    private void finishStubInstall(Operation op,String remote,String pkg,Intent intent) {
+        try {
+            if(intent==null||intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
+                throw new IllegalStateException(intent==null?"Stub install failed":intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
+            JSONObject bind=new JSONObject(); put(bind,"ref",op.ref); put(bind,"remote",remote); put(bind,"operationId",op.id); put(bind,"uid",stubUid(op.ref)); put(bind,"packageName",pkg);
+            JSONObject bound=new JSONObject(linuxd().call("bind_pending",bind.toString()));
+            if(!bound.optBoolean("ok"))throw new IllegalStateException(bound.optString("error","Stub binding failed"));
+            getPackageManager().setComponentEnabledSetting(new android.content.ComponentName(pkg,StubGenerator.HOST_ACTIVITY),PackageManager.COMPONENT_ENABLED_STATE_ENABLED,PackageManager.DONT_KILL_APP);
+            linuxd().call("install_complete",new JSONObject().put("ref",op.ref).put("remote",remote).put("operationId",op.id).toString());
+            result(op,true,null);
+        } catch(Exception e) {
+            try { linuxd().call("install_failed",new JSONObject().put("ref",op.ref).put("remote",remote).put("operationId",op.id).put("error",e.toString()).toString()); } catch(Exception ignored) { }
+            result(op,false,e.getMessage());
+        }
+    }
+
+    private void uninstallStub(Operation op) throws Exception {
+        String pkg=packageFor(op.ref); int uid=stubUid(op.ref);
+        JSONObject args=args("ref",op.ref); put(args,"uid",uid); put(args,"deleteData",false); put(args,"operationId",op.id);
+        JSONObject reply=new JSONObject(linuxd().call("uninstall",args.toString()));
+        if(!reply.optBoolean("ok")) throw new IllegalStateException(reply.optString("error","Uninstall failed"));
+        getPackageManager().getPackageInstaller().uninstall(pkg,new IntentSender((android.content.IIntentSender)new android.content.IIntentSender.Stub(){
+            @Override public void send(int code,Intent intent,String type,IBinder token,android.content.IIntentReceiver receiver,String permission,android.os.Bundle options) {
+                int status=intent==null?PackageInstaller.STATUS_FAILURE:intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE);
+                result(op,status==PackageInstaller.STATUS_SUCCESS,status==PackageInstaller.STATUS_SUCCESS?null:intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
+            }
+        }));
+    }
+
+    private byte[] fallbackIcon() {
+        Bitmap bitmap=Bitmap.createBitmap(96,96,Bitmap.Config.ARGB_8888); Canvas canvas=new Canvas(bitmap); canvas.drawColor(Color.rgb(55,95,45));
+        Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG); paint.setColor(Color.WHITE); paint.setTextSize(52); paint.setTextAlign(Paint.Align.CENTER); canvas.drawText("L",48,67,paint);
+        java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG,100,out); bitmap.recycle(); return out.toByteArray();
     }
 
     private static String packageFor(String ref) throws Exception {
@@ -237,7 +315,7 @@ public final class LinuxAppStoreService extends Service {
         if(!op.completed.compareAndSet(false,true)) return;
         try { op.callback.onResult(op.id,ok,error); }
         catch(Exception e) { Log.w(TAG,"Cannot deliver store result",e); }
-        operations.remove(op.id,op);
+        operations.remove(operationKey(op.uid,op.id),op); pending.remove(operationKey(op.uid,op.id),op);
     }
 
     @Override public void onDestroy() { instance=null; worker.shutdownNow(); super.onDestroy(); }

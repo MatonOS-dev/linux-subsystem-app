@@ -58,7 +58,7 @@ public final class StubGenerator {
     public static final String RUNTIME_REF_META = "org.matonos.linuxhost.RUNTIME_REF";
     /** Runtime OSTree commit checksum (64 lowercase hex chars). */
     public static final String RUNTIME_COMMIT_META = "org.matonos.linuxhost.RUNTIME_COMMIT";
-    private static final String KEY_ALIAS = "matonos_flatpak_stub_v1";
+    private static final String KEY_ALIAS = "org.matonos.linux.flatpak_stub_v1";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
     private static final long MAX_DESKTOP_BYTES = 1024 * 1024;
 
