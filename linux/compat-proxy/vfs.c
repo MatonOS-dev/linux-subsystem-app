@@ -157,7 +157,7 @@ static void fd_name_close(int fd){
     fd_names_unlock(mask);
 }
 void vfs_fd_close(int fd){pack_close(fd);fd_name_close(fd);}
-void vfs_fd_dup(int from,int to){if(from==to)return;pack_dup(from,to);char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}}
+long vfs_fd_dup(int from,int to){if(from==to)return 0;long e=pack_dup(from,to);if(e)return e;char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}return 0;}
 char *vfs_fd_name(int fd){
     char *published=links_fd_name(fd);if(published)return published;
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;

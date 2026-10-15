@@ -65,7 +65,7 @@ long pack_mount(const char *target,const char *index,const char *directory){
  m->next=pack_mounts;pack_mounts=m;return 0;
 }
 void pack_close(int fd){struct pack_fd **p=&pack_fds;while(*p&&(*p)->fd!=fd)p=&(*p)->next;if(*p){struct pack_fd *old=*p;*p=old->next;vfs_free(old);}}
-void pack_dup(int from,int to){if(from==to)return;struct pack_fd *f=pack_find(from);struct pack_fd copy;if(f)copy=*f;pack_close(to);if(f){f=vfs_alloc(sizeof(*f));if(!f)return;*f=copy;f->fd=to;f->next=pack_fds;pack_fds=f;}}
+long pack_dup(int from,int to){if(from==to)return 0;struct pack_fd *f=pack_find(from);struct pack_fd copy;if(f)copy=*f;pack_close(to);if(f){f=vfs_alloc(sizeof(*f));if(!f)return -ENOMEM;*f=copy;f->fd=to;f->next=pack_fds;pack_fds=f;}return 0;}
 long pack_open(const char *path,int flags){
  struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;
  if(flags&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC) || (flags&O_TMPFILE)==O_TMPFILE)return -EROFS;
@@ -83,12 +83,30 @@ long pack_open(const char *path,int flags){
  *f=(struct pack_fd){pack_fds,fd,m,o};pack_fds=f;return fd;
 }
 long pack_pread(int fd,void *buf,size_t size,int64_t off){struct pack_fd *f=pack_find(fd);if(!f)return RAW(PROXY_SC_pread64,fd,buf,size,off,0,0);if(off<0)return -EINVAL;if(!p_equal(f->object.kind,"file"))return -EISDIR;if((uint64_t)off>=f->object.length)return 0;uint64_t left=f->object.length-off;if(size>left)size=left;return RAW(PROXY_SC_pread64,fd,buf,size,f->object.offset+off,0,0);}
+static long pack_access(const mtp_object *o,int mode,int effective){
+ if(mode&~7)return -EINVAL;
+ if(mode&W_OK)return -EROFS;
+ if(!mode)return 0;
+ long uid=RAW(effective?PROXY_SC_geteuid:PROXY_SC_getuid,0,0,0,0,0,0);
+ if(!uid)return (mode&X_OK)&&!(o->mode&0111)?-EACCES:0;
+ long gid=RAW(effective?PROXY_SC_getegid:PROXY_SC_getgid,0,0,0,0,0,0);int group=(uint32_t)gid==o->gid;
+ if(!group && (uint32_t)uid!=o->uid){
+  long count=RAW(PROXY_SC_getgroups,0,0,0,0,0,0);if(count<0)return count;
+  if((uint64_t)count>SIZE_MAX/sizeof(uint32_t))return -EOVERFLOW;
+  uint32_t *groups=vfs_alloc(count*sizeof(*groups));if(!groups)return -ENOMEM;
+  long n=RAW(PROXY_SC_getgroups,count,groups,0,0,0,0);if(n<0){vfs_free(groups);return n;}
+  for(long i=0;i<n;i++)if(groups[i]==o->gid)group=1;
+  vfs_free(groups);
+ }
+ unsigned bits=(uint32_t)uid==o->uid?(o->mode>>6):group?(o->mode>>3):o->mode;
+ return (bits&(unsigned)mode)==(unsigned)mode?0:-EACCES;
+}
 long pack_path(long nr,proxy_arg_t *a,const char *path,int *handled){
  struct pack_mount *m=pack_lookup(path);*handled=m!=NULL;if(!m)return 0;
  switch(nr){case PROXY_SC_openat:return pack_open(path,a[2]);
  case PROXY_SC_newfstatat:case PROXY_SC_statx:{mtp_object o;long e=pack_object(m,path,&o);if(!e)pack_metadata(&o,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx);return e;}
  case PROXY_SC_readlinkat:{mtp_object o;long e=pack_object(m,path,&o);if(e)return e;if(!p_equal(o.kind,"symlink"))return -EINVAL;size_t n=p_len(o.target);if(n>(size_t)a[3])n=a[3];p_copy((void *)(uintptr_t)a[2],o.target,n);return n;}
- case PROXY_SC_faccessat:case PROXY_SC_faccessat2:{if(a[2]&~7)return -EINVAL;mtp_object o;long e=pack_object(m,path,&o);if(e)return e;if(a[2]&W_OK)return -EROFS;if((a[2]&X_OK)&&!(o.mode&0111))return -EACCES;return 0;}
+ case PROXY_SC_faccessat:case PROXY_SC_faccessat2:{if(a[2]&~7)return -EINVAL;mtp_object o;long e=pack_object(m,path,&o);if(e)return e;return pack_access(&o,a[2],nr==PROXY_SC_faccessat2&&(a[3]&AT_EACCESS));}
  default:return -EROFS;
  }
 }

@@ -1140,3 +1140,66 @@ private descriptor tests. Check missing/corrupt peer rejection and that
 ordinary boot/app startup is unaffected. Steam/Wine acceptance is not claimed.
 Legacy stat(106–108), old mmap argument blocks and the remaining time64/IPC-info
 wire variants from run 3 still need their separate portability coverage.
+
+### APK pack mounts (host fixture and trusted launcher API)
+
+```
+build/linux-layer-v3 --android-filter \
+  --pack-mount /packed /trusted/bundle/objects.index /trusted/bundle \
+  /packed/program
+python3 tests/pack-host.py
+```
+
+`pack_mount(target, index_path, pack_directory)` is the corresponding trusted
+launcher setup API. Mounts can be repeated. The launcher supplies all three
+arguments before payload entry; payload mount syscalls cannot create a pack
+mount. The index is loaded with the caller-buffer reader in `../packs/`, and
+referenced immutable APK-style ZIP files are opened read-only and pinned.
+No checkout, extraction of file payloads, kernel mount, or AOSP change occurs.
+Pack state is specific to this VFS feature, not a general virtual-fd layer.
+
+Opening an indexed regular file returns a real descriptor plus its indexed
+slice metadata. A new open reopens the pinned carrier through procfs before
+`F_DUPFD*`: duplicating the mount's one descriptor directly would incorrectly
+share a position between independent opens. Actual dup aliases, including
+aliases inherited through fork, share their position through the kernel.
+CLOEXEC, close/close_range and descriptor replacement update the slice table.
+Directory descriptors duplicate a pinned, empty, unlinked directory carrier;
+getdents64 synthesizes index children, with kernel-backed seek cookies shared
+by dup/fork aliases. Relative openat, chdir/fchdir and getcwd retain virtual
+names. Proc self/current-pid fd readlink exposes those names.
+
+Reads and vector reads clamp to the indexed EOF; positional I/O and mmap
+translate logical offsets to APK offsets with overflow checks. Vector offset
+encoding, iovec access and stat/statx output stay at the architecture boundary.
+Writable shared mappings fail with EACCES; file writes fail with EBADF.
+Indexed path metadata, access checks, symlinks and directory entries are
+synthetic; mutations return EROFS, including host-source rename/link into a
+pack. sendfile, copy_file_range and splice sources use chunked clamped reads;
+the chunk size does not limit the transfer length. Synthetic directories have
+size zero, nlink one and no stored timestamps; regular and symlink sizes,
+modes, uid/gid and checksum-derived inode identities come from the index.
+
+Same-class resident exec retains pack state. Peer-loader exec carries the
+index bytes, private carrier descriptors and surviving slice identities in
+the sealed version-2 state stream; payload CLOEXEC aliases are omitted.
+Both trusted siblings must be rebuilt together after this stream change.
+The existing VFS concurrency, user-pointer and containment limitations above
+also apply here. In particular, compound position/clamp operations are not a
+concurrent-I/O synchronization mechanism.
+
+**SCM_RIGHTS of pack descriptors is out of scope.** The real kernel descriptor
+can be transferred, but its index/slice metadata is not registered in the
+recipient. Do not send pack descriptors through SCM_RIGHTS expecting virtual
+file semantics; the recipient would see the underlying APK descriptor.
+
+`tests/pack-host.py` creates a real bare-user OSTree repository and uses
+`linux/packs/pack.py` to produce page-aligned STORED ZIPs. Under the copied
+Android filter it executes packed static/dynamic binaries and a shebang,
+loads a packed shared library through ld.so, compares cat/sha256sum/dd output
+(including a >1 MiB payload), and compares ls -lnR metadata against a real
+OSTree checkout. Its C/ELF32 fixtures exercise relative directories, vector
+EOF, offsets, mmap, transfers, dup/fcntl/dup2/dup3, fork, same-class exec,
+x86_64 -> i386 -> x86_64 sealed handoff, CLOEXEC/close_range and EROFS.
+The standard `tests/run.sh` includes this acceptance test. No VM or AOSP build
+is needed; these are host compatibility tests, not device acceptance.

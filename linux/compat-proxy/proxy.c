@@ -576,10 +576,13 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_mmap:if(a[4]>=0 && vfs_private_fd(a[4])){result=-EBADF;goto finish;}break;
     case PROXY_SC_read:case PROXY_SC_write:case PROXY_SC_pread64:case PROXY_SC_pwrite64:
     case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
+    case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
     case PROXY_SC_fstat:case PROXY_SC_getdents64:
         if(vfs_private_fd(a[0])){result=-EBADF;goto finish;}break;
     default:break;
     }
+    if((nr==PROXY_SC_sendfile && (vfs_private_fd(a[0])||vfs_private_fd(a[1]))) ||
+       ((nr==PROXY_SC_copy_file_range||nr==PROXY_SC_splice) && (vfs_private_fd(a[0])||vfs_private_fd(a[2])))){result=-EBADF;goto finish;}
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
     int packed=0;result=pack_call(nr,a,&packed);if(packed)goto finish;
@@ -607,7 +610,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
         if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&vfs_private_fd((int)a[1]))){result=-EBADF;break;}
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=links_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);links_close((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);vfs_fd_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=links_dup((int)a[0],(int)result);if(tracked>=0)tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);links_close((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}

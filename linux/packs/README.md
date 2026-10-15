@@ -56,3 +56,9 @@ entry metadata (kind, mode, uid, gid, checksum, payload location, xattrs and
 symlink target). A caller stats an entry from those returned metadata fields;
 directories and symlinks have no pack offset. The reader validates truncation
 and integer bounds while loading the index.
+
+The compat proxy consumes this reader through `mtp_index_open_buffer` with
+its own allocator. `MTP_FREESTANDING` omits only the libc file-opening wrapper
+and heap callbacks; hosted reader users keep the existing filename API.
+`../compat-proxy/tests/pack-host.py` exercises real index/ZIP mounts without
+extracting the payloads, including execution and dynamic shared-library mmap.
