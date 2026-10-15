@@ -16,6 +16,9 @@ final class StubSelfInstallIdentity {
     }
 
     static boolean validRef(String ref) {
-        return ref != null && ref.matches("app/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+");
+        if (ref == null || !ref.matches("app/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")) return false;
+        String[] parts=ref.split("/",-1);
+        for (String part : parts) if (part.equals(".") || part.equals("..")) return false;
+        return true;
     }
 }
