@@ -1,6 +1,6 @@
 Target architecture: x86_64
 
-Built by MatonOS-dev/MatonOS_apexs 53214ff flatpak/build.sh (bionic, NDK r30, API 36).
+Built by MatonOS-dev/MatonOS_apexs 30bbae8 flatpak/build.sh (bionic, NDK r30, API 36).
 
 flatpak-bionic source manifest
 # name|kind|location|revision-or-version|sha256
@@ -10,7 +10,7 @@ glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08
 ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-
 ostree-libglnx|git|https://github.com/GNOME/libglnx.git|b415d046880d585e5161bf230590543adeea4fe6|-
 ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462ef9e2657ca4ccd7667|-
-flatpak|git|https://github.com/MatonOS-dev/flatpak|a1a11b2451edfff78e2d1f8b034d4d5beae6d6ca|-
+flatpak|git|https://github.com/MatonOS-dev/flatpak|9470225514853e2077437996d3e254af836600da|-
 flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
 variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
 bionic-fill|git|https://github.com/MatonOS-dev/bionic-fill.git|a8b3eef4b3f74e27eb0b16a339a106660938af03|-
@@ -32,7 +32,7 @@ pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pc
 e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
 gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
 
-4a5a48efc960dfcb1300e297e69e88655a025a650aa1a6f3936c3f5f21c2261e  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak
+8735b1f7980c8dbfda474b992fb063cf2739b854739923cfd55b0aa029bb4258  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak
 99a0bad96b97f4a0afa7bf9d63857ef1e27cac4aa2f6f388e94304414e8cc29a  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/flatpak-env-wrapper
 6e7c8b8a65bb9786b38443a224ad5a9eae5b0a2c18b698ee9f0a53587626c88f  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak-store
 
