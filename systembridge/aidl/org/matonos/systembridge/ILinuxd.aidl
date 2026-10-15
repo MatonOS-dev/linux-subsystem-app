@@ -1,10 +1,10 @@
 package org.matonos.systembridge;
 
-import org.matonos.systembridge.ILinuxdIdentity;
+import org.matonos.systembridge.ILinuxdListener;
 
 interface ILinuxd {
-    /** Internal linuxd maintenance and authenticated identity lookup only. */
+    /** Flatpak install, verify, publish, bind, uninstall and inventory operations. */
     String call(String command, String jsonArgs);
-    /** Bridge-only live PackageManager identity provider.  */
-    void registerIdentity(ILinuxdIdentity identity);
+    void subscribe(String topic, ILinuxdListener listener);
+    void unsubscribe(String topic, ILinuxdListener listener);
 }
