@@ -28,9 +28,10 @@ long proxy_file_mmap(proxy_arg_t *a) {
     long r=pack_call(PROXY_SC_mmap,a,&handled);
     if(!handled)r=RAW(PROXY_SC_mmap,a[0],a[1],a[2],a[3],a[4],a[5]);
     if(r!=-EACCES && r!=-EPERM)return r;
-    if((a[3]&MAP_SHARED) || !(a[3]&MAP_PRIVATE))return r;
+    if((a[3]&MAP_SHARED) && (a[2]&PROT_WRITE))return r;
+    if(!(a[3]&(MAP_SHARED|MAP_PRIVATE)))return r;
     long area=RAW(PROXY_SC_mmap,a[0],a[1],PROT_READ|PROT_WRITE,
-                  a[3]|MAP_ANONYMOUS,-1,0);
+                  (a[3]&~(MAP_SHARED|MAP_PRIVATE))|MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if((unsigned long)area>=(unsigned long)-4095)return area;
     size_t done=0;
     while(done<(size_t)a[1]){
@@ -42,7 +43,19 @@ long proxy_file_mmap(proxy_arg_t *a) {
     }
     r=RAW(PROXY_SC_mprotect,area,a[1],a[2],0,0,0);
     if(r<0)goto failed;
-    proxy_log("exec-mmap-copy",a[4],0);
+    struct proxy_stat st;
+    struct copy_log {struct copy_log *next;uint64_t dev,ino,slice;};
+    static struct copy_log *logs;
+    if(!arch_stat_fd(a[4],&st)){
+        uint64_t slice=pack_slice_start(a[4]);
+        struct copy_log *l=logs;
+        while(l && (l->dev!=st.st_dev || l->ino!=st.st_ino || l->slice!=slice))l=l->next;
+        if(!l){
+            l=vfs_alloc(sizeof(*l));
+            if(l){*l=(struct copy_log){logs,st.st_dev,st.st_ino,slice};logs=l;}
+            proxy_log("exec-mmap-copy",a[4],0);
+        }
+    }
     return area;
 failed:
     RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;

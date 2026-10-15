@@ -1205,3 +1205,16 @@ EOF, offsets, mmap, transfers, dup/fcntl/dup2/dup3, fork, same-class exec,
 x86_64 -> i386 -> x86_64 sealed handoff, CLOEXEC/close_range and EROFS.
 The standard `tests/run.sh` includes this acceptance test. No VM or AOSP build
 is needed; these are host compatibility tests, not device acceptance.
+
+ELF PT_LOAD segments now use private file mappings, including APK carrier
+slices, when page-congruent. BSS tails are COW-zeroed and full BSS pages are
+anonymous. Permission refusals (EACCES/EPERM) retry through a writable anonymous
+copy followed by the requested protection; noncongruent ELF segments retain
+the copy path. Intercepted executable file mmaps use the same refusal retry.
+Read-only shared requests fall back to private copies; writable shared requests
+never do. A fallback diagnostic is emitted once per backing inode/slice in the
+resident process. Copies do not track later file changes or emulate SIGBUS on
+pages beyond EOF. Normal successful mappings retain kernel file semantics.
+`tests/loader-maps.py` inspects two live processes' real maps/smaps for clean
+file-backed text and uses kernel seccomp EACCES/EPERM injection for both loader
+classes, resident exec, dynamic linker mmaps and pack-backed main binaries.

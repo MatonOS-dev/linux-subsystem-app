@@ -174,3 +174,5 @@ python3 tests/packaging.py
 bash tests/exec-errors.sh
 
 python3 tests/pack-host.py
+
+python3 tests/loader-maps.py

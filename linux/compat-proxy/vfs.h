@@ -45,3 +45,4 @@ int pack_stat(const char *,struct proxy_stat *);
 #endif
 
 long proxy_file_mmap(proxy_arg_t *);
+uint64_t pack_slice_start(int);

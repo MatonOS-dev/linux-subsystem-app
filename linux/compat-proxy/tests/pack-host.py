@@ -10,6 +10,7 @@ run('cc','-m32','-nostdlib','-static','-no-pie',base/'tests/pack-peer.S','-o',sr
 run('cc','-static','-O2','-Wall','-Wextra','-Werror',base/'tests/pack-vfd.c','-o',src/'probe')
 (root/'static.c').write_text('#include <stdio.h>\nint main(void){puts("static pack ELF PASS");return 0;}\n')
 run('cc','-static',root/'static.c','-o',src/'static')
+run('cc',base/'tests/loader-maps.c','-o',src/'maps')
 (root/'lib.c').write_text('int pack_answer(void){return 42;}\n')
 (root/'dynamic.c').write_text('#include <stdio.h>\nextern int pack_answer(void);int main(void){if(pack_answer()!=42)return 1;puts("dynamic pack ELF + .so mmap PASS");return 0;}\n')
 run('cc','-shared','-fPIC',root/'lib.c','-o',src/'lib/libfixture.so')
