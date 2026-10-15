@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Deterministic OSTree object pack writer (Python 3, host side)."""
-import argparse, hashlib, json, os, pathlib, shutil, struct, subprocess, sys, tempfile, zipfile
+import argparse, hashlib, json, pathlib, shutil, struct, tempfile, zipfile
+import ostree_source
 
 MAGIC = b'MTPKIDX1'
 PAGE = 4096
 
-def run(*args):
-    return subprocess.run(args, check=True, stdout=subprocess.PIPE).stdout
 
 def align_extra(name, header_offset):
     # ZIP extra fields: private ID 0x4d54, then zero bytes for local alignment.
@@ -33,35 +32,31 @@ def save_index(path, records):
     with open(path, 'wb') as f:
         f.write(MAGIC + struct.pack('<I', len(records)))
         for r in sorted(records, key=lambda x: x['path'].encode()):
-            for k in ('path', 'checksum', 'pack'):
+            for k in ('path', 'checksum', 'pack', 'kind', 'target'):
                 b = r[k].encode(); f.write(struct.pack('<I', len(b))); f.write(b)
             xb = bytes.fromhex(r.get('xattrs', ''))
             f.write(struct.pack('<I', len(xb))); f.write(xb)
             f.write(struct.pack('<QQIII', r['offset'], r['length'], r['uid'], r['gid'], r['mode']))
 
-def files_at(root):
-    out=[]
-    for p in sorted(pathlib.Path(root).rglob('*')):
-        rel='/' + p.relative_to(root).as_posix()
-        st=p.lstat()
-        if not p.is_file() or p.is_symlink():
-            continue
-        data=p.read_bytes(); checksum=hashlib.sha256(data).hexdigest()
-        try: xa=os.getxattr(p, 'user.ostreemeta').hex()
-        except OSError: xa=''
-        out.append(dict(path=rel, checksum=checksum, source=str(p), uid=st.st_uid,
-                        gid=st.st_gid, mode=st.st_mode, xattrs=xa))
-    return out
+def files_at(repo, commit, payload_dir):
+    records, objects = ostree_source.walk_commit(repo, commit, payload_dir)
+    # The base metadata blob preserves the canonical commit, dirtree and
+    # dirmeta encodings so a reader can walk/verify the original OSTree tree.
+    return records, objects
 
-def export_commit(repo, commit, tmp):
-    run('ostree', 'checkout', '--user-mode', '--force-copy', '--repo='+repo,
-        commit, str(tmp / 'tree'))
-    return tmp / 'tree'
+def save_metadata(path, objects):
+    with open(path, 'wb') as f:
+        f.write(b'MTPKOBJ1' + struct.pack('<I', len(objects)))
+        for checksum, raw in sorted(objects.items()):
+            f.write(bytes.fromhex(checksum) + struct.pack('<Q', len(raw)) + raw)
+
 
 def make_packs(records, out, pack_size):
     # Directory locality; pack size is a target, never a hard limit.
     groups={}
-    for r in records: groups.setdefault(str(pathlib.PurePosixPath(r['path']).parent), []).append(r)
+    unique={}
+    for r in records: unique.setdefault(r['checksum'], r)
+    for r in unique.values(): groups.setdefault(str(pathlib.PurePosixPath(r['path']).parent), []).append(r)
     batches=[]; cur=[]; size=0
     for directory in sorted(groups):
         for r in sorted(groups[directory], key=lambda x:x['path']):
@@ -73,16 +68,22 @@ def make_packs(records, out, pack_size):
         tmp=out / '.pack.tmp.zip'; zip_pack(tmp, batch)
         digest=hashlib.sha256(tmp.read_bytes()).hexdigest(); dest=out / ('pack-'+digest+'.zip')
         tmp.replace(dest)
-        for r in batch: r['pack']=dest.name
+        for r in batch:
+            r['pack']=dest.name
+            for alias in records:
+                if alias['checksum']==r['checksum']:
+                    alias.update(pack=r['pack'],offset=r['offset'],length=r['length'])
 
 def pack(args):
     out=pathlib.Path(args.out); out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as d:
-        root=export_commit(args.repo,args.commit,pathlib.Path(d))
-        records=files_at(root); make_packs(records,out,args.pack_size)
-        (out/'commit.ostree').write_bytes(run('ostree','show','--raw','--repo='+args.repo,args.commit))
+        records, objects=files_at(args.repo,args.commit,pathlib.Path(d))
+        files=[r for r in records if r['kind']=='file']; make_packs(files,out,args.pack_size)
+        for r in records:
+            if r['kind']!='file': r.update(pack='',offset=0,length=0)
+        save_metadata(out/'objects.ostree',objects)
         save_index(out/'objects.index',records)
-        print(json.dumps({'objects':len(records),'bytes_written':sum(r['length'] for r in records)},sort_keys=True))
+        print(json.dumps({'objects':len(records),'metadata_objects':len(objects),'bytes_written':sum(r['length'] for r in files)},sort_keys=True))
 
 def read_index(path):
     # Kept in lockstep with reader.c; strict truncation and integer checks.
@@ -95,7 +96,7 @@ def read_index(path):
     count=struct.unpack('<I',take(4))[0]; out=[]
     for _ in range(count):
         r={}
-        for k in ('path','checksum','pack'):
+        for k in ('path','checksum','pack','kind','target'):
             n=struct.unpack('<I',take(4))[0]; r[k]=bytes(take(n)).decode()
         n=struct.unpack('<I',take(4))[0]; r['xattrs']=bytes(take(n)).hex()
         r['offset'],r['length'],r['uid'],r['gid'],r['mode']=struct.unpack('<QQIII',take(28))
@@ -107,46 +108,60 @@ def update(args):
     out=pathlib.Path(args.out); out.mkdir(parents=True,exist_ok=True)
     old=read_index(args.old_index)
     with tempfile.TemporaryDirectory() as d:
-        root=export_commit(args.repo,args.commit,pathlib.Path(d)); fresh=files_at(root)
-        old_by_path={x['path']:x for x in old}; fresh_by_path={x['path']:x for x in fresh}
+        fresh, objects=files_at(args.repo,args.commit,pathlib.Path(d))
         # A content checksum is content-addressed; unchanged objects keep their old pack.
         old_checksum={x['checksum']:x for x in old}
         records=[]; new=[]
         for r in fresh:
-            prior=old_checksum.get(r['checksum'])
+            prior=old_checksum.get(r['checksum']) if r['kind']=='file' else None
             if prior:
                 r.update(pack=prior['pack'],offset=prior['offset'],length=prior['length'])
-            else: new.append(r)
+            elif r['kind']=='file': new.append(r)
+            else: r.update(pack='',offset=0,length=0)
             records.append(r)
         if new:
             # Update's newly introduced objects are exactly one pack.
-            temp=out/'.new.zip'; zip_pack(temp,new)
+            unique_new=list({r['checksum']:r for r in new}.values())
+            temp=out/'.new.zip'; zip_pack(temp,unique_new)
             dest=out/('pack-'+hashlib.sha256(temp.read_bytes()).hexdigest()+'.zip'); temp.replace(dest)
-            for r in new:r['pack']=dest.name
+            for r in unique_new: r['pack']=dest.name
+            for r in new:
+                source=next(x for x in unique_new if x['checksum']==r['checksum'])
+                r.update(pack=source['pack'],offset=source['offset'],length=source['length'])
         # Repack touched packs only when dead-byte ratio reaches threshold.
         by_pack={}
         for x in old: by_pack.setdefault(x['pack'],[]).append(x)
         live={x['checksum'] for x in records}
-        written=sum(x['length'] for x in new); changed=written
+        unique_new=list({x['checksum']:x for x in new}.values())
+        written=sum(x['length'] for x in unique_new); changed=written
         for packname, members in by_pack.items():
+            members=list({x['checksum']:x for x in members}.values())
             live_members=[x for x in members if x['checksum'] in live]
             dead=sum(x['length'] for x in members if x['checksum'] not in live)
             total=sum(x['length'] for x in members)
-            if live_members and total and dead/total >= args.dead_ratio:
+            if live_members and total and dead and dead/total >= args.dead_ratio:
                 src=pathlib.Path(args.old_packs)/packname
                 with zipfile.ZipFile(src) as z:
                     for r in records:
                         if r['checksum'] in {x['checksum'] for x in live_members}:
                             extracted=pathlib.Path(d)/r['checksum']; extracted.write_bytes(z.read(r['checksum'])); r['source']=str(extracted)
                 rewrite=[r for r in records if r.get('pack')==packname]
-                tmp=out/'.rewrite.zip'; zip_pack(tmp,rewrite)
+                unique_rewrite=list({r['checksum']:r for r in rewrite}.values())
+                tmp=out/'.rewrite.zip'; zip_pack(tmp,unique_rewrite)
                 dest=out/('pack-'+hashlib.sha256(tmp.read_bytes()).hexdigest()+'.zip'); tmp.replace(dest)
-                size=sum(r['length'] for r in rewrite); written+=size
-                for r in rewrite:r['pack']=dest.name
-        (out/'commit.ostree').write_bytes(run('ostree','show','--raw','--repo='+args.repo,args.commit))
+                size=sum(r['length'] for r in unique_rewrite); written+=size
+                for r in unique_rewrite:r['pack']=dest.name
+                for r in rewrite:
+                    source=next(x for x in unique_rewrite if x['checksum']==r['checksum'])
+                    r.update(pack=dest.name,offset=source['offset'],length=source['length'])
+        # Make update output self-contained while retaining immutable old packs.
+        for packname in {r['pack'] for r in records if r['pack']}:
+            target=out/packname
+            if not target.exists(): shutil.copy2(pathlib.Path(args.old_packs)/packname,target)
+        save_metadata(out/'objects.ostree',objects)
         save_index(out/'objects.index',records)
         amp=(written/changed if changed else 0)
-        print(json.dumps({'bytes_written':written,'bytes_changed':changed,'write_amplification':amp,'new_objects':len(new)},sort_keys=True))
+        print(json.dumps({'bytes_written':written,'bytes_changed':changed,'write_amplification':amp,'new_objects':len(unique_new)},sort_keys=True))
 
 def main():
     ap=argparse.ArgumentParser(); sub=ap.add_subparsers(dest='cmd',required=True)

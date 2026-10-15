@@ -33,7 +33,7 @@ int mtp_index_open(const char *filename, mtp_index **out) {
     idx->count=n;idx->storage=b; const unsigned char *p=b+12,*end=b+z;
     for(uint32_t i=0;i<n;i++) {
         mtp_object *o=&idx->items[i]; const unsigned char *q;
-        if(string(&p,end,&o->path)||string(&p,end,&o->checksum)||string(&p,end,&o->pack)||take(&p,end,4,&q))goto fail;
+        if(string(&p,end,&o->path)||string(&p,end,&o->checksum)||string(&p,end,&o->pack)||string(&p,end,&o->kind)||string(&p,end,&o->target)||take(&p,end,4,&q))goto fail;
         o->xattrs_length=u32(q);if(take(&p,end,o->xattrs_length,&q))goto fail;o->xattrs=q;
         if(take(&p,end,28,&q))goto fail;
         o->offset=u64(q);o->length=u64(q+8);o->uid=u32(q+16);o->gid=u32(q+20);o->mode=u32(q+24);
@@ -43,13 +43,14 @@ int mtp_index_open(const char *filename, mtp_index **out) {
     return 0;
 fail: mtp_index_close(idx);return -1;
 }
-void mtp_index_close(mtp_index *i) { if(!i)return; for(size_t n=0;n<i->count;n++){free((void*)i->items[n].path);free((void*)i->items[n].checksum);free((void*)i->items[n].pack);}free(i->items);free(i->storage);free(i); }
+void mtp_index_close(mtp_index *i) { if(!i)return; for(size_t n=0;n<i->count;n++){free((void*)i->items[n].path);free((void*)i->items[n].checksum);free((void*)i->items[n].pack);free((void*)i->items[n].kind);free((void*)i->items[n].target);}free(i->items);free(i->storage);free(i); }
 size_t mtp_index_count(const mtp_index *i){return i?i->count:0;}
 int mtp_lookup(const mtp_index *i,const char *path,mtp_object *out) {
     if(!i||!path||!out)return -1;
     for(size_t n=0;n<i->count;n++)if(!strcmp(i->items[n].path,path)){*out=i->items[n];return 0;}
     return 1;
 }
+int mtp_stat(const mtp_index *i,const char *path,mtp_object *out) { return mtp_lookup(i,path,out); }
 int mtp_readdir(const mtp_index *i,const char *dir,size_t *cursor,const char **name,mtp_object *out) {
     if(!i||!dir||!cursor||!name)return -1;
     size_t dl=strlen(dir);

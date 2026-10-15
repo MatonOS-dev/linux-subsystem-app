@@ -1,51 +1,58 @@
 # OSTree APK packs (format v1)
 
-`pack.py` is a Python 3 host-tool prototype. It uses the `ostree` executable
-to check out a commit and emits a base index plus immutable ZIP content packs.
-`reader.c` is a small C99 reader for that index. Run `./tests/run.sh` for a
-two-commit fixture and update/replay tests.
+`pack.py` is a Python 3 host tool using PyGObject/libostree 2024.5. It reads
+real OSTree repositories in `bare-user` mode. `reader.c` is the C99 lookup
+library intended for the compat proxy. Run `./tests/run.sh` to generate a
+three-commit repo and verify checkout reconstruction and update replay.
 
-## Files and records
+## Base artifact
 
-The base artifact contains `commit.ostree` (the raw `ostree show --raw`
-output) and `objects.index` (the binary index described below). The index has
-magic `MTPKIDX1`, a little
-endian u32 record count, then records sorted by UTF-8 path bytes. Each record
-contains u32-length-prefixed path, checksum, pack filename and xattr blob,
-followed by little-endian u64 offset, u64 length, u32 uid, u32 gid and u32
-mode. The xattr blob is the `user.ostreemeta` value read from the checkout
-(empty when absent).
-Offsets point to file data, not ZIP headers; they are 4096-byte aligned.
+The base consists of `objects.ostree` and `objects.index`. `objects.ostree`
+starts with `MTPKOBJ1`, a little endian u32 object count, then records sorted
+by canonical checksum: 32 raw checksum bytes, little endian u64 object length,
+and the exact raw libostree object bytes. It contains the commit, every
+reachable dirtree, and every reachable dirmeta object, unchanged from the
+repository. This lets a client walk the tree and verify metadata with
+libostree.
 
-Each pack is an ordinary ZIP with STORED entries named by OSTree object
-checksum. ZIP local headers carry a private extra field whose padding places
-the first data byte on a 4096-byte boundary. Central directory records are
-ordinary ZIP records. Pack names are `pack-<sha256-of-complete-zip>.zip`.
-The archive is deterministic for a given object set and pack policy.
+`objects.index` starts with `MTPKIDX1`, a little endian u32 entry count, then
+records in UTF-8 path order. Each record contains five u32-length-prefixed
+strings (`path`, canonical OSTree `checksum`, pack filename, kind, symlink
+target), a u32-length-prefixed xattr byte string, then little endian u64
+payload offset, u64 payload length, u32 uid, u32 gid and u32 mode. Kinds are
+`dir`, `file`, and `symlink`. Directory and symlink records have no pack
+payload; their canonical checksums refer to OSTree dirtree/file objects. File
+checksums are canonical OSTree file-object checksums, not hashes of payload
+bytes. The xattr field is the serialized `a(ayay)` xattr variant returned by
+libostree for bare-user files. Directory metadata, including ownership and
+mode, is also retained in the verbatim dirmeta objects.
 
-The index records paths as well as checksums: this preserves per-path mode,
-ownership and xattrs for hardlinked content objects. Current implementation
-records regular files only.
+## Content packs
 
-## CLI
+Packs are immutable STORED ZIP files. Each entry is named by its canonical
+OSTree file-object checksum and contains the bare-user file content payload
+only. Local ZIP headers include a private alignment extra field that places
+each payload at a 4096-byte boundary; index offsets point directly to those
+bytes, not to ZIP headers. Pack filenames are `pack-<sha256-of-complete-zip>.zip`.
+Creation is deterministic for a given object set and pack policy. Initial
+packing groups payloads by parent directory, filling target-sized packs in
+lexical order; pack size is a policy target, not a cap.
 
-`pack.py pack --repo REPO --commit CHECKSUM --out DIR [--pack-size BYTES]`
-and `pack.py update --repo REPO --commit CHECKSUM --old-index FILE
---old-packs DIR --out DIR [--dead-ratio 0.5] [--pack-size BYTES]`.
-The repository should be in OSTree's `bare-user` mode. First install groups
-files by parent directory and fills target-sized packs in lexical order.
-Updates retain old pack references for still-live objects, create one new
-pack from missing objects, and rewrite touched packs only when dead bytes /
-total bytes reaches the requested threshold. Use `--dead-ratio 1` to avoid
-threshold-driven rewriting; `--dead-ratio 0` rewrites every touched pack.
-Output includes bytes written and live bytes changed (new or copied live
-payload bytes), plus their amplification ratio.
+## Updates
 
-Current prototype limitation: checked-out regular-file bytes are addressed
-by SHA-256 of their payload. The tool does not yet resolve OSTree's canonical
-file-object checksums or include dirtree/dirmeta object bytes, and it omits
-directories, symlinks and other non-regular entries. A production APK
-producer must replace the checkout scanner with a bare-user object reader
-before consuming this format. The test fixture supplies the checkout commands
-because `ostree` is not installed on the implementation host. The tool does
-not mutate a repository.
+`pack.py update --repo REPO --commit CHECKSUM --old-index INDEX --old-packs DIR
+--out DIR [--dead-ratio 0.5]` compares canonical checksums. It writes one pack
+for file objects absent from the old index, keeps live objects in their
+existing packs, and copies referenced immutable packs into the output to make
+it self-contained. Old packs whose dead-byte ratio reaches the threshold are
+rewritten from their still-live payloads. `--dead-ratio 1` effectively avoids
+rewrite; `--dead-ratio 0` rewrites touched packs. Output reports payload bytes
+written, changed and their ratio.
+
+## C reader
+
+`reader.h` exposes `mtp_index_open`, path lookup/stat, immediate-child readdir and
+entry metadata (kind, mode, uid, gid, checksum, payload location, xattrs and
+symlink target). A caller stats an entry from those returned metadata fields;
+directories and symlinks have no pack offset. The reader validates truncation
+and integer bounds while loading the index.
