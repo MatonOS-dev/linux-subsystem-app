@@ -11,7 +11,8 @@ with tempfile.TemporaryDirectory() as tmp:
     run('ostree','init','--repo='+str(repo),'--mode=bare-user')
     (src/'dir').mkdir();(src/'dir/tool').write_bytes(b'a'*8192);(src/'dir/tool').chmod(0o755)
     (src/'empty').write_bytes(b'');(src/'alias').write_bytes(b'a'*8192);(src/'link').symlink_to('dir/tool')
-    (src/'keep').write_bytes(b'keep'*2048)
+    (src/'keep').write_bytes(b'keep'*512)
+    (src/'\ue000').write_bytes(b'unicode-a');(src/'\U00010000').write_bytes(b'unicode-b')
     harness=base/'PackHarness.java'
     harness.write_text('''import java.io.*;import java.nio.file.*;import java.util.*;
 import org.matonos.linuxhost.stubgen.ObjectPacks;
@@ -29,6 +30,9 @@ public class PackHarness {
   if(a.length==2)ObjectPacks.initial(rows,out,10000);
   else ObjectPacks.update(rows,read(a[2]),new File(a[3]),out,Double.parseDouble(a[4]));
   ObjectPacks.writeIndex(new File(out,"objects.index"),rows);
+  Map<String,byte[]> metadata=new HashMap<>();
+  for(File f:new File(a[0]+".metadata").listFiles())metadata.put(f.getName(),Files.readAllBytes(f.toPath()));
+  ObjectPacks.writeMetadata(new File(out,"objects.ostree"),metadata);
  }
 }''')
     run('javac','-d',str(base),str(JAVA),str(harness))
@@ -47,6 +51,9 @@ public class PackHarness {
             rows,objects=pack.files_at(str(repo),c,payload)
             for r in rows:r.update(pack='',offset=0,length=0)
             t=base/'rows.tsv';table(t,rows)
+            md=base/'rows.tsv.metadata';md.mkdir(exist_ok=True)
+            for p in md.iterdir():p.unlink()
+            for checksum,raw in objects.items():(md/checksum).write_bytes(raw)
             args=[str(t),str(j)]
             opts=dict(repo=str(repo),commit=c,out=str(py),pack_size=10000,dead_ratio=ratio)
             if previous:
@@ -55,8 +62,8 @@ public class PackHarness {
                 pack.update(types.SimpleNamespace(**opts,old_index=str(previous/'objects.index'),old_packs=str(previous)))
             else:pack.pack(types.SimpleNamespace(**opts))
             run('java','-cp',str(base),'PackHarness',*args)
-            expected={p.name:p.read_bytes() for p in py.iterdir() if p.name!='objects.ostree'}
+            expected={p.name:p.read_bytes() for p in py.iterdir()}
             actual={p.name:p.read_bytes() for p in j.iterdir()}
             assert expected==actual,(ratio,n,set(expected)^set(actual),[(k,len(v),len(actual.get(k,b''))) for k,v in expected.items() if actual.get(k)!=v])
             previous=py
-    print('PASS Java bytes equal pack.py: real commits, initial and three updates, thresholds 0/.5/.75/1')
+    print('PASS Java bytes equal pack.py: real commits, initial and two updates, thresholds 0/.5/.75/1')

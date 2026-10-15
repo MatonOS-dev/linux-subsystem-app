@@ -62,3 +62,43 @@ its own allocator. `MTP_FREESTANDING` omits only the libc file-opening wrapper
 and heap callbacks; hosted reader users keep the existing filename API.
 `../compat-proxy/tests/pack-host.py` exercises real index/ZIP mounts without
 extracting the payloads, including execution and dynamic shared-library mmap.
+
+## Java writer and APK integration building blocks (task 4a, partial)
+
+`linux/stubgen/src/org/matonos/linuxhost/stubgen/ObjectPacks.java` is a
+Java-only writer for the same index, metadata and deterministic content ZIP
+format. `initial` and `update` consume canonical records with readable source
+files; `update` takes a dead-byte threshold (use `0.5` for the default policy).
+Sources for unchanged objects must remain available for repacking. The current
+writer rejects ZIP64-sized packs explicitly. It does not read an OSTree repo.
+Run `python3 linux/packs/tests/java-writer.py` to compare all output bytes,
+including raw metadata, with `pack.py` over three actual bare-user commits and
+four update thresholds. That test obtains canonical records through host
+libostree; it does not establish an Android-side OSTree reader.
+
+`StubGenerator.generate(..., packDirectory)` embeds `objects.index` and
+`objects.ostree` under `assets/matonos/` in the base. `generatePack` appends a
+code-free binary manifest to the original ZIP without relocating any payload,
+then signs with the subsystem UID's existing AndroidKeyStore stub key. The
+split is named `pack_<content-ZIP-sha256>`: the identifier prefix is required
+for an Android split name. The index retains `pack-<hash>.zip`. The hash names
+the immutable original content ZIP, before manifest insertion and signing;
+it is deliberately not the signed APK hash. Base and split version codes
+must match. Signing preserves alignment, covered by a real host signing test
+and AOSP aapt2 manifest parsing in `linux/stubgen/tests/run-tests.sh`.
+
+`PackLaunch.arguments` resolves those names using PackageManager's parallel
+`splitNames`/`splitSourceDirs` arrays. It writes only the base index and tiny
+symlinks into the stub cache; the existing `--pack-mount /app INDEX DIRECTORY`
+interface then opens and pins real APK carriers. No content is extracted.
+V3Launcher adds these arguments when the base contains the pack index; legacy
+bases retain their current launch path. The shared runtime setup is unchanged.
+
+This is not an integrated pack installer yet. LinuxAppStoreService does not
+call these generator APIs, no on-device canonical OSTree reader is shipped,
+and PackageInstaller still uses its existing full-base session. In particular,
+`apply_extra` output is not yet packed; a safe extra-tree representation and
+its relationship to linuxd's sanitized verification result still need wiring.
+App-tree publication remains necessary for existing installs and Flatpak's
+installation metadata/dependency lookup, and has not been removed. Do not
+interpret host writer/signer/argument tests as a successful device install.

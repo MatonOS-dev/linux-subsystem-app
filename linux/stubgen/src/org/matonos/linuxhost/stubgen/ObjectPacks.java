@@ -105,8 +105,9 @@ public final class ObjectPacks {
                 le(local,crc.getValue(),4);le(local,length,4);le(local,length,4);le(local,name.length,2);le(local,extra.size(),2);
                 local.write(name);extra.writeTo(local);out.write(local.toByteArray());
                 e.offset=out.getFilePointer();e.length=length;
-                try(InputStream in=new BufferedInputStream(new FileInputStream(e.source))){while((n=in.read(buffer))!=-1)out.write(buffer,0,n);}
-                if(out.getFilePointer()!=e.offset+length)throw new IOException("Payload changed while packing");
+                CRC32 written=new CRC32();
+                try(InputStream in=new BufferedInputStream(new FileInputStream(e.source))){while((n=in.read(buffer))!=-1){out.write(buffer,0,n);written.update(buffer,0,n);}}
+                if(written.getValue()!=crc.getValue() || out.getFilePointer()!=e.offset+length)throw new IOException("Payload changed while packing");
                 le(central,0x02014b50,4);le(central,0x0314,2);le(central,20,2);le(central,0,2);le(central,0,2);le(central,0,2);le(central,33,2);
                 le(central,crc.getValue(),4);le(central,length,4);le(central,length,4);le(central,name.length,2);le(central,extra.size(),2);
                 le(central,0,2);le(central,0,2);le(central,0,2);le(central,(long)(e.mode&65535)<<16,4);le(central,start,4);
@@ -130,14 +131,14 @@ public final class ObjectPacks {
     public static void initial(List<Entry> entries,File directory,long targetSize) throws Exception {
         if(targetSize<1)throw new IllegalArgumentException("Invalid pack target");
         Files.createDirectories(directory.toPath());
-        Map<String,List<Entry>> groups=new TreeMap<>();
+        Map<String,List<Entry>> groups=new TreeMap<>(UTF8);
         for(Entry e:unique(entries).values()) {
             String parent=e.path.substring(0,e.path.lastIndexOf('/'));if(parent.isEmpty())parent="/";
             groups.computeIfAbsent(parent,k->new ArrayList<>()).add(e);
         }
         List<Entry> batch=new ArrayList<>();long size=0;
         for(List<Entry> group:groups.values()) {
-            group.sort(Comparator.comparing(e->e.path));
+            group.sort((a,b)->UTF8.compare(a.path,b.path));
             for(Entry e:group) {
                 long n=e.source.length();if(!batch.isEmpty()&&n>targetSize-size){emit(directory,entries,batch);batch.clear();size=0;}
                 batch.add(e);size+=n;
