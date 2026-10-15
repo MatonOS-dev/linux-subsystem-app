@@ -44,11 +44,6 @@ final class LinuxWindowClient implements ServiceConnection {
         bound=false;
         if (!closed && retries++ < 5) activity.getWindow().getDecorView().postDelayed(this::bind, 500);
     }
-    boolean caption(boolean custom) {
-        if (bridge == null) { android.util.Log.w("MatonLinuxWindow", "request denied task=" + activity.getTaskId() + " reason=not_connected"); return false; }
-        try { boolean accepted = bridge.setClientDecorated(ref, activity.getTaskId(), custom); android.util.Log.i("MatonLinuxWindow", "caption decorated=" + custom + " task=" + activity.getTaskId() + " accepted=" + accepted); return accepted; }
-        catch (Exception error) { log(error); return false; }
-    }
     boolean begin(int edges) {
         if (bridge == null) { android.util.Log.w("MatonLinuxWindow", "request denied task=" + activity.getTaskId() + " reason=not_connected"); return false; }
         try { boolean accepted = bridge.beginGeometry(ref, activity.getTaskId(), edges, lifetime); android.util.Log.i("MatonLinuxWindow", "begin edges=" + edges + " task=" + activity.getTaskId() + " accepted=" + accepted); return accepted; }

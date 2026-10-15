@@ -161,7 +161,6 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         if (bars != null) bars.setSystemBarsAppearance(custom ? android.view.WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND : 0,
                 android.view.WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
         getWindow().setDecorFitsSystemWindows(!custom);
-        if (linuxWindow != null && isInMultiWindowMode()) linuxWindow.caption(clientDecorated);
     }
     @Override public void onMultiWindowModeChanged(boolean multi, android.content.res.Configuration config) {
         super.onMultiWindowModeChanged(multi, config); applyCaption();
