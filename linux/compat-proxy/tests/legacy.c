@@ -28,6 +28,7 @@ int main(int argc,char **argv){
  CHECK(syscall(SYS_symlink,"a","legacy/s")==0);
  char buf[256];CHECK(syscall(SYS_readlink,"legacy/s",buf,sizeof(buf))==1 && buf[0]=='a');
  long times[2]={100,200};CHECK(syscall(SYS_utime,"legacy/a",times)==0);
+ {int t=open("legacy/a",O_RDONLY);CHECK(t>=0);struct timespec ts[2]={{300,0},{400,0}};CHECK(futimens(t,ts)==0);struct timeval tv[2]={{500,0},{600,0}};CHECK(syscall(SYS_futimesat,t,NULL,tv)==0);struct stat ft;CHECK(fstat(t,&ft)==0 && ft.st_mtime==600);close(t);}
  struct timeval tv[2]={{300,1},{400,2}};CHECK(syscall(SYS_utimes,"legacy/a",tv)==0);
  int pipes[2];CHECK(syscall(SYS_pipe,pipes)==0);CHECK(write(pipes[1],"x",1)==1);
  struct pollfd pollfd={.fd=pipes[0],.events=POLLIN};CHECK(syscall(SYS_poll,&pollfd,1,0)==1);

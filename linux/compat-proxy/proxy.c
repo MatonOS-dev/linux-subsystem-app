@@ -338,7 +338,7 @@ static long modernize(long nr,proxy_arg_t *a,long *answer) {
     }
     case PROXY_SC_accept:a[3]=0;return PROXY_SC_accept4;
     case PROXY_SC_pause:*answer=RAW(PROXY_SC_ppoll,0,0,0,0,8,0);return -1;
-    case PROXY_SC_futimesat:{struct timespec times[2],*tp=NULL;if(a[2]){struct timeval *tv=(void *)(uintptr_t)a[2];tp=times;for(int i=0;i<2;i++){times[i].tv_sec=tv[i].tv_sec;times[i].tv_nsec=tv[i].tv_usec*1000;}}proxy_arg_t b[6]={a[0],a[1],(long)tp,0,0,0};*answer=path_call(PROXY_SC_utimensat,b,1,-1);return -1;}
+    case PROXY_SC_futimesat:{struct timespec times[2],*tp=NULL;if(a[2]){struct timeval *tv=(void *)(uintptr_t)a[2];tp=times;for(int i=0;i<2;i++){times[i].tv_sec=tv[i].tv_sec;times[i].tv_nsec=tv[i].tv_usec*1000;}}proxy_arg_t b[6]={a[0],a[1],(long)tp,0,0,0};*answer=a[1]?path_call(PROXY_SC_utimensat,b,1,-1):RAW(PROXY_SC_utimensat,a[0],0,(long)tp,0,0,0);return -1;}
     case PROXY_SC_poll:{struct timespec ts,*t=NULL;if((int)a[2]>=0){ts.tv_sec=(int)a[2]/1000;ts.tv_nsec=((int)a[2]%1000)*1000000;t=&ts;}*answer=dns_poll((void *)(uintptr_t)a[0],a[1],t,NULL,8);return -1;}
     case PROXY_SC_select:{struct timespec ts,*t=NULL;struct timeval *tv=(void *)(uintptr_t)a[4];if(tv){ts.tv_sec=tv->tv_sec;ts.tv_nsec=tv->tv_usec*1000;t=&ts;}*answer=RAW(PROXY_SC_pselect6,a[0],a[1],a[2],a[3],t,0);if(tv){tv->tv_sec=ts.tv_sec;tv->tv_usec=ts.tv_nsec/1000;}return -1;}
     case PROXY_SC_alarm:{struct itimerval next={0},old;next.it_value.tv_sec=(unsigned)a[0];*answer=RAW(PROXY_SC_setitimer,ITIMER_REAL,&next,&old,0,0,0);if(!*answer)*answer=old.it_value.tv_sec+(old.it_value.tv_usec!=0);return -1;}
@@ -745,8 +745,10 @@ clone_retry:
     case PROXY_SC_mkdir:case PROXY_SC_unlink:case PROXY_SC_chmod:case PROXY_SC_chown:case PROXY_SC_lchown:case PROXY_SC_statfs:
         result=path_call(nr,a,0,-1);break;
     case PROXY_SC_openat2:result=-ENOSYS;break; /* bwrap uses its checked openat fallback. */
+    /* futimens(fd): a NULL path names the fd itself; there is no path to map. */
+    case PROXY_SC_utimensat:if(!a[1]){result=app_allowed(nr)?RAW(PROXY_SC_utimensat,a[0],0,a[2],a[3],0,0):-ENOSYS;break;}result=path_call(nr,a,1,-1);break;
     case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:
-    case PROXY_SC_mknodat:case PROXY_SC_readlinkat:case PROXY_SC_mkdirat:case PROXY_SC_unlinkat:case PROXY_SC_fchmodat:case PROXY_SC_fchownat:case PROXY_SC_utimensat:
+    case PROXY_SC_mknodat:case PROXY_SC_readlinkat:case PROXY_SC_mkdirat:case PROXY_SC_unlinkat:case PROXY_SC_fchmodat:case PROXY_SC_fchownat:
         result=path_call(nr,a,1,-1);break;
     case PROXY_SC_link:case PROXY_SC_rename:result=path_call(nr,a,0,1);break;
     case PROXY_SC_linkat:case PROXY_SC_renameat:case PROXY_SC_renameat2:result=path_call(nr,a,1,3);break;
