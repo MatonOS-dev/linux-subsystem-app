@@ -25,6 +25,9 @@ enum arch_slot { ARCH_RESULT, ARCH_PC, ARCH_STACK, ARCH_ARG0, ARCH_ARG1,
 struct arch_call { long id,error; unsigned variant; uintptr_t output; };
 long proxy_copy(void *,const void *,__SIZE_TYPE__);
 long proxy_raw(long,long,long,long,long,long,long);
+/* Backends declare ARCH_ELF_CLASS/MACHINE for this loader and
+ * ARCH_PEER_ELF_CLASS/MACHINE next to ARCH_PEER_LOADER for its supported peer.
+ * ELF record parsing stays in core; supported class/machine pairs live here. */
 #include PROXY_ARCH_BACKEND
 #define arch_encode_syscall arch_peer_encode_syscall
 #define arch_decode_syscall arch_peer_decode_syscall

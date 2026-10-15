@@ -9,18 +9,82 @@
 #include <errno.h>
 #include <sys/prctl.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 #define PAGE 4096UL
 #define DOWN(x) ((x)&~(PAGE-1))
 #define UP(x) (((x)+PAGE-1)&~(PAGE-1))
 #define STACK_SIZE (4UL<<20)
-struct mapped { uintptr_t entry, phdr, base; unsigned phnum; char interp[4096]; };
+struct mapped { uintptr_t entry, phdr, base, area, size, target; unsigned phnum; char interp[4096]; };
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
 static uintptr_t inherited_aux[64];
 uintptr_t proxy_aux(unsigned type){return type<64?inherited_aux[type]:0;}
 static int bad(long n) { return (unsigned long)n >= (unsigned long)-4095; }
+/* Preflight both ELF classes before MAP_FIXED or a kernel exec of our peer.
+ * Use fixed-width ELF records, not the current backend's native typedefs. */
+static int validate_exec(const char *path,int interpreter,unsigned depth) {
+    if(depth>1)return -ELIBBAD;
+    long error=0;
+    char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);
+    if(!resolved)return error;
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd<0){vfs_free(resolved);return fd;}
+    struct proxy_stat st;
+    error=arch_stat_fd(fd,&st);
+    if(!error && (!S_ISREG(st.st_mode) || !(st.st_mode&0111)))error=-EACCES;
+    if(!error)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
+    vfs_free(resolved);
+    Elf64_Ehdr h={0};Elf32_Ehdr h32;
+    if(error)goto done;
+    error=interpreter?-ELIBBAD:-ENOEXEC;
+    unsigned char ident[EI_NIDENT];
+    if(RAW(PROXY_SC_pread64,fd,ident,sizeof(ident),0,0,0)!=sizeof(ident))goto done;
+    if(ident[0]!=127 || ident[1]!='E' || ident[2]!='L' || ident[3]!='F' ||
+       ident[EI_DATA]!=ELFDATA2LSB || ident[EI_VERSION]!=EV_CURRENT)goto done;
+    int bits=ident[EI_CLASS];
+    if(interpreter && bits!=interpreter)goto done;
+    if(bits==ELFCLASS32){
+        if(RAW(PROXY_SC_pread64,fd,&h32,sizeof(h32),0,0,0)!=sizeof(h32))goto done;
+        h.e_type=h32.e_type;h.e_machine=h32.e_machine;h.e_phoff=h32.e_phoff;
+        h.e_phnum=h32.e_phnum;h.e_phentsize=h32.e_phentsize;
+        if(h.e_phentsize!=sizeof(Elf32_Phdr))goto done;
+    }else if(bits==ELFCLASS64){
+        if(RAW(PROXY_SC_pread64,fd,&h,sizeof(h),0,0,0)!=sizeof(h))goto done;
+        if(h.e_phentsize!=sizeof(Elf64_Phdr))goto done;
+    }else goto done;
+    if(arch_exec_class(bits,h.e_machine)<0)goto done;
+    if((h.e_type!=ET_EXEC && h.e_type!=ET_DYN) || !h.e_phnum ||
+       h.e_phoff>(uint64_t)st.st_size ||
+       (uint64_t)h.e_phnum*h.e_phentsize>(uint64_t)st.st_size-h.e_phoff)goto done;
+    char interp[4096];interp[0]=0;unsigned loads=0,has_phdr=0;
+    for(unsigned i=0;i<h.e_phnum;i++){
+        Elf64_Phdr p={0};uint64_t offset=h.e_phoff+(uint64_t)i*h.e_phentsize;
+        if(bits==ELFCLASS32){
+            Elf32_Phdr q;
+            if(RAW(PROXY_SC_pread64,fd,&q,sizeof(q),offset,0,0)!=sizeof(q))goto done;
+            p.p_type=q.p_type;p.p_offset=q.p_offset;p.p_filesz=q.p_filesz;
+            p.p_memsz=q.p_memsz;p.p_vaddr=q.p_vaddr;p.p_align=q.p_align;
+        }else if(RAW(PROXY_SC_pread64,fd,&p,sizeof(p),offset,0,0)!=sizeof(p))goto done;
+        if(p.p_type==PT_PHDR)has_phdr=1;
+        if(p.p_type!=PT_LOAD && p.p_type!=PT_INTERP)continue;
+        if(p.p_offset>(uint64_t)st.st_size || p.p_filesz>(uint64_t)st.st_size-p.p_offset)goto done;
+        if(p.p_type==PT_LOAD){
+            uint64_t limit=bits==ELFCLASS32?UINT32_MAX:UINT64_MAX;
+            if(p.p_filesz>p.p_memsz || p.p_vaddr>limit-4095 || p.p_memsz>limit-4095-p.p_vaddr)goto done;
+            if(p.p_memsz)loads++;
+            if(h.e_phoff>=p.p_offset && h.e_phoff-p.p_offset+(uint64_t)h.e_phnum*h.e_phentsize<=p.p_filesz)has_phdr=1;
+        }else{
+            if(interpreter || interp[0] || p.p_filesz<2 || p.p_filesz>sizeof(interp))goto done;
+            if(RAW(PROXY_SC_pread64,fd,interp,p.p_filesz,p.p_offset,0,0)!=(long)p.p_filesz || interp[p.p_filesz-1])goto done;
+        }
+    }
+    if(!loads || !has_phdr)goto done;
+    error=interp[0]?validate_exec(interp,bits,depth+1):0;
+done:
+    RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
+}
 static int map_elf(const char *path,struct mapped *out) {
     arch_elf_ehdr eh; arch_elf_phdr *ph=NULL;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);
@@ -44,16 +108,18 @@ static int map_elf(const char *path,struct mapped *out) {
     if(high<=low) goto done;
     /* Refuse collision with the resident proxy rather than overwriting it. */
     if(eh.e_type==ET_EXEC && high>ARCH_RESIDENT_LO && low<ARCH_RESIDENT_HI) goto done;
-    long area=RAW(PROXY_SC_mmap,eh.e_type==ET_EXEC?low:0,high-low,PROT_NONE,
-                  MAP_PRIVATE|MAP_ANONYMOUS|(eh.e_type==ET_EXEC?MAP_FIXED:0),-1,0);
+    /* Stage away from the caller, including fixed-address executables. */
+    long area=RAW(PROXY_SC_mmap,0,high-low,PROT_NONE,
+                  MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if(bad(area)) {error=(int)area; goto done;}
+    out->area=area;out->size=high-low;out->target=eh.e_type==ET_EXEC?low:(uintptr_t)area;
     uintptr_t bias=(uintptr_t)area-low;
     out->base=eh.e_type==ET_DYN?bias:0; out->entry=bias+eh.e_entry;
     out->phnum=eh.e_phnum; out->phdr=0; out->interp[0]=0;
     for(unsigned i=0;i<eh.e_phnum;i++) {
         arch_elf_phdr *p=&ph[i];
         if(p->p_type==PT_INTERP) {
-            if(p->p_filesz>=sizeof(out->interp) || !p->p_filesz) goto done;
+            if(p->p_filesz>sizeof(out->interp) || !p->p_filesz) goto done;
             if(RAW(PROXY_SC_pread64,fd,out->interp,p->p_filesz,p->p_offset,0,0)!=(long)p->p_filesz) goto done;
             if(out->interp[p->p_filesz-1])goto done;
         }
@@ -66,13 +132,26 @@ static int map_elf(const char *path,struct mapped *out) {
         if(p->p_filesz && RAW(PROXY_SC_pread64,fd,bias+p->p_vaddr,p->p_filesz,p->p_offset,0,0)!=(long)p->p_filesz) goto done;
         r=RAW(PROXY_SC_mprotect,start,end-start,prot,0,0,0);
         if(bad(r)) {error=(int)r;goto done;}
-        proxy_image_map(start,end,DOWN(p->p_vaddr),path);
+        proxy_image_map(out->target+start-out->area,out->target+end-out->area,DOWN(p->p_vaddr),path);
         if(!out->phdr && eh.e_phoff>=p->p_offset && (uint64_t)eh.e_phoff+bytes<=(uint64_t)p->p_offset+p->p_filesz)
             out->phdr=bias+p->p_vaddr+eh.e_phoff-p->p_offset;
     }
     error=out->phdr?0:-ENOEXEC;
+    if(!error && eh.e_type==ET_EXEC){out->entry-=bias;out->phdr-=bias;}
 done:
+    if(error && out->size){RAW(PROXY_SC_munmap,out->area,out->size,0,0,0,0);out->size=0;}
     vfs_free(ph);RAW(PROXY_SC_close,fd,0,0,0,0,0); return error;
+}
+/* All reads, validation, allocation and protection checks precede this point.
+ * Move staged VMAs one page at a time (protections may split the reservation).
+ * Like kernel exec after begin_new_exec, an unrecoverable commit failure must
+ * terminate, never resume a caller whose fixed-address pages were replaced. */
+static void commit_elf(struct mapped *m){
+    if(m->area==m->target)return;
+    for(uintptr_t offset=0;offset<m->size;offset+=PAGE){
+        long r=RAW(PROXY_SC_mremap,m->area+offset,PAGE,PAGE,3,m->target+offset,0);
+        if(bad(r))RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
+    }
 }
 static uintptr_t stack_string(uintptr_t *cursor,const char *s) {
     size_t n=p_len(s)+1; *cursor-=n; p_copy((void *)*cursor,s,n); return *cursor;
@@ -85,6 +164,10 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);
     vfs_free(resolved);
     if(bad(fd)) return (int)fd;
+    struct proxy_stat executable;
+    int permission=arch_stat_fd(fd,&executable);
+    if(!permission && (!S_ISREG(executable.st_mode) || !(executable.st_mode&0111)))permission=-EACCES;
+    if(permission){RAW(PROXY_SC_close,fd,0,0,0,0,0);return permission;}
     long got=RAW(PROXY_SC_pread64,fd,header,sizeof(header)-1,0,0,0);
     RAW(PROXY_SC_close,fd,0,0,0,0,0);
     if(got<0) return (int)got;
@@ -105,6 +188,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         args[n]=NULL;
         int r=load_inner(interpreter,args,env,image,depth+1);vfs_free(args);return r;
     }
+    int checked=validate_exec(path,0,0);if(checked)return checked;
     int handoff=state_exec(path,argv,env);if(handoff)return handoff;
     size_t ac=0,ec=0,total=65536;
     while(argv && argv[ac]){size_t n=p_len(argv[ac]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)return -E2BIG;total+=n+1+sizeof(uintptr_t);ac++;}
@@ -119,18 +203,18 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     for(size_t i=0;i<ac;i++)av[i]=stack_string(&cur,argv[i]);
     for(size_t i=0;i<ec;i++)ev[i]=stack_string(&cur,env[i]);
     char *translated=vfs_resolve(AT_FDCWD,path,1,&path_error);
-    if(!translated){vfs_free(av);vfs_free(ev);return (int)path_error;}
+    if(!translated){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);vfs_free(av);vfs_free(ev);return (int)path_error;}
     struct mapped main={0},interp={0};int r=map_elf(translated,&main);vfs_free(translated);
-    if(r){vfs_free(av);vfs_free(ev);return r;}
+    if(r)goto failed;
     uintptr_t entry=main.entry;
     if(main.interp[0]){
         translated=vfs_resolve(AT_FDCWD,main.interp,1,&path_error);
-        if(!translated){vfs_free(av);vfs_free(ev);return (int)path_error;}
-        r=map_elf(translated,&interp);vfs_free(translated);if(r){vfs_free(av);vfs_free(ev);return r;}entry=interp.entry;
+        if(!translated){r=path_error;goto failed;}
+        r=map_elf(translated,&interp);vfs_free(translated);if(r)goto failed;entry=interp.entry;
     }
     uintptr_t execfn=stack_string(&cur,path),platform=stack_string(&cur,ARCH_PLATFORM);
     cur-=16; uintptr_t random=cur;
-    if(RAW(PROXY_SC_getrandom,random,16,0,0,0,0)!=16) return -EIO;
+    if(RAW(PROXY_SC_getrandom,random,16,0,0,0,0)!=16){r=-EIO;goto failed;}
     arch_elf_auxv aux[]={
         {AT_PHDR,{main.phdr}},{AT_PHENT,{sizeof(arch_elf_phdr)}},{AT_PHNUM,{main.phnum}},
         {AT_PAGESZ,{PAGE}},{AT_BASE,{interp.base}},{AT_ENTRY,{main.entry}},
@@ -144,7 +228,13 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     *v++=ac; for(unsigned i=0;i<ac;i++) *v++=av[i]; *v++=0;
     for(unsigned i=0;i<ec;i++) *v++=ev[i];
     *v++=0; p_copy(v,aux,sizeof(aux));
-    vfs_free(av);vfs_free(ev);image->entry=entry;image->stack=sp;return 0;
+    vfs_free(av);vfs_free(ev);commit_elf(&main);commit_elf(&interp);
+    image->entry=entry;image->stack=sp;return 0;
+failed:
+    if(main.size)RAW(PROXY_SC_munmap,main.area,main.size,0,0,0,0);
+    if(interp.size)RAW(PROXY_SC_munmap,interp.area,interp.size,0,0,0,0);
+    RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);
+    vfs_free(av);vfs_free(ev);return r;
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
     proxy_log_bwrap_args(path,argv);
