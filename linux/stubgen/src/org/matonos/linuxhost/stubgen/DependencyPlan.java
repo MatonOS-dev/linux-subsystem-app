@@ -10,7 +10,12 @@ public final class DependencyPlan {
         public final String commit,runtime;
         public final byte[] metadata;
         public final List<String> related;
+        public final boolean mayHaveRelated;
         public Info(String commit,byte[] metadata,String runtime,List<String> related)throws IOException {
+            this(commit,metadata,runtime,related,true);
+        }
+        public Info(String commit,byte[] metadata,String runtime,List<String> related,boolean mayHaveRelated)throws IOException {
+            this.mayHaveRelated=mayHaveRelated;
             if(commit==null||!commit.matches("[0-9a-f]{64}")||metadata==null||metadata.length==0||metadata.length>128*1024)
                 throw new IOException("Invalid Flatpak inspection result");
             this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.related=List.copyOf(related);
@@ -21,6 +26,7 @@ public final class DependencyPlan {
         /** Null only for Flatpak's explicit ref-not-found error; other errors must propagate. */
         Info inspect(String ref,String origin)throws Exception;
         String recordedOrigin(String ref)throws Exception;
+        default Info recordedInfo(DeploymentRecord record)throws Exception{return new Info(record.commit,record.metadata,"",Collections.emptyList(),false);}
         default List<String> related(String ref,String origin,Info info)throws Exception{return info.related;}
         String choose(String ref,List<String> origins)throws Exception;
     }
@@ -55,7 +61,7 @@ public final class DependencyPlan {
         String origin;Info info;
         if(recorded!=null) {
             origin=recorded.remote;
-            info=new Info(recorded.commit,recorded.metadata,"",Collections.emptyList());
+            info=backend.recordedInfo(recorded);
         } else {
             origin=root?requested:backend.recordedOrigin(ref);
             if(origin!=null) {
@@ -74,7 +80,14 @@ public final class DependencyPlan {
             for(DeploymentRecord.Dependency dependency:recorded.dependencies){
                 node.dependencies.add(dependency.ref);visit(dependency.ref,null,false,repair);
             }
+            if(info.runtime!=null&&!info.runtime.isEmpty()) {
+                String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;
+                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);visit(runtime,null,false,repair);}
+            }
             order.add(node);
+            if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:backend.related(ref,origin,info))if(!node.dependencies.contains(related)) {
+                node.dependencies.add(related);visit(related,null,false,repair);
+            }
         } else {
             // Match Flatpak's runtime-before-app ordering. Related extensions may
             // need their parent's runtime for apply_extra, so stage the parent first.

@@ -52,6 +52,11 @@ public final class DependencyPlanTest {
         plan=nested.plan(false);check(node(plan,RUNTIME).reused&&!node(plan,GL).reused);
         check(nested.queries.equals(List.of(APP+"@"+FIRST,GL+"@flathub")));
 
+        Fake undeclaredRepair=new Fake(){
+            @Override public DependencyPlan.Info recordedInfo(DeploymentRecord record)throws Exception{return info("org.test.Platform/x86_64/stable");}
+        };
+        undeclaredRepair.installed.put(APP,record(APP,FIRST));undeclaredRepair.add(RUNTIME,OTHER,info(""));
+        check(node(undeclaredRepair.plan(true),RUNTIME).origin.equals(OTHER));
         Fake crossRemoteExtension=new Fake(){
             @Override public List<String> related(String ref,String origin,DependencyPlan.Info info){return ref.equals(APP)?List.of(GL):info.related;}
         };
