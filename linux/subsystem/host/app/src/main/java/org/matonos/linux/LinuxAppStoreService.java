@@ -1,5 +1,6 @@
 package org.matonos.linux;
 
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -192,8 +193,7 @@ public final class LinuxAppStoreService extends Service {
 
     private void runStagedInstall(String id, Operation op) throws Exception {
         cleanupUnusedRuntimePackages();
-        String remote=op.remote;
-        if("update".equals(op.kind)||"repair".equals(op.kind)) remote=remoteFor(op.ref);
+        final String remote="update".equals(op.kind)||"repair".equals(op.kind)?remoteFor(op.ref):op.remote;
         JSONObject begin=new JSONObject(); put(begin,"operationId",id); put(begin,"ref",op.ref);
         put(begin,"remote",remote); put(begin,"compositorUid",android.os.Process.myUid());
         JSONObject beginReply=new JSONObject(linuxd().call("begin_staged_install",begin.toString()));
