@@ -1,3 +1,9 @@
 plugins {
     id 'com.android.application' version '9.2.0' apply false
 }
+
+// v3.5: keep generated outputs outside this public source repository.
+allprojects {
+    def outputRoot = System.getenv('MATON_SUBSYSTEM_OUT')
+    if (outputRoot) layout.buildDirectory = file(outputRoot + '/gradle/' + (project == rootProject ? 'root' : project.name))
+}

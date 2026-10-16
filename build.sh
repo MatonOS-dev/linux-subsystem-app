@@ -51,9 +51,9 @@ fi
 grep -q $'flatpak\t4cce363ef3168baf10a4cd0a916694d3959f9558\t' "$CACHE_DIR/src/flatpak.pin" || { echo 'Flatpak cache does not match the v3.5 source pin' >&2; exit 2; }
 bash "$ROOT/tests/run.sh" "$OUTPUT/tests"
 GRADLE=${MATON_GRADLE_HOME:-$HOME/Documents/gradle-9.4.1}/bin/gradle
-"$GRADLE" -p "$ROOT/linux/subsystem/host" --no-daemon --max-workers "$MATON_BUILD_JOBS" :app:assembleRelease
+"$GRADLE" -p "$ROOT/linux/subsystem/host" --no-daemon --project-cache-dir "$OUTPUT/gradle-cache" --max-workers "$MATON_BUILD_JOBS" :app:assembleRelease
 SDK_TOOLS=$ANDROID_HOME/build-tools/36.0.0
-python3 "$ROOT/tools/prepare-host-apk.py" "$ROOT/linux/subsystem/host/app/build/outputs/apk/release/app-release.apk" "$OUTPUT/stored.apk"
+python3 "$ROOT/tools/prepare-host-apk.py" "$OUTPUT/gradle/app/outputs/apk/release/app-release.apk" "$OUTPUT/stored.apk"
 "$SDK_TOOLS/zipalign" -P 16 -f 4 "$OUTPUT/stored.apk" "$OUTPUT/aligned.apk"
 "$SDK_TOOLS/apksigner" sign --ks "$MATON_SIGNING_STORE_FILE" --ks-key-alias "$MATON_SIGNING_KEY_ALIAS" --ks-pass "file:$MATON_SIGNING_PASSWORD_FILE" --out "$OUTPUT/MatonLinuxSubsystem.apk" "$OUTPUT/aligned.apk"
 "$SDK_TOOLS/apksigner" verify --verbose --print-certs "$OUTPUT/MatonLinuxSubsystem.apk"

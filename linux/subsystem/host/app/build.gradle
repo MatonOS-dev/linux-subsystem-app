@@ -143,7 +143,10 @@ android {
         }
     }
     buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false } }
-    externalNativeBuild { cmake { path '../../native/CMakeLists.txt' } }
+    externalNativeBuild { cmake {
+        path '../../native/CMakeLists.txt'
+        if (System.getenv('MATON_SUBSYSTEM_OUT')) buildStagingDirectory file(System.getenv('MATON_SUBSYSTEM_OUT') + '/cxx')
+    } }
     ndkVersion '30.0.16248370'
     ndkPath System.getenv('MATON_NDK') ?: "${System.getProperty('user.home')}/Documents/android-ndk-r30"
     sourceSets {
