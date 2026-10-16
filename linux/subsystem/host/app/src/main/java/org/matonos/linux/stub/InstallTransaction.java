@@ -239,6 +239,7 @@ public final class InstallTransaction {
                 }
             }finally{file.delete();}
         }
+        final java.util.Set<String> deltaBases=new java.util.HashSet<>();
         void seed(InstalledPackages installed,String ref)throws Exception {
             if(installed.installed(ref)==null)return;
             android.content.pm.PackageInfo pkg=context.getPackageManager().getPackageInfo(
@@ -252,15 +253,37 @@ public final class InstallTransaction {
             report("staging",-1,"Update base temporary bytes: "+required+"; available: "+available);
             if(required>available)throw new java.io.IOException("Insufficient space for installed update base: "+required+" bytes required, "+available+" available");
             org.matonos.linuxhost.stubgen.PackSeed.seed(entries,new File(args.get(3)),new File(installation,"repo"),()->cancelled.get());
+            try {
+                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
+                java.util.List<String> original=org.matonos.linuxhost.stubgen.PackLaunch.originalArguments(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,new File(root,"seed-original"));
+                java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> originalEntries=org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(original.get(2)));
+                long originalBytes=org.matonos.linuxhost.stubgen.PackSeed.bytes(originalEntries,new android.os.StatFs(root.getAbsolutePath()).getBlockSizeLong());
+                report("staging",-1,"Original update base payload budget: "+originalBytes);
+                if(originalBytes>root.getUsableSpace())throw new java.io.IOException("Insufficient space for original update base");
+                org.matonos.linuxhost.stubgen.PackSeed.seed(originalEntries,new File(original.get(3)),new File(installation,"repo"),()->cancelled.get());
+                for(int i=0;i<pkg.splitNames.length;i++)if(pkg.splitNames[i].matches("index_[0-9a-f]{64}")) {
+                    try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(pkg.applicationInfo.splitSourceDirs[i])) {
+                        java.util.zip.ZipEntry metadata=zip.getEntry("assets/matonos/original.ostree");
+                        if(metadata==null)throw new java.io.IOException("Installed index lacks original metadata");
+                        org.matonos.linuxhost.stubgen.OstreePacks.restoreOriginal(zip.getInputStream(metadata),new File(installation,"repo"),record.commit,record.commitObject,
+                                StagedPacks.command(context,root,new File(installation,"repo"),()->cancelled.get()));
+                        deltaBases.add(ref);
+                    }
+                }
+            } catch(Exception error) {
+                if(cancelled.get())throw error;
+                report("staging",-1,"Static delta base unavailable; using per-object pull: "+error.getMessage());
+            }
+
         }
         void pull(org.matonos.linuxhost.stubgen.DependencyPlan.Node node)throws Exception {
             report("staging",-1,"Downloading "+node.ref+" from "+origin.display());
-            cli("install","--system","--assumeyes","--no-deps","--no-related","--no-static-deltas",origin.name,node.ref);
+            cli("install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas",origin.name,node.ref);
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             if(!node.info.commit.equals(manifest.getString("appCommit"))) {
                 // install has no --commit option; update can bind the downloaded
                 // deployment to the exact snapshot inspected before any pull.
-                cli("update","--system","--assumeyes","--no-deps","--no-related","--no-static-deltas","--commit="+node.info.commit,node.ref);
+                cli("update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
                 manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             }
             if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,

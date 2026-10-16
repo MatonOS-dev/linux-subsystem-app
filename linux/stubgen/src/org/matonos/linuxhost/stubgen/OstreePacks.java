@@ -13,6 +13,7 @@ public final class OstreePacks {
     public interface Command { String run(String... arguments) throws Exception; }
     public final List<ObjectPacks.Entry> entries = new ArrayList<>();
     public final Map<String,byte[]> metadata = new HashMap<>();
+    private final Map<String,byte[]> original = new TreeMap<>();
     private final File repo;
     private final Command cli;
     private String commit;
@@ -40,6 +41,36 @@ public final class OstreePacks {
         ObjectPacks.writeIndex(new File(output,"objects.index"),entries);
         ObjectPacks.writeMetadata(new File(output,"objects.ostree"),metadata);
     }
+    /** v3.5: original metadata only; deployed-files metadata stays independent. */
+    public void writeOriginal(File output) throws Exception {
+        try(java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(new FileOutputStream(output))) {
+            for(Map.Entry<String,byte[]> e:original.entrySet()) {
+                java.util.zip.ZipEntry entry=new java.util.zip.ZipEntry(e.getKey());entry.setTime(0);
+                zip.putNextEntry(entry);zip.write(e.getValue());zip.closeEntry();
+            }
+        }
+    }
+    /** Restore only authenticated metadata. fsck must succeed before enabling deltas. */
+    public static void restoreOriginal(InputStream input,File repo,String checksum,byte[] commitObject,Command cli) throws Exception {
+        try(java.util.zip.ZipInputStream zip=new java.util.zip.ZipInputStream(input)) {
+            java.util.zip.ZipEntry entry;
+            while((entry=zip.getNextEntry())!=null) {
+                String name=entry.getName();
+                if(!name.matches("[0-9a-f]{64}\\.(?:dirtree|dirmeta)"))throw new IOException("Invalid original metadata name");
+                byte[] raw=zip.readAllBytes();
+                if(!ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(raw)).equals(name.substring(0,64)))
+                    throw new IOException("Original metadata checksum mismatch");
+                File target=new File(repo,"objects/"+name.substring(0,2)+"/"+name.substring(2));
+                Files.createDirectories(target.toPath().getParent());Files.write(target.toPath(),raw);
+            }
+        }
+        File commit=new File(repo,"objects/"+checksum.substring(0,2)+"/"+checksum.substring(2)+".commit");
+        Files.createDirectories(commit.toPath().getParent());Files.write(commit.toPath(),commitObject);
+        if(new File(repo,"state/"+checksum+".commitpartial").exists())throw new IOException("Original commit is partial");
+        try {cli.run("fsck","--all");}
+        catch(Exception error){Files.deleteIfExists(commit.toPath());throw error;}
+        cli.run("refs","--create=matonos/private/update-base",checksum);
+    }
     private static void checksum(String s) throws IOException {
         if(!s.matches("[0-9a-f]{64}"))throw new IOException("Invalid OSTree checksum");
     }
@@ -50,7 +81,9 @@ public final class OstreePacks {
         byte[] raw=Files.readAllBytes(path(sum,type).toPath());
         if(!ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(raw)).equals(sum))
             throw new IOException("OSTree metadata checksum mismatch");
-        metadata.put(sum,raw);return raw;
+        metadata.put(sum,raw);
+        if(!type.equals("commit"))original.put(sum+"."+type,raw);
+        return raw;
     }
     private void visit(String tree,String meta,String prefix,Set<String> ancestors,int depth) throws Exception {
         if(depth>256 || !ancestors.add(tree))throw new IOException("Recursive OSTree tree");

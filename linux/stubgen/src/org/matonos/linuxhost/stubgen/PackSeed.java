@@ -6,8 +6,8 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
 
 /** Materialize canonical file objects in a private bare-user-only scratch repo.
- * No refs or commits are asserted complete: stock pull fetches all metadata and
- * any absent files. Installed, signed carriers remain the only input. */
+ * Completeness is checked separately by OSTree fsck before enabling static deltas.
+ * Installed, signed carriers remain the only payload input. */
 public final class PackSeed {
     public static long bytes(List<ObjectPacks.Entry> entries,long blockSize) {
         if(blockSize<=0)throw new IllegalArgumentException("Invalid filesystem block size");

@@ -19,7 +19,7 @@ public final class StagedPacks {
         OstreePacks.Command source=command(context,operation,sourceRepo,cancelled);
         // The real Flatpak repo is bare-user-only. Read its authenticated object
         // identities first; never change its config/mode or remote refs.
-        OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source);
+        OstreePacks original=OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source);
         // The committed tree is the deployment's files/ exactly as deployed,
         // including the raw extra downloads apply_extra has not consumed (the
         // installer defers those to the stub). A separate bare-user repo keeps
@@ -29,17 +29,24 @@ public final class StagedPacks {
         local.run("init","--mode=bare-user");
         String commit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
         OstreePacks fresh=OstreePacks.read(localRepo,commit,local);
+        List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> payloads=new ArrayList<>(fresh.entries);
+        payloads.addAll(original.entries);
+        output.mkdirs();
         if(installed==null || installed.getLongVersionCode()!=org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE) {
-            fresh.write(output);
+            org.matonos.linuxhost.stubgen.ObjectPacks.initial(payloads,output,org.matonos.linuxhost.stubgen.ObjectPacks.DEFAULT_PACK_SIZE);
         } else {
             List<String> args=org.matonos.linuxhost.stubgen.PackLaunch.arguments(new File(installed.applicationInfo.sourceDir),
                     installed.splitNames,installed.applicationInfo.splitSourceDirs,new File(output.getParentFile(),"installed"));
-            org.matonos.linuxhost.stubgen.ObjectPacks.update(fresh.entries,
+            org.matonos.linuxhost.stubgen.ObjectPacks.update(payloads,
                     org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(args.get(2))),
                     new File(args.get(3)),output,0.5);
             org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
             org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
         }
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"original.index"),original.entries);
+        original.writeOriginal(new File(output,"original.ostree"));
         record(sourceRepo,deployment,manifest,output);
         android.util.Log.i("MatonInstall","Temporary operation allocated bytes after packs: "+
                 InstallTransaction.allocatedBytes(operation)+"; available: "+operation.getUsableSpace());
@@ -64,7 +71,7 @@ public final class StagedPacks {
         command(context,installation.getParentFile(),new File(installation,"repo"),cancelled).run("fsck");
     }
 
-    private static OstreePacks.Command command(Context context,File operation,File repo,
+    static OstreePacks.Command command(Context context,File operation,File repo,
             BooleanSupplier cancelled) {
         return (String... args)-> {
             if(cancelled.getAsBoolean())throw new IOException("Pack production cancelled");

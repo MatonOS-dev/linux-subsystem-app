@@ -19,6 +19,15 @@ public final class PackLaunch {
         out.addAll(mount(readIndex(indexPath),names,paths,cache,mountPoint,null));
         return out;
     }
+    public static List<String> originalArguments(String[] names,String[] paths,File cache) throws Exception {
+        try(ZipFile zip=new ZipFile(indexPath(names,paths))) {
+            ZipEntry entry=zip.getEntry("assets/matonos/original.index");
+            if(entry==null)throw new IOException("Installed index lacks original file identities");
+            try(InputStream in=zip.getInputStream(entry)) {
+                return mount(in.readAllBytes(),names,paths,cache,"/app",null);
+            }
+        }
+    }
     /** Base pack mounts at {@code mountPoint} plus, when the package has an
      * {@code extra_} split, a second mount of its self-contained output at
      * {@code extraMountPoint}. The extra split carries its own index. */

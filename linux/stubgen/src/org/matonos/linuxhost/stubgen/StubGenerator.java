@@ -236,6 +236,7 @@ public final class StubGenerator {
     private static List<String> indexAssets(File objects) {
         List<String> names=new ArrayList<>(Arrays.asList("objects.index","objects.ostree"));
         if(new File(objects,"deployment.bin").isFile())names.add("deployment.bin");
+        if(new File(objects,"original.ostree").isFile()){names.add("original.ostree");names.add("original.index");}
         return names;
     }
     /** Index identity includes metadata; both are immutable in this split. */
