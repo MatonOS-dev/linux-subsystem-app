@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "adopt.h"
+#include "../../compat-proxy/arch/x86_64/adopt.h"
 #include <stddef.h>
 #include <pthread.h>
 #include <signal.h>
@@ -10,6 +11,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <linux/audit.h>
+#include <linux/futex.h>
 #include <sched.h>
 #include <linux/sched.h>
 #include <limits.h>
@@ -20,8 +22,7 @@ extern char proxy_raw_after[];
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
 static struct adopt_thread slots[ADOPT_SLOTS];
 static uintptr_t libc_lo,libc_hi;
-static uintptr_t fs_read(void) { uintptr_t fs; R(arch_prctl,0x1003,&fs,0,0,0,0); return fs; }
-static void fs_write(uintptr_t fs) { R(arch_prctl,0x1002,fs,0,0,0,0); }
+
 struct adopt_thread *adopt_current(void) {
     int tid=R(gettid,0,0,0,0,0,0);
     for(unsigned i=0;i<ADOPT_SLOTS;i++)
@@ -38,7 +39,7 @@ extern void adopt_run(struct adopt_thread *);
 extern char adopt_return[];
 static void *start(void *arg) {
     struct adopt_thread *t=arg;
-    t->resident_fs=fs_read();
+    t->resident_fs=adopt_fs_read();
     int tid=R(gettid,0,0,0,0,0,0);
     atomic_store_explicit(&t->tid,tid,memory_order_release);
     atomic_store_explicit(&t->ready,1,memory_order_release);
@@ -47,11 +48,37 @@ static void *start(void *arg) {
     while(atomic_load_explicit(&t->ready,memory_order_acquire)!=2) R(futex,&t->ready,0,1,0,0,0);
     unsigned long mask=t->mask;
     R(rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
-    fs_write(t->app_fs);
+    adopt_fs_write(t->app_fs);
     adopt_run(t);
     /* Exit gate restored our own stack and FS. Resident libc owns cleanup. */
     atomic_store_explicit(&t->tid,0,memory_order_release);
     return NULL;
+}
+/* Non-PI Linux robust-list ABI, bounded as in the kernel. Private and shared
+ * futex waiters both use shared FUTEX_WAKE for robust owner death. */
+static void owner_died(uintptr_t entry,long offset,int tid) {
+    if(!entry || (entry&1)) return; /* PI mutexes require kernel support. */
+    _Atomic unsigned *word=(_Atomic unsigned *)(entry+offset);
+    unsigned old=atomic_load(word);
+    while((old&FUTEX_TID_MASK)==(unsigned)tid) {
+        unsigned next=(old&FUTEX_WAITERS)|FUTEX_OWNER_DIED;
+        if(atomic_compare_exchange_weak(word,&old,next)) {
+            if(old&FUTEX_WAITERS) R(futex,word,FUTEX_WAKE,1,0,0,0);
+            break;
+        }
+    }
+}
+static void robust_exit(struct adopt_thread *t) {
+    struct robust_list_head *head=(void *)t->robust;
+    if(!head) return;
+    uintptr_t pending=(uintptr_t)head->list_op_pending;
+    struct robust_list *p=head->list.next;
+    for(unsigned count=0;p && p!=&head->list && count<2048;count++) {
+        uintptr_t entry=(uintptr_t)p;
+        p=((struct robust_list *)(entry&~1UL))->next;
+        if(entry!=pending) owner_died(entry,head->futex_offset,atomic_load(&t->tid));
+    }
+    owner_died(pending,head->futex_offset,atomic_load(&t->tid));
 }
 static void trap(int sig,siginfo_t *info,void *opaque) {
     (void)sig;
@@ -60,7 +87,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     long n=info->si_syscall, result=-38;
     struct adopt_thread *self=adopt_current();
     if(!self) R(exit_group,190,0,0,0,0,0);
-    uintptr_t interrupted=fs_read();
+    uintptr_t interrupted=adopt_fs_read();
     self->app_fs=interrupted;
     if(n==SYS_rt_sigprocmask) {
         unsigned long old=*(unsigned long *)&uc->uc_sigmask, next=old;
@@ -85,7 +112,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         unsigned long flags,stack,tls,ptid,ctid;
         if(n==SYS_clone3) {
             struct clone_args *args=(void *)g[REG_RDI];
-            if(g[REG_RSI]<64 || g[REG_RSI]>sizeof(*args)) {g[REG_RAX]=-22;return;}
+            if(g[REG_RSI]<64 || (unsigned long)g[REG_RSI]>sizeof(*args)) {g[REG_RAX]=-22;return;}
             if(args->exit_signal || args->set_tid_size || args->cgroup || args->pidfd) {g[REG_RAX]=-38;return;}
             flags=args->flags; stack=args->stack+args->stack_size;
             tls=args->tls;ptid=args->parent_tid;ctid=args->child_tid;
@@ -105,14 +132,23 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                 for(unsigned i=0;i<23;i++) t->regs[i]=g[i];
                 t->regs[REG_RSP]=stack;
                 t->regs[REG_RCX]=g[REG_RIP]; t->regs[REG_R11]=g[REG_EFL];
-                fs_write(self->resident_fs);
+                const unsigned char *fp=(void *)uc->uc_mcontext.fpregs;
+                unsigned size=512;
+                t->xfeatures=0;
+                if(*(const unsigned *)(fp+464)==0x46505853) {
+                    size=*(const unsigned *)(fp+480);
+                    t->xfeatures=*(const uint64_t *)(fp+472);
+                }
+                if(size>sizeof(t->fp)) {atomic_store(&t->tid,0);g[REG_RAX]=-95;return;}
+                for(unsigned i=0;i<size;i++) t->fp[i]=fp[i];
+                adopt_fs_write(self->resident_fs);
                 pthread_attr_t attr; pthread_t thread;
                 pthread_attr_init(&attr);
                 pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
                 pthread_attr_setstacksize(&attr,128*1024);
                 int error=pthread_create(&thread,&attr,start,t);
                 pthread_attr_destroy(&attr);
-                fs_write(interrupted);
+                adopt_fs_write(interrupted);
                 if(error) {atomic_store(&t->tid,0);result=-error;}
                 else {
                     while(!atomic_load_explicit(&t->ready,memory_order_acquire)) R(futex,&t->ready,0,0,0,0,0);
@@ -125,24 +161,39 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             }
         }
     } else if(n==SYS_set_robust_list) {
-        /* Keep resident kernel registration. Glibc robust mutexes unsupported. */
-        result=-38;
+        if((unsigned long)g[REG_RSI]!=sizeof(struct robust_list_head)) result=-22;
+        else {self->robust=g[REG_RDI];result=0;}
     } else if(n==SYS_rseq) result=-38;
     else if(n==SYS_set_tid_address) { self->child_tid=g[REG_RDI]; result=R(gettid,0,0,0,0,0,0); }
     else if(n==SYS_exit) {
-        if(self==&slots[0]) R(exit_group,g[REG_RDI],0,0,0,0,0);
+        robust_exit(self);
         if(self->child_tid) { *(int *)self->child_tid=0; R(futex,self->child_tid,1,INT_MAX,0,0,0); }
-        fs_write(self->resident_fs);
+        adopt_fs_write(self->resident_fs);
         g[REG_RSP]=self->resident_sp; g[REG_RIP]=(uintptr_t)adopt_return;
         g[REG_RAX]=0; return;
     } else if(n==SYS_exit_group) R(exit_group,g[REG_RDI],0,0,0,0,0);
     g[REG_RAX]=result;
 }
 static long identity(uintptr_t *p) { *p=(uintptr_t)pthread_self(); return gettid(); }
+_Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
+    struct adopt_thread *t=adopt_current();
+    t->regs[REG_RIP]=entry; t->regs[REG_RSP]=stack;
+    t->regs[REG_EFL]=0x202;
+    /* Initial linker entry does not inherit an application FP state. */
+    __asm__ volatile("fxsave64 %0":"=m"(t->fp));
+    t->xfeatures=0;
+    adopt_fs_write(0);
+    adopt_run(t);
+    atomic_store_explicit(&t->tid,0,memory_order_release);
+    pthread_exit(NULL);
+}
 int adopt_install(void) {
     _Static_assert(offsetof(struct adopt_thread,regs)==56,"assembly layout");
+    _Static_assert(offsetof(struct adopt_thread,fp)==256,"FP assembly layout");
+    _Static_assert(offsetof(struct adopt_thread,xfeatures)==16640,"xfeatures assembly layout");
+    _Static_assert(ATOMIC_INT_LOCK_FREE==2,"signal-safe registry atomics");
     struct adopt_thread *main=reserve();
-    main->resident_fs=fs_read(); atomic_store(&main->tid,R(gettid,0,0,0,0,0,0));
+    main->resident_fs=adopt_fs_read(); atomic_store(&main->tid,R(gettid,0,0,0,0,0,0));
     /* Exempt resident libc syscall instructions, never app libc. */
     Dl_info di;
     if(!dladdr((void *)pthread_create,&di)) return -1;

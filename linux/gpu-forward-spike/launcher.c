@@ -41,5 +41,9 @@ int main(int argc, char **argv) {
         if (aux->a_type == AT_HWCAP2) aux->a_un.a_val = getauxval(AT_HWCAP2);
     /* No policy installation: isolates the loader/TLS experiment from seccomp.
      * Device needs root or existing Android policy allowing these syscalls. */
+#ifdef MATON_ADOPT
+    adopt_launch(image.entry, image.stack);
+#else
     proxy_enter(image.entry, image.stack);
+#endif
 }

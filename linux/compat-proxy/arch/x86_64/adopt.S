@@ -10,7 +10,17 @@ adopt_run:
     push %r14
     push %r15
     mov %rsp,24(%rdi)
-    lea 56(%rdi),%rdx
+    mov 16640(%rdi),%rax
+    test %rax,%rax
+    jz 1f
+    mov %rax,%rdx
+    shr $32,%rdx
+    xrstor64 256(%rdi)
+    jmp 2f
+1:  fxrstor64 256(%rdi)
+2:  lea 56(%rdi),%rdx
+    pushq 136(%rdx)
+    popfq
     mov 120(%rdx),%rsp
     pushq 128(%rdx)
     mov 0(%rdx),%r8
