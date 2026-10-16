@@ -40,8 +40,6 @@ public final class StagedPacks {
             org.matonos.linuxhost.stubgen.ObjectPacks.update(payloads,
                     org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(args.get(2))),
                     new File(args.get(3)),output,0.5);
-            org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
-            org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
         }
         org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
         org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);

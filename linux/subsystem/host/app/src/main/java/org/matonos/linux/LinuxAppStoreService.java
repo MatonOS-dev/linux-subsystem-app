@@ -402,7 +402,7 @@ public final class LinuxAppStoreService extends Service {
                 java.util.List<String> installedNow=after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames);
                 java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
                 desired2.add(index);
-                for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
+                for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:contentEntries(objects))
                     if(row.kind.equals("file"))desired2.add("pack_"+row.pack.substring(5,69));
                 if(applied!=null){String split=applied.getName().replace(".apk","");desired2.add(split);available2.add(split);}
                 if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
@@ -416,10 +416,18 @@ public final class LinuxAppStoreService extends Service {
         return java.nio.file.Files.readAllBytes(new File(objects,"objects.index").toPath());
     }
 
+    private static java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> contentEntries(File objects) throws Exception {
+        java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=new java.util.ArrayList<>(
+                org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")));
+        File original=new File(objects,"original.index");
+        if(original.isFile())entries.addAll(org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(original));
+        return entries;
+    }
+
     /** Adds every content pack an index names, reusing installed carriers. */
     private void addContentPacks(Operation op,String pkg,File work,File objects,File artifacts,PackageInfo installed,java.util.List<String> prior,
             boolean full,int revision,java.util.List<String> desired,java.util.List<String> available) throws Exception {
-        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index"))) {
+        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:contentEntries(objects)) {
             if(!row.kind.equals("file"))continue;
             String split="pack_"+row.pack.substring(5,69);
             if(desired.contains(split))continue;

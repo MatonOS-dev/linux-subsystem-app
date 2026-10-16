@@ -66,8 +66,8 @@ public final class OstreePacks {
         }
         File commit=new File(repo,"objects/"+checksum.substring(0,2)+"/"+checksum.substring(2)+".commit");
         Files.createDirectories(commit.toPath().getParent());Files.write(commit.toPath(),commitObject);
-        if(new File(repo,"state/"+checksum+".commitpartial").exists())throw new IOException("Original commit is partial");
-        try {cli.run("fsck","--all");}
+        if(new File(repo,"state/"+checksum+".commitpartial").exists()){Files.deleteIfExists(commit.toPath());throw new IOException("Original commit is partial");}
+        try {cli.run("fsck","--all","--delete");}
         catch(Exception error){Files.deleteIfExists(commit.toPath());throw error;}
         cli.run("refs","--create=matonos/private/update-base",checksum);
     }

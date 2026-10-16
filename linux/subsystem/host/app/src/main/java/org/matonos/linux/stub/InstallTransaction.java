@@ -252,8 +252,8 @@ public final class InstallTransaction {
                     new android.os.StatFs(root.getAbsolutePath()).getBlockSizeLong()),available=root.getUsableSpace();
             report("staging",-1,"Update base temporary bytes: "+required+"; available: "+available);
             if(required>available)throw new java.io.IOException("Insufficient space for installed update base: "+required+" bytes required, "+available+" available");
-            org.matonos.linuxhost.stubgen.PackSeed.seed(entries,new File(args.get(3)),new File(installation,"repo"),()->cancelled.get());
             try {
+                org.matonos.linuxhost.stubgen.PackSeed.seed(entries,new File(args.get(3)),new File(installation,"repo"),()->cancelled.get());
                 org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
                 java.util.List<String> original=org.matonos.linuxhost.stubgen.PackLaunch.originalArguments(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,new File(root,"seed-original"));
                 java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> originalEntries=org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(original.get(2)));
