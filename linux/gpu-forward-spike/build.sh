@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
+if [[ $(uname -m) != x86_64 ]]; then
+  echo "This TLS probe supports x86_64 only" >&2; exit 2
+fi
 mkdir -p build
 proxy=../compat-proxy
 compiler=${SPIKE_CC:-cc}

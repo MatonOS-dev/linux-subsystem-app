@@ -1,0 +1,7 @@
+[Runtime]
+name=org.freedesktop.Platform.GL.maton
+runtime=org.freedesktop.Platform/x86_64/@RUNTIME_BRANCH@
+sdk=org.freedesktop.Sdk/x86_64/@RUNTIME_BRANCH@
+
+[ExtensionOf]
+ref=runtime/org.freedesktop.Platform/x86_64/@RUNTIME_BRANCH@
