@@ -130,6 +130,7 @@ public final class InstallTransaction {
                 String location=node.ref.equals(appRef)?"":"package-"+i;
                 if(!node.reused) {
                     Scratch scratch=new Scratch(location.isEmpty()?operation:new File(operation,location),node.origin);
+                    scratch.seed(installed,node.ref);
                     scratch.pull(node);
                 }
                 org.json.JSONArray dependencies=new org.json.JSONArray();for(String ref:node.dependencies)dependencies.put(ref);
@@ -238,14 +239,27 @@ public final class InstallTransaction {
                 }
             }finally{file.delete();}
         }
+        void seed(InstalledPackages installed,String ref)throws Exception {
+            if(installed.installed(ref)==null)return;
+            android.content.pm.PackageInfo pkg=context.getPackageManager().getPackageInfo(
+                    DeployManifest.packageForPublic(ref),0);
+            java.util.List<String> args=org.matonos.linuxhost.stubgen.PackLaunch.arguments(
+                    new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,new File(root,"seed"));
+            java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=
+                    org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(args.get(2)));
+            long required=org.matonos.linuxhost.stubgen.PackSeed.bytes(entries),available=root.getUsableSpace();
+            report("staging",-1,"Update base temporary bytes: "+required+"; available: "+available);
+            if(required>available)throw new java.io.IOException("Insufficient space for installed update base: "+required+" bytes required, "+available+" available");
+            org.matonos.linuxhost.stubgen.PackSeed.seed(entries,new File(args.get(3)),new File(installation,"repo"),()->cancelled.get());
+        }
         void pull(org.matonos.linuxhost.stubgen.DependencyPlan.Node node)throws Exception {
             report("staging",-1,"Downloading "+node.ref+" from "+origin.display());
-            cli("install","--system","--assumeyes","--no-deps","--no-related",origin.name,node.ref);
+            cli("install","--system","--assumeyes","--no-deps","--no-related","--no-static-deltas",origin.name,node.ref);
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             if(!node.info.commit.equals(manifest.getString("appCommit"))) {
                 // install has no --commit option; update can bind the downloaded
                 // deployment to the exact snapshot inspected before any pull.
-                cli("update","--system","--assumeyes","--no-deps","--no-related","--commit="+node.info.commit,node.ref);
+                cli("update","--system","--assumeyes","--no-deps","--no-related","--no-static-deltas","--commit="+node.info.commit,node.ref);
                 manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             }
             if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,

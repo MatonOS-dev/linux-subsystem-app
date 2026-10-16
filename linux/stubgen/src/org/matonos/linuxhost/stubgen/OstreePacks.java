@@ -31,6 +31,7 @@ public final class OstreePacks {
     public static String commitDeployed(File files, Command cli) throws Exception {
         if(!files.isDirectory() || Files.isSymbolicLink(files.toPath())) throw new IOException("Missing deployed files tree");
         String value=cli.run("commit","--branch=matonos/private/deployed-files","--parent=none",
+                "--owner-uid=0","--owner-gid=0","--no-xattrs","--canonical-permissions",
                 "--subject=MatonOS local deployed files","--tree=dir="+files.getAbsolutePath()).trim();
         checksum(value); return value;
     }
