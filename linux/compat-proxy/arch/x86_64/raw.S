@@ -32,6 +32,15 @@ proxy_enter:
     mov %r13,%rsp
     xor %rdx,%rdx
     jmp *%r12
+/* vfork retries from app stack. R9 carries glibc's post-syscall PC; it is
+ * scratch in its clone/clone3 wrappers. The child executes no resident code.
+ * User dispatch is automatically off in the child until exec. */
+.org 0x80
+.global adopt_vfork_entry
+.type adopt_vfork_entry,@function
+adopt_vfork_entry:
+    syscall
+    jmp *%r9
 /* Retry clone on the application's stack, retaining its continuation even
  * when the kernel switches to a posix_spawn child stack. */
 .org 0x100

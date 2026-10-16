@@ -1,6 +1,7 @@
 #ifndef MATON_ADOPT_H
 #define MATON_ADOPT_H
 #include <stdint.h>
+#include <stddef.h>
 #if !defined(__x86_64__)
 /* arm64 slot: TPIDR_EL0, arm64 sigcontext and clone argument order.
  * riscv64 slot: tp, riscv sigcontext and clone argument order.
@@ -20,12 +21,15 @@ struct adopt_thread {
     unsigned long mask;
     _Alignas(64) unsigned char fp[16384];
     uint64_t xfeatures;
+    _Atomic unsigned char selector;
 };
 struct adopt_api {
     unsigned version;
     struct adopt_thread *(*current)(void);
     long (*identity)(uintptr_t *);
     _Atomic unsigned clones,clone3s;
+    size_t (*live)(void);
+    _Atomic unsigned fork_prepares,fork_parents,fork_children,vforks;
 };
 int adopt_install(void);
 _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack);

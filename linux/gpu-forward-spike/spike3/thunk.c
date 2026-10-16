@@ -11,11 +11,16 @@ void thunk_init(void) { api=(void *)(uintptr_t)strtoull(getenv("MATON_THREAD_ADO
 struct maton_call maton_enter(const char *name) {
     (void)name;
     struct adopt_thread *t=api->current(); if(!t) __builtin_trap();
+    atomic_store(&t->selector,0);
     uintptr_t prior=adopt_fs_read();
     struct maton_call c={prior,(void (*)(void))api->identity};
     adopt_fs_write(t->resident_fs); return c;
 }
-void maton_leave(struct maton_call *c) { adopt_fs_write(c->previous); }
+void maton_leave(struct maton_call *c) {
+    struct adopt_thread *t=api->current();
+    adopt_fs_write(c->previous);
+    atomic_store(&t->selector,c->previous==t->resident_fs?0:1);
+}
 long forwarded_identity(uintptr_t *identity,int signal_now) {
     struct maton_call c=maton_enter("identity");
     if(signal_now) adopt_raw(SYS_tgkill,adopt_raw(SYS_getpid,0,0,0),adopt_raw(SYS_gettid,0,0,0),SIGUSR1);
@@ -23,10 +28,14 @@ long forwarded_identity(uintptr_t *identity,int signal_now) {
     maton_leave(&c); return tid;
 }
 void adopt_signal_gate(int sig) {
-    uintptr_t interrupted=adopt_fs_read();
     struct adopt_thread *t=api->current();
+    unsigned char selector=atomic_exchange(&t->selector,0);
+    uintptr_t interrupted=adopt_fs_read();
     adopt_fs_write(t->app_fs);
+    atomic_store(&t->selector,1);
     extern void app_signal(int);
     app_signal(sig);
+    atomic_store(&t->selector,0);
     adopt_fs_write(interrupted);
+    atomic_store(&t->selector,selector);
 }

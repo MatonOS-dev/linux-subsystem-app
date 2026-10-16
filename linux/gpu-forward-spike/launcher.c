@@ -40,8 +40,8 @@ int main(int argc, char **argv) {
     Elf64_auxv_t *aux = (void *)(cursor + 1);
     for (; aux->a_type; aux++)
         if (aux->a_type == AT_HWCAP2) aux->a_un.a_val = getauxval(AT_HWCAP2);
-    /* The adoption variant installs its narrow thread-lifecycle filter.
-     * Other variants retain the original unfiltered loader/TLS experiment. */
+    /* Adoption uses per-thread user dispatch, which resets on exec. Other
+     * variants retain the original unfiltered loader/TLS experiment. */
 #ifdef MATON_ADOPT
     adopt_launch(image.entry, image.stack);
 #else
