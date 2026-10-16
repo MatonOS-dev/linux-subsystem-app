@@ -111,9 +111,11 @@ with `--parent-pid`, then `/apex/com.matonos.flatpak/bin/matonos-flatpak ostree`
 The explicit selector is important: multicall.c shifts argv so ostree receives
 its expected argv[0]. Local commands need no DNS transport.
 
-After phase-C Flatpak completes (including apply_extra), the store reads the
-real installation repo's app commit, then commits the deployment's **files/**
-root, including **extra/**, to a new local bare-user repo at
+After phase-C Flatpak completes (the installer no longer applies an app's
+extra-data; the raw, checksum-verified downloads stay in **extra/** and are
+applied by the app's stub), the store reads the real installation repo's app
+commit, then commits the deployment's **files/** root, including
+**extra/**, to a new local bare-user repo at
 `<staging>/<host-uid>/<operation>/pack-repo`. This separate staging repository
 is intentional: the real download repo is bare-user-only; changing its mode
 would invalidate linuxd's assumptions. The private ref is
@@ -132,7 +134,7 @@ session finishes.
 
 linuxd separately reconstructs and sanitizes its verified published deployment;
 the packed phase-C files are not claimed to be byte-equivalent to that sanitized
-tree. That trust/sanitization boundary and apply_extra/absolute symlink behaviour
+tree. That trust/sanitization boundary and absolute symlink behaviour
 still need device validation.
 
 Run `python3 linux/packs/tests/java-source.py` for the actual stock-CLI reader
