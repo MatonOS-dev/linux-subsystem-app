@@ -21,4 +21,11 @@ final class StubSelfInstallIdentity {
         for (String part : parts) if (part.equals(".") || part.equals("..")) return false;
         return true;
     }
+
+    static boolean repairCallerMatches(String requestedRef,String actualRef,int callerUid,String[] packages,
+            String expectedPackage,int packageUid,byte[][] signers,byte[] expectedCertificate) {
+        return validRef(requestedRef)&&requestedRef.equals(actualRef)&&expectedPackage!=null
+                &&packages!=null&&packages.length==1&&expectedPackage.equals(packages[0])
+                &&matches(callerUid,packageUid,packages,signers,expectedCertificate);
+    }
 }

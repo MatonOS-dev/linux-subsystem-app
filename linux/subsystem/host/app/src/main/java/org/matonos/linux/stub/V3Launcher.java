@@ -14,6 +14,9 @@ import java.util.Map;
 
 /** One Linux process tree per stub UID, under the inherited app filter/domain. */
 final class V3Launcher {
+    interface RuntimeRepair { void repair(String ref) throws Exception; }
+    private static volatile RuntimeRepair runtimeRepair;
+    static void setRuntimeRepairForTests(RuntimeRepair repair){runtimeRepair=repair;}
     private static final java.util.concurrent.ExecutorService SPAWNER =
             java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
                 Thread thread = new Thread(task, "v3-spawner");
@@ -112,7 +115,15 @@ final class V3Launcher {
                         new File(runtime.applicationInfo.sourceDir),runtime.splitNames,
                         runtime.applicationInfo.splitSourceDirs,cache,mountPoint));
             } catch(android.content.pm.PackageManager.NameNotFoundException missing) {
-                throw new java.io.IOException("Required Flatpak runtime is not installed: "+runtimeRef+". Install or update this app in the Software Centre to fetch its runtimes.",missing);
+                RuntimeRepair repair=runtimeRepair;
+                if(repair!=null)repair.repair(runtimeRef);
+                else repairRuntime(context,ref,runtimeRef);
+                try {
+                    android.content.pm.PackageInfo runtime=context.getPackageManager().getPackageInfo(runtimePackage,android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
+                    android.content.pm.PackageInfo host=context.getPackageManager().getPackageInfo(context.getPackageName(),android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
+                    if(!sameSigner(runtime,host))throw new java.io.IOException("Runtime package has an untrusted signer: "+runtimePackage);
+                    command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.arguments(new File(runtime.applicationInfo.sourceDir),runtime.splitNames,runtime.applicationInfo.splitSourceDirs,cache,mountPoint));
+                }catch(android.content.pm.PackageManager.NameNotFoundException stillMissing){throw new java.io.IOException("Runtime repair completed but required package is still missing: "+runtimeRef,stillMissing);}
             }
         }
         java.util.Collections.addAll(command,
@@ -172,6 +183,27 @@ final class V3Launcher {
             }
         }, "v3-exit").start();
         return getLaunchStatus();
+    }
+
+    static void repairRuntime(Context context,String appRef,String runtimeRef) throws Exception {
+        java.util.concurrent.CountDownLatch complete=new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<String> error=new java.util.concurrent.atomic.AtomicReference<>();
+        android.content.ServiceConnection connection=new android.content.ServiceConnection(){
+            @Override public void onServiceConnected(android.content.ComponentName name,android.os.IBinder binder){
+                try{org.matonos.linux.ILinuxAppStore.Stub.asInterface(binder).repair(appRef,"repair-"+java.util.UUID.randomUUID().toString().replace("-",""),new org.matonos.linux.ILinuxAppStoreCallback.Stub(){
+                    @Override public void onProgress(String id,String phase,int percent,long done,long total){}
+                    @Override public void onResult(String id,boolean ok,String message){if(!ok)error.set(message==null?"Subsystem app repair failed":message);complete.countDown();}
+                });}catch(Exception e){error.set(e.getMessage());complete.countDown();}
+            }
+            @Override public void onServiceDisconnected(android.content.ComponentName name){error.set("Linux Subsystem disconnected during runtime repair");complete.countDown();}
+        };
+        android.content.Intent intent=new android.content.Intent().setClassName("org.matonos.linux","org.matonos.linux.LinuxAppStoreService");
+        if(!context.bindService(intent,connection,Context.BIND_AUTO_CREATE))throw new java.io.IOException("Cannot connect to Linux Subsystem to repair required runtime "+runtimeRef);
+        boolean finished;
+        try{finished=complete.await(10,java.util.concurrent.TimeUnit.MINUTES);}
+        finally{try{context.unbindService(connection);}catch(Exception ignored){}}
+        if(!finished)throw new java.io.IOException("Timed out repairing required runtime "+runtimeRef);
+        if(error.get()!=null)throw new java.io.IOException("Cannot repair required runtime "+runtimeRef+": "+error.get());
     }
 
     static synchronized JSONObject getLaunchStatus() throws Exception {

@@ -23,4 +23,12 @@ public final class StubSelfInstallIdentityTest {
         assertFalse(StubSelfInstallIdentity.validRef("app/../x86_64/stable"));
         assertFalse(StubSelfInstallIdentity.validRef("app/org.example/app/x86_64/stable"));
     }
+    @Test public void repairMustComeFromTheMatchingRefStub() {
+        assertTrue(StubSelfInstallIdentity.repairCallerMatches(REF,REF,10123,
+                new String[]{"flatpak.org.mozilla.firefox"},"flatpak.org.mozilla.firefox",10123,new byte[][]{CERT},CERT));
+        assertFalse(StubSelfInstallIdentity.repairCallerMatches("app/org.example.Other/x86_64/stable",REF,10123,
+                new String[]{"flatpak.org.mozilla.firefox"},"flatpak.org.mozilla.firefox",10123,new byte[][]{CERT},CERT));
+        assertFalse(StubSelfInstallIdentity.repairCallerMatches(REF,REF,10123,
+                new String[]{"other"},"flatpak.org.mozilla.firefox",10123,new byte[][]{CERT},CERT));
+    }
 }

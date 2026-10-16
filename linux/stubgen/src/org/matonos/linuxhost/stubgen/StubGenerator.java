@@ -61,6 +61,7 @@ public final class StubGenerator {
     public static final String REQUIRED_PACKAGES_META = "org.matonos.linuxhost.REQUIRED_PACKAGES";
     public static final String PACKS_META = "org.matonos.linuxhost.PACKS";
     public static final String RUNTIME_PACKAGES_META = "org.matonos.linuxhost.RUNTIME_PACKAGES";
+    public static final String APP_REF_META = "org.matonos.linuxhost.APP_REF";
     private static final String KEY_ALIAS = "org.matonos.linux.flatpak_stub_v1";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
     private static final long MAX_DESKTOP_BYTES = 1024 * 1024;
@@ -242,7 +243,7 @@ public final class StubGenerator {
         return generateRuntime(workDir,ref,pkg,output,packDirectory,"/usr");
     }
     public static File generateRuntime(File workDir,String ref,String pkg,File output,File packDirectory,String mountPoint) throws Exception {
-        if(!validRef(ref)||!ref.startsWith("runtime/"))throw new IllegalArgumentException("Invalid runtime ref");
+        if(!validRef(ref)||(!ref.startsWith("runtime/")&&!ref.startsWith("app/")))throw new IllegalArgumentException("Invalid runtime or extension ref");
         if(mountPoint==null || !mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*"))throw new IllegalArgumentException("Invalid runtime mount point");
         BinaryManifest manifest=new BinaryManifest(pkg,new DesktopEntry("",Collections.emptyList()),ref,"matonos",Collections.emptyList());
         manifest.noActivities=true;
@@ -550,7 +551,7 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, RUNTIME_PACKAGES_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, RUNTIME_PACKAGES_META, APP_REF_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             for (String mime : mimes) str(mime);
             // Pre-intern commit info values if present
@@ -582,6 +583,7 @@ public final class StubGenerator {
             if(noActivities){
                 startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
+                startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
                 end("application");end("manifest");namespace(false);return finish();
             }
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
@@ -598,6 +600,7 @@ public final class StubGenerator {
             }
             if (packs != null) startEnd("meta-data", attrs(a("name", PACKS_META), a("value", packs)));
             if (runtimePackages != null && !runtimePackages.isEmpty()) startEnd("meta-data",attrs(a("name",RUNTIME_PACKAGES_META),a("value",runtimePackages)));
+            startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
             start("intent-filter", null, attrs());
             startEnd("action", attrs(a("name", "android.intent.action.MAIN")));
             startEnd("category", attrs(a("name", "android.intent.category.LAUNCHER")));

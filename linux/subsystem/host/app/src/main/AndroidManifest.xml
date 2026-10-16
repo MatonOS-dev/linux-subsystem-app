@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -31,6 +32,9 @@
         <service android:name=".stub.CompositorInstallService" android:exported="true"
             android:foregroundServiceType="dataSync" />
         <service android:name=".LinuxAppStoreService" android:exported="true" />
+        <receiver android:name=".LinuxAppStoreService$BootReceiver" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+        </receiver>
         <!-- Internal support UI; Linux apps have their own launcher entries. -->
         <activity android:name=".MainActivity" android:exported="false" />
     </application>

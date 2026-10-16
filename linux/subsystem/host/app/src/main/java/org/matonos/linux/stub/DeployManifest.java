@@ -29,10 +29,8 @@ public final class DeployManifest {
         final String ref;
         final String commit;
         final List<String> subpaths;
-        final String mountPoint;
         Deployment(String ref, String commit, List<String> subpaths) {
             this.ref = ref; this.commit = commit; this.subpaths = subpaths;
-            this.mountPoint=mountPoint(ref,subpaths);
         }
     }
 
@@ -58,9 +56,9 @@ public final class DeployManifest {
             for (String subpath : deployment.subpaths) subpaths.put(subpath);
             list.put(new JSONObject().put("ref", deployment.ref)
                     .put("commit", deployment.commit).put("subpaths", subpaths));
-            if (deployment.ref.startsWith("runtime/")) {
+            if (!deployment.ref.equals(appRef)) {
                 String pkg=packageFor(deployment.ref);
-                requiredMap.put(pkg,new JSONObject().put("package",pkg).put("mountPoint",deployment.mountPoint).put("ref",deployment.ref));
+                requiredMap.put(pkg,new JSONObject().put("package",pkg).put("ref",deployment.ref));
             }
         }
         JSONArray requiredPackages=new JSONArray();for(JSONObject row:requiredMap.values())requiredPackages.put(row);
@@ -88,11 +86,6 @@ public final class DeployManifest {
         String value=safe+suffix.toString();
         if(value.length()>255)throw new IOException("Flatpak ref is too long for an Android package name");
         return value;
-    }
-
-    private static String mountPoint(String ref,List<String> subpaths) {
-        if(subpaths.isEmpty())return "/usr";
-        return "/usr";
     }
 
     /** Read stub-generation inputs directly from this app's private staged tree. */
@@ -150,8 +143,6 @@ public final class DeployManifest {
                         if (!deploy.isFile() || symlink(deploy)) continue;
                         String ref = kind + "/" + id.getName() + "/" + arch.getName() + "/" + branch.getName();
                         if (!validRef(ref)) throw new IOException("Invalid staged deployment ref");
-                        if (APP.equals(kind) && !ref.equals(appRef))
-                            throw new IOException("Unexpected staged application deployment");
                         deployments.add(read(version, ref));
                     }
                 }

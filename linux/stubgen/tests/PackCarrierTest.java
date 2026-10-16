@@ -28,7 +28,7 @@ public final class PackCarrierTest {
   try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(runtimeManifest))){z.putNextEntry(new ZipEntry("AndroidManifest.xml"));z.write((byte[])encode.invoke(encoder));z.closeEntry();}
   Process rmanifest=new ProcessBuilder(args[1],"dump","xmltree",runtimeManifest.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String rxml=new String(rmanifest.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-  if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||rxml.contains("E: service"))throw new AssertionError("Runtime manifest must be activity-free\n"+rxml);
+  if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||rxml.contains("E: service")||!rxml.contains("org.matonos.linuxhost.FLATPAK_REF")||!rxml.contains("org.matonos.linuxhost.PACKS"))throw new AssertionError("Runtime manifest must be activity-free and carry its ref and pack metadata\n"+rxml);
   Field revision=manifest.getDeclaredField("revisionCode");revision.setAccessible(true);revision.setInt(encoder,42);
   Method pm=manifest.getDeclaredMethod("packManifest",String.class);pm.setAccessible(true);
   String split="pack_"+row.pack.substring(5,69);
