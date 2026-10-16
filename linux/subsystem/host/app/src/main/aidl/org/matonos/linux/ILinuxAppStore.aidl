@@ -3,8 +3,8 @@ package org.matonos.linux;
 import org.matonos.linux.ILinuxAppStoreCallback;
 
 interface ILinuxAppStore {
-    void install(String ref, String remote, String operationId, ILinuxAppStoreCallback callback);
-    void update(String ref, String operationId, ILinuxAppStoreCallback callback);
+    void install(String ref, String remote, String label, in byte[] icon, String operationId, ILinuxAppStoreCallback callback);
+    void update(String ref, String label, in byte[] icon, String operationId, ILinuxAppStoreCallback callback);
     void repair(String ref,String operationId,ILinuxAppStoreCallback callback);
     void uninstall(String ref, String operationId, ILinuxAppStoreCallback callback);
     String listInstalled();

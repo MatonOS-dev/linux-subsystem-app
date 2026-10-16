@@ -22,8 +22,6 @@ import org.matonos.systembridge.ILinuxd;
 import org.matonos.linux.stub.InstallTransaction;
 import org.matonos.linuxhost.stubgen.StubGenerator;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Map;
@@ -37,35 +35,37 @@ public final class LinuxAppStoreService extends Service {
     private static final String TAG = "LinuxAppStore";
     private static final String INSTALL = "org.matonos.permission.INSTALL_LINUX_APPS";
     private static final String QUERY = "org.matonos.permission.QUERY_LINUX_APPS";
+    private static final int MAX_ICON_BYTES = 1024 * 1024;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Map<String, Operation> operations = new ConcurrentHashMap<>();
     private final Map<String, Operation> pending = new ConcurrentHashMap<>();
     private static volatile LinuxAppStoreService instance;
     private static final class Operation {
         final int uid;
-        final String id, kind, ref, remote, name, url;
+        final String id, kind, ref, remote, name, url, label;
+        final byte[] icon;
         final ILinuxAppStoreCallback callback;
         volatile boolean cancelled;
         volatile org.matonos.systembridge.ICompositorInstall installService;
-        volatile String stagedMetadata, stagedDesktop;
+        volatile String stagedMetadata;
         volatile File packArtifacts;
         volatile PackageInfo installed;
         volatile JSONObject stagedManifest;
         volatile org.matonos.linux.stub.PackInstaller packInstaller;
         final AtomicBoolean completed=new AtomicBoolean();
         Operation(int uid, String id, String kind, String ref, String remote, String name, String url,
-                ILinuxAppStoreCallback callback) {
+                String label, byte[] icon, ILinuxAppStoreCallback callback) {
             this.uid=uid; this.id=id; this.kind=kind; this.ref=ref; this.remote=remote;
-            this.name=name; this.url=url; this.callback=callback;
+            this.name=name; this.url=url; this.label=label; this.icon=icon; this.callback=callback;
         }
     }
 
     private final ILinuxAppStore.Stub binder = new ILinuxAppStore.Stub() {
-        @Override public void install(String ref, String remote, String id, ILinuxAppStoreCallback cb) {
-            submit("install", ref, remote, null, null, id, cb);
+        @Override public void install(String ref, String remote, String label, byte[] icon, String id, ILinuxAppStoreCallback cb) {
+            submit("install", ref, remote, null, null, label, icon, id, cb);
         }
-        @Override public void update(String ref, String id, ILinuxAppStoreCallback cb) {
-            submit("update", ref, null, null, null, id, cb);
+        @Override public void update(String ref, String label, byte[] icon, String id, ILinuxAppStoreCallback cb) {
+            submit("update", ref, null, null, null, label, icon, id, cb);
         }
         @Override public void repair(String ref,String id,ILinuxAppStoreCallback cb){
             int uid=Binder.getCallingUid();
@@ -84,20 +84,20 @@ public final class LinuxAppStoreService extends Service {
                 byte[][] encoded=signers==null?null:new byte[][]{signers[0].toByteArray()};
                 if(!StubSelfInstallIdentity.repairCallerMatches(ref,recorded,uid,packages,pkg,info.applicationInfo.uid,encoded,expected))throw new SecurityException("Repair caller is not a trusted stub for this ref");
             }catch(SecurityException e){throw e;}catch(Exception e){throw new SecurityException("Cannot authenticate stub repair",e);}
-            Operation op=new Operation(uid,id,"repair",ref,"flathub",null,null,cb);String key=operationKey(uid,id);
+            Operation op=new Operation(uid,id,"repair",ref,"flathub",null,null,null,null,cb);String key=operationKey(uid,id);
             if(operations.putIfAbsent(key,op)!=null)throw new IllegalArgumentException("Operation ID already active for caller");
             worker.execute(()->execute(id,op));
         }
         @Override public void uninstall(String ref, String id, ILinuxAppStoreCallback cb) {
-            submit("uninstall", ref, null, null, null, id, cb);
+            submit("uninstall", ref, null, null, null, null, null, id, cb);
         }
         @Override public String listInstalled() { enforceQuery(); return call("list_installed", args("userId", android.os.Process.myUid()/100000)); }
         @Override public String listRemotes() { enforceQuery(); return remoteList(); }
         @Override public void addRemote(String name, String url, String id, ILinuxAppStoreCallback cb) {
-            submit("addRemote", null, null, name, url, id, cb);
+            submit("addRemote", null, null, name, url, null, null, id, cb);
         }
         @Override public void removeRemote(String name, String id, ILinuxAppStoreCallback cb) {
-            submit("removeRemote", null, null, name, null, id, cb);
+            submit("removeRemote", null, null, name, null, null, null, id, cb);
         }
         @Override public void cancel(String id) {
             int uid=Binder.getCallingUid(); Operation op=operations.get(operationKey(uid,id));
@@ -127,7 +127,7 @@ public final class LinuxAppStoreService extends Service {
     }
 
     private void submit(String kind, String ref, String remote, String name, String url,
-            String id, ILinuxAppStoreCallback callback) {
+            String label, byte[] icon, String id, ILinuxAppStoreCallback callback) {
         int uid=Binder.getCallingUid();
         if (id==null || !id.matches("[A-Za-z0-9_-]{1,64}") || callback==null)
             throw new IllegalArgumentException("Invalid operation request");
@@ -136,7 +136,7 @@ public final class LinuxAppStoreService extends Service {
             ref=authenticateStubRef(uid);
             if (kind.equals("install")) remote="flathub";
         }
-        Operation op=new Operation(uid,id,kind,ref,remote,name,url,callback);
+        Operation op=new Operation(uid,id,kind,ref,remote,name,url,label,icon,callback);
         String key=operationKey(uid,id);
         if(operations.putIfAbsent(key,op)!=null) throw new IllegalArgumentException("Operation ID already active for caller");
         boolean needsConfirm=(kind.equals("addRemote") || kind.equals("removeRemote")
@@ -209,9 +209,8 @@ public final class LinuxAppStoreService extends Service {
                     op.stagedManifest=staged;
                     File installation=new File(new File("/data/linux-app/staging", Integer.toString(android.os.Process.myUid())),
                             operationId + "/installation");
-                    String[] details = org.matonos.linux.stub.DeployManifest.stagedDetails(installation, staged);
-                    op.stagedMetadata = details[0];
-                    op.stagedDesktop = details[1];
+                    String details = org.matonos.linux.stub.DeployManifest.stagedMetadata(installation, staged);
+                    op.stagedMetadata = details;
                     File scratch=new File(getCacheDir(),"flatpak-pack-artifacts");
                     if(!scratch.isDirectory()&&!scratch.mkdirs())throw new java.io.IOException("Cannot create pack scratch");
                     op.packArtifacts=java.nio.file.Files.createTempDirectory(scratch.toPath(),"stage-").toFile();
@@ -313,74 +312,132 @@ public final class LinuxAppStoreService extends Service {
 
     private void installFinalStub(Operation op) throws Exception {
         String pkg=packageFor(op.ref), remote="install".equals(op.kind)?op.remote:remoteFor(op.ref);
-        if(op.stagedMetadata==null || op.stagedDesktop==null)
+        if(op.stagedMetadata==null)
             throw new IllegalStateException("Staged Flatpak metadata unavailable");
-        byte[] icon=fallbackIcon();
+        String label=launcherLabel(op);
+        byte[] icon=launcherIcon(op);
+        if(op.packArtifacts==null)throw new IllegalStateException("Staged object packs unavailable");
         File work=new File(getCacheDir(),"flatpak-stubs"); if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create stub scratch directory");
-        File desktop=new File(work,pkg+".desktop");
-        try {
-            try(FileOutputStream out=new FileOutputStream(desktop)){out.write(op.stagedDesktop.getBytes(StandardCharsets.UTF_8));}
-            if(op.packArtifacts==null)throw new IllegalStateException("Staged object packs unavailable");
-            File objects=new File(op.packArtifacts,"objects"),base=new File(op.packArtifacts,"base.apk");
-            java.util.List<String> requiredPackages=new java.util.ArrayList<>();
-            java.util.Map<String,String> runtimePackages=new java.util.TreeMap<>();
-            org.json.JSONArray required=op.stagedManifest.optJSONArray("requiredPackages");
-            java.util.Map<String,org.matonos.linux.stub.RuntimeMounts.Entry> resolved=new java.util.HashMap<>();
-            org.json.JSONArray deployments=op.stagedManifest.getJSONArray("deployments");
-            java.util.List<String> refs=new java.util.ArrayList<>(),commits=new java.util.ArrayList<>();
-            for(int i=0;i<deployments.length();i++){JSONObject row=deployments.getJSONObject(i);refs.add(row.getString("ref"));commits.add(row.getString("commit"));}
-            File installation=new File(new File("/data/linux-app/staging",Integer.toString(android.os.Process.myUid())),op.id+"/installation");
-            for(org.matonos.linux.stub.RuntimeMounts.Entry entry:org.matonos.linux.stub.RuntimeMounts.resolve(refs,commits,op.ref,(ref,commit)->{
-                File deploy=new File(installation,ref+"/"+commit),metadata=new File(deploy,"metadata");
-                if(!deploy.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)||java.nio.file.Files.isSymbolicLink(metadata.toPath())||!metadata.isFile())throw new java.io.IOException("Cannot read verified Flatpak metadata for "+ref);
-                byte[] bytes=java.nio.file.Files.readAllBytes(metadata.toPath());if(bytes.length==0||bytes.length>128*1024)throw new java.io.IOException("Invalid Flatpak metadata size");return new String(bytes,StandardCharsets.UTF_8);
-            }))resolved.put(entry.ref,entry);
-            if(required!=null)for(int i=0;i<required.length();i++){
-                JSONObject row=required.getJSONObject(i);String ref=row.getString("ref");org.matonos.linux.stub.RuntimeMounts.Entry mount=resolved.get(ref);
-                if(mount==null)throw new IllegalStateException("Runtime package mount was not resolved: "+ref);
-                String name=mount.packageName;requiredPackages.add(name);runtimePackages.put(ref,name+">"+mount.mountPoint);
-            }
-            org.matonos.linuxhost.stubgen.StubGenerator.generateWithRuntimePackages(work,op.ref,remote,desktop,icon,
-                    StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,base,null,objects,requiredPackages,runtimePackages);
-            boolean full=op.installed==null || op.installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE ||
-                    !org.matonos.linuxhost.stubgen.PackSessionPlan.sameBase(base,new File(op.installed.applicationInfo.sourceDir));
-            java.util.List<String> prior=op.installed==null || op.installed.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(op.installed.splitNames);
-            int revision=org.matonos.linuxhost.stubgen.PackSessionPlan.nextRevision(
-                    op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
-                    op.installed==null?0:op.installed.baseRevisionCode,op.installed==null?null:op.installed.splitRevisionCodes);
-            java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
-            String index=StubGenerator.indexSplitName(objects);desired.add(index);
-            if(full || !prior.contains(index)) {
-                StubGenerator.generateIndex(work,pkg,objects,new File(op.packArtifacts,index+".apk"),revision);available.add(index);
-            }
-            for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index"))) {
-                if(!row.kind.equals("file"))continue;
-                String split="pack_"+row.pack.substring(5,69);
-                if(desired.contains(split))continue;
-                desired.add(split);
-                File destination=new File(op.packArtifacts,split+".apk");
-                if(prior.contains(split) && op.installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
-                    if(full) {
-                        int position=prior.indexOf(split);
-                        java.nio.file.Files.copy(java.nio.file.Path.of(op.installed.applicationInfo.splitSourceDirs[position]),destination.toPath());
-                        available.add(split);
-                    }
-                } else {
-                    if(op.cancelled)throw new java.io.IOException("Install cancelled");
-                    StubGenerator.generatePack(work,pkg,new File(objects,row.pack),destination,revision);available.add(split);
+        File objects=new File(op.packArtifacts,"objects"),base=new File(op.packArtifacts,"base.apk");
+        java.util.List<String> requiredPackages=new java.util.ArrayList<>();
+        java.util.Map<String,String> runtimePackages=new java.util.TreeMap<>();
+        org.json.JSONArray required=op.stagedManifest.optJSONArray("requiredPackages");
+        java.util.Map<String,org.matonos.linux.stub.RuntimeMounts.Entry> resolved=new java.util.HashMap<>();
+        org.json.JSONArray deployments=op.stagedManifest.getJSONArray("deployments");
+        java.util.List<String> refs=new java.util.ArrayList<>(),commits=new java.util.ArrayList<>();
+        for(int i=0;i<deployments.length();i++){JSONObject row=deployments.getJSONObject(i);refs.add(row.getString("ref"));commits.add(row.getString("commit"));}
+        File installation=new File(new File("/data/linux-app/staging",Integer.toString(android.os.Process.myUid())),op.id+"/installation");
+        for(org.matonos.linux.stub.RuntimeMounts.Entry entry:org.matonos.linux.stub.RuntimeMounts.resolve(refs,commits,op.ref,(ref,commit)->{
+            File deploy=new File(installation,ref+"/"+commit),metadata=new File(deploy,"metadata");
+            if(!deploy.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)||java.nio.file.Files.isSymbolicLink(metadata.toPath())||!metadata.isFile())throw new java.io.IOException("Cannot read verified Flatpak metadata for "+ref);
+            byte[] bytes=java.nio.file.Files.readAllBytes(metadata.toPath());if(bytes.length==0||bytes.length>128*1024)throw new java.io.IOException("Invalid Flatpak metadata size");return new String(bytes,StandardCharsets.UTF_8);
+        }))resolved.put(entry.ref,entry);
+        if(required!=null)for(int i=0;i<required.length();i++){
+            JSONObject row=required.getJSONObject(i);String ref=row.getString("ref");org.matonos.linux.stub.RuntimeMounts.Entry mount=resolved.get(ref);
+            if(mount==null)throw new IllegalStateException("Runtime package mount was not resolved: "+ref);
+            String name=mount.packageName;requiredPackages.add(name);runtimePackages.put(ref,name+">"+mount.mountPoint);
+        }
+        org.matonos.linuxhost.stubgen.StubGenerator.generateWithRuntimePackages(work,op.ref,remote,label,icon,
+                StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,base,null,objects,requiredPackages,runtimePackages);
+        boolean full=op.installed==null || op.installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE ||
+                !org.matonos.linuxhost.stubgen.PackSessionPlan.sameBase(base,new File(op.installed.applicationInfo.sourceDir));
+        java.util.List<String> prior=op.installed==null || op.installed.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(op.installed.splitNames);
+        int revision=org.matonos.linuxhost.stubgen.PackSessionPlan.nextRevision(
+                op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
+                op.installed==null?0:op.installed.baseRevisionCode,op.installed==null?null:op.installed.splitRevisionCodes);
+        java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
+        String index=StubGenerator.indexSplitName(objects);desired.add(index);
+        if(full || !prior.contains(index)) {
+            StubGenerator.generateIndex(work,pkg,objects,new File(op.packArtifacts,index+".apk"),revision);available.add(index);
+        }
+        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index"))) {
+            if(!row.kind.equals("file"))continue;
+            String split="pack_"+row.pack.substring(5,69);
+            if(desired.contains(split))continue;
+            desired.add(split);
+            File destination=new File(op.packArtifacts,split+".apk");
+            if(prior.contains(split) && op.installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
+                if(full) {
+                    int position=prior.indexOf(split);
+                    java.nio.file.Files.copy(java.nio.file.Path.of(op.installed.applicationInfo.splitSourceDirs[position]),destination.toPath());
+                    available.add(split);
                 }
+            } else {
+                if(op.cancelled)throw new java.io.IOException("Install cancelled");
+                StubGenerator.generatePack(work,pkg,new File(objects,row.pack),destination,revision);available.add(split);
             }
-            org.matonos.linuxhost.stubgen.PackSessionPlan plan=org.matonos.linuxhost.stubgen.PackSessionPlan.create(
-                    op.installed!=null,op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
-                    prior,desired,available,full);
-            if(plan.write.isEmpty() && plan.remove.isEmpty()) {
-                finishStubInstall(op,remote,pkg,new Intent().putExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_SUCCESS));
-                return;
+        }
+        org.matonos.linuxhost.stubgen.PackSessionPlan plan=org.matonos.linuxhost.stubgen.PackSessionPlan.create(
+                op.installed!=null,op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
+                prior,desired,available,full);
+        if(plan.write.isEmpty() && plan.remove.isEmpty()) {
+            finishStubInstall(op,remote,pkg,new Intent().putExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_SUCCESS));
+            return;
+        }
+        op.packInstaller=new org.matonos.linux.stub.PackInstaller(this,pkg,op.packArtifacts,()->op.cancelled,
+                intent->worker.execute(()->finishStubInstall(op,remote,pkg,intent)));
+        plan.submit(op.packInstaller,()->op.cancelled);
+    }
+
+    /** The launcher label: the store's appstream name, the installed stub's
+     * current label (update/repair), or the Flatpak app id as a last resort. */
+    private String launcherLabel(Operation op) {
+        if(op.label!=null && !op.label.trim().isEmpty()) return op.label;
+        String installed=installedLabel(op.ref);
+        if(installed!=null && !installed.trim().isEmpty()) return installed;
+        return flatpakAppId(op.ref);
+    }
+
+    /** The launcher icon: the store's appstream icon, the installed stub's
+     * current icon (update/repair), or a generic placeholder. */
+    private byte[] launcherIcon(Operation op) {
+        if(looksLikePng(op.icon)) return op.icon;
+        byte[] installed=installedIcon(op.ref);
+        return installed!=null?installed:fallbackIcon();
+    }
+
+    private String installedLabel(String ref) {
+        try {
+            android.content.pm.ApplicationInfo info=getPackageManager().getApplicationInfo(packageFor(ref),0);
+            CharSequence label=getPackageManager().getApplicationLabel(info);
+            return label==null?null:label.toString();
+        } catch(Exception error) { return null; }
+    }
+
+    /** The icon drawable a prior install wrote into the installed stub base. */
+    private byte[] installedIcon(String ref) {
+        try {
+            File base=new File(getPackageManager().getApplicationInfo(packageFor(ref),0).sourceDir);
+            try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(base)) {
+                java.util.zip.ZipEntry entry=zip.getEntry("res/drawable/foreground.png");
+                if(entry==null || entry.getSize()>MAX_ICON_BYTES) return null;
+                byte[] bytes;
+                try(java.io.InputStream in=zip.getInputStream(entry)) {
+                    java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();
+                    byte[] buffer=new byte[8192];
+                    int total=0,read;
+                    while((read=in.read(buffer))!=-1) {
+                        total+=read; if(total>MAX_ICON_BYTES) return null;
+                        out.write(buffer,0,read);
+                    }
+                    bytes=out.toByteArray();
+                }
+                return looksLikePng(bytes)?bytes:null;
             }
-            op.packInstaller=new org.matonos.linux.stub.PackInstaller(this,pkg,op.packArtifacts,()->op.cancelled,
-                    intent->worker.execute(()->finishStubInstall(op,remote,pkg,intent)));
-            plan.submit(op.packInstaller,()->op.cancelled);
-        } finally { desktop.delete(); }
+        } catch(Exception error) { return null; }
+    }
+
+    private static boolean looksLikePng(byte[] bytes) {
+        if(bytes==null || bytes.length<8 || bytes.length>MAX_ICON_BYTES) return false;
+        byte[] magic={(byte)0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a};
+        for(int i=0;i<magic.length;i++) if(bytes[i]!=magic[i]) return false;
+        return true;
+    }
+
+    private static String flatpakAppId(String ref) {
+        String[] parts=ref==null?null:ref.split("/",-1);
+        if(parts!=null && parts.length==4 && !parts[1].isEmpty()) return parts[1];
+        return "Linux application";
     }
 
     private void installRuntimePackages(Operation op,File installation) throws Exception {

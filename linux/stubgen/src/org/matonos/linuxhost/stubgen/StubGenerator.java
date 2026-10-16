@@ -8,10 +8,8 @@ import com.android.apksig.ApkSigner;
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
@@ -24,7 +22,6 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -34,9 +31,10 @@ import java.util.zip.ZipOutputStream;
  * in manifest meta-data, replacing the retired erofs image entries. */
 public final class StubGenerator {
     public static final int FORMAT_VERSION = 1;
-    // Reconcile older launchers to recover installed display names and icons.
     // v14 adds bridge visibility for self-task Linux window capabilities.
-    public static final int STUB_VERSION_CODE = 17;
+    // v18 builds the launcher label and icon from the store's appstream read
+    // instead of the deployment's exported .desktop file.
+    public static final int STUB_VERSION_CODE = 18;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
@@ -64,7 +62,6 @@ public final class StubGenerator {
     public static final String APP_REF_META = "org.matonos.linuxhost.APP_REF";
     private static final String KEY_ALIAS = "org.matonos.linux.flatpak_stub_v1";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
-    private static final long MAX_DESKTOP_BYTES = 1024 * 1024;
 
     public static final String GAME_CONTROLLERS = "org.matonos.permission.GAME_CONTROLLERS";
 
@@ -122,22 +119,22 @@ public final class StubGenerator {
     /**
      * @param workDir private scratch directory owned by the calling app
      * @param ref installed Flatpak ref, e.g. app/org.example.Editor/x86_64/stable
-     * @param desktopFile Flatpak-exported .desktop file
+     * @param label launcher label from the remote's appstream entry for the ref
      * @param iconPng PNG icon bytes selected by the caller
      * @param permissions Android permission names approved for this stub
      * @param packageName unique Android package name chosen by the store
      * @param output destination APK
      * @param commitInfo app OSTree commit checksum, runtime ref and runtime commit checksum
      */
-    public static File generate(File workDir, String ref, File desktopFile, byte[] iconPng,
+    public static File generate(File workDir, String ref, String label, byte[] iconPng,
             List<String> permissions, String packageName, File output, CommitInfo commitInfo) throws Exception {
-        return generate(workDir, ref, desktopFile, iconPng, permissions, packageName, output, commitInfo, null);
+        return generate(workDir, ref, label, iconPng, permissions, packageName, output, commitInfo, null);
     }
 
     /**
      * @param workDir private scratch directory owned by the calling app
      * @param ref installed Flatpak ref, e.g. app/org.example.Editor/x86_64/stable
-     * @param desktopFile Flatpak-exported .desktop file
+     * @param label launcher label from the remote's appstream entry for the ref
      * @param iconPng PNG icon bytes selected by the caller
      * @param permissions Android permission names approved for this stub
      * @param packageName unique Android package name chosen by the store
@@ -145,34 +142,34 @@ public final class StubGenerator {
      * @param commitInfo app OSTree commit checksum with runtime ref/commit, or null for no-image stubs
      * @param minInterfaceVersion minimum interface version (null defaults to 2)
      */
-    public static File generate(File workDir, String ref, File desktopFile, byte[] iconPng,
+    public static File generate(File workDir, String ref, String label, byte[] iconPng,
             List<String> permissions, String packageName, File output, CommitInfo commitInfo,
             Integer minInterfaceVersion) throws Exception {
-        return generate(workDir, ref, "flathub", desktopFile, iconPng, permissions,
+        return generate(workDir, ref, "flathub", label, iconPng, permissions,
                 packageName, output, commitInfo, minInterfaceVersion);
     }
 
-    public static File generate(File workDir, String ref, String remote, File desktopFile,
+    public static File generate(File workDir, String ref, String remote, String label,
             byte[] iconPng, List<String> permissions, String packageName, File output,
             CommitInfo commitInfo, Integer minInterfaceVersion) throws Exception {
-        return generate(workDir,ref,remote,desktopFile,iconPng,permissions,packageName,output,
+        return generate(workDir,ref,remote,label,iconPng,permissions,packageName,output,
                 commitInfo,minInterfaceVersion,null);
     }
 
-    public static File generateWithPackages(File workDir, String ref, String remote, File desktopFile,
+    public static File generateWithPackages(File workDir, String ref, String remote, String label,
             byte[] iconPng, List<String> permissions, String packageName, File output,
             Integer minInterfaceVersion, File packDirectory, List<String> requiredPackages) throws Exception {
-        return generateWithRuntimePackages(workDir,ref,remote,desktopFile,iconPng,permissions,packageName,output,
+        return generateWithRuntimePackages(workDir,ref,remote,label,iconPng,permissions,packageName,output,
                 minInterfaceVersion,packDirectory,requiredPackages,Collections.emptyMap());
     }
-    public static File generateWithRuntimePackages(File workDir,String ref,String remote,File desktopFile,
+    public static File generateWithRuntimePackages(File workDir,String ref,String remote,String label,
             byte[] iconPng,List<String> permissions,String packageName,File output,Integer minInterfaceVersion,
             File packDirectory,List<String> requiredPackages,Map<String,String> runtimePackages) throws Exception {
-        File result = generate(workDir, ref, remote, desktopFile, iconPng, permissions, packageName,
+        File result = generate(workDir, ref, remote, label, iconPng, permissions, packageName,
                 output, null, minInterfaceVersion, packDirectory);
         // Re-encode with the same template and the exact Flatpak deployment package set.
-        DesktopEntry entry = readDesktop(desktopFile);
-        BinaryManifest manifest = new BinaryManifest(packageName, entry, ref, remote, permissions);
+        String cleanLabel = cleanLabel(label);
+        BinaryManifest manifest = new BinaryManifest(packageName, cleanLabel, ref, remote, permissions);
         manifest.minInterfaceVersion = minInterfaceVersion != null ? minInterfaceVersion : 2;
         List<String> checked = new ArrayList<>(requiredPackages);
         Collections.sort(checked);
@@ -180,7 +177,7 @@ public final class StubGenerator {
         manifest.runtimePackages=encodeRuntimePackages(runtimePackages);
         File unsigned = File.createTempFile("matonos-stub-meta-", ".apk", workDir);
         try {
-            writeUnsigned(unsigned, packageName, entry, ref, "flathub", iconPng, permissions, null, manifest.minInterfaceVersion, packDirectory, manifest.packs,manifest.runtimePackages);
+            writeUnsigned(unsigned, packageName, cleanLabel, ref, "flathub", iconPng, permissions, null, manifest.minInterfaceVersion, packDirectory, manifest.packs,manifest.runtimePackages);
             sign(unsigned, output, getOrCreateKey());
             return output;
         } finally { unsigned.delete(); }
@@ -188,15 +185,14 @@ public final class StubGenerator {
     private static String encodeRuntimePackages(Map<String,String> values){StringBuilder out=new StringBuilder();for(Map.Entry<String,String> e:new java.util.TreeMap<>(values).entrySet()){if(out.length()>0)out.append(';');out.append(e.getKey()).append('>').append(e.getValue());}return out.toString();}
 
     /** Pack-enabled base; only the small index/metadata live here, payloads are splits. */
-    public static File generate(File workDir, String ref, String remote, File desktopFile,
+    public static File generate(File workDir, String ref, String remote, String label,
             byte[] iconPng, List<String> permissions, String packageName, File output,
             CommitInfo commitInfo, Integer minInterfaceVersion, File packDirectory) throws Exception {
         if (packDirectory != null && (!new File(packDirectory,"objects.index").isFile()
                 || !new File(packDirectory,"objects.ostree").isFile()))
             throw new IOException("Missing pack index or metadata");
-        if (workDir == null || desktopFile == null || !desktopFile.isFile())
-            throw new IllegalArgumentException("Private work directory and readable .desktop file are required");
-        if (desktopFile.length() > MAX_DESKTOP_BYTES) throw new IllegalArgumentException("Desktop entry is too large");
+        if (workDir == null)
+            throw new IllegalArgumentException("Private work directory is required");
         if (iconPng == null || iconPng.length == 0 || iconPng.length > MAX_ICON_BYTES) throw new IllegalArgumentException("PNG icon size is invalid");
         if (!validRef(ref))
             throw new IllegalArgumentException("Invalid Flatpak ref");
@@ -206,13 +202,13 @@ public final class StubGenerator {
             throw new IllegalArgumentException("Invalid stub package name");
         if (output == null) throw new IllegalArgumentException("Output APK is required");
 
-        DesktopEntry entry = readDesktop(desktopFile);
+        String cleanLabel = cleanLabel(label);
         File parent = output.getAbsoluteFile().getParentFile();
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) throw new IOException("Cannot create output directory");
         if (!workDir.isDirectory() && !workDir.mkdirs()) throw new IOException("Cannot create private work directory");
         File unsigned = File.createTempFile("matonos-stub-", ".unsigned.apk", workDir);
         try {
-            writeUnsigned(unsigned, packageName, entry, ref, remote, iconPng, permissions, commitInfo,
+            writeUnsigned(unsigned, packageName, cleanLabel, ref, remote, iconPng, permissions, commitInfo,
                     minInterfaceVersion != null ? minInterfaceVersion : 2, packDirectory);
             sign(unsigned, output, getOrCreateKey());
             return output;
@@ -245,7 +241,7 @@ public final class StubGenerator {
     public static File generateRuntime(File workDir,String ref,String pkg,File output,File packDirectory,String mountPoint) throws Exception {
         if(!validRef(ref)||(!ref.startsWith("runtime/")&&!ref.startsWith("app/")))throw new IllegalArgumentException("Invalid runtime or extension ref");
         if(mountPoint==null || !mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*"))throw new IllegalArgumentException("Invalid runtime mount point");
-        BinaryManifest manifest=new BinaryManifest(pkg,new DesktopEntry("",Collections.emptyList()),ref,"matonos",Collections.emptyList());
+        BinaryManifest manifest=new BinaryManifest(pkg,"",ref,"matonos",Collections.emptyList());
         manifest.noActivities=true;
         manifest.packs=mountPoint;
         manifest.revisionCode=STUB_VERSION_CODE;
@@ -259,7 +255,7 @@ public final class StubGenerator {
         } finally {unsigned.delete();}
     }
     private static void writeIndexUnsigned(File unsigned,String pkg,File objects,int revision) throws Exception {
-        BinaryManifest encoder=new BinaryManifest(pkg,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
+        BinaryManifest encoder=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
         encoder.revisionCode=revision;
         try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
             put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects)));
@@ -280,7 +276,7 @@ public final class StubGenerator {
         String name=pack.getName();
         if(!name.matches("pack-[0-9a-f]{64}\\.zip"))throw new IllegalArgumentException("Invalid pack name");
         String split="pack_"+name.substring(5,69);
-        BinaryManifest encoder=new BinaryManifest(packageName,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
+        BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
         encoder.revisionCode=revision;
         File unsigned=File.createTempFile("matonos-pack-",".apk",workDir);
         try {
@@ -290,48 +286,18 @@ public final class StubGenerator {
     }
 
     /** Legacy compatibility: no commit info, no images. */
-    public static File generate(File workDir, String ref, File desktopFile, byte[] iconPng,
+    public static File generate(File workDir, String ref, String label, byte[] iconPng,
             List<String> permissions, String packageName, File output) throws Exception {
-        return generate(workDir, ref, desktopFile, iconPng, permissions, packageName, output, null, null);
+        return generate(workDir, ref, label, iconPng, permissions, packageName, output, null, null);
     }
 
-    private static DesktopEntry readDesktop(File file) throws IOException {
-        return readDesktop(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
-    }
-
-    /** Use exactly the generator's Name parsing when reconciling a stub label. */
-    public static String desktopDisplayName(String desktop) throws IOException {
-        return readDesktop(new StringReader(desktop)).name;
-    }
-
-    private static DesktopEntry readDesktop(java.io.Reader input) throws IOException {
-        Properties properties = new Properties();
-        StringBuilder section = new StringBuilder();
-        boolean inEntry = false;
-        try (BufferedReader reader = new BufferedReader(input)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                    if (inEntry) break;
-                    inEntry = "[Desktop Entry]".equals(trimmed);
-                } else if (inEntry && !trimmed.isEmpty() && !trimmed.startsWith("#")) {
-                    section.append(line).append('\n');
-                }
-            }
-        }
-        if (!inEntry) throw new IOException(".desktop file has no [Desktop Entry] group");
-        properties.load(new StringReader(section.toString()));
-        String name = properties.getProperty("Name", "Linux application").trim();
-        if (name.isEmpty()) name = "Linux application";
-        if (name.getBytes(StandardCharsets.UTF_8).length > 4096) name = "Linux application";
-        List<String> mimes = new ArrayList<>();
-        for (String item : properties.getProperty("MimeType", "").split(";")) {
-            String mime = item.trim();
-            if (mime.length() <= 255 && mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+") && !mimes.contains(mime)) mimes.add(mime);
-        }
-        if (mimes.size() > 128) mimes.subList(128, mimes.size()).clear();
-        return new DesktopEntry(name, mimes);
+    /** The launcher label: the caller's appstream name, or the generator's last resort. */
+    static String cleanLabel(String label) {
+        if (label == null) return "Linux application";
+        String name = label.trim();
+        if (name.isEmpty()) return "Linux application";
+        if (name.getBytes(StandardCharsets.UTF_8).length > 4096) return "Linux application";
+        return name;
     }
 
     private static boolean validRef(String ref) {
@@ -369,17 +335,17 @@ public final class StubGenerator {
         return component > 0 && component <= 63;
     }
 
-    private static void writeUnsigned(File file, String pkg, DesktopEntry entry, String ref, String remote,
+    private static void writeUnsigned(File file, String pkg, String label, String ref, String remote,
             byte[] icon, List<String> permissions, CommitInfo commitInfo, int minInterfaceVersion,
             File packDirectory) throws IOException {
-        writeUnsigned(file,pkg,entry,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,null);
+        writeUnsigned(file,pkg,label,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,null);
     }
-    private static void writeUnsigned(File file, String pkg, DesktopEntry entry, String ref, String remote,
+    private static void writeUnsigned(File file, String pkg, String label, String ref, String remote,
             byte[] icon, List<String> permissions, CommitInfo commitInfo, int minInterfaceVersion,
             File packDirectory, String packs) throws IOException {
-        writeUnsigned(file,pkg,entry,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,packs,null);
+        writeUnsigned(file,pkg,label,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,packs,null);
     }
-    private static void writeUnsigned(File file,String pkg,DesktopEntry entry,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String runtimePackages) throws IOException {
+    private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String runtimePackages) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
             if (cleanPermissions.size() >= 128 || (p != null && p.length() > 255)) throw new IllegalArgumentException("Too many or oversized Android permissions");
@@ -396,7 +362,7 @@ public final class StubGenerator {
             if (!validCommit(commitInfo.runtimeCommit))
                 throw new IllegalArgumentException("Invalid runtime commit checksum");
         }
-        BinaryManifest encoder = new BinaryManifest(pkg, entry, ref, remote, cleanPermissions);
+        BinaryManifest encoder = new BinaryManifest(pkg, label, ref, remote, cleanPermissions);
         encoder.commitInfo = commitInfo;
         encoder.minInterfaceVersion = minInterfaceVersion;
         encoder.packs = packs;
@@ -408,7 +374,7 @@ public final class StubGenerator {
             put(zip, "resources.arsc", iconResourceTable(pkg));
             put(zip, "classes.dex", emptyDex());
             put(zip, "res/drawable/foreground.png", icon);
-            put(zip, "res/drawable/icon.xml", new BinaryManifest("", entry, "", "flathub", Collections.emptyList()).adaptiveIcon());
+            put(zip, "res/drawable/icon.xml", new BinaryManifest("", "", "", "flathub", Collections.emptyList()).adaptiveIcon());
         }
     }
 
@@ -448,7 +414,7 @@ public final class StubGenerator {
     }
 
     private static byte[] resourceStringPool(String... values) throws IOException {
-        BinaryManifest encoder = new BinaryManifest("",new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
+        BinaryManifest encoder = new BinaryManifest("","","","flathub",Collections.emptyList());
         for (String value: values) encoder.str(value);
         ByteArrayOutputStream out = new ByteArrayOutputStream(); encoder.writeStringPool(out); return out.toByteArray();
     }
@@ -528,21 +494,17 @@ public final class StubGenerator {
         final PrivateKey key; final X509Certificate certificate;
         KeyMaterial(PrivateKey key, X509Certificate certificate) { this.key = key; this.certificate = certificate; }
     }
-    private static final class DesktopEntry {
-        final String name; final List<String> mimeTypes;
-        DesktopEntry(String name, List<String> mimeTypes) { this.name = name; this.mimeTypes = mimeTypes; }
-    }
 
     /** Minimal Android binary XML encoder for the manifest vocabulary used by stubs. */
     private static final class BinaryManifest {
         private static final String ANDROID = "http://schemas.android.com/apk/res/android";
         private static final int ANDROID_URI = 0x01000000;
         private final String pkg, label, ref, remote;
-        private final List<String> mimes, permissions;
+        private final List<String> permissions;
         private final LinkedHashMap<String, Integer> strings = new LinkedHashMap<>();
         private final List<Chunk> nodes = new ArrayList<>();
-        BinaryManifest(String pkg, DesktopEntry entry, String ref, String remote, List<String> permissions) {
-            this.pkg = pkg; this.label = entry.name; this.ref = ref; this.remote = remote; this.mimes = entry.mimeTypes; this.permissions = permissions;
+        BinaryManifest(String pkg, String label, String ref, String remote, List<String> permissions) {
+            this.pkg = pkg; this.label = label; this.ref = ref; this.remote = remote; this.permissions = permissions;
         }
         CommitInfo commitInfo;
         String packs;
@@ -551,9 +513,8 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, RUNTIME_PACKAGES_META, APP_REF_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.category.DEFAULT", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, RUNTIME_PACKAGES_META, APP_REF_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
-            for (String mime : mimes) str(mime);
             // Pre-intern commit info values if present
             if (commitInfo != null) {
                 str(commitInfo.appCommit);
@@ -605,14 +566,6 @@ public final class StubGenerator {
             startEnd("action", attrs(a("name", "android.intent.action.MAIN")));
             startEnd("category", attrs(a("name", "android.intent.category.LAUNCHER")));
             end("intent-filter");
-            for (String mime : mimes) {
-                start("intent-filter", null, attrs());
-                startEnd("action", attrs(a("name", "android.intent.action.VIEW")));
-                startEnd("category", attrs(a("name", "android.intent.category.DEFAULT")));
-                startEnd("category", attrs(a("name", "android.intent.category.BROWSABLE")));
-                startEnd("data", attrs(a("mimeType", mime)));
-                end("intent-filter");
-            }
             end("activity");
             // Stays enabled while the launcher is hidden, so the store can
             // resume an install interrupted by a crash or power cut.

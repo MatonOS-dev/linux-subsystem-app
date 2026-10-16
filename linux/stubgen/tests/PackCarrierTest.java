@@ -16,11 +16,9 @@ public final class PackCarrierTest {
   File dir=new File(args[0]);File payload=new File(dir,"payload");Files.write(payload.toPath(),new byte[8193]);
   ObjectPacks.Entry row=new ObjectPacks.Entry("/payload","a".repeat(64),"file",0100755);row.source=payload;
   ObjectPacks.initial(Collections.singletonList(row),dir,10000);
-  Class<?> desktop=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$DesktopEntry");
-  Constructor<?> dc=desktop.getDeclaredConstructor(String.class,List.class);dc.setAccessible(true);
   Class<?> manifest=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$BinaryManifest");
-  Constructor<?> mc=manifest.getDeclaredConstructor(String.class,desktop,String.class,String.class,List.class);mc.setAccessible(true);
-  Object encoder=mc.newInstance("flatpak.org.example.Test",dc.newInstance("",Collections.emptyList()),"","flathub",Collections.emptyList());
+  Constructor<?> mc=manifest.getDeclaredConstructor(String.class,String.class,String.class,String.class,List.class);mc.setAccessible(true);
+  Object encoder=mc.newInstance("flatpak.org.example.Test","","","flathub",Collections.emptyList());
   Field noActivities=manifest.getDeclaredField("noActivities");noActivities.setAccessible(true);noActivities.setBoolean(encoder,true);
   Field runtimeMount=manifest.getDeclaredField("packs");runtimeMount.setAccessible(true);runtimeMount.set(encoder,"/usr");
   Method encode=manifest.getDeclaredMethod("encode");encode.setAccessible(true);

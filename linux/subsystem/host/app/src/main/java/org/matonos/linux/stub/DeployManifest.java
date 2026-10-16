@@ -88,20 +88,18 @@ public final class DeployManifest {
         return value;
     }
 
-    /** Read stub-generation inputs directly from this app's private staged tree. */
-    public static String[] stagedDetails(File installation, JSONObject manifest) throws Exception {
+    /** Read the stub metadata directly from this app's private staged tree. */
+    public static String stagedMetadata(File installation, JSONObject manifest) throws Exception {
         File deploy = stagedDeployment(installation, manifest);
         File metadataFile = new File(deploy, "metadata");
-        File desktopFile = new File(deploy, "export/share/applications/" + manifest.getString("appRef").split("/", -1)[1] + ".desktop");
         String root = installation.getCanonicalPath() + File.separator;
-        if (!metadataFile.getCanonicalPath().startsWith(root) || !desktopFile.getCanonicalPath().startsWith(root)
-                || Files.isSymbolicLink(metadataFile.toPath()) || Files.isSymbolicLink(desktopFile.toPath()))
-            throw new IOException("Staged app details escape the private installation");
+        if (!metadataFile.getCanonicalPath().startsWith(root)
+                || Files.isSymbolicLink(metadataFile.toPath()) || !metadataFile.isFile())
+            throw new IOException("Staged app metadata escapes the private installation");
         byte[] metadata = Files.readAllBytes(metadataFile.toPath());
-        byte[] desktop = Files.readAllBytes(desktopFile.toPath());
-        if (metadata.length == 0 || metadata.length > 128 * 1024 || desktop.length == 0 || desktop.length > 128 * 1024)
-            throw new IOException("Staged app details are empty or too large");
-        return new String[] { new String(metadata, StandardCharsets.UTF_8), new String(desktop, StandardCharsets.UTF_8) };
+        if (metadata.length == 0 || metadata.length > 128 * 1024)
+            throw new IOException("Staged app metadata is empty or too large");
+        return new String(metadata, StandardCharsets.UTF_8);
     }
 
     /** The deployment directory contains deploy (a file), metadata and files/. */

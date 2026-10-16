@@ -9,13 +9,10 @@ import java.io.FileOutputStream;
 /** Parse the generator's binary XML with AOSP aapt2, not a mirror parser. */
 public final class ForegroundManifestTest {
     public static void main(String[] args) throws Exception {
-        Class<?> desktop=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$DesktopEntry");
-        Constructor<?> entry=desktop.getDeclaredConstructor(String.class,java.util.List.class);
-        entry.setAccessible(true);
         Class<?> manifest=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$BinaryManifest");
-        Constructor<?> ctor=manifest.getDeclaredConstructor(String.class,desktop,String.class,String.class,java.util.List.class);
+        Constructor<?> ctor=manifest.getDeclaredConstructor(String.class,String.class,String.class,String.class,java.util.List.class);
         ctor.setAccessible(true);
-        Object encoder=ctor.newInstance("flatpak.org.example.Test",entry.newInstance("Test",Collections.emptyList()),"app/org.example.Test/x86_64/stable","flathub",Collections.emptyList());
+        Object encoder=ctor.newInstance("flatpak.org.example.Test","Test","app/org.example.Test/x86_64/stable","flathub",Collections.emptyList());
         Method encode=manifest.getDeclaredMethod("encode");encode.setAccessible(true);
         File apk=new File(args[1],"foreground-manifest.apk");
         try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(apk))) {
