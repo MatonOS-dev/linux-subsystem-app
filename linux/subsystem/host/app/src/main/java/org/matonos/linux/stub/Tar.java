@@ -154,6 +154,8 @@ public final class Tar {
             if ((mode & 07000) != 0) throw new IOException("Extra entry " + name + " has a privileged mode");
             if (type != '0' && type != '5' && type != '2')
                 throw new IOException("Unsupported extra entry type for " + name);
+            if (type != '0' && size != 0)
+                throw new IOException("Extra entry " + name + " has a payload but is not a file");
             if (size < 0 || size > ExtraProtocol.MAX_ENTRY_BYTES)
                 throw new IOException("Extra entry " + name + " is too large");
             long payloadSize = type == '0' ? size : 0;
@@ -206,7 +208,6 @@ public final class Tar {
                     throw new IOException("Cannot mark extra entry executable");
                 skip(in, (BLOCK - (size % BLOCK)) % BLOCK);
             }
-            if (type == '5' || type == '2') skip(in, size);
         }
     }
 
