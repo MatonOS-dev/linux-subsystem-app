@@ -39,6 +39,14 @@ adopt_run:
     mov $0,%eax
     mov 96(%rdx),%rdx
     ret
+/* Arrive here after sigreturn consumed the application-stack frame. Only
+ * now may joiners free that stack. RDI is the resident registry entry. */
+.global adopt_exit_return
+.type adopt_exit_return,@function
+adopt_exit_return:
+    sub $8,%rsp
+    call adopt_publish_exit
+    add $8,%rsp
 .global adopt_return
 .type adopt_return,@function
 adopt_return:

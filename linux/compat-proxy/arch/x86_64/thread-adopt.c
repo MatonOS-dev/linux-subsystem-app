@@ -47,7 +47,7 @@ static struct adopt_thread *reserve(void) {
     return NULL;
 }
 extern void adopt_run(struct adopt_thread *);
-extern char adopt_return[];
+extern char adopt_exit_return[];
 static void *start(void *arg) {
     struct adopt_thread *t=arg;
     t->resident_fs=adopt_fs_read();
@@ -192,15 +192,21 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     else if(n==SYS_set_tid_address) { self->child_tid=g[REG_RDI]; result=R(gettid,0,0,0,0,0,0); }
     else if(n==SYS_exit) {
         robust_exit(self);
-        if(self->child_tid) {
-            atomic_store_explicit((_Atomic int *)self->child_tid,0,memory_order_release);
-            R(futex,self->child_tid,FUTEX_WAKE,INT_MAX,0,0,0);
-        }
+        /* Consume the signal frame before publishing exit: join may unmap
+         * the entire application stack as soon as the tid becomes zero. */
         adopt_fs_write(self->resident_fs);
-        g[REG_RSP]=self->resident_sp; g[REG_RIP]=(uintptr_t)adopt_return;
+        g[REG_RDI]=(uintptr_t)self;
+        g[REG_RSP]=self->resident_sp; g[REG_RIP]=(uintptr_t)adopt_exit_return;
         g[REG_RAX]=0; return;
     } else if(n==SYS_exit_group) R(exit_group,g[REG_RDI],0,0,0,0,0);
     g[REG_RAX]=result;
+}
+void adopt_publish_exit(struct adopt_thread *self) {
+    if(self->child_tid) {
+        uintptr_t word=self->child_tid;
+        atomic_store_explicit((_Atomic int *)word,0,memory_order_release);
+        R(futex,word,FUTEX_WAKE,INT_MAX,0,0,0);
+    }
 }
 static long identity(uintptr_t *p) {
     static pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
