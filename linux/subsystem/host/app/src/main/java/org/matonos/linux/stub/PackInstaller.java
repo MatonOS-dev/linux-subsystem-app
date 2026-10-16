@@ -27,11 +27,11 @@ public final class PackInstaller implements PackSessionPlan.Installer {
         this.context=context;this.pkg=pkg;this.artifacts=artifacts;this.cancelled=cancelled;this.callback=callback;
         installer=context.getPackageManager().getPackageInstaller();
     }
-    @Override public synchronized void begin(PackSessionPlan.Mode mode,boolean keep) throws Exception {
+    @Override public synchronized void begin(PackSessionPlan.Mode mode) throws Exception {
         if(terminal || cancelRequested || cancelled.getAsBoolean())throw new IOException("Install cancelled");
         PackageInstaller.SessionParams params=new PackageInstaller.SessionParams(mode==PackSessionPlan.Mode.FULL?
                 PackageInstaller.SessionParams.MODE_FULL_INSTALL:PackageInstaller.SessionParams.MODE_INHERIT_EXISTING);
-        params.setAppPackageName(pkg);params.setDontKillApp(keep);
+        params.setAppPackageName(pkg);
         params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
         id=installer.createSession(params);
         try {session=installer.openSession(id);}catch(Exception e){installer.abandonSession(id);id=-1;throw e;}

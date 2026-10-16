@@ -127,55 +127,20 @@ Packing runs before `verify_staged_install` takes staging away. After successful
 verification, LinuxAppStoreService invokes StubGenerator to create and log
 `base.apk` plus `pack_<hash>.apk` artifacts under a unique
 `<host-cache>/flatpak-pack-artifacts/stage-*` directory. Raw index, metadata and
-ZIPs live in its `objects/` subdirectory. Artifacts remain in cache for task 4c
-inspection. PackageInstaller still installs a separately generated legacy
-base only: split sessions, incremental update selection and artifact retention/
-cleanup policy are deliberately not wired yet.
+ZIPs live in its `objects/` subdirectory; they are removed once the install
+session finishes.
 
-This is not an integrated pack installer yet. In particular, linuxd separately
-reconstructs and sanitizes its verified published deployment; the packed
-phase-C files are not claimed to be byte-equivalent to that sanitized tree.
-Before enabling split sessions, review that trust/sanitization boundary and
-validate apply_extra and absolute symlink behavior on device.
-App-tree publication remains necessary for existing installs and Flatpak's
-installation metadata/dependency lookup, and has not been removed. Do not
-interpret host writer/signer/argument tests as a successful device install.
+linuxd separately reconstructs and sanitizes its verified published deployment;
+the packed phase-C files are not claimed to be byte-equivalent to that sanitized
+tree. That trust/sanitization boundary and apply_extra/absolute symlink behaviour
+still need device validation.
 
 Run `python3 linux/packs/tests/java-source.py` for the actual stock-CLI reader
 against host bare-user and bare-user-only repositories, byte equality with
 pack.py, framing widths through four bytes, binary/text xattrs, unusual names,
 and a final files/extra commit fixture. This does not run apply_extra itself.
 
-## Session planning constraints (task 4c)
-
-`PackSessionPlan` is an Android-independent planner with a fake installer seam.
-It plans base + all desired content splits for a first install, and a new base
-+ missing splits + removed split names for an inherited update. Desired split
-names must come from the new index, installed names from PackageManager.
-Repacked content receives a different hash/name. An existing content name is
-immutable and inherited. The planner is not connected to LinuxAppStoreService.
-The host stub test runner covers planning, rejected versions, commit/write/remove
-failures and cancellation before and during a session.
-
-Stock Android imposes two constraints that the install policy must resolve:
-
-- `PackageInstallerSession` checks an inherited session's version against the
-  existing package even if every split is replaced. Increasing versionCode
-  requires MODE_FULL_INSTALL with every carrier regenerated to match the new
-  base version. Inheriting unchanged carriers requires a fixed versionCode.
-  An increasing base revisionCode is a possible separate update counter; it is
-  not an increasing versionCode and is not implemented by this planner.
-- Supplying a base clears INSTALL_DONT_KILL_APP in both session modes. Since
-  objects.index is in base, pack index updates restart the Android app. The
-  planner requests dontKillApp only for an inherited session without a base;
-  the current pack format never uses that case for an index change.
-
-Source evidence in this checkout: frameworks/base/services/core/java/com/android/
-server/pm/PackageInstallerSession.java, assertPackageConsistentLocked and the
-MODE_INHERIT_EXISTING validation branch (Existing version check, base replacement
-clears setDontKillApp). Do not patch AOSP to bypass these checks.
-
-### PackageInstaller sessions (task 4c2)
+## PackageInstaller sessions
 
 Packs are the store's app install format. The base contains only the stub and
 its UI/permission metadata. Exactly one `index_<sha256>` code-free split holds
@@ -203,20 +168,9 @@ using installed APKs as old carriers (indexed payload offsets survive signing).
 Only newly generated raw ZIPs go through generatePack; retained signed APKs are
 inherited, or copied directly for a full same-version base replacement.
 
-**Stock limitation: split removal restarts the app.** This checkout's
-`frameworks/base/services/core/java/com/android/server/pm/PackageInstallerSession.java`
-lines 4813–4814 and 5164–5182 compare package names and versionCode, not
-revisionCode. `core/java/android/content/pm/parsing/ApkLiteParseUtils.java`
-222–225 requires matching versionCodes; 438 reads per-APK revisionCode.
-`PackageManagerServiceUtils.java` 1449–1473 rejects decreasing base or matching
-split revisions, not different revisions across APKs. A changed split revision
-therefore does not require a changed base revision. However,
-PackageInstallerSession 4836–4858 clears DONT_KILL_APP on **any** replacement or
-removal of an existing split. Every changed index requires removing its old
-split. The adapter requests setDontKillApp(true) only for a base-free inherited
-session, but stock PM clears it. Non-restarting index replacement is unavailable
-under the zero-framework-patches rule. A device test must confirm this behavior,
-not assume the requested flag guarantees process survival.
+Updates restart the app, as Android app updates do: every content update
+replaces the index split, and PackageManager kills the app when an existing split
+is replaced or removed. No DONT_KILL_APP is requested.
 
 The adapter streams/fsyncs each APK, removes obsolete names and commits once.
 A private asynchronous status broadcast completes the store operation. A pending
@@ -247,24 +201,8 @@ payload and fails closed while that registration is absent. An error after a
 successful PackageInstaller commit (for example bind_pending failing) is a
 post-install registration failure, not a rolled-back APK transaction.
 
-Host validation: run stubgen/tests/run-tests.sh (including signed index manifests,
-revision IDs, single-index rejection, retained installed-APK carrier offsets,
-base comparison, session planning and fake failures/cancellation),
-packs/tests/java-writer.py, java-source.py and run.sh. The filtered
+Tests: stubgen/tests/run-tests.sh, packs/tests/java-writer.py, java-source.py and run.sh. The filtered
 MATON_APPS_ONLY=matonos-linux-subsystem tools/build-apps.sh builds/signs the
 whole host app. Host-local AIDL declarations restore the existing private
 installer/callback types removed from the bridge; ILinuxdListener mirrors the
 canonical declaration in install/linuxd/aidl. No bridge ABI was changed.
-
-Real-PC checks (Ryzen/RX6600, Surface Pro 3, HP Haswell; same protocol on each):
-install a small app from the store, inspect its base and single index split,
-and launch with /app provided by installed APK carriers. Keep it running while
-updating a fixture with unchanged, added, repacked and deleted objects. Compare
-unchanged carrier inodes before/after, split revisions and removed split names.
-On the current stock PM expect the PID to change when the old index is removed,
-regardless of DONT_KILL_APP being requested. Verify apply_extra and runtime/
-extension dependencies, unplug/network failure during staging, cancellation
-while streaming, PackageInstaller rejection, free-space failure and uninstall.
-Repeat with enforcing SELinux, checking installed APK access, /app symlinks and
-lease release. Device execution is delegated to the coordinator; none was run
-in task 4c2.

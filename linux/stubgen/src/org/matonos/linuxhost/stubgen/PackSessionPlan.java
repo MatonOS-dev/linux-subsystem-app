@@ -12,15 +12,11 @@ public final class PackSessionPlan {
     public enum Mode { FULL, INHERIT }
     public final Mode mode;
     public final long versionCode;
-    public final boolean dontKillApp;
     public final List<String> write, remove;
 
     private PackSessionPlan(Mode mode, long version, boolean baseChanges,
             SortedSet<String> writes, SortedSet<String> removes) {
         this.mode=mode; versionCode=version;
-        // Stock PM also clears this flag when any existing split is removed.
-        // Keep the request explicit; do not promise process survival.
-        dontKillApp=mode==Mode.INHERIT && !baseChanges;
         write=Collections.unmodifiableList(new ArrayList<>(writes));
         remove=Collections.unmodifiableList(new ArrayList<>(removes));
     }
@@ -93,7 +89,7 @@ public final class PackSessionPlan {
      * callback delivery and abandonment after asynchronous commit failure.
      */
     public interface Installer {
-        void begin(Mode mode, boolean dontKillApp) throws Exception;
+        void begin(Mode mode) throws Exception;
         void write(String apk) throws Exception;
         void remove(String split) throws Exception;
         void commit() throws Exception;
@@ -106,7 +102,7 @@ public final class PackSessionPlan {
         boolean begun=false;
         try {
             checkCancelled(cancelled);
-            installer.begin(mode,dontKillApp);begun=true;
+            installer.begin(mode);begun=true;
             for(String apk:write){checkCancelled(cancelled);installer.write(apk);}
             for(String split:remove){checkCancelled(cancelled);installer.remove(split);}
             checkCancelled(cancelled);

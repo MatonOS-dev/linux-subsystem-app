@@ -13,7 +13,7 @@ public class PackSessionPlanTest {
     static class Fake implements PackSessionPlan.Installer {
         List<String> calls=new ArrayList<>();String fail;
         void call(String value)throws Exception{calls.add(value);if(value.equals(fail))throw new java.io.IOException(value);}
-        public void begin(PackSessionPlan.Mode mode,boolean keep)throws Exception{call(mode+":"+keep);}
+        public void begin(PackSessionPlan.Mode mode)throws Exception{call(mode.toString());}
         public void write(String apk)throws Exception{call("write:"+apk);}
         public void remove(String split)throws Exception{call("remove:"+split);}
         public void commit()throws Exception{call("commit");}
@@ -27,13 +27,13 @@ public class PackSessionPlanTest {
     }
     public static void main(String[] args)throws Exception {
         PackSessionPlan first=PackSessionPlan.create(false,0,1,list(),list(b,a),list(a,b),true);
-        check(first.mode==PackSessionPlan.Mode.FULL && !first.dontKillApp);
+        check(first.mode==PackSessionPlan.Mode.FULL);
         check(first.write.equals(list("base.apk",a+".apk",b+".apk")) && first.remove.isEmpty());
         PackSessionPlan update=PackSessionPlan.create(true,1,1,list(a,b),list(a,c),list(c),false);
-        check(update.mode==PackSessionPlan.Mode.INHERIT && update.dontKillApp);
+        check(update.mode==PackSessionPlan.Mode.INHERIT);
         check(update.write.equals(list(c+".apk")) && update.remove.equals(list(b)));
         Fake fake=new Fake();update.submit(fake);
-        check(fake.calls.equals(list("INHERIT:true","write:"+c+".apk","remove:"+b,"commit")));
+        check(fake.calls.equals(list("INHERIT","write:"+c+".apk","remove:"+b,"commit")));
         for(String fail:list("write:"+c+".apk","remove:"+b,"commit")) {
             Fake broken=new Fake();broken.fail=fail;rejects(()->update.submit(broken));
             check(broken.calls.get(broken.calls.size()-1).equals("abandon"));
@@ -42,8 +42,8 @@ public class PackSessionPlanTest {
         rejects(()->update.submit(cancelled,()->true));check(cancelled.calls.isEmpty());
         Fake during=new Fake();
         rejects(()->update.submit(during,()->during.calls.size()>=2));
-        check(during.calls.equals(list("INHERIT:true","write:"+c+".apk","abandon")));
-        check(PackSessionPlan.create(true,1,1,list(a),list(a),list(),false).dontKillApp);
+        check(during.calls.equals(list("INHERIT","write:"+c+".apk","abandon")));
+        check(PackSessionPlan.create(true,1,1,list(a),list(a),list(),false).mode==PackSessionPlan.Mode.INHERIT);
         check(PackSessionPlan.create(true,1,2,list(a),list(a),list(a),true).mode==PackSessionPlan.Mode.FULL);
         rejects(()->PackSessionPlan.create(true,1,2,list(a),list(a),list(a),false));
         rejects(()->PackSessionPlan.create(true,2,1,list(a),list(a),list(a),true));
@@ -54,9 +54,9 @@ public class PackSessionPlanTest {
         rejects(()->PackSessionPlan.create(false,0,1,list(),list(),list(),false));
         String ix="index_"+"d".repeat(64), next="index_"+"e".repeat(64);
         PackSessionPlan index=PackSessionPlan.create(true,17,17,list(a,ix),list(a,next),list(next),false);
-        check(index.write.equals(list(next+".apk")) && index.remove.equals(list(ix)) && index.dontKillApp);
+        check(index.write.equals(list(next+".apk")) && index.remove.equals(list(ix)));
         PackSessionPlan full=PackSessionPlan.create(true,17,18,list(a,ix),list(a,next),list(a,next),true);
-        check(full.mode==PackSessionPlan.Mode.FULL && !full.dontKillApp && full.remove.isEmpty());
+        check(full.mode==PackSessionPlan.Mode.FULL && full.remove.isEmpty());
         check(PackSessionPlan.nextRevision(17,17,0,new int[]{2,5,3})==6);
         check(PackSessionPlan.nextRevision(17,18,0,new int[]{Integer.MAX_VALUE})==1);
         rejects(()->PackSessionPlan.nextRevision(17,17,0,new int[]{Integer.MAX_VALUE}));
