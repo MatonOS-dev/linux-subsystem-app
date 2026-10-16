@@ -13,5 +13,5 @@ for source in loader proxy vfs links net sysvipc state; do
   "$compiler" -DPROXY_LIBRARY -O2 -fno-stack-protector -fno-builtin -fPIC -Wall -Wextra -Werror -c "$proxy/$source.c" -o "build/$source.o"
 done
 "$compiler" -c "$proxy/arch/x86_64/raw.S" -o build/raw.o
-"$compiler" -O2 -fPIC -fno-stack-protector -pie launcher.c build/*.o -ldl -o build/launcher
+"$compiler" -O2 -fPIC -fno-stack-protector -pie launcher.c build/{loader,proxy,vfs,links,net,sysvipc,state,raw}.o spike2/provider.c -pthread -ldl -o build/launcher
 cc -I"${MATON_AOSP_ROOT:-/mnt/data/aosp}/external/vulkan-headers/include" -O2 -fno-stack-protector -Wall -Wextra -Werror probe.c -ldl -pthread -o build/probe

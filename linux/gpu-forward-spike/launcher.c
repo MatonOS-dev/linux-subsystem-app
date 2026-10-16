@@ -4,7 +4,10 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/auxv.h>
+#include <elf.h>
 #include "bridge.h"
+#include "spike2/provider.h"
 #include "../compat-proxy/proxy.h"
 extern char **environ;
 int main(int argc, char **argv) {
@@ -18,8 +21,18 @@ int main(int argc, char **argv) {
     char value[32];
     snprintf(value, sizeof(value), "%lx", (unsigned long)&bridge);
     setenv("MATON_GPU_BRIDGE", value, 1);
+    shadow_publish();
     struct image image;
     if (proxy_load(argv[1], argv + 1, environ, &image)) return 4;
+    /* PROXY_LIBRARY has no entry-stack auxv import. Preserve the kernel's
+     * FSGSBASE permission bit in this isolated launcher's generated stack. */
+    uintptr_t *cursor = (uintptr_t *)image.stack;
+    uintptr_t count = *cursor++;
+    cursor += count + 1;
+    while (*cursor) cursor++;
+    Elf64_auxv_t *aux = (void *)(cursor + 1);
+    for (; aux->a_type; aux++)
+        if (aux->a_type == AT_HWCAP2) aux->a_un.a_val = getauxval(AT_HWCAP2);
     /* No policy installation: isolates the loader/TLS experiment from seccomp.
      * Device needs root or existing Android policy allowing these syscalls. */
     proxy_enter(image.entry, image.stack);
