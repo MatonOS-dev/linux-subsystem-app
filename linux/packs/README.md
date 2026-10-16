@@ -153,10 +153,10 @@ format change is needed: PackLaunch extracts the index and links only actual
 PackageManager-supplied APK paths for the existing proxy `--pack-mount` API.
 Missing or multiple index splits fail closed. There is no base-index fallback.
 
-VersionCode 17 identifies this stub template/format, equal in base and every
+VersionCode 18 identifies this stub template/format, equal in base and every
 split. Increase that constant only for a template/format change, using a full
 session with every split; never bump it for a content update. Changes to base
-contents (including desktop label/permissions) also require a full session.
+contents (including the appstream launcher label/permissions) also require a full session.
 Base comparison ignores ZIP timestamps and signature entries, comparing all
 actual entry bytes. Every newly generated content/index split receives one plus
 the maximum installed base/split revisionCode. Unchanged inherited splits keep

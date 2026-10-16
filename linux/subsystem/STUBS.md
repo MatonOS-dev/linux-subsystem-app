@@ -10,7 +10,7 @@ held by Android Keystore; it is not portable to another device.
 
 The v1 package contains:
 
-- A binary `AndroidManifest.xml` with the Flatpak display label, the required
+- A binary `AndroidManifest.xml` with the appstream display label, the required
   `<uses-library android:name="org.matonos.linuxhost"/>`, approved Android
   permission declarations, a launcher activity whose class is
   `org.matonos.linux.stub.StubActivity` (shipped `android:enabled="false"`;
@@ -19,9 +19,10 @@ The v1 package contains:
   `org.matonos.linux.stub.InstallActivity` ("install me": the store uses
   it to resume an interrupted install; no-op when installed), and a placeholder service class
   `org.matonos.linux.stub.StubService`.
-- An `ACTION_MAIN` / `CATEGORY_LAUNCHER` filter. Each valid MIME type from the
-  `.desktop` file's `MimeType=` entry is represented by its own `ACTION_VIEW`
-  filter with `CATEGORY_DEFAULT` and `CATEGORY_BROWSABLE`.
+- An `ACTION_MAIN` / `CATEGORY_LAUNCHER` filter. Stubs declare no
+  `ACTION_VIEW` MIME filters: the launcher label and icon come from the
+  remote's appstream data, not the deployment's exported `.desktop` file, so
+  its `MimeType=` entries are never read.
 - Activity metadata `org.matonos.linuxhost.FLATPAK_REF` containing the exact
   installed ref, `org.matonos.linuxhost.FLATPAK_REMOTE` containing the
   configured install remote, and `org.matonos.linuxhost.MIN_INTERFACE_VERSION`
@@ -30,15 +31,16 @@ The v1 package contains:
   dependencies from app metadata.
 - A minimal empty `resources.arsc` table required by Android PackageManager
   even though the stub declares no compiled resources.
-- The caller-provided PNG at `assets/matonos-stub/icon.png` and an empty,
-  valid `classes.dex`. The icon is retained as a package asset; the store can
-  decode/resize it when presenting the catalog.
+- The caller-provided PNG at `res/drawable/foreground.png` — the launcher icon
+  from the remote's appstream data — an adaptive icon XML, and an empty, valid
+  `classes.dex`.
 
 Package names are selected by the caller and must be unique Android package
 names. Stub format version is `1`; it is separate from the host interface
 version. The Flatpak ref is checked against the standard
-`app|runtime/name/arch/branch` form. Unsupported desktop MIME strings are
-skipped. Localized desktop labels and desktop actions are not part of v1.
+`app|runtime/name/arch/branch` form. The launcher label and icon are supplied
+by the store from the remote's appstream data; the generator never reads the
+deployment's `.desktop` file.
 
 ## Host interface
 
@@ -50,7 +52,7 @@ for future per-app D-Bus and portal integration; it does not implement those
 features in v1.
 
 The stub generator is `MatonLinuxStubGenerator` in `linux/stubgen`. Its Java
-entry point accepts an app-private work directory, Flatpak ref, `.desktop` file, PNG bytes,
+entry point accepts an app-private work directory, Flatpak ref, launcher label, PNG bytes,
 permission list, package name, and output APK file. It encodes the small
 binary XML vocabulary directly, so it does not require AAPT2 on-device, then
 signs with `apksig`. The Android Keystore alias
@@ -83,8 +85,8 @@ After the provider/engine split, repeat on a freshly built and booted image:
 
 1. Expose `MatonLinuxStubGenerator` to a small trusted test caller (the store
    app or bridge; integration is out of scope here).
-2. Generate a stub for `app/org.example.Test/x86_64/stable` with a minimal
-   Desktop Entry, PNG, and no permissions.
+2. Generate a stub for `app/org.example.Test/x86_64/stable` with an appstream
+   label, PNG, and no permissions.
 3. Install it with `pm install -r /data/local/tmp/test.apk`, verify `pm path`
    and dynamic-library resolution, enable it with `pm enable
    <package>/org.matonos.linux.stub.StubActivity`, then launch its
@@ -95,9 +97,8 @@ After the provider/engine split, repeat on a freshly built and booted image:
 ## Follow-up contract for the bridge and store
 
 The store must choose the package name, map requested Flatpak permissions to
-the approved Android permission list, provide the exported `.desktop` file
-and selected icon bytes, and invoke the generator when installing or
-updating a ref. The bridge/store integration also needs a narrow caller
+the approved Android permission list, provide the appstream launcher label and
+icon bytes, and invoke the generator when installing or updating a ref. The bridge/store integration also needs a narrow caller
 surface for this library and policy for which signed callers may mint stubs.
 The installed per-device key must not be exported or copied; after a reset,
 stubs are re-minted from installed refs and store metadata.
