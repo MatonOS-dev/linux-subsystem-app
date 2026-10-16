@@ -69,7 +69,7 @@ public final class OstreePacks {
         if(new File(repo,"state/"+checksum+".commitpartial").exists()){Files.deleteIfExists(commit.toPath());throw new IOException("Original commit is partial");}
         try {cli.run("fsck","--all","--delete");}
         catch(Exception error){Files.deleteIfExists(commit.toPath());throw error;}
-        cli.run("refs","--create=matonos/private/update-base",checksum);
+        cli.run("refs","--create=matonos/private/update-base/"+checksum,checksum);
     }
     private static void checksum(String s) throws IOException {
         if(!s.matches("[0-9a-f]{64}"))throw new IOException("Invalid OSTree checksum");
