@@ -80,14 +80,14 @@ public final class PerAppRuntime implements AutoCloseable {
                 return;
             }
         }
-        if (!new File("/system_ext/bin/Xwayland").isFile()) return;
         try {
+            File binaries = XwaylandFiles.prepare(context, directory);
             File sockets = new File(directory, "x11");
             if (!sockets.isDirectory() && !sockets.mkdir())
                 throw new java.io.IOException("Cannot create X11 socket directory");
             // All runtime sockets stay private to this app UID.
             Os.chmod(sockets.getAbsolutePath(), 0700);
-            if (!NativeCompositor.nativeXwaylandInit(sockets.getAbsolutePath(), "/system_ext/bin"))
+            if (!NativeCompositor.nativeXwaylandInit(sockets.getAbsolutePath(), binaries.getAbsolutePath()))
                 throw new java.io.IOException("Cannot initialize Xwayland");
             String display = NativeCompositor.nativeAddXwayland(SESSION, android.os.Process.myUid());
             if (display == null || !display.matches("X[0-9]+"))

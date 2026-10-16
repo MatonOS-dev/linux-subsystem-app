@@ -121,3 +121,25 @@ SHA1 from the bionic libgcrypt the Flatpak stack already ships)
 wlroots 0.20.2 now builds with -Dxwayland=enabled; its xcb dependencies and
 the xwayland.pc dependency (with have_* feature variables) resolve from
 xstage/x86_64.
+
+## v3.5 APK packaging (2026-10-16)
+
+Xwayland and xkbcomp are executable APK native libraries. Keyboard data is an
+APK asset; the server is built with xkb_bin_dir=., and the C launcher supplies
+-xkbdir and a private cwd whose xkbcomp symlink targets the APK native binary.
+GL forwarders retain their original SONAMEs through private runtime symlinks.
+No new upstream source changes are needed for this packaging.
+
+Inherited Bionic SHA1 dependencies (deliberately retained during packaging;
+these are separate from the static musl Flatpak build):
+libgcrypt 1.11.1, LGPL-2.1-or-later library (COPYING.LIB)
+  source: https://gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.1.tar.bz2
+  SHA-256: 24e91c9123a46c54e8371f3a3a2502f1198f2893fbfbf59af95bc1c21499b00e
+libgpg-error 1.51, LGPL-2.1-or-later library (COPYING.LIB)
+  source: https://gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2
+  SHA-256: be0f1b2db6b93eed55369cdf79f19f72750c8c7c39fc20b577e724545427e6b2
+The inherited build uses libgcrypt's shared lib/ and libgpg-error's lib64/;
+MATON_XWAYLAND_CRYPTO_PREFIX selects that Bionic prefix. Keep its source
+notices beside the prefix (or set MATON_XWAYLAND_CRYPTO_SOURCES). This change
+reuses that prepared dependency build; an empty-cache crypto bootstrap is
+not claimed. Other X11 source hashes and recipes remain above/in build-xwayland.sh.

@@ -108,6 +108,13 @@ def packagePipeWireNotices = tasks.register('packagePipeWireNotices', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn packagePipeWireNotices }
 
+def xwaylandOutput = new File(layout.buildDirectory.get().asFile, 'generated/xwayland')
+def packageXwayland = tasks.register('packageXwayland', Exec) {
+    outputs.upToDateWhen { false }
+    commandLine 'python3', file('../../../../tools/package-xwayland.py').absolutePath, xwaylandOutput.absolutePath
+}
+tasks.named('preBuild').configure { dependsOn packageXwayland }
+
 android {
     namespace 'org.matonos.linux'
     compileSdk 36
@@ -125,6 +132,8 @@ android {
             // so the preinstalled copy can also load JNI directly from the ZIP.
             useLegacyPackaging = true
             // Preserve the executable ELF, rather than treating it as a DSO.
+            keepDebugSymbols += '**/libmatonos-Xwayland*.so'
+            keepDebugSymbols += '**/libmatonos-xkbcomp.so'
             keepDebugSymbols += '**/libmatonos-dbus-broker.so'
             keepDebugSymbols += '**/libmatonos-flatpak-plan.so'
             keepDebugSymbols += '**/libmatonos-v3-loader.so'
@@ -153,6 +162,8 @@ android {
         main {
             java.srcDirs += file('../../../stubgen/src')
             jniLibs.srcDirs += file(System.getenv('MATON_COMPOSITOR_JNI_LIBS') ?: "$aospRoot/out/matonos/compositor/jniLibs")
+            jniLibs.srcDir new File(xwaylandOutput, 'jni')
+            assets.srcDir new File(xwaylandOutput, 'assets')
             jniLibs.srcDir brokerJni
             jniLibs.srcDir v3Jni
             jniLibs.srcDir planJni

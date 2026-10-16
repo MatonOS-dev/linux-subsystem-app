@@ -824,7 +824,7 @@ static void on_xwayland_ready(struct wl_listener* l,void* data) {
   __android_log_print(ANDROID_LOG_INFO,"MatonCompositor","Session %d: Xwayland ready on %s",
       xw->session,xw->xwayland?xw->xwayland->display_name:"?");
   if(xw->process_fd>=0)maton_xwayland_end(xw->process_fd,xw->process_pid);
-  char binary[512];snprintf(binary,sizeof(binary),"%s/Xwayland",server.xwayland_path);
+  char binary[512];snprintf(binary,sizeof(binary),"%s/libmatonos-Xwayland-server.so",server.xwayland_path);
   xw->process_fd=maton_xwayland_pin(binary,&xw->process_pid);
   xwayland_apply_socket_mode(xw);
   /* Xwayland uses our private socket directory, not /tmp/.X11-unix. */
@@ -847,7 +847,7 @@ static void on_xwayland_ready(struct wl_listener* l,void* data) {
 static void on_xwayland_destroy(struct wl_listener* l,void* data) {
   (void)data;struct XwaylandSession* xw=(struct XwaylandSession*)((char*)l-offsetof(struct XwaylandSession,destroy));
   if(xw->process_fd<0){
-    char binary[512];snprintf(binary,sizeof(binary),"%s/Xwayland",server.xwayland_path);
+    char binary[512];snprintf(binary,sizeof(binary),"%s/libmatonos-Xwayland-server.so",server.xwayland_path);
     xw->process_fd=maton_xwayland_pin(binary,&xw->process_pid);
   }
   maton_xwayland_end(xw->process_fd,xw->process_pid);
@@ -1214,17 +1214,12 @@ bool maton_core_xwayland_init(const char* socket_dir,const char* xwayland_path) 
   /* wlroots bakes the build-host Xwayland path from xwayland.pc into its
    * binary check and exec; WLR_XWAYLAND overrides both at runtime. */
   char binary[512];
-  int written=snprintf(binary,sizeof(binary),"%s/Xwayland",xwayland_path);
+  int written=snprintf(binary,sizeof(binary),"%s/libmatonos-Xwayland.so",xwayland_path);
   if(written<0||written>=(int)sizeof(binary))return false;
   /* Per-app clients share Xwayland's UID and use a mode-0600 socket. */
-  /* Xwayland's glamor uses the EGL/GLES/GBM forwarders in <prefix>/lib64/xwayland
-   * (linux/subsystem/xwayland-egl); only Xwayland, which inherits this
-   * environment, loads them. */
-  char libraries[512];
-  size_t prefix=strlen(xwayland_path);
-  if(prefix>=4&&!strcmp(xwayland_path+prefix-4,"/bin"))prefix-=4;
-  written=snprintf(libraries,sizeof(libraries),"%.*s/lib64/xwayland",(int)prefix,xwayland_path);
-  if(written<0||written>=(int)sizeof(libraries)||setenv("LD_LIBRARY_PATH",libraries,1))return false;
+  /* Private symlinks resolve APK library names, including the GL forwarders. */
+  const char* libraries=getenv("MATON_XWAYLAND_LIBDIR");
+  if(!libraries||setenv("LD_LIBRARY_PATH",libraries,1))return false;
   /* Mesa's Android build has no desktop GL: glamor's default GL-first probe
    * makes libepoxy dlopen libGLESv1_CM and abort, so ask for GLES directly. */
   return setenv("WLR_XWAYLAND",binary,1)==0&&

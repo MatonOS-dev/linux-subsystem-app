@@ -25,7 +25,7 @@ SRC=$SOURCES/src
 DOWN=$SOURCES/downloads
 COMPOSITOR_PREFIX=$BUILD/stage/x86_64
 COMPOSITOR_HOST=$BUILD/host
-FLATPAK_PREFIX=$AOSP/out/matonos/flatpak-ndk/prefix
+FLATPAK_PREFIX=${MATON_XWAYLAND_CRYPTO_PREFIX:-$AOSP/out/matonos/flatpak-ndk/prefix}
 mkdir -p "$BUILD" "$PREFIX" "$SRC"
 CC=$TOOLCHAIN/bin/x86_64-linux-android${API}-clang
 CXX=$TOOLCHAIN/bin/x86_64-linux-android${API}-clang++
@@ -171,7 +171,7 @@ Version: 24.1.13
 URL: https://gitlab.freedesktop.org/xorg/xserver/
 # The device runtime path: wlroots bakes this into XWAYLAND_PATH and checks
 # access(X_OK) on it at server creation. The build prefix would fail there.
-xwayland=/system_ext/bin/Xwayland
+xwayland=libmatonos-Xwayland.so
 have_glamor=true
 have_glamor_api=true
 have_eglstream=false
@@ -218,7 +218,7 @@ cp "$FLATPAK_PREFIX/lib/pkgconfig/libgcrypt.pc" \
 # (xwayland-egl/): libEGL, libGLESv2 and libgbm load Mesa through the
 # same-process-HAL namespace, and libEGL maps the GBM platform to
 # EGL_EXT_platform_device. They sit in lib/xwayland-egl (on device
-# /system_ext/lib64/xwayland), which only Xwayland's LD_LIBRARY_PATH names.
+# private runtime library links), which only Xwayland's LD_LIBRARY_PATH names.
 MESA_SRC=${MESA_DIR:-$HOME/Documents/mesa-26.2.3}
 [[ -f $MESA_SRC/src/gbm/main/gbm.h ]] || die "Mesa source (gbm.h) missing at $MESA_SRC"
 SHIM_SRC=$ROOT/xwayland-egl
@@ -299,7 +299,7 @@ configure_meson xwayland "$SRC/xwayland-24.1.13" \
   -Dxwayland_ei=false -Dxdmcp=false -Dsystemd_notify=false \
   -Dlibdecor=false -Dxvfb=false -Dsha1=libgcrypt \
   -Dxwayland-path="$PREFIX/bin" \
-  -Dxkb_dir=/system_ext/share/X11/xkb -Dxkb_bin_dir=/system_ext/bin \
+  -Dxkb_dir=/system_ext/share/X11/xkb -Dxkb_bin_dir=. \
   -Dxkb_output_dir=/system_ext/share/X11/xkb/compiled
 
 # Xwayland cannot start without a keymap: it runs xkbcomp on the XKB data at
@@ -332,7 +332,7 @@ Version: 24.1.13
 URL: https://gitlab.freedesktop.org/xorg/xserver/
 # The device runtime path: wlroots bakes this into XWAYLAND_PATH and checks
 # access(X_OK) on it at server creation. The build prefix would fail there.
-xwayland=/system_ext/bin/Xwayland
+xwayland=libmatonos-Xwayland.so
 have_glamor=true
 have_glamor_api=true
 have_eglstream=false

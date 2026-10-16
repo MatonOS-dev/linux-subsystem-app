@@ -44,7 +44,7 @@ if [[ ${1:-} == --build-dependencies ]]; then
   cp "$OUT_DIR/SOURCE" "$ROOT/linux/flatpak/prebuilt/static/SOURCE"
   python3 "$ROOT/tools/fetch-compositor.py"
   MATON_COMPOSITOR_BOOTSTRAP=1 bash "$ROOT/linux/subsystem/build-compositor.sh"
-  MATON_X11_CLIENTS_ONLY=1 bash "$ROOT/linux/subsystem/build-xwayland.sh"
+  bash "$ROOT/linux/subsystem/build-xwayland.sh"
   bash "$ROOT/linux/subsystem/build-compositor.sh"
 fi
 [[ -s $BUILD_DIR/flatpak/build.ninja ]] || { echo 'Build pinned dependencies first with --build-dependencies (see README)' >&2; exit 2; }
