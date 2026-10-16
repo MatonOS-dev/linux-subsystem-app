@@ -1,4 +1,4 @@
-MatonOS Flatpak APEX component notices
+MatonOS Flatpak component notices
 
 The following components are statically linked into the listed binaries.
 Each component's declared SPDX expression and selected license option are recorded in linked-components.json.

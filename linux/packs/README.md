@@ -107,7 +107,8 @@ remain in raw dirmeta objects, as in pack.py. This uses one CLI process per
 file; batching is a future performance improvement. No new APEX helper exists.
 
 On device, local CLI calls run the same packaged v3 loader as phase-C installs,
-with `--parent-pid`, then `/apex/com.matonos.flatpak/bin/matonos-flatpak ostree`.
+with `--parent-pid`, then the subsystem APK's
+`libmatonos-flatpak.so ostree` executable from its native-library directory.
 The explicit selector is important: multicall.c shifts argv so ostree receives
 its expected argv[0]. Local commands need no DNS transport.
 

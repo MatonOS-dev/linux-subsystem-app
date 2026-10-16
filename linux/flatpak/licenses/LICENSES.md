@@ -1,4 +1,4 @@
-# MatonOS Flatpak APEX licenses
+# MatonOS Flatpak licenses
 
 This bundle statically links the components listed in `licenses/linked-components.json`.
 The selected license option for every SPDX alternative is recorded there. Components with GPL-3.0 or LGPL-3.0 as the only usable option are rejected by the build gate.
