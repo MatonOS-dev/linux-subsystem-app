@@ -25,7 +25,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
-extern char proxy_clone_entry[],adopt_vfork_entry[];
+extern char proxy_clone_entry[],adopt_vfork_entry[],adopt_syscall_entry[];
 extern void proxy_restore(void);
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
 /* Chunk size controls allocation granularity, not registry capacity. Published
@@ -320,10 +320,12 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         g[REG_RAX]=0; return;
     } else if(n==SYS_exit_group) R(exit_group,g[REG_RDI],0,0,0,0,0);
     else {
-        result=proxy_raw(n,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],g[REG_R8],g[REG_R9]);
-        /* Internal restart codes cannot be exposed as userspace errno values.
-         * Full per-action SA_RESTART handling remains a signal-policy task. */
-        if(result<=-512 && result>=-516) result=-EINTR;
+        if(n==SYS_arch_prctl && g[REG_RDI]==0x1002) self->app_fs=g[REG_RSI];
+        g[REG_RCX]=g[REG_RIP];
+        g[REG_RIP]=(uintptr_t)adopt_syscall_entry;
+        g[REG_RAX]=n;
+        atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+        return;
     }
 finish:
     g[REG_RAX]=result;
