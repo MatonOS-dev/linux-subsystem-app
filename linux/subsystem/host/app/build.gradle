@@ -152,7 +152,6 @@ android {
     sourceSets {
         main {
             java.srcDirs += file('../../../stubgen/src')
-            aidl.srcDirs += file("$rootDir/../../../systembridge/aidl")
             jniLibs.srcDirs += file(System.getenv('MATON_COMPOSITOR_JNI_LIBS') ?: "$aospRoot/out/matonos/compositor/jniLibs")
             jniLibs.srcDir brokerJni
             jniLibs.srcDir v3Jni

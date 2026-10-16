@@ -53,7 +53,7 @@ output's `export/` (overrides the deployment entry) → the remote's
 appstream, read by the subsystem app itself (never supplied by a caller) →
 the Flatpak app id and a generic icon.
 
-Stub format version is `1` (`STUB_VERSION_CODE` is `19`); it is separate from
+Stub format version is `1` (`STUB_VERSION_CODE` is `20`); it is separate from
 the host interface version and only changes with the template/format. The
 Flatpak ref is checked against the standard `app|runtime/name/arch/branch`
 form.

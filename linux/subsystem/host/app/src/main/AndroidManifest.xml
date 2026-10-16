@@ -32,10 +32,8 @@
         <activity android:name=".stub.StubActivity" android:exported="true" />
         <activity android:name=".stub.InstallActivity" android:exported="true" />
         <service android:name=".stub.StubService" android:exported="false" />
-        <!-- Private worker endpoint owned by the subsystem app itself. -->
-        <service android:name=".stub.CompositorInstallService" android:exported="true"
+        <service android:name=".LinuxAppStoreService" android:exported="true"
             android:foregroundServiceType="dataSync" />
-        <service android:name=".LinuxAppStoreService" android:exported="true" />
         <receiver android:name=".LinuxAppStoreService$BootReceiver" android:exported="true">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
         </receiver>

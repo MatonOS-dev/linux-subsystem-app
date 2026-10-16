@@ -3,7 +3,6 @@ package org.matonos.linux.stub;
 import android.content.Context;
 import android.util.Log;
 import org.json.JSONObject;
-import org.matonos.systembridge.ICompositorInstallCallback;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
@@ -25,15 +24,21 @@ public final class InstallTransaction {
     /** Notified exactly once, on the worker thread, after the worker is done. */
     public interface Completion { void workerFinished(); }
 
+    public interface Callback {
+        void onProgress(String operationId, String phase, int percent, String line);
+        void onComplete(String operationId, String manifest);
+        void onFailed(String operationId, String error);
+    }
+
     private final Context context;
-    private final ICompositorInstallCallback callback;
+    private final Callback callback;
     private final String operationId;
     private final String appRef;
     private final String remote;
     private final AtomicBoolean cancelled = new AtomicBoolean();
     private volatile Process process;
 
-    private InstallTransaction(Context context, ICompositorInstallCallback callback,
+    private InstallTransaction(Context context, Callback callback,
             String operationId, String appRef, String remote) {
         this.context = context;
         this.callback = callback;
@@ -42,8 +47,8 @@ public final class InstallTransaction {
         this.remote = remote;
     }
 
-    /** Validates everything the bridge may pass before any staging is touched. */
-    public static InstallTransaction create(Context context, ICompositorInstallCallback callback,
+    /** Validates the requested transaction before any staging is touched. */
+    public static InstallTransaction create(Context context, Callback callback,
             String operationId, String appRef, String remote) {
         if (operationId == null || !OPERATION_ID.matcher(operationId).matches())
             throw new IllegalArgumentException("Invalid operation ID");

@@ -35,7 +35,7 @@ public final class StubGenerator {
     // v19 moves the launcher entry into a code-free launcher split, applies
     // Flatpak extra data in a per-package service, and carries the result in a
     // self-contained extra split mounted over the package's extra directory.
-    public static final int STUB_VERSION_CODE = 19;
+    public static final int STUB_VERSION_CODE = 20;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
@@ -769,7 +769,6 @@ public final class StubGenerator {
             startEnd("uses-permission",attrs(a("name","android.permission.INTERNET")));
             start("queries",null,attrs());
             startEnd("package",attrs(a("name","org.matonos.linux")));
-            startEnd("package",attrs(a("name","org.matonos.systembridge")));
             start("intent",null,attrs());
             startEnd("action",attrs(a("name","org.matonos.linuxhost.PACKAGE")));
             end("intent");

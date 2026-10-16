@@ -17,7 +17,6 @@ import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
 import org.json.JSONObject;
-import org.matonos.systembridge.ICompositorInstallCallback;
 import org.matonos.linux.stub.InstallTransaction;
 import org.matonos.linuxhost.stubgen.StubGenerator;
 import java.io.File;
@@ -35,6 +34,30 @@ public final class LinuxAppStoreService extends Service {
     private static final String INSTALL = "org.matonos.permission.INSTALL_LINUX_APPS";
     private static final String QUERY = "org.matonos.permission.QUERY_LINUX_APPS";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
+    private InstallTransaction activeInstall;
+    private android.os.PowerManager.WakeLock installWakeLock;
+
+    private void beginInstallForeground() {
+        android.app.NotificationManager manager=getSystemService(android.app.NotificationManager.class);
+        manager.createNotificationChannel(new android.app.NotificationChannel("linux-install",
+                "Linux application downloads",android.app.NotificationManager.IMPORTANCE_LOW));
+        startForeground(3,new android.app.Notification.Builder(this,"linux-install")
+                .setContentTitle("Linux application download").setSmallIcon(android.R.drawable.stat_sys_download)
+                .setOngoing(true).build(),android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        installWakeLock=getSystemService(android.os.PowerManager.class).newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK,"MatonOS:Install");
+        installWakeLock.setReferenceCounted(false);
+        installWakeLock.acquire();
+    }
+
+    private synchronized void finishInstall(InstallTransaction transaction) {
+        if(activeInstall!=transaction)return;
+        activeInstall=null;
+        if(installWakeLock!=null && installWakeLock.isHeld())installWakeLock.release();
+        installWakeLock=null;
+        stopForeground(STOP_FOREGROUND_REMOVE);
+    }
+
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Map<String, Operation> operations = new ConcurrentHashMap<>();
     private final Map<String, Operation> pending = new ConcurrentHashMap<>();
@@ -47,7 +70,7 @@ public final class LinuxAppStoreService extends Service {
         final String id, kind, ref, remote, name, url;
         final ILinuxAppStoreCallback callback;
         volatile boolean cancelled;
-        volatile org.matonos.systembridge.ICompositorInstall installService;
+        volatile InstallTransaction installService;
         volatile String stagedMetadata;
         volatile File packArtifacts;
         volatile PackageInfo installed;
@@ -100,7 +123,7 @@ public final class LinuxAppStoreService extends Service {
                 throw new SecurityException("Operation is not owned by caller");
             if(op.packInstaller!=null && !op.packInstaller.cancelBeforeCommit())return;
             op.cancelled=true;
-            if(op.installService!=null)try{op.installService.cancelInstall(op.stagingId);}catch(Exception ignored){}
+            if(op.installService!=null)try{op.installService.cancel(op.stagingId);}catch(Exception ignored){}
             if(op.installService==null)result(op,false,"Operation cancelled");
         }
     };
@@ -197,7 +220,7 @@ public final class LinuxAppStoreService extends Service {
             if(!remoteFor(op.ref).equals(remote))throw new SecurityException("Ref already installed from another remote; uninstall first");
         }catch(PackageManager.NameNotFoundException absent) { }
         InstallTransaction.prepare(this,op.stagingId,"repair".equals(op.kind));
-        ICompositorInstallCallback stagedCallback=new ICompositorInstallCallback.Stub() {
+        InstallTransaction.Callback stagedCallback=new InstallTransaction.Callback() {
             @Override public void onProgress(String operationId,String phase,int percent,String line) {
                 try { op.callback.onProgress(op.id,phase,percent,-1,-1); }
                 catch(Exception e) { Log.w(TAG,"Cannot deliver install progress",e); }
@@ -227,11 +250,17 @@ public final class LinuxAppStoreService extends Service {
                 result(op,false,error);
             }
         };
-        android.content.ServiceConnection connection=new android.content.ServiceConnection(){
-            @Override public void onServiceConnected(ComponentName name,IBinder service){try{op.installService=org.matonos.systembridge.ICompositorInstall.Stub.asInterface(service);op.installService.startInstall(stagedCallback,op.stagingId,op.ref,remote);}catch(Exception error){result(op,false,error.getMessage());}finally{unbindService(this);}}
-            @Override public void onServiceDisconnected(ComponentName name){result(op,false,"Flatpak installer disconnected");}
-        };
-        if(!bindService(new Intent(this,org.matonos.linux.stub.CompositorInstallService.class),connection,Context.BIND_AUTO_CREATE))throw new IllegalStateException("Cannot connect to Flatpak installer");
+        synchronized (this) {
+            if (activeInstall != null) throw new IllegalStateException("Another install is active");
+            InstallTransaction transaction=InstallTransaction.create(this,stagedCallback,op.stagingId,op.ref,remote);
+            activeInstall=transaction;
+            op.installService=transaction;
+            try {
+                beginInstallForeground();
+                if(op.cancelled)transaction.cancel();
+                transaction.start(()->finishInstall(transaction));
+            } catch(RuntimeException error) {finishInstall(transaction);throw error;}
+        }
     }
 
     private void cleanupUnusedPackages() {
@@ -613,5 +642,5 @@ public final class LinuxAppStoreService extends Service {
         operations.remove(operationKey(op.uid,op.id),op); pending.remove(operationKey(op.uid,op.id),op);
     }
 
-    @Override public void onDestroy() { instance=null; worker.shutdownNow(); super.onDestroy(); }
+    @Override public synchronized void onDestroy() { if(activeInstall!=null){activeInstall.cancel();finishInstall(activeInstall);} instance=null; worker.shutdownNow(); super.onDestroy(); }
 }
