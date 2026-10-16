@@ -12,7 +12,7 @@ import android.os.ParcelFileDescriptor;
  * {@code org.matonos.linux}'s and refuses every other caller.
  *
  * <p>{@code applyExtra} writes {@link org.matonos.linux.stub.ExtraProtocol}'s
- * status byte and, for STATUS_OK, a ustar archive of the applied extra tree
+ * status byte and, for STATUS_OK, an unsigned package-built extra split APK
  * into {@code output}.
  */
 interface IExtraExec {

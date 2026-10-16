@@ -96,9 +96,12 @@ public final class PackLaunch {
     static Set<String> packs(byte[] index) throws IOException {
         try {
             ByteBuffer b=ByteBuffer.wrap(index).order(ByteOrder.LITTLE_ENDIAN);
+            if(index==null || index.length<12)throw new IOException("Truncated pack index");
             byte[] magic=new byte[8];b.get(magic);
             if(!Arrays.equals(magic,"MTPKIDX1".getBytes(StandardCharsets.US_ASCII)))throw new IOException("Invalid pack index");
-            long count=Integer.toUnsignedLong(b.getInt());Set<String> packs=new TreeSet<>();
+            long count=Integer.toUnsignedLong(b.getInt());
+            if(count>b.remaining()/4L)throw new IOException("Invalid pack index entry count");
+            Set<String> packs=new TreeSet<>();
             for(long i=0;i<count;i++) {
                 String path=string(b),checksum=string(b),pack=string(b),kind=string(b);string(b);blob(b);
                 long offset=b.getLong(),length=b.getLong();b.getInt();b.getInt();b.getInt();

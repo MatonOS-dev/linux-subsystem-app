@@ -8,6 +8,7 @@ import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.concurrent.CountDownLatch;
@@ -25,13 +26,12 @@ import org.matonos.linuxhost.stubgen.StubGenerator;
  *
  * <p>The subsystem app installs a package's content (packs, no applied extra
  * output), then binds the package's own service, which runs {@code apply_extra}
- * under the package's UID, and receives the applied tree as a ustar archive
- * over a pipe. The archive is validated and extracted into a fresh directory;
- * the caller packs it as the package's {@code extra_} split. The package is not
+     * under the package's UID, and receives its unsigned {@code extra_} APK
+     * over a pipe. The subsystem app only validates its signing identity and signs it. The package is not
  * running yet: the base stub has no launcher entry until this step succeeds.
  *
  * <p>The pipe is the whole protocol: the service owns the write end and writes
- * {@link ExtraProtocol}'s status byte (and, on success, the archive). A service
+ * {@link ExtraProtocol}'s status byte (and, on success, the APK). A service
  * that crashes is an ordinary truncation, and the watchdog closes the read end
  * so a stuck vendor script cannot pin the worker forever.
  */
@@ -43,7 +43,7 @@ public final class ExtraInstall {
     private ExtraInstall() { }
 
     /**
-     * Applies {@code pkg}'s extra data and extracts the result into
+     * Applies {@code pkg}'s extra data and stages/signs its split APK in
      * {@code destination}. Returns {@code destination}, or {@code null} when
      * the package has no extra data at all ({@link ExtraProtocol#STATUS_NONE}).
      * Any failure is an {@link IOException} and leaves no installed split: the
@@ -76,14 +76,14 @@ public final class ExtraInstall {
             if (failure.get() != null) throw new IOException(failure.get());
             IExtraExec extra = service.get();
             if (extra == null) throw new IOException("The package declares no extra service");
-            return read(extra, destination, timeoutMs);
+            return read(extra, pkg, destination, timeoutMs);
         } finally {
             try { context.unbindService(connection); } catch (Exception ignored) { }
         }
     }
 
     /** One request: hand the service the pipe's write end, then read the reply. */
-    private static File read(IExtraExec extra, File destination, long timeoutMs) throws Exception {
+    private static File read(IExtraExec extra, String pkg, File destination, long timeoutMs) throws Exception {
         ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
         final AtomicBoolean timedOut = new AtomicBoolean();
         ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -109,8 +109,34 @@ public final class ExtraInstall {
                 if (status == ExtraProtocol.STATUS_NONE) return null;
                 if (status == ExtraProtocol.STATUS_ERROR) throw new IOException(message(in));
                 if (status != ExtraProtocol.STATUS_OK) throw new IOException("Unexpected extra service reply");
-                Tar.extract(in, destination, ExtraProtocol.MAX_OUTPUT_BYTES);
-                return destination;
+                String packageName = readString(in), splitName = readString(in);
+                int versionCode = readInt(in); long length = readLong(in);
+                if (!packageName.equals(pkg) || versionCode != StubGenerator.STUB_VERSION_CODE ||
+                        !splitName.matches("extra_[0-9a-f]{64}") || length < 0 ||
+                        length > destination.getParentFile().getUsableSpace())
+                    throw new IOException("Invalid extra split identity or insufficient staging space");
+                java.nio.file.Files.createDirectories(destination.getParentFile().toPath());
+                File unsigned = new File(destination.getParentFile(), splitName + ".unsigned.apk");
+                File signed = new File(destination.getParentFile(), splitName + ".apk");
+                try {
+                    try (FileOutputStream out = new FileOutputStream(unsigned)) {
+                        byte[] buffer = new byte[65536]; long remaining = length;
+                        while (remaining > 0) {
+                            int count = in.read(buffer, 0, (int)Math.min(buffer.length, remaining));
+                            if (count < 0) throw new IOException("Truncated extra APK stream");
+                            out.write(buffer, 0, count); remaining -= count;
+                        }
+                    }
+                    if (!StubGenerator.validExtraIdentity(unsigned, packageName, splitName))
+                        throw new IOException("Extra APK manifest identity mismatch");
+                    StubGenerator.signExtra(unsigned, signed);
+                } finally { unsigned.delete(); }
+                if (!signed.renameTo(new File(destination.getParentFile(), destination.getName()))) {
+                    File target=new File(destination.getParentFile(),destination.getName());
+                    java.nio.file.Files.move(signed.toPath(),target.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    return target;
+                }
+                return new File(destination.getParentFile(),destination.getName());
             } catch (IOException error) {
                 if (timedOut.get()) throw new IOException("The package's apply_extra timed out", error);
                 throw error;
@@ -119,6 +145,22 @@ public final class ExtraInstall {
             kill.cancel(false);
             watchdog.shutdownNow();
         }
+    }
+
+    private static String readString(InputStream in) throws IOException {
+        int length = readInt(in);
+        if (length < 1 || length > 512) throw new IOException("Invalid extra identity field");
+        byte[] bytes = new byte[length]; int offset = 0;
+        while (offset < length) { int count = in.read(bytes, offset, length-offset); if (count < 0) throw new IOException("Truncated identity"); offset += count; }
+        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    }
+    private static int readInt(InputStream in) throws IOException {
+        int a=in.read(),b=in.read(),c=in.read(),d=in.read();
+        if ((a|b|c|d)<0) throw new IOException("Truncated extra response");
+        return (a<<24)|(b<<16)|(c<<8)|d;
+    }
+    private static long readLong(InputStream in) throws IOException {
+        long value=0; for(int i=0;i<8;i++){int b=in.read();if(b<0)throw new IOException("Truncated extra response");value=(value<<8)|(b&255);} return value;
     }
 
     private static IOException truncated(AtomicBoolean timedOut) {

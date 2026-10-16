@@ -363,6 +363,14 @@ public final class StubGenerator {
      * the launcher components and their resources. */
     public static File generateExtra(File workDir,String pkg,File objects,File output,int revision,
             String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
+        File unsigned=generateExtraUnsigned(workDir,pkg,objects,revision,launcherLabel,launcherMimeTypes,launcherIcon);
+        try { sign(unsigned,output,getOrCreateKey()); return output; }
+        finally { unsigned.delete(); }
+    }
+
+    /** Builds the package's extra split without signing it. */
+    public static File generateExtraUnsigned(File workDir,String pkg,File objects,int revision,
+            String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
         if(!packageName(pkg))throw new IllegalArgumentException("Invalid package name");
         if(!new File(objects,"objects.index").isFile()||!new File(objects,"objects.ostree").isFile())
@@ -375,7 +383,7 @@ public final class StubGenerator {
             if(pack==null)pack=entry.pack;
             else if(!pack.equals(entry.pack))throw new IOException("Extra split requires a single pack");
         }
-        if(pack==null)throw new IOException("Extra split has no payload");
+        if(pack==null)throw new IOException("Extra split has no payload pack");
         String split=extraSplitName(objects,launcher?launcherLabel:null,launcherMimeTypes,launcher?launcherIcon:null);
         BinaryManifest manifest=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
         manifest.revisionCode=revision;
@@ -390,8 +398,54 @@ public final class StubGenerator {
             appended.put("res/drawable/icon.xml",new BinaryManifest("","","","flathub",Collections.emptyList()).adaptiveIcon(0x7f020000));
         }
         File unsigned=File.createTempFile("matonos-extra-",".apk",workDir);
-        try {ObjectPacks.carrier(new File(objects,pack),unsigned,appended);sign(unsigned,output,getOrCreateKey());return output;}
-        finally {unsigned.delete();}
+        ObjectPacks.carrier(new File(objects,pack),unsigned,appended);
+        return unsigned;
+    }
+
+    /** Validates an unsigned extra split's minimal signing identity. */
+    /**
+     * The extra split is built inside the package, next to vendor code, so the
+     * subsystem only signs it when its manifest is exactly the identity plus a
+     * code-free application and the APK carries no code.
+     */
+    public static boolean validExtraIdentity(File apk,String pkg,String split) throws Exception {
+        if(!packageName(pkg)||split==null||!split.matches("extra_[0-9a-f]{64}")) return false;
+        try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(apk)) {
+            for(java.util.Enumeration<? extends java.util.zip.ZipEntry> e=zip.entries();e.hasMoreElements();) {
+                String name=e.nextElement().getName();
+                if(name.endsWith(".dex")||name.startsWith("lib/")||name.equals("resources.arsc"))return false;
+            }
+            java.util.zip.ZipEntry manifest=zip.getEntry("AndroidManifest.xml");
+            if(manifest==null)return false;
+            byte[] bytes;
+            try(java.io.InputStream in=zip.getInputStream(manifest)){bytes=in.readAllBytes();}
+            com.android.apksig.internal.apk.AndroidBinXmlParser parser =
+                    new com.android.apksig.internal.apk.AndroidBinXmlParser(java.nio.ByteBuffer.wrap(bytes));
+            boolean identity=false,codeFree=false;
+            for(;parser.getEventType()!=com.android.apksig.internal.apk.AndroidBinXmlParser.EVENT_END_DOCUMENT;parser.next()) {
+                if(parser.getEventType()!=com.android.apksig.internal.apk.AndroidBinXmlParser.EVENT_START_ELEMENT)continue;
+                String element=parser.getName();
+                if("manifest".equals(element)&&parser.getDepth()==1) {
+                    String foundPackage=null,foundSplit=null;Integer version=null;
+                    for(int i=0;i<parser.getAttributeCount();i++) {
+                        String name=parser.getAttributeName(i);
+                        if("package".equals(name))foundPackage=parser.getAttributeStringValue(i);
+                        else if("split".equals(name))foundSplit=parser.getAttributeStringValue(i);
+                        else if("versionCode".equals(name))version=parser.getAttributeIntValue(i);
+                    }
+                    identity=pkg.equals(foundPackage)&&split.equals(foundSplit)&&version!=null&&version==STUB_VERSION_CODE;
+                } else if("application".equals(element)&&parser.getDepth()==2) {
+                    for(int i=0;i<parser.getAttributeCount();i++)
+                        if("hasCode".equals(parser.getAttributeName(i)))codeFree=!parser.getAttributeBooleanValue(i);
+                } else if(!("uses-sdk".equals(element)&&parser.getDepth()==2)) return false;
+            }
+            return identity&&codeFree;
+        }
+    }
+
+    /** Signs an identity-checked package-built extra split with the subsystem key. */
+    public static File signExtra(File unsigned,File output) throws Exception {
+        sign(unsigned,output,getOrCreateKey()); return output;
     }
 
     private static boolean packageName(String pkg) {

@@ -353,7 +353,9 @@ public final class LinuxAppStoreService extends Service {
         int revision=org.matonos.linuxhost.stubgen.PackSessionPlan.nextRevision(
                 op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
                 op.installed==null?0:op.installed.baseRevisionCode,op.installed==null?null:op.installed.splitRevisionCodes);
-        boolean hasExtra=org.matonos.linux.stub.ExtraPayload.hasExtra(readIndex(objects));
+        boolean hasExtra=false;
+        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
+            if(row.path.equals("/extra")||row.path.startsWith("/extra/")){hasExtra=true;break;}
         java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
         String index=StubGenerator.indexSplitName(objects);desired.add(index);
         if(full || !prior.contains(index)) {
@@ -361,11 +363,7 @@ public final class LinuxAppStoreService extends Service {
         }
         addContentPacks(op,pkg,work,objects,prior,full,revision,desired,available);
         if(hasExtra) {
-            // The extra step decides between a separate launcher split and one
-            // carried by the extra split; keep an installed launcher alive
-            // until then so a failed update never strips the app.
-            for(String split:prior)
-                if(split.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX)) desired.add(split);
+            for(String split:prior) if(split.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX)) desired.add(split);
         } else {
             addLauncherSplit(op,pkg,work,revision,launcher.label,launcher.mimeTypes,baseIcon,prior,full,desired,available);
         }
@@ -378,22 +376,15 @@ public final class LinuxAppStoreService extends Service {
         File applied;
         try { applied=org.matonos.linux.stub.ExtraInstall.apply(this,pkg,new File(op.packArtifacts,"extra-output")); }
         catch(Exception failure) { if(op.installed==null) removePackage(pkg); throw failure; }
-        org.matonos.linux.stub.LauncherData extraLauncher=org.matonos.linux.stub.LauncherData.fromExtraOutput(applied,appId);
-        org.matonos.linux.stub.LauncherData chosen=extraLauncher!=null?extraLauncher:launcher;
-        byte[] chosenIcon=chosen.icon!=null?chosen.icon:fallbackIcon();
         PackageInfo after=getPackageManager().getPackageInfo(pkg,0);
         java.util.List<String> installedNow=after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames);
         java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
         desired2.add(index);
         for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
             if(row.kind.equals("file")) desired2.add("pack_"+row.pack.substring(5,69));
-        File extraObjects=new File(op.packArtifacts,"extra-objects");
-        if(chosen.fromExtra) {
-            addExtraSplit(op,pkg,work,extraObjects,applied,revision,chosen.label,chosen.mimeTypes,chosenIcon,desired2,available2);
-        } else {
-            addLauncherSplit(op,pkg,work,revision,chosen.label,chosen.mimeTypes,chosenIcon,installedNow,false,desired2,available2);
-            addExtraSplit(op,pkg,work,extraObjects,applied,revision,null,null,null,desired2,available2);
-        }
+        if(applied!=null) { String split=applied.getName().replace(".apk", ""); desired2.add(split); available2.add(split); }
+        if(!installedNow.stream().anyMatch(s->s.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX)))
+            addLauncherSplit(op,pkg,work,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
         runPackSession(op,pkg,op.packArtifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
         finishStubInstall(op,success());
     }
@@ -436,24 +427,6 @@ public final class LinuxAppStoreService extends Service {
             StubGenerator.generateLauncher(work,pkg,label,mimeTypes,icon,new File(op.packArtifacts,split+".apk"),revision);
             available.add(split);
         }
-    }
-
-    /** Packs an applied extra tree as a self-contained {@code extra_} split.
-     * When {@code label} is non-null the split also carries the launcher. */
-    private void addExtraSplit(Operation op,String pkg,File work,File extraObjects,File applied,int revision,
-            String label,java.util.List<String> mimeTypes,byte[] icon,
-            java.util.List<String> desired,java.util.List<String> available) throws Exception {
-        java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=
-                org.matonos.linuxhost.stubgen.ObjectPacks.fromTree(applied,"/");
-        if(entries.isEmpty())return; // An apply_extra that produced nothing publishes no split.
-        org.matonos.linuxhost.stubgen.ObjectPacks.initial(entries,extraObjects,Long.MAX_VALUE);
-        org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(extraObjects,"objects.index"),entries);
-        org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(extraObjects,"objects.ostree"),java.util.Collections.emptyMap());
-        String split=StubGenerator.extraSplitName(extraObjects,label,mimeTypes,icon);
-        if(desired.contains(split))return;
-        desired.add(split);
-        StubGenerator.generateExtra(work,pkg,extraObjects,new File(op.packArtifacts,split+".apk"),revision,label,mimeTypes,icon);
-        available.add(split);
     }
 
     private static org.matonos.linuxhost.stubgen.PackSessionPlan plan(boolean installed,long installedVersion,
@@ -570,14 +543,16 @@ public final class LinuxAppStoreService extends Service {
             // so an old extra split disappears when the new commit has none.
             try {
                 File applied=null;
-                if(org.matonos.linux.stub.ExtraPayload.hasExtra(java.nio.file.Files.readAllBytes(new File(objects,"objects.index").toPath())))
+                boolean hasRawExtra=false;
+                for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
+                    if(row.path.equals("/extra")||row.path.startsWith("/extra/")){hasRawExtra=true;break;}
+                if(hasRawExtra)
                     applied=org.matonos.linux.stub.ExtraInstall.apply(this,pkg,new File(runtimeDir,"extra-output"));
-                File extraObjects=new File(runtimeDir,"extra-objects");
                 java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
                 desired2.add(index);
                 for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
                     if(row.kind.equals("file")) desired2.add("pack_"+row.pack.substring(5,69));
-                addRuntimeExtraSplit(runtimeDir,pkg,extraObjects,applied,revision,desired2,available2);
+                if(applied!=null) { String split=applied.getName().replace(".apk", ""); desired2.add(split); available2.add(split); }
                 PackageInfo after=getPackageManager().getPackageInfo(pkg,0);
                 org.matonos.linuxhost.stubgen.PackSessionPlan extraPlan=org.matonos.linuxhost.stubgen.PackSessionPlan.create(
                         true,after.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
@@ -588,21 +563,6 @@ public final class LinuxAppStoreService extends Service {
                 throw failure;
             }
         }
-    }
-
-    private void addRuntimeExtraSplit(File runtimeDir,String pkg,File objects,File applied,int revision,
-            java.util.List<String> desired,java.util.List<String> available) throws Exception {
-        if(applied==null)return;
-        java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=
-                org.matonos.linuxhost.stubgen.ObjectPacks.fromTree(applied,"/");
-        if(entries.isEmpty())return;
-        org.matonos.linuxhost.stubgen.ObjectPacks.initial(entries,objects,Long.MAX_VALUE);
-        org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(objects,"objects.index"),entries);
-        org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(objects,"objects.ostree"),java.util.Collections.emptyMap());
-        String split=StubGenerator.extraSplitName(objects);
-        desired.add(split);
-        StubGenerator.generateExtra(runtimeDir,pkg,objects,new File(runtimeDir,split+".apk"),revision,null,null,null);
-        available.add(split);
     }
 
     private void submitRuntimeSession(Operation op,String pkg,File runtimeDir,

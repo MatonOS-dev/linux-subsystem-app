@@ -4,6 +4,7 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageInfo;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
@@ -32,7 +33,7 @@ import java.util.concurrent.TimeUnit;
  * {@code apply_extra} is arbitrary vendor code, so the installer never runs
  * it: it is deferred here, where the process already belongs to the package's
  * UID and SELinux domain, and the result is handed back to the subsystem app
- * as an archive so it can be published as an ordinary content split.
+ * as a split APK so the subsystem app only needs to sign and install it.
  *
  * <p>The mount point comes from the service's own {@code EXTRA_MOUNT}
  * metadata ({@code /app} for apps, the runtime's mount point otherwise). The
@@ -73,13 +74,27 @@ public final class ExtraService extends Service {
                 ApplicationInfo info = getApplicationInfo();
                 byte[] index = readIndex(info);
                 Map<String, String> carriers = carriers(info);
-                if (!ExtraPayload.materialize(index, carriers, work)) {
+                if (!hasExtra(index)) {
                     stream.write(ExtraProtocol.STATUS_NONE);
                     return;
                 }
-                if (ExtraPayload.hasFile(index, ExtraPayload.APPLY_EXTRA)) runApplyExtra(info, work);
-                stream.write(ExtraProtocol.STATUS_OK);
-                Tar.write(work, stream);
+                materialize(index, carriers, work);
+                if (hasFile(index, "/bin/apply_extra")) runApplyExtra(info, work);
+                File objects = packApplied(work);
+                String split = StubGenerator.extraSplitName(objects);
+                int revision = getPackageManager().getPackageInfo(getPackageName(), 0).baseRevisionCode;
+                File apk = StubGenerator.generateExtraUnsigned(getCacheDir(), getPackageName(), objects,
+                        revision, null, null, null);
+                try {
+                    stream.write(ExtraProtocol.STATUS_OK);
+                    writeString(stream, getPackageName()); writeString(stream, split);
+                    writeInt(stream, StubGenerator.STUB_VERSION_CODE);
+                    writeLong(stream, apk.length());
+                    try (java.io.InputStream in = new java.io.FileInputStream(apk)) {
+                        byte[] buffer = new byte[65536]; int count;
+                        while ((count = in.read(buffer)) != -1) stream.write(buffer, 0, count);
+                    }
+                } finally { apk.delete(); }
             } catch (Throwable failure) {
                 Log.e(TAG, "apply_extra failed for " + getPackageName(), failure);
                 try {
@@ -95,6 +110,61 @@ public final class ExtraService extends Service {
         } catch (IOException ignored) {
             // The subsystem app stopped reading (cancelled or timed out).
         }
+    }
+
+    private static boolean hasExtra(byte[] index) throws IOException {
+        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(index))
+            if (entry.path.equals("/extra") || entry.path.startsWith("/extra/")) return true;
+        return false;
+    }
+    private static boolean hasFile(byte[] index, String path) throws IOException {
+        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(index))
+            if (entry.path.equals(path) && entry.kind.equals("file")) return true;
+        return false;
+    }
+    private static void materialize(byte[] index, Map<String,String> carriers, File destination) throws IOException {
+        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(index)) {
+            String path=entry.path;
+            if (!path.equals("/extra") && !path.startsWith("/extra/")) continue;
+            String name=path.substring("/extra".length()); if(name.startsWith("/"))name=name.substring(1);
+            File target=name.isEmpty()?destination:new File(destination,name);
+            if(entry.kind.equals("dir")) { target.mkdirs(); }
+            else if(entry.kind.equals("symlink")) {
+                java.nio.file.Path link=java.nio.file.Path.of(entry.target);
+                if(link.isAbsolute())throw new IOException("Unsafe extra-data link");
+                java.nio.file.Files.createSymbolicLink(target.toPath(),link);
+            } else if(entry.kind.equals("file")) {
+                File carrier=new File(carriers.get(entry.pack));
+                try(java.io.RandomAccessFile in=new java.io.RandomAccessFile(carrier,"r");
+                    java.io.OutputStream out=new java.io.FileOutputStream(target)) {
+                    in.seek(entry.offset); byte[] buffer=new byte[65536]; long left=entry.length;
+                    while(left>0){int count=in.read(buffer,0,(int)Math.min(buffer.length,left));if(count<0)throw new IOException("Truncated extra payload");out.write(buffer,0,count);left-=count;}
+                }
+                if((entry.mode&0111)!=0)target.setExecutable(true,true);
+            }
+        }
+    }
+
+    private File packApplied(File applied) throws Exception {
+        File objects = new File(getCacheDir(), "extra-objects");
+        remove(objects); if (!objects.mkdirs()) throw new IOException("Cannot create extra pack directory");
+        java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries =
+                org.matonos.linuxhost.stubgen.ObjectPacks.fromTree(applied, "/");
+        if (entries.isEmpty()) throw new IOException("apply_extra produced no files");
+        org.matonos.linuxhost.stubgen.ObjectPacks.initial(entries, objects, Long.MAX_VALUE);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(objects, "objects.index"), entries);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(objects, "objects.ostree"), java.util.Collections.emptyMap());
+        return objects;
+    }
+
+    private static void writeString(OutputStream out, String value) throws IOException {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8); writeInt(out, bytes.length); out.write(bytes);
+    }
+    private static void writeInt(OutputStream out, int value) throws IOException {
+        out.write(value >>> 24); out.write(value >>> 16); out.write(value >>> 8); out.write(value);
+    }
+    private static void writeLong(OutputStream out, long value) throws IOException {
+        for (int shift = 56; shift >= 0; shift -= 8) out.write((int) (value >>> shift));
     }
 
     @Override public IBinder onBind(Intent intent) {

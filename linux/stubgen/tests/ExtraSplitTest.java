@@ -43,6 +43,19 @@ public final class ExtraSplitTest {
             throw new AssertionError("Index is unreadable");
         String extraName = StubGenerator.extraSplitName(objects);
         if (!extraName.matches("extra_[0-9a-f]{64}")) throw new AssertionError("Extra split name: " + extraName);
+        File unsigned = StubGenerator.generateExtraUnsigned(root, "org.example.Package", objects, 0, null, null, null);
+        if (!StubGenerator.validExtraIdentity(unsigned, "org.example.Package", extraName))
+            throw new AssertionError("Unsigned extra split identity did not validate");
+        if (StubGenerator.validExtraIdentity(unsigned, "org.example.Other", extraName))
+            throw new AssertionError("Unsigned extra split accepted the wrong package");
+        // A package-built split carrying components (here a launcher alias) must
+        // not be signed by the subsystem key.
+        File withComponents = StubGenerator.generateExtraUnsigned(root, "org.example.Package", objects, 0,
+                "Example", Collections.emptyList(), new byte[] {(byte) 0x89, 'P', 'N', 'G'});
+        String componentsName = StubGenerator.extraSplitName(objects, "Example", Collections.emptyList(),
+                new byte[] {(byte) 0x89, 'P', 'N', 'G'});
+        if (StubGenerator.validExtraIdentity(withComponents, "org.example.Package", componentsName))
+            throw new AssertionError("Extra split with components or resources was accepted");
 
         // fromTree must refuse an escaping symlink: the applied output is
         // untrusted input to the subsystem app.
@@ -111,6 +124,9 @@ public final class ExtraSplitTest {
         catch (IOException expected) { }
         try { PackLaunch.argumentsWithExtra(base, names.toArray(new String[0]),
                 paths.toArray(new String[0]), cache, "/app", "/app"); throw new AssertionError("Equal extra mount accepted"); }
+        catch (IOException expected) { }
+        try { PackLaunch.argumentsWithExtra(base, new String[]{"index_"+"a".repeat(64)},
+                new String[]{base.getAbsolutePath()}, cache, "/app", "/app/extra"); throw new AssertionError("Truncated pack index accepted"); }
         catch (IOException expected) { }
 
         System.out.println("PASS extra split is a single-pack self-contained carrier mounted under the package's extra directory");

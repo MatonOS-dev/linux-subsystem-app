@@ -13,7 +13,7 @@ java -Xmx256m -cp "$TEST_OUT/classes" DeploymentRecordTest "$TEST_OUT"
 java -Xmx256m -cp "$TEST_OUT/classes" PackSessionPlanTest
 java -Xmx256m -cp "$TEST_OUT/classes" ControllerMetadataTest
 java -Xmx256m -cp "$TEST_OUT/classes" CommitValidationTest
-java -Xmx256m -cp "$TEST_OUT/classes" ExtraSplitTest "$TEST_OUT"
+java -Xmx256m -cp "$TEST_OUT/classes:$STUB_DIR/prebuilt/apksig.jar" ExtraSplitTest "$TEST_OUT"
 java -cp "$TEST_OUT/classes:$AOSP_ROOT/prebuilts/sdk/current/public/android.jar" ForegroundManifestTest "$AOSP_ROOT/out/host/linux-x86/bin/aapt2" "$TEST_OUT"
 
 java -cp "$TEST_OUT/classes:$STUB_DIR/prebuilt/apksig.jar:$AOSP_ROOT/prebuilts/sdk/current/public/android.jar" PackCarrierTest "$TEST_OUT" "$AOSP_ROOT/out/host/linux-x86/bin/aapt2"
