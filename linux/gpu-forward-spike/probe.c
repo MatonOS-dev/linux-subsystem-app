@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
             destroy(instance,NULL);
         }
         raw(SYS_arch_prctl, 0x1002, saved);
-        printf("foreign Vulkan create/destroy (no desktop loader): %d\n", result);
+        printf("foreign Vulkan create/destroy (direct resident loader): %d\n", result);
         if (result != VK_SUCCESS) return 7;
     }
     if (!strcmp(sym, "getpid")) {
