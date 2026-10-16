@@ -7,6 +7,9 @@
 #include <sys/auxv.h>
 #include <elf.h>
 #include "bridge.h"
+#ifdef MATON_ADOPT
+#include "spike3/adopt.h"
+#endif
 #include "spike2/provider.h"
 #include "../compat-proxy/proxy.h"
 extern char **environ;
@@ -22,6 +25,9 @@ int main(int argc, char **argv) {
     snprintf(value, sizeof(value), "%lx", (unsigned long)&bridge);
     setenv("MATON_GPU_BRIDGE", value, 1);
     shadow_publish();
+#ifdef MATON_ADOPT
+    if (adopt_install()) return 5;
+#endif
     struct image image;
     if (proxy_load(argv[1], argv + 1, environ, &image)) return 4;
     /* PROXY_LIBRARY has no entry-stack auxv import. Preserve the kernel's
