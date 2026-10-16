@@ -160,7 +160,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
                 runOnUiThread(() -> {
                     if (!destroyed && window!=0) { if(view==null)showWindow(window);else attachIfReady(); }
                 });
-                JSONObject result=V3Launcher.launch(this, ref, this::message);
+                JSONObject result=V3Launcher.launch(this, ref);
                 if (!result.optBoolean("ok")) { message(result.optString("error","Application could not start"));return; }
                 message("Waiting for the application window…");
                 int seconds=0;
@@ -185,6 +185,15 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         try {
             ActivityInfo info=getPackageManager().getActivityInfo(getComponentName(),PackageManager.GET_META_DATA);
             if(info.metaData!=null){ref=info.metaData.getString(HostContract.META_FLATPAK_REF);minimum=info.metaData.getInt(HostContract.META_MIN_INTERFACE,1);}
+            if(ref==null||ref.trim().isEmpty()){
+                // The user may have launched the code-free activity-alias; when
+                // it carries no metadata of its own, the base stub activity is
+                // authoritative for the application reference.
+                ActivityInfo base=getPackageManager().getActivityInfo(
+                        new android.content.ComponentName(getPackageName(),StubActivity.class.getName()),
+                        PackageManager.GET_META_DATA);
+                if(base.metaData!=null){ref=base.metaData.getString(HostContract.META_FLATPAK_REF);minimum=base.metaData.getInt(HostContract.META_MIN_INTERFACE,1);}
+            }
         } catch(Exception e){failure("Cannot read application reference",e);return;}
         if(ref==null||ref.trim().isEmpty()){message("This launcher has no application reference.");return;}
         if(minimum>HostContract.getInterfaceVersion()){message("Update the Linux host to launch this application.");return;}

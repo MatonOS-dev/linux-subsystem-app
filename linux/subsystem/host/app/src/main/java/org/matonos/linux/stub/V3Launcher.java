@@ -66,7 +66,7 @@ final class V3Launcher {
         }
     }
 
-    static synchronized JSONObject launch(Context context, String ref, ExtraData.Progress progress)
+    static synchronized JSONObject launch(Context context, String ref)
             throws Exception {
         if (process != null) return getLaunchStatus();
         if (ref == null || !ref.matches("app/[A-Za-z0-9_.-]+/x86_64/[A-Za-z0-9_.-]+"))
@@ -107,8 +107,13 @@ final class V3Launcher {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
         }
         android.content.pm.ApplicationInfo installed=context.getApplicationInfo();
-        command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.arguments(
-                new File(installed.sourceDir),installed.splitNames,installed.splitSourceDirs,cache));
+        // The applied extra output is a self-contained split mounted at
+        // <mount>/extra, exactly where a deploy-time apply_extra would have
+        // left its output; the base packs mount at <mount>.
+        command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsWithExtra(
+                new File(installed.sourceDir),installed.splitNames,installed.splitSourceDirs,cache,
+                org.matonos.linuxhost.stubgen.StubGenerator.APP_MOUNT,
+                org.matonos.linuxhost.stubgen.StubGenerator.APP_MOUNT+"/extra"));
         android.content.pm.ActivityInfo stubInfo=context.getPackageManager().getActivityInfo(
                 new android.content.ComponentName(context,StubActivity.class),
                 android.content.pm.PackageManager.GET_META_DATA);
@@ -127,18 +132,11 @@ final class V3Launcher {
                     pkg=runtimePackage(context,runtimePackage);
                 }catch(android.content.pm.PackageManager.NameNotFoundException stillMissing){throw new java.io.IOException("Runtime repair completed but required package is still missing: "+runtimeRef,stillMissing);}
             }
-            command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.arguments(new File(pkg.applicationInfo.sourceDir),
-                    pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mountPoint));
+            command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsWithExtra(
+                    new File(pkg.applicationInfo.sourceDir),
+                    pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mountPoint,mountPoint+"/extra"));
         }
         File deployment=pinDeployment(current,uid%100000);
-        try {
-            // The installer defers an app's apply_extra to this stub, which
-            // already runs the app's code in its own UID; map its private
-            // output over /app/extra. The map target is longer than /app, so
-            // it wins over both the pack mount and flatpak's own /app bind.
-            File extra=ExtraData.prepare(context,deployment,ref,home,cache,runtime.directory(),progress);
-            if(extra!=null){command.add("--map");command.add(extra.getAbsolutePath());command.add("/app/extra");}
-        } catch(Exception failure) { releaseDeployment(); throw failure; }
         java.util.Collections.addAll(command,
                 "/apex/com.matonos.flatpak/bin/matonos-app-flatpak",
                 "--user", "run", "--socket=wayland", "--socket=x11", "--no-documents-portal",

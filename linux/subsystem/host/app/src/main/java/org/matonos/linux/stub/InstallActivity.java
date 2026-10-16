@@ -42,8 +42,8 @@ public class InstallActivity extends Activity {
                             unbindService(thisConnectionHolder[0]); finish();
                         }
                     };
-                    if(update())api.update(ref,null,null,operationId.isEmpty()?"self-update":operationId,callback);
-                    else api.install(ref, "flathub", null, null, operationId.isEmpty()?"self-install":operationId,callback);
+                    if(update())api.update(ref,operationId.isEmpty()?"self-update":operationId,callback);
+                    else api.install(ref, "flathub", operationId.isEmpty()?"self-install":operationId,callback);
                 } catch(Exception error) { Log.e(TAG,"Cannot request Flatpak install",error); finish(); }
             }
             final android.content.ServiceConnection[] thisConnectionHolder={this};

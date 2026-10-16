@@ -42,8 +42,7 @@ public final class LinuxAppStoreService extends Service {
     private static volatile LinuxAppStoreService instance;
     private static final class Operation {
         final int uid;
-        final String id, kind, ref, remote, name, url, label;
-        final byte[] icon;
+        final String id, kind, ref, remote, name, url;
         final ILinuxAppStoreCallback callback;
         volatile boolean cancelled;
         volatile org.matonos.systembridge.ICompositorInstall installService;
@@ -54,18 +53,18 @@ public final class LinuxAppStoreService extends Service {
         volatile org.matonos.linux.stub.PackInstaller packInstaller;
         final AtomicBoolean completed=new AtomicBoolean();
         Operation(int uid, String id, String kind, String ref, String remote, String name, String url,
-                String label, byte[] icon, ILinuxAppStoreCallback callback) {
+                ILinuxAppStoreCallback callback) {
             this.uid=uid; this.id=id; this.kind=kind; this.ref=ref; this.remote=remote;
-            this.name=name; this.url=url; this.label=label; this.icon=icon; this.callback=callback;
+            this.name=name; this.url=url; this.callback=callback;
         }
     }
 
     private final ILinuxAppStore.Stub binder = new ILinuxAppStore.Stub() {
-        @Override public void install(String ref, String remote, String label, byte[] icon, String id, ILinuxAppStoreCallback cb) {
-            submit("install", ref, remote, null, null, label, icon, id, cb);
+        @Override public void install(String ref, String remote, String id, ILinuxAppStoreCallback cb) {
+            submit("install", ref, remote, null, null, id, cb);
         }
-        @Override public void update(String ref, String label, byte[] icon, String id, ILinuxAppStoreCallback cb) {
-            submit("update", ref, null, null, null, label, icon, id, cb);
+        @Override public void update(String ref, String id, ILinuxAppStoreCallback cb) {
+            submit("update", ref, null, null, null, id, cb);
         }
         @Override public void repair(String ref,String id,ILinuxAppStoreCallback cb){
             int uid=Binder.getCallingUid();
@@ -84,20 +83,20 @@ public final class LinuxAppStoreService extends Service {
                 byte[][] encoded=signers==null?null:new byte[][]{signers[0].toByteArray()};
                 if(!StubSelfInstallIdentity.repairCallerMatches(ref,recorded,uid,packages,pkg,info.applicationInfo.uid,encoded,expected))throw new SecurityException("Repair caller is not a trusted stub for this ref");
             }catch(SecurityException e){throw e;}catch(Exception e){throw new SecurityException("Cannot authenticate stub repair",e);}
-            Operation op=new Operation(uid,id,"repair",ref,"flathub",null,null,null,null,cb);String key=operationKey(uid,id);
+            Operation op=new Operation(uid,id,"repair",ref,"flathub",null,null,cb);String key=operationKey(uid,id);
             if(operations.putIfAbsent(key,op)!=null)throw new IllegalArgumentException("Operation ID already active for caller");
             worker.execute(()->execute(id,op));
         }
         @Override public void uninstall(String ref, String id, ILinuxAppStoreCallback cb) {
-            submit("uninstall", ref, null, null, null, null, null, id, cb);
+            submit("uninstall", ref, null, null, null, id, cb);
         }
         @Override public String listInstalled() { enforceQuery(); return call("list_installed", args("userId", android.os.Process.myUid()/100000)); }
         @Override public String listRemotes() { enforceQuery(); return remoteList(); }
         @Override public void addRemote(String name, String url, String id, ILinuxAppStoreCallback cb) {
-            submit("addRemote", null, null, name, url, null, null, id, cb);
+            submit("addRemote", null, null, name, url, id, cb);
         }
         @Override public void removeRemote(String name, String id, ILinuxAppStoreCallback cb) {
-            submit("removeRemote", null, null, name, null, null, null, id, cb);
+            submit("removeRemote", null, null, name, null, id, cb);
         }
         @Override public void cancel(String id) {
             int uid=Binder.getCallingUid(); Operation op=operations.get(operationKey(uid,id));
@@ -127,7 +126,7 @@ public final class LinuxAppStoreService extends Service {
     }
 
     private void submit(String kind, String ref, String remote, String name, String url,
-            String label, byte[] icon, String id, ILinuxAppStoreCallback callback) {
+            String id, ILinuxAppStoreCallback callback) {
         int uid=Binder.getCallingUid();
         if (id==null || !id.matches("[A-Za-z0-9_-]{1,64}") || callback==null)
             throw new IllegalArgumentException("Invalid operation request");
@@ -136,7 +135,7 @@ public final class LinuxAppStoreService extends Service {
             ref=authenticateStubRef(uid);
             if (kind.equals("install")) remote="flathub";
         }
-        Operation op=new Operation(uid,id,kind,ref,remote,name,url,label,icon,callback);
+        Operation op=new Operation(uid,id,kind,ref,remote,name,url,callback);
         String key=operationKey(uid,id);
         if(operations.putIfAbsent(key,op)!=null) throw new IllegalArgumentException("Operation ID already active for caller");
         boolean needsConfirm=(kind.equals("addRemote") || kind.equals("removeRemote")
@@ -314,8 +313,6 @@ public final class LinuxAppStoreService extends Service {
         String pkg=packageFor(op.ref), remote="install".equals(op.kind)?op.remote:remoteFor(op.ref);
         if(op.stagedMetadata==null)
             throw new IllegalStateException("Staged Flatpak metadata unavailable");
-        String label=launcherLabel(op);
-        byte[] icon=launcherIcon(op);
         if(op.packArtifacts==null)throw new IllegalStateException("Staged object packs unavailable");
         File work=new File(getCacheDir(),"flatpak-stubs"); if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create stub scratch directory");
         File objects=new File(op.packArtifacts,"objects"),base=new File(op.packArtifacts,"base.apk");
@@ -337,7 +334,15 @@ public final class LinuxAppStoreService extends Service {
             if(mount==null)throw new IllegalStateException("Runtime package mount was not resolved: "+ref);
             String name=mount.packageName;requiredPackages.add(name);runtimePackages.put(ref,name+">"+mount.mountPoint);
         }
-        org.matonos.linuxhost.stubgen.StubGenerator.generateWithRuntimePackages(work,op.ref,remote,label,icon,
+        // Launcher data is derived here, never supplied by a caller. The
+        // deployment export wins; apply_extra may override it below; otherwise
+        // the remote's appstream is read by this subsystem app, then app id.
+        String appId=appId(op.ref);
+        File deployment=org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,op.stagedManifest);
+        org.matonos.linux.stub.LauncherData launcher=org.matonos.linux.stub.LauncherData.resolve(
+                deployment,appId,null,new org.matonos.linux.stub.LauncherData.Flathub());
+        byte[] baseIcon=launcher.icon!=null?launcher.icon:fallbackIcon();
+        org.matonos.linuxhost.stubgen.StubGenerator.generateWithRuntimePackages(work,op.ref,remote,launcher.label,baseIcon,
                 StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,base,null,objects,requiredPackages,runtimePackages);
         boolean full=op.installed==null || op.installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE ||
                 !org.matonos.linuxhost.stubgen.PackSessionPlan.sameBase(base,new File(op.installed.applicationInfo.sourceDir));
@@ -345,18 +350,66 @@ public final class LinuxAppStoreService extends Service {
         int revision=org.matonos.linuxhost.stubgen.PackSessionPlan.nextRevision(
                 op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
                 op.installed==null?0:op.installed.baseRevisionCode,op.installed==null?null:op.installed.splitRevisionCodes);
+        boolean hasExtra=org.matonos.linux.stub.ExtraPayload.hasExtra(readIndex(objects));
         java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
         String index=StubGenerator.indexSplitName(objects);desired.add(index);
         if(full || !prior.contains(index)) {
             StubGenerator.generateIndex(work,pkg,objects,new File(op.packArtifacts,index+".apk"),revision);available.add(index);
         }
+        addContentPacks(op,pkg,work,objects,prior,full,revision,desired,available);
+        if(hasExtra) {
+            // The extra step decides between a separate launcher split and one
+            // carried by the extra split; keep an installed launcher alive
+            // until then so a failed update never strips the app.
+            for(String split:prior)
+                if(split.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX)) desired.add(split);
+        } else {
+            addLauncherSplit(op,pkg,work,revision,launcher.label,launcher.mimeTypes,baseIcon,prior,full,desired,available);
+        }
+        runPackSession(op,pkg,op.packArtifacts,plan(op.installed!=null,
+                op.installed==null?0:op.installed.getLongVersionCode(),prior,desired,available,full));
+        if(!hasExtra) { finishStubInstall(op,remote,pkg,success()); return; }
+        // The package is installed but has no launcher entry yet. Run its own
+        // apply_extra under its UID and publish the applied tree as an extra
+        // split, in a second session that inherits what the first installed.
+        File applied;
+        try { applied=org.matonos.linux.stub.ExtraInstall.apply(this,pkg,new File(op.packArtifacts,"extra-output")); }
+        catch(Exception failure) { if(op.installed==null) removePackage(pkg); throw failure; }
+        org.matonos.linux.stub.LauncherData extraLauncher=org.matonos.linux.stub.LauncherData.fromExtraOutput(applied,appId);
+        org.matonos.linux.stub.LauncherData chosen=extraLauncher!=null?extraLauncher:launcher;
+        byte[] chosenIcon=chosen.icon!=null?chosen.icon:fallbackIcon();
+        PackageInfo after=getPackageManager().getPackageInfo(pkg,0);
+        java.util.List<String> installedNow=after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames);
+        java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
+        desired2.add(index);
+        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
+            if(row.kind.equals("file")) desired2.add("pack_"+row.pack.substring(5,69));
+        File extraObjects=new File(op.packArtifacts,"extra-objects");
+        if(chosen.fromExtra) {
+            addExtraSplit(op,pkg,work,extraObjects,applied,revision,chosen.label,chosen.mimeTypes,chosenIcon,desired2,available2);
+        } else {
+            addLauncherSplit(op,pkg,work,revision,chosen.label,chosen.mimeTypes,chosenIcon,installedNow,false,desired2,available2);
+            addExtraSplit(op,pkg,work,extraObjects,applied,revision,null,null,null,desired2,available2);
+        }
+        runPackSession(op,pkg,op.packArtifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
+        finishStubInstall(op,remote,pkg,success());
+    }
+
+    /** The index/metadata bytes produced by {@code StagedPacks.build}. */
+    private static byte[] readIndex(File objects) throws Exception {
+        return java.nio.file.Files.readAllBytes(new File(objects,"objects.index").toPath());
+    }
+
+    /** Adds every content pack an index names, reusing installed carriers. */
+    private void addContentPacks(Operation op,String pkg,File work,File objects,java.util.List<String> prior,
+            boolean full,int revision,java.util.List<String> desired,java.util.List<String> available) throws Exception {
         for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index"))) {
             if(!row.kind.equals("file"))continue;
             String split="pack_"+row.pack.substring(5,69);
             if(desired.contains(split))continue;
             desired.add(split);
             File destination=new File(op.packArtifacts,split+".apk");
-            if(prior.contains(split) && op.installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
+            if(op.installed!=null && prior.contains(split) && op.installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
                 if(full) {
                     int position=prior.indexOf(split);
                     java.nio.file.Files.copy(java.nio.file.Path.of(op.installed.applicationInfo.splitSourceDirs[position]),destination.toPath());
@@ -367,77 +420,89 @@ public final class LinuxAppStoreService extends Service {
                 StubGenerator.generatePack(work,pkg,new File(objects,row.pack),destination,revision);available.add(split);
             }
         }
-        org.matonos.linuxhost.stubgen.PackSessionPlan plan=org.matonos.linuxhost.stubgen.PackSessionPlan.create(
-                op.installed!=null,op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
-                prior,desired,available,full);
-        if(plan.write.isEmpty() && plan.remove.isEmpty()) {
-            finishStubInstall(op,remote,pkg,new Intent().putExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_SUCCESS));
-            return;
+    }
+
+    /** Adds the code-free launcher split unless the same one is installed. */
+    private void addLauncherSplit(Operation op,String pkg,File work,int revision,String label,
+            java.util.List<String> mimeTypes,byte[] icon,java.util.List<String> prior,boolean full,
+            java.util.List<String> desired,java.util.List<String> available) throws Exception {
+        String split=StubGenerator.launcherSplitName(label,mimeTypes,icon);
+        if(desired.contains(split))return;
+        desired.add(split);
+        if(full || !prior.contains(split)) {
+            StubGenerator.generateLauncher(work,pkg,label,mimeTypes,icon,new File(op.packArtifacts,split+".apk"),revision);
+            available.add(split);
         }
-        op.packInstaller=new org.matonos.linux.stub.PackInstaller(this,pkg,op.packArtifacts,()->op.cancelled,
-                intent->worker.execute(()->finishStubInstall(op,remote,pkg,intent)));
-        plan.submit(op.packInstaller,()->op.cancelled);
     }
 
-    /** The launcher label: the store's appstream name, the installed stub's
-     * current label (update/repair), or the Flatpak app id as a last resort. */
-    private String launcherLabel(Operation op) {
-        if(op.label!=null && !op.label.trim().isEmpty()) return op.label;
-        String installed=installedLabel(op.ref);
-        if(installed!=null && !installed.trim().isEmpty()) return installed;
-        return flatpakAppId(op.ref);
+    /** Packs an applied extra tree as a self-contained {@code extra_} split.
+     * When {@code label} is non-null the split also carries the launcher. */
+    private void addExtraSplit(Operation op,String pkg,File work,File extraObjects,File applied,int revision,
+            String label,java.util.List<String> mimeTypes,byte[] icon,
+            java.util.List<String> desired,java.util.List<String> available) throws Exception {
+        java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=
+                org.matonos.linuxhost.stubgen.ObjectPacks.fromTree(applied,"/");
+        if(entries.isEmpty())return; // An apply_extra that produced nothing publishes no split.
+        org.matonos.linuxhost.stubgen.ObjectPacks.initial(entries,extraObjects,Long.MAX_VALUE);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(extraObjects,"objects.index"),entries);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(extraObjects,"objects.ostree"),java.util.Collections.emptyMap());
+        String split=StubGenerator.extraSplitName(extraObjects,label,mimeTypes,icon);
+        if(desired.contains(split))return;
+        desired.add(split);
+        StubGenerator.generateExtra(work,pkg,extraObjects,new File(op.packArtifacts,split+".apk"),revision,label,mimeTypes,icon);
+        available.add(split);
     }
 
-    /** The launcher icon: the store's appstream icon, the installed stub's
-     * current icon (update/repair), or a generic placeholder. */
-    private byte[] launcherIcon(Operation op) {
-        if(looksLikePng(op.icon)) return op.icon;
-        byte[] installed=installedIcon(op.ref);
-        return installed!=null?installed:fallbackIcon();
+    private static org.matonos.linuxhost.stubgen.PackSessionPlan plan(boolean installed,long installedVersion,
+            java.util.List<String> prior,java.util.List<String> desired,java.util.List<String> available,
+            boolean full) throws Exception {
+        return org.matonos.linuxhost.stubgen.PackSessionPlan.create(installed,installedVersion,
+                StubGenerator.STUB_VERSION_CODE,prior,desired,available,full);
     }
 
-    private String installedLabel(String ref) {
+    /** Commits one atomic session and blocks until its terminal result. */
+    private Intent runPackSession(Operation op,String pkg,File artifacts,
+            org.matonos.linuxhost.stubgen.PackSessionPlan plan) throws Exception {
+        if(plan.write.isEmpty() && plan.remove.isEmpty()) return success();
+        java.util.concurrent.CountDownLatch done=new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Intent> result=new java.util.concurrent.atomic.AtomicReference<>();
+        org.matonos.linux.stub.PackInstaller installer=new org.matonos.linux.stub.PackInstaller(this,pkg,artifacts,
+                ()->op.cancelled,intent->{result.set(intent);done.countDown();});
+        op.packInstaller=installer;
+        plan.submit(installer,()->op.cancelled);
+        while(!done.await(1,java.util.concurrent.TimeUnit.SECONDS))if(op.cancelled)throw new java.io.IOException("Install cancelled");
+        Intent completed=result.get();
+        if(completed==null)throw new IllegalStateException("Package installer returned no result");
+        if(completed.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
+            throw new IllegalStateException(completed.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
+        return completed;
+    }
+
+    private static Intent success() {
+        return new Intent().putExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_SUCCESS);
+    }
+
+    /** Removes a first install that failed after its content was committed. */
+    private void removePackage(String pkg) {
         try {
-            android.content.pm.ApplicationInfo info=getPackageManager().getApplicationInfo(packageFor(ref),0);
-            CharSequence label=getPackageManager().getApplicationLabel(info);
-            return label==null?null:label.toString();
-        } catch(Exception error) { return null; }
-    }
-
-    /** The icon drawable a prior install wrote into the installed stub base. */
-    private byte[] installedIcon(String ref) {
-        try {
-            File base=new File(getPackageManager().getApplicationInfo(packageFor(ref),0).sourceDir);
-            try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(base)) {
-                java.util.zip.ZipEntry entry=zip.getEntry("res/drawable/foreground.png");
-                if(entry==null || entry.getSize()>MAX_ICON_BYTES) return null;
-                byte[] bytes;
-                try(java.io.InputStream in=zip.getInputStream(entry)) {
-                    java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();
-                    byte[] buffer=new byte[8192];
-                    int total=0,read;
-                    while((read=in.read(buffer))!=-1) {
-                        total+=read; if(total>MAX_ICON_BYTES) return null;
-                        out.write(buffer,0,read);
-                    }
-                    bytes=out.toByteArray();
+            String action=getPackageName()+".PACK_ROLLBACK."+java.util.UUID.randomUUID();
+            PendingIntent status=PendingIntent.getBroadcast(this,0,
+                    new Intent(action).setPackage(getPackageName()),PendingIntent.FLAG_MUTABLE);
+            android.content.BroadcastReceiver receiver=new android.content.BroadcastReceiver(){
+                @Override public void onReceive(android.content.Context context,Intent intent){
+                    try{unregisterReceiver(this);}catch(Exception ignored){}
+                    status.cancel();
                 }
-                return looksLikePng(bytes)?bytes:null;
-            }
-        } catch(Exception error) { return null; }
+            };
+            registerReceiver(receiver,new android.content.IntentFilter(action),RECEIVER_NOT_EXPORTED);
+            getPackageManager().getPackageInstaller().uninstall(pkg,status.getIntentSender());
+        } catch(Exception error) { Log.w(TAG,"Cannot remove partially installed package "+pkg,error); }
     }
 
-    private static boolean looksLikePng(byte[] bytes) {
-        if(bytes==null || bytes.length<8 || bytes.length>MAX_ICON_BYTES) return false;
-        byte[] magic={(byte)0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a};
-        for(int i=0;i<magic.length;i++) if(bytes[i]!=magic[i]) return false;
-        return true;
-    }
-
-    private static String flatpakAppId(String ref) {
+    /** The Flatpak app id inside a validated application ref. */
+    private static String appId(String ref) {
         String[] parts=ref==null?null:ref.split("/",-1);
-        if(parts!=null && parts.length==4 && !parts[1].isEmpty()) return parts[1];
-        return "Linux application";
+        return parts!=null && parts.length==4 && !parts[1].isEmpty()?parts[1]:"Linux application";
     }
 
     private void installRuntimePackages(Operation op,File installation) throws Exception {
@@ -497,7 +562,58 @@ public final class LinuxAppStoreService extends Service {
             Intent completed=result.get();
             if(completed==null||completed.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
                 throw new IllegalStateException("Could not install Flatpak runtime "+ref+": "+(completed==null?"no session result":completed.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)));
+            // Every runtime/extension package owns its extra-data execution,
+            // including first installs and content updates. Always reconcile
+            // so an old extra split disappears when the new commit has none.
+            try {
+                File applied=null;
+                if(org.matonos.linux.stub.ExtraPayload.hasExtra(java.nio.file.Files.readAllBytes(new File(objects,"objects.index").toPath())))
+                    applied=org.matonos.linux.stub.ExtraInstall.apply(this,pkg,new File(runtimeDir,"extra-output"));
+                File extraObjects=new File(runtimeDir,"extra-objects");
+                java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
+                desired2.add(index);
+                for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
+                    if(row.kind.equals("file")) desired2.add("pack_"+row.pack.substring(5,69));
+                addRuntimeExtraSplit(runtimeDir,pkg,extraObjects,applied,revision,desired2,available2);
+                PackageInfo after=getPackageManager().getPackageInfo(pkg,0);
+                org.matonos.linuxhost.stubgen.PackSessionPlan extraPlan=org.matonos.linuxhost.stubgen.PackSessionPlan.create(
+                        true,after.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
+                        after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames),desired2,available2,false);
+                submitRuntimeSession(op,pkg,runtimeDir,extraPlan,ref);
+            } catch(Exception failure) {
+                if(prior==null) removePackage(pkg);
+                throw failure;
+            }
         }
+    }
+
+    private void addRuntimeExtraSplit(File runtimeDir,String pkg,File objects,File applied,int revision,
+            java.util.List<String> desired,java.util.List<String> available) throws Exception {
+        if(applied==null)return;
+        java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=
+                org.matonos.linuxhost.stubgen.ObjectPacks.fromTree(applied,"/");
+        if(entries.isEmpty())return;
+        org.matonos.linuxhost.stubgen.ObjectPacks.initial(entries,objects,Long.MAX_VALUE);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(objects,"objects.index"),entries);
+        org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(objects,"objects.ostree"),java.util.Collections.emptyMap());
+        String split=StubGenerator.extraSplitName(objects);
+        desired.add(split);
+        StubGenerator.generateExtra(runtimeDir,pkg,objects,new File(runtimeDir,split+".apk"),revision,null,null,null);
+        available.add(split);
+    }
+
+    private void submitRuntimeSession(Operation op,String pkg,File runtimeDir,
+            org.matonos.linuxhost.stubgen.PackSessionPlan plan,String ref) throws Exception {
+        if(plan.write.isEmpty()&&plan.remove.isEmpty())return;
+        java.util.concurrent.CountDownLatch done=new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Intent> result=new java.util.concurrent.atomic.AtomicReference<>();
+        org.matonos.linux.stub.PackInstaller installer=new org.matonos.linux.stub.PackInstaller(this,pkg,runtimeDir,
+                ()->op.cancelled,intent->{result.set(intent);done.countDown();});
+        plan.submit(installer,()->op.cancelled);
+        while(!done.await(1,java.util.concurrent.TimeUnit.SECONDS))if(op.cancelled)throw new java.io.IOException("Install cancelled");
+        Intent completed=result.get();
+        if(completed==null||completed.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
+            throw new IllegalStateException("Could not install extra split for "+ref);
     }
 
     private void finishStubInstall(Operation op,String remote,String pkg,Intent intent) {

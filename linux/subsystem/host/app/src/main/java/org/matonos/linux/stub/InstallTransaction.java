@@ -20,8 +20,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>The worker runs the shipped {@code matonos-app-flatpak} through the same
  * v3 loader the stub uses, so pull and deployment happen under this app's own
  * PackageManager UID. An application's {@code apply_extra} is deliberately not
- * run here: it is arbitrary vendor code, so the stub runs it on first launch
- * (see {@link ExtraData}). It never chooses a path,
+ * run here: it is arbitrary vendor code, so it runs later under the stub's own
+ * UID through the generated package's {@code ExtraService} (see
+ * {@link ExtraService}) and its output is published as a content split. It
+ * never chooses a path,
  * loader flag or final identity: the operation ID and ref/remote come from the
  * bridge, and the staging directory is derived from this process's own UID.
  * When the worker exits it closes everything it opened into staging, reports

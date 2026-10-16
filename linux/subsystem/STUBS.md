@@ -1,4 +1,4 @@
-# MatonOS Flatpak stub APK format v1
+# MatonOS Flatpak stub APK format (v3.5)
 
 A stub APK is a small, signed package record for one installed Flatpak app. It
 contains no application implementation. The shared code is supplied by the
@@ -8,56 +8,79 @@ held by Android Keystore; it is not portable to another device.
 
 ## Contents
 
-The v1 package contains:
+A v3.5 package is a base APK plus content splits, all signed together:
 
-- A binary `AndroidManifest.xml` with the appstream display label, the required
+- The **base** contains a binary `AndroidManifest.xml` with the required
   `<uses-library android:name="org.matonos.linuxhost"/>`, approved Android
-  permission declarations, a launcher activity whose class is
-  `org.matonos.linux.stub.StubActivity` (shipped `android:enabled="false"`;
-  the bridge enables it once the Flatpak install completes, so the app stays
-  hidden until then), an always-enabled, unprivileged
-  `org.matonos.linux.stub.InstallActivity` ("install me": the store uses
-  it to resume an interrupted install; no-op when installed), and a placeholder service class
-  `org.matonos.linux.stub.StubService`.
-- An `ACTION_MAIN` / `CATEGORY_LAUNCHER` filter. Stubs declare no
-  `ACTION_VIEW` MIME filters: the launcher label and icon come from the
-  remote's appstream data, not the deployment's exported `.desktop` file, so
-  its `MimeType=` entries are never read.
-- Activity metadata `org.matonos.linuxhost.FLATPAK_REF` containing the exact
-  installed ref, `org.matonos.linuxhost.FLATPAK_REMOTE` containing the
-  configured install remote, and `org.matonos.linuxhost.MIN_INTERFACE_VERSION`
-  containing the minimum host interface version (currently `1`). The ref
-  supplies app ID, architecture, and branch; Flatpak resolves the runtime and
+  permission declarations, an *always-enabled* `StubActivity`
+  (`org.matonos.linux.stub.StubActivity`) with **no launcher entry**, an
+  unprivileged `org.matonos.linux.stub.InstallActivity` ("install me"),
+  placeholder services (`StubService`, `ExtraService`) and an empty, valid
+  `classes.dex`. The base deliberately carries no `ACTION_MAIN` /
+  `CATEGORY_LAUNCHER` filter: the icon in the launcher is the launcher split's
+  `activity-alias`, so a label or icon change never updates the base.
+- `ExtraService` (AIDL `IExtraExec`) is declared in every base and in every
+  runtime/extension package, with metadata
+  `org.matonos.linuxhost.EXTRA_MOUNT` naming the declared mount point (`/app`
+  for apps, the package's own mount point otherwise). It is declared
+  `exported="true"` only because a cross-app bind cannot use
+  `exported="false"`; every call is refused unless `Binder.getCallingUid()`
+  is the subsystem app's. It runs the package's `apply_extra` under the
+  package's own UID and returns the applied tree as a ustar archive over a
+  pipe. See `docs/FLATPAK-EXTRA-DATA.md`.
+- Activity metadata `org.matonos.linuxhost.FLATPAK_REF`, `...FLATPAK_REMOTE`,
+  `...MIN_INTERFACE_VERSION` and `...APP_REF` are unchanged. The ref supplies
+  app ID, architecture and branch; Flatpak resolves the runtime and
   dependencies from app metadata.
-- A minimal empty `resources.arsc` table required by Android PackageManager
-  even though the stub declares no compiled resources.
-- The caller-provided PNG at `res/drawable/foreground.png` — the launcher icon
-  from the remote's appstream data — an adaptive icon XML, and an empty, valid
-  `classes.dex`.
+- Exactly one `index_<sha256>` code-free split holds `objects.index` and
+  `objects.ostree`; content rides in `pack_<sha256>` carrier splits (see
+  `linux/packs/README.md`).
+- A code-free **launcher split** `launcher_<sha256>` declares an
+  `<activity-alias>` targeting the base `StubActivity` with the
+  `ACTION_MAIN`/`CATEGORY_LAUNCHER` filter, one `ACTION_VIEW` filter per
+  `MimeType=` from the source `.desktop`, a literal `android:label` and an
+  adaptive icon whose resources live inside the split (type id 2,
+  `0x7f020000`-`2`, so no ID can clash with the base).
+- A **self-contained extra split** `extra_<sha256>` carries the applied
+  `apply_extra` output in the pack format (one payload pack plus its own
+  embedded `objects.index`/`objects.ostree`). When the launcher data came from
+  the extra output's `export/`, the same split also carries the launcher
+  components above; otherwise it is launcher-less.
 
-Package names are selected by the caller and must be unique Android package
-names. Stub format version is `1`; it is separate from the host interface
-version. The Flatpak ref is checked against the standard
-`app|runtime/name/arch/branch` form. The launcher label and icon are supplied
-by the store from the remote's appstream data; the generator never reads the
-deployment's `.desktop` file.
+Launcher data source order: the deployment's
+`export/share/applications/*.desktop` → a `.desktop` in the applied extra
+output's `export/` (overrides the deployment entry) → the remote's
+appstream, read by the subsystem app itself (never supplied by a caller) →
+the Flatpak app id and a generic icon.
+
+Stub format version is `1` (`STUB_VERSION_CODE` is `19`); it is separate from
+the host interface version and only changes with the template/format. The
+Flatpak ref is checked against the standard `app|runtime/name/arch/branch`
+form.
 
 ## Host interface
 
 `HostContract.INTERFACE_VERSION` is the host ABI version. The host launcher
-reads the ref and minimum version from the stub activity metadata. It routes
-to the compositor host Activity and presents an explicit not-wired message
-until the Flatpak runtime launch hook is connected. `StubService` is reserved
-for future per-app D-Bus and portal integration; it does not implement those
-features in v1.
+reads the ref and minimum version from the stub activity metadata; when the
+launched component is the code-free launcher `activity-alias` (which carries no
+metadata of its own), `StubActivity` falls back to the base activity's
+metadata. `StubService` hosts the per-app runtime; `ExtraService` applies the
+package's extra data (above).
 
 The stub generator is `MatonLinuxStubGenerator` in `linux/stubgen`. Its Java
-entry point accepts an app-private work directory, Flatpak ref, launcher label, PNG bytes,
-permission list, package name, and output APK file. It encodes the small
-binary XML vocabulary directly, so it does not require AAPT2 on-device, then
-signs with `apksig`. The Android Keystore alias
-`matonos_flatpak_stub_v1` is created on first use as a non-exportable EC
+entry points accept an app-private work directory, Flatpak ref, remote, label,
+PNG bytes, permission list, package name and output APK; the launcher and extra
+splits are generated by `generateLauncher` and `generateExtra`. It encodes the
+small binary XML vocabulary directly (including `activity-alias`), so it does
+not require AAPT2 on-device, then signs with `apksig`. The Android Keystore
+alias `matonos_flatpak_stub_v1` is created on first use as a non-exportable EC
 P-256 signing key.
+
+It also emits code-free `launcher_`/`extra_` splits, so the generated
+manifests (base, launcher alias, extra pack carrier, runtime and pack) are all
+parsed by AOSP's own `aapt2` in the host test harness
+(`linux/stubgen/tests/run-tests.sh`), including the split component rules a
+code-free split must satisfy.
 
 ## Stock PackageManager multiarch handling
 
@@ -97,8 +120,9 @@ After the provider/engine split, repeat on a freshly built and booted image:
 ## Follow-up contract for the bridge and store
 
 The store must choose the package name, map requested Flatpak permissions to
-the approved Android permission list, provide the appstream launcher label and
-icon bytes, and invoke the generator when installing or updating a ref. The bridge/store integration also needs a narrow caller
+the approved Android permission list, derive the launcher label/icon/MIME
+associations (appstream is read by the subsystem app itself, never passed in by
+a caller) and invoke the generator when installing or updating a ref. The bridge/store integration also needs a narrow caller
 surface for this library and policy for which signed callers may mint stubs.
 The installed per-device key must not be exported or copied; after a reset,
 stubs are re-minted from installed refs and store metadata.
