@@ -1,6 +1,13 @@
+/* Optional resident-libc backend for the isolated v3.5 adoption launcher.
+ * This file deliberately links libc; never include it in the freestanding
+ * proxy build. Its narrow filter is not a security boundary or the production
+ * proxy policy. Applications must reserve SIGSYS and use signal entry gates.
+ * No instrumentation, stack protector, compiler TLS, or lazy PLT resolution
+ * may execute with the wrong FS. All resident pthread symbols are bound at
+ * startup by the build's -z now. */
 #define _GNU_SOURCE
+#include "../../../gpu-forward-spike/spike3/adopt.h"
 #include "adopt.h"
-#include "../../compat-proxy/arch/x86_64/adopt.h"
 #include <stddef.h>
 #include <pthread.h>
 #include <signal.h>
@@ -15,6 +22,7 @@
 #include <sched.h>
 #include <linux/sched.h>
 #include <limits.h>
+#include <errno.h>
 #include <dlfcn.h>
 #include <unistd.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
@@ -22,6 +30,9 @@ extern char proxy_raw_after[];
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
 static struct adopt_thread slots[ADOPT_SLOTS];
 static uintptr_t libc_lo,libc_hi;
+static int force_clone;
+static long identity(uintptr_t *);
+static struct adopt_api api={.version=1,.current=adopt_current,.identity=identity};
 
 struct adopt_thread *adopt_current(void) {
     int tid=R(gettid,0,0,0,0,0,0);
@@ -84,14 +95,17 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     (void)sig;
     ucontext_t *uc=opaque;
     greg_t *g=uc->uc_mcontext.gregs;
-    long n=info->si_syscall, result=-38;
+    long n=info->si_syscall, result=-ENOSYS;
     struct adopt_thread *self=adopt_current();
     if(!self) R(exit_group,190,0,0,0,0,0);
     uintptr_t interrupted=adopt_fs_read();
     self->app_fs=interrupted;
-    if(n==SYS_rt_sigprocmask) {
+    if(n==SYS_rt_sigaction) {
+        if(g[REG_RDI]==SIGSYS && g[REG_RSI]) result=-EINVAL;
+        else result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
+    } else if(n==SYS_rt_sigprocmask) {
         unsigned long old=*(unsigned long *)&uc->uc_sigmask, next=old;
-        if(g[REG_R10]!=8) result=-22;
+        if(g[REG_R10]!=8) result=-EINVAL;
         else {
             result=0;
             if(g[REG_RSI]) {
@@ -100,7 +114,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                 case SIG_SETMASK: next=mask; break;
                 case SIG_BLOCK: next|=mask; break;
                 case SIG_UNBLOCK: next&=~mask; break;
-                default: result=-22;
+                default: result=-EINVAL;
                 }
             }
             if(!result) {
@@ -110,21 +124,26 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         }
     } else if(n==SYS_clone3 || n==SYS_clone) {
         unsigned long flags,stack,tls,ptid,ctid;
+        if(n==SYS_clone3 && force_clone) {g[REG_RAX]=-ENOSYS;return;}
         if(n==SYS_clone3) {
-            struct clone_args *args=(void *)g[REG_RDI];
-            if(g[REG_RSI]<64 || (unsigned long)g[REG_RSI]>sizeof(*args)) {g[REG_RAX]=-22;return;}
-            if(args->exit_signal || args->set_tid_size || args->cgroup || args->pidfd) {g[REG_RAX]=-38;return;}
+            atomic_fetch_add(&api.clone3s,1);
+            struct clone_args copy={0},*args=&copy;
+            if(g[REG_RSI]<64 || (unsigned long)g[REG_RSI]>sizeof(*args)) {g[REG_RAX]=-EINVAL;return;}
+            for(unsigned i=0;i<(unsigned long)g[REG_RSI];i++)
+                ((unsigned char *)args)[i]=((unsigned char *)g[REG_RDI])[i];
+            if(args->exit_signal || args->set_tid_size || args->cgroup) {g[REG_RAX]=-ENOSYS;return;}
             flags=args->flags; stack=args->stack+args->stack_size;
             tls=args->tls;ptid=args->parent_tid;ctid=args->child_tid;
         } else {
+            atomic_fetch_add(&api.clones,1);
             flags=g[REG_RDI];stack=g[REG_RSI];tls=g[REG_R8];ptid=g[REG_RDX];ctid=g[REG_R10];
         }
         unsigned long required=CLONE_VM|CLONE_SIGHAND|CLONE_THREAD|CLONE_SETTLS;
         unsigned long allowed=required|CLONE_FS|CLONE_FILES|CLONE_SYSVSEM|CLONE_PARENT_SETTID|CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID;
-        if((flags&required)!=required || (flags&~allowed)) result=-38;
+        if((flags&required)!=required || (flags&~allowed)) result=-ENOSYS;
         else {
             struct adopt_thread *t=reserve();
-            if(!t) result=-11;
+            if(!t) result=-EAGAIN;
             else {
                 t->app_fs=tls; t->child_tid=(flags&CLONE_CHILD_CLEARTID)?ctid:0;
                 t->mask=*(unsigned long *)&uc->uc_sigmask;
@@ -139,15 +158,17 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                     size=*(const unsigned *)(fp+480);
                     t->xfeatures=*(const uint64_t *)(fp+472);
                 }
-                if(size>sizeof(t->fp)) {atomic_store(&t->tid,0);g[REG_RAX]=-95;return;}
+                if(size>sizeof(t->fp)) {atomic_store(&t->tid,0);g[REG_RAX]=-EOPNOTSUPP;return;}
                 for(unsigned i=0;i<size;i++) t->fp[i]=fp[i];
                 adopt_fs_write(self->resident_fs);
                 pthread_attr_t attr; pthread_t thread;
-                pthread_attr_init(&attr);
-                pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
-                pthread_attr_setstacksize(&attr,128*1024);
-                int error=pthread_create(&thread,&attr,start,t);
-                pthread_attr_destroy(&attr);
+                int error=pthread_attr_init(&attr);
+                if(!error) {
+                    error=pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
+                    if(!error) error=pthread_attr_setstacksize(&attr,128*1024);
+                    if(!error) error=pthread_create(&thread,&attr,start,t);
+                    pthread_attr_destroy(&attr);
+                }
                 adopt_fs_write(interrupted);
                 if(error) {atomic_store(&t->tid,0);result=-error;}
                 else {
@@ -161,20 +182,34 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             }
         }
     } else if(n==SYS_set_robust_list) {
-        if((unsigned long)g[REG_RSI]!=sizeof(struct robust_list_head)) result=-22;
+        if((unsigned long)g[REG_RSI]!=sizeof(struct robust_list_head)) result=-EINVAL;
         else {self->robust=g[REG_RDI];result=0;}
-    } else if(n==SYS_rseq) result=-38;
+    } else if(n==SYS_get_robust_list) {
+        if(g[REG_RDI] && g[REG_RDI]!=atomic_load(&self->tid)) result=-EOPNOTSUPP;
+        else {*(uintptr_t *)g[REG_RSI]=self->robust;
+            *(size_t *)g[REG_RDX]=sizeof(struct robust_list_head); result=0;}
+    } else if(n==SYS_rseq) result=-ENOSYS;
     else if(n==SYS_set_tid_address) { self->child_tid=g[REG_RDI]; result=R(gettid,0,0,0,0,0,0); }
     else if(n==SYS_exit) {
         robust_exit(self);
-        if(self->child_tid) { *(int *)self->child_tid=0; R(futex,self->child_tid,1,INT_MAX,0,0,0); }
+        if(self->child_tid) {
+            atomic_store_explicit((_Atomic int *)self->child_tid,0,memory_order_release);
+            R(futex,self->child_tid,FUTEX_WAKE,INT_MAX,0,0,0);
+        }
         adopt_fs_write(self->resident_fs);
         g[REG_RSP]=self->resident_sp; g[REG_RIP]=(uintptr_t)adopt_return;
         g[REG_RAX]=0; return;
     } else if(n==SYS_exit_group) R(exit_group,g[REG_RDI],0,0,0,0,0);
     g[REG_RAX]=result;
 }
-static long identity(uintptr_t *p) { *p=(uintptr_t)pthread_self(); return gettid(); }
+static long identity(uintptr_t *p) {
+    static pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
+    if(pthread_mutex_lock(&mutex)) __builtin_trap();
+    *p=(uintptr_t)pthread_self();
+    long tid=gettid();
+    if(pthread_mutex_unlock(&mutex)) __builtin_trap();
+    return tid;
+}
 _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     struct adopt_thread *t=adopt_current();
     t->regs[REG_RIP]=entry; t->regs[REG_RSP]=stack;
@@ -192,7 +227,9 @@ int adopt_install(void) {
     _Static_assert(offsetof(struct adopt_thread,fp)==256,"FP assembly layout");
     _Static_assert(offsetof(struct adopt_thread,xfeatures)==16640,"xfeatures assembly layout");
     _Static_assert(ATOMIC_INT_LOCK_FREE==2,"signal-safe registry atomics");
+    _Static_assert(ATOMIC_POINTER_LOCK_FREE==2,"signal-safe FS publication");
     struct adopt_thread *main=reserve();
+    if(!main) return -1;
     main->resident_fs=adopt_fs_read(); atomic_store(&main->tid,R(gettid,0,0,0,0,0,0));
     /* Exempt resident libc syscall instructions, never app libc. */
     Dl_info di;
@@ -208,7 +245,7 @@ int adopt_install(void) {
     }
     fclose(maps);
     if(!libc_lo || libc_lo>>32 != (libc_hi-1)>>32) return -1;
-    static struct adopt_api api={1,adopt_current,identity};
+    force_clone=getenv("MATON_ADOPT_FORCE_CLONE")!=NULL;
     char value[32]; snprintf(value,sizeof(value),"%lx",(unsigned long)&api);
     setenv("MATON_THREAD_ADOPT",value,1);
     struct sigaction sa={0}; sa.sa_sigaction=trap; sa.sa_flags=SA_SIGINFO;
@@ -230,7 +267,7 @@ int adopt_install(void) {
         BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS,0),
 #define TRAP(n) BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,SYS_##n,0,1), BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_TRAP)
-        TRAP(rt_sigprocmask),TRAP(clone),TRAP(clone3),TRAP(exit),TRAP(exit_group),TRAP(set_tid_address),TRAP(set_robust_list),TRAP(rseq),TRAP(fork),TRAP(vfork),
+        TRAP(rt_sigaction),TRAP(rt_sigprocmask),TRAP(clone),TRAP(clone3),TRAP(exit),TRAP(exit_group),TRAP(set_tid_address),TRAP(set_robust_list),TRAP(get_robust_list),TRAP(rseq),TRAP(fork),TRAP(vfork),
         BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW)
     };
     struct sock_fprog program={sizeof(f)/sizeof(f[0]),f};

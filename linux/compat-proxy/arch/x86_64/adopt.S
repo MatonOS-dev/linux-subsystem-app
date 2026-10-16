@@ -36,7 +36,7 @@ adopt_run:
     mov 80(%rdx),%rbp
     mov 88(%rdx),%rbx
     mov 112(%rdx),%rcx
-    xor %eax,%eax
+    mov $0,%eax
     mov 96(%rdx),%rdx
     ret
 .global adopt_return

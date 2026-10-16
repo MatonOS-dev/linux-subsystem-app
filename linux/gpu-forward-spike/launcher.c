@@ -24,9 +24,10 @@ int main(int argc, char **argv) {
     char value[32];
     snprintf(value, sizeof(value), "%lx", (unsigned long)&bridge);
     setenv("MATON_GPU_BRIDGE", value, 1);
-    shadow_publish();
 #ifdef MATON_ADOPT
     if (adopt_install()) return 5;
+#else
+    shadow_publish();
 #endif
     struct image image;
     if (proxy_load(argv[1], argv + 1, environ, &image)) return 4;
@@ -39,8 +40,8 @@ int main(int argc, char **argv) {
     Elf64_auxv_t *aux = (void *)(cursor + 1);
     for (; aux->a_type; aux++)
         if (aux->a_type == AT_HWCAP2) aux->a_un.a_val = getauxval(AT_HWCAP2);
-    /* No policy installation: isolates the loader/TLS experiment from seccomp.
-     * Device needs root or existing Android policy allowing these syscalls. */
+    /* The adoption variant installs its narrow thread-lifecycle filter.
+     * Other variants retain the original unfiltered loader/TLS experiment. */
 #ifdef MATON_ADOPT
     adopt_launch(image.entry, image.stack);
 #else
