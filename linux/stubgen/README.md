@@ -1,3 +1,6 @@
+> v3.5: linuxd is retired. Any linuxd/shared-store paths below describe the
+> historical design. See [current ownership and device checks](../../docs/RETIRE-LINUXD.md).
+
 # Image-carrying launcher APKs
 
 Generated stubs carry no native code. They declare `<uses-library

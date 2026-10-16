@@ -116,26 +116,23 @@ extra-data; the raw, checksum-verified downloads stay in **extra/** and are
 applied by the app's stub), the store reads the real installation repo's app
 commit, then commits the deployment's **files/** root, including
 **extra/**, to a new local bare-user repo at
-`<staging>/<host-uid>/<operation>/pack-repo`. This separate staging repository
+`<subsystem-cache>/flatpak-staging/<operation>/pack-repo`. This separate staging repository
 is intentional: the real download repo is bare-user-only; changing its mode
-would invalidate linuxd's assumptions. The private ref is
+would invalidate Flatpak's assumptions. The private ref is
 `matonos/private/deployed-files`, scoped by the operation directory, with no
 parent or remote. It never gets published or uploaded. The local commit is
 packed, so index paths are relative to /app (there is no /files prefix).
 Upstream app/runtime pins and the verification manifest keep their original
 signed identities. The private repo is removed by normal staging cleanup.
 
-Packing runs before `verify_staged_install` takes staging away. After successful
-verification, LinuxAppStoreService invokes StubGenerator to create and log
-`base.apk` plus `pack_<hash>.apk` artifacts under a unique
-`<host-cache>/flatpak-pack-artifacts/stage-*` directory. Raw index, metadata and
-ZIPs live in its `objects/` subdirectory; they are removed once the install
-session finishes.
+The subsystem runs OSTree fsck before producing packs. Flatpak's pull uses the
+image's pinned Flathub remote/key. Staging is app-private; no ownership handoff,
+sealing daemon or published checkout exists. `deployment.bin` in each signed
+index split carries ref, original upstream commit object, origin, metadata and
+deploy GVariant. Its bytes participate in the index split's hash. The stub
+rebuilds only Flatpak's lookup scaffold in its own cache and mounts payloads
+from installed APKs. See [retirement inventory](../../docs/RETIRE-LINUXD.md).
 
-linuxd separately reconstructs and sanitizes its verified published deployment;
-the packed phase-C files are not claimed to be byte-equivalent to that sanitized
-tree. That trust/sanitization boundary and absolute symlink behaviour
-still need device validation.
 
 Run `python3 linux/packs/tests/java-source.py` for the actual stock-CLI reader
 against host bare-user and bare-user-only repositories, byte equality with
@@ -184,27 +181,18 @@ cache links are removed on completion/failure/cancellation, without following
 symlinks. Process death recovery of sessions/cache is still a device lifecycle
 check; the current operation registry is in memory.
 
-linuxd verify_staged_install, bind_pending, install_complete/install_failed and
-publication are retained for authenticated staging, UID/deployment registration,
-installed remote/commit queries, launch leases, Flatpak deployment metadata,
-export/dependency bookkeeping and runtime/extension publication. Flatpak still
-expects its deployment scaffold even though the proxy supplies /app payloads
-from APKs. No linuxd publication code was removed. Existing app checkouts are
-not garbage-collected by this change. The store's legacy base-only APK session
-was removed. Metadata/absolute-symlink equivalence between the packed phase-C
-snapshot and linuxd's sanitized reconstructed tree still needs device review;
-no new sanitization-equivalence claim is made here.
+There is no linuxd publication or registration step. Successful PackageInstaller
+commit is the installed state; PackageManager owns updates, uninstall and APK
+lifetimes. Runtime/extension code is carried by runtime packages. The stub
+rebuilds disposable Flatpak lookup metadata from the signed index split; no
+shared deployment lease is acquired. Extra-data still executes in the target
+package and its result is a content split.
 
-Final stubs declare their launcher activity enabled in the manifest. The host
-therefore needs no CHANGE_COMPONENT_ENABLED_STATE grant or cross-package toggle.
-On first install the icon can appear just before linuxd binding completes;
-V3Launcher must acquire the registered deployment lease before spawning the
-payload and fails closed while that registration is absent. An error after a
-successful PackageInstaller commit (for example bind_pending failing) is a
-post-install registration failure, not a rolled-back APK transaction.
+Final stubs declare their launcher activity enabled in the manifest. Missing
+runtime packages trigger the existing authenticated subsystem repair request.
+Pre-retirement stubs without deployment.bin must be reinstalled/updated once.
 
-Tests: stubgen/tests/run-tests.sh, packs/tests/java-writer.py, java-source.py and run.sh. The filtered
-MATON_APPS_ONLY=matonos-linux-subsystem tools/build-apps.sh builds/signs the
-whole host app. Host-local AIDL declarations restore the existing private
-installer/callback types removed from the bridge; ILinuxdListener mirrors the
-canonical declaration in install/linuxd/aidl. No bridge ABI was changed.
+Tests: stubgen/tests/run-tests.sh, stubgen/tests/deployment-flatpak-test.py,
+packs/tests/java-writer.py, java-source.py and run.sh. Build the subsystem with
+MATON_APPS_ONLY=matonos-linux-subsystem tools/build-apps.sh. No ILinuxd AIDL,
+bridge registration or deployment-reconciliation service remains.

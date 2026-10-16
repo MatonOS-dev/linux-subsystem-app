@@ -1,3 +1,6 @@
+> v3.5: linuxd is retired. Any linuxd/shared-store paths below describe the
+> historical design. See [current ownership and device checks](../../docs/RETIRE-LINUXD.md).
+
 # Linux layer v3 — syscall compatibility proxy
 
 Experimental x86_64 resident ELF loader and static library. Android's inherited

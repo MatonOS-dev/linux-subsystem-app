@@ -1,3 +1,6 @@
+> v3.5: linuxd is retired. Any linuxd/shared-store paths below describe the
+> historical design. See [current ownership and device checks](../../docs/RETIRE-LINUXD.md).
+
 # Per-stub DNS forwarder
 
 Each generated app stub runs a native DNS forwarder under its own Android UID.
