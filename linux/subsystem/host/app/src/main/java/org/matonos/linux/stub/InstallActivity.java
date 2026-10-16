@@ -21,6 +21,13 @@ public class InstallActivity extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        final String ref;
+        try {
+            android.content.pm.ActivityInfo info=getPackageManager().getActivityInfo(
+                    new android.content.ComponentName(getPackageName(),org.matonos.linuxhost.stubgen.StubGenerator.HOST_ACTIVITY),android.content.pm.PackageManager.GET_META_DATA);
+            ref=info.metaData.getString(org.matonos.linuxhost.stubgen.StubGenerator.REF_META);
+            if(!DeployManifest.validRef(ref))throw new IllegalArgumentException("Invalid stub ref");
+        } catch(Exception error){Log.e(TAG,"Cannot read installed stub identity",error);finish();return;}
         String operation = getIntent().getStringExtra(EXTRA_OPERATION_ID);
         final String operationId = operation == null ? "" : operation;
         Intent store = new Intent().setClassName("org.matonos.linux", "org.matonos.linux.LinuxAppStoreService");
