@@ -12,7 +12,7 @@ import org.matonos.linuxhost.stubgen.OstreePacks;
 /** Local pack production, before linuxd takes ownership of staging. */
 public final class StagedPacks {
     public static void build(Context context, File installation, JSONObject manifest,
-            File output, BooleanSupplier cancelled) throws Exception {
+            File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed) throws Exception {
         File deployment=DeployManifest.stagedDeployment(installation,manifest);
         File operation=installation.getParentFile();
         File sourceRepo=new File(installation,"repo");
@@ -26,7 +26,18 @@ public final class StagedPacks {
         OstreePacks.Command local=command(context,operation,localRepo,cancelled);
         local.run("init","--mode=bare-user");
         String commit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
-        OstreePacks.read(localRepo,commit,local).write(output);
+        OstreePacks fresh=OstreePacks.read(localRepo,commit,local);
+        if(installed==null || installed.getLongVersionCode()!=org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE) {
+            fresh.write(output);
+        } else {
+            List<String> args=org.matonos.linuxhost.stubgen.PackLaunch.arguments(new File(installed.applicationInfo.sourceDir),
+                    installed.splitNames,installed.applicationInfo.splitSourceDirs,new File(output.getParentFile(),"installed"));
+            org.matonos.linuxhost.stubgen.ObjectPacks.update(fresh.entries,
+                    org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(args.get(2))),
+                    new File(args.get(3)),output,0.5);
+            org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
+            org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
+        }
     }
 
     private static OstreePacks.Command command(Context context,File operation,File repo,

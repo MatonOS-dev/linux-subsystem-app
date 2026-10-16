@@ -21,13 +21,14 @@ public final class PackInstaller implements PackSessionPlan.Installer {
     private int id=-1;
     private PendingIntent status;
     private BroadcastReceiver receiver;
-    private boolean terminal;
+    private boolean terminal,committed;
+    private volatile boolean cancelRequested;
     public PackInstaller(Context context,String pkg,File artifacts,BooleanSupplier cancelled,Consumer<Intent> callback) {
         this.context=context;this.pkg=pkg;this.artifacts=artifacts;this.cancelled=cancelled;this.callback=callback;
         installer=context.getPackageManager().getPackageInstaller();
     }
     @Override public synchronized void begin(PackSessionPlan.Mode mode,boolean keep) throws Exception {
-        if(cancelled.getAsBoolean())throw new IOException("Install cancelled");
+        if(terminal || cancelRequested || cancelled.getAsBoolean())throw new IOException("Install cancelled");
         PackageInstaller.SessionParams params=new PackageInstaller.SessionParams(mode==PackSessionPlan.Mode.FULL?
                 PackageInstaller.SessionParams.MODE_FULL_INSTALL:PackageInstaller.SessionParams.MODE_INHERIT_EXISTING);
         params.setAppPackageName(pkg);params.setDontKillApp(keep);
@@ -41,7 +42,7 @@ public final class PackInstaller implements PackSessionPlan.Installer {
         try(InputStream input=new FileInputStream(apk);OutputStream output=session.openWrite(name,0,apk.length())) {
             byte[] buffer=new byte[32768];int n;
             while((n=input.read(buffer))!=-1) {
-                if(cancelled.getAsBoolean())throw new IOException("Install cancelled");
+                if(terminal || cancelRequested || cancelled.getAsBoolean())throw new IOException("Install cancelled");
                 output.write(buffer,0,n);
             }
             session.fsync(output);
@@ -49,7 +50,7 @@ public final class PackInstaller implements PackSessionPlan.Installer {
     }
     @Override public synchronized void remove(String split) throws Exception {session.removeSplit(split);}
     @Override public synchronized void commit() throws Exception {
-        if(cancelled.getAsBoolean())throw new IOException("Install cancelled");
+        if(terminal || cancelRequested || cancelled.getAsBoolean())throw new IOException("Install cancelled");
         String action=context.getPackageName()+".PACK_INSTALL."+UUID.randomUUID();
         receiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent intent){
             int code=intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE);
@@ -68,7 +69,15 @@ public final class PackInstaller implements PackSessionPlan.Installer {
         }};
         context.registerReceiver(receiver,new IntentFilter(action),Context.RECEIVER_NOT_EXPORTED);
         status=PendingIntent.getBroadcast(context,id,new Intent(action).setPackage(context.getPackageName()),PendingIntent.FLAG_MUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
-        session.commit(status.getIntentSender());session.close();session=null;
+        session.commit(status.getIntentSender());committed=true;session.close();session=null;
+    }
+    /** Commit is the point of no return; do not report a committed install as cancelled. */
+    public boolean cancelBeforeCommit() {
+        cancelRequested=true;
+        synchronized(this) {
+            if(committed || terminal)return false;
+            abandon();return true;
+        }
     }
     @Override public synchronized void abandon() {
         if(terminal)return;

@@ -517,7 +517,7 @@ public final class StubGenerator {
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
             startEnd("provider", attrs(a("name", "org.matonos.linux.PortalFiles"),
                     a("authorities", pkg + ".portal.files"), ab("exported", false), ab("grantUriPermissions", true)));
-            start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", false), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
+            start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", true), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             startEnd("meta-data", attrs(a("name", REMOTE_META), a("value", remote)));
             startEnd("meta-data", attrs(a("name", MIN_INTERFACE_META), ai("value", minInterfaceVersion)));

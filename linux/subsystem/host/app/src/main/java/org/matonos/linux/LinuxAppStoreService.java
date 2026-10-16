@@ -48,6 +48,8 @@ public final class LinuxAppStoreService extends Service {
         volatile InstallTransaction transaction;
         volatile String stagedMetadata, stagedDesktop;
         volatile File packArtifacts;
+        volatile PackageInfo installed;
+        volatile org.matonos.linux.stub.PackInstaller packInstaller;
         final AtomicBoolean completed=new AtomicBoolean();
         Operation(int uid, String id, String kind, String ref, String remote, String name, String url,
                 ILinuxAppStoreCallback callback) {
@@ -66,7 +68,7 @@ public final class LinuxAppStoreService extends Service {
         @Override public void uninstall(String ref, String id, ILinuxAppStoreCallback cb) {
             submit("uninstall", ref, null, null, null, id, cb);
         }
-        @Override public String listInstalled() { enforceQuery(); return call("list_installed", args("userId", android.os.UserHandle.myUserId())); }
+        @Override public String listInstalled() { enforceQuery(); return call("list_installed", args("userId", android.os.Process.myUid()/100000)); }
         @Override public String listRemotes() { enforceQuery(); return remoteList(); }
         @Override public void addRemote(String name, String url, String id, ILinuxAppStoreCallback cb) {
             submit("addRemote", null, null, name, url, id, cb);
@@ -78,6 +80,7 @@ public final class LinuxAppStoreService extends Service {
             int uid=Binder.getCallingUid(); Operation op=operations.get(operationKey(uid,id));
             if(op==null || !StorePermissionPolicy.ownsOperation(op.uid,uid))
                 throw new SecurityException("Operation is not owned by caller");
+            if(op.packInstaller!=null && !op.packInstaller.cancelBeforeCommit())return;
             op.cancelled=true;
             if(op.transaction!=null) op.transaction.cancel();
             result(op,false,"Operation cancelled");
@@ -181,15 +184,20 @@ public final class LinuxAppStoreService extends Service {
                     File scratch=new File(getCacheDir(),"flatpak-pack-artifacts");
                     if(!scratch.isDirectory()&&!scratch.mkdirs())throw new java.io.IOException("Cannot create pack scratch");
                     op.packArtifacts=java.nio.file.Files.createTempDirectory(scratch.toPath(),"stage-").toFile();
+                    try {op.installed=getPackageManager().getPackageInfo(packageFor(op.ref),0);}
+                    catch(PackageManager.NameNotFoundException absent){op.installed=null;}
                     org.matonos.linux.stub.StagedPacks.build(LinuxAppStoreService.this,installation,staged,
-                            new File(op.packArtifacts,"objects"),()->op.cancelled);
+                            new File(op.packArtifacts,"objects"),()->op.cancelled,op.installed);
                     if(op.cancelled)throw new java.io.IOException("Install cancelled");
                     JSONObject args=new JSONObject(); put(args,"operationId",operationId);
                     args.put("manifest",staged);
                     JSONObject reply=new JSONObject(linuxd().call("verify_staged_install",args.toString()));
                     if(!reply.optBoolean("ok",false)) throw new IllegalStateException(reply.optString("error","Staged install verification failed"));
                     installFinalStub(op);
-                } catch(Exception e) { result(op,false,e.getMessage()); }
+                } catch(Exception e) {
+                    try {linuxd().call("abort_staged_install",args("operationId",operationId).toString());}catch(Exception ignored){}
+                    result(op,false,e.getMessage());
+                } finally {if(op.cancelled)cleanArtifacts(op);}
             }
             @Override public void onFailed(String operationId,String error) {
                 try { linuxd().call("abort_staged_install",args("operationId",operationId).toString()); }
@@ -198,7 +206,11 @@ public final class LinuxAppStoreService extends Service {
             }
         };
         op.transaction=InstallTransaction.create(this,stagedCallback,id,op.ref,remote);
-        if(op.cancelled) { op.transaction.cancel(); return; }
+        if(op.cancelled) {
+            op.transaction.cancel();
+            linuxd().call("abort_staged_install",args("operationId",id).toString());
+            return;
+        }
         op.transaction.start(()-> { });
     }
 
@@ -248,55 +260,80 @@ public final class LinuxAppStoreService extends Service {
             throw new IllegalStateException("Staged Flatpak metadata unavailable");
         byte[] icon=fallbackIcon();
         File work=new File(getCacheDir(),"flatpak-stubs"); if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create stub scratch directory");
-        File desktop=new File(work,pkg+".desktop"), apk=new File(work,pkg+".apk");
+        File desktop=new File(work,pkg+".desktop");
         try {
             try(FileOutputStream out=new FileOutputStream(desktop)){out.write(op.stagedDesktop.getBytes(StandardCharsets.UTF_8));}
-            // Task 4b produces a complete reviewable set. Task 4c will switch
-            // the PackageInstaller session below to these base + split files.
             if(op.packArtifacts==null)throw new IllegalStateException("Staged object packs unavailable");
-            File objects=new File(op.packArtifacts,"objects");
-            File packBase=new File(op.packArtifacts,"base.apk");
-            StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,packBase,null,null,objects);
-            Log.i(TAG,"Pack artifact base: "+packBase);
-            File[] packs=objects.listFiles((dir,name)->name.matches("pack-[0-9a-f]{64}\\.zip"));
-            if(packs==null)throw new java.io.IOException("Missing object pack directory");
-            java.util.Arrays.sort(packs,java.util.Comparator.comparing(File::getName));
-            for(File pack:packs) {
-                if(op.cancelled)throw new java.io.IOException("Install cancelled");
-                File split=new File(op.packArtifacts,"pack_"+pack.getName().substring(5,69)+".apk");
-                StubGenerator.generatePack(work,pkg,pack,split);
-                Log.i(TAG,"Pack artifact split: "+split);
+            File objects=new File(op.packArtifacts,"objects"),base=new File(op.packArtifacts,"base.apk");
+            StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,base,null,null,objects);
+            boolean full=op.installed==null || op.installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE ||
+                    !org.matonos.linuxhost.stubgen.PackSessionPlan.sameBase(base,new File(op.installed.applicationInfo.sourceDir));
+            java.util.List<String> prior=op.installed==null || op.installed.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(op.installed.splitNames);
+            int revision=org.matonos.linuxhost.stubgen.PackSessionPlan.nextRevision(
+                    op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
+                    op.installed==null?0:op.installed.baseRevisionCode,op.installed==null?null:op.installed.splitRevisionCodes);
+            java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
+            String index=StubGenerator.indexSplitName(objects);desired.add(index);
+            if(full || !prior.contains(index)) {
+                StubGenerator.generateIndex(work,pkg,objects,new File(op.packArtifacts,index+".apk"),revision);available.add(index);
             }
-            StubGenerator.generate(work,op.ref,remote,desktop,icon,StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,apk,null,null);
-            PackageInstaller installer=getPackageManager().getPackageInstaller();
-            PackageInstaller.SessionParams params=new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
-            params.setAppPackageName(pkg); params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
-            int sessionId=installer.createSession(params);
-            try(PackageInstaller.Session session=installer.openSession(sessionId)) {
-                try(FileInputStream input=new FileInputStream(apk); java.io.OutputStream output=session.openWrite("base.apk",0,apk.length())) {
-                    byte[] buffer=new byte[32768]; int count; while((count=input.read(buffer))!=-1)output.write(buffer,0,count); session.fsync(output);
+            for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index"))) {
+                if(!row.kind.equals("file"))continue;
+                String split="pack_"+row.pack.substring(5,69);
+                if(desired.contains(split))continue;
+                desired.add(split);
+                File destination=new File(op.packArtifacts,split+".apk");
+                if(prior.contains(split) && op.installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
+                    if(full) {
+                        int position=prior.indexOf(split);
+                        java.nio.file.Files.copy(java.nio.file.Path.of(op.installed.applicationInfo.splitSourceDirs[position]),destination.toPath());
+                        available.add(split);
+                    }
+                } else {
+                    if(op.cancelled)throw new java.io.IOException("Install cancelled");
+                    StubGenerator.generatePack(work,pkg,new File(objects,row.pack),destination,revision);available.add(split);
                 }
-                session.commit(new IntentSender((android.content.IIntentSender)new android.content.IIntentSender.Stub(){
-                    @Override public void send(int code,Intent intent,String type,IBinder token,android.content.IIntentReceiver receiver,String permission,android.os.Bundle options) { worker.execute(()->finishStubInstall(op,remote,pkg,intent)); }
-                }));
-            } catch(Exception e){installer.abandonSession(sessionId); throw e;}
-        } finally { desktop.delete(); apk.delete(); }
+            }
+            org.matonos.linuxhost.stubgen.PackSessionPlan plan=org.matonos.linuxhost.stubgen.PackSessionPlan.create(
+                    op.installed!=null,op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
+                    prior,desired,available,full);
+            if(plan.write.isEmpty() && plan.remove.isEmpty()) {
+                finishStubInstall(op,remote,pkg,new Intent().putExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_SUCCESS));
+                return;
+            }
+            op.packInstaller=new org.matonos.linux.stub.PackInstaller(this,pkg,op.packArtifacts,()->op.cancelled,
+                    intent->worker.execute(()->finishStubInstall(op,remote,pkg,intent)));
+            plan.submit(op.packInstaller,()->op.cancelled);
+        } finally { desktop.delete(); }
     }
 
     private void finishStubInstall(Operation op,String remote,String pkg,Intent intent) {
         try {
+            if(op.completed.get())return;
             if(intent==null||intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
                 throw new IllegalStateException(intent==null?"Stub install failed":intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
             JSONObject bind=new JSONObject(); put(bind,"ref",op.ref); put(bind,"remote",remote); put(bind,"operationId",op.id); put(bind,"uid",stubUid(op.ref)); put(bind,"packageName",pkg);
             JSONObject bound=new JSONObject(linuxd().call("bind_pending",bind.toString()));
             if(!bound.optBoolean("ok"))throw new IllegalStateException(bound.optString("error","Stub binding failed"));
-            getPackageManager().setComponentEnabledSetting(new android.content.ComponentName(pkg,StubGenerator.HOST_ACTIVITY),PackageManager.COMPONENT_ENABLED_STATE_ENABLED,PackageManager.DONT_KILL_APP);
             linuxd().call("install_complete",new JSONObject().put("ref",op.ref).put("remote",remote).put("operationId",op.id).toString());
             result(op,true,null);
         } catch(Exception e) {
-            try { linuxd().call("install_failed",new JSONObject().put("ref",op.ref).put("remote",remote).put("operationId",op.id).put("error",e.toString()).toString()); } catch(Exception ignored) { }
             result(op,false,e.getMessage());
         }
+    }
+
+    private static void cleanArtifacts(Operation op) {
+        File directory=op.packArtifacts;if(directory==null)return;
+        try {
+            java.nio.file.Files.walkFileTree(directory.toPath(),new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                @Override public java.nio.file.FileVisitResult visitFile(java.nio.file.Path path,java.nio.file.attribute.BasicFileAttributes attrs) throws java.io.IOException {
+                    java.nio.file.Files.deleteIfExists(path);return java.nio.file.FileVisitResult.CONTINUE;
+                }
+                @Override public java.nio.file.FileVisitResult postVisitDirectory(java.nio.file.Path path,java.io.IOException error) throws java.io.IOException {
+                    java.nio.file.Files.deleteIfExists(path);return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+        } catch(Exception e){Log.w(TAG,"Cannot remove pack artifacts",e);}
     }
 
     private void uninstallStub(Operation op) throws Exception {
@@ -304,12 +341,20 @@ public final class LinuxAppStoreService extends Service {
         JSONObject args=args("ref",op.ref); put(args,"uid",uid); put(args,"deleteData",false); put(args,"operationId",op.id);
         JSONObject reply=new JSONObject(linuxd().call("uninstall",args.toString()));
         if(!reply.optBoolean("ok")) throw new IllegalStateException(reply.optString("error","Uninstall failed"));
-        getPackageManager().getPackageInstaller().uninstall(pkg,new IntentSender((android.content.IIntentSender)new android.content.IIntentSender.Stub(){
-            @Override public void send(int code,Intent intent,String type,IBinder token,android.content.IIntentReceiver receiver,String permission,android.os.Bundle options) {
-                int status=intent==null?PackageInstaller.STATUS_FAILURE:intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE);
-                result(op,status==PackageInstaller.STATUS_SUCCESS,status==PackageInstaller.STATUS_SUCCESS?null:intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
+        String action=getPackageName()+".PACK_UNINSTALL."+java.util.UUID.randomUUID();
+        android.app.PendingIntent status=android.app.PendingIntent.getBroadcast(this,0,
+                new Intent(action).setPackage(getPackageName()),android.app.PendingIntent.FLAG_MUTABLE);
+        android.content.BroadcastReceiver receiver=new android.content.BroadcastReceiver() {
+            @Override public void onReceive(android.content.Context context,Intent intent) {
+                int code=intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE);
+                if(code==PackageInstaller.STATUS_PENDING_USER_ACTION)code=PackageInstaller.STATUS_FAILURE;
+                unregisterReceiver(this);status.cancel();
+                result(op,code==PackageInstaller.STATUS_SUCCESS,code==PackageInstaller.STATUS_SUCCESS?null:intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
             }
-        }));
+        };
+        registerReceiver(receiver,new android.content.IntentFilter(action),RECEIVER_NOT_EXPORTED);
+        try {getPackageManager().getPackageInstaller().uninstall(pkg,status.getIntentSender());}
+        catch(Exception error){unregisterReceiver(receiver);status.cancel();throw error;}
     }
 
     private byte[] fallbackIcon() {
@@ -376,7 +421,14 @@ public final class LinuxAppStoreService extends Service {
     }
 
     private void result(Operation op, boolean ok, String error) {
+        cleanArtifacts(op);
         if(!op.completed.compareAndSet(false,true)) return;
+        if(!ok && op.packInstaller!=null)op.packInstaller.abandon();
+        if(!ok && op.stagedMetadata!=null && ("install".equals(op.kind)||"update".equals(op.kind))) {
+            try {linuxd().call("install_failed",new JSONObject().put("ref",op.ref).put("remote","install".equals(op.kind)?op.remote:remoteFor(op.ref))
+                    .put("operationId",op.id).put("error",error==null?"Install failed":error).toString());}
+            catch(Exception ignored){}
+        }
         try { op.callback.onResult(op.id,ok,error); }
         catch(Exception e) { Log.w(TAG,"Cannot deliver store result",e); }
         operations.remove(operationKey(op.uid,op.id),op); pending.remove(operationKey(op.uid,op.id),op);
