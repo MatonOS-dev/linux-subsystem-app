@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 /* Unprivileged applet entry for the per-app stock portal. Every process
  * remains at the app UID, in untrusted_app, with its inherited seccomp
- * filter. This entry never uses linuxd's privileged launch wrapper. */
+ * filter. This entry stays entirely under the app's identity. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

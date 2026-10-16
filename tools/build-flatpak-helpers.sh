@@ -6,7 +6,7 @@
 # build; MATON_FORCE_HELPERS=1 rebuilds unconditionally.
 #
 # The Flatpak/OSTree multicall and portal come from MatonOS_apexs;
-# the in-tree staging helper is rebuilt here with the shared path header.
+# the unprivileged applet entries are rebuilt here.
 set -Eeuo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -26,7 +26,6 @@ STAMPS=$STAGE/HELPERS.sha256
 
 # source -> installed names (one binary may be installed under several).
 declare -A HELPERS=(
-  [flatpak-env-wrapper]="flatpak-env-wrapper"
   [matonos-app-tool]="matonos-app-flatpak matonos-app-bwrap"
 )
 

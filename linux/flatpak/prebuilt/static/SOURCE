@@ -33,7 +33,6 @@ e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/li
 gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
 
 8735b1f7980c8dbfda474b992fb063cf2739b854739923cfd55b0aa029bb4258  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/matonos-flatpak
-99a0bad96b97f4a0afa7bf9d63857ef1e27cac4aa2f6f388e94304414e8cc29a  /home/hanro50/matonos/repos/MatonOS_apexs/flatpak/out/flatpak-env-wrapper
 
 Flatpak fork base: a1a11b2451edfff78e2d1f8b034d4d5beae6d6ca + local changes below (not committed).
 2b74b80cba1c90d902e95be2b49340f2ccf6abe7a6c64e0e25fbc522a61d5f49  MatonOS-dev/flatpak/common/flatpak-run.c
@@ -43,9 +42,6 @@ Toolchain: NDK r30, x86_64-linux-android36; Bionic helpers and multicall, stripp
 Portal payload retained from the Bionic recipe (2026-10-08):
 
 In-tree management/app-shim refresh (rounds 10+11):
-b472e5e394602d6b7685d140cd7a4399da4291ffb795eaac0149bf9877aed968  linux/flatpak/flatpak-env-wrapper.c
 a12949305e40701449ec66dd71bed01e64a2ab7237c966dbd7d7105b7f342133  linux/flatpak/matonos-app-tool.c
-0914c103ac0d78ce91ed1eb9cc0acf1d916adeed03a8286a4922aae21c11c8ba  linux/flatpak/linux-paths.h
-66dd94d1be2f0b15387af96ad830f76a72860e3ee572357ec42275586b83fcf8  linux/flatpak/prebuilt/static/x86_64/flatpak-env-wrapper
 d1ceee0581b5aacf3166430a8230c91a5ef7e193243444ca5aa60f81a406742a  linux/flatpak/prebuilt/static/x86_64/matonos-app-flatpak
 d1ceee0581b5aacf3166430a8230c91a5ef7e193243444ca5aa60f81a406742a  linux/flatpak/prebuilt/static/x86_64/matonos-app-bwrap

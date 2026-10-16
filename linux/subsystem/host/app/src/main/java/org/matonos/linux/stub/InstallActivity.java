@@ -10,8 +10,8 @@ import org.matonos.linux.ILinuxAppStore;
 import org.matonos.linux.ILinuxAppStoreCallback;
 
 /** Compatibility action for an already installed, device-signed stub. New
- * installs are owned by the bridge and create this APK after deployment.
- * linuxd authenticates this package and uses FPINSTALL for network staging. */
+ * installs are owned by the subsystem and installed through PackageManager.
+ * The subsystem authenticates this package before private network staging. */
 public class InstallActivity extends Activity {
     private static final String TAG = "MatonStubInstall";
     /** Optional operation ID from the store, so it can follow progress. */

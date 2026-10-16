@@ -8,6 +8,6 @@ interface ICompositorInstall {
      * reports through callback. Rejects a second concurrent operation. */
     void startInstall(ICompositorInstallCallback callback, String operationId, String appRef, String remote);
     /** Stops the worker for operationId and releases its wake lock and DNS
-     * service. Staging cleanup remains linuxd's. */
+     * service. The subsystem app owns staging cleanup. */
     void cancelInstall(String operationId);
 }

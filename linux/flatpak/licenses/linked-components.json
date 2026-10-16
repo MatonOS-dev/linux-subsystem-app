@@ -1,17 +1,5 @@
 {
   "binaries": {
-    "flatpak-env-wrapper": [
-      {
-        "chosen_license": "MIT",
-        "license_terms": [
-          "MIT"
-        ],
-        "name": "musl",
-        "spdx_license": "MIT",
-        "upstream_license": "MIT",
-        "version": "1.2.6-r2"
-      }
-    ],
     "matonos-flatpak": [
       {
         "chosen_license": "LGPL-2.1-or-later",

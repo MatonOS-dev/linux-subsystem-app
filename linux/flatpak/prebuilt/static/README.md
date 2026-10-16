@@ -1,3 +1,6 @@
+> v3.5: linuxd is retired. Any linuxd/shared-store paths below describe the
+> historical design. See [current ownership and device checks](../../../../docs/RETIRE-LINUXD.md).
+
 # Bionic APEX payload staging
 
 The directory name is retained for build-input stability. The payload is bionic.

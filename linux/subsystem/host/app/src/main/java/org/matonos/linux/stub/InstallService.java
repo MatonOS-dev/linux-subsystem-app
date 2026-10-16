@@ -9,7 +9,7 @@ import android.content.pm.ServiceInfo;
 import android.os.IBinder;
 
 /** Shows progress for compatibility self-update calls. Network staging uses
- * the dedicated FPINSTALL identity; this service owns no install choices. */
+ * the subsystem app's own identity; this service owns no install choices. */
 public final class InstallService extends Service {
     @Override public void onCreate() {
         super.onCreate();

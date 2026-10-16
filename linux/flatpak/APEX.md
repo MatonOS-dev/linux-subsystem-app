@@ -1,3 +1,6 @@
+> v3.5: linuxd is retired. Any linuxd/shared-store paths below describe the
+> historical design. See [current ownership and device checks](../../docs/RETIRE-LINUXD.md).
+
 # Flatpak APEX
 
 `com.matonos.flatpak` packages the bionic Flatpak/OSTree/bubblewrap multicall

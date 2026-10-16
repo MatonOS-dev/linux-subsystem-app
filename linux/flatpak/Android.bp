@@ -23,19 +23,6 @@ cc_prebuilt_binary {
 // tools/build-flatpak-helpers.sh. Hashes are in prebuilt/static/SOURCE.
 
 cc_prebuilt_binary {
-    name: "matonos-flatpak-launcher-static-prebuilt",
-    srcs: ["prebuilt/static/x86_64/flatpak-env-wrapper"],
-    stem: "flatpak-env-wrapper",
-    system_ext_specific: true,
-    apex_available: ["com.matonos.flatpak"],
-    compile_multilib: "64",
-    strip: {
-        none: true,
-    },
-    check_elf_files: false,
-}
-
-cc_prebuilt_binary {
     name: "matonos-app-flatpak-prebuilt",
     srcs: ["prebuilt/static/x86_64/matonos-app-flatpak"],
     stem: "matonos-app-flatpak",
@@ -318,7 +305,6 @@ apex {
     min_sdk_version: "37",
     binaries: [
         "matonos-flatpak-static-prebuilt",
-        "matonos-flatpak-launcher-static-prebuilt",
         "matonos-app-flatpak-prebuilt",
         "matonos-app-bwrap-prebuilt",
     ],
