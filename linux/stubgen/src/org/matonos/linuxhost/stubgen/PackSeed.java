@@ -9,10 +9,11 @@ import java.util.*;
  * No refs or commits are asserted complete: stock pull fetches all metadata and
  * any absent files. Installed, signed carriers remain the only input. */
 public final class PackSeed {
-    public static long bytes(List<ObjectPacks.Entry> entries) {
+    public static long bytes(List<ObjectPacks.Entry> entries,long blockSize) {
+        if(blockSize<=0)throw new IllegalArgumentException("Invalid filesystem block size");
         long size=0;Set<String> seen=new HashSet<>();
         for(ObjectPacks.Entry e:entries)if(eligible(e)&&seen.add(e.checksum))
-            size=Math.addExact(size,Math.max(4096,Math.multiplyExact((e.length+4095)/4096,4096)));
+            size=Math.addExact(size,Math.max(blockSize,Math.multiplyExact(Math.addExact(e.length,blockSize-1)/blockSize,blockSize)));
         return size;
     }
     private static boolean eligible(ObjectPacks.Entry e) {

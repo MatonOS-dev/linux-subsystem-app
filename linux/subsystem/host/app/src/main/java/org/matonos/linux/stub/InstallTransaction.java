@@ -247,7 +247,8 @@ public final class InstallTransaction {
                     new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,new File(root,"seed"));
             java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=
                     org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(args.get(2)));
-            long required=org.matonos.linuxhost.stubgen.PackSeed.bytes(entries),available=root.getUsableSpace();
+            long required=org.matonos.linuxhost.stubgen.PackSeed.bytes(entries,
+                    new android.os.StatFs(root.getAbsolutePath()).getBlockSizeLong()),available=root.getUsableSpace();
             report("staging",-1,"Update base temporary bytes: "+required+"; available: "+available);
             if(required>available)throw new java.io.IOException("Insufficient space for installed update base: "+required+" bytes required, "+available+" available");
             org.matonos.linuxhost.stubgen.PackSeed.seed(entries,new File(args.get(3)),new File(installation,"repo"),()->cancelled.get());
@@ -266,7 +267,22 @@ public final class InstallTransaction {
                     Files.readAllBytes(new File(DeployManifest.stagedDeployment(installation,manifest),"metadata").toPath())))
                 throw new java.io.IOException("Pulled deployment differs from planned Flatpak commit");
             StagedPacks.verify(context,installation,()->cancelled.get());
+            report("staging",-1,"Temporary operation allocated bytes after pull: "+allocatedBytes(operationDirectory())+
+                    "; available: "+root.getUsableSpace());
         }
+    }
+    /** Count allocated blocks once per inode, including hardlinked checkouts. */
+    static long allocatedBytes(File root)throws Exception {
+        java.util.Set<String> seen=new java.util.HashSet<>();
+        long[] bytes={0};
+        try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(root.toPath())) {
+            java.util.Iterator<java.nio.file.Path> it=paths.iterator();
+            while(it.hasNext()) {
+                android.system.StructStat stat=android.system.Os.lstat(it.next().toString());
+                if(seen.add(stat.st_dev+":"+stat.st_ino))bytes[0]=Math.addExact(bytes[0],Math.multiplyExact(stat.st_blocks,512));
+            }
+        }
+        return bytes[0];
     }
     private static byte[] blob(java.io.DataInputStream in,int limit)throws Exception {
         int count=in.readInt();if(count<0||count>limit)throw new java.io.IOException("Invalid Flatpak field length");

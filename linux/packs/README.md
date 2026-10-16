@@ -197,3 +197,37 @@ Tests: stubgen/tests/run-tests.sh, stubgen/tests/deployment-flatpak-test.py,
 packs/tests/java-writer.py, java-source.py and run.sh. Build the subsystem with
 MATON_APPS_ONLY=matonos-linux-subsystem tools/build-apps.sh. No ILinuxd AIDL,
 bridge registration or deployment-reconciliation service remains.
+
+### v3.5 updates from installed carriers
+
+The common subsystem `InstallTransaction.Scratch` pull path seeds its private
+bare-user-only repository from PackageManager-resolved installed pack slices.
+`PackSeed` copies each unique canonical file object once and recreates symlinks;
+no deployed filesystem or writable persistent OSTree repository is retained.
+Only uid/gid 0, empty-xattr, canonical-mode objects qualify. Other objects are
+fetched normally. Pack production uses stock OSTree canonical owner/permission
+options so the indexed identities can be reused in the next download.
+
+Pulls use Flatpak's `--no-static-deltas`: ordinary per-object fetching skips
+seeded checksums. The packs represent deployed `files/`, not the complete
+original Flatpak commit, so claiming a complete static-delta base would be
+incorrect. In particular a delta from an empty base could download everything.
+Metadata and missing payload objects still come from the authenticated remote;
+the existing fsck runs before packaging. `ObjectPacks.update(..., 0.5)` continues
+to reuse installed carrier splits.
+
+Before seeding, the subsystem checks available space against the unique base
+payload rounded to the actual filesystem block size. This is a payload budget,
+not a total-update cap: directory metadata, new downloads, extra-data, the local
+pack repo, new packs, signed carriers and PackageInstaller sessions also consume
+space. Stock libostree enforces its free-space reserve during downloads; write
+failures abort before package replacement. Progress reports base budget/free
+bytes and actual allocated operation bytes after each pull; logcat records
+allocated operation bytes after packing. Allocated-byte accounting deduplicates
+hardlinks by device/inode. Operation cleanup releases the temporary base too.
+
+`linux/stubgen/tests/run-tests.sh` includes a real HTTP OSTree test: commit A is
+packed, a fresh repo is seeded only from those packs, and commit B changes one
+small file while retaining a random 1 MiB file and a symlink. It asserts one
+content-object request, checks fsck, updates packs, builds carriers and checks
+payload slices through the production `PackLaunch` path. No image/VM is needed.

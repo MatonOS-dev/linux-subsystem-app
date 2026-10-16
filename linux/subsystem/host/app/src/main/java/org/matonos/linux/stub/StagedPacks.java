@@ -41,6 +41,8 @@ public final class StagedPacks {
             org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
         }
         record(sourceRepo,deployment,manifest,output);
+        android.util.Log.i("MatonInstall","Temporary operation allocated bytes after packs: "+
+                InstallTransaction.allocatedBytes(operation)+"; available: "+operation.getUsableSpace());
     }
 
     private static void record(File sourceRepo,File deployment,JSONObject manifest,File output) throws Exception {
