@@ -36,7 +36,7 @@ public final class StubGenerator {
     public static final int FORMAT_VERSION = 1;
     // Reconcile older launchers to recover installed display names and icons.
     // v14 adds bridge visibility for self-task Linux window capabilities.
-    public static final int STUB_VERSION_CODE = 16;
+    public static final int STUB_VERSION_CODE = 17;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
@@ -190,15 +190,42 @@ public final class StubGenerator {
         }
     }
 
+    /** Index identity includes metadata; both are immutable in this split. */
+    public static String indexSplitName(File objects) throws Exception {
+        java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
+        for(String name:Arrays.asList("objects.index","objects.ostree")) {
+            byte[] bytes=java.nio.file.Files.readAllBytes(new File(objects,name).toPath());
+            hash.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length).array());hash.update(bytes);
+        }
+        return "index_"+ObjectPacks.hex(hash.digest());
+    }
+    public static File generateIndex(File workDir,String pkg,File objects,File output,int revision) throws Exception {
+        BinaryManifest encoder=new BinaryManifest(pkg,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
+        encoder.revisionCode=revision;
+        File unsigned=File.createTempFile("matonos-index-",".apk",workDir);
+        try {
+            try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
+                put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects)));
+                for(String name:Arrays.asList("objects.index","objects.ostree"))
+                    put(zip,"assets/matonos/"+name,java.nio.file.Files.readAllBytes(new File(objects,name).toPath()));
+            }
+            sign(unsigned,output,getOrCreateKey());return output;
+        } finally {unsigned.delete();}
+    }
+
     /** Builds a code-free split named for the immutable content ZIP hash.
      * Indexed offsets survive manifest insertion and v2/v3 signing. */
     public static File generatePack(File workDir, String packageName, File pack, File output) throws Exception {
+        return generatePack(workDir,packageName,pack,output,0);
+    }
+    public static File generatePack(File workDir, String packageName, File pack, File output,int revision) throws Exception {
         if(!packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
             throw new IllegalArgumentException("Invalid package name");
         String name=pack.getName();
         if(!name.matches("pack-[0-9a-f]{64}\\.zip"))throw new IllegalArgumentException("Invalid pack name");
         String split="pack_"+name.substring(5,69);
         BinaryManifest encoder=new BinaryManifest(packageName,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
+        encoder.revisionCode=revision;
         File unsigned=File.createTempFile("matonos-pack-",".apk",workDir);
         try {
             ObjectPacks.carrier(pack,unsigned,encoder.packManifest(split));
@@ -311,10 +338,6 @@ public final class StubGenerator {
         byte[] manifest = encoder.encode();
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);
-            if(packDirectory!=null) {
-                put(zip,"assets/matonos/objects.index",java.nio.file.Files.readAllBytes(new File(packDirectory,"objects.index").toPath()));
-                put(zip,"assets/matonos/objects.ostree",java.nio.file.Files.readAllBytes(new File(packDirectory,"objects.ostree").toPath()));
-            }
             // Supply a real drawable resource so Android launchers can resolve the app icon.
             put(zip, "resources.arsc", iconResourceTable(pkg));
             put(zip, "classes.dex", emptyDex());
@@ -457,6 +480,7 @@ public final class StubGenerator {
         }
         CommitInfo commitInfo;
         int minInterfaceVersion = 2;
+        int revisionCode;
         byte[] encode() throws IOException {
             for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "data", "mimeType", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", "android.intent.category.DEFAULT", "android.intent.category.BROWSABLE", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
@@ -540,7 +564,7 @@ public final class StubGenerator {
         }
         byte[] packManifest(String split) throws IOException {
             namespace(true);
-            start("manifest",null,attrs(a("package",pkg),a("split",split),ai("versionCode",STUB_VERSION_CODE)));
+            start("manifest",null,attrs(a("package",pkg),a("split",split),ai("versionCode",STUB_VERSION_CODE),ai("revisionCode",revisionCode)));
             startEnd("uses-sdk",attrs(ai("minSdkVersion",30),ai("targetSdkVersion",36)));
             startEnd("application",attrs(ab("hasCode",false)));
             end("manifest");namespace(false);return finish();
@@ -593,7 +617,7 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "revisionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
@@ -609,6 +633,7 @@ public final class StubGenerator {
                 case "appComponentFactory": return android.R.attr.appComponentFactory;
                 case "drawable": return 0x01010199; case "icon": return 0x01010002; case "name": return 0x01010003; case "label": return 0x01010001; case "exported": return 0x01010010; case "enabled": return 0x0101000e;
                 case "hasCode": return 0x0101000c; case "required": return 0x0101028e; case "value": return 0x01010024;
+                case "revisionCode": return 0x010104d5;
                 case "mimeType": return 0x01010026; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
                 case "minSdkVersion": return 0x0101020c; case "targetSdkVersion": return 0x01010270; default: return 0;
             }

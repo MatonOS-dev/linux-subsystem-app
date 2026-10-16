@@ -11,10 +11,17 @@ import java.util.zip.*;
 /** Resolves only PackageManager-supplied carriers; no caller-supplied payload paths. */
 public final class PackLaunch {
     public static List<String> arguments(File base, String[] names, String[] paths, File cache) throws Exception {
-        byte[] index;
-        try(ZipFile zip=new ZipFile(base)) {
+        byte[] index=null;String indexPath=null;
+        if(names==null || paths==null || names.length!=paths.length)
+            throw new IOException("Missing or inconsistent package splits");
+        for(int i=0;i<names.length;i++)if(names[i].matches("index_[0-9a-f]{64}")) {
+            if(indexPath!=null)throw new IOException("Multiple index splits");
+            indexPath=paths[i];
+        }
+        if(indexPath==null)throw new IOException("Missing index split");
+        try(ZipFile zip=new ZipFile(indexPath)) {
             ZipEntry entry=zip.getEntry("assets/matonos/objects.index");
-            if(entry==null)return Collections.emptyList();
+            if(entry==null)throw new IOException("Index split has no index");
             try(InputStream in=zip.getInputStream(entry)){index=in.readAllBytes();}
         }
         Set<String> needed=packs(index);

@@ -48,10 +48,14 @@ public final class PackCarrierTest {
   try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(base))) {
    ZipEntry entry=new ZipEntry("assets/matonos/objects.index");zip.putNextEntry(entry);zip.write(Files.readAllBytes(index.toPath()));zip.closeEntry();
   }
-  List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split},new String[]{signed.getAbsolutePath()},new File(dir,"cache"));
+  List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split,"index_"+"b".repeat(64)},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
   if(command.size()!=4||!command.get(0).equals("--pack-mount")||!command.get(1).equals("/app"))throw new AssertionError(command);
   if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
   if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");
+  try {
+   org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{"index_"+"b".repeat(64),"index_"+"c".repeat(64)},new String[]{base.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
+   throw new AssertionError("Duplicate index accepted");
+  } catch(IOException expected) { }
   try {
    org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,null,null,new File(dir,"cache"));
    throw new AssertionError("Missing split accepted");
