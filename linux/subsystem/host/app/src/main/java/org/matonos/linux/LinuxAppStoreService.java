@@ -133,19 +133,24 @@ public final class LinuxAppStoreService extends Service {
         boolean privileged=checkCallingPermission(INSTALL)==PackageManager.PERMISSION_GRANTED;
         if (!privileged && (kind.equals("install") || kind.equals("update"))) {
             ref=authenticateStubRef(uid);
-            if (kind.equals("install")) remote="flathub";
+            try {remote=remoteFor(ref);}catch(Exception e){throw new SecurityException("Cannot resolve installed origin",e);}
         }
+        if(kind.equals("install"))try {
+            remote=privileged?normalizeRemote(remote):org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote).encode();
+            try {String installedOrigin=remoteFor(ref);if(!installedOrigin.equals(remote))throw new SecurityException("Ref already installed from another remote; uninstall first");}
+            catch(PackageManager.NameNotFoundException absent) { }
+        }catch(RuntimeException e){throw e;}catch(Exception e){throw new IllegalArgumentException("Invalid install origin",e);}
         Operation op=new Operation(uid,id,kind,ref,remote,name,url,callback);
         String key=operationKey(uid,id);
         if(operations.putIfAbsent(key,op)!=null) throw new IllegalArgumentException("Operation ID already active for caller");
-        boolean needsConfirm=(kind.equals("addRemote") || kind.equals("removeRemote")
+        boolean needsConfirm=(kind.equals("install") && !"flathub".equals(remote)) || (kind.equals("addRemote") || kind.equals("removeRemote")
                 ? StorePermissionPolicy.remoteMutation(privileged)==StorePermissionPolicy.Decision.CONFIRM
                 : StorePermissionPolicy.packageOperation(privileged)==StorePermissionPolicy.Decision.CONFIRM);
         if(needsConfirm) {
             pending.put(key,op);
             Intent intent=new Intent(this,ConfirmInstallActivity.class)
                     .putExtra("operationId",id).putExtra("kind",kind).putExtra("ref",ref)
-                    .putExtra("remote",remote).putExtra("name",name).putExtra("url",url)
+                    .putExtra("remote",remoteDisplay(remote)).putExtra("name",name).putExtra("url",url)
                     .putExtra("caller",callerLabel(uid)).putExtra("callerUid",uid).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
         } else worker.execute(()->execute(id,op));
@@ -193,6 +198,9 @@ public final class LinuxAppStoreService extends Service {
     private void runStagedInstall(String id, Operation op) throws Exception {
         cleanupUnusedRuntimePackages();
         final String remote="update".equals(op.kind)||"repair".equals(op.kind)?remoteFor(op.ref):op.remote;
+        if("install".equals(op.kind))try {
+            if(!remoteFor(op.ref).equals(remote))throw new SecurityException("Ref already installed from another remote; uninstall first");
+        }catch(PackageManager.NameNotFoundException absent) { }
         InstallTransaction.prepare(this,op.stagingId);
         ICompositorInstallCallback stagedCallback=new ICompositorInstallCallback.Stub() {
             @Override public void onProgress(String operationId,String phase,int percent,String line) {
@@ -257,13 +265,22 @@ public final class LinuxAppStoreService extends Service {
 
 
     private String remoteFor(String ref) throws Exception {
-        int uid=stubUid(ref);
-        if(!ref.equals(authenticateStubRef(uid)))throw new SecurityException("Untrusted installed stub");
-        android.content.pm.ActivityInfo info=getPackageManager().getActivityInfo(
-                new ComponentName(packageFor(ref),StubGenerator.HOST_ACTIVITY),PackageManager.GET_META_DATA);
-        String remote=info.metaData==null?null:info.metaData.getString(StubGenerator.REMOTE_META);
-        if(!"flathub".equals(remote))throw new IllegalStateException("Unsupported installed remote");
-        return remote;
+        PackageInfo pkg=getPackageManager().getPackageInfo(packageFor(ref),PackageManager.GET_SIGNING_CERTIFICATES);
+        if(!runtimeSignerMatches(pkg))throw new SecurityException("Untrusted installed stub");
+        org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
+        if(!record.ref.equals(ref))throw new SecurityException("Installed ref mismatch");
+        return record.remote;
+    }
+
+    private static String remoteDisplay(String remote) {
+        try{return org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote).display();}catch(Exception e){return remote;}
+    }
+    /** Existing Binder string accepts a JSON descriptor as well as the built-in name. */
+    private static String normalizeRemote(String value) throws Exception {
+        if("flathub".equals(value))return value;
+        JSONObject descriptor=new JSONObject(value);
+        if(descriptor.has("flatpakrepo"))return org.matonos.linuxhost.stubgen.RemoteOrigin.flatpakrepo(descriptor.getString("name"),descriptor.getString("flatpakrepo")).encode();
+        return new org.matonos.linuxhost.stubgen.RemoteOrigin(descriptor.getString("name"),descriptor.getString("url"),descriptor.getString("gpgKey")).encode();
     }
 
     private int stubUid(String ref) throws Exception {
@@ -310,7 +327,14 @@ public final class LinuxAppStoreService extends Service {
 
     private static String operationKey(int uid,String id) { return uid+":"+id; }
 
-    private boolean runtimeSignerMatches(PackageInfo info){try{PackageInfo host=getPackageManager().getPackageInfo(getPackageName(),PackageManager.GET_SIGNING_CERTIFICATES);if(info.signingInfo==null||host.signingInfo==null||info.signingInfo.hasMultipleSigners()||host.signingInfo.hasMultipleSigners())return false;android.content.pm.Signature[] a=info.signingInfo.getApkContentsSigners(),b=host.signingInfo.getApkContentsSigners();return a!=null&&b!=null&&a.length==1&&b.length==1&&a[0].equals(b[0]);}catch(Exception e){return false;}}
+    private boolean runtimeSignerMatches(PackageInfo info) {
+        try {
+            if(info.signingInfo==null||info.signingInfo.hasMultipleSigners())return false;
+            android.content.pm.Signature[] signers=info.signingInfo.getApkContentsSigners();
+            byte[] expected=StubGenerator.getExistingSigningCertificate();
+            return signers!=null&&signers.length==1&&expected!=null&&MessageDigest.isEqual(signers[0].toByteArray(),expected);
+        }catch(Exception error){return false;}
+    }
 
     private void installFinalStub(Operation op) throws Exception {
         String pkg=packageFor(op.ref), remote="install".equals(op.kind)?op.remote:remoteFor(op.ref);
@@ -343,9 +367,9 @@ public final class LinuxAppStoreService extends Service {
         String appId=appId(op.ref);
         File deployment=org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,op.stagedManifest);
         org.matonos.linux.stub.LauncherData launcher=org.matonos.linux.stub.LauncherData.resolve(
-                deployment,appId,null,new org.matonos.linux.stub.LauncherData.Flathub());
+                deployment,appId,null,"flathub".equals(remote)?new org.matonos.linux.stub.LauncherData.Flathub():null);
         byte[] baseIcon=launcher.icon!=null?launcher.icon:fallbackIcon();
-        org.matonos.linuxhost.stubgen.StubGenerator.generateWithRuntimePackages(work,op.ref,remote,launcher.label,baseIcon,
+        org.matonos.linuxhost.stubgen.StubGenerator.generateWithRuntimePackages(work,op.ref,org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote).name,launcher.label,baseIcon,
                 StubGenerator.permissionsForMetadata(op.stagedMetadata),pkg,base,null,objects,requiredPackages,runtimePackages);
         boolean full=op.installed==null || op.installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE ||
                 !org.matonos.linuxhost.stubgen.PackSessionPlan.sameBase(base,new File(op.installed.applicationInfo.sourceDir));

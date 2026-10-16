@@ -67,9 +67,12 @@ public final class StagedPacks {
         record(sourceRepo,deployment,manifest.getString("appRef"),manifest.getString("appCommit"),output);
     }
 
+    private static File installationOrigin(File deployment) {
+        File root=deployment;for(int i=0;i<5;i++)root=root.getParentFile();return root;
+    }
     private static void record(File sourceRepo,File deployment,String ref,String commit,File output) throws Exception {
         org.matonos.linuxhost.stubgen.DeploymentRecord record=new org.matonos.linuxhost.stubgen.DeploymentRecord(
-                ref,commit,"flathub",Files.readAllBytes(new File(deployment,"metadata").toPath()),
+                ref,commit,new String(Files.readAllBytes(new File(installationOrigin(deployment),"origin.txt").toPath()),StandardCharsets.UTF_8),Files.readAllBytes(new File(deployment,"metadata").toPath()),
                 Files.readAllBytes(new File(deployment,"deploy").toPath()),
                 Files.readAllBytes(new File(sourceRepo,"objects/"+commit.substring(0,2)+"/"+commit.substring(2)+".commit").toPath()));
         Files.write(new File(output,"deployment.bin").toPath(),record.encode());

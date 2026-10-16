@@ -49,8 +49,8 @@ public final class InstallTransaction {
             throw new IllegalArgumentException("Invalid operation ID");
         if (appRef == null || !appRef.startsWith("app/") || !DeployManifest.validRef(appRef))
             throw new IllegalArgumentException("Invalid application reference");
-        if (!"flathub".equals(remote))
-            throw new IllegalArgumentException("Invalid remote");
+        try {org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote);}
+        catch(java.io.IOException invalid){throw new IllegalArgumentException(invalid);}
         if (callback == null) throw new IllegalArgumentException("A completion callback is required");
         return new InstallTransaction(context, callback, operationId, appRef, remote);
     }
@@ -103,7 +103,8 @@ public final class InstallTransaction {
             command.add("--system");
             // --assumeyes keeps the unattended CLI that emits download progress.
             command.add("--assumeyes");
-            command.add(remote);
+            org.matonos.linuxhost.stubgen.RemoteOrigin origin=org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote);
+            command.add(origin.name);
             command.add(appRef);
             ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
             Map<String, String> env = builder.environment();
@@ -128,8 +129,10 @@ public final class InstallTransaction {
             env.put("G_TLS_CA_PATH", "/apex/com.android.conscrypt/cacerts");
             builder.directory(home);
             ArrayList<String> remoteCommand=new ArrayList<>(command.subList(0,command.indexOf("install")));
-            java.util.Collections.addAll(remoteCommand,"remote-add","--system","--if-not-exists","flathub",
-                    "/apex/com.matonos.flatpak/etc/flatpak/remotes.d/flathub.flatpakrepo");
+            File descriptor=new File(operation,"origin.flatpakrepo");
+            if(!origin.url.isEmpty())Files.write(descriptor.toPath(),origin.flatpakrepo().getBytes(StandardCharsets.UTF_8));
+            java.util.Collections.addAll(remoteCommand,"remote-add","--system","--if-not-exists",origin.name,
+                    origin.url.isEmpty()?"/apex/com.matonos.flatpak/etc/flatpak/remotes.d/flathub.flatpakrepo":descriptor.getAbsolutePath());
             builder.command(remoteCommand);
             Process setup=builder.start();process=setup;
             try(java.io.InputStream output=setup.getInputStream()){output.transferTo(java.io.OutputStream.nullOutputStream());}
@@ -151,7 +154,9 @@ public final class InstallTransaction {
             // No worker writes staging after the completion callback.
             DnsForwarder.release();
             StagedPacks.verify(context,installation,() -> cancelled.get());
-            JSONObject manifest = DeployManifest.build(installation, appRef, remote, operationId);
+            Files.write(new File(installation,"origin.txt").toPath(),remote.getBytes(StandardCharsets.UTF_8));
+            JSONObject manifest = DeployManifest.build(installation, appRef, origin.name, operationId)
+                    .put("origin",remote);
             callback.onComplete(operationId, manifest.toString());
         } catch (Throwable error) {
             Log.e(TAG, "Install worker failed for " + appRef, error);

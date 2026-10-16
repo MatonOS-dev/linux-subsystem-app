@@ -188,7 +188,7 @@ public final class StubGenerator {
         manifest.runtimePackages=encodeRuntimePackages(runtimePackages);
         File unsigned = File.createTempFile("matonos-stub-meta-", ".apk", workDir);
         try {
-            writeUnsigned(unsigned, packageName, cleanLabel, ref, "flathub", iconPng, permissions, null, manifest.minInterfaceVersion, packDirectory, manifest.packs,manifest.runtimePackages);
+            writeUnsigned(unsigned, packageName, cleanLabel, ref, remote, iconPng, permissions, null, manifest.minInterfaceVersion, packDirectory, manifest.packs,manifest.runtimePackages);
             sign(unsigned, output, getOrCreateKey());
             return output;
         } finally { unsigned.delete(); }
