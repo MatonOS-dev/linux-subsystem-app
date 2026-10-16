@@ -13,20 +13,22 @@ public final class DeploymentRecord {
     public DeploymentRecord(String ref,String commit,String remote,byte[] metadata,byte[] deploy,byte[] commitObject) throws IOException {
         if(ref==null||!ref.matches("(?:app|runtime)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
                 ||Arrays.asList(ref.split("/")).contains("..")||Arrays.asList(ref.split("/")).contains(".")
-                ||commit==null||!commit.matches("[0-9a-f]{64}")||!"flathub".equals(remote)
+                ||commit==null||!commit.matches("[0-9a-f]{64}")||remote==null
                 ||metadata.length==0||metadata.length>128*1024||deploy.length==0||deploy.length>1024*1024)
             throw new IOException("Invalid packaged Flatpak deployment");
         try {
             if(commitObject.length>1024*1024||!ObjectPacks.hex(java.security.MessageDigest.getInstance("SHA-256").digest(commitObject)).equals(commit))
                 throw new IOException("Packaged OSTree commit checksum mismatch");
         } catch(java.security.NoSuchAlgorithmException impossible){throw new IOException(impossible);}
+        RemoteOrigin.parse(remote);
         this.commitObject=commitObject;
         this.ref=ref;this.commit=commit;this.remote=remote;this.metadata=metadata;this.deploy=deploy;
     }
     public byte[] encode() throws IOException {
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();
         try(DataOutputStream out=new DataOutputStream(bytes)) {
-            out.writeUTF("MTDEP1");out.writeUTF(ref);out.writeUTF(commit);out.writeUTF(remote);
+            out.writeUTF("MTDEP2");out.writeUTF(ref);out.writeUTF(commit);
+            byte[] origin=remote.getBytes(StandardCharsets.UTF_8);out.writeInt(origin.length);out.write(origin);
             out.writeInt(commitObject.length);out.write(commitObject);
             out.writeInt(metadata.length);out.write(metadata);out.writeInt(deploy.length);out.write(deploy);
         }
@@ -34,8 +36,9 @@ public final class DeploymentRecord {
     }
     public static DeploymentRecord decode(byte[] bytes) throws IOException {
         try(DataInputStream in=new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if(!in.readUTF().equals("MTDEP1"))throw new IOException("Unknown deployment record");
-            String ref=in.readUTF(),commit=in.readUTF(),remote=in.readUTF();
+            String version=in.readUTF();
+            if(!version.equals("MTDEP1")&&!version.equals("MTDEP2"))throw new IOException("Unknown deployment record");
+            String ref=in.readUTF(),commit=in.readUTF(),remote=version.equals("MTDEP1")?in.readUTF():new String(blob(in,2*1024*1024),StandardCharsets.UTF_8);
             byte[] commitObject=blob(in,1024*1024),metadata=blob(in,128*1024),deploy=blob(in,1024*1024);
             if(in.read()!=-1)throw new IOException("Trailing deployment record bytes");
             return new DeploymentRecord(ref,commit,remote,metadata,deploy,commitObject);
@@ -52,10 +55,10 @@ public final class DeploymentRecord {
             if(found!=null)throw new IOException("Multiple deployment splits");
             try(ZipFile zip=new ZipFile(paths[i])) {
                 ZipEntry entry=zip.getEntry("assets/matonos/deployment.bin");
-                if(entry==null||entry.getSize()>3*1024*1024)throw new IOException("Missing deployment record; reinstall app");
+                if(entry==null||entry.getSize()>5*1024*1024)throw new IOException("Missing deployment record; reinstall app");
                 try(InputStream in=zip.getInputStream(entry)) {
-                    byte[] bytes=in.readNBytes(3*1024*1024+1);
-                    if(bytes.length>3*1024*1024)throw new IOException("Oversized deployment record");
+                    byte[] bytes=in.readNBytes(5*1024*1024+1);
+                    if(bytes.length>5*1024*1024)throw new IOException("Oversized deployment record");
                     found=decode(bytes);
                 }
             }

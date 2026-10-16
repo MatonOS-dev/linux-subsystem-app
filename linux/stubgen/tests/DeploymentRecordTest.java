@@ -14,6 +14,17 @@ public final class DeploymentRecordTest {
         String commit=ObjectPacks.hex(java.security.MessageDigest.getInstance("SHA-256").digest(object));
         DeploymentRecord record=new DeploymentRecord("app/org.test.App/x86_64/stable",commit,"flathub",
                 "[Application]\nname=org.test.App\n".getBytes(),new byte[]{1,2,3},object);
+        RemoteOrigin custom=new RemoteOrigin("test","https://repo.example/repo","AQID");
+        DeploymentRecord customRecord=new DeploymentRecord(record.ref,commit,custom.encode(),record.metadata,record.deploy,object);
+        if(!DeploymentRecord.decode(customRecord.encode()).remote.equals(custom.encode()))throw new AssertionError("Origin not preserved");
+        if(!RemoteOrigin.parse(custom.encode()).url.equals(custom.url))throw new AssertionError();
+        if(!RemoteOrigin.flatpakrepo("test",custom.flatpakrepo()).encode().equals(custom.encode()))throw new AssertionError();
+        rejects(()->new RemoteOrigin("FlAtHuB",custom.url,custom.key));
+        rejects(()->new RemoteOrigin("flathub",custom.url,custom.key));
+        rejects(()->new RemoteOrigin("test","file:///repo",custom.key));
+        rejects(()->new RemoteOrigin("test",custom.url,""));
+        rejects(()->new RemoteOrigin("test",custom.url,"AQID\\nUrl=https://evil.example"));
+        rejects(()->RemoteOrigin.flatpakrepo("test",custom.flatpakrepo()+"Url=https://evil.example\n"));
         byte[] bytes=record.encode();
         DeploymentRecord decoded=DeploymentRecord.decode(bytes);
         if(!decoded.ref.equals(record.ref)||!Arrays.equals(record.deploy,decoded.deploy))throw new AssertionError();
