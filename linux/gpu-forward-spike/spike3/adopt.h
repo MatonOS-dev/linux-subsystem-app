@@ -2,6 +2,7 @@
 #define MATON_ADOPT_H
 #include <stdint.h>
 #include <stddef.h>
+#include <signal.h>
 #if !defined(__x86_64__)
 /* arm64 slot: TPIDR_EL0, arm64 sigcontext and clone argument order.
  * riscv64 slot: tp, riscv sigcontext and clone argument order.
@@ -22,6 +23,9 @@ struct adopt_thread {
     _Alignas(64) unsigned char fp[16384];
     uint64_t xfeatures;
     _Atomic unsigned char selector;
+    uintptr_t vfork_resume;
+    stack_t prior_signal_stack;
+    void *signal_stack;
 };
 struct adopt_api {
     unsigned version;

@@ -24,6 +24,8 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/auxv.h>
+#include <sys/uio.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
 extern char proxy_clone_entry[],adopt_vfork_entry[],adopt_syscall_entry[];
 extern void proxy_restore(void);
@@ -41,6 +43,7 @@ static _Atomic(struct thread_chunk *) chunks;
  * mmap fallback without an imposed memory cap. Resident brk remains native. */
 static uintptr_t app_brk;
 static int force_clone;
+static size_t signal_stack_size;
 static long identity(uintptr_t *);
 static size_t live(void);
 static pthread_mutex_t identity_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -60,6 +63,21 @@ static long dispatch_on(struct adopt_thread *t) {
 static void dispatch_off(void) {
     if(R(prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_OFF,0,0,0,0)) __builtin_trap();
 }
+static long signal_stack_install(struct adopt_thread *t) {
+    if(R(sigaltstack,0,&t->prior_signal_stack,0,0,0,0)) return -1;
+    long p=R(mmap,0,signal_stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if((unsigned long)p>=(unsigned long)-4095) return p;
+    t->signal_stack=(void *)p;
+    stack_t ss={.ss_sp=(void *)p,.ss_size=signal_stack_size};
+    long error=R(sigaltstack,&ss,0,0,0,0,0);
+    if(error) {R(munmap,p,signal_stack_size,0,0,0,0);t->signal_stack=NULL;}
+    return error;
+}
+static void signal_stack_release(struct adopt_thread *t) {
+    if(R(sigaltstack,&t->prior_signal_stack,0,0,0,0,0)) __builtin_trap();
+    R(munmap,t->signal_stack,signal_stack_size,0,0,0,0);t->signal_stack=NULL;
+}
+__attribute__((target("general-regs-only")))
 struct adopt_thread *adopt_current(void) {
     int tid=R(gettid,0,0,0,0,0,0);
     for(struct thread_chunk *c=atomic_load_explicit(&chunks,memory_order_acquire);c;
@@ -94,6 +112,19 @@ static struct adopt_thread *reserve(void) {
         link=&c->next;
     }
 }
+/* Parent-only continuation recovery. The vfork child never reads records. */
+__attribute__((target("general-regs-only")))
+uintptr_t adopt_vfork_parent(void) {
+    struct adopt_thread *t=adopt_current();
+    if(!t) __builtin_trap();
+    return t->vfork_resume;
+}
+static long clone_reject(const char *line,long error) {
+    size_t n=0;while(line[n]) n++;
+    R(write,2,line,n,0,0,0);
+    return -error;
+}
+#define REJECT(reason,error) clone_reject("maton adopt: clone rejected: " reason " (" #error ")\n",error)
 static size_t live(void) {
     size_t count=0;
     for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
@@ -110,7 +141,13 @@ static void fork_rebase(struct adopt_thread *self) {
      * discard every vanished identity/reservation. No parent memory changes. */
     for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
         for(unsigned i=0;i<CHUNK_THREADS;i++)
-            if(&c->entries[i]!=self) atomic_store(&c->entries[i].tid,0);
+            if(&c->entries[i]!=self) {
+                if(c->entries[i].signal_stack) {
+                    R(munmap,c->entries[i].signal_stack,signal_stack_size,0,0,0,0);
+                    c->entries[i].signal_stack=NULL;
+                }
+                atomic_store(&c->entries[i].tid,0);
+            }
     self->resident_fs=backend_fs_read();
     atomic_store(&self->tid,R(gettid,0,0,0,0,0,0));
 }
@@ -148,6 +185,7 @@ extern char adopt_exit_return[];
 static void *start(void *arg) {
     struct adopt_thread *t=arg;
     t->resident_fs=backend_fs_read();
+    if(signal_stack_install(t)) R(exit_group,193,0,0,0,0,0);
     int tid=R(gettid,0,0,0,0,0,0);
     atomic_store_explicit(&t->tid,tid,memory_order_release);
     atomic_store_explicit(&t->ready,1,memory_order_release);
@@ -162,6 +200,7 @@ static void *start(void *arg) {
     adopt_run(t);
     /* Exit gate restored our own stack and FS. Resident libc owns cleanup. */
     dispatch_off();
+    signal_stack_release(t);
     atomic_store_explicit(&t->tid,0,memory_order_release);
     return NULL;
 }
@@ -179,17 +218,21 @@ static void owner_died(uintptr_t entry,long offset,int tid) {
         }
     }
 }
+static int read_user(void *out,const void *in,size_t size) {
+    struct iovec local={out,size},remote={(void *)in,size};
+    return R(process_vm_readv,R(getpid,0,0,0,0,0,0),&local,1,&remote,1,0)==(long)size;
+}
 static void robust_exit(struct adopt_thread *t) {
-    struct robust_list_head *head=(void *)t->robust;
-    if(!head) return;
-    uintptr_t pending=(uintptr_t)head->list_op_pending;
-    struct robust_list *p=head->list.next;
+    struct robust_list_head *head=(void *)t->robust,copy;
+    if(!head || !read_user(&copy,head,sizeof(copy))) return;
+    uintptr_t pending=(uintptr_t)copy.list_op_pending;
+    struct robust_list *p=copy.list.next;
     for(unsigned count=0;p && p!=&head->list && count<2048;count++) {
         uintptr_t entry=(uintptr_t)p;
-        p=((struct robust_list *)(entry&~1UL))->next;
-        if(entry!=pending) owner_died(entry,head->futex_offset,atomic_load(&t->tid));
+        if(!read_user(&p,(void *)(entry&~1UL),sizeof(p))) return;
+        if(entry!=pending) owner_died(entry,copy.futex_offset,atomic_load(&t->tid));
     }
-    owner_died(pending,head->futex_offset,atomic_load(&t->tid));
+    owner_died(pending,copy.futex_offset,atomic_load(&t->tid));
 }
 static void trap(int sig,siginfo_t *info,void *opaque) {
     (void)sig;
@@ -205,6 +248,12 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         g[REG_RIP]=(uintptr_t)proxy_restore;
         atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
         return;
+    } else if(n==SYS_munmap && (uintptr_t)g[REG_RDI]<=(uintptr_t)g[REG_RSP] &&
+              (uintptr_t)g[REG_RSP]-(uintptr_t)g[REG_RDI]<(uintptr_t)g[REG_RSI]) {
+        /* The kernel permits unmap-self followed by exit without any stack
+         * access. SIGSYS runs on our own altstack; consume that live frame
+         * after unmapping, rather than retrying on the disappearing stack. */
+        result=R(munmap,g[REG_RDI],g[REG_RSI],0,0,0,0);
     } else if(n==SYS_brk) result=app_brk;
     else if(n==SYS_rt_sigaction) {
         if(g[REG_RDI]==SIGSYS && g[REG_RSI]) result=-EINVAL;
@@ -229,38 +278,46 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             }
         }
     } else if(n==SYS_fork) result=resident_fork(self,0,0,0);
-    else if(n==SYS_vfork) goto vfork_retry;
+    else if(n==SYS_vfork) {g[REG_R11]=g[REG_RSP];goto vfork_retry;}
     else if(n==SYS_clone3 || n==SYS_clone) {
         unsigned long flags,stack,tls,ptid,ctid;
         unsigned long exit_signal;
+        unsigned long child_stack;
         if(n==SYS_clone3 && force_clone) {result=-ENOSYS;goto finish;}
         if(n==SYS_clone3) {
             atomic_fetch_add(&api.clone3s,1);
             struct clone_args copy={0},*args=&copy;
-            if(g[REG_RSI]<64 || (unsigned long)g[REG_RSI]>sizeof(*args)) {result=-EINVAL;goto finish;}
+            if(g[REG_RSI]<64 || (unsigned long)g[REG_RSI]>sizeof(*args)) {result=REJECT("clone3 size",EINVAL);goto finish;}
             for(unsigned i=0;i<(unsigned long)g[REG_RSI];i++)
                 ((unsigned char *)args)[i]=((unsigned char *)g[REG_RDI])[i];
-            if(args->set_tid_size || args->cgroup) {result=-ENOSYS;goto finish;}
+            if(args->set_tid || args->set_tid_size || args->cgroup) {result=REJECT("clone3 fields",ENOSYS);goto finish;}
             flags=args->flags; exit_signal=args->exit_signal;
-            if(args->stack_size>UINTPTR_MAX-args->stack) {result=-EINVAL;goto finish;}
+            if(args->stack_size>UINTPTR_MAX-args->stack) {result=REJECT("stack overflow",EINVAL);goto finish;}
             stack=args->stack+args->stack_size;
+            if((args->stack==0)!=(args->stack_size==0)) {result=REJECT("inconsistent stack base/size",EINVAL);goto finish;}
             tls=args->tls;ptid=args->parent_tid;ctid=args->child_tid;
         } else {
             atomic_fetch_add(&api.clones,1);
             exit_signal=g[REG_RDI]&CSIGNAL;
             flags=g[REG_RDI]&~CSIGNAL;stack=g[REG_RSI];tls=g[REG_R8];ptid=g[REG_RDX];ctid=g[REG_R10];
         }
-        if((flags&(CLONE_VM|CLONE_VFORK))==(CLONE_VM|CLONE_VFORK) &&
-           !(flags&CLONE_THREAD)) goto vfork_retry;
+        child_stack=stack?stack:(unsigned long)g[REG_RSP];
+        if((flags&(CLONE_VM|CLONE_VFORK))==(CLONE_VM|CLONE_VFORK) && !(flags&CLONE_THREAD)) {
+            unsigned long allowed=CLONE_VM|CLONE_VFORK|CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|CLONE_PARENT_SETTID;
+            if(n==SYS_clone3) allowed|=CLONE_CLEAR_SIGHAND;
+            if((flags&~allowed) || exit_signal!=SIGCHLD) {result=REJECT("vfork flags/signal",EINVAL);goto finish;}
+            g[REG_R11]=child_stack;
+            goto vfork_retry;
+        }
         if(!(flags&(CLONE_VM|CLONE_THREAD)) && exit_signal==SIGCHLD &&
            !(flags&~(unsigned long)(CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|CLONE_PARENT_SETTID))) {
             result=resident_fork(self,flags,ptid,ctid);
             goto finish;
         }
-        if(exit_signal) {result=-EINVAL;goto finish;}
-        unsigned long required=CLONE_VM|CLONE_SIGHAND|CLONE_THREAD|CLONE_SETTLS;
-        unsigned long allowed=required|CLONE_FS|CLONE_FILES|CLONE_SYSVSEM|CLONE_PARENT_SETTID|CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID;
-        if((flags&required)!=required || (flags&~allowed)) result=-ENOSYS;
+        if(exit_signal) {result=REJECT("unsupported process clone/signal",EINVAL);goto finish;}
+        unsigned long required=CLONE_VM|CLONE_SIGHAND|CLONE_THREAD|CLONE_SETTLS|CLONE_FS|CLONE_FILES|CLONE_SYSVSEM;
+        unsigned long allowed=required|CLONE_DETACHED|CLONE_FS|CLONE_FILES|CLONE_SYSVSEM|CLONE_PARENT_SETTID|CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID;
+        if((flags&required)!=required || (flags&~allowed)) result=REJECT("thread flags",ENOSYS);
         else {
             struct adopt_thread *t=reserve();
             if(!t) result=-EAGAIN;
@@ -269,7 +326,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                 t->mask=*(unsigned long *)&uc->uc_sigmask;
                 t->robust=0; atomic_store(&t->ready,0);
                 for(unsigned i=0;i<23;i++) t->regs[i]=g[i];
-                t->regs[REG_RSP]=stack;
+                t->regs[REG_RSP]=stack?stack:(unsigned long)g[REG_RSP];
                 t->regs[REG_RCX]=g[REG_RIP]; t->regs[REG_R11]=g[REG_EFL];
                 const unsigned char *fp=(void *)uc->uc_mcontext.fpregs;
                 unsigned size=512;
@@ -336,7 +393,8 @@ vfork_retry:
      * No child-side C, FS switch, registry access or resident atfork operation.
      * Kernel user-dispatch reset on clone/exec makes this safe before exec. */
     atomic_fetch_add(&api.vforks,1);
-    g[REG_R9]=g[REG_RIP];
+    self->vfork_resume=g[REG_RIP];
+    g[REG_RCX]=g[REG_RIP];
     g[REG_RIP]=(uintptr_t)adopt_vfork_entry;
     g[REG_RAX]=n;
     atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
@@ -357,7 +415,7 @@ static long identity(uintptr_t *p) {
 }
 _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     struct adopt_thread *t=adopt_current();
-    t->regs[REG_RIP]=entry; t->regs[REG_RSP]=stack;
+    t->regs[REG_RIP]=entry; t->regs[REG_RCX]=entry; t->regs[REG_RSP]=stack;
     t->regs[REG_EFL]=0x202;
     /* Initial linker entry does not inherit an application FP state. */
     __asm__ volatile("fxsave64 %0":"=m"(t->fp));
@@ -367,6 +425,7 @@ _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     atomic_store(&t->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
     adopt_run(t);
     dispatch_off();
+    signal_stack_release(t);
     atomic_store_explicit(&t->tid,0,memory_order_release);
     pthread_exit(NULL);
 }
@@ -379,6 +438,10 @@ int adopt_install(void) {
     _Static_assert(ATOMIC_CHAR_LOCK_FREE==2,"signal-safe dispatch selector");
     struct adopt_thread *main=reserve();
     if(!main) return -1;
+    signal_stack_size=getauxval(AT_MINSIGSTKSZ);
+    if(signal_stack_size>SIZE_MAX-65536) return -1;
+    signal_stack_size+=65536;
+    if(signal_stack_install(main)) return -1;
     main->resident_fs=backend_fs_read(); atomic_store(&main->tid,R(gettid,0,0,0,0,0,0));
     if(pthread_atfork(resident_prepare,resident_parent,resident_child)) return -1;
     force_clone=getenv("MATON_ADOPT_FORCE_CLONE")!=NULL;
@@ -391,7 +454,7 @@ int adopt_install(void) {
         unsigned long flags;
         void (*restorer)(void);
         unsigned long mask;
-    } action={trap,SA_SIGINFO|0x04000000UL,proxy_restore,0};
+    } action={trap,SA_SIGINFO|SA_ONSTACK|0x04000000UL,proxy_restore,0};
     if(R(rt_sigaction,SIGSYS,&action,0,8,0,0)) return -1;
     return dispatch_on(main);
 }

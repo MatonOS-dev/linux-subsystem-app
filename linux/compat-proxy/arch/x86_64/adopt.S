@@ -1,4 +1,4 @@
-/* x86_64 glibc ucontext greg order. No libc/TLS dependencies. */
+/* x86_64 Linux ucontext greg order. No libc/TLS dependencies. */
 .text
 .global adopt_run
 .type adopt_run,@function
@@ -22,7 +22,6 @@ adopt_run:
     pushq 136(%rdx)
     popfq
     mov 120(%rdx),%rsp
-    pushq 128(%rdx)
     mov 0(%rdx),%r8
     mov 8(%rdx),%r9
     mov 16(%rdx),%r10
@@ -38,7 +37,7 @@ adopt_run:
     mov 112(%rdx),%rcx
     mov $0,%eax
     mov 96(%rdx),%rdx
-    ret
+    jmp *%rcx
 /* Arrive here after sigreturn consumed the application-stack frame. Only
  * now may joiners free that stack. RDI is the resident registry entry. */
 .global adopt_exit_return
