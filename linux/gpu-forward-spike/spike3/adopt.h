@@ -8,7 +8,6 @@
 #error "thread adoption backend is currently x86_64 only"
 #endif
 #include <stdatomic.h>
-#define ADOPT_SLOTS 1024
 struct adopt_thread {
     _Atomic int tid;
     uintptr_t resident_fs;

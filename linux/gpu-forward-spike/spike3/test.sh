@@ -13,3 +13,4 @@ status=$?
 set -e
 [[ $status == 73 ]]
 echo 'PASS: adopted worker exit_group status=73'
+env GLIBC_TUNABLES=glibc.pthread.stack_cache_size=0 timeout 60s build/launcher-adopt "$PWD/build/adopt-test" many

@@ -25,10 +25,18 @@
 #include <errno.h>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <sys/mman.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
 extern char proxy_raw_after[];
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
-static struct adopt_thread slots[ADOPT_SLOTS];
+/* Chunk size controls allocation granularity, not registry capacity. Published
+ * chunks are never unmapped: interrupted lock-free readers may retain them. */
+enum { CHUNK_THREADS=32 };
+struct thread_chunk {
+    _Atomic(struct thread_chunk *) next;
+    struct adopt_thread entries[CHUNK_THREADS];
+};
+static _Atomic(struct thread_chunk *) chunks;
 static uintptr_t libc_lo,libc_hi;
 static int force_clone;
 static long identity(uintptr_t *);
@@ -36,15 +44,37 @@ static struct adopt_api api={.version=1,.current=adopt_current,.identity=identit
 
 struct adopt_thread *adopt_current(void) {
     int tid=R(gettid,0,0,0,0,0,0);
-    for(unsigned i=0;i<ADOPT_SLOTS;i++)
-        if(atomic_load_explicit(&slots[i].tid,memory_order_acquire)==tid) return &slots[i];
+    for(struct thread_chunk *c=atomic_load_explicit(&chunks,memory_order_acquire);c;
+        c=atomic_load_explicit(&c->next,memory_order_acquire))
+        for(unsigned i=0;i<CHUNK_THREADS;i++)
+            if(atomic_load_explicit(&c->entries[i].tid,memory_order_acquire)==tid)
+                return &c->entries[i];
     return NULL;
 }
 static struct adopt_thread *reserve(void) {
-    for(unsigned i=0;i<ADOPT_SLOTS;i++) { int zero=0;
-        if(atomic_compare_exchange_strong(&slots[i].tid,&zero,-1)) return &slots[i];
+    _Atomic(struct thread_chunk *) *link=&chunks;
+    for(;;) {
+        struct thread_chunk *c=atomic_load_explicit(link,memory_order_acquire);
+        if(!c) {
+            /* Fixed-size multiplication is checked at compile time; no growing
+             * capacity arithmetic, tid-indexed allocations or size truncation. */
+            _Static_assert(CHUNK_THREADS<=SIZE_MAX/sizeof(struct adopt_thread)-1,
+                           "registry chunk size overflow");
+            long memory=R(mmap,0,sizeof(*c),PROT_READ|PROT_WRITE,
+                          MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+            if((unsigned long)memory>=(unsigned long)-4095) return NULL;
+            struct thread_chunk *fresh=(void *)memory;
+            if(atomic_compare_exchange_strong_explicit(link,&c,fresh,
+                   memory_order_release,memory_order_acquire)) c=fresh;
+            else R(munmap,fresh,sizeof(*fresh),0,0,0,0);
+        }
+        for(unsigned i=0;i<CHUNK_THREADS;i++) {
+            int zero=0;
+            if(atomic_compare_exchange_strong(&c->entries[i].tid,&zero,-1))
+                return &c->entries[i];
+        }
+        link=&c->next;
     }
-    return NULL;
 }
 extern void adopt_run(struct adopt_thread *);
 extern char adopt_exit_return[];

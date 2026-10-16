@@ -51,6 +51,36 @@ static int kernel_threads(void) {
     while((entry=readdir(dir))) if(entry->d_name[0]!='.') n++;
     assert(!closedir(dir)); return n;
 }
+enum { MANY=1100 };
+static _Atomic int arrived,many_go,many_checked,many_leave;
+static uintptr_t many_ids[MANY];
+static void *many_worker(void *arg) {
+    unsigned i=(uintptr_t)arg;
+    atomic_fetch_add(&arrived,1);
+    while(!atomic_load(&many_go)) syscall(SYS_futex,&many_go,0,0,NULL);
+    assert(forwarded_identity(&many_ids[i],0)==syscall(SYS_gettid));
+    atomic_fetch_add(&many_checked,1);
+    while(!atomic_load(&many_leave)) syscall(SYS_futex,&many_leave,0,0,NULL);
+    return NULL;
+}
+static void many_threads(void) {
+    pthread_t *threads=calloc(MANY,sizeof(*threads)); assert(threads);
+    pthread_attr_t attr; assert(!pthread_attr_init(&attr));
+    assert(!pthread_attr_setstacksize(&attr,256*1024));
+    for(unsigned i=0;i<MANY;i++) {
+        int error=pthread_create(&threads[i],&attr,many_worker,(void *)(uintptr_t)i);
+        if(error) {fprintf(stderr,"create %u/%d: %s\n",i,MANY,strerror(error));abort();}
+    }
+    while(atomic_load(&arrived)!=MANY) sched_yield();
+    assert(kernel_threads()==MANY+1);
+    atomic_store(&many_go,1); syscall(SYS_futex,&many_go,1,INT32_MAX);
+    while(atomic_load(&many_checked)!=MANY) sched_yield();
+    for(unsigned i=0;i<MANY;i++) for(unsigned j=0;j<i;j++) assert(many_ids[i]!=many_ids[j]);
+    atomic_store(&many_leave,1); syscall(SYS_futex,&many_leave,1,INT32_MAX);
+    for(unsigned i=0;i<MANY;i++) assert(!pthread_join(threads[i],NULL));
+    assert(!pthread_attr_destroy(&attr)); free(threads);
+    puts("PASS: 1100 simultaneously live adopted threads, resident identities unique, joins");
+}
 static pthread_t main_thread;
 static void *main_joiner(void *arg) {
     (void)arg;
@@ -68,6 +98,7 @@ int main(int argc,char **argv) {
     assert(__rseq_size==0);
     assert(!fesetround(FE_DOWNWARD));
     if(argc>1) {
+        if(!strcmp(argv[1],"many")) {many_threads();return 0;}
         pthread_t child;
         if(!strcmp(argv[1],"main-exit")) {
             main_thread=pthread_self();
