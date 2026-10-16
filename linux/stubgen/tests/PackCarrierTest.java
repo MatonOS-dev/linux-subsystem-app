@@ -26,8 +26,15 @@ public final class PackCarrierTest {
   try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(runtimeManifest))){z.putNextEntry(new ZipEntry("AndroidManifest.xml"));z.write((byte[])encode.invoke(encoder));z.closeEntry();}
   Process rmanifest=new ProcessBuilder(args[1],"dump","xmltree",runtimeManifest.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String rxml=new String(rmanifest.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-  if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||rxml.contains("E: service")||!rxml.contains("org.matonos.linuxhost.FLATPAK_REF")||!rxml.contains("org.matonos.linuxhost.PACKS"))throw new AssertionError("Runtime manifest must be activity-free and carry its ref and pack metadata\n"+rxml);
+  if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||!rxml.contains("org.matonos.linux.stub.ExtraService")||!rxml.contains("org.matonos.linuxhost.EXTRA_MOUNT")||!rxml.contains("org.matonos.linuxhost.FLATPAK_REF")||!rxml.contains("org.matonos.linuxhost.PACKS")||!rxml.contains("org.matonos.linuxhost"))throw new AssertionError("Runtime manifest must be activity-free, carry its ref, pack metadata and the extra service; and declare the host uses-library\n"+rxml);
   Field revision=manifest.getDeclaredField("revisionCode");revision.setAccessible(true);revision.setInt(encoder,42);
+  Method lm=manifest.getDeclaredMethod("launcherManifest",String.class,String.class,List.class,int.class);lm.setAccessible(true);
+  String launcherSplit="launcher_"+"d".repeat(64);
+  File launcherManifest=new File(dir,"launcher-manifest.apk");
+  try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(launcherManifest))){z.putNextEntry(new ZipEntry("AndroidManifest.xml"));z.write((byte[])lm.invoke(encoder,launcherSplit,"Editor",Arrays.asList("text/plain","image/png"),0x7f020000));z.closeEntry();}
+  Process lp=new ProcessBuilder(args[1],"dump","xmltree",launcherManifest.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
+  String lxml=new String(lp.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+  if(lp.waitFor()!=0||!lxml.contains("E: activity-alias")||!lxml.contains("targetActivity(0x01010202)=\"org.matonos.linux.stub.StubActivity\"")||!lxml.contains("split=\""+launcherSplit+"\"")||!lxml.contains("label(0x01010001)=\"Editor\"")||!lxml.contains("icon(0x01010002)=@0x7f020000")||!lxml.contains("android.intent.category.LAUNCHER")||!lxml.contains("android.intent.action.VIEW")||!lxml.contains("mimeType(0x01010026)=\"text/plain\"")||!lxml.contains("mimeType(0x01010026)=\"image/png\""))throw new AssertionError("Launcher split manifest is wrong\n"+lxml);
   Method pm=manifest.getDeclaredMethod("packManifest",String.class);pm.setAccessible(true);
   String split="pack_"+row.pack.substring(5,69);
   File unsigned=new File(dir,"pack-unsigned.apk"),signed=new File(dir,"pack-signed.apk");
@@ -51,6 +58,25 @@ public final class PackCarrierTest {
   Process p=new ProcessBuilder(args[1],"dump","xmltree",signed.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String xml=new String(p.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(p.waitFor()!=0 || !xml.contains("split=\""+split+"\"") || !xml.contains("hasCode(0x0101000c)=false") || !xml.contains("revisionCode(0x010104d5)=42"))throw new AssertionError(xml);
+  // Multi-entry carrier: embedded index/metadata and a raster icon must not move the payload.
+  java.util.Map<String,byte[]> entries=new java.util.LinkedHashMap<>();
+  entries.put("AndroidManifest.xml",(byte[])lm.invoke(encoder,launcherSplit,"Editor",Collections.singletonList("text/plain"),0x7f020000));
+  entries.put("assets/matonos/objects.index",new byte[]{1,2,3,4,5});
+  entries.put("assets/matonos/objects.ostree",new byte[]{9,8,7});
+  entries.put("res/drawable/foreground.png",new byte[]{(byte)0x89,0x50,0x4e,0x47,6,7,8});
+  File multiUnsigned=new File(dir,"multi-unsigned.apk"),multi=new File(dir,"multi-signed.apk");
+  ObjectPacks.carrier(new File(dir,row.pack),multiUnsigned,entries);
+  sign.invoke(null,multiUnsigned,multi,kc.newInstance(key,cert));
+  if(!new ApkVerifier.Builder(multi).setMinCheckedPlatformVersion(30).build().verify().isVerified())throw new AssertionError("Multi-entry carrier signature");
+  try(RandomAccessFile f=new RandomAccessFile(multi,"r");ZipFile zip=new ZipFile(multi)) {
+   f.seek(0);byte[] header=new byte[30];f.readFully(header);
+   int names=(header[26]&255)|((header[27]&255)<<8),extra=(header[28]&255)|((header[29]&255)<<8);
+   if(30+names+extra!=row.offset || row.offset%4096!=0)throw new AssertionError("Multi-entry carrier moved indexed payload");
+   byte[] bytes=new byte[(int)row.length];f.seek(row.offset);f.readFully(bytes);
+   if(!Arrays.equals(bytes,Files.readAllBytes(payload.toPath())))throw new AssertionError("Multi-entry payload slice changed");
+   for(java.util.Map.Entry<String,byte[]> e:entries.entrySet())
+    try(InputStream in=zip.getInputStream(zip.getEntry(e.getKey()))){if(in==null||!Arrays.equals(in.readAllBytes(),e.getValue()))throw new AssertionError("Carrier entry changed: "+e.getKey());}
+  }
   File index=new File(dir,"objects.index");ObjectPacks.writeIndex(index,Collections.singletonList(row));
   List<ObjectPacks.Entry> decoded=ObjectPacks.readIndex(index);
   if(decoded.size()!=1 || !decoded.get(0).pack.equals(row.pack) || decoded.get(0).offset!=row.offset)throw new AssertionError("Index round trip");

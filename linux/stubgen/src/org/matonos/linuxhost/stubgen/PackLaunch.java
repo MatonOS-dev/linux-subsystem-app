@@ -14,24 +14,61 @@ public final class PackLaunch {
         return arguments(base,names,paths,cache,"/app");
     }
     public static List<String> arguments(File base, String[] names, String[] paths, File cache,String mountPoint) throws Exception {
-        if(mountPoint==null || !mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*"))throw new IOException("Invalid pack mount point");
-        byte[] index=null;String indexPath=null;
+        ArrayList<String> out=new ArrayList<>();
+        String indexPath=indexPath(names,paths);
+        out.addAll(mount(readIndex(indexPath),names,paths,cache,mountPoint,null));
+        return out;
+    }
+    /** Base pack mounts at {@code mountPoint} plus, when the package has an
+     * {@code extra_} split, a second mount of its self-contained output at
+     * {@code extraMountPoint}. The extra split carries its own index. */
+    public static List<String> argumentsWithExtra(File base, String[] names, String[] paths, File cache,
+            String mountPoint,String extraMountPoint) throws Exception {
+        ArrayList<String> out=new ArrayList<>(arguments(base,names,paths,cache,mountPoint));
+        if(mountPoint==null || !mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*")
+                || extraMountPoint==null || !extraMountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*")
+                || !extraMountPoint.startsWith(mountPoint+"/"))
+            throw new IOException("Invalid extra pack mount point");
+        String extraPath=null;
+        if(names!=null&&paths!=null&&names.length==paths.length)
+            for(int i=0;i<names.length;i++)if(names[i].matches("extra_[0-9a-f]{64}")) {
+                if(extraPath!=null)throw new IOException("Multiple extra splits");
+                extraPath=paths[i];
+            }
+        if(extraPath!=null)
+            out.addAll(mount(readIndex(extraPath),null,null,cache,extraMountPoint,extraPath));
+        return out;
+    }
+    private static String indexPath(String[] names,String[] paths) throws IOException {
         if(names==null || paths==null || names.length!=paths.length)
             throw new IOException("Missing or inconsistent package splits");
+        String indexPath=null;
         for(int i=0;i<names.length;i++)if(names[i].matches("index_[0-9a-f]{64}")) {
             if(indexPath!=null)throw new IOException("Multiple index splits");
             indexPath=paths[i];
         }
         if(indexPath==null)throw new IOException("Missing index split");
-        try(ZipFile zip=new ZipFile(indexPath)) {
+        return indexPath;
+    }
+    /** The embedded index of an {@code index_} or self-contained {@code extra_} split. */
+    private static byte[] readIndex(String apkPath) throws IOException {
+        try(ZipFile zip=new ZipFile(apkPath)) {
             ZipEntry entry=zip.getEntry("assets/matonos/objects.index");
             if(entry==null)throw new IOException("Index split has no index");
-            try(InputStream in=zip.getInputStream(entry)){index=in.readAllBytes();}
+            try(InputStream in=zip.getInputStream(entry)){return in.readAllBytes();}
         }
+    }
+    /** Materializes one pack mount: the index, plus one symlink per needed
+     * carrier name. Only the index and tiny links touch the cache; the loader
+     * opens and pins the real APK descriptors before any payload runs. */
+    private static List<String> mount(byte[] index,String[] names,String[] paths,File cache,
+            String mountPoint,String onlyCarrier) throws Exception {
+        if(mountPoint==null || !mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*"))throw new IOException("Invalid pack mount point");
         Set<String> needed=packs(index);
         Map<String,String> carriers=new HashMap<>();
-        if(names!=null || paths!=null) {
-            if(names==null || paths==null || names.length!=paths.length)throw new IOException("Inconsistent package splits");
+        if(onlyCarrier!=null) {
+            for(String pack:needed)carriers.put(pack,onlyCarrier);
+        } else {
             for(int i=0;i<names.length;i++) {
                 if(names[i].matches("pack_[0-9a-f]{64}")) {
                     String pack="pack-"+names[i].substring(5)+".zip";
@@ -42,8 +79,6 @@ public final class PackLaunch {
         if(!carriers.keySet().containsAll(needed))throw new IOException("Missing installed content split");
         String hash=ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(index));
         Path directory=new File(cache,"pack-mount-"+hash).toPath();Files.createDirectories(directory);
-        // Only the index and tiny carrier-name links are materialized. The loader
-        // opens and pins the real APK descriptors before any payload runs.
         for(String pack:needed) {
             Path target=Path.of(carriers.get(pack));
             if(!target.isAbsolute() || !Files.isRegularFile(target))throw new IOException("Invalid installed carrier");

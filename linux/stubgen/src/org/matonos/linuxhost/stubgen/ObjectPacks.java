@@ -53,7 +53,10 @@ public final class ObjectPacks {
     }
     /** Reads the same bounded format validated by the launcher. Payloads stay in carriers. */
     public static List<Entry> readIndex(File file) throws IOException {
-        byte[] bytes=Files.readAllBytes(file.toPath());PackLaunch.packs(bytes);
+        return readIndex(Files.readAllBytes(file.toPath()));
+    }
+    public static List<Entry> readIndex(byte[] bytes) throws IOException {
+        PackLaunch.packs(bytes);
         java.nio.ByteBuffer b=java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         b.position(8);int count=b.getInt();List<Entry> result=new ArrayList<>();
         for(int i=0;i<count;i++) {
@@ -63,6 +66,55 @@ public final class ObjectPacks {
             e.uid=b.getInt();e.gid=b.getInt();e.mode=b.getInt();result.add(e);
         }
         return result;
+    }
+    /** Deterministic pack entries for a plain directory tree. Files are content
+     * addressed; directories and symlinks get a stable path-derived checksum.
+     * Symlink targets must be relative and non-escaping. */
+    public static List<Entry> fromTree(File root,String prefix) throws Exception {
+        if(!root.isDirectory()||Files.isSymbolicLink(root.toPath()))
+            throw new IOException("Missing tree root");
+        List<Entry> entries=new ArrayList<>();
+        fromTreeInto(root,"",prefix.endsWith("/")?prefix:prefix+"/",entries);
+        return entries;
+    }
+    private static void fromTreeInto(File directory,String relative,String prefix,List<Entry> entries) throws Exception {
+        File[] children=directory.listFiles();
+        if(children==null)throw new IOException("Cannot list "+directory);
+        Arrays.sort(children,Comparator.comparing(File::getName));
+        for(File child:children) {
+            String name=child.getName();
+            if(name.isEmpty()||name.equals(".")||name.equals("..")||name.indexOf('/')>=0)
+                throw new IOException("Unsafe tree entry");
+            String path=prefix+relative+name;
+            java.nio.file.Path from=child.toPath();
+            if(Files.isSymbolicLink(from)) {
+                java.nio.file.Path target=Files.readSymbolicLink(from);
+                if(target.isAbsolute()||escapes(target))throw new IOException("Unsafe tree link "+path);
+                Entry e=new Entry(path,pathChecksum(path,"symlink"),"symlink",0120777);e.target=target.toString();entries.add(e);
+            } else if(Files.isDirectory(from,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                Entry e=new Entry(path,pathChecksum(path,"dir"),"dir",0100755);entries.add(e);
+                fromTreeInto(child,relative+name+"/",prefix,entries);
+            } else if(Files.isRegularFile(from,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                Entry e=new Entry(path,checksum(child),"file",child.canExecute()?0100755:0100644);e.source=child;entries.add(e);
+            } else throw new IOException("Unsupported tree entry "+path);
+        }
+    }
+    private static boolean escapes(java.nio.file.Path target) {
+        for(java.nio.file.Path part:target)if(part.toString().equals(".."))return true;
+        return false;
+    }
+    private static String checksum(File file) throws Exception {
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");
+        try(InputStream in=new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buffer=new byte[65536];int n;while((n=in.read(buffer))!=-1)digest.update(buffer,0,n);
+        }
+        return hex(digest.digest());
+    }
+    private static String pathChecksum(String path,String kind) throws Exception {
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");
+        digest.update(kind.getBytes(StandardCharsets.UTF_8));digest.update((byte)0);
+        digest.update(path.getBytes(StandardCharsets.UTF_8));
+        return hex(digest.digest());
     }
     private static String field(java.nio.ByteBuffer b) {
         byte[] bytes=new byte[b.getInt()];b.get(bytes);return new String(bytes,StandardCharsets.UTF_8);
@@ -185,7 +237,16 @@ public final class ObjectPacks {
     }
     /** Appends a manifest without moving any indexed payload byte. ZIP32 only. */
     public static void carrier(File pack, File output, byte[] manifest) throws Exception {
+        java.util.Map<String,byte[]> entries=new java.util.LinkedHashMap<>();
+        entries.put("AndroidManifest.xml",manifest);
+        carrier(pack,output,entries);
+    }
+    /** Appends stored entries (AndroidManifest.xml first) without moving any
+     * indexed payload byte. Used for split APKs that also carry the embedded
+     * index, metadata, resources or a raster icon. ZIP32 only. */
+    public static void carrier(File pack, File output, java.util.Map<String,byte[]> entries) throws Exception {
         if(!pack.getName().equals("pack-"+digest(pack)+".zip"))throw new IOException("Pack name/hash mismatch");
+        if(entries.isEmpty())throw new IOException("No carrier entries");
         try(RandomAccessFile in=new RandomAccessFile(pack,"r");RandomAccessFile out=new RandomAccessFile(output,"rw")) {
             long length=in.length();if(length<22)throw new IOException("Truncated pack");
             byte[] end=new byte[22];in.seek(length-22);in.readFully(end);
@@ -194,21 +255,36 @@ public final class ObjectPacks {
                 throw new IOException("Unsupported pack ZIP end");
             int count=Short.toUnsignedInt(e.getShort(10));long central=Integer.toUnsignedLong(e.getInt(16));
             long size=Integer.toUnsignedLong(e.getInt(12));
-            if(count>=65535 || central+size!=length-22)throw new IOException("ZIP64 carrier required");
+            if(count+entries.size()>=65535 || central+size!=length-22)throw new IOException("ZIP64 carrier required");
             out.setLength(0);byte[] buffer=new byte[65536];in.seek(0);long left=central;
             while(left>0){int n=in.read(buffer,0,(int)Math.min(left,buffer.length));if(n<0)throw new EOFException();out.write(buffer,0,n);left-=n;}
-            byte[] name="AndroidManifest.xml".getBytes(StandardCharsets.US_ASCII);CRC32 crc=new CRC32();crc.update(manifest);
-            ByteArrayOutputStream local=new ByteArrayOutputStream();
-            le(local,0x04034b50,4);le(local,20,2);le(local,0,2);le(local,0,2);le(local,0,2);le(local,33,2);
-            le(local,crc.getValue(),4);le(local,manifest.length,4);le(local,manifest.length,4);le(local,name.length,2);le(local,0,2);local.write(name);local.write(manifest);
-            out.write(local.toByteArray());long start=out.getFilePointer();left=size;
+            // New local entries start where the original central directory was,
+            // so every indexed payload offset (all below central) is unchanged.
+            long[] offsets=new long[entries.size()];long[] crcs=new long[entries.size()];long[] sizes=new long[entries.size()];
+            int index=0;
+            for(java.util.Map.Entry<String,byte[]> row:entries.entrySet()) {
+                byte[] name=row.getKey().getBytes(StandardCharsets.US_ASCII);byte[] data=row.getValue();CRC32 crc=new CRC32();crc.update(data);
+                offsets[index]=out.getFilePointer();crcs[index]=crc.getValue();sizes[index]=data.length;
+                ByteArrayOutputStream local=new ByteArrayOutputStream();
+                le(local,0x04034b50,4);le(local,20,2);le(local,0,2);le(local,0,2);le(local,0,2);le(local,33,2);
+                le(local,crc.getValue(),4);le(local,data.length,4);le(local,data.length,4);le(local,name.length,2);le(local,0,2);
+                local.write(name);local.write(data);out.write(local.toByteArray());index++;
+            }
+            long centralStart=out.getFilePointer();left=size;
             while(left>0){int n=in.read(buffer,0,(int)Math.min(left,buffer.length));if(n<0)throw new EOFException();out.write(buffer,0,n);left-=n;}
-            ByteArrayOutputStream c=new ByteArrayOutputStream();
-            le(c,0x02014b50,4);le(c,0x0314,2);le(c,20,2);le(c,0,2);le(c,0,2);le(c,0,2);le(c,33,2);
-            le(c,crc.getValue(),4);le(c,manifest.length,4);le(c,manifest.length,4);le(c,name.length,2);le(c,0,2);
-            le(c,0,2);le(c,0,2);le(c,0,2);le(c,0100644L<<16,4);le(c,central,4);c.write(name);out.write(c.toByteArray());
-            if(out.getFilePointer()>=0xffffffffL)throw new IOException("ZIP64 carrier required");
-            e.putShort(8,(short)(count+1));e.putShort(10,(short)(count+1));e.putInt(12,(int)(size+c.size()));e.putInt(16,(int)start);out.write(end);
+            long appended=0;index=0;
+            for(java.util.Map.Entry<String,byte[]> row:entries.entrySet()) {
+                byte[] name=row.getKey().getBytes(StandardCharsets.US_ASCII);
+                ByteArrayOutputStream c=new ByteArrayOutputStream();
+                le(c,0x02014b50,4);le(c,0x0314,2);le(c,20,2);le(c,0,2);le(c,0,2);le(c,0,2);le(c,33,2);
+                le(c,crcs[index],4);le(c,sizes[index],4);le(c,sizes[index],4);le(c,name.length,2);le(c,0,2);
+                le(c,0,2);le(c,0,2);le(c,0,2);le(c,0100644L<<16,4);le(c,offsets[index],4);c.write(name);
+                out.write(c.toByteArray());appended+=c.size();index++;
+            }
+            if(out.getFilePointer()>=0xffffffffL || size+appended>=0xffffffffL)throw new IOException("ZIP64 carrier required");
+            e.putShort(8,(short)(count+entries.size()));e.putShort(10,(short)(count+entries.size()));
+            e.putInt(12,(int)(size+appended));e.putInt(16,(int)centralStart);
+            out.write(end);
         }
     }
     private ObjectPacks() { }

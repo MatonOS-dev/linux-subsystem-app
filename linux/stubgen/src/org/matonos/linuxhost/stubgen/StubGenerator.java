@@ -32,12 +32,23 @@ import java.util.zip.ZipOutputStream;
 public final class StubGenerator {
     public static final int FORMAT_VERSION = 1;
     // v14 adds bridge visibility for self-task Linux window capabilities.
-    // v18 builds the launcher label and icon from the store's appstream read
-    // instead of the deployment's exported .desktop file.
-    public static final int STUB_VERSION_CODE = 18;
+    // v19 moves the launcher entry into a code-free launcher split, applies
+    // Flatpak extra data in a per-package service, and carries the result in a
+    // self-contained extra split mounted over the package's extra directory.
+    public static final int STUB_VERSION_CODE = 19;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
+    /** Per-package service that applies this package's Flatpak extra data. */
+    public static final String EXTRA_SERVICE = "org.matonos.linux.stub.ExtraService";
+    /** Mount point the extra service mounts this package's packs at. */
+    public static final String EXTRA_MOUNT_META = "org.matonos.linuxhost.EXTRA_MOUNT";
+    /** Split carrying the launcher components (activity-alias) and nothing else. */
+    public static final String LAUNCHER_SPLIT_PREFIX = "launcher_";
+    /** Split carrying the applied extra output (and possibly the launcher). */
+    public static final String EXTRA_SPLIT_PREFIX = "extra_";
+    /** The mount point an app's extra directory lives under. */
+    public static final String APP_MOUNT = "/app";
     /** Host-side AppComponentFactory: loads the stub's components from the current host APK. */
     public static final String HOST_LOADER = "org.matonos.linux.stub.StubLoader";
     /** Unprivileged entry point (the store uses it): asks the bridge to install this stub's Flatpak; no-op when installed. */
@@ -285,19 +296,185 @@ public final class StubGenerator {
         } finally {unsigned.delete();}
     }
 
+    /** Identity of the launcher components: the label, MIME types and icon. */
+    public static String launcherSplitName(String label,List<String> mimeTypes,byte[] iconPng) throws Exception {
+        java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
+        update(hash,cleanLabel(label).getBytes(StandardCharsets.UTF_8));
+        for(String mime:cleanMimeTypes(mimeTypes)) update(hash,mime.getBytes(StandardCharsets.UTF_8));
+        update(hash,iconPng);
+        return LAUNCHER_SPLIT_PREFIX+ObjectPacks.hex(hash.digest());
+    }
+
+    /** Identity of the extra output: index, metadata and, when it also carries
+     * the launcher components, the label, MIME types and icon. */
+    public static String extraSplitName(File objects) throws Exception {
+        return extraSplitName(objects,null,null,null);
+    }
+    public static String extraSplitName(File objects,String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
+        java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
+        for(String name:Arrays.asList("objects.index","objects.ostree")) {
+            byte[] bytes=java.nio.file.Files.readAllBytes(new File(objects,name).toPath());
+            update(hash,bytes);
+        }
+        if(launcherLabel!=null&&launcherIcon!=null&&launcherIcon.length>0) {
+            update(hash,cleanLabel(launcherLabel).getBytes(StandardCharsets.UTF_8));
+            for(String mime:cleanMimeTypes(launcherMimeTypes)) update(hash,mime.getBytes(StandardCharsets.UTF_8));
+            update(hash,launcherIcon);
+        }
+        return EXTRA_SPLIT_PREFIX+ObjectPacks.hex(hash.digest());
+    }
+    private static void update(java.security.MessageDigest hash,byte[] bytes) {
+        hash.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length).array());hash.update(bytes);
+    }
+
+    /** Code-free launcher split: an {@code activity-alias} targeting the base
+     * stub activity with the LAUNCHER filter and one VIEW filter per MIME type.
+     * Its icon resource uses a distinct type id, so no ID can clash with the
+     * base. The base stub keeps no launcher entry of its own. */
+    public static File generateLauncher(File workDir,String pkg,String label,
+            List<String> mimeTypes,byte[] iconPng,File output,int revision) throws Exception {
+        if(revision<0)throw new IllegalArgumentException("Negative split revision");
+        if(!packageName(pkg))throw new IllegalArgumentException("Invalid package name");
+        if(iconPng==null||iconPng.length==0||iconPng.length>MAX_ICON_BYTES)throw new IllegalArgumentException("PNG icon size is invalid");
+        String clean=cleanLabel(label);List<String> mimes=cleanMimeTypes(mimeTypes);
+        String split=launcherSplitName(clean,mimes,iconPng);
+        BinaryManifest manifest=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
+        manifest.revisionCode=revision;
+        File unsigned=File.createTempFile("matonos-launcher-",".apk",workDir);
+        try {
+            try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
+                put(zip,"AndroidManifest.xml",manifest.launcherManifest(split,clean,mimes,0x7f020000));
+                put(zip,"resources.arsc",iconResourceTable(pkg,2));
+                put(zip,"res/drawable/foreground.png",iconPng);
+                put(zip,"res/drawable/icon.xml",new BinaryManifest("","","","flathub",Collections.emptyList()).adaptiveIcon(0x7f020000));
+            }
+            sign(unsigned,output,getOrCreateKey());return output;
+        } finally {unsigned.delete();}
+    }
+
+    /** Self-contained extra split: the applied extra output in the pack format,
+     * with the index and metadata embedded so the loader can mount it directly.
+     * When the launcher source is the extra output, the same split also carries
+     * the launcher components and their resources. */
+    public static File generateExtra(File workDir,String pkg,File objects,File output,int revision,
+            String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
+        if(revision<0)throw new IllegalArgumentException("Negative split revision");
+        if(!packageName(pkg))throw new IllegalArgumentException("Invalid package name");
+        if(!new File(objects,"objects.index").isFile()||!new File(objects,"objects.ostree").isFile())
+            throw new IOException("Missing pack index or metadata");
+        boolean launcher=launcherLabel!=null&&launcherIcon!=null&&launcherIcon.length>0;
+        if(launcher&&launcherIcon.length>MAX_ICON_BYTES)throw new IllegalArgumentException("PNG icon size is invalid");
+        List<ObjectPacks.Entry> entries=ObjectPacks.readIndex(new File(objects,"objects.index"));
+        String pack=null;
+        for(ObjectPacks.Entry entry:entries)if(entry.kind.equals("file")) {
+            if(pack==null)pack=entry.pack;
+            else if(!pack.equals(entry.pack))throw new IOException("Extra split requires a single pack");
+        }
+        if(pack==null)throw new IOException("Extra split has no payload");
+        String split=extraSplitName(objects,launcher?launcherLabel:null,launcherMimeTypes,launcher?launcherIcon:null);
+        BinaryManifest manifest=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
+        manifest.revisionCode=revision;
+        java.util.Map<String,byte[]> appended=new LinkedHashMap<>();
+        if(launcher) appended.put("AndroidManifest.xml",manifest.launcherManifest(split,cleanLabel(launcherLabel),cleanMimeTypes(launcherMimeTypes),0x7f020000));
+        else appended.put("AndroidManifest.xml",manifest.packManifest(split));
+        appended.put("assets/matonos/objects.index",java.nio.file.Files.readAllBytes(new File(objects,"objects.index").toPath()));
+        appended.put("assets/matonos/objects.ostree",java.nio.file.Files.readAllBytes(new File(objects,"objects.ostree").toPath()));
+        if(launcher) {
+            appended.put("resources.arsc",iconResourceTable(pkg,2));
+            appended.put("res/drawable/foreground.png",launcherIcon);
+            appended.put("res/drawable/icon.xml",new BinaryManifest("","","","flathub",Collections.emptyList()).adaptiveIcon(0x7f020000));
+        }
+        File unsigned=File.createTempFile("matonos-extra-",".apk",workDir);
+        try {ObjectPacks.carrier(new File(objects,pack),unsigned,appended);sign(unsigned,output,getOrCreateKey());return output;}
+        finally {unsigned.delete();}
+    }
+
+    private static boolean packageName(String pkg) {
+        return pkg!=null&&pkg.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+");
+    }
+
     /** Legacy compatibility: no commit info, no images. */
     public static File generate(File workDir, String ref, String label, byte[] iconPng,
             List<String> permissions, String packageName, File output) throws Exception {
         return generate(workDir, ref, label, iconPng, permissions, packageName, output, null, null);
     }
 
-    /** The launcher label: the caller's appstream name, or the generator's last resort. */
+    /** The launcher label: the caller's name, or the generator's last resort. */
     static String cleanLabel(String label) {
         if (label == null) return "Linux application";
         String name = label.trim();
         if (name.isEmpty()) return "Linux application";
         if (name.getBytes(StandardCharsets.UTF_8).length > 4096) return "Linux application";
         return name;
+    }
+
+    /** Parsed Flatpak {@code .desktop} launcher data. */
+    public static final class DesktopEntry {
+        public final String name;
+        public final String iconName;
+        public final List<String> mimeTypes;
+        DesktopEntry(String name, String iconName, List<String> mimeTypes) {
+            this.name = name; this.iconName = iconName; this.mimeTypes = mimeTypes;
+        }
+    }
+
+    /** Reads the {@code [Desktop Entry]} group's name, icon name and MIME types
+     * only. Localized keys ({@code Name[de]}) are ignored; comments do not
+     * count. */
+    public static DesktopEntry parseDesktop(String content) throws IOException {
+        if (content == null) throw new IOException("No desktop entry content");
+        String name = null, icon = null;
+        List<String> mimes = new ArrayList<>();
+        boolean inEntry = false, seen = false;
+        for (String raw : content.split("\n", -1)) {
+            String line = raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
+            String trimmed = line.trim();
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                if (inEntry) break;
+                inEntry = "[Desktop Entry]".equals(trimmed);
+                if (inEntry) seen = true;
+                continue;
+            }
+            if (!inEntry || trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+            int equals = line.indexOf('=');
+            if (equals < 0) continue;
+            String key = line.substring(0, equals).trim();
+            String value = line.substring(equals + 1).trim();
+            if (key.equals("Name")) name = value;
+            else if (key.equals("Icon") && validIconName(value)) icon = value;
+            else if (key.equals("MimeType"))
+                for (String item : value.split(";")) {
+                    String mime = item.trim();
+                    if (mime.length() <= 255
+                            && mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
+                            && !mimes.contains(mime)) mimes.add(mime);
+                }
+        }
+        if (!seen) throw new IOException(".desktop file has no [Desktop Entry] group");
+        return new DesktopEntry(cleanLabel(name), icon, cleanMimeTypes(mimes));
+    }
+
+    /** A theme icon name: a plain file name, never a path or an absolute name. */
+    private static boolean validIconName(String value) {
+        return !value.isEmpty() && value.length() <= 255
+                && value.matches("[A-Za-z0-9_.+-]+")
+                && !value.equals(".") && !value.equals("..");
+    }
+
+
+    /** Bounded, de-duplicated, syntactically valid MIME type list. */
+    public static List<String> cleanMimeTypes(List<String> mimeTypes) {
+        List<String> clean = new ArrayList<>();
+        if (mimeTypes == null) return clean;
+        for (String item : mimeTypes) {
+            if (item == null) continue;
+            String mime = item.trim();
+            if (mime.length() <= 255
+                    && mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
+                    && !clean.contains(mime)) clean.add(mime);
+            if (clean.size() >= 128) break;
+        }
+        return clean;
     }
 
     private static boolean validRef(String ref) {
@@ -379,20 +556,29 @@ public final class StubGenerator {
     }
 
 
+    private static byte[] iconResourceTable(String pkg) throws IOException {
+        return iconResourceTable(pkg,1);
+    }
+
     /** Adaptive icon XML, foreground bitmap and background color resources.
      * The background must be a reference: density-specific drawable inflation
      * resolves a layer's resource ID, which is zero for an inline XML color.
+     *
+     * <p>A split resource table uses a distinct type id (2) so its entries can
+     * never share a resource ID with the base's type id 1 entries. The type
+     * string pool is offset with a placeholder so the split's "drawable" type
+     * keeps that id.
      */
-    private static byte[] iconResourceTable(String pkg) throws IOException {
+    private static byte[] iconResourceTable(String pkg,int typeId) throws IOException {
         byte[] global = resourceStringPool("res/drawable/icon.xml", "res/drawable/foreground.png");
-        byte[] types = resourceStringPool("drawable");
+        byte[] types = typeId==1?resourceStringPool("drawable"):resourceStringPool("matonos","drawable");
         byte[] keys = resourceStringPool("icon", "foreground", "background");
         byte[] spec = new byte[28];
         put16(spec,0,0x0202); put16(spec,2,16); putInt(spec,4,spec.length);
-        spec[8]=1; putInt(spec,12,3);
+        spec[8]=(byte)typeId; putInt(spec,12,3);
         byte[] type = new byte[144];
         put16(type,0,0x0201); put16(type,2,84); putInt(type,4,type.length);
-        type[8]=1; putInt(type,12,3); putInt(type,16,96); putInt(type,20,64);
+        type[8]=(byte)typeId; putInt(type,12,3); putInt(type,16,96); putInt(type,20,64);
         putInt(type,84,0); putInt(type,88,16); putInt(type,92,32);
         for (int i=0;i<3;i++) {
             int offset=96+i*16; put16(type,offset,8); putInt(type,offset+4,i);
@@ -403,7 +589,7 @@ public final class StubGenerator {
         putInt(header,4,288+types.length+keys.length+spec.length+type.length); putInt(header,8,0x7f);
         byte[] name = pkg.getBytes(StandardCharsets.UTF_16LE);
         System.arraycopy(name,0,header,12,Math.min(name.length,254));
-        putInt(header,268,288); putInt(header,272,1);
+        putInt(header,268,288); putInt(header,272,typeId);
         putInt(header,276,288+types.length); putInt(header,280,3);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         BinaryManifest.write16(out,2); BinaryManifest.write16(out,12);
@@ -513,7 +699,7 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.LAUNCHER", "android.intent.category.DEFAULT", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, RUNTIME_PACKAGES_META, APP_REF_META, pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, RUNTIME_PACKAGES_META, APP_REF_META, EXTRA_SERVICE, EXTRA_MOUNT_META, APP_MOUNT, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             // Pre-intern commit info values if present
             if (commitInfo != null) {
@@ -542,6 +728,11 @@ public final class StubGenerator {
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), a("appComponentFactory", HOST_LOADER), new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             if(noActivities){
+                startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
+                start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
+                startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
+                startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", packs)));
+                end("service");
                 startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
                 startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
@@ -562,10 +753,9 @@ public final class StubGenerator {
             if (packs != null) startEnd("meta-data", attrs(a("name", PACKS_META), a("value", packs)));
             if (runtimePackages != null && !runtimePackages.isEmpty()) startEnd("meta-data",attrs(a("name",RUNTIME_PACKAGES_META),a("value",runtimePackages)));
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
-            start("intent-filter", null, attrs());
-            startEnd("action", attrs(a("name", "android.intent.action.MAIN")));
-            startEnd("category", attrs(a("name", "android.intent.category.LAUNCHER")));
-            end("intent-filter");
+            // The base stub deliberately has no MAIN/LAUNCHER filter: the
+            // launcher entry lives in the code-free launcher split so a label
+            // or icon change never updates the base.
             end("activity");
             // Stays enabled while the launcher is hidden, so the store can
             // resume an install interrupted by a crash or power cut.
@@ -590,6 +780,13 @@ public final class StubGenerator {
                     a("value", "Owns the Linux application runtime and its background network operations")));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             end("service");
+            // Extra data is arbitrary vendor code: the stub's own UID runs
+            // apply_extra, never the installer. Exported only so the subsystem
+            // app can bind it; the service refuses every other caller's UID.
+            start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
+            startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
+            startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", APP_MOUNT)));
+            end("service");
             startEnd("service", attrs(a("name", "org.matonos.linux.stub.InstallService"),
                     ab("exported", false), ai("foregroundServiceType", 1)));
             end("application"); end("manifest"); namespace(false);
@@ -602,6 +799,34 @@ public final class StubGenerator {
             startEnd("application",attrs(ab("hasCode",false)));
             end("manifest");namespace(false);return finish();
         }
+        /** Launcher split manifest: an activity-alias that targets the base
+         * stub activity, with the LAUNCHER filter and VIEW filters. */
+        byte[] launcherManifest(String split,String launcherLabel,List<String> mimeTypes,int iconId) throws IOException {
+            for (String s : Arrays.asList("targetActivity","activity-alias","data","android.intent.action.VIEW",
+                    "android.intent.action.MAIN","android.intent.category.LAUNCHER","android.intent.category.DEFAULT",
+                    HOST_ACTIVITY,pkg,launcherLabel)) str(s);
+            for (String mime:mimeTypes) str(mime);
+            namespace(true);
+            start("manifest",null,attrs(a("package",pkg),a("split",split),ai("versionCode",STUB_VERSION_CODE),ai("revisionCode",revisionCode)));
+            startEnd("uses-sdk",attrs(ai("minSdkVersion",30),ai("targetSdkVersion",36)));
+            start("application",null,attrs(ab("hasCode",false)));
+            start("activity-alias",null,attrs(a("name",pkg+".Launcher"),a("targetActivity",HOST_ACTIVITY),
+                    ab("exported",true),ab("enabled",true),a("label",launcherLabel),
+                    new Attr("icon","@drawable/icon",iconId,1)));
+            start("intent-filter",null,attrs());
+            startEnd("action",attrs(a("name","android.intent.action.MAIN")));
+            startEnd("category",attrs(a("name","android.intent.category.LAUNCHER")));
+            end("intent-filter");
+            for(String mime:mimeTypes) {
+                start("intent-filter",null,attrs());
+                startEnd("action",attrs(a("name","android.intent.action.VIEW")));
+                startEnd("category",attrs(a("name","android.intent.category.DEFAULT")));
+                startEnd("data",attrs(a("mimeType",mime)));
+                end("intent-filter");
+            }
+            end("activity-alias");
+            end("application");end("manifest");namespace(false);return finish();
+        }
         private byte[] finish() throws IOException {
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             writeStringPool(body); writeResourceMap(body);
@@ -609,11 +834,12 @@ public final class StubGenerator {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             write16(out, 0x0003); write16(out, 8); write32(out, 8 + body.size()); body.writeTo(out); return out.toByteArray();
         }
-        byte[] adaptiveIcon() throws IOException {
+        byte[] adaptiveIcon() throws IOException { return adaptiveIcon(0x7f010000); }
+        byte[] adaptiveIcon(int base) throws IOException {
             namespace(true);
             start("adaptive-icon", null, attrs());
-            startEnd("background", attrs(new Attr("drawable", "@drawable/background", 0x7f010002, 1)));
-            startEnd("foreground", attrs(new Attr("drawable", "@drawable/foreground", 0x7f010001, 1)));
+            startEnd("background", attrs(new Attr("drawable", "@drawable/background", base+2, 1)));
+            startEnd("foreground", attrs(new Attr("drawable", "@drawable/foreground", base+1, 1)));
             end("adaptive-icon"); namespace(false);
             ByteArrayOutputStream body=new ByteArrayOutputStream();
             writeStringPool(body);writeResourceMap(body);
@@ -650,7 +876,7 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "versionCode", "revisionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "targetActivity", "versionCode", "revisionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
@@ -668,6 +894,7 @@ public final class StubGenerator {
                 case "hasCode": return 0x0101000c; case "required": return 0x0101028e; case "value": return 0x01010024;
                 case "revisionCode": return 0x010104d5;
                 case "mimeType": return 0x01010026; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
+                case "targetActivity": return 0x01010202;
                 case "minSdkVersion": return 0x0101020c; case "targetSdkVersion": return 0x01010270; default: return 0;
             }
         }
