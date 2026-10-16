@@ -54,6 +54,8 @@ static int kernel_threads(void) {
 enum { MANY=1100 };
 static _Atomic int arrived,many_go,many_checked,many_leave;
 static uintptr_t many_ids[MANY];
+static pthread_t many_handles[MANY];
+static _Atomic unsigned many_next;
 static void *many_worker(void *arg) {
     unsigned i=(uintptr_t)arg;
     atomic_fetch_add(&arrived,1);
@@ -63,23 +65,46 @@ static void *many_worker(void *arg) {
     while(!atomic_load(&many_leave)) syscall(SYS_futex,&many_leave,0,0,NULL);
     return NULL;
 }
-static void many_threads(void) {
-    pthread_t *threads=calloc(MANY,sizeof(*threads)); assert(threads);
+static void *many_creator(void *arg) {
+    (void)arg;
     pthread_attr_t attr; assert(!pthread_attr_init(&attr));
     assert(!pthread_attr_setstacksize(&attr,256*1024));
-    for(unsigned i=0;i<MANY;i++) {
-        int error=pthread_create(&threads[i],&attr,many_worker,(void *)(uintptr_t)i);
+    for(;;) {
+        unsigned i=atomic_fetch_add(&many_next,1);
+        if(i>=MANY) break;
+        int error=pthread_create(&many_handles[i],&attr,many_worker,(void *)(uintptr_t)i);
         if(error) {fprintf(stderr,"create %u/%d: %s\n",i,MANY,strerror(error));abort();}
     }
+    assert(!pthread_attr_destroy(&attr));
+    return NULL;
+}
+static void *many_fork_child(void *arg) {
+    uintptr_t id; assert(forwarded_identity(&id,0)==syscall(SYS_gettid));
+    return arg;
+}
+static void many_threads(void) {
+    pthread_t creators[4];
+    for(unsigned i=0;i<4;i++) assert(!pthread_create(&creators[i],NULL,many_creator,NULL));
+    for(unsigned i=0;i<4;i++) assert(!pthread_join(creators[i],NULL));
     while(atomic_load(&arrived)!=MANY) sched_yield();
+    for(int i=0;kernel_threads()!=MANY+1 && i<5000;i++) usleep(1000);
     assert(kernel_threads()==MANY+1);
+    struct adopt_api *api=(void *)(uintptr_t)strtoull(getenv("MATON_THREAD_ADOPT"),NULL,16);
+    assert(api->live()==MANY+1);
+    pid_t pid=fork();assert(pid>=0);
+    if(!pid) {
+        assert(api->live()==1);
+        pthread_t t; assert(!pthread_create(&t,NULL,many_fork_child,NULL));
+        assert(!pthread_join(t,NULL));_exit(0);
+    }
+    int status;assert(waitpid(pid,&status,0)==pid && WIFEXITED(status) && WEXITSTATUS(status)==0);
+    assert(api->live()==MANY+1);
     atomic_store(&many_go,1); syscall(SYS_futex,&many_go,1,INT32_MAX);
     while(atomic_load(&many_checked)!=MANY) sched_yield();
     for(unsigned i=0;i<MANY;i++) for(unsigned j=0;j<i;j++) assert(many_ids[i]!=many_ids[j]);
     atomic_store(&many_leave,1); syscall(SYS_futex,&many_leave,1,INT32_MAX);
-    for(unsigned i=0;i<MANY;i++) assert(!pthread_join(threads[i],NULL));
-    assert(!pthread_attr_destroy(&attr)); free(threads);
-    puts("PASS: 1100 simultaneously live adopted threads, resident identities unique, joins");
+    for(unsigned i=0;i<MANY;i++) assert(!pthread_join(many_handles[i],NULL));
+    puts("PASS: 1100 simultaneously live adopted threads, concurrent registry growth, unique resident identities, fork rebase, joins");
 }
 static pthread_t main_thread;
 static void *main_joiner(void *arg) {
@@ -113,7 +138,9 @@ int main(int argc,char **argv) {
     uintptr_t main_id; assert(forwarded_identity(&main_id,1)==syscall(SYS_gettid));
     pthread_t threads[N];
     for(unsigned i=0;i<N;i++) assert(!pthread_create(&threads[i],NULL,worker,(void *)(uintptr_t)i));
-    errno=0; assert(fork()==-1 && errno==ENOSYS);
+    pid_t pid=fork(); assert(pid>=0);
+    if(!pid) {uintptr_t id; assert(forwarded_identity(&id,0)==syscall(SYS_gettid));_exit(0);}
+    int status; assert(waitpid(pid,&status,0)==pid && WIFEXITED(status) && WEXITSTATUS(status)==0);
     atomic_store(&release,1);
     for(unsigned i=0;i<N;i++) {void *v; assert(!pthread_join(threads[i],&v));assert((uintptr_t)v==i);}
     for(unsigned i=0;i<N;i++) { assert(identities[i]!=main_id); for(unsigned j=0;j<i;j++) assert(identities[i]!=identities[j]); }
@@ -143,5 +170,5 @@ int main(int argc,char **argv) {
     unsigned clones=atomic_load(&api->clones),clone3s=atomic_load(&api->clone3s);
     assert((getenv("MATON_ADOPT_FORCE_CLONE") ? clones : clone3s)>=N+30*N+2);
     printf("clone=%u clone3=%u; nested creation, pthread_exit and robust owner death PASS\n",clones,clone3s);
-    printf("PASS: %d joinable + %d detached, own resident tid/pthread_self, join, signal gate, fork ENOSYS; signals=%d\n",N,30*N,atomic_load(&signals));
+    printf("PASS: %d joinable + %d detached, own resident tid/pthread_self, join, signal gate, multithreaded fork; signals=%d\n",N,30*N,atomic_load(&signals));
 }
