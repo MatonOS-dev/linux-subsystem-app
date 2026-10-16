@@ -27,7 +27,7 @@ public final class RuntimeMounts {
         if(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))throw new IOException("Invalid resolved runtime mount point");
         return new Entry(ref,DeployManifest.packageForPublic(ref),mountPoint);
     }
-    static String extensionParent(String metadata) throws IOException {
+    public static String extensionParent(String metadata) throws IOException {
         String value=value(metadata,"ExtensionOf","ref");if(value==null)return null;
         if(!DeployManifest.validRef(value)||(!value.startsWith("runtime/")&&!value.startsWith("app/")))throw new IOException("Invalid Flatpak extension parent ref");return value;
     }

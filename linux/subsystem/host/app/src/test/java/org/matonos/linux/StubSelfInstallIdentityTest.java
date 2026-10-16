@@ -16,10 +16,10 @@ public final class StubSelfInstallIdentityTest {
         assertFalse(StubSelfInstallIdentity.matches(10123,10123,new String[]{"stub"},new byte[][]{{4}},CERT));
         assertFalse(StubSelfInstallIdentity.matches(10123,10123,new String[]{"stub"},new byte[][]{CERT,CERT},CERT));
     }
-    @Test public void onlyAcceptsFlatpakApplicationRefs() {
+    @Test public void acceptsAllFlatpakPackageRefs() {
         assertTrue(StubSelfInstallIdentity.validRef(REF));
         assertFalse(StubSelfInstallIdentity.validRef(null));
-        assertFalse(StubSelfInstallIdentity.validRef("runtime/org.mozilla.firefox/x86_64/stable"));
+        assertTrue(StubSelfInstallIdentity.validRef("runtime/org.mozilla.firefox/x86_64/stable"));
         assertFalse(StubSelfInstallIdentity.validRef("app/../x86_64/stable"));
         assertFalse(StubSelfInstallIdentity.validRef("app/org.example/app/x86_64/stable"));
     }

@@ -45,6 +45,16 @@ public final class ForegroundManifestTest {
             throw new AssertionError("Missing per-stub portal provider capability declaration\n"+xml);
         if (xml.contains("org.matonos.linuxruntimes"))
             throw new AssertionError("Retired runtime package query present\n"+xml);
+        Object dependency=ctor.newInstance("flatpak.runtime.org.example.Platform.x86_64.stable.xabcdef123456","","runtime/org.example.Platform/x86_64/stable","example",Collections.emptyList());
+        java.lang.reflect.Field noActivities=manifest.getDeclaredField("noActivities");noActivities.setAccessible(true);noActivities.setBoolean(dependency,true);
+        java.lang.reflect.Field mount=manifest.getDeclaredField("packs");mount.setAccessible(true);mount.set(dependency,"/usr");
+        java.lang.reflect.Field declared=manifest.getDeclaredField("runtimePackages");declared.setAccessible(true);declared.set(dependency,"runtime/org.example.GL/x86_64/stable>flatpak.runtime.GL.xabc>/usr/lib/GL");
+        try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(apk))) {
+            zip.putNextEntry(new ZipEntry("AndroidManifest.xml"));zip.write((byte[])encode.invoke(dependency));zip.closeEntry();
+        }
+        p=new ProcessBuilder(args[0],"dump","xmltree",apk.getAbsolutePath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
+        xml=new String(p.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+        if(p.waitFor()!=0||xml.contains("E: activity")||!xml.contains("/usr/lib/GL")||!xml.contains("ExtraService")||!xml.contains("runtime/org.example.Platform"))throw new AssertionError("Nonlaunchable package declaration failed\n"+xml);
         System.out.println("PASS: AOSP parses foreground-service type IDs, install dataSync, runtime specialUse and the host StubLoader factory");
     }
 }

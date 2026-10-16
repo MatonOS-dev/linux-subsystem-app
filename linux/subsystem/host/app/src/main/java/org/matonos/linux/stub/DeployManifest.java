@@ -31,7 +31,7 @@ public final class DeployManifest {
      * if any deployment directory disagrees with its own signed metadata.
      */
     static JSONObject build(File installation, String appRef, String remote, String operationId) throws Exception {
-        if (!validRef(appRef) || !appRef.startsWith(APP + "/"))
+        if (!validRef(appRef))
             throw new IOException("Invalid authorized application reference");
         List<Deployment> deployments = new ArrayList<>();
         scan(new File(installation, APP), APP, appRef, remote, deployments);
@@ -62,6 +62,7 @@ public final class DeployManifest {
         return packageFor(ref);
     }
     private static String packageFor(String ref) throws Exception {
+        if(!validRef(ref))throw new IOException("Invalid Flatpak ref");
         String[] parts=ref.split("/",-1);
         StringBuilder safe=new StringBuilder("flatpak");
         for(String part:parts) {
@@ -96,7 +97,7 @@ public final class DeployManifest {
     /** The deployment directory contains deploy (a file), metadata and files/. */
     public static File stagedDeployment(File installation, JSONObject manifest) throws Exception {
         String ref=manifest.getString("appRef"), commit=manifest.getString("appCommit");
-        if(!validRef(ref) || !ref.startsWith("app/") || !commit.matches("[0-9a-f]{64}"))
+        if(!validRef(ref) || !commit.matches("[0-9a-f]{64}"))
             throw new IOException("Invalid staged app identity");
         File deployment=new File(installation,ref+"/"+commit);
         if(!deployment.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)

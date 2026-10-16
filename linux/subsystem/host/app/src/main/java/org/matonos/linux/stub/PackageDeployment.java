@@ -18,10 +18,17 @@ final class PackageDeployment {
         DeploymentRecord record=DeploymentRecord.installed(app.splitNames,app.splitSourceDirs);
         if(!record.ref.equals(appRef))throw new IOException("Installed deployment ref mismatch");
         record.materialize(root,"/app");
-        ActivityInfo activity=context.getPackageManager().getActivityInfo(new ComponentName(context,StubActivity.class),PackageManager.GET_META_DATA);
-        String map=activity.metaData==null?null:activity.metaData.getString(StubGenerator.RUNTIME_PACKAGES_META);
-        if(map!=null&&!map.isEmpty())for(String row:map.split(";")) {
+        ApplicationInfo identity=context.getPackageManager().getApplicationInfo(context.getPackageName(),PackageManager.GET_META_DATA);
+        String map=identity.metaData==null?null:identity.metaData.getString(StubGenerator.RUNTIME_PACKAGES_META);
+        java.util.ArrayDeque<String> pending=new java.util.ArrayDeque<>();
+        if(map!=null&&!map.isEmpty())java.util.Collections.addAll(pending,map.split(";"));
+        java.util.Map<String,String> seen=new java.util.HashMap<>();
+        while(!pending.isEmpty()) {
+            if(seen.size()>128)throw new IOException("Too many declared packages");
+            String row=pending.removeFirst();
             String[] fields=row.split(">",3);if(fields.length!=3)throw new IOException("Invalid runtime record");
+            String previous=seen.putIfAbsent(fields[1],row);
+            if(previous!=null){if(!previous.equals(row))throw new IOException("Conflicting declared package mount");continue;}
             PackageInfo pkg=context.getPackageManager().getPackageInfo(fields[1],PackageManager.GET_SIGNING_CERTIFICATES);
             PackageInfo own=context.getPackageManager().getPackageInfo(context.getPackageName(),PackageManager.GET_SIGNING_CERTIFICATES);
             if(pkg.signingInfo==null||own.signingInfo==null||pkg.signingInfo.hasMultipleSigners()||own.signingInfo.hasMultipleSigners()
@@ -31,6 +38,9 @@ final class PackageDeployment {
             DeploymentRecord runtime=DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
             if(!runtime.ref.equals(fields[0]))throw new IOException("Runtime deployment ref mismatch");
             runtime.materialize(new File(root,"system"),fields[2]);
+            ApplicationInfo dependency=context.getPackageManager().getApplicationInfo(fields[1],PackageManager.GET_META_DATA);
+            String children=dependency.metaData==null?null:dependency.metaData.getString(StubGenerator.RUNTIME_PACKAGES_META);
+            if(children!=null&&!children.isEmpty())java.util.Collections.addAll(pending,children.split(";"));
         }
         return root;
     }

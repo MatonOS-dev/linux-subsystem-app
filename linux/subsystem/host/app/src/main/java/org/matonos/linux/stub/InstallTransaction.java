@@ -47,7 +47,7 @@ public final class InstallTransaction {
             String operationId, String appRef, String remote) {
         if (operationId == null || !OPERATION_ID.matcher(operationId).matches())
             throw new IllegalArgumentException("Invalid operation ID");
-        if (appRef == null || !appRef.startsWith("app/") || !DeployManifest.validRef(appRef))
+        if (!DeployManifest.validRef(appRef))
             throw new IllegalArgumentException("Invalid application reference");
         try {org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote);}
         catch(java.io.IOException invalid){throw new IllegalArgumentException(invalid);}

@@ -176,22 +176,26 @@ public final class StubGenerator {
     public static File generateWithRuntimePackages(File workDir,String ref,String remote,String label,
             byte[] iconPng,List<String> permissions,String packageName,File output,Integer minInterfaceVersion,
             File packDirectory,List<String> requiredPackages,Map<String,String> runtimePackages) throws Exception {
-        File result = generate(workDir, ref, remote, label, iconPng, permissions, packageName,
-                output, null, minInterfaceVersion, packDirectory);
-        // Re-encode with the same template and the exact Flatpak deployment package set.
-        String cleanLabel = cleanLabel(label);
-        BinaryManifest manifest = new BinaryManifest(packageName, cleanLabel, ref, remote, permissions);
-        manifest.minInterfaceVersion = minInterfaceVersion != null ? minInterfaceVersion : 2;
-        List<String> checked = new ArrayList<>(requiredPackages);
-        Collections.sort(checked);
-        manifest.packs = String.join(";", checked);
-        manifest.runtimePackages=encodeRuntimePackages(runtimePackages);
-        File unsigned = File.createTempFile("matonos-stub-meta-", ".apk", workDir);
+        return generatePackage(workDir,ref,remote,label,iconPng,permissions,packageName,output,
+                packDirectory,requiredPackages,runtimePackages,true,"/app");
+    }
+    public static File generatePackage(File workDir,String ref,String remote,String label,byte[] iconPng,
+            List<String> permissions,String packageName,File output,File packDirectory,List<String> requiredPackages,
+            Map<String,String> dependencies,boolean launchable,String mountPoint) throws Exception {
+        if(!validRef(ref)||(packageName==null||!packageName.matches("[A-Za-z][A-Za-z0-9_.]+")))throw new IllegalArgumentException("Invalid package identity");
+        if(!launchable&&(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*")||Arrays.asList(mountPoint.split("/")).contains("..")))throw new IllegalArgumentException("Invalid package mount");
+        BinaryManifest manifest=new BinaryManifest(packageName,cleanLabel(label),ref,remote,permissions);
+        manifest.minInterfaceVersion=2;manifest.noActivities=!launchable;
+        manifest.packs=launchable?String.join(";",requiredPackages):mountPoint;
+        manifest.runtimePackages=encodeRuntimePackages(dependencies);
+        File unsigned=File.createTempFile("matonos-stub-meta-",".apk",workDir);
         try {
-            writeUnsigned(unsigned, packageName, cleanLabel, ref, remote, iconPng, permissions, null, manifest.minInterfaceVersion, packDirectory, manifest.packs,manifest.runtimePackages);
-            sign(unsigned, output, getOrCreateKey());
-            return output;
-        } finally { unsigned.delete(); }
+            if(launchable)writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.runtimePackages);
+            else try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
+                put(zip,"AndroidManifest.xml",manifest.encode());put(zip,"classes.dex",emptyDex());
+            }
+            sign(unsigned,output,getOrCreateKey());return output;
+        } finally {unsigned.delete();}
     }
     private static String encodeRuntimePackages(Map<String,String> values){StringBuilder out=new StringBuilder();for(Map.Entry<String,String> e:new java.util.TreeMap<>(values).entrySet()){if(out.length()>0)out.append(';');out.append(e.getKey()).append('>').append(e.getValue());}return out.toString();}
 
@@ -255,20 +259,8 @@ public final class StubGenerator {
         return generateRuntime(workDir,ref,pkg,output,packDirectory,"/usr");
     }
     public static File generateRuntime(File workDir,String ref,String pkg,File output,File packDirectory,String mountPoint) throws Exception {
-        if(!validRef(ref)||(!ref.startsWith("runtime/")&&!ref.startsWith("app/")))throw new IllegalArgumentException("Invalid runtime or extension ref");
-        if(mountPoint==null || !mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*"))throw new IllegalArgumentException("Invalid runtime mount point");
-        BinaryManifest manifest=new BinaryManifest(pkg,"",ref,"matonos",Collections.emptyList());
-        manifest.noActivities=true;
-        manifest.packs=mountPoint;
-        manifest.revisionCode=STUB_VERSION_CODE;
-        File unsigned=File.createTempFile("matonos-runtime-",".apk",workDir);
-        try {
-            try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
-                put(zip,"AndroidManifest.xml",manifest.encode());
-                put(zip,"classes.dex",emptyDex());
-            }
-            sign(unsigned,output,getOrCreateKey());return output;
-        } finally {unsigned.delete();}
+        return generatePackage(workDir,ref,"matonos","",null,Collections.emptyList(),pkg,output,
+                packDirectory,Collections.emptyList(),Collections.emptyMap(),false,mountPoint);
     }
     private static void writeIndexUnsigned(File unsigned,String pkg,File objects,int revision) throws Exception {
         BinaryManifest encoder=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
@@ -786,15 +778,16 @@ public final class StubGenerator {
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), a("appComponentFactory", HOST_LOADER), new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
+            startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
+            startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
+            if(runtimePackages!=null&&!runtimePackages.isEmpty())startEnd("meta-data",attrs(a("name",RUNTIME_PACKAGES_META),a("value",runtimePackages)));
             if(noActivities){
                 startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
                 start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
                 startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
                 startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", packs)));
                 end("service");
-                startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
-                startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
                 end("application");end("manifest");namespace(false);return finish();
             }
             startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
