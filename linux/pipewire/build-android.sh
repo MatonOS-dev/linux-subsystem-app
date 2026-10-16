@@ -36,7 +36,7 @@ cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
 [built-in options]
-c_args = ['-O2', '-march=x86-64-v2', '-I$DEVICE/audio/compat/include', '-include', '$ROOT/compat/android.h']
+c_args = ['-O2', '-march=x86-64-v2', '-I$ROOT/compat', '-include', '$ROOT/compat/android.h']
 [properties]
 needs_exe_wrapper = true
 CROSS
