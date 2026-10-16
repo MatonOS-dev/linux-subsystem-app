@@ -1,0 +1,4 @@
+Build headers only; no runtime libraries. Unmodified AOSP snapshots.
+hardware/interfaces: 0162af698935100a590b7359581ac8b1b80693e5
+system/core: 545d2487e38192a2ce25040897ced877cf6b4f53
+external/libdrm: d821d1b8866b0ed7bd13044c01e22fdd7daba12c

@@ -10,7 +10,7 @@ set -Eeuo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-AOSP=$(cd "$ROOT/../../../../.." && pwd)
+AOSP=${MATON_AOSP_ROOT:?set MATON_AOSP_ROOT to the AOSP SDK/header checkout}
 NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 API=35
@@ -18,7 +18,7 @@ JOBS=${MATON_BUILD_JOBS:-4}
 [[ $JOBS =~ ^[1-4]$ ]] || die 'MATON_BUILD_JOBS must be 1..4'
 [[ -x $TOOLCHAIN/bin/x86_64-linux-android${API}-clang ]] || die "missing NDK at $NDK"
 
-BUILD=${MATON_XWAYLAND_BUILD:-$AOSP/out/matonos/compositor}
+BUILD=${MATON_XWAYLAND_BUILD:-${MATON_COMPOSITOR_BUILD:-$AOSP/out/matonos/compositor}}
 PREFIX=$BUILD/xstage/x86_64
 SOURCES=${MATON_COMPOSITOR_SOURCES:-$BUILD/sources}
 SRC=$SOURCES/src
@@ -81,6 +81,9 @@ for entry in \
   'xkeyboard-config-2.48:b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5' \
   'xwayland-24.1.13:173aea3d6f79609164c04528e1c8e4c9b60fcd59391c3c9dad4667297d727fb6'; do
   name=${entry%%:*}; hash=${entry#*:}
+  if [[ ${MATON_X11_CLIENTS_ONLY:-0} == 1 ]]; then
+    case "$name" in xorgproto-2025.1|xtrans-1.6.0|util-macros-1.20.2|libpthread-stubs-0.5|xcb-proto-1.17.0|libXau-1.0.12|libXdmcp-1.1.5|libxcb-1.17.0|xcb-util-wm-0.4.2|xcb-util-errors-1.0.1) ;; *) continue;; esac
+  fi
   archive=$DOWN/$name.tar.xz
   [[ -s $archive ]] || archive=$DOWN/$name.tar.gz
   [[ -s $archive ]] || die "missing pinned source archive $archive"
@@ -155,6 +158,39 @@ PYTHON=python3 configure_build libxcb-1.17.0 --without-xcb-xprint \
 # xcb-util-wm (icccm + ewmh) and xcb-util-errors: wlroots xwm requirements.
 configure_build xcb-util-wm-0.4.2
 configure_build xcb-util-errors-1.0.1
+if [[ ${MATON_X11_CLIENTS_ONLY:-0} == 1 ]]; then
+cat > "$PREFIX/lib/pkgconfig/xwayland.pc" <<EOF
+prefix=$PREFIX
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: Xwayland
+Description: X Server for Wayland
+Version: 24.1.13
+URL: https://gitlab.freedesktop.org/xorg/xserver/
+# The device runtime path: wlroots bakes this into XWAYLAND_PATH and checks
+# access(X_OK) on it at server creation. The build prefix would fail there.
+xwayland=/system_ext/bin/Xwayland
+have_glamor=true
+have_glamor_api=true
+have_eglstream=false
+have_initfd=true
+have_listenfd=true
+have_verbose=true
+have_terminate_delay=true
+have_no_touch_pointer_emulation=true
+have_force_xrandr_emulation=true
+have_geometry=true
+have_fullscreen=true
+have_host_grab=true
+have_decorate=false
+have_enable_ei_portal=false
+have_byteswappedclients=true
+have_hidpi=true
+EOF
+exit 0
+fi
 # libX11: the client-side Xlib for Flatpak apps (links our libxcb).
 configure_build libX11-1.8.13 --disable-udb
 # libxkbfile is meson-only (no configure script); libXfont2 still ships

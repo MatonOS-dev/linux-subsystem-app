@@ -11,7 +11,7 @@ dependencies {
 // permissions. The image extracts its copy from this same APK (buildinfra).
 def brokerRoot = file('../../../dbus-broker')
 def brokerOutput = System.getenv('MATON_DBUS_ANDROID_OUT') ?: layout.buildDirectory.dir('broker/android').get().asFile.absolutePath
-def aospRoot = System.getenv('MATON_AOSP_ROOT') ?: file('../../../../../../..').absolutePath
+def aospRoot = System.getenv('MATON_BUILD_ROOT') ?: file('../../../../out').absolutePath
 def brokerJni = new File(layout.buildDirectory.get().asFile, 'generated/brokerJni')
 def buildSessionBroker = tasks.register('buildSessionBroker', Exec) {
     inputs.dir brokerRoot
@@ -31,7 +31,7 @@ def packageSessionBroker = tasks.register('packageSessionBroker', Copy) {
 tasks.named('preBuild').configure { dependsOn packageSessionBroker }
 
 def planRoot = file('../../flatpak-plan')
-def planOutput = "$aospRoot/out/matonos/flatpak-plan"
+def planOutput = System.getenv('MATON_FLATPAK_PLAN_OUT') ?: "$aospRoot/out/matonos/flatpak-plan"
 def planJni = new File(layout.buildDirectory.get().asFile, 'generated/planJni')
 def buildFlatpakPlan = tasks.register('buildFlatpakPlan', Exec) {
     outputs.upToDateWhen { false }

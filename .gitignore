@@ -40,3 +40,11 @@ matonos.local.env
 # Private signing keys never go into this public repo
 *.pem
 *.pk8
+
+# Standalone build outputs and all signing material
+/out/
+/dist/
+*.p12
+*.pfx
+*.key
+/cache/

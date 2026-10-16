@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-AOSP=$(readlink -f "$ROOT/../../../../..")
+AOSP=${MATON_AOSP_ROOT:?set MATON_AOSP_ROOT to the AOSP SDK/header checkout}
 NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 API=35
@@ -172,6 +172,7 @@ mkdir -p "$BUILD/generated/wayland-protocols"
 "$HOST/bin/wayland-scanner" enum-header \
   "$HOST/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml" \
   "$BUILD/generated/wayland-protocols/xdg-shell-enum.h"
+[[ ${MATON_COMPOSITOR_BOOTSTRAP:-0} == 1 ]] && exit 0
 build_cross wlroots wlroots-0.20.2 \
   "-Dbackends=[] -Drenderers=[] -Dallocators=[] -Dexamples=false -Dxwayland=enabled -Dsession=disabled -Dcolor-management=disabled -Dlibliftoff=disabled"
 

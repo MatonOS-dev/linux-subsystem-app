@@ -11,7 +11,7 @@ set -Eeuo pipefail
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 DEVICE_DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
-. "$(dirname -- "$(readlink -f -- "$0")")/local-env.sh"
+
 NDK=${ANDROID_NDK:-$HOME/Documents/android-ndk-r30}
 API=36
 ARCH=x86_64

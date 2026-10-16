@@ -5,9 +5,7 @@ import os, pathlib, shlex, subprocess, sys
 source = pathlib.Path(__file__).resolve().parent
 out = pathlib.Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
-aosp = pathlib.Path(os.environ['MATON_AOSP_ROOT'])
-paths = dict(line.split(': ', 1) for line in (aosp / 'paths.md').read_text().splitlines() if ': ' in line)
-build = pathlib.Path(os.environ.get('MATON_FLATPAK_PLAN_BUILD', str(pathlib.Path(paths['apexs']) / 'flatpak/build/flatpak')))
+build = pathlib.Path(os.environ['MATON_FLATPAK_PLAN_BUILD'])
 
 def command(target):
     lines = subprocess.check_output(['ninja', '-C', str(build), '-t', 'commands', target], text=True).splitlines()
