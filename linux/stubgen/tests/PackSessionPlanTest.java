@@ -19,6 +19,12 @@ public class PackSessionPlanTest {
         public void commit()throws Exception{call("commit");}
         public void abandon()throws Exception{call("abandon");}
     }
+    static void base(java.io.File file,String contents,boolean signature) throws Exception {
+        try(java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(file))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("AndroidManifest.xml"));zip.write(contents.getBytes(java.nio.charset.StandardCharsets.UTF_8));zip.closeEntry();
+            if(signature){zip.putNextEntry(new java.util.zip.ZipEntry("META-INF/CERT.SF"));zip.write(1);zip.closeEntry();}
+        }
+    }
     public static void main(String[] args)throws Exception {
         PackSessionPlan first=PackSessionPlan.create(false,0,1,list(),list(b,a),list(a,b),true);
         check(first.mode==PackSessionPlan.Mode.FULL && !first.dontKillApp);
@@ -51,6 +57,15 @@ public class PackSessionPlanTest {
         check(index.write.equals(list(next+".apk")) && index.remove.equals(list(ix)) && index.dontKillApp);
         PackSessionPlan full=PackSessionPlan.create(true,17,18,list(a,ix),list(a,next),list(a,next),true);
         check(full.mode==PackSessionPlan.Mode.FULL && !full.dontKillApp && full.remove.isEmpty());
+        check(PackSessionPlan.nextRevision(17,17,0,new int[]{2,5,3})==6);
+        check(PackSessionPlan.nextRevision(17,18,0,new int[]{Integer.MAX_VALUE})==1);
+        rejects(()->PackSessionPlan.nextRevision(17,17,0,new int[]{Integer.MAX_VALUE}));
+        rejects(()->PackSessionPlan.nextRevision(17,17,0,new int[]{-1}));
+        java.io.File x=java.io.File.createTempFile("base-a-",".apk"),y=java.io.File.createTempFile("base-b-",".apk");
+        try {
+            base(x,"template",false);base(y,"template",true);check(PackSessionPlan.sameBase(x,y));
+            base(y,"changed permissions",false);check(!PackSessionPlan.sameBase(x,y));
+        } finally {x.delete();y.delete();}
         System.out.println("Pack session planning tests passed");
     }
 }

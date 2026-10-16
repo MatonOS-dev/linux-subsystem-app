@@ -200,17 +200,21 @@ public final class StubGenerator {
         return "index_"+ObjectPacks.hex(hash.digest());
     }
     public static File generateIndex(File workDir,String pkg,File objects,File output,int revision) throws Exception {
-        BinaryManifest encoder=new BinaryManifest(pkg,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
-        encoder.revisionCode=revision;
+        if(revision<0)throw new IllegalArgumentException("Negative split revision");
         File unsigned=File.createTempFile("matonos-index-",".apk",workDir);
         try {
-            try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
-                put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects)));
-                for(String name:Arrays.asList("objects.index","objects.ostree"))
-                    put(zip,"assets/matonos/"+name,java.nio.file.Files.readAllBytes(new File(objects,name).toPath()));
-            }
+            writeIndexUnsigned(unsigned,pkg,objects,revision);
             sign(unsigned,output,getOrCreateKey());return output;
         } finally {unsigned.delete();}
+    }
+    private static void writeIndexUnsigned(File unsigned,String pkg,File objects,int revision) throws Exception {
+        BinaryManifest encoder=new BinaryManifest(pkg,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
+        encoder.revisionCode=revision;
+        try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
+            put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects)));
+            for(String name:Arrays.asList("objects.index","objects.ostree"))
+                put(zip,"assets/matonos/"+name,java.nio.file.Files.readAllBytes(new File(objects,name).toPath()));
+        }
     }
 
     /** Builds a code-free split named for the immutable content ZIP hash.
@@ -219,6 +223,7 @@ public final class StubGenerator {
         return generatePack(workDir,packageName,pack,output,0);
     }
     public static File generatePack(File workDir, String packageName, File pack, File output,int revision) throws Exception {
+        if(revision<0)throw new IllegalArgumentException("Negative split revision");
         if(!packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
             throw new IllegalArgumentException("Invalid package name");
         String name=pack.getName();

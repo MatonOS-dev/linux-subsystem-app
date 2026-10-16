@@ -1,6 +1,7 @@
 package org.matonos.linuxhost.stubgen;
 
 import java.io.IOException;
+import java.io.File;
 import java.util.*;
 
 /** Android-independent planning for one atomic base + content-split session.
@@ -50,6 +51,18 @@ public final class PackSessionPlan {
         return new PackSessionPlan(full?Mode.FULL:Mode.INHERIT,nextVersion,baseChanges,writes,removes);
     }
 
+    public static int nextRevision(long installedVersion,long nextVersion,int base,int[] splits) throws IOException {
+        if(installedVersion!=nextVersion)return 1;
+        int revision=base;
+        if(base<0)throw new IOException("Invalid base revision");
+        if(splits!=null)for(int value:splits) {
+            if(value<0)throw new IOException("Invalid split revision");
+            revision=Math.max(revision,value);
+        }
+        if(revision==Integer.MAX_VALUE)throw new IOException("Split revision exhausted; requires a new stub format version");
+        return revision+1;
+    }
+
     private static SortedSet<String> names(Collection<String> names) throws IOException {
         SortedSet<String> result=new TreeSet<>();
         for(String name:names) {
@@ -59,6 +72,23 @@ public final class PackSessionPlan {
         return result;
     }
 
+    public static boolean sameBase(File a,File b) throws Exception {
+        try(java.util.zip.ZipFile left=new java.util.zip.ZipFile(a);java.util.zip.ZipFile right=new java.util.zip.ZipFile(b)) {
+            java.util.Set<String> names=new java.util.TreeSet<>();
+            for(java.util.Enumeration<? extends java.util.zip.ZipEntry> entries=left.entries();entries.hasMoreElements();) {
+                String name=entries.nextElement().getName();if(!name.startsWith("META-INF/"))names.add(name);
+            }
+            java.util.Set<String> other=new java.util.TreeSet<>();
+            for(java.util.Enumeration<? extends java.util.zip.ZipEntry> entries=right.entries();entries.hasMoreElements();) {
+                String name=entries.nextElement().getName();if(!name.startsWith("META-INF/"))other.add(name);
+            }
+            if(!names.equals(other))return false;
+            for(String name:names)try(java.io.InputStream x=left.getInputStream(left.getEntry(name));java.io.InputStream y=right.getInputStream(right.getEntry(name))) {
+                if(!java.util.Arrays.equals(x.readAllBytes(),y.readAllBytes()))return false;
+            }
+            return true;
+        }
+    }
     /** A fakeable installer seam. An Android adapter owns file streaming/fsync,
      * callback delivery and abandonment after asynchronous commit failure.
      */

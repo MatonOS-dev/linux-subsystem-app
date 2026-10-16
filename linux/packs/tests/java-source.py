@@ -32,7 +32,7 @@ public class SourceHarness {
  }
 }''')
     java=ROOT/'linux/stubgen/src/org/matonos/linuxhost/stubgen'
-    run('javac','-d',str(base),str(java/'ObjectPacks.java'),str(java/'OstreePacks.java'),str(harness))
+    run('javac','-d',str(base),str(java/'ObjectPacks.java'),str(java/'PackLaunch.java'),str(java/'OstreePacks.java'),str(harness))
     def check(label,commit,extra=None):
         jout=base/(label+'-java');pyout=base/(label+'-py')
         args=['java','-cp',str(base),'SourceHarness',str(repo),commit,str(jout)]

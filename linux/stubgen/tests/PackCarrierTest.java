@@ -20,6 +20,7 @@ public final class PackCarrierTest {
   Class<?> manifest=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$BinaryManifest");
   Constructor<?> mc=manifest.getDeclaredConstructor(String.class,desktop,String.class,String.class,List.class);mc.setAccessible(true);
   Object encoder=mc.newInstance("flatpak.org.example.Test",dc.newInstance("",Collections.emptyList()),"","flathub",Collections.emptyList());
+  Field revision=manifest.getDeclaredField("revisionCode");revision.setAccessible(true);revision.setInt(encoder,42);
   Method pm=manifest.getDeclaredMethod("packManifest",String.class);pm.setAccessible(true);
   String split="pack_"+row.pack.substring(5,69);
   File unsigned=new File(dir,"pack-unsigned.apk"),signed=new File(dir,"pack-signed.apk");
@@ -42,13 +43,28 @@ public final class PackCarrierTest {
   }
   Process p=new ProcessBuilder(args[1],"dump","xmltree",signed.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String xml=new String(p.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-  if(p.waitFor()!=0 || !xml.contains("split=\""+split+"\"") || !xml.contains("hasCode(0x0101000c)=false"))throw new AssertionError(xml);
+  if(p.waitFor()!=0 || !xml.contains("split=\""+split+"\"") || !xml.contains("hasCode(0x0101000c)=false") || !xml.contains("revisionCode(0x010104d5)=42"))throw new AssertionError(xml);
   File index=new File(dir,"objects.index");ObjectPacks.writeIndex(index,Collections.singletonList(row));
-  File base=new File(dir,"pack-base.apk");
-  try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(base))) {
-   ZipEntry entry=new ZipEntry("assets/matonos/objects.index");zip.putNextEntry(entry);zip.write(Files.readAllBytes(index.toPath()));zip.closeEntry();
-  }
-  List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split,"index_"+"b".repeat(64)},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
+  List<ObjectPacks.Entry> decoded=ObjectPacks.readIndex(index);
+  if(decoded.size()!=1 || !decoded.get(0).pack.equals(row.pack) || decoded.get(0).offset!=row.offset)throw new AssertionError("Index round trip");
+  File installedDir=new File(dir,"installed-carriers"),updatedDir=new File(dir,"updated-carriers");installedDir.mkdirs();
+  Files.deleteIfExists(new File(installedDir,row.pack).toPath());
+  Files.createSymbolicLink(new File(installedDir,row.pack).toPath(),signed.toPath().toAbsolutePath());
+  ObjectPacks.Entry fresh=new ObjectPacks.Entry(row.path,row.checksum,row.kind,row.mode);fresh.source=payload;
+  ObjectPacks.update(Collections.singletonList(fresh),decoded,installedDir,updatedDir,0.5);
+  if(!fresh.pack.equals(row.pack) || fresh.offset!=row.offset || !Arrays.equals(Files.readAllBytes(new File(updatedDir,row.pack).toPath()),Files.readAllBytes(signed.toPath())))throw new AssertionError("Installed APK carrier reuse");
+  Files.write(new File(dir,"objects.ostree").toPath(),new byte[0]);
+  String indexName=org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir);
+  if(!indexName.matches("index_[0-9a-f]{64}"))throw new AssertionError(indexName);
+  File indexUnsigned=new File(dir,"index-unsigned.apk"),base=new File(dir,"index-signed.apk");
+  Method wi=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator").getDeclaredMethod("writeIndexUnsigned",File.class,String.class,File.class,int.class);wi.setAccessible(true);
+  wi.invoke(null,indexUnsigned,"flatpak.org.example.Test",dir,43);
+  sign.invoke(null,indexUnsigned,base,kc.newInstance(key,cert));
+  if(!new ApkVerifier.Builder(base).setMinCheckedPlatformVersion(30).build().verify().isVerified())throw new AssertionError("Index signature");
+  Process ip=new ProcessBuilder(args[1],"dump","xmltree",base.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
+  String ix=new String(ip.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+  if(ip.waitFor()!=0 || !ix.contains("split=\""+indexName+"\"") || !ix.contains("revisionCode(0x010104d5)=43"))throw new AssertionError(ix);
+  List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
   if(command.size()!=4||!command.get(0).equals("--pack-mount")||!command.get(1).equals("/app"))throw new AssertionError(command);
   if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
   if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");

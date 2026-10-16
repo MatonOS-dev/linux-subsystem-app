@@ -51,6 +51,22 @@ public final class ObjectPacks {
             }
         }
     }
+    /** Reads the same bounded format validated by the launcher. Payloads stay in carriers. */
+    public static List<Entry> readIndex(File file) throws IOException {
+        byte[] bytes=Files.readAllBytes(file.toPath());PackLaunch.packs(bytes);
+        java.nio.ByteBuffer b=java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.position(8);int count=b.getInt();List<Entry> result=new ArrayList<>();
+        for(int i=0;i<count;i++) {
+            String path=field(b),checksum=field(b),pack=field(b),kind=field(b),target=field(b);
+            Entry e=new Entry(path,checksum,kind,0);e.pack=pack;e.target=target;
+            e.xattrs=new byte[b.getInt()];b.get(e.xattrs);e.offset=b.getLong();e.length=b.getLong();
+            e.uid=b.getInt();e.gid=b.getInt();e.mode=b.getInt();result.add(e);
+        }
+        return result;
+    }
+    private static String field(java.nio.ByteBuffer b) {
+        byte[] bytes=new byte[b.getInt()];b.get(bytes);return new String(bytes,StandardCharsets.UTF_8);
+    }
     public static void writeMetadata(File file,Map<String,byte[]> objects) throws Exception {
         try(OutputStream out=new BufferedOutputStream(new FileOutputStream(file))) {
             out.write("MTPKOBJ1".getBytes(StandardCharsets.US_ASCII));le(out,objects.size(),4);
