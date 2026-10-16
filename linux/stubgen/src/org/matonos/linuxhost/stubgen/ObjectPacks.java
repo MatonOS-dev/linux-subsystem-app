@@ -175,33 +175,11 @@ public final class ObjectPacks {
         propagate(fresh,live.values());if(!added.isEmpty())emit(output,fresh,added);
         Map<String,List<Entry>> packs=new TreeMap<>();
         for(Entry e:prior.values())packs.computeIfAbsent(e.pack,k->new ArrayList<>()).add(e);
-        // Inspect the immutable carriers, not just the previous index: that index
-        // omits objects deleted in earlier updates. Ignore carriers no longer
-        // referenced by the newest index and all superseded index generations.
-        long total=0,dead=0;
-        Map<String,List<Entry>> retained=new TreeMap<>();
         for(Map.Entry<String,List<Entry>> p:packs.entrySet()) {
-            List<Entry> keep=new ArrayList<>();Set<String> needed=new HashSet<>();
-            for(Entry e:p.getValue())if(live.containsKey(e.checksum)) {
-                keep.add(live.get(e.checksum));needed.add(e.checksum);
-            }
+            long total=0,dead=0;List<Entry> keep=new ArrayList<>();
+            for(Entry e:p.getValue()){total=Math.addExact(total,e.length);if(live.containsKey(e.checksum))keep.add(live.get(e.checksum));else dead=Math.addExact(dead,e.length);}
             if(keep.isEmpty())continue;
-            retained.put(p.getKey(),keep);
-            try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(new File(oldDirectory,p.getKey()))) {
-                Set<String> seen=new HashSet<>();
-                for(Enumeration<? extends java.util.zip.ZipEntry> entries=zip.entries();entries.hasMoreElements();) {
-                    java.util.zip.ZipEntry entry=entries.nextElement();String name=entry.getName();
-                    if(!name.matches("[0-9a-f]{64}"))continue;
-                    if(!seen.add(name)||entry.getSize()<0)throw new IOException("Invalid carrier object");
-                    total=Math.addExact(total,entry.getSize());
-                    if(!needed.contains(name))dead=Math.addExact(dead,entry.getSize());
-                }
-                if(!seen.containsAll(needed))throw new IOException("Missing retained object");
-            }
-        }
-        boolean repack=total>0&&dead>0&&(double)dead/total>=threshold;
-        for(Map.Entry<String,List<Entry>> p:retained.entrySet()) {
-            if(repack)emit(output,fresh,p.getValue());
+            if(total>0&&dead>0&&(double)dead/total>=threshold)emit(output,fresh,keep);
             else Files.copy(new File(oldDirectory,p.getKey()).toPath(),new File(output,p.getKey()).toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
     }

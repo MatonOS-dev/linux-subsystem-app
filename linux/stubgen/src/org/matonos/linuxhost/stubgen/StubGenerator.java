@@ -191,14 +191,13 @@ public final class StubGenerator {
     }
 
     /** Index identity includes metadata; both are immutable in this split. */
-    public static String indexSplitName(File objects,int revision) throws Exception {
+    public static String indexSplitName(File objects) throws Exception {
         java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
         for(String name:Arrays.asList("objects.index","objects.ostree")) {
             byte[] bytes=java.nio.file.Files.readAllBytes(new File(objects,name).toPath());
             hash.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length).array());hash.update(bytes);
         }
-        if(revision<1)throw new IOException("Invalid index revision");
-        return "index_r"+revision+"_"+ObjectPacks.hex(hash.digest());
+        return "index_"+ObjectPacks.hex(hash.digest());
     }
     public static File generateIndex(File workDir,String pkg,File objects,File output,int revision) throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
@@ -212,7 +211,7 @@ public final class StubGenerator {
         BinaryManifest encoder=new BinaryManifest(pkg,new DesktopEntry("",Collections.emptyList()),"","flathub",Collections.emptyList());
         encoder.revisionCode=revision;
         try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
-            put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects,revision)));
+            put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects)));
             for(String name:Arrays.asList("objects.index","objects.ostree"))
                 put(zip,"assets/matonos/"+name,java.nio.file.Files.readAllBytes(new File(objects,name).toPath()));
         }

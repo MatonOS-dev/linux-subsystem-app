@@ -273,7 +273,7 @@ public final class LinuxAppStoreService extends Service {
                     op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
                     op.installed==null?0:op.installed.baseRevisionCode,op.installed==null?null:op.installed.splitRevisionCodes);
             java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
-            String index=StubGenerator.indexSplitName(objects,revision);desired.add(index);
+            String index=StubGenerator.indexSplitName(objects);desired.add(index);
             if(full || !prior.contains(index)) {
                 StubGenerator.generateIndex(work,pkg,objects,new File(op.packArtifacts,index+".apk"),revision);available.add(index);
             }

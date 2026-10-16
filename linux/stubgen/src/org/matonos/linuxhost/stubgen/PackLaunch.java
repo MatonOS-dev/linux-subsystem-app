@@ -14,8 +14,10 @@ public final class PackLaunch {
         byte[] index=null;String indexPath=null;
         if(names==null || paths==null || names.length!=paths.length)
             throw new IOException("Missing or inconsistent package splits");
-        int selected=newestIndex(Arrays.asList(names));
-        if(selected>=0)indexPath=paths[selected];
+        for(int i=0;i<names.length;i++)if(names[i].matches("index_[0-9a-f]{64}")) {
+            if(indexPath!=null)throw new IOException("Multiple index splits");
+            indexPath=paths[i];
+        }
         if(indexPath==null)throw new IOException("Missing index split");
         try(ZipFile zip=new ZipFile(indexPath)) {
             ZipEntry entry=zip.getEntry("assets/matonos/objects.index");
@@ -51,33 +53,6 @@ public final class PackLaunch {
         try {Files.write(temp,index);Files.move(temp,destination,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);}
         finally {Files.deleteIfExists(temp);}
         return Arrays.asList("--pack-mount","/app",destination.toString(),directory.toString());
-    }
-    /** All index names must parse; duplicate revisions fail even below the newest. */
-    public static int newestIndex(List<String> names) throws IOException {
-        int selected=-1,highest=0;Set<Integer> revisions=new HashSet<>();
-        for(int i=0;i<names.size();i++) {
-            String name=names.get(i);
-            if(name==null)throw new IOException("Null split name");
-            if(!name.startsWith("index_"))continue;
-            if(!name.matches("index_r[1-9][0-9]*_[0-9a-f]{64}"))throw new IOException("Invalid index name: "+name);
-            int revision;
-            try {revision=Integer.parseInt(name.substring(7,name.indexOf('_',7)));}
-            catch(NumberFormatException e){throw new IOException("Index revision overflow",e);}
-            if(!revisions.add(revision))throw new IOException("Index revision tie");
-            if(revision>highest){highest=revision;selected=i;}
-        }
-        return selected;
-    }
-    public static Set<String> referencedSplits(File indexApk) throws IOException {
-        try(ZipFile zip=new ZipFile(indexApk)) {
-            ZipEntry entry=zip.getEntry("assets/matonos/objects.index");
-            if(entry==null)throw new IOException("Missing index");
-            Set<String> result=new TreeSet<>();
-            try(InputStream in=zip.getInputStream(entry)) {
-                for(String pack:packs(in.readAllBytes()))result.add("pack_"+pack.substring(5,69));
-            }
-            return result;
-        }
     }
     static Set<String> packs(byte[] index) throws IOException {
         try {
