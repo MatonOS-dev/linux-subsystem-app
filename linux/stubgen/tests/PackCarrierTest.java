@@ -92,6 +92,11 @@ public final class PackCarrierTest {
   org.matonos.linuxhost.stubgen.DeploymentRecord record=new org.matonos.linuxhost.stubgen.DeploymentRecord(
           "app/org.example.Test/x86_64/stable",commit,"flathub",new byte[]{1},new byte[]{2},commitObject);
   Files.write(new File(dir,"deployment.bin").toPath(),record.encode());
+  Files.copy(index.toPath(),new File(dir,"original.index").toPath(),StandardCopyOption.REPLACE_EXISTING);
+  Files.write(new File(dir,"original.ostree").toPath(),new byte[]{3,5,7});
+  String identity=org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir);
+  Files.write(new File(dir,"original.ostree").toPath(),new byte[]{3,5,8});
+  if(identity.equals(org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir)))throw new AssertionError("Original metadata excluded from signed split identity");
   String indexName=org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir);
   if(!indexName.matches("index_[0-9a-f]{64}"))throw new AssertionError(indexName);
   File indexUnsigned=new File(dir,"index-unsigned.apk"),base=new File(dir,"index-signed.apk");
@@ -102,6 +107,9 @@ public final class PackCarrierTest {
   org.matonos.linuxhost.stubgen.DeploymentRecord installedRecord=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
           new String[]{indexName},new String[]{base.getAbsolutePath()});
   if(!installedRecord.ref.equals(record.ref)||!Arrays.equals(installedRecord.commitObject,commitObject))throw new AssertionError("Signed index lost its deployment record");
+  List<String> original=PackLaunch.originalArguments(new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"original-cache"));
+  if(!Arrays.equals(Files.readAllBytes(Path.of(original.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Original index changed");
+  try(ZipFile zip=new ZipFile(base)){if(zip.getEntry("assets/matonos/original.ostree")==null)throw new AssertionError("Signed index lost original metadata");}
   Process ip=new ProcessBuilder(args[1],"dump","xmltree",base.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String ix=new String(ip.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(ip.waitFor()!=0 || !ix.contains("split=\""+indexName+"\"") || !ix.contains("revisionCode(0x010104d5)=43"))throw new AssertionError(ix);
