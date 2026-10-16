@@ -55,6 +55,25 @@ int main(int argc, char **argv) {
         raw(SYS_arch_prctl, 0x1002, saved);
         if (pid != getpid()) return 5;
     }
+    if (argc > 2 && !strcmp(sym, "eglBindAPI")) {
+        void *(*display)(void *) = resolve(lib,"eglGetDisplay");
+        unsigned (*initialize)(void *,int *,int *) = resolve(lib,"eglInitialize");
+        unsigned (*terminate)(void *) = resolve(lib,"eglTerminate");
+        int (*error)(void) = resolve(lib,"eglGetError");
+        if (!display || !initialize || !terminate || !error) return 8;
+        uintptr_t saved;
+        raw(SYS_arch_prctl, 0x1003, (long)&saved);
+        raw(SYS_arch_prctl, 0x1002, bridge->tls);
+        void *d = display(NULL);
+        int major=0,minor=0;
+        unsigned initialized = initialize(d,&major,&minor);
+        unsigned bound = initialized ? ((unsigned (*)(unsigned))p)(argc>3 ? 0x30A2 : 0x30A0) : 0;
+        int e = error();
+        if (initialized) terminate(d);
+        raw(SYS_arch_prctl, 0x1002, saved);
+        printf("foreign EGL %d.%d initialize=%u bind=%u error=%#x\n",major,minor,initialized,bound,e);
+        if (!initialized || !bound) return 8;
+    }
     if (argc > 2 && !strcmp(sym, "vkGetInstanceProcAddr")) {
         PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)p;
         uintptr_t saved;
