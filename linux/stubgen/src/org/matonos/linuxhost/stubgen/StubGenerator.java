@@ -229,10 +229,15 @@ public final class StubGenerator {
         }
     }
 
+    private static List<String> indexAssets(File objects) {
+        List<String> names=new ArrayList<>(Arrays.asList("objects.index","objects.ostree"));
+        if(new File(objects,"deployment.bin").isFile())names.add("deployment.bin");
+        return names;
+    }
     /** Index identity includes metadata; both are immutable in this split. */
     public static String indexSplitName(File objects) throws Exception {
         java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
-        for(String name:Arrays.asList("objects.index","objects.ostree")) {
+        for(String name:indexAssets(objects)) {
             byte[] bytes=java.nio.file.Files.readAllBytes(new File(objects,name).toPath());
             hash.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length).array());hash.update(bytes);
         }
@@ -270,7 +275,7 @@ public final class StubGenerator {
         encoder.revisionCode=revision;
         try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
             put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects)));
-            for(String name:Arrays.asList("objects.index","objects.ostree"))
+            for(String name:indexAssets(objects))
                 put(zip,"assets/matonos/"+name,java.nio.file.Files.readAllBytes(new File(objects,name).toPath()));
         }
     }

@@ -18,7 +18,6 @@ import android.os.IBinder;
 import android.util.Log;
 import org.json.JSONObject;
 import org.matonos.systembridge.ICompositorInstallCallback;
-import org.matonos.systembridge.ILinuxd;
 import org.matonos.linux.stub.InstallTransaction;
 import org.matonos.linuxhost.stubgen.StubGenerator;
 import java.io.File;
@@ -41,6 +40,7 @@ public final class LinuxAppStoreService extends Service {
     private final Map<String, Operation> pending = new ConcurrentHashMap<>();
     private static volatile LinuxAppStoreService instance;
     private static final class Operation {
+        final String stagingId="stage-"+java.util.UUID.randomUUID().toString().replace("-","");
         final int uid;
         final String id, kind, ref, remote, name, url;
         final ILinuxAppStoreCallback callback;
@@ -90,7 +90,7 @@ public final class LinuxAppStoreService extends Service {
         @Override public void uninstall(String ref, String id, ILinuxAppStoreCallback cb) {
             submit("uninstall", ref, null, null, null, id, cb);
         }
-        @Override public String listInstalled() { enforceQuery(); return call("list_installed", args("userId", android.os.Process.myUid()/100000)); }
+        @Override public String listInstalled() { enforceQuery(); return listInstalledPackages(); }
         @Override public String listRemotes() { enforceQuery(); return remoteList(); }
         @Override public void addRemote(String name, String url, String id, ILinuxAppStoreCallback cb) {
             submit("addRemote", null, null, name, url, id, cb);
@@ -104,8 +104,8 @@ public final class LinuxAppStoreService extends Service {
                 throw new SecurityException("Operation is not owned by caller");
             if(op.packInstaller!=null && !op.packInstaller.cancelBeforeCommit())return;
             op.cancelled=true;
-            if(op.installService!=null)try{op.installService.cancelInstall(op.id);}catch(Exception ignored){}
-            result(op,false,"Operation cancelled");
+            if(op.installService!=null)try{op.installService.cancelInstall(op.stagingId);}catch(Exception ignored){}
+            if(op.installService==null)result(op,false,"Operation cancelled");
         }
     };
 
@@ -193,21 +193,17 @@ public final class LinuxAppStoreService extends Service {
     private void runStagedInstall(String id, Operation op) throws Exception {
         cleanupUnusedRuntimePackages();
         final String remote="update".equals(op.kind)||"repair".equals(op.kind)?remoteFor(op.ref):op.remote;
-        JSONObject begin=new JSONObject(); put(begin,"operationId",id); put(begin,"ref",op.ref);
-        put(begin,"remote",remote); put(begin,"compositorUid",android.os.Process.myUid());
-        JSONObject beginReply=new JSONObject(linuxd().call("begin_staged_install",begin.toString()));
-        if(!beginReply.optBoolean("ok",false)) throw new IllegalStateException(beginReply.optString("error","Cannot begin staged install"));
+        InstallTransaction.prepare(this,op.stagingId);
         ICompositorInstallCallback stagedCallback=new ICompositorInstallCallback.Stub() {
             @Override public void onProgress(String operationId,String phase,int percent,String line) {
-                try { op.callback.onProgress(operationId,phase,percent,-1,-1); }
+                try { op.callback.onProgress(op.id,phase,percent,-1,-1); }
                 catch(Exception e) { Log.w(TAG,"Cannot deliver install progress",e); }
             }
             @Override public void onComplete(String operationId,String manifest) {
                 try {
                     JSONObject staged = new JSONObject(manifest);
                     op.stagedManifest=staged;
-                    File installation=new File(new File("/data/linux-app/staging", Integer.toString(android.os.Process.myUid())),
-                            operationId + "/installation");
+                    File installation=InstallTransaction.installation(LinuxAppStoreService.this,op.stagingId);
                     String details = org.matonos.linux.stub.DeployManifest.stagedMetadata(installation, staged);
                     op.stagedMetadata = details;
                     File scratch=new File(getCacheDir(),"flatpak-pack-artifacts");
@@ -218,25 +214,18 @@ public final class LinuxAppStoreService extends Service {
                     org.matonos.linux.stub.StagedPacks.build(LinuxAppStoreService.this,installation,staged,
                             new File(op.packArtifacts,"objects"),()->op.cancelled,op.installed);
                     if(op.cancelled)throw new java.io.IOException("Install cancelled");
-                    JSONObject args=new JSONObject(); put(args,"operationId",operationId);
-                    args.put("manifest",staged);
-                    JSONObject reply=new JSONObject(linuxd().call("verify_staged_install",args.toString()));
-                    if(!reply.optBoolean("ok",false)) throw new IllegalStateException(reply.optString("error","Staged install verification failed"));
                     installRuntimePackages(op,installation);
                     installFinalStub(op);
                 } catch(Exception e) {
-                    try {linuxd().call("abort_staged_install",args("operationId",operationId).toString());}catch(Exception ignored){}
                     result(op,false,e.getMessage());
                 } finally {if(op.cancelled)cleanArtifacts(op);}
             }
             @Override public void onFailed(String operationId,String error) {
-                try { linuxd().call("abort_staged_install",args("operationId",operationId).toString()); }
-                catch(Exception ignored) { }
                 result(op,false,error);
             }
         };
         android.content.ServiceConnection connection=new android.content.ServiceConnection(){
-            @Override public void onServiceConnected(ComponentName name,IBinder service){try{op.installService=org.matonos.systembridge.ICompositorInstall.Stub.asInterface(service);op.installService.startInstall(stagedCallback,id,op.ref,remote);}catch(Exception error){result(op,false,error.getMessage());}finally{unbindService(this);}}
+            @Override public void onServiceConnected(ComponentName name,IBinder service){try{op.installService=org.matonos.systembridge.ICompositorInstall.Stub.asInterface(service);op.installService.startInstall(stagedCallback,op.stagingId,op.ref,remote);}catch(Exception error){result(op,false,error.getMessage());}finally{unbindService(this);}}
             @Override public void onServiceDisconnected(ComponentName name){result(op,false,"Flatpak installer disconnected");}
         };
         if(!bindService(new Intent(this,org.matonos.linux.stub.CompositorInstallService.class),connection,Context.BIND_AUTO_CREATE))throw new IllegalStateException("Cannot connect to Flatpak installer");
@@ -268,16 +257,30 @@ public final class LinuxAppStoreService extends Service {
 
 
     private String remoteFor(String ref) throws Exception {
-        JSONObject request=args("ref",ref); put(request,"uid",stubUid(ref));
-        JSONObject info=new JSONObject(linuxd().call("installed_commit",request.toString()));
-        if(!info.optBoolean("ok",false)) throw new IllegalStateException(info.optString("error","Installed app not found"));
-        String[] fields=info.optString("output").split("\\t",-1);
-        if(fields.length<2 || fields[0].isEmpty()) throw new IllegalStateException("Installed remote is unavailable");
-        return fields[0];
+        int uid=stubUid(ref);
+        if(!ref.equals(authenticateStubRef(uid)))throw new SecurityException("Untrusted installed stub");
+        android.content.pm.ActivityInfo info=getPackageManager().getActivityInfo(
+                new ComponentName(packageFor(ref),StubGenerator.HOST_ACTIVITY),PackageManager.GET_META_DATA);
+        String remote=info.metaData==null?null:info.metaData.getString(StubGenerator.REMOTE_META);
+        if(!"flathub".equals(remote))throw new IllegalStateException("Unsupported installed remote");
+        return remote;
     }
 
     private int stubUid(String ref) throws Exception {
         return getPackageManager().getApplicationInfo(packageFor(ref),0).uid;
+    }
+
+    private String listInstalledPackages() {
+        try {
+            java.util.Set<String> refs=new java.util.TreeSet<>();
+            for(PackageInfo pkg:getPackageManager().getInstalledPackages(0)) {
+                if(pkg.applicationInfo==null||!pkg.packageName.startsWith("flatpak."))continue;
+                try {String ref=authenticateStubRef(pkg.applicationInfo.uid);
+                    if(pkg.packageName.equals(packageFor(ref)))refs.add(ref);
+                } catch(Exception ignored) { }
+            }
+            return new JSONObject().put("ok",true).put("output",String.join("\n",refs)).toString();
+        } catch(Exception error){throw new IllegalStateException("Cannot list installed stubs",error);}
     }
 
     private String authenticateStubRef(int uid) {
@@ -323,7 +326,7 @@ public final class LinuxAppStoreService extends Service {
         org.json.JSONArray deployments=op.stagedManifest.getJSONArray("deployments");
         java.util.List<String> refs=new java.util.ArrayList<>(),commits=new java.util.ArrayList<>();
         for(int i=0;i<deployments.length();i++){JSONObject row=deployments.getJSONObject(i);refs.add(row.getString("ref"));commits.add(row.getString("commit"));}
-        File installation=new File(new File("/data/linux-app/staging",Integer.toString(android.os.Process.myUid())),op.id+"/installation");
+        File installation=InstallTransaction.installation(this,op.stagingId);
         for(org.matonos.linux.stub.RuntimeMounts.Entry entry:org.matonos.linux.stub.RuntimeMounts.resolve(refs,commits,op.ref,(ref,commit)->{
             File deploy=new File(installation,ref+"/"+commit),metadata=new File(deploy,"metadata");
             if(!deploy.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)||java.nio.file.Files.isSymbolicLink(metadata.toPath())||!metadata.isFile())throw new java.io.IOException("Cannot read verified Flatpak metadata for "+ref);
@@ -368,7 +371,7 @@ public final class LinuxAppStoreService extends Service {
         }
         runPackSession(op,pkg,op.packArtifacts,plan(op.installed!=null,
                 op.installed==null?0:op.installed.getLongVersionCode(),prior,desired,available,full));
-        if(!hasExtra) { finishStubInstall(op,remote,pkg,success()); return; }
+        if(!hasExtra) { finishStubInstall(op,success()); return; }
         // The package is installed but has no launcher entry yet. Run its own
         // apply_extra under its UID and publish the applied tree as an extra
         // split, in a second session that inherits what the first installed.
@@ -392,7 +395,7 @@ public final class LinuxAppStoreService extends Service {
             addExtraSplit(op,pkg,work,extraObjects,applied,revision,null,null,null,desired2,available2);
         }
         runPackSession(op,pkg,op.packArtifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
-        finishStubInstall(op,remote,pkg,success());
+        finishStubInstall(op,success());
     }
 
     /** The index/metadata bytes produced by {@code StagedPacks.build}. */
@@ -616,15 +619,11 @@ public final class LinuxAppStoreService extends Service {
             throw new IllegalStateException("Could not install extra split for "+ref);
     }
 
-    private void finishStubInstall(Operation op,String remote,String pkg,Intent intent) {
+    private void finishStubInstall(Operation op,Intent intent) {
         try {
             if(op.completed.get())return;
             if(intent==null||intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
                 throw new IllegalStateException(intent==null?"Stub install failed":intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
-            JSONObject bind=new JSONObject(); put(bind,"ref",op.ref); put(bind,"remote",remote); put(bind,"operationId",op.id); put(bind,"uid",stubUid(op.ref)); put(bind,"packageName",pkg);
-            JSONObject bound=new JSONObject(linuxd().call("bind_pending",bind.toString()));
-            if(!bound.optBoolean("ok"))throw new IllegalStateException(bound.optString("error","Stub binding failed"));
-            linuxd().call("install_complete",new JSONObject().put("ref",op.ref).put("remote",remote).put("operationId",op.id).toString());
             result(op,true,null);
         } catch(Exception e) {
             result(op,false,e.getMessage());
@@ -646,10 +645,8 @@ public final class LinuxAppStoreService extends Service {
     }
 
     private void uninstallStub(Operation op) throws Exception {
-        String pkg=packageFor(op.ref); int uid=stubUid(op.ref);
-        JSONObject args=args("ref",op.ref); put(args,"uid",uid); put(args,"deleteData",false); put(args,"operationId",op.id);
-        JSONObject reply=new JSONObject(linuxd().call("uninstall",args.toString()));
-        if(!reply.optBoolean("ok")) throw new IllegalStateException(reply.optString("error","Uninstall failed"));
+        String pkg=packageFor(op.ref);
+        if(!op.ref.equals(authenticateStubRef(stubUid(op.ref))))throw new SecurityException("Untrusted installed stub");
         String action=getPackageName()+".PACK_UNINSTALL."+java.util.UUID.randomUUID();
         android.app.PendingIntent status=android.app.PendingIntent.getBroadcast(this,0,
                 new Intent(action).setPackage(getPackageName()),android.app.PendingIntent.FLAG_MUTABLE);
@@ -698,28 +695,6 @@ public final class LinuxAppStoreService extends Service {
             throw new SecurityException("QUERY_LINUX_APPS permission required");
     }
 
-    private JSONObject args(String key, Object value) {
-        JSONObject args=new JSONObject(); put(args,key,value); return args;
-    }
-
-    private void put(JSONObject args, String key, Object value) {
-        try { args.put(key,value); }
-        catch(org.json.JSONException e) { throw new IllegalArgumentException(e); }
-    }
-
-    private String call(String command, JSONObject args) {
-        try { return linuxd().call(command,args.toString()); }
-        catch(Exception e) { throw new IllegalStateException("linuxd unavailable",e); }
-    }
-
-    private ILinuxd linuxd() throws Exception {
-        IBinder service=(IBinder)Class.forName("android.os.ServiceManager")
-                .getMethod("checkService",String.class)
-                .invoke(null,"org.matonos.systembridge.ILinuxd/default");
-        if(service==null) throw new IllegalStateException("linuxd unavailable");
-        return ILinuxd.Stub.asInterface(service);
-    }
-
     private String callerLabel(int uid) {
         try {
             String[] packages=getPackageManager().getPackagesForUid(uid);
@@ -730,14 +705,10 @@ public final class LinuxAppStoreService extends Service {
     }
 
     private void result(Operation op, boolean ok, String error) {
-        cleanArtifacts(op);
         if(!op.completed.compareAndSet(false,true)) return;
+        cleanArtifacts(op);
+        InstallTransaction.cleanup(this,op.stagingId);
         if(!ok && op.packInstaller!=null)op.packInstaller.abandon();
-        if(!ok && op.stagedMetadata!=null && ("install".equals(op.kind)||"update".equals(op.kind)||"repair".equals(op.kind))) {
-            try {linuxd().call("install_failed",new JSONObject().put("ref",op.ref).put("remote","install".equals(op.kind)?op.remote:remoteFor(op.ref))
-                    .put("operationId",op.id).put("error",error==null?"Install failed":error).toString());}
-            catch(Exception ignored){}
-        }
         try { op.callback.onResult(op.id,ok,error); }
         catch(Exception e) { Log.w(TAG,"Cannot deliver store result",e); }
         operations.remove(operationKey(op.uid,op.id),op); pending.remove(operationKey(op.uid,op.id),op);

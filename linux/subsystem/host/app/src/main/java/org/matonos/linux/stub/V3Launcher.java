@@ -26,9 +26,6 @@ final class V3Launcher {
     private static Process process;
     private static Integer exit;
     private static String error;
-    private static java.nio.channels.FileChannel deploymentChannel;
-    private static java.nio.channels.FileLock deploymentLease;
-
     /** Installed runtime package, trusted only when signed by this subsystem's key. */
     private static android.content.pm.PackageInfo runtimePackage(Context context,String name)
             throws android.content.pm.PackageManager.NameNotFoundException,java.io.IOException {
@@ -40,40 +37,11 @@ final class V3Launcher {
     }
     private static boolean sameSigner(android.content.pm.PackageInfo a,android.content.pm.PackageInfo b){return a.signingInfo!=null&&b.signingInfo!=null&&!a.signingInfo.hasMultipleSigners()&&!b.signingInfo.hasMultipleSigners()&&a.signingInfo.getApkContentsSigners().length==1&&b.signingInfo.getApkContentsSigners().length==1&&a.signingInfo.getApkContentsSigners()[0].equals(b.signingInfo.getApkContentsSigners()[0]);}
 
-    /** Drops the deployment lease held for the running session. */
-    private static void releaseDeployment() {
-        if (deploymentLease != null) { try { deploymentLease.release(); } catch (Exception ignored) { } deploymentLease = null; }
-        if (deploymentChannel != null) { try { deploymentChannel.close(); } catch (Exception ignored) { } deploymentChannel = null; }
-    }
-
-    private static File pinDeployment(File current,int appid) throws Exception {
-        for (;;) {
-            File version=current.getCanonicalFile();
-            if(!version.getParent().equals("/data/linux-app/install") ||
-               !version.getName().matches(appid+"-[A-Za-z0-9]+"))
-                throw new java.io.IOException("Invalid Linux deployment pointer");
-            java.nio.channels.FileChannel channel;
-            try {channel=java.nio.channels.FileChannel.open(
-                    new File(version,".lease").toPath(),java.nio.file.StandardOpenOption.READ);}
-            catch(java.nio.file.NoSuchFileException removed) {
-                if(!current.getCanonicalFile().equals(version))continue;
-                throw removed;
-            }
-            java.nio.channels.FileLock lease=channel.tryLock(0,Long.MAX_VALUE,true);
-            if(lease==null){channel.close();Thread.yield();continue;}
-            if(!current.getCanonicalFile().equals(version)) {lease.release();channel.close();continue;}
-            deploymentChannel=channel;deploymentLease=lease;return version;
-        }
-    }
-
     static synchronized JSONObject launch(Context context, String ref)
             throws Exception {
         if (process != null) return getLaunchStatus();
         if (ref == null || !ref.matches("app/[A-Za-z0-9_.-]+/x86_64/[A-Za-z0-9_.-]+"))
             throw new IllegalArgumentException("Invalid application reference");
-        int uid = android.os.Process.myUid();
-        String root="/data/linux-app";
-        File current=new File(root+"/install/"+(uid%100000));
         // PackageManager follows signature-verified updates of the image host.
         File loader = LoaderCommand.loader(context);
         PerAppRuntime runtime = StubService.runtime();
@@ -136,7 +104,7 @@ final class V3Launcher {
                     new File(pkg.applicationInfo.sourceDir),
                     pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mountPoint,mountPoint+"/extra"));
         }
-        File deployment=pinDeployment(current,uid%100000);
+        File deployment=PackageDeployment.prepare(context,ref);
         java.util.Collections.addAll(command,
                 "/apex/com.matonos.flatpak/bin/matonos-app-flatpak",
                 "--user", "run", "--socket=wayland", "--socket=x11", "--no-documents-portal",
@@ -147,7 +115,7 @@ final class V3Launcher {
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
         env.clear();
-        env.put("FLATPAK_SYSTEM_DIR", root + "/runtime");
+        env.put("FLATPAK_SYSTEM_DIR", new File(deployment,"system").getAbsolutePath());
         env.put("MATON_FLATPAK_DNS", dns);
         env.put("PATH", "/apex/com.matonos.flatpak/bin:/system/bin");
         env.put("LD_LIBRARY_PATH", "/apex/com.matonos.flatpak/lib64:/system/lib64");
@@ -172,8 +140,8 @@ final class V3Launcher {
         // that forked it exits, not the process. Activity launch threads end
         // whenever a window closes, so fork from a thread that lives as long as
         // this stub process.
-        try {env.put("FLATPAK_USER_DIR",deployment.getAbsolutePath());process = SPAWNER.submit(builder::start).get();}
-        catch(Exception failure){releaseDeployment();throw failure;}
+        env.put("FLATPAK_USER_DIR",deployment.getAbsolutePath());
+        process = SPAWNER.submit(builder::start).get();
         final Process child = process;
         Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());
         new Thread(() -> {

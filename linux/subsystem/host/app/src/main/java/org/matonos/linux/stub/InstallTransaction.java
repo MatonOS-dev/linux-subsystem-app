@@ -13,26 +13,11 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * One compositor-side Flatpak install into the linuxd-created staging
- * installation for this authorized operation.
- *
- * <p>The worker runs the shipped {@code matonos-app-flatpak} through the same
- * v3 loader the stub uses, so pull and deployment happen under this app's own
- * PackageManager UID. An application's {@code apply_extra} is deliberately not
- * run here: it is arbitrary vendor code, so it runs later under the stub's own
- * UID through the generated package's {@code ExtraService} (see
- * {@link ExtraService}) and its output is published as a content split. It
- * never chooses a path,
- * loader flag or final identity: the operation ID and ref/remote come from the
- * bridge, and the staging directory is derived from this process's own UID.
- * When the worker exits it closes everything it opened into staging, reports
- * the deployment manifest, and lets linuxd verify and publish.
- */
+/** Downloads and verifies an authorized Flatpak transaction in subsystem-private data.
+ * Flatpak checks signatures while pulling; OSTree fsck checks content before packs
+ * are produced. Extra-data execution remains in the generated package's own UID. */
 public final class InstallTransaction {
     private static final String TAG = "MatonInstall";
-    /** Linuxd-owned staging root; the per-UID parent is not ours to write. */
-    private static final String STAGING_ROOT = "/data/linux-app/staging";
     private static final java.util.regex.Pattern OPERATION_ID =
             java.util.regex.Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final int MAX_LINE = 2048;
@@ -64,7 +49,7 @@ public final class InstallTransaction {
             throw new IllegalArgumentException("Invalid operation ID");
         if (appRef == null || !appRef.startsWith("app/") || !DeployManifest.validRef(appRef))
             throw new IllegalArgumentException("Invalid application reference");
-        if (remote == null || !remote.matches("[A-Za-z0-9._-]{1,128}"))
+        if (!"flathub".equals(remote))
             throw new IllegalArgumentException("Invalid remote");
         if (callback == null) throw new IllegalArgumentException("A completion callback is required");
         return new InstallTransaction(context, callback, operationId, appRef, remote);
@@ -142,6 +127,15 @@ public final class InstallTransaction {
             env.put("CURL_CA_BUNDLE", "/apex/com.android.conscrypt/cacerts");
             env.put("G_TLS_CA_PATH", "/apex/com.android.conscrypt/cacerts");
             builder.directory(home);
+            ArrayList<String> remoteCommand=new ArrayList<>(command.subList(0,command.indexOf("install")));
+            java.util.Collections.addAll(remoteCommand,"remote-add","--system","--if-not-exists","flathub",
+                    "/apex/com.matonos.flatpak/etc/flatpak/remotes.d/flathub.flatpakrepo");
+            builder.command(remoteCommand);
+            Process setup=builder.start();process=setup;
+            try(java.io.InputStream output=setup.getInputStream()){output.transferTo(java.io.OutputStream.nullOutputStream());}
+            if(setup.waitFor()!=0)throw new java.io.IOException("Cannot configure authenticated Flathub remote");
+            if(cancelled.get())throw new java.io.IOException("Install cancelled");
+            builder.command(command);
             Process child = builder.start();
             process = child;
             try (BufferedReader output = new BufferedReader(
@@ -154,9 +148,9 @@ public final class InstallTransaction {
             process = null;
             if (cancelled.get()) { fail("Install cancelled"); return; }
             if (status != 0) { fail("Flatpak install failed (" + status + ")"); return; }
-            // Release every handle this worker opened into staging before linuxd
-            // takes the directory namespace and seals the regular files.
+            // No worker writes staging after the completion callback.
             DnsForwarder.release();
+            StagedPacks.verify(context,installation,() -> cancelled.get());
             JSONObject manifest = DeployManifest.build(installation, appRef, remote, operationId);
             callback.onComplete(operationId, manifest.toString());
         } catch (Throwable error) {
@@ -165,26 +159,37 @@ public final class InstallTransaction {
         } finally {
             // The forwarder socket lives in this operation's run/ directory, so
             // it must not outlive the worker on any path, cancellation
-            // included. Release before linuxd seals the tree; success already
+            // included. Success already
             // released it before reporting completion.
             DnsForwarder.release();
         }
     }
 
-    /**
-     * The linuxd-created operation directory: {@code <staging>/<uid>/<txn>}.
-     * Java cannot open each component with O_NOFOLLOW, so every component is
-     * compared canonically and each directory must also be owned by this UID.
-     */
-    private File operationDirectory() throws Exception {
-        File parent = new File(STAGING_ROOT, Integer.toString(android.os.Process.myUid()));
-        File operation = new File(parent, operationId).getCanonicalFile();
-        if (!parent.getCanonicalPath().equals(operation.getParent()))
-            throw new java.io.IOException("Invalid staging directory");
-        if (!operation.isDirectory() || Files.isSymbolicLink(operation.toPath()))
-            throw new java.io.IOException("The staging transaction is not ready");
-        return operation;
+    public static File installation(Context context,String id) throws Exception {
+        return new File(operation(context,id),"installation");
     }
+    private static File operation(Context context,String id) throws Exception {
+        if(id==null||!OPERATION_ID.matcher(id).matches())throw new IllegalArgumentException("Invalid operation ID");
+        File parent=new File(context.getCacheDir().getCanonicalFile(),"flatpak-staging");
+        return new File(parent,id);
+    }
+    public static void prepare(Context context,String id) throws Exception {
+        File operation=operation(context,id);
+        // A reused caller ID must never adopt a prior interrupted transaction.
+        cleanup(context,id);
+        for(String name:new String[]{"installation","home","cache","tmp","run"})
+            if(!new File(operation,name).mkdirs())throw new java.io.IOException("Cannot create private staging "+name);
+    }
+    public static void cleanup(Context context,String id) {
+        try {
+            java.nio.file.Files.walkFileTree(operation(context,id).toPath(),new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                @Override public java.nio.file.FileVisitResult visitFile(java.nio.file.Path p,java.nio.file.attribute.BasicFileAttributes a) throws java.io.IOException {Files.delete(p);return java.nio.file.FileVisitResult.CONTINUE;}
+                @Override public java.nio.file.FileVisitResult postVisitDirectory(java.nio.file.Path p,java.io.IOException e) throws java.io.IOException {if(e!=null)throw e;Files.delete(p);return java.nio.file.FileVisitResult.CONTINUE;}
+            });
+        }catch(java.nio.file.NoSuchFileException absent) { }
+        catch(Exception error){Log.w(TAG,"Cannot clean private staging",error);}
+    }
+    private File operationDirectory() throws Exception {return operation(context,operationId);}
 
     private static File requireDirectory(File operation, String name) throws Exception {
         File directory = new File(operation, name).getCanonicalFile();

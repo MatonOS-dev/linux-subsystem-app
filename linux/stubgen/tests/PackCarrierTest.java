@@ -87,6 +87,11 @@ public final class PackCarrierTest {
   ObjectPacks.update(Collections.singletonList(fresh),decoded,installedDir,updatedDir,0.5);
   if(!fresh.pack.equals(row.pack) || fresh.offset!=row.offset || !Arrays.equals(Files.readAllBytes(new File(updatedDir,row.pack).toPath()),Files.readAllBytes(signed.toPath())))throw new AssertionError("Installed APK carrier reuse");
   Files.write(new File(dir,"objects.ostree").toPath(),new byte[0]);
+  byte[] commitObject=new byte[]{1,9,2};
+  String commit=ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(commitObject));
+  org.matonos.linuxhost.stubgen.DeploymentRecord record=new org.matonos.linuxhost.stubgen.DeploymentRecord(
+          "app/org.example.Test/x86_64/stable",commit,"flathub",new byte[]{1},new byte[]{2},commitObject);
+  Files.write(new File(dir,"deployment.bin").toPath(),record.encode());
   String indexName=org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir);
   if(!indexName.matches("index_[0-9a-f]{64}"))throw new AssertionError(indexName);
   File indexUnsigned=new File(dir,"index-unsigned.apk"),base=new File(dir,"index-signed.apk");
@@ -94,6 +99,9 @@ public final class PackCarrierTest {
   wi.invoke(null,indexUnsigned,"flatpak.org.example.Test",dir,43);
   sign.invoke(null,indexUnsigned,base,kc.newInstance(key,cert));
   if(!new ApkVerifier.Builder(base).setMinCheckedPlatformVersion(30).build().verify().isVerified())throw new AssertionError("Index signature");
+  org.matonos.linuxhost.stubgen.DeploymentRecord installedRecord=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
+          new String[]{indexName},new String[]{base.getAbsolutePath()});
+  if(!installedRecord.ref.equals(record.ref)||!Arrays.equals(installedRecord.commitObject,commitObject))throw new AssertionError("Signed index lost its deployment record");
   Process ip=new ProcessBuilder(args[1],"dump","xmltree",base.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String ix=new String(ip.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(ip.waitFor()!=0 || !ix.contains("split=\""+indexName+"\"") || !ix.contains("revisionCode(0x010104d5)=43"))throw new AssertionError(ix);

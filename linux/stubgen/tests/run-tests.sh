@@ -9,6 +9,7 @@ openssl req -x509 -newkey rsa:2048 -keyout "$TEST_OUT/key.pem" -out "$TEST_OUT/c
 openssl pkcs8 -topk8 -nocrypt -in "$TEST_OUT/key.pem" -outform DER -out "$TEST_OUT/key.der"
 trap 'rm -f "$TEST_OUT/key.pem" "$TEST_OUT/key.der"' EXIT
 javac -cp "$AOSP_ROOT/prebuilts/sdk/current/public/android.jar:$STUB_DIR/prebuilt/apksig.jar" -d "$TEST_OUT/classes" "$STUB_DIR"/src/org/matonos/linuxhost/stubgen/*.java "$STUB_DIR"/tests/*.java
+java -Xmx256m -cp "$TEST_OUT/classes" DeploymentRecordTest "$TEST_OUT"
 java -Xmx256m -cp "$TEST_OUT/classes" PackSessionPlanTest
 java -Xmx256m -cp "$TEST_OUT/classes" ControllerMetadataTest
 java -Xmx256m -cp "$TEST_OUT/classes" CommitValidationTest

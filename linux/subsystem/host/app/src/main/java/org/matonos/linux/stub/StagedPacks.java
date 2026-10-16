@@ -9,7 +9,7 @@ import java.util.function.BooleanSupplier;
 import org.json.JSONObject;
 import org.matonos.linuxhost.stubgen.OstreePacks;
 
-/** Local pack production, before linuxd takes ownership of staging. */
+/** Pack production from a private, signature-verified Flatpak installation. */
 public final class StagedPacks {
     public static void buildRuntime(Context context, File installation, String ref, String commit,
             File output, BooleanSupplier cancelled) throws Exception {
@@ -33,6 +33,7 @@ public final class StagedPacks {
         local.run("init","--mode=bare-user");
         String localCommit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
         OstreePacks.read(localRepo,localCommit,local).write(output);
+        record(sourceRepo,deployment,ref,commit,output);
     }
     public static void build(Context context, File installation, JSONObject manifest,
             File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed) throws Exception {
@@ -63,6 +64,19 @@ public final class StagedPacks {
             org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
             org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
         }
+        record(sourceRepo,deployment,manifest.getString("appRef"),manifest.getString("appCommit"),output);
+    }
+
+    private static void record(File sourceRepo,File deployment,String ref,String commit,File output) throws Exception {
+        org.matonos.linuxhost.stubgen.DeploymentRecord record=new org.matonos.linuxhost.stubgen.DeploymentRecord(
+                ref,commit,"flathub",Files.readAllBytes(new File(deployment,"metadata").toPath()),
+                Files.readAllBytes(new File(deployment,"deploy").toPath()),
+                Files.readAllBytes(new File(sourceRepo,"objects/"+commit.substring(0,2)+"/"+commit.substring(2)+".commit").toPath()));
+        Files.write(new File(output,"deployment.bin").toPath(),record.encode());
+    }
+    /** Flatpak authenticates downloads. Check repository content before packing. */
+    public static void verify(Context context,File installation,BooleanSupplier cancelled) throws Exception {
+        command(context,installation.getParentFile(),new File(installation,"repo"),cancelled).run("fsck");
     }
 
     private static OstreePacks.Command command(Context context,File operation,File repo,

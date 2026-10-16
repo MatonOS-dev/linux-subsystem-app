@@ -11,16 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.TreeMap;
 
-/**
- * Reads Flatpak's authenticated {@code deploy} metadata for a staged
- * installation and builds the exact completion manifest linuxd validates.
- *
- * <p>The manifest is only a hint: linuxd re-derives the app ID, remote,
- * commits and extension relations from signed OSTree metadata, so a wrong
- * value here fails verification rather than being trusted. Every value still
- * comes from Flatpak's own {@code deploy} GVariant (type
- * {@code (ssasta{sv})}) rather than a truncated CLI listing.
- */
+/** Reads deployment identities produced by Flatpak in subsystem-private staging. */
 public final class DeployManifest {
     private static final String APP = "app";
     private static final String RUNTIME = "runtime";
@@ -43,8 +34,8 @@ public final class DeployManifest {
         if (!validRef(appRef) || !appRef.startsWith(APP + "/"))
             throw new IOException("Invalid authorized application reference");
         List<Deployment> deployments = new ArrayList<>();
-        scan(new File(installation, APP), APP, appRef, deployments);
-        scan(new File(installation, RUNTIME), RUNTIME, appRef, deployments);
+        scan(new File(installation, APP), APP, appRef, remote, deployments);
+        scan(new File(installation, RUNTIME), RUNTIME, appRef, remote, deployments);
         String appCommit = null;
         for (Deployment deployment : deployments)
             if (deployment.ref.equals(appRef)) appCommit = deployment.commit;
@@ -119,7 +110,7 @@ public final class DeployManifest {
      * Symlinked bookkeeping entries such as {@code current} and {@code active}
      * are never followed, so one deployment is never counted twice.
      */
-    private static void scan(File kindRoot, String kind, String appRef,
+    private static void scan(File kindRoot, String kind, String appRef, String remote,
             List<Deployment> deployments) throws Exception {
         File[] ids = entries(kindRoot);
         if (ids == null) return;
@@ -141,14 +132,16 @@ public final class DeployManifest {
                         if (!deploy.isFile() || symlink(deploy)) continue;
                         String ref = kind + "/" + id.getName() + "/" + arch.getName() + "/" + branch.getName();
                         if (!validRef(ref)) throw new IOException("Invalid staged deployment ref");
-                        deployments.add(read(version, ref));
+                        if(kind.equals(APP)&&!ref.equals(appRef)&&!new File(version,"metadata").isFile())
+                            throw new IOException("Unexpected app deployment");
+                        deployments.add(read(version, ref, remote));
                     }
                 }
             }
         }
     }
 
-    private static Deployment read(File version, String ref) throws Exception {
+    private static Deployment read(File version, String ref, String remote) throws Exception {
         byte[] data;
         try {
             data = Files.readAllBytes(new File(version, "deploy").toPath());
@@ -161,7 +154,7 @@ public final class DeployManifest {
         } catch (Exception error) {
             throw new IOException("Malformed staged deployment metadata", error);
         }
-        if (metadata.origin == null || !metadata.commit.matches("[0-9a-f]{64}"))
+        if (!remote.equals(metadata.origin) || !metadata.commit.matches("[0-9a-f]{64}"))
             throw new IOException("Staged deployment has no valid commit");
         StringBuilder expected = new StringBuilder(metadata.commit);
         for (String subpath : metadata.subpaths) {
@@ -284,7 +277,7 @@ public final class DeployManifest {
         return value;
     }
 
-    /* ---- validation; mirrors linuxd's accepted ref/subpath syntax ---- */
+    /* Ref and subpath validation. */
 
     static boolean validRef(String ref) {
         if (ref == null || ref.length() >= 512) return false;
