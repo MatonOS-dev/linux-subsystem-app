@@ -63,7 +63,7 @@ public final class DependencyPlan {
             origin=recorded.remote;
             info=backend.recordedInfo(recorded);
         } else {
-            origin=root?requested:backend.recordedOrigin(ref);
+            origin=root?requested:(repair?backend.recordedOrigin(ref):null);
             if(origin!=null) {
                 info=backend.inspect(ref,origin);
                 if(info==null)throw new IOException("Recorded origin no longer provides "+ref);
@@ -78,15 +78,15 @@ public final class DependencyPlan {
         Node node=new Node(ref,origin,info,!root&&installed!=null);nodes.put(ref,node);
         if(recorded!=null) {
             for(DeploymentRecord.Dependency dependency:recorded.dependencies){
-                node.dependencies.add(dependency.ref);visit(dependency.ref,null,false,repair);
+                node.dependencies.add(dependency.ref);visit(dependency.ref,null,false,true);
             }
             if(info.runtime!=null&&!info.runtime.isEmpty()) {
                 String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;
-                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);visit(runtime,null,false,repair);}
+                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);visit(runtime,null,false,true);}
             }
             order.add(node);
             if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:backend.related(ref,origin,info))if(!node.dependencies.contains(related)) {
-                node.dependencies.add(related);visit(related,null,false,repair);
+                node.dependencies.add(related);visit(related,null,false,true);
             }
         } else {
             // Match Flatpak's runtime-before-app ordering. Related extensions may

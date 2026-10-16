@@ -66,8 +66,11 @@ public final class DependencyPlanTest {
         check(node(fallback.plan(false),RUNTIME).origin.equals(OTHER)&&fallback.choices.isEmpty());
         Fake absent=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable"));rejects(()->absent.plan(false));
         Fake pinnedAbsent=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable")).add(RUNTIME,FIRST,info(""));
-        pinnedAbsent.recorded.put(RUNTIME,OTHER);rejects(()->pinnedAbsent.plan(false));
+        pinnedAbsent.recorded.put(RUNTIME,OTHER);rejects(()->pinnedAbsent.plan(true));
         check(pinnedAbsent.queries.equals(List.of(APP+"@"+FIRST,RUNTIME+"@"+OTHER)));
+        Fake freshChoice=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable")).add(RUNTIME,FIRST,info("")).add(RUNTIME,OTHER,info(""));
+        freshChoice.recorded.put(RUNTIME,OTHER);
+        check(node(freshChoice.plan(false),RUNTIME).origin.equals(FIRST)&&freshChoice.choices.size()==1);
         Fake cancel=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable")).add(RUNTIME,FIRST,info("")).add(RUNTIME,OTHER,info(""));
         cancel.cancel=true;rejects(()->cancel.plan(false));
         Fake network=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable"));network.fail=true;rejects(()->network.plan(false));
