@@ -54,8 +54,8 @@ public final class PackCarrierTest {
   ObjectPacks.update(Collections.singletonList(fresh),decoded,installedDir,updatedDir,0.5);
   if(!fresh.pack.equals(row.pack) || fresh.offset!=row.offset || !Arrays.equals(Files.readAllBytes(new File(updatedDir,row.pack).toPath()),Files.readAllBytes(signed.toPath())))throw new AssertionError("Installed APK carrier reuse");
   Files.write(new File(dir,"objects.ostree").toPath(),new byte[0]);
-  String indexName=org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir);
-  if(!indexName.matches("index_[0-9a-f]{64}"))throw new AssertionError(indexName);
+  String indexName=org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir,43);
+  if(!indexName.matches("index_r43_[0-9a-f]{64}"))throw new AssertionError(indexName);
   File indexUnsigned=new File(dir,"index-unsigned.apk"),base=new File(dir,"index-signed.apk");
   Method wi=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator").getDeclaredMethod("writeIndexUnsigned",File.class,String.class,File.class,int.class);wi.setAccessible(true);
   wi.invoke(null,indexUnsigned,"flatpak.org.example.Test",dir,43);
@@ -69,7 +69,7 @@ public final class PackCarrierTest {
   if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
   if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");
   try {
-   org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{"index_"+"b".repeat(64),"index_"+"c".repeat(64)},new String[]{base.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
+   org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{"index_r43_"+"b".repeat(64),"index_r43_"+"c".repeat(64)},new String[]{base.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
    throw new AssertionError("Duplicate index accepted");
   } catch(IOException expected) { }
   try {

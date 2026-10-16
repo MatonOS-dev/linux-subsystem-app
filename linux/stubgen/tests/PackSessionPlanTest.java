@@ -31,10 +31,10 @@ public class PackSessionPlanTest {
         check(first.write.equals(list("base.apk",a+".apk",b+".apk")) && first.remove.isEmpty());
         PackSessionPlan update=PackSessionPlan.create(true,1,1,list(a,b),list(a,c),list(c),false);
         check(update.mode==PackSessionPlan.Mode.INHERIT && update.dontKillApp);
-        check(update.write.equals(list(c+".apk")) && update.remove.equals(list(b)));
+        check(update.write.equals(list(c+".apk")) && update.remove.isEmpty());
         Fake fake=new Fake();update.submit(fake);
-        check(fake.calls.equals(list("INHERIT:true","write:"+c+".apk","remove:"+b,"commit")));
-        for(String fail:list("write:"+c+".apk","remove:"+b,"commit")) {
+        check(fake.calls.equals(list("INHERIT:true","write:"+c+".apk","commit")));
+        for(String fail:list("write:"+c+".apk","commit")) {
             Fake broken=new Fake();broken.fail=fail;rejects(()->update.submit(broken));
             check(broken.calls.get(broken.calls.size()-1).equals("abandon"));
         }
@@ -52,9 +52,19 @@ public class PackSessionPlanTest {
         rejects(()->PackSessionPlan.create(true,1,1,list(a,a),list(a),list(),true));
         rejects(()->PackSessionPlan.create(true,1,1,list(a),list("../bad"),list(),true));
         rejects(()->PackSessionPlan.create(false,0,1,list(),list(),list(),false));
-        String ix="index_"+"d".repeat(64), next="index_"+"e".repeat(64);
+        String ix="index_r1_"+"d".repeat(64), next="index_r2_"+"e".repeat(64);
         PackSessionPlan index=PackSessionPlan.create(true,17,17,list(a,ix),list(a,next),list(next),false);
-        check(index.write.equals(list(next+".apk")) && index.remove.equals(list(ix)) && index.dontKillApp);
+        check(index.write.equals(list(next+".apk")) && index.remove.isEmpty() && index.dontKillApp);
+        check(org.matonos.linuxhost.stubgen.PackLaunch.newestIndex(list(next,ix))==0);
+        rejects(()->org.matonos.linuxhost.stubgen.PackLaunch.newestIndex(list(ix,"index_r1_"+"f".repeat(64))));
+        rejects(()->org.matonos.linuxhost.stubgen.PackLaunch.newestIndex(list(next,"index_bad")));
+        rejects(()->org.matonos.linuxhost.stubgen.PackLaunch.newestIndex(list("index_r2147483648_"+"f".repeat(64))));
+        PackSessionPlan gc=PackSessionPlan.garbageCollect(17,list(ix,next,a,b,c),Map.of(next,list(a,c)),true);
+        check(gc.write.isEmpty()&&!gc.dontKillApp&&gc.remove.equals(list(ix,b)));
+        rejects(()->PackSessionPlan.garbageCollect(17,list(ix,next,a),Map.of(next,list(a)),false));
+        rejects(()->PackSessionPlan.garbageCollect(17,list(ix,next,a),Map.of(next,list(c)),true));
+        Fake collector=new Fake();gc.submit(collector);
+        check(collector.calls.equals(list("INHERIT:false","remove:"+ix,"remove:"+b,"commit")));
         PackSessionPlan full=PackSessionPlan.create(true,17,18,list(a,ix),list(a,next),list(a,next),true);
         check(full.mode==PackSessionPlan.Mode.FULL && !full.dontKillApp && full.remove.isEmpty());
         check(PackSessionPlan.nextRevision(17,17,0,new int[]{2,5,3})==6);

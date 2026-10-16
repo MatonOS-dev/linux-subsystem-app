@@ -38,7 +38,7 @@ public final class PackInstaller implements PackSessionPlan.Installer {
     }
     @Override public synchronized void write(String name) throws Exception {
         File apk=new File(artifacts,name);
-        if(!name.matches("base\\.apk|(?:pack|index)_[0-9a-f]{64}\\.apk") || !apk.isFile())throw new IOException("Invalid session artifact");
+        if(!name.matches("base\\.apk|(?:pack_[0-9a-f]{64}|index_r[1-9][0-9]*_[0-9a-f]{64})\\.apk") || !apk.isFile())throw new IOException("Invalid session artifact");
         try(InputStream input=new FileInputStream(apk);OutputStream output=session.openWrite(name,0,apk.length())) {
             byte[] buffer=new byte[32768];int n;
             while((n=input.read(buffer))!=-1) {

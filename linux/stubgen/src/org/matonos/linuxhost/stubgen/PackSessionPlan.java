@@ -18,8 +18,7 @@ public final class PackSessionPlan {
     private PackSessionPlan(Mode mode, long version, boolean baseChanges,
             SortedSet<String> writes, SortedSet<String> removes) {
         this.mode=mode; versionCode=version;
-        // Stock PM also clears this flag when any existing split is removed.
-        // Keep the request explicit; do not promise process survival.
+        // Content updates only add splits; GC deliberately requests normal removal.
         dontKillApp=mode==Mode.INHERIT && !baseChanges;
         write=Collections.unmodifiableList(new ArrayList<>(writes));
         remove=Collections.unmodifiableList(new ArrayList<>(removes));
@@ -47,8 +46,28 @@ public final class PackSessionPlan {
                 writes.add(split+".apk");
             }
         }
-        if(!full)for(String split:prior)if(!desired.contains(split))removes.add(split);
+
         return new PackSessionPlan(full?Mode.FULL:Mode.INHERIT,nextVersion,baseChanges,writes,removes);
+    }
+
+    /** Caller must hold an exclusive launch gate and prove the UID has no process
+     * until commit completes. The newest index and its carriers remain installed. */
+    public static PackSessionPlan garbageCollect(long version, Collection<String> installed,
+            Map<String,? extends Collection<String>> references, boolean idle) throws IOException {
+        if(!idle)throw new IOException("GC requires an idle package");
+        SortedSet<String> prior=names(installed),keep=new TreeSet<>();
+        List<String> ordered=new ArrayList<>(prior);int selected=PackLaunch.newestIndex(ordered);
+        if(selected<0)throw new IOException("GC requires an index");
+        String newest=ordered.get(selected);keep.add(newest);
+        // Older indices are superseded atomically by this removal session.
+        Collection<String> carriers=references.get(newest);
+        if(carriers==null)throw new IOException("Missing newest index references");
+        for(String carrier:carriers) {
+            if(!carrier.matches("pack_[0-9a-f]{64}")||!prior.contains(carrier))throw new IOException("Missing GC carrier");
+            keep.add(carrier);
+        }
+        prior.removeAll(keep);
+        return new PackSessionPlan(Mode.INHERIT,version,true,new TreeSet<>(),prior);
     }
 
     public static int nextRevision(long installedVersion,long nextVersion,int base,int[] splits) throws IOException {
@@ -66,7 +85,7 @@ public final class PackSessionPlan {
     private static SortedSet<String> names(Collection<String> names) throws IOException {
         SortedSet<String> result=new TreeSet<>();
         for(String name:names) {
-            if(name==null || !name.matches("(?:pack|index)_[0-9a-f]{64}") || !result.add(name))
+            if(name==null || !name.matches("(?:pack_[0-9a-f]{64}|index_r[1-9][0-9]*_[0-9a-f]{64})") || !result.add(name))
                 throw new IOException("Invalid or duplicate content split: "+name);
         }
         return result;
