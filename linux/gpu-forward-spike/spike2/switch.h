@@ -5,7 +5,9 @@
  * protector, sanitizers, profiling, or instrumentation. x86_64 only. */
 static inline long gs_raw(long n, long a, long b, long c) {
     long r;
-    __asm__ volatile("syscall" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c)
+    /* FUTEX_WAIT consumes arg4 (timeout), unlike the other calls here. */
+    register long timeout __asm__("r10") = 0;
+    __asm__ volatile("syscall" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "r"(timeout)
                      : "rcx", "r11", "memory");
     return r;
 }
