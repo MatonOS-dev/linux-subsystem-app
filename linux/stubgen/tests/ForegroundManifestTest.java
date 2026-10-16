@@ -36,8 +36,8 @@ public final class ForegroundManifestTest {
         if(!xml.contains("appComponentFactory(0x0101057a)=\"org.matonos.linux.stub.StubLoader\""))throw new AssertionError("Missing host StubLoader factory\n"+xml);
         if(xml.contains("extractNativeLibs"))throw new AssertionError("extractNativeLibs must not be set\n"+xml);
         if(!xml.contains("org.matonos.linuxhost"))throw new AssertionError("Missing host uses-library\n"+xml);
-        if (!xml.contains("org.matonos.systembridge"))
-            throw new AssertionError("Missing self-task bridge package visibility query\n"+xml);
+        if (xml.contains("org.matonos.systembridge"))
+            throw new AssertionError("Generated stubs no longer query the system bridge\n"+xml);
         if (xml.contains("org.matonos.permission.SYSTEM_BRIDGE"))
             throw new AssertionError("A generated stub must not request the general bridge permission");
         if (!xml.contains("authorities(0x01010018)=\"flatpak.org.example.Test.portal.files\"")
