@@ -160,7 +160,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
                 runOnUiThread(() -> {
                     if (!destroyed && window!=0) { if(view==null)showWindow(window);else attachIfReady(); }
                 });
-                JSONObject result=V3Launcher.launch(this, ref);
+                JSONObject result=V3Launcher.launch(this, ref, this::message);
                 if (!result.optBoolean("ok")) { message(result.optString("error","Application could not start"));return; }
                 message("Waiting for the application window…");
                 int seconds=0;

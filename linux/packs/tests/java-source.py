@@ -55,8 +55,9 @@ public class SourceHarness {
     original_repo=repo;repo=only_repo
     check('bare-user-only',only_commit)
     repo=original_repo
-    # Represents deployment files AFTER apply_extra (not upstream commit files).
-    (src/'extra').mkdir();(src/'extra/downloaded').write_bytes(b'post apply_extra')
+    # Deployment files carry the raw extra downloads the stub applies later,
+    # not upstream commit files.
+    (src/'extra').mkdir();(src/'extra/downloaded').write_bytes(b'raw extra download')
     new,out=check('extra',commit,src)
     assert new!=commit and any(r['path']=='/extra/downloaded' for r in pack.read_index(out/'objects.index'))
     assert run('ostree','rev-parse','--repo='+str(repo),'matonos/private/deployed-files')==new

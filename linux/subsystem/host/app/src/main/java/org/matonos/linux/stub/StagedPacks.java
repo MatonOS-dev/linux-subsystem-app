@@ -43,8 +43,10 @@ public final class StagedPacks {
         // The real Flatpak repo is bare-user-only. Read its authenticated object
         // identities first; never change its config/mode or remote refs.
         OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source);
-        // A separate bare-user repo preserves post-apply_extra metadata without
-        // the bare-user-only mode restrictions imposed on the download repo.
+        // The committed tree is the deployment's files/ exactly as deployed,
+        // including the raw extra downloads apply_extra has not consumed (the
+        // installer defers those to the stub). A separate bare-user repo keeps
+        // that tree without the bare-user-only restrictions of the download repo.
         File localRepo=new File(operation,"pack-repo");
         OstreePacks.Command local=command(context,operation,localRepo,cancelled);
         local.run("init","--mode=bare-user");

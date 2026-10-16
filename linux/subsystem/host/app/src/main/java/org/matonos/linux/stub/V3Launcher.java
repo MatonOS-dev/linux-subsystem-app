@@ -40,6 +40,12 @@ final class V3Launcher {
     }
     private static boolean sameSigner(android.content.pm.PackageInfo a,android.content.pm.PackageInfo b){return a.signingInfo!=null&&b.signingInfo!=null&&!a.signingInfo.hasMultipleSigners()&&!b.signingInfo.hasMultipleSigners()&&a.signingInfo.getApkContentsSigners().length==1&&b.signingInfo.getApkContentsSigners().length==1&&a.signingInfo.getApkContentsSigners()[0].equals(b.signingInfo.getApkContentsSigners()[0]);}
 
+    /** Drops the deployment lease held for the running session. */
+    private static void releaseDeployment() {
+        if (deploymentLease != null) { try { deploymentLease.release(); } catch (Exception ignored) { } deploymentLease = null; }
+        if (deploymentChannel != null) { try { deploymentChannel.close(); } catch (Exception ignored) { } deploymentChannel = null; }
+    }
+
     private static File pinDeployment(File current,int appid) throws Exception {
         for (;;) {
             File version=current.getCanonicalFile();
@@ -60,7 +66,8 @@ final class V3Launcher {
         }
     }
 
-    static synchronized JSONObject launch(Context context, String ref) throws Exception {
+    static synchronized JSONObject launch(Context context, String ref, ExtraData.Progress progress)
+            throws Exception {
         if (process != null) return getLaunchStatus();
         if (ref == null || !ref.matches("app/[A-Za-z0-9_.-]+/x86_64/[A-Za-z0-9_.-]+"))
             throw new IllegalArgumentException("Invalid application reference");
@@ -123,6 +130,15 @@ final class V3Launcher {
             command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.arguments(new File(pkg.applicationInfo.sourceDir),
                     pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mountPoint));
         }
+        File deployment=pinDeployment(current,uid%100000);
+        try {
+            // The installer defers an app's apply_extra to this stub, which
+            // already runs the app's code in its own UID; map its private
+            // output over /app/extra. The map target is longer than /app, so
+            // it wins over both the pack mount and flatpak's own /app bind.
+            File extra=ExtraData.prepare(context,deployment,ref,home,cache,runtime.directory(),progress);
+            if(extra!=null){command.add("--map");command.add(extra.getAbsolutePath());command.add("/app/extra");}
+        } catch(Exception failure) { releaseDeployment(); throw failure; }
         java.util.Collections.addAll(command,
                 "/apex/com.matonos.flatpak/bin/matonos-app-flatpak",
                 "--user", "run", "--socket=wayland", "--socket=x11", "--no-documents-portal",
@@ -154,13 +170,12 @@ final class V3Launcher {
             if (target.matches("x11/X[0-9]+")) env.put("DISPLAY", ":" + target.substring(5));
         }
         builder.directory(home);
-        File deployment=pinDeployment(current,uid%100000);
         // PR_SET_PDEATHSIG (the loader's --parent-pid) fires when the *thread*
         // that forked it exits, not the process. Activity launch threads end
         // whenever a window closes, so fork from a thread that lives as long as
         // this stub process.
         try {env.put("FLATPAK_USER_DIR",deployment.getAbsolutePath());process = SPAWNER.submit(builder::start).get();}
-        catch(Exception failure){deploymentLease.release();deploymentChannel.close();deploymentLease=null;deploymentChannel=null;throw failure;}
+        catch(Exception failure){releaseDeployment();throw failure;}
         final Process child = process;
         Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());
         new Thread(() -> {
