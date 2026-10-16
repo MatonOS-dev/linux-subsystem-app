@@ -13,8 +13,8 @@ Meson, Ninja, CMake, pkg-config, autotools, Python 3.12+, curl, tar, unzip,
 OpenSSL, and the development packages for GLib and OSTree. The tests execute
 host `ostree`, compile C/Java fixtures and use the SDK's `aapt2`. No AOSP or
 device-tree checkout is required: build-only platform headers, their revision
-pins and licences are in `third_party/platform-headers`; the bridge AIDL
-APIs are app-owned; no system bridge compile snapshot is needed.
+pins and licences are in `third_party/platform-headers`. AIDL APIs are
+app-owned; no system bridge compile snapshot is needed.
 
 ```sh
 export JAVA_HOME=/path/to/jdk-21
