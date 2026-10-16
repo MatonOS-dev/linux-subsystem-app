@@ -7,6 +7,7 @@ import java.util.*;
 import java.util.zip.*;
 import java.lang.reflect.*;
 import org.matonos.linuxhost.stubgen.ObjectPacks;
+import org.matonos.linuxhost.stubgen.PackLaunch;
 import com.android.apksig.ApkVerifier;
 
 /** Uses a disposable real signer; checks the signed ZIP's original indexed offsets. */
@@ -20,6 +21,14 @@ public final class PackCarrierTest {
   Class<?> manifest=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$BinaryManifest");
   Constructor<?> mc=manifest.getDeclaredConstructor(String.class,desktop,String.class,String.class,List.class);mc.setAccessible(true);
   Object encoder=mc.newInstance("flatpak.org.example.Test",dc.newInstance("",Collections.emptyList()),"","flathub",Collections.emptyList());
+  Field noActivities=manifest.getDeclaredField("noActivities");noActivities.setAccessible(true);noActivities.setBoolean(encoder,true);
+  Field runtimeMount=manifest.getDeclaredField("packs");runtimeMount.setAccessible(true);runtimeMount.set(encoder,"/usr");
+  Method encode=manifest.getDeclaredMethod("encode");encode.setAccessible(true);
+  File runtimeManifest=new File(dir,"runtime-manifest.apk");
+  try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(runtimeManifest))){z.putNextEntry(new ZipEntry("AndroidManifest.xml"));z.write((byte[])encode.invoke(encoder));z.closeEntry();}
+  Process rmanifest=new ProcessBuilder(args[1],"dump","xmltree",runtimeManifest.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
+  String rxml=new String(rmanifest.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+  if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||rxml.contains("E: service"))throw new AssertionError("Runtime manifest must be activity-free\n"+rxml);
   Field revision=manifest.getDeclaredField("revisionCode");revision.setAccessible(true);revision.setInt(encoder,42);
   Method pm=manifest.getDeclaredMethod("packManifest",String.class);pm.setAccessible(true);
   String split="pack_"+row.pack.substring(5,69);
@@ -66,6 +75,7 @@ public final class PackCarrierTest {
   if(ip.waitFor()!=0 || !ix.contains("split=\""+indexName+"\"") || !ix.contains("revisionCode(0x010104d5)=43"))throw new AssertionError(ix);
   List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
   if(command.size()!=4||!command.get(0).equals("--pack-mount")||!command.get(1).equals("/app"))throw new AssertionError(command);
+  if(!PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"),"/usr").get(1).equals("/usr"))throw new AssertionError("custom runtime mount point");
   if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
   if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");
   try {
@@ -76,7 +86,7 @@ public final class PackCarrierTest {
    org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,null,null,new File(dir,"cache"));
    throw new AssertionError("Missing split accepted");
   } catch(IOException expected) { }
-  System.out.println("PASS launcher resolves PackageManager split names/paths, index and /app arguments; missing split rejected");
+  System.out.println("PASS launcher resolves PackageManager split names/paths, index and custom mount arguments; missing split rejected");
   System.out.println("PASS signed code-free pack manifest, content hash name, STORED 4096 alignment and indexed slice");
  }
 }

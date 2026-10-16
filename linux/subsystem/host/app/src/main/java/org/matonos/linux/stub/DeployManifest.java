@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.TreeMap;
 
 /**
  * Reads Flatpak's authenticated {@code deploy} metadata for a staged
@@ -28,8 +29,10 @@ public final class DeployManifest {
         final String ref;
         final String commit;
         final List<String> subpaths;
+        final String mountPoint;
         Deployment(String ref, String commit, List<String> subpaths) {
             this.ref = ref; this.commit = commit; this.subpaths = subpaths;
+            this.mountPoint=mountPoint(ref,subpaths);
         }
     }
 
@@ -49,15 +52,47 @@ public final class DeployManifest {
             if (deployment.ref.equals(appRef)) appCommit = deployment.commit;
         if (appCommit == null) throw new IOException("The authorized application was not deployed");
         JSONArray list = new JSONArray();
+        TreeMap<String,JSONObject> requiredMap=new TreeMap<>();
         for (Deployment deployment : deployments) {
             JSONArray subpaths = new JSONArray();
             for (String subpath : deployment.subpaths) subpaths.put(subpath);
             list.put(new JSONObject().put("ref", deployment.ref)
                     .put("commit", deployment.commit).put("subpaths", subpaths));
+            if (deployment.ref.startsWith("runtime/")) {
+                String pkg=packageFor(deployment.ref);
+                requiredMap.put(pkg,new JSONObject().put("package",pkg).put("mountPoint",deployment.mountPoint).put("ref",deployment.ref));
+            }
         }
+        JSONArray requiredPackages=new JSONArray();for(JSONObject row:requiredMap.values())requiredPackages.put(row);
         return new JSONObject().put("version", 1).put("operationId", operationId)
                 .put("appRef", appRef).put("appCommit", appCommit).put("remote", remote)
-                .put("deployments", list);
+                .put("deployments", list).put("requiredPackages", requiredPackages);
+    }
+
+    public static String packageForPublic(String ref) throws Exception {
+        return packageFor(ref);
+    }
+    private static String packageFor(String ref) throws Exception {
+        String[] parts=ref.split("/",-1);
+        StringBuilder safe=new StringBuilder("flatpak");
+        for(String part:parts) {
+            safe.append('.');
+            for(int i=0;i<part.length();i++) {
+                char c=part.charAt(i);
+                safe.append((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'?c:'_');
+            }
+        }
+        byte[] digest=java.security.MessageDigest.getInstance("SHA-256").digest(ref.getBytes(StandardCharsets.UTF_8));
+        StringBuilder suffix=new StringBuilder(".x");
+        for(int i=0;i<6;i++)suffix.append(String.format(java.util.Locale.ROOT,"%02x",digest[i]&255));
+        String value=safe+suffix.toString();
+        if(value.length()>255)throw new IOException("Flatpak ref is too long for an Android package name");
+        return value;
+    }
+
+    private static String mountPoint(String ref,List<String> subpaths) {
+        if(subpaths.isEmpty())return "/usr";
+        return "/usr";
     }
 
     /** Read stub-generation inputs directly from this app's private staged tree. */

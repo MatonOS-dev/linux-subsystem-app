@@ -26,6 +26,8 @@ final class V3Launcher {
     private static java.nio.channels.FileChannel deploymentChannel;
     private static java.nio.channels.FileLock deploymentLease;
 
+    private static boolean sameSigner(android.content.pm.PackageInfo a,android.content.pm.PackageInfo b){return a.signingInfo!=null&&b.signingInfo!=null&&!a.signingInfo.hasMultipleSigners()&&!b.signingInfo.hasMultipleSigners()&&a.signingInfo.getApkContentsSigners().length==1&&b.signingInfo.getApkContentsSigners().length==1&&a.signingInfo.getApkContentsSigners()[0].equals(b.signingInfo.getApkContentsSigners()[0]);}
+
     private static File pinDeployment(File current,int appid) throws Exception {
         for (;;) {
             File version=current.getCanonicalFile();
@@ -88,6 +90,31 @@ final class V3Launcher {
         android.content.pm.ApplicationInfo installed=context.getApplicationInfo();
         command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.arguments(
                 new File(installed.sourceDir),installed.splitNames,installed.splitSourceDirs,cache));
+        android.content.pm.ActivityInfo stubInfo=context.getPackageManager().getActivityInfo(
+                new android.content.ComponentName(context,StubActivity.class),
+                android.content.pm.PackageManager.GET_META_DATA);
+        String required=stubInfo.metaData==null?null:stubInfo.metaData.getString(org.matonos.linuxhost.stubgen.StubGenerator.RUNTIME_PACKAGES_META);
+        if(required!=null&&!required.isEmpty())for(String runtimeRecord:required.split(";")) {
+            String[] fields=runtimeRecord.split(">",3);if(fields.length!=3)throw new java.io.IOException("Invalid runtime package metadata");
+            String runtimeRef=fields[0],runtimePackage=fields[1],mountPoint=fields[2];
+            try {
+                android.content.pm.PackageInfo runtime=context.getPackageManager().getPackageInfo(runtimePackage,
+                        android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
+                android.content.pm.PackageInfo host=context.getPackageManager().getPackageInfo(
+                        context.getPackageName(),android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
+                boolean trusted=false;
+                if(runtime.signingInfo!=null&&host.signingInfo!=null&&!runtime.signingInfo.hasMultipleSigners()&&!host.signingInfo.hasMultipleSigners())for(android.content.pm.Signature a:runtime.signingInfo.getApkContentsSigners())
+                    for(android.content.pm.Signature b:host.signingInfo.getApkContentsSigners())if(a.equals(b))trusted=true;
+                if(!trusted) {
+                    throw new java.io.IOException("Runtime package has an untrusted signer: "+runtimePackage);
+                }
+                command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.arguments(
+                        new File(runtime.applicationInfo.sourceDir),runtime.splitNames,
+                        runtime.applicationInfo.splitSourceDirs,cache,mountPoint));
+            } catch(android.content.pm.PackageManager.NameNotFoundException missing) {
+                throw new java.io.IOException("Required Flatpak runtime is not installed: "+runtimeRef+". Install or update this app in the Software Centre to fetch its runtimes.",missing);
+            }
+        }
         java.util.Collections.addAll(command,
                 "/apex/com.matonos.flatpak/bin/matonos-app-flatpak",
                 "--user", "run", "--socket=wayland", "--socket=x11", "--no-documents-portal",

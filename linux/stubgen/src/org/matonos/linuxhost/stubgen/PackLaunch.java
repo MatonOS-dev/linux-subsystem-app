@@ -11,6 +11,10 @@ import java.util.zip.*;
 /** Resolves only PackageManager-supplied carriers; no caller-supplied payload paths. */
 public final class PackLaunch {
     public static List<String> arguments(File base, String[] names, String[] paths, File cache) throws Exception {
+        return arguments(base,names,paths,cache,"/app");
+    }
+    public static List<String> arguments(File base, String[] names, String[] paths, File cache,String mountPoint) throws Exception {
+        if(mountPoint==null || !mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*"))throw new IOException("Invalid pack mount point");
         byte[] index=null;String indexPath=null;
         if(names==null || paths==null || names.length!=paths.length)
             throw new IOException("Missing or inconsistent package splits");
@@ -52,7 +56,7 @@ public final class PackLaunch {
         Path temp=Files.createTempFile(directory,"index-",".tmp"),destination=directory.resolve("objects.index");
         try {Files.write(temp,index);Files.move(temp,destination,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);}
         finally {Files.deleteIfExists(temp);}
-        return Arrays.asList("--pack-mount","/app",destination.toString(),directory.toString());
+        return Arrays.asList("--pack-mount",mountPoint,destination.toString(),directory.toString());
     }
     static Set<String> packs(byte[] index) throws IOException {
         try {

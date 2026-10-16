@@ -11,6 +11,29 @@ import org.matonos.linuxhost.stubgen.OstreePacks;
 
 /** Local pack production, before linuxd takes ownership of staging. */
 public final class StagedPacks {
+    public static void buildRuntime(Context context, File installation, String ref, String commit,
+            File output, BooleanSupplier cancelled) throws Exception {
+        buildDeployment(context,installation,ref,commit,output,cancelled);
+    }
+    public static void buildExtension(Context context, File installation,String ref,String commit,
+            File output,BooleanSupplier cancelled) throws Exception {
+        buildDeployment(context,installation,ref,commit,output,cancelled);
+    }
+    private static void buildDeployment(Context context,File installation,String ref,String commit,
+            File output,BooleanSupplier cancelled) throws Exception {
+        File deployment=new File(installation,ref+"/"+commit);
+        if(!deployment.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)
+                ||Files.isSymbolicLink(deployment.toPath())||!deployment.isDirectory())
+            throw new IOException("Missing staged runtime deployment: "+ref);
+        File sourceRepo=new File(installation,"repo"),operation=installation.getParentFile();
+        OstreePacks.Command source=command(context,operation,sourceRepo,cancelled);
+        OstreePacks.read(sourceRepo,commit,source);
+        File localRepo=new File(output.getParentFile(),"repo");
+        OstreePacks.Command local=command(context,operation,localRepo,cancelled);
+        local.run("init","--mode=bare-user");
+        String localCommit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
+        OstreePacks.read(localRepo,localCommit,local).write(output);
+    }
     public static void build(Context context, File installation, JSONObject manifest,
             File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed) throws Exception {
         File deployment=DeployManifest.stagedDeployment(installation,manifest);
