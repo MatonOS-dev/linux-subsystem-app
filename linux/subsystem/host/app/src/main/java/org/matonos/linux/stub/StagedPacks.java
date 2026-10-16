@@ -40,17 +40,21 @@ public final class StagedPacks {
             org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
             org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
         }
-        record(sourceRepo,deployment,manifest.getString("appRef"),manifest.getString("appCommit"),output);
+        record(sourceRepo,deployment,manifest,output);
     }
 
-    private static File installationOrigin(File deployment) {
-        File root=deployment;for(int i=0;i<5;i++)root=root.getParentFile();return root;
-    }
-    private static void record(File sourceRepo,File deployment,String ref,String commit,File output) throws Exception {
+    private static void record(File sourceRepo,File deployment,JSONObject manifest,File output) throws Exception {
+        String ref=manifest.getString("appRef"),commit=manifest.getString("appCommit");
+        List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency> dependencies=new ArrayList<>();
+        org.json.JSONArray declared=manifest.getJSONArray("dependencies");
+        for(int i=0;i<declared.length();i++) {
+            String dependency=declared.getString(i);JSONObject row=InstallTransaction.row(manifest,dependency);
+            dependencies.add(new org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency(dependency,row.getString("origin"),row.getString("mount")));
+        }
         org.matonos.linuxhost.stubgen.DeploymentRecord record=new org.matonos.linuxhost.stubgen.DeploymentRecord(
-                ref,commit,new String(Files.readAllBytes(new File(installationOrigin(deployment),"origin.txt").toPath()),StandardCharsets.UTF_8),Files.readAllBytes(new File(deployment,"metadata").toPath()),
+                ref,commit,manifest.getString("origin"),Files.readAllBytes(new File(deployment,"metadata").toPath()),
                 Files.readAllBytes(new File(deployment,"deploy").toPath()),
-                Files.readAllBytes(new File(sourceRepo,"objects/"+commit.substring(0,2)+"/"+commit.substring(2)+".commit").toPath()));
+                Files.readAllBytes(new File(sourceRepo,"objects/"+commit.substring(0,2)+"/"+commit.substring(2)+".commit").toPath()),dependencies,manifest.getString("mount"));
         Files.write(new File(output,"deployment.bin").toPath(),record.encode());
     }
     /** Flatpak authenticates downloads. Check repository content before packing. */

@@ -6,7 +6,7 @@ import java.util.Collections;
 import java.util.List;
 
 /** Maps Flatpak extension refs using the authenticated metadata already staged by Flatpak. */
-public final class RuntimeMounts {
+public final class PackageMounts {
     public interface Metadata { String read(String ref,String commit) throws Exception; }
     public static final class Entry { public final String ref,packageName,mountPoint;
         Entry(String r,String p,String m){ref=r;packageName=p;mountPoint=m;} }
@@ -58,5 +58,5 @@ public final class RuntimeMounts {
     private static String extensionId(String ref) throws IOException {
         String[] parts=ref.split("/",-1);if(parts.length!=4||(!parts[0].equals("runtime")&&!parts[0].equals("app")))throw new IOException("Invalid runtime or extension ref");return parts[1];
     }
-    private RuntimeMounts(){}
+    private PackageMounts(){}
 }

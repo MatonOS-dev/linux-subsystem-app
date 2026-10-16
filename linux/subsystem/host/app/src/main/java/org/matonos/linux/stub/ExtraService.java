@@ -79,7 +79,7 @@ public final class ExtraService extends Service {
                     return;
                 }
                 materialize(index, carriers, work);
-                if (hasFile(index, "/bin/apply_extra")) runApplyExtra(info, work);
+                if (hasFile(index, "/bin/apply_extra")) runApplyExtra(work);
                 File objects = packApplied(work);
                 String split = StubGenerator.extraSplitName(objects);
                 int revision = getPackageManager().getPackageInfo(getPackageName(), 0).baseRevisionCode;
@@ -260,14 +260,13 @@ public final class ExtraService extends Service {
      * {@code docs/FLATPAK-EXTRA-DATA.md}: no bubblewrap sandbox, and the
      * loader runs directly rather than through {@code matonos-app-flatpak run}.
      */
-    private void runApplyExtra(ApplicationInfo info, File work) throws Exception {
+    private void runApplyExtra(File work) throws Exception {
         String mount = mountPoint();
         File cache = getCacheDir().getCanonicalFile();
         ArrayList<String> command = new ArrayList<>();
         command.add(LoaderCommand.loader(this).getAbsolutePath());
         command.add("--parent-pid"); command.add(Integer.toString(Process.myPid()));
-        command.addAll(PackLaunch.arguments(new File(info.sourceDir), info.splitNames,
-                info.splitSourceDirs, cache, mount));
+        command.addAll(DeclaredPackages.arguments(DeclaredPackages.resolve(this,null),cache,false));
         command.add("--map"); command.add(work.getAbsolutePath()); command.add(mount + "/extra");
         command.add(mount + "/bin/apply_extra");
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);

@@ -69,7 +69,7 @@ public final class StubGenerator {
     public static final String RUNTIME_COMMIT_META = "org.matonos.linuxhost.RUNTIME_COMMIT";
     public static final String REQUIRED_PACKAGES_META = "org.matonos.linuxhost.REQUIRED_PACKAGES";
     public static final String PACKS_META = "org.matonos.linuxhost.PACKS";
-    public static final String RUNTIME_PACKAGES_META = "org.matonos.linuxhost.RUNTIME_PACKAGES";
+    public static final String DEPENDENCIES_META = "org.matonos.linuxhost.DEPENDENCIES";
     public static final String APP_REF_META = "org.matonos.linuxhost.APP_REF";
     private static final String KEY_ALIAS = "org.matonos.linux.flatpak_stub_v1";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
@@ -170,14 +170,14 @@ public final class StubGenerator {
     public static File generateWithPackages(File workDir, String ref, String remote, String label,
             byte[] iconPng, List<String> permissions, String packageName, File output,
             Integer minInterfaceVersion, File packDirectory, List<String> requiredPackages) throws Exception {
-        return generateWithRuntimePackages(workDir,ref,remote,label,iconPng,permissions,packageName,output,
+        return generateWithDependencies(workDir,ref,remote,label,iconPng,permissions,packageName,output,
                 minInterfaceVersion,packDirectory,requiredPackages,Collections.emptyMap());
     }
-    public static File generateWithRuntimePackages(File workDir,String ref,String remote,String label,
+    public static File generateWithDependencies(File workDir,String ref,String remote,String label,
             byte[] iconPng,List<String> permissions,String packageName,File output,Integer minInterfaceVersion,
-            File packDirectory,List<String> requiredPackages,Map<String,String> runtimePackages) throws Exception {
+            File packDirectory,List<String> requiredPackages,Map<String,String> dependencyPackages) throws Exception {
         return generatePackage(workDir,ref,remote,label,iconPng,permissions,packageName,output,
-                packDirectory,requiredPackages,runtimePackages,true,"/app");
+                packDirectory,requiredPackages,dependencyPackages,true,"/app");
     }
     public static File generatePackage(File workDir,String ref,String remote,String label,byte[] iconPng,
             List<String> permissions,String packageName,File output,File packDirectory,List<String> requiredPackages,
@@ -187,17 +187,17 @@ public final class StubGenerator {
         BinaryManifest manifest=new BinaryManifest(packageName,cleanLabel(label),ref,remote,permissions);
         manifest.minInterfaceVersion=2;manifest.noActivities=!launchable;
         manifest.packs=launchable?String.join(";",requiredPackages):mountPoint;
-        manifest.runtimePackages=encodeRuntimePackages(dependencies);
+        manifest.dependencyPackages=encodeDependencies(dependencies);
         File unsigned=File.createTempFile("matonos-stub-meta-",".apk",workDir);
         try {
-            if(launchable)writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.runtimePackages);
+            if(launchable)writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages);
             else try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
                 put(zip,"AndroidManifest.xml",manifest.encode());put(zip,"classes.dex",emptyDex());
             }
             sign(unsigned,output,getOrCreateKey());return output;
         } finally {unsigned.delete();}
     }
-    private static String encodeRuntimePackages(Map<String,String> values){StringBuilder out=new StringBuilder();for(Map.Entry<String,String> e:new java.util.TreeMap<>(values).entrySet()){if(out.length()>0)out.append(';');out.append(e.getKey()).append('>').append(e.getValue());}return out.toString();}
+    private static String encodeDependencies(Map<String,String> values){StringBuilder out=new StringBuilder();for(Map.Entry<String,String> e:new java.util.TreeMap<>(values).entrySet()){if(out.length()>0)out.append(';');out.append(e.getKey()).append('>').append(e.getValue());}return out.toString();}
 
     /** Pack-enabled base; only the small index/metadata live here, payloads are splits. */
     public static File generate(File workDir, String ref, String remote, String label,
@@ -254,13 +254,6 @@ public final class StubGenerator {
             writeIndexUnsigned(unsigned,pkg,objects,revision);
             sign(unsigned,output,getOrCreateKey());return output;
         } finally {unsigned.delete();}
-    }
-    public static File generateRuntime(File workDir,String ref,String pkg,File output,File packDirectory) throws Exception {
-        return generateRuntime(workDir,ref,pkg,output,packDirectory,"/usr");
-    }
-    public static File generateRuntime(File workDir,String ref,String pkg,File output,File packDirectory,String mountPoint) throws Exception {
-        return generatePackage(workDir,ref,"matonos","",null,Collections.emptyList(),pkg,output,
-                packDirectory,Collections.emptyList(),Collections.emptyMap(),false,mountPoint);
     }
     private static void writeIndexUnsigned(File unsigned,String pkg,File objects,int revision) throws Exception {
         BinaryManifest encoder=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
@@ -573,7 +566,7 @@ public final class StubGenerator {
             File packDirectory, String packs) throws IOException {
         writeUnsigned(file,pkg,label,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,packs,null);
     }
-    private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String runtimePackages) throws IOException {
+    private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String dependencyPackages) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
             if (cleanPermissions.size() >= 128 || (p != null && p.length() > 255)) throw new IllegalArgumentException("Too many or oversized Android permissions");
@@ -594,7 +587,7 @@ public final class StubGenerator {
         encoder.commitInfo = commitInfo;
         encoder.minInterfaceVersion = minInterfaceVersion;
         encoder.packs = packs;
-        encoder.runtimePackages=runtimePackages;
+        encoder.dependencyPackages=dependencyPackages;
         byte[] manifest = encoder.encode();
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);
@@ -745,12 +738,12 @@ public final class StubGenerator {
         }
         CommitInfo commitInfo;
         String packs;
-        String runtimePackages;
+        String dependencyPackages;
         boolean noActivities;
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, RUNTIME_PACKAGES_META, APP_REF_META, EXTRA_SERVICE, EXTRA_MOUNT_META, APP_MOUNT, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, EXTRA_SERVICE, EXTRA_MOUNT_META, APP_MOUNT, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             // Pre-intern commit info values if present
             if (commitInfo != null) {
@@ -759,7 +752,8 @@ public final class StubGenerator {
                 str(commitInfo.runtimeCommit);
             }
             if (packs != null) str(packs);
-            if (runtimePackages != null) str(runtimePackages);
+            if (dependencyPackages != null) str(dependencyPackages);
+            str("intent");str("org.matonos.linuxhost.PACKAGE");
             namespace(true);
             List<Attr> root = new ArrayList<>(attrs(a("package", pkg), ai("versionCode", STUB_VERSION_CODE), a("versionName", "1.0")));
             start("manifest", null, root);
@@ -775,17 +769,21 @@ public final class StubGenerator {
             start("queries",null,attrs());
             startEnd("package",attrs(a("name","org.matonos.linux")));
             startEnd("package",attrs(a("name","org.matonos.systembridge")));
+            start("intent",null,attrs());
+            startEnd("action",attrs(a("name","org.matonos.linuxhost.PACKAGE")));
+            end("intent");
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
             start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), a("appComponentFactory", HOST_LOADER), new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
-            if(runtimePackages!=null&&!runtimePackages.isEmpty())startEnd("meta-data",attrs(a("name",RUNTIME_PACKAGES_META),a("value",runtimePackages)));
+            if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
             if(noActivities){
                 startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
                 start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
                 startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
                 startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", packs)));
+                start("intent-filter",null,attrs());startEnd("action",attrs(a("name","org.matonos.linuxhost.PACKAGE")));end("intent-filter");
                 end("service");
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
                 end("application");end("manifest");namespace(false);return finish();
@@ -803,7 +801,7 @@ public final class StubGenerator {
                 startEnd("meta-data", attrs(a("name", RUNTIME_COMMIT_META), a("value", commitInfo.runtimeCommit)));
             }
             if (packs != null) startEnd("meta-data", attrs(a("name", PACKS_META), a("value", packs)));
-            if (runtimePackages != null && !runtimePackages.isEmpty()) startEnd("meta-data",attrs(a("name",RUNTIME_PACKAGES_META),a("value",runtimePackages)));
+            if (dependencyPackages != null && !dependencyPackages.isEmpty()) startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
             // The base stub deliberately has no MAIN/LAUNCHER filter: the
             // launcher entry lives in the code-free launcher split so a label
@@ -838,6 +836,7 @@ public final class StubGenerator {
             start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", APP_MOUNT)));
+            start("intent-filter",null,attrs());startEnd("action",attrs(a("name","org.matonos.linuxhost.PACKAGE")));end("intent-filter");
             end("service");
             startEnd("service", attrs(a("name", "org.matonos.linux.stub.InstallService"),
                     ab("exported", false), ai("foregroundServiceType", 1)));

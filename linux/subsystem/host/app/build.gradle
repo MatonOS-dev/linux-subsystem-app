@@ -30,6 +30,23 @@ def packageSessionBroker = tasks.register('packageSessionBroker', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn packageSessionBroker }
 
+def planRoot = file('../../flatpak-plan')
+def planOutput = "$aospRoot/out/matonos/flatpak-plan"
+def planJni = new File(layout.buildDirectory.get().asFile, 'generated/planJni')
+def buildFlatpakPlan = tasks.register('buildFlatpakPlan', Exec) {
+    outputs.upToDateWhen { false }
+    inputs.files fileTree(planRoot)
+    outputs.file new File(planOutput, 'libmatonos-flatpak-plan.so')
+    environment 'MATON_AOSP_ROOT', aospRoot
+    commandLine 'python3', new File(planRoot, 'build.py').absolutePath, planOutput
+}
+def packageFlatpakPlan = tasks.register('packageFlatpakPlan', Copy) {
+    dependsOn buildFlatpakPlan
+    from new File(planOutput, 'libmatonos-flatpak-plan.so')
+    into new File(planJni, 'x86_64')
+}
+tasks.named('preBuild').configure { dependsOn packageFlatpakPlan }
+
 def v3Root = file('../../../compat-proxy')
 def v3Output = System.getenv('MATON_V3_ANDROID_OUT') ?: "$aospRoot/out/matonos/compat-proxy"
 def v3Jni = new File(layout.buildDirectory.get().asFile, 'generated/v3Jni')
@@ -85,6 +102,7 @@ android {
             useLegacyPackaging = true
             // Preserve the executable ELF, rather than treating it as a DSO.
             keepDebugSymbols += '**/libmatonos-dbus-broker.so'
+            keepDebugSymbols += '**/libmatonos-flatpak-plan.so'
             keepDebugSymbols += '**/libmatonos-v3-loader.so'
             keepDebugSymbols += '**/libmatonos-v3-loader-i386.so'
         }
@@ -108,6 +126,7 @@ android {
             jniLibs.srcDirs += file(System.getenv('MATON_COMPOSITOR_JNI_LIBS') ?: "$aospRoot/out/matonos/compositor/jniLibs")
             jniLibs.srcDir brokerJni
             jniLibs.srcDir v3Jni
+            jniLibs.srcDir planJni
             jniLibs.srcDir new File(pipewireOutput, 'jniLibs')
             assets.srcDir pipewireAssets
         }

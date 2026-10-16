@@ -48,7 +48,7 @@ public final class ForegroundManifestTest {
         Object dependency=ctor.newInstance("flatpak.runtime.org.example.Platform.x86_64.stable.xabcdef123456","","runtime/org.example.Platform/x86_64/stable","example",Collections.emptyList());
         java.lang.reflect.Field noActivities=manifest.getDeclaredField("noActivities");noActivities.setAccessible(true);noActivities.setBoolean(dependency,true);
         java.lang.reflect.Field mount=manifest.getDeclaredField("packs");mount.setAccessible(true);mount.set(dependency,"/usr");
-        java.lang.reflect.Field declared=manifest.getDeclaredField("runtimePackages");declared.setAccessible(true);declared.set(dependency,"runtime/org.example.GL/x86_64/stable>flatpak.runtime.GL.xabc>/usr/lib/GL");
+        java.lang.reflect.Field declared=manifest.getDeclaredField("dependencyPackages");declared.setAccessible(true);declared.set(dependency,"runtime/org.example.GL/x86_64/stable>flatpak.runtime.GL.xabc>/usr/lib/GL");
         try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(apk))) {
             zip.putNextEntry(new ZipEntry("AndroidManifest.xml"));zip.write((byte[])encode.invoke(dependency));zip.closeEntry();
         }

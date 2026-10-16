@@ -14,9 +14,9 @@ import java.util.Map;
 
 /** One Linux process tree per stub UID, under the inherited app filter/domain. */
 final class V3Launcher {
-    interface RuntimeRepair { void repair(String ref) throws Exception; }
-    private static volatile RuntimeRepair runtimeRepair;
-    static void setRuntimeRepairForTests(RuntimeRepair repair){runtimeRepair=repair;}
+    interface DependencyRepair { void repair(String ref) throws Exception; }
+    private static volatile DependencyRepair dependencyRepair;
+    static void setDependencyRepairForTests(DependencyRepair repair){dependencyRepair=repair;}
     private static final java.util.concurrent.ExecutorService SPAWNER =
             java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
                 Thread thread = new Thread(task, "v3-spawner");
@@ -26,17 +26,6 @@ final class V3Launcher {
     private static Process process;
     private static Integer exit;
     private static String error;
-    /** Installed runtime package, trusted only when signed by this subsystem's key. */
-    private static android.content.pm.PackageInfo runtimePackage(Context context,String name)
-            throws android.content.pm.PackageManager.NameNotFoundException,java.io.IOException {
-        android.content.pm.PackageManager pm=context.getPackageManager();
-        android.content.pm.PackageInfo pkg=pm.getPackageInfo(name,android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
-        android.content.pm.PackageInfo host=pm.getPackageInfo(context.getPackageName(),android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
-        if(!sameSigner(pkg,host))throw new java.io.IOException("Runtime package has an untrusted signer: "+name);
-        return pkg;
-    }
-    private static boolean sameSigner(android.content.pm.PackageInfo a,android.content.pm.PackageInfo b){return a.signingInfo!=null&&b.signingInfo!=null&&!a.signingInfo.hasMultipleSigners()&&!b.signingInfo.hasMultipleSigners()&&a.signingInfo.getApkContentsSigners().length==1&&b.signingInfo.getApkContentsSigners().length==1&&a.signingInfo.getApkContentsSigners()[0].equals(b.signingInfo.getApkContentsSigners()[0]);}
-
     static synchronized JSONObject launch(Context context, String ref)
             throws Exception {
         if (process != null) return getLaunchStatus();
@@ -74,36 +63,11 @@ final class V3Launcher {
         if (x11.isDirectory()) {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
         }
-        android.content.pm.ApplicationInfo installed=context.getApplicationInfo();
-        // The applied extra output is a self-contained split mounted at
-        // <mount>/extra, exactly where a deploy-time apply_extra would have
-        // left its output; the base packs mount at <mount>.
-        command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsWithExtra(
-                new File(installed.sourceDir),installed.splitNames,installed.splitSourceDirs,cache,
-                org.matonos.linuxhost.stubgen.StubGenerator.APP_MOUNT,
-                org.matonos.linuxhost.stubgen.StubGenerator.APP_MOUNT+"/extra"));
-        android.content.pm.ActivityInfo stubInfo=context.getPackageManager().getActivityInfo(
-                new android.content.ComponentName(context,StubActivity.class),
-                android.content.pm.PackageManager.GET_META_DATA);
-        String required=stubInfo.metaData==null?null:stubInfo.metaData.getString(org.matonos.linuxhost.stubgen.StubGenerator.RUNTIME_PACKAGES_META);
-        if(required!=null&&!required.isEmpty())for(String runtimeRecord:required.split(";")) {
-            String[] fields=runtimeRecord.split(">",3);if(fields.length!=3)throw new java.io.IOException("Invalid runtime package metadata");
-            String runtimeRef=fields[0],runtimePackage=fields[1],mountPoint=fields[2];
-            android.content.pm.PackageInfo pkg;
-            try {
-                pkg=runtimePackage(context,runtimePackage);
-            } catch(android.content.pm.PackageManager.NameNotFoundException missing) {
-                RuntimeRepair repair=runtimeRepair;
-                if(repair!=null)repair.repair(runtimeRef);
-                else repairRuntime(context,ref,runtimeRef);
-                try {
-                    pkg=runtimePackage(context,runtimePackage);
-                }catch(android.content.pm.PackageManager.NameNotFoundException stillMissing){throw new java.io.IOException("Runtime repair completed but required package is still missing: "+runtimeRef,stillMissing);}
-            }
-            command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsWithExtra(
-                    new File(pkg.applicationInfo.sourceDir),
-                    pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mountPoint,mountPoint+"/extra"));
-        }
+        java.util.List<DeclaredPackages.Entry> packages=DeclaredPackages.resolve(context,dependencyRef->{
+            DependencyRepair repair=dependencyRepair;
+            if(repair!=null)repair.repair(dependencyRef);else repairDependency(context,ref,dependencyRef);
+        });
+        command.addAll(DeclaredPackages.arguments(packages,cache,true));
         File deployment=PackageDeployment.prepare(context,ref);
         java.util.Collections.addAll(command,
                 "/apex/com.matonos.flatpak/bin/matonos-app-flatpak",
@@ -163,7 +127,7 @@ final class V3Launcher {
         return getLaunchStatus();
     }
 
-    static void repairRuntime(Context context,String appRef,String runtimeRef) throws Exception {
+    static void repairDependency(Context context,String appRef,String dependencyRef) throws Exception {
         java.util.concurrent.CountDownLatch complete=new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.atomic.AtomicReference<String> error=new java.util.concurrent.atomic.AtomicReference<>();
         android.content.ServiceConnection connection=new android.content.ServiceConnection(){
@@ -173,15 +137,15 @@ final class V3Launcher {
                     @Override public void onResult(String id,boolean ok,String message){if(!ok)error.set(message==null?"Subsystem app repair failed":message);complete.countDown();}
                 });}catch(Exception e){error.set(e.getMessage());complete.countDown();}
             }
-            @Override public void onServiceDisconnected(android.content.ComponentName name){error.set("Linux Subsystem disconnected during runtime repair");complete.countDown();}
+            @Override public void onServiceDisconnected(android.content.ComponentName name){error.set("Linux Subsystem disconnected during dependency repair");complete.countDown();}
         };
         android.content.Intent intent=new android.content.Intent().setClassName("org.matonos.linux","org.matonos.linux.LinuxAppStoreService");
-        if(!context.bindService(intent,connection,Context.BIND_AUTO_CREATE))throw new java.io.IOException("Cannot connect to Linux Subsystem to repair required runtime "+runtimeRef);
+        if(!context.bindService(intent,connection,Context.BIND_AUTO_CREATE))throw new java.io.IOException("Cannot connect to Linux Subsystem to repair declared package "+dependencyRef);
         boolean finished;
         try{finished=complete.await(10,java.util.concurrent.TimeUnit.MINUTES);}
         finally{try{context.unbindService(connection);}catch(Exception ignored){}}
-        if(!finished)throw new java.io.IOException("Timed out repairing required runtime "+runtimeRef);
-        if(error.get()!=null)throw new java.io.IOException("Cannot repair required runtime "+runtimeRef+": "+error.get());
+        if(!finished)throw new java.io.IOException("Timed out repairing declared package "+dependencyRef);
+        if(error.get()!=null)throw new java.io.IOException("Cannot repair declared package "+dependencyRef+": "+error.get());
     }
 
     static synchronized JSONObject getLaunchStatus() throws Exception {
