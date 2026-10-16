@@ -4,6 +4,7 @@
     <permission android:name="org.matonos.permission.QUERY_LINUX_APPS"
         android:protectionLevel="normal" />
     <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.REAL_GET_TASKS" />
     <uses-permission android:name="android.permission.DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />

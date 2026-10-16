@@ -45,6 +45,7 @@ public final class LinuxAppStoreService extends Service {
         final String id, kind, ref, remote, name, url;
         final ILinuxAppStoreCallback callback;
         volatile boolean cancelled;
+        boolean packGcAttempted;
         volatile InstallTransaction transaction;
         volatile String stagedMetadata, stagedDesktop;
         volatile File packArtifacts;
@@ -255,6 +256,10 @@ public final class LinuxAppStoreService extends Service {
     private static String operationKey(int uid,String id) { return uid+":"+id; }
 
     private void installFinalStub(Operation op) throws Exception {
+        if(!op.packGcAttempted) {
+            op.packGcAttempted=true;
+            if(collectIdlePacks(op))return;
+        }
         String pkg=packageFor(op.ref), remote="install".equals(op.kind)?op.remote:remoteFor(op.ref);
         if(op.stagedMetadata==null || op.stagedDesktop==null)
             throw new IllegalStateException("Staged Flatpak metadata unavailable");
@@ -273,7 +278,12 @@ public final class LinuxAppStoreService extends Service {
                     op.installed==null?0:op.installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
                     op.installed==null?0:op.installed.baseRevisionCode,op.installed==null?null:op.installed.splitRevisionCodes);
             java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
-            String index=StubGenerator.indexSplitName(objects,revision);desired.add(index);
+            String index=StubGenerator.indexSplitName(objects,revision);
+            if(!full) {
+                int newest=org.matonos.linuxhost.stubgen.PackLaunch.newestIndex(prior);
+                if(newest>=0 && prior.get(newest).endsWith(index.substring(index.lastIndexOf('_'))))index=prior.get(newest);
+            }
+            desired.add(index);
             if(full || !prior.contains(index)) {
                 StubGenerator.generateIndex(work,pkg,objects,new File(op.packArtifacts,index+".apk"),revision);available.add(index);
             }
@@ -305,6 +315,56 @@ public final class LinuxAppStoreService extends Service {
                     intent->worker.execute(()->finishStubInstall(op,remote,pkg,intent)));
             plan.submit(op.packInstaller,()->op.cancelled);
         } finally { desktop.delete(); }
+    }
+
+    /** GC is opportunistic and never enables/disables or stops an application.
+     * Only an already disabled package is eligible: its launch components cannot
+     * race the idle check. Normal enabled apps simply keep their old carriers. */
+    private boolean packGcIdle(String pkg,int uid) throws Exception {
+        int state=getPackageManager().getApplicationEnabledSetting(pkg);
+        if(state!=PackageManager.COMPONENT_ENABLED_STATE_DISABLED &&
+                state!=PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER)return false;
+        if(checkSelfPermission("android.permission.REAL_GET_TASKS")!=PackageManager.PERMISSION_GRANTED)return false;
+        android.app.ActivityManager manager=getSystemService(android.app.ActivityManager.class);
+        java.util.List<android.app.ActivityManager.RunningAppProcessInfo> processes=manager.getRunningAppProcesses();
+        if(processes==null)return false;
+        for(android.app.ActivityManager.RunningAppProcessInfo process:processes)if(process.uid==uid)return false;
+        return true;
+    }
+
+    private boolean collectIdlePacks(Operation op) throws Exception {
+        if(op.installed==null || op.installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE)return false;
+        String pkg=packageFor(op.ref);int uid=op.installed.applicationInfo.uid;
+        if(!packGcIdle(pkg,uid))return false;
+        PackageInfo info=getPackageManager().getPackageInfo(pkg,0);
+        if(info.splitNames==null)return false;
+        java.util.List<String> names=java.util.Arrays.asList(info.splitNames);
+        int newest=org.matonos.linuxhost.stubgen.PackLaunch.newestIndex(names);
+        if(newest<0)return false;
+        String index=names.get(newest);
+        java.util.Set<String> carriers=org.matonos.linuxhost.stubgen.PackLaunch.referencedSplits(
+                new File(info.applicationInfo.splitSourceDirs[newest]));
+        org.matonos.linuxhost.stubgen.PackSessionPlan gc=org.matonos.linuxhost.stubgen.PackSessionPlan.garbageCollect(
+                info.getLongVersionCode(),names,java.util.Collections.singletonMap(index,carriers),true);
+        if(gc.remove.isEmpty() || !packGcIdle(pkg,uid))return false;
+        op.packInstaller=new org.matonos.linux.stub.PackInstaller(this,pkg,op.packArtifacts,()->op.cancelled,
+                intent->worker.execute(()-> {
+                    try {
+                        if(op.completed.get())return;
+                        // GC failure leaves the installed generation intact; refresh
+                        // PackageManager state before the independent content session.
+                        if(intent.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
+                            Log.w(TAG,"Pack GC deferred: "+intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
+                        op.packInstaller=null;
+                        op.installed=getPackageManager().getPackageInfo(pkg,0);
+                        installFinalStub(op);
+                    } catch(Exception failure){result(op,false,failure.getMessage());}
+                }));
+        gc.submit(op.packInstaller,()->op.cancelled || !idleUnchecked(pkg,uid));
+        return true;
+    }
+    private boolean idleUnchecked(String pkg,int uid) {
+        try{return packGcIdle(pkg,uid);}catch(Exception unavailable){return false;}
     }
 
     private void finishStubInstall(Operation op,String remote,String pkg,Intent intent) {
