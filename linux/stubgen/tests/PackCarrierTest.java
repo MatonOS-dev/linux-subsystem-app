@@ -68,6 +68,27 @@ public final class PackCarrierTest {
   if(command.size()!=4||!command.get(0).equals("--pack-mount")||!command.get(1).equals("/app"))throw new AssertionError(command);
   if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
   if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");
+  // Superseded indices and unreferenced carriers must not affect the mount.
+  List<String> newest=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,
+   new String[]{"index_r1_"+"d".repeat(64),split,indexName,"pack_"+"f".repeat(64)},
+   new String[]{"/does/not/exist",signed.getAbsolutePath(),base.getAbsolutePath(),"/does/not/exist"},new File(dir,"multi-cache"));
+  if(!Files.isSameFile(Path.of(newest.get(3),row.pack),signed.toPath()))throw new AssertionError("Newest index not selected");
+  // Delete in two stages: the second old index no longer names the first dead
+  // object, but that object's bytes remain in the retained immutable ZIP.
+  File cumulative=new File(dir,"cumulative");cumulative.mkdirs();
+  List<ObjectPacks.Entry> original=new ArrayList<>();
+  for(int i=0;i<3;i++) {
+   File source=new File(cumulative,"source"+i);Files.write(source.toPath(),new byte[100]);
+   ObjectPacks.Entry e=new ObjectPacks.Entry("/"+i,Integer.toHexString(i+1).repeat(64),"file",0100644);e.source=source;original.add(e);
+  }
+  File generation0=new File(cumulative,"g0");ObjectPacks.initial(original,generation0,10000);
+  List<ObjectPacks.Entry> generation1=new ArrayList<>();
+  for(int i=1;i<3;i++){ObjectPacks.Entry e=new ObjectPacks.Entry(original.get(i).path,original.get(i).checksum,"file",0100644);e.source=original.get(i).source;generation1.add(e);}
+  File g1=new File(cumulative,"g1");ObjectPacks.update(generation1,original,generation0,g1,.5);
+  if(!generation1.get(0).pack.equals(original.get(0).pack))throw new AssertionError("Early repack");
+  ObjectPacks.Entry survivor=new ObjectPacks.Entry(original.get(2).path,original.get(2).checksum,"file",0100644);survivor.source=original.get(2).source;
+  ObjectPacks.update(Collections.singletonList(survivor),generation1,g1,new File(cumulative,"g2"),.5);
+  if(survivor.pack.equals(original.get(0).pack))throw new AssertionError("Cumulative dead objects ignored");
   try {
    org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{"index_r43_"+"b".repeat(64),"index_r43_"+"c".repeat(64)},new String[]{base.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
    throw new AssertionError("Duplicate index accepted");

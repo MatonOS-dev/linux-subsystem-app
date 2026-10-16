@@ -54,6 +54,7 @@ public final class PackSessionPlan {
      * until commit completes. The newest index and its carriers remain installed. */
     public static PackSessionPlan garbageCollect(long version, Collection<String> installed,
             Map<String,? extends Collection<String>> references, boolean idle) throws IOException {
+        if(version<1)throw new IOException("Invalid GC version");
         if(!idle)throw new IOException("GC requires an idle package");
         SortedSet<String> prior=names(installed),keep=new TreeSet<>();
         List<String> ordered=new ArrayList<>(prior);int selected=PackLaunch.newestIndex(ordered);
@@ -88,6 +89,7 @@ public final class PackSessionPlan {
             if(name==null || !name.matches("(?:pack_[0-9a-f]{64}|index_r[1-9][0-9]*_[0-9a-f]{64})") || !result.add(name))
                 throw new IOException("Invalid or duplicate content split: "+name);
         }
+        PackLaunch.newestIndex(new ArrayList<>(result));
         return result;
     }
 

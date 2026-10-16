@@ -35,8 +35,8 @@ import java.util.zip.ZipOutputStream;
 public final class StubGenerator {
     public static final int FORMAT_VERSION = 1;
     // Reconcile older launchers to recover installed display names and icons.
-    // v14 adds bridge visibility for self-task Linux window capabilities.
-    public static final int STUB_VERSION_CODE = 17;
+    // v18 requires revision-bearing index splits; older formats need a full install.
+    public static final int STUB_VERSION_CODE = 18;
     public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";

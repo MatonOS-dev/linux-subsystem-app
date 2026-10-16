@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic OSTree object pack writer (Python 3, host side)."""
-import argparse, hashlib, json, pathlib, shutil, struct, tempfile, zipfile
+import argparse, hashlib, json, pathlib, re, shutil, struct, tempfile, zipfile
 import ostree_source
 
 MAGIC = b'MTPKIDX1'
@@ -128,18 +128,26 @@ def update(args):
             for r in new:
                 source=next(x for x in unique_new if x['checksum']==r['checksum'])
                 r.update(pack=source['pack'],offset=source['offset'],length=source['length'])
-        # Repack touched packs only when dead-byte ratio reaches threshold.
+        # Measure cumulative dead payload in carriers the newest index retains.
         by_pack={}
         for x in old: by_pack.setdefault(x['pack'],[]).append(x)
         live={x['checksum'] for x in records}
         unique_new=list({x['checksum']:x for x in new}.values())
         written=sum(x['length'] for x in unique_new); changed=written
+        retained={}; total=written; dead=0
         for packname, members in by_pack.items():
             members=list({x['checksum']:x for x in members}.values())
-            live_members=[x for x in members if x['checksum'] in live]
-            dead=sum(x['length'] for x in members if x['checksum'] not in live)
-            total=sum(x['length'] for x in members)
-            if live_members and total and dead and dead/total >= args.dead_ratio:
+            live_members=[x for x in members if x['kind']=='file' and x['checksum'] in live]
+            if not live_members: continue
+            retained[packname]=live_members
+            needed={x['checksum'] for x in live_members}
+            with zipfile.ZipFile(pathlib.Path(args.old_packs)/packname) as z:
+                entries=[x for x in z.infolist() if re.fullmatch('[0-9a-f]{64}',x.filename)]
+                total+=sum(x.file_size for x in entries)
+                dead+=sum(x.file_size for x in entries if x.filename not in needed)
+        repack=bool(total and dead and dead/total >= args.dead_ratio)
+        for packname, live_members in retained.items():
+            if repack:
                 src=pathlib.Path(args.old_packs)/packname
                 with zipfile.ZipFile(src) as z:
                     for r in records:

@@ -65,6 +65,10 @@ public class PackSessionPlanTest {
         rejects(()->PackSessionPlan.garbageCollect(17,list(ix,next,a),Map.of(next,list(c)),true));
         Fake collector=new Fake();gc.submit(collector);
         check(collector.calls.equals(list("INHERIT:false","remove:"+ix,"remove:"+b,"commit")));
+        for(String fail:list("remove:"+ix,"commit")) {
+            Fake broken=new Fake();broken.fail=fail;rejects(()->gc.submit(broken));
+            check(broken.calls.get(broken.calls.size()-1).equals("abandon"));
+        }
         PackSessionPlan full=PackSessionPlan.create(true,17,18,list(a,ix),list(a,next),list(a,next),true);
         check(full.mode==PackSessionPlan.Mode.FULL && !full.dontKillApp && full.remove.isEmpty());
         check(PackSessionPlan.nextRevision(17,17,0,new int[]{2,5,3})==6);

@@ -179,6 +179,7 @@ public final class ObjectPacks {
         // omits objects deleted in earlier updates. Ignore carriers no longer
         // referenced by the newest index and all superseded index generations.
         long total=0,dead=0;
+        for(Entry e:added)total=Math.addExact(total,e.length);
         Map<String,List<Entry>> retained=new TreeMap<>();
         for(Map.Entry<String,List<Entry>> p:packs.entrySet()) {
             List<Entry> keep=new ArrayList<>();Set<String> needed=new HashSet<>();
