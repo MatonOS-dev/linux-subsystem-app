@@ -23,12 +23,12 @@ public class PackSessionPlanTest {
         PackSessionPlan first=PackSessionPlan.create(false,0,1,list(),list(b,a),list(a,b),true);
         check(first.mode==PackSessionPlan.Mode.FULL && !first.dontKillApp);
         check(first.write.equals(list("base.apk",a+".apk",b+".apk")) && first.remove.isEmpty());
-        PackSessionPlan update=PackSessionPlan.create(true,1,1,list(a,b),list(a,c),list(c),true);
-        check(update.mode==PackSessionPlan.Mode.INHERIT && !update.dontKillApp);
-        check(update.write.equals(list("base.apk",c+".apk")) && update.remove.equals(list(b)));
+        PackSessionPlan update=PackSessionPlan.create(true,1,1,list(a,b),list(a,c),list(c),false);
+        check(update.mode==PackSessionPlan.Mode.INHERIT && update.dontKillApp);
+        check(update.write.equals(list(c+".apk")) && update.remove.equals(list(b)));
         Fake fake=new Fake();update.submit(fake);
-        check(fake.calls.equals(list("INHERIT:false","write:base.apk","write:"+c+".apk","remove:"+b,"commit")));
-        for(String fail:list("write:base.apk","remove:"+b,"commit")) {
+        check(fake.calls.equals(list("INHERIT:true","write:"+c+".apk","remove:"+b,"commit")));
+        for(String fail:list("write:"+c+".apk","remove:"+b,"commit")) {
             Fake broken=new Fake();broken.fail=fail;rejects(()->update.submit(broken));
             check(broken.calls.get(broken.calls.size()-1).equals("abandon"));
         }
@@ -36,15 +36,21 @@ public class PackSessionPlanTest {
         rejects(()->update.submit(cancelled,()->true));check(cancelled.calls.isEmpty());
         Fake during=new Fake();
         rejects(()->update.submit(during,()->during.calls.size()>=2));
-        check(during.calls.equals(list("INHERIT:false","write:base.apk","abandon")));
+        check(during.calls.equals(list("INHERIT:true","write:"+c+".apk","abandon")));
         check(PackSessionPlan.create(true,1,1,list(a),list(a),list(),false).dontKillApp);
-        rejects(()->PackSessionPlan.create(true,1,2,list(a),list(a),list(a),true));
+        check(PackSessionPlan.create(true,1,2,list(a),list(a),list(a),true).mode==PackSessionPlan.Mode.FULL);
+        rejects(()->PackSessionPlan.create(true,1,2,list(a),list(a),list(a),false));
         rejects(()->PackSessionPlan.create(true,2,1,list(a),list(a),list(a),true));
         rejects(()->PackSessionPlan.create(false,0,0,list(),list(),list(),true));
         rejects(()->PackSessionPlan.create(false,0,1,list(),list(a),list(),true));
         rejects(()->PackSessionPlan.create(true,1,1,list(a,a),list(a),list(),true));
         rejects(()->PackSessionPlan.create(true,1,1,list(a),list("../bad"),list(),true));
         rejects(()->PackSessionPlan.create(false,0,1,list(),list(),list(),false));
+        String ix="index_"+"d".repeat(64), next="index_"+"e".repeat(64);
+        PackSessionPlan index=PackSessionPlan.create(true,17,17,list(a,ix),list(a,next),list(next),false);
+        check(index.write.equals(list(next+".apk")) && index.remove.equals(list(ix)) && index.dontKillApp);
+        PackSessionPlan full=PackSessionPlan.create(true,17,18,list(a,ix),list(a,next),list(a,next),true);
+        check(full.mode==PackSessionPlan.Mode.FULL && !full.dontKillApp && full.remove.isEmpty());
         System.out.println("Pack session planning tests passed");
     }
 }

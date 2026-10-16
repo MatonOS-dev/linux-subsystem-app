@@ -17,8 +17,8 @@ public final class PackSessionPlan {
     private PackSessionPlan(Mode mode, long version, boolean baseChanges,
             SortedSet<String> writes, SortedSet<String> removes) {
         this.mode=mode; versionCode=version;
-        // PackageInstallerSession clears INSTALL_DONT_KILL_APP whenever a base
-        // is supplied. Pack index updates always supply a base.
+        // Stock PM also clears this flag when any existing split is removed.
+        // Keep the request explicit; do not promise process survival.
         dontKillApp=mode==Mode.INHERIT && !baseChanges;
         write=Collections.unmodifiableList(new ArrayList<>(writes));
         remove=Collections.unmodifiableList(new ArrayList<>(removes));
@@ -31,28 +31,29 @@ public final class PackSessionPlan {
         if(nextVersion<1 || (installed && nextVersion<installedVersion))
             throw new IOException("Invalid or decreasing package version");
         // INHERIT checks Existing's version even when every split is replaced.
-        if(installed && nextVersion!=installedVersion)
+        if(installed && !baseChanges && nextVersion!=installedVersion)
             throw new IOException("Inherited sessions require the installed versionCode; " +
                     "increasing versionCode requires a full install of every split");
         if(!installed && !baseChanges)throw new IOException("First install requires base.apk");
         SortedSet<String> prior=names(installedSplits), desired=names(desiredSplits);
         SortedSet<String> available=names(availableSplits), writes=new TreeSet<>(), removes=new TreeSet<>();
         if(!installed && !prior.isEmpty())throw new IOException("Unexpected installed splits");
-        if(baseChanges)writes.add("base.apk");
+        boolean full=!installed || baseChanges;
+        if(full)writes.add("base.apk");
         for(String split:desired) {
-            if(!installed || !prior.contains(split)) {
+            if(full || !prior.contains(split)) {
                 if(!available.contains(split))throw new IOException("Missing new carrier: "+split);
                 writes.add(split+".apk");
             }
         }
-        for(String split:prior)if(!desired.contains(split))removes.add(split);
-        return new PackSessionPlan(installed?Mode.INHERIT:Mode.FULL,nextVersion,baseChanges,writes,removes);
+        if(!full)for(String split:prior)if(!desired.contains(split))removes.add(split);
+        return new PackSessionPlan(full?Mode.FULL:Mode.INHERIT,nextVersion,baseChanges,writes,removes);
     }
 
     private static SortedSet<String> names(Collection<String> names) throws IOException {
         SortedSet<String> result=new TreeSet<>();
         for(String name:names) {
-            if(name==null || !name.matches("pack_[0-9a-f]{64}") || !result.add(name))
+            if(name==null || !name.matches("(?:pack|index)_[0-9a-f]{64}") || !result.add(name))
                 throw new IOException("Invalid or duplicate content split: "+name);
         }
         return result;
