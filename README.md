@@ -14,7 +14,7 @@ OpenSSL, and the development packages for GLib and OSTree. The tests execute
 host `ostree`, compile C/Java fixtures and use the SDK's `aapt2`. No AOSP or
 device-tree checkout is required: build-only platform headers, their revision
 pins and licences are in `third_party/platform-headers`; the bridge AIDL
-compile contract is carried in `systembridge/aidl`.
+APIs are app-owned; no system bridge compile snapshot is needed.
 
 ```sh
 export JAVA_HOME=/path/to/jdk-21
@@ -72,13 +72,29 @@ same pinned Flatpak GLib dependency build, eliminating its former separate
 AOSP libffi/PCRE build. PipeWire is also live (`NativeAudio` and
 `libmaton_pipewire.so`); its embedded library and notices remain here.
 
-Xwayland's server, xkbcomp and system runtime/data remain image components,
-preserved in the device tree under `prebuilt/xwayland/`. This repository
-builds only the X11 client libraries needed by wlroots during APK dependency
-bootstrap. The source recipe for the server is retained for provenance.
-System image policy, bridge implementation/allowlist and image packaging stay
-in the device repository. The standalone AIDL directory is a compile snapshot;
-refresh it deliberately when the image's bridge contract changes.
+Xwayland, xkbcomp, X11 libraries, GL forwarders and keyboard data are packaged
+in the APK. `linux/subsystem/build-xwayland.sh` and `UPSTREAMS` own the pinned
+build recipe/provenance; `tools/package-xwayland.py` packages that output.
+Executables are `libmatonos-Xwayland*.so` and `libmatonos-xkbcomp.so` native
+libraries. Keyboard data is extracted from assets into each stub's private
+runtime directory, keyed by host update time. Private symlinks retain the
+library SONAMEs and the stock xkbcomp name. A small C entry point passes the
+keyboard directory to the server and sets its working directory for xkbcomp.
+No executable is extracted to writable app data. The image extracts native
+libraries from the same verified APK into its app-local nativeLibraryDir;
+PackageManager extracts installed updates. Global image Xwayland files are
+no longer used. The server is built with `-Dxkb_bin_dir=.`; a stale dependency
+build must be refreshed before packaging. Select the inherited Bionic crypto
+prefix with `MATON_XWAYLAND_CRYPTO_PREFIX`; its pins and retained-version
+exception are in `UPSTREAMS` (the static musl Flatpak prefix cannot replace it).
+
+Device checks after a fresh image boot: confirm the subsystem uses `priv_app`,
+execute its own APK native helpers (Flatpak and both Xwayland entry points),
+install/download using network and PackageInstaller, then launch an X11 app,
+type several keyboard layouts and close/reopen it. Verify Xwayland and xkbcomp
+come from the host nativeLibraryDir, no `/system_ext/bin/Xwayland` exists and
+no SELinux denials occur. Install a same-signer host update and relaunch an
+existing stub to check that its binaries and keyboard assets follow the update.
 
 ## Validation and limits
 
