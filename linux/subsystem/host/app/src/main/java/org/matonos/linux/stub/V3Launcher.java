@@ -70,7 +70,7 @@ final class V3Launcher {
         command.addAll(DeclaredPackages.arguments(packages,cache,true));
         File deployment=PackageDeployment.prepare(context,ref);
         java.util.Collections.addAll(command,
-                "/apex/com.matonos.flatpak/bin/matonos-app-flatpak",
+                LoaderCommand.tool(context, LoaderCommand.FLATPAK_CLI).getAbsolutePath(),
                 "--user", "run", "--socket=wayland", "--socket=x11", "--no-documents-portal",
                 "--no-a11y-bus", "--nofilesystem=host", "--nofilesystem=/tmp",
                 "--nodevice=all", "--device=dri",
@@ -81,8 +81,9 @@ final class V3Launcher {
         env.clear();
         env.put("FLATPAK_SYSTEM_DIR", new File(deployment,"system").getAbsolutePath());
         env.put("MATON_FLATPAK_DNS", dns);
-        env.put("PATH", "/apex/com.matonos.flatpak/bin:/system/bin");
-        env.put("LD_LIBRARY_PATH", "/apex/com.matonos.flatpak/lib64:/system/lib64");
+        String nativeDir = LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
+        env.put("PATH", nativeDir + ":/system/bin");
+        env.put("LD_LIBRARY_PATH", nativeDir + ":/system/lib64");
         env.put("HOME", home.getAbsolutePath());
         env.put("TMPDIR", cache.getAbsolutePath());
         env.put("FLATPAK_DOWNLOAD_TMPDIR", cache.getAbsolutePath());

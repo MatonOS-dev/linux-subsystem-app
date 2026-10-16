@@ -67,6 +67,30 @@ def packageV3Loader = tasks.register('packageV3Loader', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn packageV3Loader }
 
+// Executable Flatpak entry points travel in the subsystem APK's native
+// library directory so host updates update the tools and v3 loader together.
+def flatpakJni = new File(layout.buildDirectory.get().asFile, 'generated/flatpakJni/x86_64')
+def flatpakTools = file('../../../flatpak/prebuilt/static/x86_64')
+def buildFlatpakHelpers = tasks.register('buildFlatpakHelpers', Exec) {
+    inputs.files file('../../../flatpak/matonos-app-tool.c'), file('../../../../tools/build-flatpak-helpers.sh')
+    outputs.files new File(flatpakTools, 'matonos-app-flatpak'), new File(flatpakTools, 'matonos-app-bwrap')
+    commandLine 'bash', file('../../../../tools/build-flatpak-helpers.sh').absolutePath
+}
+def packageFlatpakTools = tasks.register('packageFlatpakTools', Copy) {
+    dependsOn buildFlatpakHelpers
+    from(file('../../../flatpak/prebuilt/static/x86_64/matonos-flatpak')) { rename { 'libmatonos-flatpak.so' } }
+    from(file('../../../flatpak/prebuilt/static/x86_64/matonos-app-flatpak')) { rename { 'libmatonos-app-flatpak.so' } }
+    from(file('../../../flatpak/prebuilt/static/x86_64/matonos-app-bwrap')) { rename { 'libmatonos-app-bwrap.so' } }
+    into flatpakJni
+}
+tasks.named('preBuild').configure { dependsOn packageFlatpakTools }
+def flatpakAssets = new File(layout.buildDirectory.get().asFile, 'generated/flatpakAssets')
+def packageFlatpakRemote = tasks.register('packageFlatpakRemote', Copy) {
+    from file('../../../flatpak/etc/flatpak/remotes.d/flathub.flatpakrepo')
+    into new File(flatpakAssets, 'flatpak/remotes.d')
+}
+tasks.named('preBuild').configure { dependsOn packageFlatpakRemote }
+
 def pipewireRoot = file('../../../pipewire')
 def pipewireOutput = System.getenv('MATON_PIPEWIRE_BUILD') ?: "$aospRoot/out/matonos/pipewire"
 def buildPipeWire = tasks.register('buildPipeWire', Exec) {
@@ -105,6 +129,9 @@ android {
             keepDebugSymbols += '**/libmatonos-flatpak-plan.so'
             keepDebugSymbols += '**/libmatonos-v3-loader.so'
             keepDebugSymbols += '**/libmatonos-v3-loader-i386.so'
+            keepDebugSymbols += '**/libmatonos-flatpak.so'
+            keepDebugSymbols += '**/libmatonos-app-flatpak.so'
+            keepDebugSymbols += '**/libmatonos-app-bwrap.so'
         }
     }
     signingConfigs {
@@ -127,8 +154,10 @@ android {
             jniLibs.srcDir brokerJni
             jniLibs.srcDir v3Jni
             jniLibs.srcDir planJni
+            jniLibs.srcDir new File(layout.buildDirectory.get().asFile, 'generated/flatpakJni')
             jniLibs.srcDir new File(pipewireOutput, 'jniLibs')
             assets.srcDir pipewireAssets
+            assets.srcDir flatpakAssets
         }
     }
 }

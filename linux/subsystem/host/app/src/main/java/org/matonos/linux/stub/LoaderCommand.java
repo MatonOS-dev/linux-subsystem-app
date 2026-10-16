@@ -18,15 +18,29 @@ import java.util.List;
  * two callers cannot drift apart.
  */
 final class LoaderCommand {
-    static final String FLATPAK_BIN = "/apex/com.matonos.flatpak/bin";
+    static final String FLATPAK_TOOL = "libmatonos-flatpak.so";
+    static final String FLATPAK_CLI = "libmatonos-app-flatpak.so";
+    static final String FLATPAK_BWRAP = "libmatonos-app-bwrap.so";
 
     /** Loader for the calling package's host, resolved through PackageManager. */
     static File loader(Context context) throws PackageManager.NameNotFoundException {
-        ApplicationInfo host = context.getPackageManager().getApplicationInfo("org.matonos.linux", 0);
-        File loader = new File(host.nativeLibraryDir, "libmatonos-v3-loader.so");
+        File loader = new File(nativeLibraryDir(context), "libmatonos-v3-loader.so");
         if (!loader.isFile() || !loader.canExecute())
             throw new IllegalStateException("Update the Linux host: v3 loader is missing");
         return loader;
+    }
+
+    /** Executable tools shipped beside the loader in this host APK. */
+    static File tool(Context context, String name) throws PackageManager.NameNotFoundException {
+        File tool = new File(nativeLibraryDir(context), name);
+        if (!tool.isFile() || !tool.canExecute())
+            throw new IllegalStateException("Update the Linux host: " + name + " is missing");
+        return tool;
+    }
+
+    static File nativeLibraryDir(Context context) throws PackageManager.NameNotFoundException {
+        ApplicationInfo host = context.getPackageManager().getApplicationInfo("org.matonos.linux", 0);
+        return new File(host.nativeLibraryDir);
     }
 
     /** The logical resolver address this UID's forwarder answers on. */

@@ -168,14 +168,22 @@ public final class InstallTransaction {
             LoaderCommand.addDns(prefix,dns,run);LoaderCommand.addResolvMaps(prefix,resolv);
             File descriptor=new File(root,"origin.flatpakrepo");
             if(!origin.url.isEmpty())Files.write(descriptor.toPath(),origin.flatpakrepo().getBytes(StandardCharsets.UTF_8));
-            if(configure)cli("remote-add","--system",origin.name,origin.url.isEmpty()?"/apex/com.matonos.flatpak/etc/flatpak/remotes.d/flathub.flatpakrepo":descriptor.getAbsolutePath());
+            if(configure) {
+                if(origin.url.isEmpty()) {
+                    try(java.io.InputStream in=context.getAssets().open("flatpak/remotes.d/flathub.flatpakrepo")) {
+                        Files.copy(in,descriptor.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                cli("remote-add","--system",origin.name,descriptor.getAbsolutePath());
+            }
         }
         byte[] command(java.util.List<String> tail,boolean absentAllowed)throws Exception {
             checkCancelled();java.util.List<String> command=new ArrayList<>(prefix);command.addAll(tail);
             File error=File.createTempFile("flatpak-",".log",tmp);
             ProcessBuilder builder=new ProcessBuilder(command).directory(home).redirectError(error);
             Map<String,String> env=builder.environment();env.clear();
-            env.put("PATH",LoaderCommand.FLATPAK_BIN+":/system/bin");env.put("LD_LIBRARY_PATH","/apex/com.matonos.flatpak/lib64:/system/lib64");env.put("LC_ALL","C");
+            String nativeDir=LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
+            env.put("PATH",nativeDir+":/system/bin");env.put("LD_LIBRARY_PATH",nativeDir+":/system/lib64");env.put("LC_ALL","C");
             env.put("HOME",home.getAbsolutePath());env.put("TMPDIR",tmp.getAbsolutePath());env.put("XDG_RUNTIME_DIR",run.getAbsolutePath());
             env.put("XDG_DATA_HOME",new File(home,".local/share").getAbsolutePath());env.put("XDG_CONFIG_HOME",new File(home,".config").getAbsolutePath());env.put("XDG_CACHE_HOME",cache.getAbsolutePath());
             env.put("FLATPAK_SYSTEM_DIR",installation.getAbsolutePath());env.put("FLATPAK_USER_DIR",installation.getAbsolutePath());env.put("FLATPAK_SYSTEM_CACHE_DIR",cache.getAbsolutePath());env.put("FLATPAK_DOWNLOAD_TMPDIR",tmp.getAbsolutePath());
@@ -191,7 +199,7 @@ public final class InstallTransaction {
             }finally{process=null;child.destroyForcibly();error.delete();}
         }
         byte[] cli(String... args)throws Exception {
-            java.util.List<String> tail=new ArrayList<>();tail.add(LoaderCommand.FLATPAK_BIN+"/matonos-app-flatpak");java.util.Collections.addAll(tail,args);
+            java.util.List<String> tail=new ArrayList<>();tail.add(LoaderCommand.tool(context,LoaderCommand.FLATPAK_CLI).getAbsolutePath());java.util.Collections.addAll(tail,args);
             return command(tail,false);
         }
         org.matonos.linuxhost.stubgen.DependencyPlan.Info inspect(String ref)throws Exception {

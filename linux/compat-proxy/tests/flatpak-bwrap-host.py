@@ -9,9 +9,9 @@ build = base / 'build'
 root = build / 'bionic-host-root'
 fixture = build / 'flatpak-bwrap'
 fixture.mkdir(exist_ok=True)
-proxy = [str(build/'linux-layer-v3'), '--android-filter', '--map', str(root/'system'), '/system', '--map', str(root/'apex'), '/apex']
+proxy = [str(build/'linux-layer-v3'), '--android-filter', '--map', str(root/'system'), '/system', '--map', str(root/'apex'), '/apex', '--map', str(root/'system_ext'), '/system_ext']
 runtime = pathlib.Path(os.environ.get('COMPAT_HOST_RUNTIME', '/usr'))
-bwrap = '/apex/com.matonos.flatpak/bin/matonos-app-bwrap'
+bwrap = '/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/bwrap'
 # The VM log exposes the outer command, but not the contents of --args.
 # Replay the actual ldconfig payload when supplied, retaining source-derived
 # host fd bundles: VM backing files and memfds cannot be read offline.

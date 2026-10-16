@@ -71,14 +71,15 @@ public final class StagedPacks {
             command.add("--parent-pid");command.add(Integer.toString(android.os.Process.myPid()));
             // multicall.c explicitly shifts argv for this selector: argv[0]
             // passed to ostree_cli_main is "ostree", not matonos-flatpak.
-            command.add(LoaderCommand.FLATPAK_BIN+"/matonos-flatpak");command.add("ostree");
+            command.add(LoaderCommand.tool(context,LoaderCommand.FLATPAK_TOOL).getAbsolutePath());command.add("ostree");
             command.add("--repo="+repo.getAbsolutePath());Collections.addAll(command,args);
             File error=File.createTempFile("pack-ostree-",".log",new File(operation,"tmp"));
             try {
                 ProcessBuilder pb=new ProcessBuilder(command).redirectError(error);
                 Map<String,String> env=pb.environment();env.clear();
-                env.put("PATH",LoaderCommand.FLATPAK_BIN+":/system/bin");
-                env.put("LD_LIBRARY_PATH","/apex/com.matonos.flatpak/lib64:/system/lib64");
+                String nativeDir=LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
+                env.put("PATH",nativeDir+":/system/bin");
+                env.put("LD_LIBRARY_PATH",nativeDir+":/system/lib64");
                 env.put("LC_ALL","C");env.put("HOME",new File(operation,"home").getAbsolutePath());
                 env.put("TMPDIR",new File(operation,"tmp").getAbsolutePath());
                 pb.directory(new File(operation,"home"));

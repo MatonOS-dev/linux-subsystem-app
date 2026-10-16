@@ -298,7 +298,7 @@ done:
  * build. Log it without changing the fd offset or its seals. */
 void proxy_log_bwrap_args(const char *path,char *const *argv){
     const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
-    if(!p_equal(base,"matonos-app-bwrap") && !p_equal(base,"bwrap"))return;
+    if(!p_equal(base,"matonos-app-bwrap") && !p_equal(base,"libmatonos-app-bwrap.so") && !p_equal(base,"bwrap"))return;
     for(size_t i=0;argv && argv[i];i++){
         RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 bwrap argv ",14,0,0,0);
         RAW(PROXY_SC_write,proxy_diagnostic_fd,argv[i],p_len(argv[i]),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);

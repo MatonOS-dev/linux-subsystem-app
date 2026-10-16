@@ -84,7 +84,8 @@ spike limitation. Initial host fixtures use `--root` to supply Android's
 filesystem; `--map SOURCE TARGET` overlays Android paths on the real host root
 for the glibc bwrap payload tests.
 
-`tests/bionic-host.sh` copies the staged runtime/Flatpak APEX files into build/
+`tests/bionic-host.sh` copies the staged Android runtime and subsystem APK tool
+inputs into build/
 and verifies bwrap 0.13.0 and Flatpak 1.19.2 versions under --android-filter,
 then runs staged bwrap with the two host glibc payloads. Set COMPAT_PRODUCT_OUT
 to use different artifacts. fd names are recorded across opens, close, dup
@@ -222,8 +223,8 @@ python3 tests/lifetime.py /mnt/data/aosp/out/matonos/compat-proxy/libmatonos-v3-
 ```
 
 See ../subsystem/V3-LAUNCH.md for the production spec, paths, retirement and
-remaining image checks. Historical bionic replay fixtures reference old staged
-APEX helpers and do not prove the new production path.
+remaining image checks. The bionic host fixture stages tools at the subsystem
+APK native-library path used in production.
 
 Round 26 DNS: `--dns-forwarder 127.x.y.z:53 --dns-socket /private/runtime/dns/forwarder`
 configures an exact app-visible IPv4 resolver and its Unix transport base.

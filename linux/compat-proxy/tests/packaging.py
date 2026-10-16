@@ -9,6 +9,9 @@ with tempfile.TemporaryDirectory(prefix='packaging-',dir=root/'build') as tmp:
     directory=pathlib.Path(tmp);apk=directory/'fixture.apk';out=directory/'extracted'
     with zipfile.ZipFile(apk,'w') as z:
         for name in names:z.write(root/'build/android-test'/name,'lib/x86_64/'+name,compress_type=zipfile.ZIP_STORED)
+        # The production host APK also carries the Flatpak planner helper;
+        # this fixture only exercises extraction, so a loader ELF is sufficient.
+        z.write(root/'build/android-test'/names[0],'lib/x86_64/libmatonos-flatpak-plan.so',compress_type=zipfile.ZIP_STORED)
     subprocess.run(['bash',str(root/'extract-loaders.sh'),str(apk),str(out)],check=True)
     for name,elf_class in zip(names,(2,1)):
         p=out/name;assert p.read_bytes()==(root/'build/android-test'/name).read_bytes()

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Rebuild the in-tree Flatpak launch helpers that ship as prebuilts in the
-# com.matonos.flatpak APEX (linux/flatpak/prebuilt/static/<arch>/), but only
-# when their sources or the recipe changed. Soong then repacks the APEX
-# because its prebuilt inputs changed. build.sh runs this before the AOSP
-# build; MATON_FORCE_HELPERS=1 rebuilds unconditionally.
+# Rebuild the in-tree Flatpak launch helpers that ship as APK inputs in
+# linux/flatpak/prebuilt/static/<arch>/ when sources or the recipe changed.
+# build-apps.sh packages these beside the v3 loader; MATON_FORCE_HELPERS=1
+# rebuilds unconditionally.
 #
 # The Flatpak/OSTree multicall and portal come from MatonOS_apexs;
 # the unprivileged applet entries are rebuilt here.

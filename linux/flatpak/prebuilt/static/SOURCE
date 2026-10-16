@@ -42,6 +42,6 @@ Toolchain: NDK r30, x86_64-linux-android36; Bionic helpers and multicall, stripp
 Portal payload retained from the Bionic recipe (2026-10-08):
 
 In-tree management/app-shim refresh (rounds 10+11):
-a12949305e40701449ec66dd71bed01e64a2ab7237c966dbd7d7105b7f342133  linux/flatpak/matonos-app-tool.c
-d1ceee0581b5aacf3166430a8230c91a5ef7e193243444ca5aa60f81a406742a  linux/flatpak/prebuilt/static/x86_64/matonos-app-flatpak
-d1ceee0581b5aacf3166430a8230c91a5ef7e193243444ca5aa60f81a406742a  linux/flatpak/prebuilt/static/x86_64/matonos-app-bwrap
+61ffc8a9f26da3d6edac3ae75e3cdf0d5cf02b218dffecf2435398822fe33e1e  linux/flatpak/matonos-app-tool.c
+ab9d32206be445f71a4889cde6379b1b29e3b9438f515a959893539a81810755  linux/flatpak/prebuilt/static/x86_64/matonos-app-flatpak
+ab9d32206be445f71a4889cde6379b1b29e3b9438f515a959893539a81810755  linux/flatpak/prebuilt/static/x86_64/matonos-app-bwrap
