@@ -6,6 +6,7 @@ if [[ $(uname -m) != x86_64 ]]; then
 fi
 mkdir -p build
 proxy=../compat-proxy
+python3 "$proxy/gen-policy.py"
 compiler=${SPIKE_CC:-cc}
 # Same proxy sources, separate outputs; never writes to the AOSP tree.
 for source in loader proxy vfs links net sysvipc state; do

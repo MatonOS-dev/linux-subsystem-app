@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
     if (!p) return 4;
     /* getpid has no callbacks/allocator ABI; EGL/Vulkan pointers deliberately
      * aren't called on glibc TLS. Resolve alone does not prove driver safety. */
-    if (argc == 1) {
+    if (!strcmp(sym, "getpid")) {
         uintptr_t saved;
         raw(SYS_arch_prctl, 0x1003, (long)&saved);
         raw(SYS_arch_prctl, 0x1002, bridge->tls);
@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
         printf("foreign Vulkan create/destroy (no desktop loader): %d\n", result);
         if (result != VK_SUCCESS) return 7;
     }
-    if (argc == 1) {
+    if (!strcmp(sym, "getpid")) {
         const int iterations = 100000;
         struct timespec begin, end;
         clock_gettime(CLOCK_MONOTONIC, &begin);
