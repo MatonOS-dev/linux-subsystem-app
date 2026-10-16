@@ -25,6 +25,17 @@ public final class DeploymentRecordTest {
         rejects(()->new RemoteOrigin("test",custom.url,""));
         rejects(()->new RemoteOrigin("test",custom.url,"AQID\\nUrl=https://evil.example"));
         rejects(()->RemoteOrigin.flatpakrepo("test",custom.flatpakrepo()+"Url=https://evil.example\n"));
+        DeploymentRecord bound=new DeploymentRecord(record.ref,commit,custom.encode(),record.metadata,record.deploy,object,
+                List.of(new DeploymentRecord.Dependency("runtime/org.test.Platform/x86_64/stable",custom.encode(),"/usr")),"/app/extensions/test");
+        DeploymentRecord restored=DeploymentRecord.decode(bound.encode());
+        if(restored.dependencies.size()!=1||!restored.dependencies.get(0).remote.equals(custom.encode())||!restored.dependencies.get(0).mount.equals("/usr")||!restored.mount.equals(bound.mount))throw new AssertionError("Dependency origin/mount lost");
+        rejects(()->new DeploymentRecord.Dependency("runtime/org.test.Platform/x86_64/stable",custom.encode(),"/usr/../escape"));
+        rejects(()->new DeploymentRecord(record.ref,commit,custom.encode(),record.metadata,record.deploy,object,
+                List.of(new DeploymentRecord.Dependency(record.ref,custom.encode(),"/app"))));
+        for(String old:List.of("MTDEP1","MTDEP2")) {
+            ByteArrayOutputStream legacy=new ByteArrayOutputStream();new DataOutputStream(legacy).writeUTF(old);
+            rejects(()->DeploymentRecord.decode(legacy.toByteArray()));
+        }
         byte[] bytes=record.encode();
         DeploymentRecord decoded=DeploymentRecord.decode(bytes);
         if(!decoded.ref.equals(record.ref)||!Arrays.equals(record.deploy,decoded.deploy))throw new AssertionError();

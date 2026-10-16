@@ -8,9 +8,29 @@ import java.util.zip.*;
 
 /** Tiny Flatpak deployment scaffolding carried by the signed index split. */
 public final class DeploymentRecord {
-    public final String ref, commit, remote;
+    public final String ref, commit, remote, mount;
     public final byte[] metadata, deploy, commitObject;
+    public static final class Dependency {
+        public final String ref,remote,mount;
+        public Dependency(String ref,String remote,String mount)throws IOException {
+            if(!DependencyPlan.validRef(ref)||mount==null||!mount.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*")
+                    ||Arrays.asList(mount.split("/")).contains("..")||Arrays.asList(mount.split("/")).contains("."))throw new IOException("Invalid declared dependency");
+            RemoteOrigin.parse(remote);this.ref=ref;this.remote=remote;this.mount=mount;
+        }
+    }
+    public final List<Dependency> dependencies;
     public DeploymentRecord(String ref,String commit,String remote,byte[] metadata,byte[] deploy,byte[] commitObject) throws IOException {
+        this(ref,commit,remote,metadata,deploy,commitObject,Collections.emptyList());
+    }
+    public DeploymentRecord(String ref,String commit,String remote,byte[] metadata,byte[] deploy,byte[] commitObject,List<Dependency> dependencies)throws IOException {
+        this(ref,commit,remote,metadata,deploy,commitObject,dependencies,ref!=null&&ref.startsWith("app/")?"/app":"/usr");
+    }
+    public DeploymentRecord(String ref,String commit,String remote,byte[] metadata,byte[] deploy,byte[] commitObject,List<Dependency> dependencies,String mount)throws IOException {
+        new Dependency(ref,remote,mount);this.mount=mount;
+        if(dependencies==null||dependencies.size()>128)throw new IOException("Invalid dependency list");
+        Set<String> refs=new HashSet<>();
+        for(Dependency dependency:dependencies)if(!refs.add(dependency.ref)||dependency.ref.equals(ref))throw new IOException("Duplicate or self dependency");
+        this.dependencies=List.copyOf(dependencies);
         if(ref==null||!ref.matches("(?:app|runtime)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
                 ||Arrays.asList(ref.split("/")).contains("..")||Arrays.asList(ref.split("/")).contains(".")
                 ||commit==null||!commit.matches("[0-9a-f]{64}")||remote==null
@@ -25,25 +45,35 @@ public final class DeploymentRecord {
         this.ref=ref;this.commit=commit;this.remote=remote;this.metadata=metadata;this.deploy=deploy;
     }
     public byte[] encode() throws IOException {
+        long size=metadata.length+(long)deploy.length+commitObject.length+remote.length()+1024;
+        for(Dependency dependency:dependencies)size+=dependency.ref.length()+dependency.mount.length()+dependency.remote.length()+32;
+        if(size>5*1024*1024)throw new IOException("Deployment record exceeds size limit");
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();
         try(DataOutputStream out=new DataOutputStream(bytes)) {
-            out.writeUTF("MTDEP2");out.writeUTF(ref);out.writeUTF(commit);
-            byte[] origin=remote.getBytes(StandardCharsets.UTF_8);out.writeInt(origin.length);out.write(origin);
+            out.writeUTF("MTDEP3");out.writeUTF(ref);out.writeUTF(commit);
+            byte[] origin=remote.getBytes(StandardCharsets.UTF_8);out.writeInt(origin.length);out.write(origin);out.writeUTF(mount);
             out.writeInt(commitObject.length);out.write(commitObject);
             out.writeInt(metadata.length);out.write(metadata);out.writeInt(deploy.length);out.write(deploy);
+            out.writeInt(dependencies.size());
+            for(Dependency dependency:dependencies){out.writeUTF(dependency.ref);out.writeUTF(dependency.mount);writeOrigin(out,dependency.remote);}
         }
         return bytes.toByteArray();
     }
     public static DeploymentRecord decode(byte[] bytes) throws IOException {
         try(DataInputStream in=new DataInputStream(new ByteArrayInputStream(bytes))) {
             String version=in.readUTF();
-            if(!version.equals("MTDEP1")&&!version.equals("MTDEP2"))throw new IOException("Unknown deployment record");
-            String ref=in.readUTF(),commit=in.readUTF(),remote=version.equals("MTDEP1")?in.readUTF():new String(blob(in,2*1024*1024),StandardCharsets.UTF_8);
+            if(!version.equals("MTDEP3"))throw new IOException("Unknown deployment record");
+            String ref=in.readUTF(),commit=in.readUTF(),remote=new String(blob(in,2*1024*1024),StandardCharsets.UTF_8);
+            String mount=in.readUTF();
             byte[] commitObject=blob(in,1024*1024),metadata=blob(in,128*1024),deploy=blob(in,1024*1024);
+            int count=in.readInt();if(count<0||count>128)throw new IOException("Invalid dependency count");
+            List<Dependency> dependencies=new ArrayList<>();
+            for(int i=0;i<count;i++){String depRef=in.readUTF(),depMount=in.readUTF();dependencies.add(new Dependency(depRef,new String(blob(in,2*1024*1024),StandardCharsets.UTF_8),depMount));}
             if(in.read()!=-1)throw new IOException("Trailing deployment record bytes");
-            return new DeploymentRecord(ref,commit,remote,metadata,deploy,commitObject);
+            return new DeploymentRecord(ref,commit,remote,metadata,deploy,commitObject,dependencies,mount);
         }
     }
+    private static void writeOrigin(DataOutputStream out,String origin)throws IOException {byte[] bytes=origin.getBytes(StandardCharsets.UTF_8);out.writeInt(bytes.length);out.write(bytes);}
     private static byte[] blob(DataInputStream in,int limit) throws IOException {
         int length=in.readInt();if(length<=0||length>limit)throw new IOException("Invalid deployment field size");
         byte[] bytes=new byte[length];in.readFully(bytes);return bytes;
