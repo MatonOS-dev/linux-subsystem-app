@@ -11,7 +11,7 @@ if [[ ! -f "$libc" || ! -f "$interpreter" ]]; then
 fi
 mkdir -p build/i386-p1
 cc -m32 -c tests/i386-entry.S -o build/i386-p1/entry.o
-for test in dynamic sockets dns ipc pty fp resolver; do
+for test in dynamic sockets dns ipc pty fp resolver nofollow; do
     "$compiler" -c -O2 -fno-stack-protector -Wall -Wextra -Werror \
         "tests/i386-$test.c" -o "build/i386-p1/$test.o"
     ld -m elf_i386 -o "build/i386-p1/$test" --dynamic-linker "$interpreter" \
@@ -27,3 +27,5 @@ done
 python3 tests/i386-dns.py
 
 python3 tests/i386-resolver.py
+
+timeout 15 build/linux-layer-v3-i386 --android-filter "$PWD/build/i386-p1/nofollow"

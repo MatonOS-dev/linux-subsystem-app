@@ -10,6 +10,7 @@ void links_exit(void);
 char *links_fd_name(int);
 struct proxy_stat; struct statx;
 void links_payload_fd_stat(int,void *);
+int links_fd_stored(int);
 void links_fd_stat(int,struct proxy_stat *);
 void links_recover_path(const char *);
 int links_hidden(const char *);

@@ -1272,3 +1272,26 @@ for these mutations/stats and SIGKILL recovery, checks that an unrelated
 object's sidecar bytes/mtime did not change, and covers overwrite/exchange,
 failed publication, same-name NOREPLACE, immediate zero-count collection and
 one-shot corrupt metadata fallback. It is included in `tests/run.sh`.
+
+Stored hardlink names and no-follow lookups (2026-10-17): `links_target()`
+recognizes the existing `.v3-inodes` representation and substitutes only the
+final backing regular file. Open and at-style flags remain intact; real
+symlinks retain kernel behavior. Empty-path stat calls reuse the existing fd
+link-count path, and empty-path readlink on a stored fd returns EINVAL.
+Path-first xattr operations, the newer xattrat family, and inotify's
+IN_DONT_FOLLOW go through the same translation. No additional tree walks
+are introduced. `openat2` remains ENOSYS.
+
+`tests/hardlinks.c` covers the libglnx O_PATH/no-follow/statx/reopen sequence,
+metadata and xattr variants, real symlinks, and no-follow inotify watches.
+`tests/i386-nofollow.c` covers the ELF32 statx/readlinkat layouts. Run the full
+suite with `bash linux/compat-proxy/tests/run.sh`. To also compile and run the
+actual upstream libglnx chase implementation, set `MATON_TEST_GLNX_SOURCE` to
+an existing libglnx source directory; this optional test requires host GLib
+and gio-unix development packages. All optional-test outputs stay in build/.
+
+The inherited app syscall policy remains authoritative: on this checkout
+`name_to_handle_at` is denied (ENOSYS); its path route is ready if permitted,
+but does not bypass that denial. Host filesystems/kernels without xattrat
+return ENOSYS. Validation is on the host under the copied app filter, not a
+fresh MatonOS VM deployment; rerun Flatpak installation on the rebuilt image.

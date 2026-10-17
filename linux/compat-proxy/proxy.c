@@ -9,6 +9,7 @@
 #include "links.h"
 #include "sysvipc.h"
 #include <sys/time.h>
+#include <sys/inotify.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/un.h>
@@ -179,11 +180,14 @@ static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)re
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
 static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
-    int at=one==1 || (nr==PROXY_SC_symlinkat && one==2);
+    int at=(one==1 && nr!=PROXY_SC_inotify_add_watch) || (nr==PROXY_SC_symlinkat && one==2);
     int fd=at?(int)a[one-1]:AT_FDCWD;
-    int follow=nr!=PROXY_SC_lsetxattr && nr!=PROXY_SC_lremovexattr && nr!=PROXY_SC_readlinkat && nr!=PROXY_SC_readlink && nr!=PROXY_SC_unlinkat && nr!=PROXY_SC_renameat && nr!=PROXY_SC_renameat2 && nr!=PROXY_SC_symlinkat && nr!=PROXY_SC_mkdirat && nr!=PROXY_SC_mknodat;
+    int follow=nr!=PROXY_SC_lgetxattr && nr!=PROXY_SC_llistxattr && nr!=PROXY_SC_lsetxattr && nr!=PROXY_SC_lremovexattr && nr!=PROXY_SC_readlinkat && nr!=PROXY_SC_readlink && nr!=PROXY_SC_unlinkat && nr!=PROXY_SC_renameat && nr!=PROXY_SC_renameat2 && nr!=PROXY_SC_symlinkat && nr!=PROXY_SC_mkdirat && nr!=PROXY_SC_mknodat;
     if(nr==PROXY_SC_newfstatat || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_faccessat2 || nr==PROXY_SC_fchmodat2)follow=!(a[nr==PROXY_SC_fchownat?4:3]&AT_SYMLINK_NOFOLLOW);
+    if(nr==PROXY_SC_inotify_add_watch)follow=!(a[2]&IN_DONT_FOLLOW);
+    if(nr==PROXY_SC_name_to_handle_at)follow=!!(a[4]&AT_SYMLINK_FOLLOW);
     if(nr==PROXY_SC_linkat)follow=(a[4]&AT_SYMLINK_FOLLOW)?VFS_FOLLOW_LINK_SOURCE:0;
+    if(nr==PROXY_SC_getxattrat || nr==PROXY_SC_listxattrat || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
     /* Publish an unnamed inode via procfs: AT_EMPTY_PATH otherwise requires
@@ -199,7 +203,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         a[4]=(a[4]&~AT_EMPTY_PATH)|AT_SYMLINK_FOLLOW;follow=VFS_FOLLOW_LINK_SOURCE;
     }
     /* Other empty-path operations act on the original descriptor. */
-    if(a[one] && !*(char *)(uintptr_t)a[one] && at){long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
+    if(a[one] && !*(char *)(uintptr_t)a[one] && at){if(nr==PROXY_SC_readlinkat && links_fd_stored(fd))return -EINVAL;long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
     long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
@@ -207,7 +211,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     int packed=0;e=pack_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;pack_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
-    int writing=nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
+    int writing=nr==PROXY_SC_setxattr || nr==PROXY_SC_lsetxattr || nr==PROXY_SC_removexattr || nr==PROXY_SC_lremovexattr || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
     if(nr==PROXY_SC_mkdirat){struct proxy_stat existing;if(!arch_stat_at(AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW)){e=-EEXIST;goto done;}}
     /* Exclusive creation checks existence before mount write permission.
      * bwrap probes an already bound file this way before mounting a new
@@ -485,7 +489,7 @@ static int ours(long n) {
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
     case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
     case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_sendfile:case PROXY_SC_copy_file_range:case PROXY_SC_splice:
-    case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:
+    case PROXY_SC_getxattr:case PROXY_SC_lgetxattr:case PROXY_SC_listxattr:case PROXY_SC_llistxattr:case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:
     case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
     case PROXY_SC_close_range:case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_close:case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
     case PROXY_SC_capget:case PROXY_SC_capset:case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:
@@ -494,7 +498,7 @@ static int ours(long n) {
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
     case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_newfstatat:
-    case PROXY_SC_statx:case PROXY_SC_access:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:case PROXY_SC_readlink:case PROXY_SC_readlinkat:
+    case PROXY_SC_inotify_add_watch:case PROXY_SC_getxattrat:case PROXY_SC_listxattrat:case PROXY_SC_setxattrat:case PROXY_SC_removexattrat:case PROXY_SC_name_to_handle_at:case PROXY_SC_statx:case PROXY_SC_access:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:case PROXY_SC_readlink:case PROXY_SC_readlinkat:
     case PROXY_SC_fchdir:case PROXY_SC_chdir:case PROXY_SC_getcwd:case PROXY_SC_mkdir:case PROXY_SC_mkdirat:case PROXY_SC_unlink:case PROXY_SC_unlinkat:
     case PROXY_SC_rename:case PROXY_SC_renameat:case PROXY_SC_renameat2:case PROXY_SC_link:case PROXY_SC_linkat:
     case PROXY_SC_symlink:case PROXY_SC_symlinkat:case PROXY_SC_chmod:case PROXY_SC_fchmodat:case PROXY_SC_fchmodat2:case PROXY_SC_chown:case PROXY_SC_lchown:
@@ -598,7 +602,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_sendfile:case PROXY_SC_copy_file_range:case PROXY_SC_splice:case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
         if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         break;
-    case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:result=path_call(nr,a,0,-1);break;
+    case PROXY_SC_getxattr:case PROXY_SC_lgetxattr:case PROXY_SC_listxattr:case PROXY_SC_llistxattr:case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:result=path_call(nr,a,0,-1);break;
     case PROXY_SC_ppoll:if(app_allowed(nr))result=dns_poll((void *)(uintptr_t)a[0],a[1],(void *)(uintptr_t)a[2],(void *)(uintptr_t)a[3],a[4]);break;
     case PROXY_SC_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
     case PROXY_SC_getdents64:result=links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);break;
@@ -762,7 +766,7 @@ clone_retry:
     case PROXY_SC_openat2:result=-ENOSYS;break; /* bwrap uses its checked openat fallback. */
     /* futimens(fd): a NULL path names the fd itself; there is no path to map. */
     case PROXY_SC_utimensat:if(!a[1]){result=app_allowed(nr)?RAW(PROXY_SC_utimensat,a[0],0,a[2],a[3],0,0):-ENOSYS;break;}result=path_call(nr,a,1,-1);break;
-    case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:
+    case PROXY_SC_inotify_add_watch:case PROXY_SC_getxattrat:case PROXY_SC_listxattrat:case PROXY_SC_setxattrat:case PROXY_SC_removexattrat:case PROXY_SC_name_to_handle_at:case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:
     case PROXY_SC_mknodat:case PROXY_SC_readlinkat:case PROXY_SC_mkdirat:case PROXY_SC_unlinkat:case PROXY_SC_fchmodat:case PROXY_SC_fchmodat2:case PROXY_SC_fchownat:
         result=path_call(nr,a,1,-1);break;
     case PROXY_SC_link:case PROXY_SC_rename:result=path_call(nr,a,0,1);break;
