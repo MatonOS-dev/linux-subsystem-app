@@ -75,6 +75,37 @@ def packageVulkanForward = tasks.register('packageVulkanForward', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn packageVulkanForward }
 
+def eglRoot = file('../../../egl-forward')
+def eglOutput = System.getenv('MATON_EGL_OUT') ?: "$aospRoot/out/matonos/egl-forward"
+def eglDeps = new File(eglOutput, 'deps')
+def eglNdk = System.getenv('MATON_NDK') ?: "${System.getProperty('user.home')}/Android/Sdk/ndk/30.0.16248370"
+def buildEglForward = tasks.register('buildEglForward', Exec) {
+    inputs.files fileTree(eglRoot)
+    outputs.files new File(eglOutput, 'libEGL_maton.so'), new File(eglOutput, '10_maton.json')
+    outputs.upToDateWhen { false }
+    environment 'CC', System.getenv('MATON_EGL_CC') ?: 'clang-21'
+    environment 'READELF', System.getenv('MATON_EGL_READELF') ?: 'llvm-readelf-21'
+    commandLine 'bash', '-c', 'set -euo pipefail; bash "$1/fetch-tools.sh" "$2"; CC="$3" READELF="$4" bash "$1/build.sh" "$5" "$2" "$6"',
+            'egl-forward-build', eglRoot.absolutePath, eglDeps.absolutePath,
+            System.getenv('MATON_EGL_CC') ?: 'clang-21',
+            System.getenv('MATON_EGL_READELF') ?: 'llvm-readelf-21', eglOutput, eglNdk
+}
+def eglJni = new File(layout.buildDirectory.get().asFile, 'generated/eglJni/x86_64')
+def eglAssets = new File(layout.buildDirectory.get().asFile, 'generated/eglAssets/egl')
+def packageEglForward = tasks.register('packageEglForward', Copy) {
+    dependsOn buildEglForward
+    from(new File(eglOutput, 'libEGL_maton.so')) { into 'eglJni/x86_64' }
+    from(new File(eglOutput, '10_maton.json')) { into 'eglAssets/egl' }
+    into layout.buildDirectory.dir('generated')
+    doLast {
+        def manifest = new File(eglAssets, '10_maton.json')
+        def json = manifest.getText('UTF-8')
+        def target = '"library_path": "/run/maton/egl/libEGL_maton.so"'
+        if (!json.contains(target)) throw new GradleException('EGL vendor manifest does not point at /run/maton/egl')
+    }
+}
+tasks.named('preBuild').configure { dependsOn packageEglForward }
+
 def v3Root = file('../../../compat-proxy')
 def v3Output = System.getenv('MATON_V3_ANDROID_OUT') ?: "$aospRoot/out/matonos/compat-proxy"
 def v3Jni = new File(layout.buildDirectory.get().asFile, 'generated/v3Jni')
@@ -91,7 +122,7 @@ def buildV3Loader = tasks.register('buildV3Loader', Exec) {
 }
 def packageV3Loader = tasks.register('packageV3Loader', Copy) {
     dependsOn buildV3Loader
-    from fileTree(v3Output) { include 'lib*.so' }
+    from fileTree(v3Output) { include 'libmatonos*.so' }
     into new File(v3Jni, 'x86_64')
 }
 tasks.named('preBuild').configure { dependsOn packageV3Loader }
@@ -171,6 +202,7 @@ android {
             keepDebugSymbols += '**/libmatonos-app-flatpak.so'
             keepDebugSymbols += '**/libmatonos-app-bwrap.so'
             keepDebugSymbols += '**/libmaton_vulkan.so'
+            keepDebugSymbols += '**/libEGL_maton.so'
         }
     }
     signingConfigs {
@@ -205,6 +237,8 @@ android {
             assets.srcDir pipewireAssets
             assets.srcDir flatpakAssets
             assets.srcDir vulkanAssets
+            jniLibs.srcDir new File(layout.buildDirectory.get().asFile, 'generated/eglJni')
+            assets.srcDir new File(layout.buildDirectory.get().asFile, 'generated/eglAssets')
         }
     }
 }

@@ -49,21 +49,52 @@ The offscreen program needs to run inside the adopted Android EGL bridge; host
 Mesa's GLVND vendor ABI is not the Android library interface and is not a
 substitute runtime.
 
-Current host verification: the DSO builds with zero dependencies and one
-export; arm64 and riscv64 stub compilations pass; the ABI handshake passes; the
-offscreen harness compiles. The local FSGSBASE switch-pair measurement is
-32.4 ns over 1,000,000 pairs. This is a host measurement of the shared
-switch-to-Android/switch-back code path with the adoption lookup. Calls from
-desktop apps that do not select this EGL vendor pay 0 ns. The end-to-end EGL
-overhead and triangle readback are not verified yet.
+Host verification on 2026-10-17: pinned inputs fetched; the DSO built with zero
+`DT_NEEDED`, one dynamic export, and arm64/riscv64 stub compilation; the GLVND
+ABI test passed; the offscreen harness compiled. The measured TLS switch pair
+was **31.2 ns** over 1,000,000 pairs on the host (FSGSBASE, including adoption
+lookup). Each EGL/GLES call through this vendor pays one such pair; code paths
+that do not select this EGL vendor pay 0 ns. The host triangle execution did
+not pass: this harness's fake bridge opens the host GLVND EGL DSO, which does
+not provide the resident Android EGL entry points expected by the forwarder.
+No glibc or musl pbuffer readback pass is claimed.
 
-## Stub launch integration still required
+## Host APK and VM status
 
-This task is scoped to `linux/egl-forward/`; it does not modify the shared host
-APK or `V3Launcher`. `PACKAGING.md` records the exact follow-up needed to add
-the DSO and JSON asset to the host APK, map them at `/run/maton/egl`, and set
-`__EGL_VENDOR_LIBRARY_FILENAMES` for Flatpak launches. Until that is wired and
-built, the Flathub `eglinfo` VM acceptance test cannot run.
+The host APK build now fetches/builds the vendor, packages
+`lib/x86_64/libEGL_maton.so` and `assets/egl/10_maton.json`, and validates that
+the manifest uses `/run/maton/egl/libEGL_maton.so`. On each stub launch,
+`V3Launcher` copies these files to the per-launch work directory, maps it at
+`/run/maton/egl`, and sets
+`__EGL_VENDOR_LIBRARY_FILENAMES=/run/maton/egl/10_maton.json` in both Flatpak's
+environment and the loader process environment.
+
+The signed APK built, passed 16 KiB alignment and native dependency closure
+checks (81 APK libraries), and installed as an update on the assigned fresh
+QEMU copy. The device extracted `libEGL_maton.so` into the updated host's
+`nativeLibraryDir`. The Flathub store opened and populated search results.
+Launching install for `app/io.github.arunsivaramanneo.GPUViewer/x86_64/stable`
+stopped before downloading: SELinux denied `{ create }` on the private DNS
+forwarder's `forwarder.udp` socket (`priv_app_36` creating a `privapp_data_file`
+`sock_file`, enforcing). This prevents preparing an installed app stub, so the
+VM did not exercise EGL, `eglinfo`, GLES rendering, or the pbuffer readback.
+The socket policy is outside this EGL repository and needs resolution before
+the requested real stub-launch acceptance can run. Do not treat APK install as
+proof of EGL runtime behavior.
+
+## Real-PC verification
+
+1. Build and install the updated `org.matonos.linux` host APK with the standard
+   app build pipeline, then boot a fresh MatonOS image.
+2. Install a Flathub app that provides `eglinfo`, launch it from its generated
+   stub, and run `eglinfo -p surfaceless`. Confirm the vendor and GLES renderer
+   match the resident EGL/GPU. Record the full app ref and output.
+3. Build `tests/offscreen.c` for glibc and musl, run both through the same
+   stub launch environment, and confirm the 64x64 pbuffer triangle's red
+   center pixel with `glReadPixels`.
+4. On a machine without an Android desktop-GL API, confirm
+   `eglBindAPI(EGL_OPENGL_API)` fails cleanly. Wayland and X11 windows belong
+   to step 2; they are not step-1 success criteria.
 
 ## Next step
 
