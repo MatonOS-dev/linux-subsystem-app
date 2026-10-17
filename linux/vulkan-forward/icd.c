@@ -6,9 +6,6 @@
 #include "backend.h"
 #include "../gpu-forward-spike/bridge.h"
 #include "dispatch.h"
-#ifndef MV_WSI_PROTOTYPE
-#define MV_WSI_PROTOTYPE 0
-#endif
 #include "wsi.h"
 #include "wayland_resolve.h"
 #define EXPORT __attribute__((visibility("default")))
@@ -82,15 +79,7 @@ static void *mv_new(struct mv_instance *i,size_t n) {
 static void mv_delete(struct mv_instance *i,void *p) {
     if(i->custom)i->allocator.pfnFree(i->allocator.pUserData,p);else mv_free(p);
 }
-#if MV_WSI_PROTOTYPE
 #include "wsi_vulkan.inc"
-#else
-static int mv_wsi_instance_extension(const char *name) {(void)name;return 0;}
-static VkResult mv_wsi_instance_extensions(uint32_t *count,VkExtensionProperties *out) {
-    (void)out;if(count)*count=0;return VK_SUCCESS;
-}
-static PFN_vkVoidFunction mv_wsi_lookup(const char *name) {(void)name;return 0;}
-#endif
 static VkPhysicalDevice mv_wrap(struct mv_instance *i,VkPhysicalDevice raw) {
     while(__atomic_exchange_n(&i->lock,1,__ATOMIC_ACQUIRE)){}
     struct mv_handle *h=i->physical;

@@ -9,12 +9,7 @@ mkdir -p "$out"
 python3 "$here/gen.py" "$headers/registry/vk.xml" "$out"
 cc=${CC:-clang-21}
 flags=(-std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/x86_64")
-wsi=()
-if [[ ${MATON_VK_WSI_PROTOTYPE:-0} == 1 ]]; then
-  flags+=(-DMV_WSI_PROTOTYPE=1)
-  wsi+=("$here/wsi.c" "$here/wsi_wayland.c" "$here/wayland_resolve.c")
-fi
-"$cc" "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "${wsi[@]}" -o "$out/libmaton_vulkan.so"
+"$cc" "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wayland_resolve.c" -o "$out/libmaton_vulkan.so"
 readelf=${READELF:-llvm-readelf-21}
 "$readelf" -d "$out/libmaton_vulkan.so" > "$out/dynamic.txt"
 if rg -q NEEDED "$out/dynamic.txt"; then echo 'unexpected DT_NEEDED' >&2;exit 1;fi

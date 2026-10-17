@@ -1,17 +1,14 @@
 #include "wsi.h"
 #include "runtime.h"
-#ifndef MV_WSI_PROTOTYPE
-#define MV_WSI_PROTOTYPE 0
-#endif
 void mv_wsi_surface_init(struct mv_wsi_surface *s,uint64_t token,VkExtent2D e) {
     *s=(struct mv_wsi_surface){token,1,e,token!=0};
 }
 void mv_wsi_surface_resize(struct mv_wsi_surface *s,VkExtent2D e) { s->extent=e;s->generation++; }
 VkBool32 mv_wsi_support(const struct mv_wsi_surface *s,VkQueueFlags flags,int ahb) {
-    return MV_WSI_PROTOTYPE && s->alive && ahb && (flags&VK_QUEUE_GRAPHICS_BIT)!=0;
+    return s->alive && ahb && (flags&VK_QUEUE_GRAPHICS_BIT)!=0;
 }
 VkResult mv_wsi_capabilities(const struct mv_wsi_surface *s,VkSurfaceCapabilitiesKHR *c) {
-    if(!MV_WSI_PROTOTYPE || !s->alive)return VK_ERROR_SURFACE_LOST_KHR;
+    if(!s->alive)return VK_ERROR_SURFACE_LOST_KHR;
     *c=(VkSurfaceCapabilitiesKHR){.minImageCount=2,.maxImageCount=4,
         .currentExtent=s->extent,.minImageExtent={1,1},.maxImageExtent={4096,4096},
         .maxImageArrayLayers=1,.supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
@@ -21,12 +18,10 @@ VkResult mv_wsi_capabilities(const struct mv_wsi_surface *s,VkSurfaceCapabilitie
     return VK_SUCCESS;
 }
 VkResult mv_wsi_formats(uint32_t *n,VkSurfaceFormatKHR *f) {
-    if(!MV_WSI_PROTOTYPE){*n=0;return VK_ERROR_EXTENSION_NOT_PRESENT;}
     if(!f){*n=1;return VK_SUCCESS;}if(!*n)return VK_INCOMPLETE;
     *n=1;*f=(VkSurfaceFormatKHR){VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};return VK_SUCCESS;
 }
 VkResult mv_wsi_modes(uint32_t *n,VkPresentModeKHR *m) {
-    if(!MV_WSI_PROTOTYPE){*n=0;return VK_ERROR_EXTENSION_NOT_PRESENT;}
     if(!m){*n=1;return VK_SUCCESS;}if(!*n)return VK_INCOMPLETE;
     *n=1;*m=VK_PRESENT_MODE_FIFO_KHR;return VK_SUCCESS;
 }
@@ -112,7 +107,6 @@ VkResult mv_wsi_destroy(struct mv_wsi_swapchain *c) {
 }
 VkResult mv_wsi_import_ahb(struct mv_wsi_driver *d,struct AHardwareBuffer *ahb,VkExtent2D e,VkFormat format,VkImage *image,VkDeviceMemory *memory) {
     *image=VK_NULL_HANDLE;*memory=VK_NULL_HANDLE;
-    if(!MV_WSI_PROTOTYPE)return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(!d || !ahb || !d->properties || !d->create || !d->allocate || !d->bind || !d->destroy || !d->free)return VK_ERROR_EXTENSION_NOT_PRESENT;
     VkAndroidHardwareBufferFormatPropertiesANDROID f={.sType=VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID};
     VkAndroidHardwareBufferPropertiesANDROID p={.sType=VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,.pNext=&f};
