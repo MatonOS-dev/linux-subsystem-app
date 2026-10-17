@@ -191,7 +191,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
     /* Other empty-path operations act on the original descriptor. */
-    if(a[one] && !*(char *)(uintptr_t)a[one] && at){if(nr==PROXY_SC_readlinkat && links_fd_stored(fd))return -EINVAL;long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
+    if(a[one] && !*(char *)(uintptr_t)a[one] && at){if(nr==PROXY_SC_fchmodat2){struct proxy_stat mode;if(!arch_stat_fd(fd,&mode) && S_ISREG(mode.st_mode))a[2]=(a[2]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
     long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
@@ -253,7 +253,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=-EOPNOTSUPP;
     else if(nr==PROXY_SC_linkat)e=links_publish(p,q,a[4]);
     else if(nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2)e=links_name_call(nr,a,p,q);
-    else if(nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    else if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     else e=links_path_call(nr,a,p);
     if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record((int)e,fd,original_path);
     if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
@@ -585,6 +585,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(net_handled)goto finish;
     result=-ENOSYS;
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
+    if(nr==PROXY_SC_fchmod){struct proxy_stat mode;if(!arch_stat_fd((int)a[0],&mode) && S_ISREG(mode.st_mode))a[1]=(a[1]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}
     switch(nr) {
     case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;

@@ -10,7 +10,7 @@ int main(int argc,char **argv){
  if(syscall(303,-100,"a",-100,"b",0))return 3;
  fd=syscall(295,-100,"b",0x200000|0x20000|0x80000,0);if(fd<0)return 4;
  struct statx st;if(syscall(383,fd,"",0x1000|0x100,0x7ff,&st) || (st.stx_mode&0170000)!=0100000 || st.stx_nlink!=2)return 5;
- char buf[8];if(syscall(305,fd,"",buf,sizeof(buf))!=-1 || *__errno_location()!=22)return 6;
+ char buf[8];if(syscall(305,fd,"",buf,sizeof(buf))!=-1 || *__errno_location()!=2)return 6;
  close(fd);if(syscall(304,"b",-100,"real"))return 7;
  fd=syscall(295,-100,"real",0x200000|0x20000,0);if(fd<0)return 8;
  if(syscall(383,fd,"",0x1000|0x100,0x7ff,&st) || (st.stx_mode&0170000)!=0120000 || syscall(305,fd,"",buf,sizeof(buf))!=1 || buf[0]!='b')return 9;

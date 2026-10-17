@@ -256,65 +256,61 @@ Proc-fd link sources receive the same non-store refusal as other external paths.
 `tests/links.c` covers this fallback and `tests/publication.c` covers named
 publication and rename mount policy.
 
-Round 14 replaces the named-file copy fallback with a hidden inode store.
-On the first named link, the regular file moves atomically into
-`<private-tree>/.v3-inodes/i-<128-bit-random-id>` and both names become
-symlinks to that same backing file. Subsequent links add another name.
-The store exists only beneath the nearest owner-owned regular
-`.v3-store-root` (checked without following symlinks). Both names must be
-under that same marker. Without a marker, link/linkat use the kernel result
-and never create a store. Root-move target rewriting and its recovery journal
-are removed; symlink-era stores must not be relocated while in use.
-The marker stays visible; payload mutation, removal,
-renaming and alias creation are refused with EPERM. The owner creates it
-before starting the proxy; no old stores are migrated.
+Hardlink emulation (links-simplify, 2026-10-17): only the nearest owner-owned
+regular `.v3-store-root` establishes a store; both link names must share it.
+Unmarked link/linkat calls use the kernel answer without creating a store.
+An indexed placeholder cannot be linked or moved outside its store (EXDEV),
+including on hosts whose kernel permits native hardlinks.
+The marker remains visible and payload pathname mutation is denied. The owner
+creates markers before starting the proxy. Existing symlink-format stores
+are not migrated: discard old disposable staging trees before using this build.
+Do not mix proxy versions on a live store.
 
-Installer and repair staging mark the operation root before commands run.
-Discovery probes, package/delta scratch repositories and StagedPacks' pack-repo
-remain below that boundary, so Java's whole-operation cleanup removes backing
-inodes and count sidecars too. Disposable launch metadata (`flatpak-launch`)
-and the extra-data service's `extra` work tree have their own markers.
-Persistent app homes/caches are not disposable operation trees. Pack artifacts
-and stub-generation scratch are Java-only outputs, not proxied repositories.
+On first link, content moves into `.v3-inodes/i-<128-bit-random-id>`.
+Each linked name is an empty regular file with S_ISVTX and an index entry
+`p-<16-hex-st_dev>-<16-hex-st_ino>` containing the NUL-terminated relative
+backing ID. Both the sticky bit and a valid index are required. A stray sticky
+file without an index is ordinary and its metadata/content remain unchanged.
+Relative index values need no root-move rewriting. Payload chmod preserves the
+physical sticky bit on ordinary files and cannot set it on backing objects;
+chmod of a linked name affects only its backing object, preserving its marker.
 
-Both names must share such a private directory. Source ownership remains
-required. Filesystem and virtual-mount boundaries return EXDEV; read-only
-virtual mounts retain EROFS. Ordinary symlinks without AT_SYMLINK_FOLLOW and
-nonregular sources retain EPERM. No app/host path is hard-coded.
+Open (including O_PATH/O_NOFOLLOW), pathname stat/xattrs/truncate/chmod/chown/
+utimens and related metadata operations redirect to the backing regular file.
+The fd then supplies read/write/mmap and identity naturally; logical nlink is
+read from the persistent count sidecar. Reopening O_PATH through proc-fd opens
+the backing file. There is no symlink type masking, dirent type rewriting,
+readlink override or no-follow flag rewriting. Native readlink(path) returns
+EINVAL; native readlinkat(regular_fd, "") returns ENOENT on the host kernel.
+openat2 retains its existing ENOSYS result; libglnx's checked fallback works.
+`.v3-inodes` remains hidden and payload paths cannot access its contents.
 
-Path resolution preserves store names instead of interpreting their backing
-absolute symlinks in the virtual root. stat/lstat/statx and fstat report the
-backing regular inode and persistent logical link count; readlink returns
-EINVAL, O_NOFOLLOW opens the regular backing file, and metadata changes affect
-that file. Directory enumeration hides `.v3-inodes` and reports its names as
-DT_REG. Payload path resolution rejects the reserved store component.
-Rename/unlink operate on the name; renaming one name over another name of the
-same inode is a no-op. The final unlink removes the backing file and count
-sidecar; already-open descriptors continue to work and report nlink zero.
+The existing flock, conversion journal and incremental intent protocol protect
+namespace/count updates from process interruption. A placeholder is indexed
+under a single hidden staging name before atomic publication. Recovery deletes
+unpublished staging files and their indices. Unlink/overwrite retire the old
+placeholder index; rename/exchange retain identities still at either affected
+name. Zero logical links collect backing content and count metadata. Existing
+fds keep working after final unlink. Clean operations never scan the tree.
+Corrupt/missing count metadata permits a bounded exceptional recount.
 
-Each store has a kernel flock lock, independent of proxy memory, so fork/exec
-and independently launched proxies share the same serialization. Count
-sidecars avoid a name-count ceiling and avoid traversing the tree for clean
-metadata reads. A dirty marker precedes name mutations; interrupted mutations
-recompute counts from names under the lock. A conversion journal records the
-original name before its backing rename, allowing an interrupted conversion
-to restore that name. Store entries lacking count metadata are checked for
-orphans on the next path/listing access and removed if unreferenced. Recounts
-traverse same-filesystem directories without following ordinary symlinks;
-mutations currently recount all store objects (an optimization opportunity).
-This protects against process death, rather than promising power-loss
-transactions; the journal and directory updates are not fsync-ordered.
+Limits: no fsync ordering or power-loss guarantee; direct host/raw namespace
+mutations bypass the protocol, including inode reuse against a stale index.
+Corrupt index/intent recovery is not a general filesystem repair service.
+Pre-existing native hardlink aliases are not imported. Recounts require readable
+same-filesystem directories. Android SELinux integration still needs a fresh
+image test; no VM was touched for this change.
 
-Remaining limits: all same-filesystem subdirectories of a tree must remain readable during recount;
-permission-denied recovery fails closed. Raw/unintercepted changes to names
-are outside the protocol. The first conversion has a rename-to-symlink gap
-for raw observers; proxied open/metadata/listing operations serialize against
-it. Pre-existing native hard links are not imported as extra logical names.
-These are compatibility limits; the proxy is not a security boundary.
-
-`tests/run.sh` verifies named temp fallback, unmarked kernel hardlink behavior,
-marker scoping and protection, shared-write and metadata semantics, independent
-processes, conversion recovery and incremental counts. No VM was used.
+Tests cover marker scoping, concurrent independent proxies, shared writes and
+metadata, same-inode rename, root relocation with relative indices, final-unlink
+GC, O_PATH/proc-fd reopen, real symlinks and raw regular-file/statx checks outside
+the proxy. Six constructed conversion checkpoints and a real SIGKILL intent
+exercise recovery. The 20k-file/5k-link benchmark requires zero healthy-path tree
+walks. Optional host OSTree init/commit/require-hardlinks checkout/fsck runs when
+ostree is installed. Set MATON_TEST_GLNX_SOURCE to compile the real libglnx
+chase/reopen regression. Run `bash linux/compat-proxy/tests/run.sh` with its
+build symlink pointing to external output, then `tests/run.sh OUTPUT` and the
+signed APK build described in the repository README.
 
 Round 15 GPU sysfs: at startup the freestanding loader reads the five
 `vendor.maton.graphics.{vendor,device,driver,render_node,mode}` properties
@@ -1196,9 +1192,10 @@ removes the object and sidecar; open descriptors still report zero links.
 
 A store's existing exclusive `flock` covers recovery, intent publication,
 namespace mutation, count writes and garbage collection. No second store lock
-is acquired. `intent` is a 16,424-byte v1 record shared by x86_64/i386: uint64
-magic `0x76336c696e6b0001`, two baseline counts, two baseline name-presence
-counts, two PATH_MAX object strings, and two PATH_MAX name strings. Empty
+is acquired. `intent` is a 16,520-byte v2 record shared by x86_64/i386: uint64
+magic `0x76336c696e6b0002`, two baseline counts, two baseline name-presence
+counts, two PATH_MAX object strings, and two PATH_MAX name strings, followed by two 48-byte canonical physical
+placeholder identities used to retire overwritten/unlinked index entries. Empty
 object slots are unused. Both names are inspected for each affected object;
 replay writes `baseline_count - baseline_presence + current_presence`.
 This also covers overwrite/exchange and failed syscalls, and is idempotent
@@ -1211,16 +1208,11 @@ existing NUL-separated source/object `conversion` journal, now published by
 the same mechanism; recovery restores the source or writes count 1 using
 only those paths. A leftover `pending` has not authorized any mutation and
 is discarded. `intent` is removed only after count updates and collection.
-The existing `move` journal still rewrites absolute targets when moving an
-entire store root; that explicit directory move necessarily traverses names
-but no longer triggers a recount afterward.
-
 Legacy `dirty`, invalid intent records, and missing/short/zero count metadata
 are exceptional recovery cases. They permit one complete recount attempt per
 store inode/device per process. A failed attempt or repeated damage returns
 an error instead of repeating the walk. Healthy reads only read metadata;
-ordinary operations never create `dirty`. Legacy stores need no format
-migration. Do not mix old and new writers on a live store: old writers still
+ordinary operations never create `dirty`. Old symlink-format stores are not supported. Do not mix old and new writers on a live store: old writers still
 use the expensive dirty protocol. As before, the guarantee concerns process
 interruption, not power loss: there is no fsync durability protocol. Direct
 host mutations bypassing the proxy remain unsupported. Structurally valid
@@ -1241,7 +1233,7 @@ Stored hardlink names and no-follow lookups (2026-10-17): `links_target()`
 recognizes the existing `.v3-inodes` representation and substitutes only the
 final backing regular file. Open and at-style flags remain intact; real
 symlinks retain kernel behavior. Empty-path stat calls reuse the existing fd
-link-count path, and empty-path readlink on a stored fd returns EINVAL.
+link-count path, and readlink is passed directly to the kernel.
 Path-first xattr operations, the newer xattrat family, and inotify's
 IN_DONT_FOLLOW go through the same translation. No additional tree walks
 are introduced. `openat2` remains ENOSYS.

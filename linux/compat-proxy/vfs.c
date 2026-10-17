@@ -243,11 +243,6 @@ restart:;
             }
             if(magic){char *answer=join(target,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);if(!answer)*error=-ENOMEM;return answer;}
         }
-        if(target && links_hidden(target)){
-            char internal[4096];int valid=links_target(host,internal);
-            vfs_free(target);target=NULL;e=-EINVAL;
-            if(!valid){vfs_free(host);*error=-ENOENT;goto fail;}
-        }
         vfs_free(host);
         if(target && self_proc(out) && used>=4 && p_equal(out+used-4,"/exe") && executable){vfs_free(target);target=dupstr(executable);}
         if(target){if(++links>40){vfs_free(target);*error=-ELOOP;goto fail;}char *head;

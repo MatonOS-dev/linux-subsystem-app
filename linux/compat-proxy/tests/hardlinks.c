@@ -17,7 +17,7 @@
 int main(int argc,char **argv){
  CHECK(argc>=2);CHECK(chdir(argv[1])==0);
  if(argc==4 && !strcmp(argv[2],"--link")){CHECK(link("c",argv[3])==0);return 0;}
- if(argc==3 && !strcmp(argv[2],"--recover")){struct stat st;CHECK(stat("restored",&st)==0 && S_ISREG(st.st_mode));CHECK(stat("survivor",&st)==0 && st.st_nlink==1);puts("PASS crash conversion restoration and orphan collection");return 0;}
+ if(argc==3 && !strcmp(argv[2],"--recover")){struct stat st;CHECK(stat("restored",&st)==0 && S_ISREG(st.st_mode));CHECK(stat("survivor",&st)==0 && st.st_nlink==1);int fd=open("restored",O_RDONLY);char buf[32]={0};CHECK(fd>=0 && read(fd,buf,31)==22 && !strcmp(buf,"interrupted conversion"));close(fd);puts("PASS crash conversion restoration and orphan collection");return 0;}
  if(argc==3 && !strcmp(argv[2],"--prepare")){int t=open("c",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);return 0;}
  if(argc==3 && !strcmp(argv[2],"--check")){struct stat st;CHECK(stat("c",&st)==0 && st.st_nlink==9);puts("PASS independent loader processes share persistent link counts");return 0;}
  if(argc==3 && !strcmp(argv[2],"--markers")){
@@ -45,6 +45,20 @@ int main(int argc,char **argv){
   errno=0;CHECK(link(m,"outer/alias")==-1 && errno==EPERM);
   puts("PASS marker boundaries, visibility and mutation refusal");return 0;
  }
+ if(argc==4 && !strcmp(argv[2],"--escape")){errno=0;CHECK(link("a",argv[3])==-1 && errno==EXDEV);return 0;}
+ if(argc==4 && !strcmp(argv[2],"--replace")){
+  CHECK(rename(argv[3],"b")==0);struct stat a,b;CHECK(stat("a",&a)==0 && a.st_nlink==1 && stat("b",&b)==0 && b.st_size==3);return 0;
+ }
+ if(argc==3 && !strcmp(argv[2],"--placeholders")){
+  int t=open("a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0 && write(t,"content",7)==7);close(t);CHECK(link("a","b")==0);
+  CHECK(chmod("a",01700)==0);CHECK(chmod("stray",0600)==0);CHECK(chmod("ordinary",01600)==0);
+  struct stat st;CHECK(stat("stray",&st)==0 && (st.st_mode&S_ISVTX) && st.st_size==5);
+  CHECK(stat("ordinary",&st)==0 && !(st.st_mode&S_ISVTX));
+  CHECK(stat("a",&st)==0 && !(st.st_mode&S_ISVTX) && st.st_size==7 && st.st_nlink==2);
+  t=open("b",O_RDWR);CHECK(t>=0);CHECK(fchmod(t,01640)==0);CHECK(fstat(t,&st)==0 && !(st.st_mode&S_ISVTX));
+  errno=0;long cm=syscall(452,t,"",01640,AT_EMPTY_PATH);CHECK(cm==0 || (cm==-1 && errno==ENOSYS));CHECK(fstat(t,&st)==0 && !(st.st_mode&S_ISVTX));close(t);
+  puts("PASS chmod preserves physical marker, ignores sticky changes and leaves stray sticky ordinary");return 0;
+ }
  CHECK(argc==2);int fd=open("a",O_CREAT|O_RDWR|O_EXCL,0640);CHECK(fd>=0);CHECK(write(fd,"first",5)==5);CHECK(link("a","b")==0);
  struct stat a,b;CHECK(lstat("a",&a)==0 && stat("b",&b)==0 && S_ISREG(a.st_mode) && a.st_ino==b.st_ino && a.st_nlink==2);CHECK(fstat(fd,&b)==0 && b.st_nlink==2);
  struct statx sx;CHECK(statx(AT_FDCWD,"b",AT_SYMLINK_NOFOLLOW,STATX_BASIC_STATS,&sx)==0 && S_ISREG(sx.stx_mode) && sx.stx_nlink==2);CHECK(statx(fd,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&sx)==0 && sx.stx_nlink==2);
@@ -59,7 +73,7 @@ int main(int argc,char **argv){
   CHECK(fstat(probe,&b)==0 && S_ISREG(b.st_mode) && b.st_nlink==2);
   char proc[80],content[8];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",probe);
   int reopened=open(proc,O_RDONLY|O_CLOEXEC);CHECK(reopened>=0);CHECK(read(reopened,content,5)==5 && !memcmp(content,"first",5));close(reopened);
-  errno=0;CHECK(readlinkat(probe,"",content,sizeof(content))==-1 && errno==EINVAL);close(probe);
+  errno=0;CHECK(readlinkat(probe,"",content,sizeof(content))==-1 && errno==ENOENT);close(probe);
  }
  char target[20];errno=0;CHECK(readlinkat(dir,"b",target,sizeof(target))==-1 && errno==EINVAL);
  CHECK(symlink("b","real-symlink")==0);CHECK(readlinkat(dir,"real-symlink",target,sizeof(target))==1 && target[0]=='b');
@@ -99,8 +113,9 @@ CHECK(lremovexattr("a","user.nofollow")==0);
  char buf[20];errno=0;CHECK(readlink("a",buf,sizeof(buf))==-1 && errno==EINVAL);int second=open("b",O_RDWR|O_NOFOLLOW);CHECK(second>=0);CHECK(pwrite(second,"other",5,0)==5 && pread(fd,buf,5,0)==5 && !memcmp(buf,"other",5));
  CHECK(chmod("b",0600)==0 && fstat(fd,&b)==0 && (b.st_mode&0777)==0600);struct timespec times[2]={{100,123},{200,456}};CHECK(utimensat(AT_FDCWD,"b",times,AT_SYMLINK_NOFOLLOW)==0 && fstat(fd,&b)==0 && b.st_mtim.tv_nsec==456);
  DIR *d=opendir(".");CHECK(d!=NULL);int seen=0;struct dirent *e;while((e=readdir(d))){CHECK(strcmp(e->d_name,".v3-inodes"));if(!strcmp(e->d_name,"a") || !strcmp(e->d_name,"b")){CHECK(e->d_type==DT_REG);seen++;}}closedir(d);CHECK(seen==2);errno=0;CHECK(open(".v3-inodes",O_RDONLY|O_DIRECTORY)==-1 && errno==ENOENT);
- struct stat shm; if(!stat("/dev/shm",&shm) && shm.st_dev!=a.st_dev){char target[128];snprintf(target,sizeof(target),"/dev/shm/v3-hardlinks-%ld",(long)getpid());errno=0;CHECK(link("a",target)==-1 && errno==EACCES);}
+ struct stat shm; if(!stat("/dev/shm",&shm) && shm.st_dev!=a.st_dev){char target[128];snprintf(target,sizeof(target),"/dev/shm/v3-hardlinks-%ld",(long)getpid());errno=0;CHECK(link("a",target)==-1 && errno==EXDEV);}
  CHECK(rename("a","b")==0 && lstat("a",&b)==0 && b.st_nlink==2);CHECK(rename("b","c")==0 && lstat("c",&b)==0 && b.st_nlink==2);CHECK(unlink("a")==0 && fstat(fd,&b)==0 && b.st_nlink==1);
+ char moved[4096];CHECK(strlen(argv[1])+7<sizeof(moved));snprintf(moved,sizeof(moved),"%s.moved",argv[1]);CHECK(rename(argv[1],moved)==0 && stat("c",&a)==0 && a.st_nlink==1);CHECK(rename(moved,argv[1])==0 && stat("c",&a)==0 && a.st_nlink==1);
  for(int i=0;i<8;i++){pid_t p=fork();CHECK(p>=0);if(!p){char name[32];snprintf(name,sizeof(name),"child-%d",i);execl(argv[0],argv[0],argv[1],"--link",name,NULL);_exit(3);}}
  for(int i=0;i<8;i++){int status;CHECK(wait(&status)>0 && status==0);}CHECK(stat("c",&a)==0 && a.st_nlink==9);
  for(int i=0;i<8;i++){char name[32];snprintf(name,sizeof(name),"child-%d",i);CHECK(unlink(name)==0);}CHECK(unlink("c")==0 && fstat(fd,&b)==0 && b.st_nlink==0);close(fd);close(second);
