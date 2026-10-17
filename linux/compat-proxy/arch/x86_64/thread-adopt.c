@@ -47,7 +47,35 @@ static _Atomic(struct thread_chunk *) chunks;
  * mmap fallback without an imposed memory cap. Resident brk remains native. */
 static uintptr_t app_brk;
 static int force_clone;
+static size_t live(void);
 static size_t signal_stack_size;
+#ifdef MATON_IN_PROCESS
+static _Atomic int exec_stopping;
+static long exec_owner;
+int inprocess_quiesce(void) {
+    exec_owner=R(gettid,0,0,0,0,0,0);
+    atomic_store(&exec_stopping,1);
+    while(live()>1) {
+        for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
+            for(unsigned i=0;i<CHUNK_THREADS;i++) {
+                struct adopt_thread *t=&c->entries[i];int tid=atomic_load(&t->tid);
+                if(tid>0 && tid!=exec_owner) {
+                    int phase=atomic_load(&t->exec_kicked);
+                    /* One wakeup interrupts a blocking dispatcher call. A
+                     * second, only after app entry, covers startup/return
+                     * races. SA_NODEFER must never receive a signal flood. */
+                    if((phase==0 || (phase==1 && t->resident_sp &&
+                       atomic_load(&t->selector)==SYSCALL_DISPATCH_FILTER_BLOCK)) &&
+                       atomic_compare_exchange_strong(&t->exec_kicked,&phase,phase+1))
+                        R(tgkill,R(getpid,0,0,0,0,0,0),tid,SIGSYS,0,0,0);
+                }
+            }
+        struct timespec pause={0,10000000};
+        R(nanosleep,&pause,0,0,0,0,0);
+    }
+    atomic_store(&exec_stopping,0);return 0;
+}
+#endif
 static long identity(uintptr_t *);
 static size_t live(void);
 static pthread_mutex_t identity_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -116,8 +144,11 @@ static struct adopt_thread *reserve(void) {
         }
         for(unsigned i=0;i<CHUNK_THREADS;i++) {
             int zero=0;
-            if(atomic_compare_exchange_strong(&c->entries[i].tid,&zero,-1))
+            if(atomic_compare_exchange_strong(&c->entries[i].tid,&zero,-1)) {
+                c->entries[i].resident_sp=0;
+                atomic_store(&c->entries[i].exec_kicked,0);
                 return &c->entries[i];
+            }
         }
         link=&c->next;
     }
@@ -139,7 +170,7 @@ static size_t live(void) {
     size_t count=0;
     for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
         for(unsigned i=0;i<CHUNK_THREADS;i++)
-            if(atomic_load(&c->entries[i].tid)>0) {
+            if(atomic_load(&c->entries[i].tid)!=0) {
                 if(count==SIZE_MAX) __builtin_trap();
                 count++;
             }
@@ -254,6 +285,12 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     struct adopt_thread *self=adopt_current();
 #ifdef MATON_IN_PROCESS
     if(!self) { inprocess_chain(sig,info,opaque); return; }
+    if(info->si_code<=0) {
+        if(!atomic_load(&exec_stopping) || atomic_load(&self->tid)==exec_owner ||
+           atomic_load(&self->selector)!=SYSCALL_DISPATCH_FILTER_BLOCK || !self->resident_sp)return;
+        atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_ALLOW);
+        goto app_exit;
+    }
     /* A syscall retried through our exempt gateway may still be trapped by
      * zygote's older filter. Return ENOSYS instead of recursive signal-stack
      * exhaustion. The production dispatcher must translate such calls. */
@@ -275,24 +312,24 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         g[REG_RIP]=(uintptr_t)proxy_restore;
         atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
         return;
-    } else if(n==SYS_munmap && (uintptr_t)g[REG_RDI]<=(uintptr_t)g[REG_RSP] &&
+    }
+#ifndef MATON_IN_PROCESS
+    else if(n==SYS_munmap && (uintptr_t)g[REG_RDI]<=(uintptr_t)g[REG_RSP] &&
               (uintptr_t)g[REG_RSP]-(uintptr_t)g[REG_RDI]<(uintptr_t)g[REG_RSI]) {
         /* The kernel permits unmap-self followed by exit without any stack
          * access. SIGSYS runs on our own altstack; consume that live frame
          * after unmapping, rather than retrying on the disappearing stack. */
         result=R(munmap,g[REG_RDI],g[REG_RSI],0,0,0,0);
     }
-#ifdef MATON_IN_PROCESS
-    else if(n==SYS_access) result=R(faccessat,AT_FDCWD,g[REG_RDI],g[REG_RSI],0,0,0);
-    else if(n==SYS_open) result=R(openat,AT_FDCWD,g[REG_RDI],g[REG_RSI],g[REG_RDX],0,0);
-    else if(n==SYS_stat || n==SYS_lstat)
-        result=R(newfstatat,AT_FDCWD,g[REG_RDI],g[REG_RSI],n==SYS_lstat?AT_SYMLINK_NOFOLLOW:0,0,0);
-    else if(n==SYS_readlink) result=R(readlinkat,AT_FDCWD,g[REG_RDI],g[REG_RSI],g[REG_RDX],0,0);
 #endif
     else if(n==SYS_brk) result=app_brk;
     else if(n==SYS_rt_sigaction) {
         if(g[REG_RDI]==SIGSYS && g[REG_RSI]) result=-EINVAL;
+#ifdef MATON_IN_PROCESS
+        else {long a[6]={g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10]};result=resident_session_call(inprocess_session,n,a);}
+#else
         else result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
+#endif
     } else if(n==SYS_rt_sigprocmask) {
         unsigned long old=*(unsigned long *)&uc->uc_sigmask, next=old;
         if(g[REG_R10]!=8) result=-EINVAL;
@@ -312,12 +349,39 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                 *(unsigned long *)&uc->uc_sigmask=next & ~(1UL<<(SIGSYS-1));
             }
         }
+    }
 #ifdef MATON_IN_PROCESS
-    } else if(n==SYS_fork || n==SYS_vfork || n==SYS_execve || n==SYS_execveat) result=-ENOSYS;
-    else if(n==SYS_write && (g[REG_RDI]==1 || g[REG_RDI]==2)) {
-        result=R(write,inprocess_output[g[REG_RDI]-1],g[REG_RSI],g[REG_RDX],0,0,0);
+    else if(n==SYS_execve || n==SYS_execveat) {
+        if(n==SYS_execveat && ((int)g[REG_RDI]!=AT_FDCWD || g[REG_R8]))result=-ENOSYS;
+        else {
+            uintptr_t entry[2];
+            result=resident_session_exec(inprocess_session,
+                (void *)(n==SYS_execve?g[REG_RDI]:g[REG_RSI]),
+                (void *)(n==SYS_execve?g[REG_RSI]:g[REG_RDX]),
+                (void *)(n==SYS_execve?g[REG_RDX]:g[REG_R10]),entry);
+            if(!result){
+                /* Reset only the Linux signal frame's FP state; ART's
+                 * resident pthread state is restored by the exit gate. Keep
+                 * the kernel's signal-frame size/magic trailer intact. */
+                unsigned char *fp=(void *)uc->uc_mcontext.fpregs;
+                unsigned mxcsr_mask=*(unsigned *)(fp+28);
+                for(unsigned i=0;i<464;i++)fp[i]=0;
+                *(unsigned short *)fp=0x037f;*(unsigned *)(fp+24)=0x1f80;
+                *(unsigned *)(fp+28)=mxcsr_mask;
+                if(*(unsigned *)(fp+464)==0x46505853) {
+                    for(unsigned i=512;i<576;i++)fp[i]=0;
+                    *(uint64_t *)(fp+512)=3;
+                }
+                self->robust=0;self->child_tid=0;self->app_fs=0;
+                backend_fs_write(0);
+                g[REG_RIP]=entry[0];g[REG_RSP]=entry[1];g[REG_RDX]=0;g[REG_RAX]=0;
+                atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);return;
+            }
+        }
+    }
+    else if(n==SYS_fork || n==SYS_vfork) result=-ENOSYS;
 #endif
-    } else if(n==SYS_fork) result=resident_fork(self,0,0,0);
+    else if(n==SYS_fork) result=resident_fork(self,0,0,0);
     else if(n==SYS_vfork) {g[REG_R11]=g[REG_RSP];goto vfork_retry;}
     else if(n==SYS_clone3 || n==SYS_clone) {
         unsigned long flags,stack,tls,ptid,ctid;
@@ -342,6 +406,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             flags=g[REG_RDI]&~CSIGNAL;stack=g[REG_RSI];tls=g[REG_R8];ptid=g[REG_RDX];ctid=g[REG_R10];
         }
 #ifdef MATON_IN_PROCESS
+        if(atomic_load(&exec_stopping)){result=-EAGAIN;goto finish;}
         if(!(flags&CLONE_THREAD)) {result=-ENOSYS;goto finish;}
 #endif
         child_stack=stack?stack:(unsigned long)g[REG_RSP];
@@ -421,6 +486,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     else if(n==SYS_exit) {
 #ifdef MATON_IN_PROCESS
 app_exit:
+        atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_ALLOW);
 #endif
         robust_exit(self);
         /* Consume the signal frame before publishing exit: join may unmap
@@ -431,6 +497,13 @@ app_exit:
         g[REG_RAX]=0; return;
     } else if(n==SYS_exit_group) R(exit_group,g[REG_RDI],0,0,0,0,0);
     else {
+#ifdef MATON_IN_PROCESS
+        if(n!=SYS_arch_prctl) {
+            long a[6]={g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],g[REG_R8],g[REG_R9]};
+            result=resident_session_call(inprocess_session,n,a);goto finish;
+        }
+        if(g[REG_RDI]!=0x1002 && g[REG_RDI]!=0x1003){result=-EINVAL;goto finish;}
+#endif
         if(n==SYS_arch_prctl && g[REG_RDI]==0x1002) self->app_fs=g[REG_RSI];
         g[REG_RCX]=g[REG_RIP];
         g[REG_RIP]=(uintptr_t)adopt_syscall_entry;
@@ -439,6 +512,9 @@ app_exit:
         return;
     }
 finish:
+#ifdef MATON_IN_PROCESS
+    if(atomic_load(&exec_stopping) && atomic_load(&self->tid)!=exec_owner)goto app_exit;
+#endif
     g[REG_RAX]=result;
     atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
     return;

@@ -2,6 +2,8 @@
 #ifndef MATON_INPROCESS_ROUTING_H
 #define MATON_INPROCESS_ROUTING_H
 #include <signal.h>
+#include "session.h"
+extern struct resident_session *inprocess_session;
 #include <stdint.h>
 long inprocess_filter(void);
 int inprocess_signals(void (*handler)(int,siginfo_t *,void *));

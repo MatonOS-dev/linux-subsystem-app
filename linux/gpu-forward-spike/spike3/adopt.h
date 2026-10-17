@@ -26,6 +26,7 @@ struct adopt_thread {
     uintptr_t vfork_resume;
     stack_t prior_signal_stack;
     void *signal_stack;
+    _Atomic int exec_kicked; /* Resident exec: at most two wakeups, never a signal flood. */
 };
 struct adopt_api {
     unsigned version;

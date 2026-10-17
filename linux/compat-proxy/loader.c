@@ -18,6 +18,8 @@
 #ifdef MATON_IN_PROCESS
 /* First slice has no exec hops: one main, interpreter and entry stack. */
 static uintptr_t resident_maps[6];
+void inprocess_image_maps(uintptr_t out[6]) {p_copy(out,resident_maps,sizeof(resident_maps));}
+void inprocess_forget_image(void) {for(unsigned i=0;i<6;i++)resident_maps[i]=0;}
 void inprocess_unload(void) {
     for(unsigned i=0;i<6;i+=2)if(resident_maps[i+1]) {
         RAW(PROXY_SC_munmap,resident_maps[i],resident_maps[i+1],0,0,0,0);
@@ -71,6 +73,7 @@ failed:
     RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;
 }
 static uintptr_t inherited_aux[64];
+void inprocess_aux(unsigned type,uintptr_t value){if(type<64)inherited_aux[type]=value;}
 uintptr_t proxy_aux(unsigned type){return type<64?inherited_aux[type]:0;}
 static int bad(long n) { return (unsigned long)n >= (unsigned long)-4095; }
 /* Preflight both ELF classes before MAP_FIXED or a kernel exec of our peer.

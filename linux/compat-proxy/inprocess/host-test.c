@@ -9,10 +9,24 @@
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <stddef.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/resource.h>
+#include <string.h>
 static void resident_fault_handler(int sig){(void)sig;}
 int main(int argc,char **argv) {
     if(argc<2)return 2;
-    char *env[]={"INPROCESS_TEST=present",NULL};
+    char foreign[80],cwd[4096];
+    unsigned char *sentinel=mmap(NULL,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if(sentinel==MAP_FAILED || !getcwd(cwd,sizeof(cwd)))return 7;
+    sentinel[0]=73;
+    int original=open("/dev/null",O_RDONLY|O_CLOEXEC);
+    int fd=fcntl(original,F_DUPFD_CLOEXEC,800);close(original);if(fd<0)return 8;
+    snprintf(foreign,sizeof(foreign),"RESIDENT_MAP=%lx",(unsigned long)sentinel);
+    char *env[]={"INPROCESS_TEST=present",foreign,"RESIDENT_FD=800",NULL};
+    struct rlimit limit,after_limit;if(getrlimit(RLIMIT_NOFILE,&limit))return 9;
+    mode_t mask=umask(027);umask(mask);
     pid_t pid=getpid();
     struct sigaction installed={0},after;
     installed.sa_handler=resident_fault_handler;
@@ -38,8 +52,13 @@ int main(int argc,char **argv) {
         int status=inprocess_run(argv+1,env);
         printf("resident-alive pid=%d run=%d status=%d\n",(int)getpid(),i,status);
         if(status!=expected || getpid()!=pid)return 1;
+        char after_cwd[4096];
+        if(sentinel[0]!=73 || fcntl(fd,F_GETFD)!=FD_CLOEXEC || !getcwd(after_cwd,sizeof(after_cwd)) || strcmp(cwd,after_cwd))return 10;
+        if(getrlimit(RLIMIT_NOFILE,&after_limit) || memcmp(&limit,&after_limit,sizeof(limit)))return 11;
+        mode_t after_mask=umask(mask);if(after_mask!=mask)return 12;
         if(sigaction(SIGSEGV,NULL,&after) || after.sa_handler!=resident_fault_handler)return 4;
         if(sigaction(SIGBUS,NULL,&after) || after.sa_handler!=resident_fault_handler)return 5;
     }
+    close(fd);munmap(sentinel,4096);
     return 0;
 }

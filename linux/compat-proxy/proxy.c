@@ -537,7 +537,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         }
         namespace_clone_parent=0;namespace_clone_flags=0;
     }
+#ifdef MATON_IN_PROCESS
+    struct thread_state local_thread={0};struct thread_state *thread=&local_thread;
+#else
     struct thread_state *thread=thread_state();
+#endif
     if(info->si_code!=SYS_SECCOMP) {
         /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
         dispatch_app(sig,info,opaque);(*arch_signal_mask(uc))&=~SIGSYS_BIT;
@@ -778,6 +782,28 @@ clean_mask:
     arch_signal_stack_ready(uc);
     if(selector && dispatch_selector==selector) *selector=saved;
 }
+/* Resident entry deliberately shares syscall translation, not installation.
+ * Its caller owns thread routing and must intercept process-global operations. */
+#ifdef MATON_IN_PROCESS
+void proxy_resident_reset(void) {
+    namespaces=0;userns_remaining=~0U;
+    dns_endpoint=(struct sockaddr_in){0};dns_path[0]=0;
+    while(image_maps){struct image_map *m=image_maps;image_maps=m->next;vfs_free(m->path);vfs_free(m);}
+}
+long proxy_resident_dispatch(long nr, const long args[6]) {
+    ucontext_t context={0};
+    siginfo_t info={0};
+    info.si_code=SYS_SECCOMP;info.si_syscall=nr;
+    ARCH_CONTEXT(&context,ARCH_ARG0)=args[0];
+    ARCH_CONTEXT(&context,ARCH_ARG1)=args[1];
+    ARCH_CONTEXT(&context,ARCH_ARG2)=args[2];
+    ARCH_CONTEXT(&context,ARCH_ARG3)=args[3];
+    ARCH_CONTEXT(&context,ARCH_ARG4)=args[4];
+    ARCH_CONTEXT(&context,ARCH_ARG5)=args[5];
+    handler(SIGSYS,&info,&context);
+    return ARCH_CONTEXT(&context,ARCH_RESULT);
+}
+#endif
 #include ARCH_FILTER_HEADER
 int proxy_install(int android) {
     ipc_init(); /* IPC failure must never prevent payload startup. */
