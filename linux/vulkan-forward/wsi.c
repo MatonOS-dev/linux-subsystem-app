@@ -85,13 +85,16 @@ VkResult mv_wsi_acquire(struct mv_wsi_swapchain *c,uint32_t *index) {
     for(uint32_t i=0;i<c->count;i++)if(!c->images[i].state){c->images[i].state=1;*index=i;return VK_SUCCESS;}
     return VK_NOT_READY;
 }
-VkResult mv_wsi_present(struct mv_wsi_swapchain *c,uint32_t index) {
+void mv_wsi_cancel_acquire(struct mv_wsi_swapchain *c,uint32_t index) {
+    if(c&&index<c->count&&c->images[index].state==1)c->images[index].state=0;
+}
+VkResult mv_wsi_present(struct mv_wsi_swapchain *c,uint32_t index,int acquire_fence_fd) {
     VkResult r=status(c);if(r)return r;
     if(index>=c->count || c->images[index].state!=1)return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wsi_image *b=&c->images[index];
     if(c->serial==UINT64_MAX)return VK_ERROR_OUT_OF_DATE_KHR;
     uint64_t serial=++c->serial;
-    r=c->ops.present(c->ops.context,c->surface->token,b->token,serial);
+    r=c->ops.present(c->ops.context,c->surface->token,b->token,serial,b->wl_buffer,acquire_fence_fd);
     if(!r){b->serial=serial;b->state=2;}return r;
 }
 VkResult mv_wsi_release(struct mv_wsi_swapchain *c,uint64_t token,uint64_t serial) {

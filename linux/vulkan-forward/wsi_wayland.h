@@ -13,6 +13,7 @@ struct wl_interface;
 
 struct mv_wl_dmabuf;
 struct mv_wl_buffer;
+struct mv_wl_sync_surface;
 
 struct mv_wl_plane {
     int fd;
@@ -24,11 +25,15 @@ struct mv_wl_dmabuf *mv_wl_dmabuf_create(struct wl_display *display);
 void mv_wl_dmabuf_destroy(struct mv_wl_dmabuf *dmabuf);
 int mv_wl_dmabuf_version(const struct mv_wl_dmabuf *dmabuf);
 int mv_wl_dmabuf_dispatch(struct mv_wl_dmabuf *dmabuf);
+int mv_wl_dmabuf_dispatch_one(struct mv_wl_dmabuf *dmabuf);
 struct mv_wl_buffer *mv_wl_dmabuf_create_buffer(struct mv_wl_dmabuf *dmabuf,
         uint32_t width, uint32_t height, uint32_t format,
         const struct mv_wl_plane *planes, uint32_t plane_count);
 void mv_wl_buffer_destroy(struct mv_wl_buffer *buffer);
 int mv_wl_buffer_released(const struct mv_wl_buffer *buffer);
 void mv_wl_buffer_clear_released(struct mv_wl_buffer *buffer);
+struct mv_wl_sync_surface *mv_wl_sync_surface_create(struct mv_wl_dmabuf *,struct wl_surface *);
+void mv_wl_sync_surface_destroy(struct mv_wl_sync_surface *);
+int mv_wl_surface_present(struct mv_wl_sync_surface *,struct wl_surface *,struct mv_wl_buffer *,int);
 
 #endif

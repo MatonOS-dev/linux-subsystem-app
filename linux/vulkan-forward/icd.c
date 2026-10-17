@@ -37,7 +37,7 @@ struct mv_instance {
 struct mv_device {
     struct mv_handle base;
     VkAllocationCallbacks allocator;
-    int custom, lock, wsi_swapchain_enabled;
+    int custom, lock, wsi_swapchain_enabled, wsi_sync_fd_enabled;
     struct mv_handle *children;
     struct mv_dispatch dispatch;
     PFN_vkGetDeviceProcAddr gdpa;

@@ -44,8 +44,8 @@ static VkResult create_buffer(void *ctx,VkExtent2D extent,uint32_t format,int fd
 static void destroy_buffer(void *ctx,void *buffer) {
     (void)ctx;assert((uintptr_t)buffer>=0x5001 && (uintptr_t)buffer<=0x5004);buffer_destroys++;
 }
-static VkResult present(void *ctx,uint64_t surface,uint64_t buffer,uint64_t serial) {
-    (void)ctx;struct message r=exchange((struct message){1,surface,buffer,serial});assert(r.op==1);return VK_SUCCESS;
+static VkResult present(void *ctx,uint64_t surface,uint64_t buffer,uint64_t serial,void *wl_buffer,int fence_fd) {
+    (void)ctx;assert(wl_buffer && fence_fd==123);struct message r=exchange((struct message){1,surface,buffer,serial});assert(r.op==1);return VK_SUCCESS;
 }
 static VkResult properties(VkDevice d,const struct AHardwareBuffer *b,VkAndroidHardwareBufferPropertiesANDROID *p) {
     (void)d;assert(b==last_ahb);p->allocationSize=8192;p->memoryTypeBits=8;
@@ -110,11 +110,11 @@ int main(void) {
     assert(allocations==4 && exports==3 && buffers==2);
     assert(releases==4 && destroys==3 && buffer_destroys==2);
     fail_buffer=0;assert(!mv_wsi_create(&s,&ci,&ops,&c));VkImage images[2];n=1;assert(mv_wsi_images(c,&n,images)==VK_INCOMPLETE && n==1);n=2;assert(!mv_wsi_images(c,&n,images));assert(images[0]!=images[1]);
-    uint32_t a,b;assert(!mv_wsi_acquire(c,&a));assert(!mv_wsi_present(c,a));assert(mv_wsi_present(c,a)==VK_ERROR_INITIALIZATION_FAILED);
-    assert(!mv_wsi_acquire(c,&b) && a!=b);assert(!mv_wsi_present(c,b));assert(mv_wsi_acquire(c,&a)==VK_NOT_READY);
+    uint32_t a,b;assert(!mv_wsi_acquire(c,&a));assert(!mv_wsi_present(c,a,123));assert(mv_wsi_present(c,a,123)==VK_ERROR_INITIALIZATION_FAILED);
+    assert(!mv_wsi_acquire(c,&b) && a!=b);assert(!mv_wsi_present(c,b,123));assert(mv_wsi_acquire(c,&a)==VK_NOT_READY);
     assert(mv_wsi_destroy(c)==VK_NOT_READY);
     struct message r=exchange((struct message){2,42,c->images[0].token,0});assert(mv_wsi_release(c,r.buffer,r.serial+1)==VK_ERROR_INITIALIZATION_FAILED);assert(!mv_wsi_release(c,r.buffer,r.serial));assert(mv_wsi_release(c,r.buffer,r.serial)==VK_ERROR_INITIALIZATION_FAILED);
-    assert(!mv_wsi_acquire(c,&a) && a==0);assert(!mv_wsi_present(c,a));assert(mv_wsi_release(c,r.buffer,r.serial)==VK_ERROR_INITIALIZATION_FAILED);
+    assert(!mv_wsi_acquire(c,&a) && a==0);assert(!mv_wsi_present(c,a,123));assert(mv_wsi_release(c,r.buffer,r.serial)==VK_ERROR_INITIALIZATION_FAILED);
     mv_wsi_surface_resize(&s,(VkExtent2D){800,600});assert(mv_wsi_acquire(c,&a)==VK_ERROR_OUT_OF_DATE_KHR);
     for(unsigned i=0;i<2;i++){r=exchange((struct message){2,42,c->images[i].token,0});assert(!mv_wsi_release(c,r.buffer,r.serial));}
     s.alive=0;assert(mv_wsi_acquire(c,&a)==VK_ERROR_SURFACE_LOST_KHR);assert(!mv_wsi_destroy(c));assert(releases==6 && destroys==5 && buffer_destroys==4);

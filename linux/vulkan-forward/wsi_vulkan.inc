@@ -3,6 +3,7 @@ struct mv_wayland_surface {
     struct wl_display *display;
     struct wl_surface *surface;
     struct mv_wl_dmabuf *dmabuf;
+    struct mv_wl_sync_surface *sync;
     int custom_allocator;
     VkAllocationCallbacks allocator;
     struct mv_wsi_surface state;
@@ -90,8 +91,9 @@ static VkResult mv_wsi_live_create_buffer(void *opaque,VkExtent2D extent,uint32_
     return *buffer?VK_SUCCESS:VK_ERROR_OUT_OF_HOST_MEMORY;
 }
 static void mv_wsi_live_destroy_buffer(void *opaque,void *buffer) {(void)opaque;mv_wl_buffer_destroy(buffer);}
-static VkResult mv_wsi_live_present(void *opaque,uint64_t surface,uint64_t buffer,uint64_t serial) {
-    (void)opaque;(void)surface;(void)buffer;(void)serial;return VK_ERROR_FEATURE_NOT_PRESENT;
+static VkResult mv_wsi_live_present(void *opaque,uint64_t surface,uint64_t buffer,uint64_t serial,void *wl_buffer,int fence_fd) {
+    (void)surface;(void)buffer;(void)serial;struct mv_wsi_live_context *c=opaque;
+    return mv_wl_surface_present(c->surface->sync,c->surface->surface,wl_buffer,fence_fd)==0?VK_SUCCESS:VK_ERROR_DEVICE_LOST;
 }
 
 static const char *const mv_wsi_instance_names[] = {
@@ -169,6 +171,7 @@ static void mv_vkDestroySurfaceKHR(VkInstance instance,VkSurfaceKHR surface,cons
     (void)allocator;
     struct mv_wayland_surface *s=mv_wsi_surface(instance,surface);
     if (s) {
+        mv_wl_sync_surface_destroy(s->sync);
         mv_wl_dmabuf_destroy(s->dmabuf);
         if (s->custom_allocator) s->allocator.pfnFree(s->allocator.pUserData,s);
         else mv_delete(s->instance,s);
@@ -239,6 +242,12 @@ static struct mv_wsi_live_context *mv_wsi_live(VkDevice device,VkSwapchainKHR sw
     struct mv_wsi_live_context *live=c->ops.context;
     return live&&live->device==(struct mv_device *)device?live:0;
 }
+static void mv_wsi_collect_releases(struct mv_wsi_swapchain *chain) {
+    for(uint32_t j=0;j<chain->count;j++)if(mv_wl_buffer_released(chain->images[j].wl_buffer)) {
+        mv_wl_buffer_clear_released(chain->images[j].wl_buffer);
+        (void)mv_wsi_release(chain,chain->images[j].token,chain->images[j].serial);
+    }
+}
 static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR *info,
         const VkAllocationCallbacks *allocator,VkSwapchainKHR *out) {
     if(!out)return VK_ERROR_INITIALIZATION_FAILED;*out=VK_NULL_HANDLE;
@@ -248,6 +257,8 @@ static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateI
     if(allocator&&(!allocator->pfnAllocation||!allocator->pfnReallocation||!allocator->pfnFree))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wayland_surface *surface=mv_wsi_surface((VkInstance)d->base.instance,info->surface);
     if(!surface)return VK_ERROR_SURFACE_LOST_KHR;
+    if(!surface->sync)surface->sync=mv_wl_sync_surface_create(surface->dmabuf,surface->surface);
+    if(!surface->sync)return VK_ERROR_FEATURE_NOT_PRESENT;
     struct mv_wsi_live_context *c=mv_alloc(sizeof(*c));if(!c)return VK_ERROR_OUT_OF_HOST_MEMORY;memset(c,0,sizeof(*c));
     c->device=d;c->surface=surface;
     struct mv_scope scope;
@@ -274,6 +285,11 @@ static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateI
 static void mv_vkDestroySwapchainKHR(VkDevice device,VkSwapchainKHR swapchain,const VkAllocationCallbacks *allocator) {
     (void)allocator;struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return;
     struct mv_wsi_swapchain *c=(void *)(uintptr_t)swapchain;
+    for(;;) {
+        mv_wsi_collect_releases(c);int pending=0;
+        for(uint32_t j=0;j<c->count;j++)pending|=c->images[j].state==2;
+        if(!pending||mv_wl_dmabuf_dispatch_one(live->surface->dmabuf)<0)break;
+    }
     if(mv_wsi_destroy(c)==VK_SUCCESS)mv_free(live);
 }
 static VkResult mv_vkGetSwapchainImagesKHR(VkDevice device,VkSwapchainKHR swapchain,uint32_t *count,VkImage *images) {
@@ -283,16 +299,62 @@ static VkResult mv_vkGetSwapchainImagesKHR(VkDevice device,VkSwapchainKHR swapch
 static VkResult mv_vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR swapchain,uint64_t timeout,
         VkSemaphore semaphore,VkFence fence,uint32_t *index) {
     struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return VK_ERROR_OUT_OF_DATE_KHR;
-    if(semaphore||fence)return VK_ERROR_FEATURE_NOT_PRESENT;
-    VkResult r=mv_wsi_acquire((void *)(uintptr_t)swapchain,index);
-    return r==VK_NOT_READY&&timeout?VK_TIMEOUT:r;
+    struct mv_wsi_swapchain *chain=(void *)(uintptr_t)swapchain;
+    for(;;) {
+        (void)mv_wl_dmabuf_dispatch(live->surface->dmabuf);
+        mv_wsi_collect_releases(chain);
+        VkResult r=mv_wsi_acquire(chain,index);
+        if(r!=VK_NOT_READY) {
+            if(r!=VK_SUCCESS)return r;
+            struct mv_device *d=(void *)device;struct mv_handle *q=d->children;
+            while(q&&(q->pool||q->device!=d))q=q->next;
+            if(!q){mv_wsi_cancel_acquire(chain,*index);return VK_ERROR_INITIALIZATION_FAILED;}
+            VkSubmitInfo si={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.signalSemaphoreCount=semaphore?1u:0u,
+                .pSignalSemaphores=semaphore?&semaphore:NULL};struct mv_scope scope;
+            if(!mv_enter(&scope)){mv_wsi_cancel_acquire(chain,*index);return VK_ERROR_INITIALIZATION_FAILED;}
+            VkResult sr=d->dispatch.vkQueueSubmit(q->android,1,&si,fence);switch_back(&scope);
+            if(sr)mv_wsi_cancel_acquire(chain,*index);return sr;
+        }
+        if(!timeout)return VK_NOT_READY;
+        if(mv_wl_dmabuf_dispatch_one(live->surface->dmabuf)<0)return VK_ERROR_SURFACE_LOST_KHR;
+    }
 }
 static VkResult mv_vkAcquireNextImage2KHR(VkDevice device,const VkAcquireNextImageInfoKHR *info,uint32_t *index) {
     if(!info||info->pNext)return VK_ERROR_FEATURE_NOT_PRESENT;
     return mv_vkAcquireNextImageKHR(device,info->swapchain,info->timeout,info->semaphore,info->fence,index);
 }
 static VkResult mv_vkQueuePresentKHR(VkQueue queue,const VkPresentInfoKHR *info) {
-    (void)queue;(void)info;return VK_ERROR_FEATURE_NOT_PRESENT;
+    if(!queue||!info||info->pNext||info->swapchainCount!=1||!info->pSwapchains||!info->pImageIndices)
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    struct mv_handle *qh=(void *)queue;struct mv_device *d=qh->device;
+    if(!d||!d->wsi_swapchain_enabled||!d->wsi_sync_fd_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
+    struct mv_wsi_live_context *live=mv_wsi_live((VkDevice)d,(VkSwapchainKHR)info->pSwapchains[0]);
+    if(!live)return VK_ERROR_OUT_OF_DATE_KHR;
+    struct mv_wsi_swapchain *chain=(void *)(uintptr_t)info->pSwapchains[0];
+    struct mv_scope scope;if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkCreateSemaphore create=(PFN_vkCreateSemaphore)d->gdpa(d->base.android,"vkCreateSemaphore");
+    PFN_vkGetSemaphoreFdKHR get_fd=(PFN_vkGetSemaphoreFdKHR)d->gdpa(d->base.android,"vkGetSemaphoreFdKHR");
+    PFN_vkDestroySemaphore destroy=(PFN_vkDestroySemaphore)d->gdpa(d->base.android,"vkDestroySemaphore");
+    if(!create||!get_fd||!destroy){switch_back(&scope);return VK_ERROR_EXTENSION_NOT_PRESENT;}
+    VkExportSemaphoreCreateInfo export={.sType=VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+        .handleTypes=VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+    VkSemaphoreCreateInfo ci={.sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,.pNext=&export};
+    VkSemaphore signal=VK_NULL_HANDLE;VkResult r=create(d->base.android,&ci,NULL,&signal);
+    VkPipelineStageFlags *stages=NULL;
+    if(!r&&info->waitSemaphoreCount){stages=mv_alloc((size_t)info->waitSemaphoreCount*sizeof(*stages));if(!stages)r=VK_ERROR_OUT_OF_HOST_MEMORY;else for(uint32_t j=0;j<info->waitSemaphoreCount;j++)stages[j]=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;}
+    if(!r) {
+        VkSubmitInfo submit={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.waitSemaphoreCount=info->waitSemaphoreCount,
+            .pWaitSemaphores=info->pWaitSemaphores,.pWaitDstStageMask=stages,.signalSemaphoreCount=1,.pSignalSemaphores=&signal};
+        r=d->dispatch.vkQueueSubmit(qh->android,1,&submit,VK_NULL_HANDLE);
+    }
+    int fd=-1;if(!r){VkSemaphoreGetFdInfoKHR gi={.sType=VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+        .semaphore=signal,.handleType=VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};r=get_fd(d->base.android,&gi,&fd);}
+    if(signal)destroy(d->base.android,signal,NULL);switch_back(&scope);mv_free(stages);
+    if(r){if(fd>=0)mv_close(fd);return r;}
+    r=mv_wsi_present(chain,info->pImageIndices[0],fd);
+    mv_close(fd);
+    if(info->pResults)info->pResults[0]=r;
+    return r;
 }
 
 static PFN_vkVoidFunction mv_wsi_lookup(const char *name) {

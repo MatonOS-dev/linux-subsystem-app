@@ -55,6 +55,7 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     struct mv_device seed={0};if(a){seed.custom=1;seed.allocator=*a;}
     struct mv_device *d=mv_dnew(&seed,sizeof(*d));if(!d)return VK_ERROR_OUT_OF_HOST_MEMORY;
     d->custom=seed.custom;d->allocator=seed.allocator;d->base.instance=h->instance;d->base.device=d;d->wsi_swapchain_enabled=swapchain_enabled;
+    for(uint32_t j=0;j<info->enabledExtensionCount;j++)if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME))d->wsi_sync_fd_enabled=1;
     VkDeviceCreateInfo copy=*info;
     const char **extension_names=0;
     if(swapchain_enabled) {

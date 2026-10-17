@@ -26,7 +26,7 @@ struct mv_wsi_ops {
     void (*destroy_buffer)(void *,void *);
     /* Enqueue only after render completion; D1 has no GPU sync integration.
      * Failure MUST mean not enqueued. Success retains the buffer until release. */
-    VkResult (*present)(void *,uint64_t,uint64_t,uint64_t);
+    VkResult (*present)(void *,uint64_t,uint64_t,uint64_t,void *,int);
 };
 struct mv_wsi_swapchain { struct mv_wsi_surface *surface; struct mv_wsi_ops ops;
     uint64_t generation, serial; uint32_t count; struct mv_wsi_image *images; };
@@ -39,7 +39,8 @@ VkResult mv_wsi_modes(uint32_t *,VkPresentModeKHR *);
 VkResult mv_wsi_create(struct mv_wsi_surface *,const VkSwapchainCreateInfoKHR *,const struct mv_wsi_ops *,struct mv_wsi_swapchain **);
 VkResult mv_wsi_images(struct mv_wsi_swapchain *,uint32_t *,VkImage *);
 VkResult mv_wsi_acquire(struct mv_wsi_swapchain *,uint32_t *);
-VkResult mv_wsi_present(struct mv_wsi_swapchain *,uint32_t);
+void mv_wsi_cancel_acquire(struct mv_wsi_swapchain *,uint32_t);
+VkResult mv_wsi_present(struct mv_wsi_swapchain *,uint32_t,int);
 VkResult mv_wsi_release(struct mv_wsi_swapchain *,uint64_t,uint64_t);
 /* Nonblocking prototype teardown refuses in-flight buffers; D2 needs retirement. */
 VkResult mv_wsi_destroy(struct mv_wsi_swapchain *);

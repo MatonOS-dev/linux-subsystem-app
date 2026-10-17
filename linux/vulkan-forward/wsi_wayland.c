@@ -20,18 +20,22 @@ typedef struct wl_event_queue *(*queue_create_fn)(struct wl_display *);
 typedef void (*queue_destroy_fn)(struct wl_event_queue *);
 typedef int (*roundtrip_fn)(struct wl_display *, struct wl_event_queue *);
 typedef int (*dispatch_pending_fn)(struct wl_display *, struct wl_event_queue *);
+typedef int (*dispatch_queue_fn)(struct wl_display *, struct wl_event_queue *);
 typedef struct wl_proxy *(*wrapper_fn)(struct wl_proxy *);
 typedef void (*wrapper_destroy_fn)(struct wl_proxy *);
 typedef void (*set_queue_fn)(struct wl_proxy *, struct wl_event_queue *);
+typedef int (*flush_fn)(struct wl_display *);
 
 struct mv_wl_dmabuf {
     struct wl_display *display;
     struct wl_event_queue *queue;
     struct wl_proxy *registry, *proxy, *wrapper;
-    uint32_t global_name;
-    int version;
+    struct wl_proxy *sync_manager;
+    uint32_t global_name, sync_global_name;
+    int version, sync_version;
 };
 struct mv_wl_buffer { struct wl_proxy *proxy; int released; };
+struct mv_wl_sync_surface { struct wl_proxy *proxy; struct wl_display *display; };
 
 static marshal_fn marshal;
 static version_fn proxy_version;
@@ -41,17 +45,22 @@ static queue_create_fn queue_create;
 static queue_destroy_fn queue_destroy;
 static roundtrip_fn roundtrip;
 static dispatch_pending_fn dispatch_pending;
+static dispatch_queue_fn dispatch_queue;
 static wrapper_fn create_wrapper;
 static wrapper_destroy_fn destroy_wrapper;
 static set_queue_fn set_queue;
+static flush_fn display_flush;
 static const struct wl_interface *registry_interface;
+static const struct wl_interface *surface_interface;
+static const struct wl_interface sync_surface_interface;
+static const struct wl_interface *sync_manager_types[] = { &sync_surface_interface, 0 };
 static int resolved;
 
 static void *sym(const char *name) { return mv_wayland_symbol(name); }
 static int resolve(void) {
     if (resolved) return marshal && proxy_version && add_listener && proxy_destroy &&
-        queue_create && queue_destroy && roundtrip && dispatch_pending && create_wrapper &&
-        destroy_wrapper && set_queue && registry_interface;
+        queue_create && queue_destroy && roundtrip && dispatch_pending && dispatch_queue && create_wrapper &&
+        destroy_wrapper && set_queue && display_flush && registry_interface && surface_interface;
     resolved = 1;
     marshal=(marshal_fn)sym("wl_proxy_marshal_flags");
     proxy_version=(version_fn)sym("wl_proxy_get_version");
@@ -61,16 +70,32 @@ static int resolve(void) {
     queue_destroy=(queue_destroy_fn)sym("wl_event_queue_destroy");
     roundtrip=(roundtrip_fn)sym("wl_display_roundtrip_queue");
     dispatch_pending=(dispatch_pending_fn)sym("wl_display_dispatch_queue_pending");
+    dispatch_queue=(dispatch_queue_fn)sym("wl_display_dispatch_queue");
     create_wrapper=(wrapper_fn)sym("wl_proxy_create_wrapper");
     destroy_wrapper=(wrapper_destroy_fn)sym("wl_proxy_wrapper_destroy");
     set_queue=(set_queue_fn)sym("wl_proxy_set_queue");
+    display_flush=(flush_fn)sym("wl_display_flush");
     registry_interface=(const struct wl_interface *)sym("wl_registry_interface");
+    surface_interface=(const struct wl_interface *)sym("wl_surface_interface");
+    sync_manager_types[1]=surface_interface;
     return marshal && proxy_version && add_listener && proxy_destroy && queue_create &&
-        queue_destroy && roundtrip && dispatch_pending && create_wrapper && destroy_wrapper &&
-        set_queue && registry_interface;
+        queue_destroy && roundtrip && dispatch_pending && dispatch_queue && create_wrapper && destroy_wrapper &&
+        set_queue && display_flush && registry_interface && surface_interface;
 }
 
 static const struct wl_interface params_interface, buffer_interface;
+static const struct wl_message sync_manager_methods[] = {
+    {"destroy", "1", 0}, {"get_surface_sync", "no", sync_manager_types},
+};
+static const struct wl_message sync_surface_methods[] = {
+    {"destroy", "1", 0}, {"set_acquire_fence", "h", 0},
+};
+static const struct wl_interface sync_surface_interface = {
+    "maton_sync_surface_v1", 1, 2, sync_surface_methods, 0, 0,
+};
+static const struct wl_interface sync_manager_interface = {
+    "maton_sync_file_v1", 1, 2, sync_manager_methods, 0, 0,
+};
 static const struct wl_interface *dmabuf_params_types[] = { &params_interface };
 static const struct wl_interface *params_create_immed_types[] = { &buffer_interface, 0, 0, 0, 0 };
 static const struct wl_interface *params_created_types[] = { &buffer_interface };
@@ -103,12 +128,17 @@ static void registry_global(void *data, struct wl_proxy *registry, uint32_t name
         const char *interface, uint32_t version) {
     (void)registry;
     struct mv_wl_dmabuf *d=data;
-    if (d->global_name || !interface || strcmp(interface,"zwp_linux_dmabuf_v1")) return;
-    d->global_name=name; d->version=version>4?4:(int)version;
+    if (!interface) return;
+    if (!d->global_name && !strcmp(interface,"zwp_linux_dmabuf_v1")) {
+        d->global_name=name; d->version=version>4?4:(int)version;
+    } else if (!d->sync_global_name && !strcmp(interface,"maton_sync_file_v1")) {
+        d->sync_global_name=name; d->sync_version=version>1?1:(int)version;
+    }
 }
 static void registry_remove(void *data, struct wl_proxy *registry, uint32_t name) {
     (void)registry; struct mv_wl_dmabuf *d=data;
     if (d->global_name==name) { d->global_name=0; d->version=0; }
+    if (d->sync_global_name==name) { d->sync_global_name=0; d->sync_version=0; }
 }
 static void (*const registry_listener[])(void) = {
     (void (*)(void))registry_global, (void (*)(void))registry_remove,
@@ -135,6 +165,11 @@ struct mv_wl_dmabuf *mv_wl_dmabuf_create(struct wl_display *display) {
             d->global_name,dmabuf_interface.name,(uint32_t)d->version,(void *)0);
     if (!d->proxy) goto fail;
     set_queue(d->proxy,d->queue);
+    if(d->sync_global_name && d->sync_version>0) {
+        d->sync_manager=marshal(d->registry,0,&sync_manager_interface,(uint32_t)d->sync_version,0,
+                d->sync_global_name,sync_manager_interface.name,(uint32_t)d->sync_version,(void *)0);
+        if(d->sync_manager)set_queue(d->sync_manager,d->queue);
+    }
     d->wrapper=create_wrapper(d->proxy); if (!d->wrapper) goto fail;
     set_queue(d->wrapper,d->queue);
     return d;
@@ -145,6 +180,7 @@ void mv_wl_dmabuf_destroy(struct mv_wl_dmabuf *d) {
     if (!d) return;
     if (d->wrapper) destroy_wrapper(d->wrapper);
     if (d->proxy) marshal(d->proxy,0,0,proxy_version(d->proxy),1);
+    if (d->sync_manager) marshal(d->sync_manager,0,0,proxy_version(d->sync_manager),1);
     if (d->registry) proxy_destroy(d->registry);
     if (d->queue) queue_destroy(d->queue);
     mv_free(d);
@@ -153,6 +189,10 @@ int mv_wl_dmabuf_version(const struct mv_wl_dmabuf *d) { return d?d->version:0; 
 int mv_wl_dmabuf_dispatch(struct mv_wl_dmabuf *d) {
     if (!d || !d->display || !d->queue || !dispatch_pending) return -1;
     return dispatch_pending(d->display,d->queue);
+}
+int mv_wl_dmabuf_dispatch_one(struct mv_wl_dmabuf *d) {
+    if(!d||!d->display||!d->queue||!dispatch_queue)return -1;
+    return dispatch_queue(d->display,d->queue);
 }
 
 struct mv_wl_buffer *mv_wl_dmabuf_create_buffer(struct mv_wl_dmabuf *d,
@@ -190,3 +230,26 @@ void mv_wl_buffer_destroy(struct mv_wl_buffer *b) {
 }
 int mv_wl_buffer_released(const struct mv_wl_buffer *b) { return b && b->released; }
 void mv_wl_buffer_clear_released(struct mv_wl_buffer *b) { if (b) b->released=0; }
+struct mv_wl_sync_surface *mv_wl_sync_surface_create(struct mv_wl_dmabuf *d,struct wl_surface *surface) {
+    if(!d||!d->sync_manager||!surface)return 0;
+    struct wl_proxy *proxy=marshal(d->sync_manager,1,&sync_surface_interface,
+            (uint32_t)d->sync_version,0,(void *)0,surface);
+    if(!proxy)return 0;set_queue(proxy,d->queue);
+    struct mv_wl_sync_surface *sync=mv_alloc(sizeof(*sync));
+    if(!sync){marshal(proxy,0,0,proxy_version(proxy),1);return 0;}
+    sync->proxy=proxy;sync->display=d->display;return sync;
+}
+void mv_wl_sync_surface_destroy(struct mv_wl_sync_surface *sync) {
+    if(!sync)return;if(sync->proxy)marshal(sync->proxy,0,0,proxy_version(sync->proxy),1);mv_free(sync);
+}
+int mv_wl_surface_present(struct mv_wl_sync_surface *sync,struct wl_surface *surface,
+        struct mv_wl_buffer *buffer,int fence_fd) {
+    if(!sync||!sync->proxy||!surface||!buffer||!buffer->proxy||fence_fd<0)return -1;
+    marshal(sync->proxy,1,0,proxy_version(sync->proxy),0,fence_fd);
+    uint32_t version=proxy_version((struct wl_proxy *)surface);
+    marshal((struct wl_proxy *)surface,1,0,version,0,buffer->proxy,0,0);
+    if(version>=4)marshal((struct wl_proxy *)surface,9,0,version,0,0,0,0,0);
+    else marshal((struct wl_proxy *)surface,2,0,version,0,0,0,0,0);
+    marshal((struct wl_proxy *)surface,6,0,version,0);
+    return display_flush(sync->display);
+}
