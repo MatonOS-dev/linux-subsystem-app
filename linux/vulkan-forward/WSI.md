@@ -40,8 +40,11 @@ window, or in-process ART path is part of this design.
 The verified VM probe path is a Vulkan image with
 `VkExternalMemoryImageCreateInfo.handleTypes =
 VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID`, followed
-by dedicated memory allocation with `VkExportMemoryAllocateInfo` for the same
-handle type. After binding, the resident driver's
+by `VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT` and
+`VkImageDrmFormatModifierExplicitCreateInfoEXT` using the driver's advertised
+linear modifier and an explicit plane layout. Dedicated memory allocation
+uses `VkExportMemoryAllocateInfo` for the same AHB handle type. After binding,
+the resident driver's
 `vkGetMemoryAndroidHardwareBufferANDROID` returned an AHB;
 `AHardwareBuffer_getNativeHandle` exposed two fds, with fd 0 reported as the
 buffer dma-buf and fd 1 as gralloc metadata. For a 256x256
@@ -49,12 +52,17 @@ buffer dma-buf and fd 1 as gralloc metadata. For a 256x256
 format `AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM` and stride 256 pixels.
 `vkGetImageDrmFormatModifierPropertiesEXT`, with
 `VK_EXT_image_drm_format_modifier` enabled, reported modifier `0` (linear).
+`vkGetImageSubresourceLayout` on this modifier-tiled image reported plane
+offset 0 and row pitch 1024 bytes; the AHB stride (256 pixels × 4 bytes)
+agreed. The format-properties query reported exactly one supported modifier,
+linear, with one plane.
 The compositor's existing format table maps Android RGBA_8888 to
 `DRM_FORMAT_ABGR8888`; this is the fourcc to advertise for that byte order.
-The probe did not prove the plane offset or pass the buffer through the
-compositor mapper validator, so full linux-dmabuf layout acceptance remains
-unverified. The alternate `VK_EXT_external_memory_dma_buf` path was enumerated
-by the driver but was not used.
+This validates the export metadata on the VM driver, but the buffer has not
+yet been passed through the compositor mapper validator. Full linux-dmabuf
+import acceptance remains unverified. The alternate
+`VK_EXT_external_memory_dma_buf` path was enumerated by the driver but was not
+used.
 
 ## Synchronization and presentation
 
