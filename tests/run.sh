@@ -20,3 +20,15 @@ python3 "$ROOT/linux/packs/tests/java-source.py"
 python3 "$ROOT/linux/packs/tests/java-writer.py"
 make -C "$ROOT/linux/dbus-broker" -j4 OUT="$OUT/bus" check-inhibit check-portal-wire check-policy-wildcard
 bash "$ROOT/tests/packagename/run.sh" "$OUT/packagename"
+mkdir -p "$OUT/install-handoff/classes"
+ANDROID_JAR=${MATON_ANDROID_JAR:-/mnt/data/aosp/prebuilts/sdk/current/public/android.jar}
+JSON_JAR=${MATON_JSON_JAR:-/mnt/data/aosp/prebuilts/misc/common/json/json-prebuilt.jar}
+AAPT2=${MATON_AAPT2:-/mnt/data/aosp/out/host/linux-x86/bin/aapt2}
+javac -cp "$ANDROID_JAR:$JSON_JAR:$ROOT/linux/stubgen/prebuilt/apksig.jar" -d "$OUT/install-handoff/classes" \
+  "$ROOT"/linux/stubgen/src/org/matonos/linuxhost/stubgen/*.java \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployManifest.java" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/InstallHandoff.java" \
+  "$ROOT/tests/install-handoff/InstallHandoffTest.java"
+java -cp "$OUT/install-handoff/classes:$JSON_JAR:$ANDROID_JAR:$ROOT/linux/stubgen/prebuilt/apksig.jar" \
+  org.matonos.linuxhost.stubgen.InstallHandoffTest "$OUT/install-handoff"
+"$AAPT2" dump badging "$OUT/install-handoff/handoff.apk" | grep -F "package: name='flatpak.app.org_example_Editor.x86_64.stable.x" >/dev/null

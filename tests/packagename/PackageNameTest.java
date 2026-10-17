@@ -2,7 +2,20 @@ import org.matonos.linux.stub.DeployManifest;
 
 /** Every Flatpak ref must map to a name StubGenerator accepts (numeric branches included). */
 public final class PackageNameTest {
-    private static final String VALID = "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+";
+    // Port of FrameworkParsingPackageUtils.validateName(name, true, true):
+    // ASCII letters begin each dot-delimited segment; following chars may also be digits/underscore.
+    private static boolean frameworkValid(String name) {
+        if (name == null || name.length() > 255) return false;
+        boolean separator = false, front = true;
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) { front = false; continue; }
+            if (!front && ((c >= '0' && c <= '9') || c == '_')) continue;
+            if (c == '.') { separator = true; front = true; continue; }
+            return false;
+        }
+        return separator;
+    }
     public static void main(String[] args) throws Exception {
         String[] refs = {
             "app/org.mozilla.firefox/x86_64/stable",
@@ -15,7 +28,7 @@ public final class PackageNameTest {
         int failed = 0;
         for (String ref : refs) {
             String name = DeployManifest.packageForPublic(ref);
-            boolean ok = name.matches(VALID) && name.length() <= 255;
+            boolean ok = frameworkValid(name);
             if (!ok) failed++;
             System.out.println((ok ? "ok   " : "FAIL ") + ref + " -> " + name);
         }

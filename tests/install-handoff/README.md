@@ -1,0 +1,22 @@
+# Install hand-off host regression
+
+`tests/run.sh` compiles the real `InstallHandoff`, `DeployManifest`, and
+`StubGenerator` sources on the JVM. `InstallTransaction.packageManifest()` now
+delegates to `InstallHandoff`, the same seam used by the service path. The test
+checks the package document fields consumed by `DeployManifest` and
+`StagedPacks`, exercises the row-versus-manifest failure, writes a real binary
+APK manifest through `StubGenerator`, and parses it with AOSP `aapt2 dump
+badging`. Only Android Keystore signing is replaced with a byte-copy backend;
+no test backend is active by default.
+
+Package-name validation mirrors
+`/mnt/data/aosp/frameworks/base/core/java/android/content/pm/parsing/FrameworkParsingPackageUtils.java`,
+`validateName(name, true, true)` (lines 72–103 in this checkout). In
+particular each dot starts a segment whose first character must be an ASCII
+letter, and the optional filename check limits the name to 255 characters.
+
+The broader `tests/run.sh` also runs the real compatibility-proxy/OSTree
+placeholder fixture. The focused hand-off test does not yet invoke Android's
+`LinuxAppStoreService.onComplete`, `StagedPacks.build`, or `PackageInstaller`
+with an Android `Context`; it verifies their JSON boundary and generated APK
+before that platform-only session boundary.

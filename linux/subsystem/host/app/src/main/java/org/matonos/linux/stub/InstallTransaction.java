@@ -388,9 +388,7 @@ public final class InstallTransaction {
         return new File(location.isEmpty()?operation(context,id):new File(operation(context,id),location),"installation");
     }
     public static JSONObject packageManifest(JSONObject plan,String ref)throws Exception {
-        JSONObject row=row(plan,ref);
-        return new JSONObject().put("appRef",ref).put("appCommit",row.getString("commit")).put("origin",row.getString("origin"))
-                .put("dependencies",row.getJSONArray("dependencies")).put("mount",row.getString("mount")).put("deployments",plan.getJSONArray("deployments"));
+        return InstallHandoff.packageManifest(plan,ref);
     }
 
     public static File installation(Context context,String id) throws Exception {

@@ -30,6 +30,10 @@ import java.util.zip.ZipOutputStream;
  * App stubs declare the OSTree commit checksums of the app and its runtime
  * in manifest meta-data, replacing the retired erofs image entries. */
 public final class StubGenerator {
+    /** Host-test seam for the Android Keystore boundary; unset in production. */
+    interface SigningBackend { void sign(File input, File output) throws Exception; }
+    private static volatile SigningBackend testSigningBackend;
+    static void setSigningBackendForTest(SigningBackend backend) { testSigningBackend = backend; }
     public static final int FORMAT_VERSION = 1;
     // v14 adds bridge visibility for self-task Linux window capabilities.
     // v19 moves the launcher entry into a code-free launcher split, applies
@@ -194,7 +198,7 @@ public final class StubGenerator {
             else try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
                 put(zip,"AndroidManifest.xml",manifest.encode());put(zip,"classes.dex",emptyDex());
             }
-            sign(unsigned,output,getOrCreateKey());return output;
+            sign(unsigned,output);return output;
         } finally {unsigned.delete();}
     }
     private static String encodeDependencies(Map<String,String> values){StringBuilder out=new StringBuilder();for(Map.Entry<String,String> e:new java.util.TreeMap<>(values).entrySet()){if(out.length()>0)out.append(';');out.append(e.getKey()).append('>').append(e.getValue());}return out.toString();}
@@ -225,7 +229,7 @@ public final class StubGenerator {
         try {
             writeUnsigned(unsigned, packageName, cleanLabel, ref, remote, iconPng, permissions, commitInfo,
                     minInterfaceVersion != null ? minInterfaceVersion : 2, packDirectory);
-            sign(unsigned, output, getOrCreateKey());
+            sign(unsigned, output);
             return output;
         } finally {
             //noinspection ResultOfMethodCallIgnored
@@ -253,7 +257,7 @@ public final class StubGenerator {
         File unsigned=File.createTempFile("matonos-index-",".apk",workDir);
         try {
             writeIndexUnsigned(unsigned,pkg,objects,revision);
-            sign(unsigned,output,getOrCreateKey());return output;
+            sign(unsigned,output);return output;
         } finally {unsigned.delete();}
     }
     private static void writeIndexUnsigned(File unsigned,String pkg,File objects,int revision) throws Exception {
@@ -283,7 +287,7 @@ public final class StubGenerator {
         File unsigned=File.createTempFile("matonos-pack-",".apk",workDir);
         try {
             ObjectPacks.carrier(pack,unsigned,encoder.packManifest(split));
-            sign(unsigned,output,getOrCreateKey());return output;
+            sign(unsigned,output);return output;
         } finally {unsigned.delete();}
     }
 
@@ -339,7 +343,7 @@ public final class StubGenerator {
                 put(zip,"res/drawable/foreground.png",iconPng);
                 put(zip,"res/drawable/icon.xml",new BinaryManifest("","","","flathub",Collections.emptyList()).adaptiveIcon(0x7f020000));
             }
-            sign(unsigned,output,getOrCreateKey());return output;
+            sign(unsigned,output);return output;
         } finally {unsigned.delete();}
     }
 
@@ -350,7 +354,7 @@ public final class StubGenerator {
     public static File generateExtra(File workDir,String pkg,File objects,File output,int revision,
             String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
         File unsigned=generateExtraUnsigned(workDir,pkg,objects,revision,launcherLabel,launcherMimeTypes,launcherIcon);
-        try { sign(unsigned,output,getOrCreateKey()); return output; }
+        try { sign(unsigned,output); return output; }
         finally { unsigned.delete(); }
     }
 
@@ -431,7 +435,7 @@ public final class StubGenerator {
 
     /** Signs an identity-checked package-built extra split with the subsystem key. */
     public static File signExtra(File unsigned,File output) throws Exception {
-        sign(unsigned,output,getOrCreateKey()); return output;
+        sign(unsigned,output); return output;
     }
 
     private static boolean packageName(String pkg) {
@@ -712,7 +716,13 @@ public final class StubGenerator {
         return new KeyMaterial(key, certificate);
     }
 
+    private static void sign(File input, File output) throws Exception {
+        if (testSigningBackend != null) { testSigningBackend.sign(input, output); return; }
+        sign(input, output, getOrCreateKey());
+    }
     private static void sign(File input, File output, KeyMaterial material) throws Exception {
+        SigningBackend testBackend = testSigningBackend;
+        if (testBackend != null) { testBackend.sign(input, output); return; }
         ApkSigner.SignerConfig signer = new ApkSigner.SignerConfig.Builder("matonos-stub", material.key,
                 Collections.singletonList(material.certificate)).build();
         new ApkSigner.Builder(Collections.singletonList(signer)).setInputApk(input).setOutputApk(output)
