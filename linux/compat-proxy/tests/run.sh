@@ -149,6 +149,8 @@ test ! -e "$move_fixture/.v3-inodes/move"
 printf 'PASS interrupted store-root rename recovery\n'
 rm -r "$move_fixture"
 
+bash tests/links-incremental.sh
+
 COMPAT_GPU_SKIP_BUILD=1 bash tests/gpu-host.sh
 
 cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/temp-gc.c -o build/temp-gc

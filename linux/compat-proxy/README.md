@@ -1222,3 +1222,53 @@ pages beyond EOF. Normal successful mappings retain kernel file semantics.
 `tests/loader-maps.py` inspects two live processes' real maps/smaps for clean
 file-backed text and uses kernel seccomp EACCES/EPERM injection for both loader
 classes, resident exec, dynamic linker mmaps and pack-backed main binaries.
+
+Incremental hardlink counts (2026-10-17): ordinary link, unlink and rename
+transactions never enumerate the store or walk its tree. The existing
+`i-*.count` format stays an unsigned 64-bit native-endian value (both supported
+x86 backends are little endian). First conversion writes count 1; each later
+transaction applies its namespace delta directly. The unlink that reaches zero
+removes the object and sidecar; open descriptors still report zero links.
+
+A store's existing exclusive `flock` covers recovery, intent publication,
+namespace mutation, count writes and garbage collection. No second store lock
+is acquired. `intent` is a 16,424-byte v1 record shared by x86_64/i386: uint64
+magic `0x76336c696e6b0001`, two baseline counts, two baseline name-presence
+counts, two PATH_MAX object strings, and two PATH_MAX name strings. Empty
+object slots are unused. Both names are inspected for each affected object;
+replay writes `baseline_count - baseline_presence + current_presence`.
+This also covers overwrite/exchange and failed syscalls, and is idempotent
+when interrupted during a count write or garbage collection. Duplicate names
+and objects are counted once. Arithmetic checks uint64 overflow/underflow.
+
+Intents are completely written to `pending`, then atomically renamed to
+`intent` before changing names. An interrupted first conversion uses the
+existing NUL-separated source/object `conversion` journal, now published by
+the same mechanism; recovery restores the source or writes count 1 using
+only those paths. A leftover `pending` has not authorized any mutation and
+is discarded. `intent` is removed only after count updates and collection.
+The existing `move` journal still rewrites absolute targets when moving an
+entire store root; that explicit directory move necessarily traverses names
+but no longer triggers a recount afterward.
+
+Legacy `dirty`, invalid intent records, and missing/short/zero count metadata
+are exceptional recovery cases. They permit one complete recount attempt per
+store inode/device per process. A failed attempt or repeated damage returns
+an error instead of repeating the walk. Healthy reads only read metadata;
+ordinary operations never create `dirty`. Legacy stores need no format
+migration. Do not mix old and new writers on a live store: old writers still
+use the expensive dirty protocol. As before, the guarantee concerns process
+interruption, not power loss: there is no fsync durability protocol. Direct
+host mutations bypassing the proxy remain unsupported. Structurally valid
+but incorrect external count edits cannot be detected without recounting.
+
+`tests/links-incremental.sh` builds a test-only loader. Its recount diagnostic
+counts directory visits; its `stop-intent` hook stops replay after intent
+publication and namespace mutation, before count updates. Neither hook is
+present in production builds. The test creates 20,000 files, adds 5,000
+emulated links in another directory, and compares 25,000 stats to the same
+proxy's plain-file baseline (required ratio <5). It requires zero tree walks
+for these mutations/stats and SIGKILL recovery, checks that an unrelated
+object's sidecar bytes/mtime did not change, and covers overwrite/exchange,
+failed publication, same-name NOREPLACE, immediate zero-count collection and
+one-shot corrupt metadata fallback. It is included in `tests/run.sh`.
