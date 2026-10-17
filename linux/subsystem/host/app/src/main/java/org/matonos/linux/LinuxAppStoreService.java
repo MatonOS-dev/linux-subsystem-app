@@ -73,6 +73,10 @@ public final class LinuxAppStoreService extends Service {
         volatile InstallTransaction installService;
         volatile String stagedMetadata;
         volatile File packArtifacts;
+        // cancel() can reach result() on a Binder thread while the worker adds
+        // leases, so never iterate this list without holding its monitor.
+        final java.util.List<AutoCloseable> workLeases=java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        volatile File stubWork;
         volatile PackageInfo installed;
         volatile JSONObject stagedManifest;
         volatile org.matonos.linux.stub.PackInstaller packInstaller;
@@ -130,11 +134,13 @@ public final class LinuxAppStoreService extends Service {
 
     @Override public IBinder onBind(Intent intent) { return binder; }
 
-    @Override public void onCreate() { super.onCreate(); instance=this; }
+    @Override public void onCreate() { super.onCreate(); instance=this;
+        // Stale work can be gigabytes; never walk it on the main thread.
+        worker.execute(this::sweepWork); }
 
     @Override public int onStartCommand(Intent intent,int flags,int startId){
         if(intent!=null&&"org.matonos.linux.CLEAN_UNUSED_PACKAGES".equals(intent.getAction())){
-            worker.execute(()->{cleanupUnusedPackages();stopSelf(startId);});return START_NOT_STICKY;
+            worker.execute(()->{sweepWork();cleanupUnusedPackages();stopSelf(startId);});return START_NOT_STICKY;
         }
         return START_NOT_STICKY;
     }
@@ -219,6 +225,10 @@ public final class LinuxAppStoreService extends Service {
         if("install".equals(op.kind))try {
             if(!remoteFor(op.ref).equals(remote))throw new SecurityException("Ref already installed from another remote; uninstall first");
         }catch(PackageManager.NameNotFoundException absent) { }
+        op.workLeases.add(WorkDirs.keep(new File(new File(WorkDirs.root(this),"flatpak-staging"),op.stagingId)));
+        op.stubWork=new File(WorkDirs.directory(this,"flatpak-stubs"),op.stagingId);
+        op.workLeases.add(WorkDirs.keep(op.stubWork));
+        java.nio.file.Files.createDirectories(op.stubWork.toPath());
         InstallTransaction.prepare(this,op.stagingId,"repair".equals(op.kind));
         InstallTransaction.Callback stagedCallback=new InstallTransaction.Callback() {
             @Override public void onProgress(String operationId,String phase,int percent,String line) {
@@ -232,9 +242,11 @@ public final class LinuxAppStoreService extends Service {
                     File installation=InstallTransaction.installation(LinuxAppStoreService.this,op.stagingId);
                     String details = org.matonos.linux.stub.DeployManifest.stagedMetadata(installation, staged);
                     op.stagedMetadata = details;
-                    File scratch=new File(getCacheDir(),"flatpak-pack-artifacts");
+                    File scratch=new File(WorkDirs.root(LinuxAppStoreService.this),"flatpak-pack-artifacts");
                     if(!scratch.isDirectory()&&!scratch.mkdirs())throw new java.io.IOException("Cannot create pack scratch");
-                    op.packArtifacts=java.nio.file.Files.createTempDirectory(scratch.toPath(),"stage-").toFile();
+                    op.packArtifacts=new File(scratch,op.stagingId);
+                    op.workLeases.add(WorkDirs.keep(op.packArtifacts));
+                    java.nio.file.Files.createDirectory(op.packArtifacts.toPath());
                     try {op.installed=getPackageManager().getPackageInfo(packageFor(op.ref),0);}
                     catch(PackageManager.NameNotFoundException absent){op.installed=null;}
                     org.matonos.linux.stub.StagedPacks.build(LinuxAppStoreService.this,installation,InstallTransaction.packageManifest(staged,op.ref),
@@ -242,8 +254,9 @@ public final class LinuxAppStoreService extends Service {
                     if(op.cancelled)throw new java.io.IOException("Install cancelled");
                     installDeclaredPackages(op);
                     installFinalStub(op);
-                } catch(Exception e) {
-                    result(op,false,e.getMessage());
+                } catch(Throwable e) {
+                    Log.e(TAG,"Staged install failed for "+op.ref,e);
+                    result(op,false,e.getMessage()==null?e.toString():e.getMessage());
                 } finally {if(op.cancelled)cleanArtifacts(op);}
             }
             @Override public void onFailed(String operationId,String error) {
@@ -261,6 +274,11 @@ public final class LinuxAppStoreService extends Service {
                 transaction.start(()->finishInstall(transaction));
             } catch(RuntimeException error) {finishInstall(transaction);throw error;}
         }
+    }
+
+    private void sweepWork() {
+        try { WorkDirs.sweep(WorkDirs.root(this)); }
+        catch(Exception error) { Log.w(TAG,"Cannot sweep stale work",error); }
     }
 
     private void cleanupUnusedPackages() {
@@ -384,7 +402,8 @@ public final class LinuxAppStoreService extends Service {
         if(op.stagedMetadata==null)
             throw new IllegalStateException("Staged Flatpak metadata unavailable");
         if(artifacts==null)throw new IllegalStateException("Staged object packs unavailable");
-        File work=new File(getCacheDir(),"flatpak-stubs"); if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create stub scratch directory");
+        WorkDirs.require(artifacts);
+        File work=op.stubWork; if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create stub scratch directory");
         File objects=new File(artifacts,"objects"),base=new File(artifacts,"base.apk");
         java.util.List<String> requiredPackages=new java.util.ArrayList<>();
         java.util.Map<String,String> dependencyPackages=new java.util.TreeMap<>();
@@ -634,11 +653,22 @@ public final class LinuxAppStoreService extends Service {
 
     private void result(Operation op, boolean ok, String error) {
         if(!op.completed.compareAndSet(false,true)) return;
-        cleanArtifacts(op);
-        InstallTransaction.cleanup(this,op.stagingId);
-        if(!ok && op.packInstaller!=null)op.packInstaller.abandon();
-        try { op.callback.onResult(op.id,ok,error); }
-        catch(Exception e) { Log.w(TAG,"Cannot deliver store result",e); }
+        if(!ok && (error==null || error.isEmpty()))error="Store operation failed for "+op.ref;
+        if(!ok)Log.e(TAG,"Store operation failed for "+op.ref+": "+error);
+        // Deliver the terminal result even if cleanup itself fails.
+        try {
+            cleanArtifacts(op);
+            InstallTransaction.cleanup(this,op.stagingId);
+            if(op.stubWork!=null)WorkDirs.remove(op.stubWork);
+            if(!ok && op.packInstaller!=null)op.packInstaller.abandon();
+        } catch(Throwable cleanup) { Log.e(TAG,"Operation cleanup failed",cleanup); }
+        finally {
+            java.util.List<AutoCloseable> leases;
+            synchronized(op.workLeases){leases=new java.util.ArrayList<>(op.workLeases);op.workLeases.clear();}
+            for(AutoCloseable lease:leases)try{lease.close();}catch(Throwable e){Log.w(TAG,"Cannot release work lease",e);}
+            try { op.callback.onResult(op.id,ok,error); }
+            catch(Exception e) { Log.w(TAG,"Cannot deliver store result",e); }
+        }
         operations.remove(operationKey(op.uid,op.id),op); pending.remove(operationKey(op.uid,op.id),op);
     }
 

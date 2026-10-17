@@ -117,7 +117,7 @@ extra-data; the raw, checksum-verified downloads stay in **extra/** and are
 applied by the app's stub), the store reads the real installation repo's app
 commit, then commits the deployment's **files/** root, including
 **extra/**, to a new local bare-user repo at
-`<subsystem-cache>/flatpak-staging/<operation>/pack-repo`. This separate staging repository
+`<subsystem-work>/flatpak-staging/<operation>/pack-repo`. This separate staging repository
 is intentional: the real download repo is bare-user-only; changing its mode
 would invalidate Flatpak's assumptions. The private ref is
 `matonos/private/deployed-files`, scoped by the operation directory, with no

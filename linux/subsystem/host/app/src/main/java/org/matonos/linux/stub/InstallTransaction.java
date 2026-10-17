@@ -1,6 +1,7 @@
 package org.matonos.linux.stub;
 
 import android.content.Context;
+import org.matonos.linux.WorkDirs;
 import android.util.Log;
 import org.json.JSONObject;
 import java.io.BufferedReader;
@@ -171,7 +172,7 @@ public final class InstallTransaction {
             cache=requireDirectory(root,"cache");tmp=requireDirectory(root,"tmp");run=requireDirectory(root,"run");
             String dns=LoaderCommand.resolverAddress();File resolv=new File(run,"install-resolv.conf");LoaderCommand.writeResolv(resolv,dns);
             prefix.add(LoaderCommand.loader(context).getAbsolutePath());prefix.add("--parent-pid");prefix.add(Integer.toString(android.os.Process.myPid()));
-            LoaderCommand.addDns(prefix,dns,context.getCacheDir().getCanonicalFile());LoaderCommand.addResolvMaps(prefix,resolv);
+            LoaderCommand.addDns(prefix,dns,WorkDirs.root(context));LoaderCommand.addResolvMaps(prefix,resolv);
             File descriptor=new File(root,"origin.flatpakrepo");
             if(!origin.url.isEmpty())Files.write(descriptor.toPath(),origin.flatpakrepo().getBytes(StandardCharsets.UTF_8));
             if(configure) {
@@ -339,7 +340,7 @@ public final class InstallTransaction {
     }
     private static File operation(Context context,String id) throws Exception {
         if(id==null||!OPERATION_ID.matcher(id).matches())throw new IllegalArgumentException("Invalid operation ID");
-        File parent=new File(context.getCacheDir().getCanonicalFile(),"flatpak-staging");
+        File parent=new File(WorkDirs.root(context),"flatpak-staging");
         return new File(parent,id);
     }
     public static void prepare(Context context,String id,boolean repair) throws Exception {
@@ -362,7 +363,11 @@ public final class InstallTransaction {
         }catch(java.nio.file.NoSuchFileException absent) { }
         catch(Exception error){Log.w(TAG,"Cannot clean private staging",error);}
     }
-    private File operationDirectory() throws Exception {return operation(context,operationId);}
+    private File operationDirectory() throws Exception {
+        File directory=operation(context,operationId);
+        WorkDirs.require(directory);
+        return directory;
+    }
 
     private static File requireDirectory(File operation, String name) throws Exception {
         File directory = new File(operation, name).getCanonicalFile();

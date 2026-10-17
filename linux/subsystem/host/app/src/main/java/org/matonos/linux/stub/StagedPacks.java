@@ -13,6 +13,7 @@ import org.matonos.linuxhost.stubgen.OstreePacks;
 public final class StagedPacks {
     public static void build(Context context, File installation, JSONObject manifest,
             File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed) throws Exception {
+        org.matonos.linux.WorkDirs.require(installation);
         File deployment=DeployManifest.stagedDeployment(installation,manifest);
         File operation=installation.getParentFile();
         File sourceRepo=new File(installation,"repo");
@@ -45,6 +46,8 @@ public final class StagedPacks {
         org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
         org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"original.index"),original.entries);
         original.writeOriginal(new File(output,"original.ostree"));
+        org.matonos.linux.WorkDirs.require(installation);
+        org.matonos.linux.WorkDirs.require(output);
         record(sourceRepo,deployment,manifest,output);
         android.util.Log.i("MatonInstall","Temporary operation allocated bytes after packs: "+
                 InstallTransaction.allocatedBytes(operation)+"; available: "+operation.getUsableSpace());

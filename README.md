@@ -116,3 +116,45 @@ fallbacks. No kernel or policy changes are required by this repository split.
 Licences are preserved at the root and under the individual components,
 including `linux/flatpak/licenses`, build-support licences, apksig and platform
 header notices. No signing keys belong here.
+
+Live install, pack-artifact, stub-generation, deployment and extra-data work
+uses canonical `Context.getNoBackupFilesDir()/work`, never app cache. The
+`.v3-store-root` markers remain on staging, launch deployment and applied-extra
+roots. No old cache contents are migrated. The store sweeps stale work when its
+service starts and on the existing boot cleanup action; stub launch and extra
+service startup also sweep their own private work roots. Process-local,
+reference-counted leases protect exact live trees; sweeping descends shared
+category directories and removes stale siblings without following symlinks.
+Leases end at terminal operation cleanup, or process exit for launch mappings.
+There are no age heuristics or storage caps.
+
+The Linux application's XDG cache and temporary/cache environment paths stay
+purgeable. Its loader-mapped resolver file and extracted pack-launch metadata
+live in `work/launch-maps`; deployment metadata lives in `work/flatpak-launch`.
+DNS paths are checked as UTF-8 bytes before binding: `sun_path` needs a NUL in
+108 bytes. Android's 223-byte package-name limit permits a 267-byte canonical
+`/data/data/<package>/no_backup/work/dns/forwarder.udp`, so legal long stub
+names cannot all fit. Oversized paths fail explicitly rather than silently
+omitting DNS; no path truncation or external socket directory is used.
+
+The staging-completion callback previously caught post-download exceptions
+without logging them. Terminal result processing marked an operation completed
+before unprotected cleanup, allowing an unchecked cleanup failure to prevent
+callback delivery and making a subsequent failure report a no-op. Completion
+now logs failures (including unchecked failures), checks that required operation
+trees remain readable, and delivers the store callback in a cleanup `finally`.
+This source audit identifies missing diagnostics and a callback-loss path; the
+historical VM incident's exact exception cannot be proven without its stack
+trace. No VM was touched for this change.
+
+`tests/run.sh` includes WorkDirs host tests for canonical private storage,
+107/108-byte socket boundaries, maximum package-name rejection, keeping live
+work, deleting stale siblings/released work, missing-tree errors, and symlink
+containment. Runtime integration checks on a fresh image: install Firefox under
+storage pressure and clear app caches while packs are built; confirm work stays
+under `no_backup/work` and the operation reports success or an explicit failure.
+Interrupt an install, restart the service or reboot, and confirm stale work is
+removed; trigger boot cleanup during an install and confirm its live staging and
+artifacts survive. Launch a stub, clear its cache, and verify resolver/pack maps
+remain available. These checks still require a device; no kernel or shared
+image changes are needed.
