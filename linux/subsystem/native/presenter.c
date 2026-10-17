@@ -149,10 +149,12 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   if (ahb) {
     struct wlr_dmabuf_attributes attrs;
     if (wlr_buffer_get_dmabuf(buffer, &attrs)) opaque = maton_dmabuf_format_opaque(attrs.format);
-    if (buffer != l->shown) {
-      maton_transaction_set_buffer(t, l->control, ahb, buffer, -1);
+    if (buffer != l->shown || seq != l->shown_seq) {
+      int acquire_fence=scene_surface?maton_sync_take_acquire(scene_surface->surface):-1;
+      maton_transaction_set_buffer(t, l->control, ahb, buffer, acquire_fence);
       l->shown = buffer;
       l->shown_source = NULL;
+      l->shown_seq = seq;
     }
   } else if (buffer != l->shown_source || seq != l->shown_seq || !l->shown) {
     struct wlr_buffer* copy = copy_shm(p, l, buffer);
