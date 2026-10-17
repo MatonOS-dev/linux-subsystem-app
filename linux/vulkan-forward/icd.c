@@ -37,7 +37,7 @@ struct mv_instance {
 struct mv_device {
     struct mv_handle base;
     VkAllocationCallbacks allocator;
-    int custom, lock;
+    int custom, lock, wsi_swapchain_enabled;
     struct mv_handle *children;
     struct mv_dispatch dispatch;
     PFN_vkGetDeviceProcAddr gdpa;
@@ -46,6 +46,9 @@ static void mv_vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice,uint32_
 static struct adopt_api *mv_adopt;
 static struct gpu_bridge *mv_bridge;
 static PFN_vkGetInstanceProcAddr mv_gipa;
+static void *(*mv_ahb_native_handle)(const struct AHardwareBuffer *);
+static void (*mv_ahb_describe)(const struct AHardwareBuffer *,void *);
+static void (*mv_ahb_release)(struct AHardwareBuffer *);
 static int mv_fast, mv_state;
 static int mv_enter(struct mv_scope *s) {
     if(switch_to_android(mv_adopt,mv_fast,s))return 1;
@@ -67,6 +70,12 @@ static int mv_init(void) {
     if(mv_bridge && mv_bridge->version==1 && mv_enter(&s)) {
         void *lib=mv_bridge->open("/system/lib64/libvulkan.so",2);
         if(lib)mv_gipa=(PFN_vkGetInstanceProcAddr)mv_bridge->symbol(lib,"vkGetInstanceProcAddr");
+        void *android=mv_bridge->open("/system/lib64/libandroid.so",2);
+        if(android) {
+            mv_ahb_native_handle=(void *)mv_bridge->symbol(android,"AHardwareBuffer_getNativeHandle");
+            mv_ahb_describe=(void *)mv_bridge->symbol(android,"AHardwareBuffer_describe");
+            mv_ahb_release=(void *)mv_bridge->symbol(android,"AHardwareBuffer_release");
+        }
         switch_back(&s);
     }
     __atomic_store_n(&mv_state,mv_gipa?2:3,__ATOMIC_RELEASE);

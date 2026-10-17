@@ -54,7 +54,7 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     if(a && (!a->pfnAllocation || !a->pfnFree || !a->pfnReallocation))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_device seed={0};if(a){seed.custom=1;seed.allocator=*a;}
     struct mv_device *d=mv_dnew(&seed,sizeof(*d));if(!d)return VK_ERROR_OUT_OF_HOST_MEMORY;
-    d->custom=seed.custom;d->allocator=seed.allocator;d->base.instance=h->instance;d->base.device=d;
+    d->custom=seed.custom;d->allocator=seed.allocator;d->base.instance=h->instance;d->base.device=d;d->wsi_swapchain_enabled=swapchain_enabled;
     VkDeviceCreateInfo copy=*info;
     const char **extension_names=0;
     if(swapchain_enabled) {
@@ -166,7 +166,7 @@ static void mv_vkCmdExecuteCommands(VkCommandBuffer buffer,uint32_t n,const VkCo
 static PFN_vkVoidFunction mv_lookup(const char *name);
 static PFN_vkVoidFunction mv_vkGetDeviceProcAddr(VkDevice device,const char *name) {
     if(!device || !name)return 0;struct mv_device *d=(void *)device;
-    PFN_vkVoidFunction local=mv_wsi_device_lookup(name);if(local)return local;
+    PFN_vkVoidFunction local=mv_wsi_device_lookup(device,name);if(local)return local;
     local=mv_lookup(name);if(!local)return 0;
     struct mv_scope s;if(!mv_enter(&s))return 0;PFN_vkVoidFunction raw=d->gdpa(d->base.android,name);switch_back(&s);return raw?local:0;
 }
