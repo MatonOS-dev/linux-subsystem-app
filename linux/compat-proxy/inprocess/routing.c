@@ -18,6 +18,14 @@
 #include <dlfcn.h>
 int inprocess_status;
 int inprocess_output[2]={1,2};
+void inprocess_mark(const char *label,long number) {
+    char line[128];unsigned n=0;
+    while(*label && n<90)line[n++]=*label++;
+    line[n++]=' ';if(number<0){line[n++]='-';number=-number;}
+    char digits[24];unsigned d=0;do{digits[d++]='0'+number%10;number/=10;}while(number && d<24);
+    while(d)line[n++]=digits[--d];line[n++]='\n';
+    proxy_raw(SYS_write,inprocess_output[1],(long)line,n,0,0,0);
+}
 static struct sigaction previous;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int signals_ready;
@@ -80,14 +88,18 @@ struct launch { char *const *argv;char *const *env;int result; };
 static void *run(void *opaque) {
     struct launch *l=opaque;
     struct image image;
+    inprocess_mark("mapping",0);
     l->result=proxy_load(l->argv[0],l->argv,l->env,&image);
     if(l->result)return NULL;
+    inprocess_mark("mapped",image.entry);
     /* Auxv comes from ART's process, never from the JNI caller's stack. */
     uintptr_t *p=(uintptr_t *)image.stack; p+=*p+2;while(*p)p++;
     for(Elf64_auxv_t *a=(void *)(p+1);a->a_type;a++)
         if(a->a_type==AT_HWCAP || a->a_type==AT_HWCAP2 || a->a_type==AT_SYSINFO_EHDR)
             a->a_un.a_val=getauxval(a->a_type);
+    inprocess_mark("installing",0);
     if(adopt_install()){l->result=-ENOTSUP;return NULL;}
+    inprocess_mark("entering",0);
     inprocess_status=0;
     inprocess_enter(image.entry,image.stack);
     l->result=inprocess_status;

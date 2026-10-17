@@ -148,3 +148,16 @@ pthread layout is assumed. Documentation/tests/tools are excluded by limiting
 recursive builds to library directories; libgcrypt assembly is disabled.
 Both pkg-config files resolve within xstage/x86_64, without an inherited
 prefix. Packaging includes COPYING, COPYING.LIB and AUTHORS from both sources.
+
+In-process stage-one diagnostic fixtures (not the Flatpak runtime)
+  Ubuntu glibc 2.39-0ubuntu8.9, LGPL-2.1-or-later
+  source: https://launchpad.net/ubuntu/+source/glibc/2.39-0ubuntu8.9
+  ld-linux-x86-64.so.2 SHA-256: c20a2dc8917c755f02b94049356320fe1f62ac7d9f8994731f807d9df39302da
+  libc.so.6 SHA-256: 3a15d66867d83762c7f2f1e37359cb8f6c5743edb369c65285cb0b1c4f7498bf
+Deliberate retained version: stage-one device test uses the installed host
+compiler's exact loader/libc pair, with hashes enforced before packaging;
+not a new runtime base. build-fixtures.py packages unmodified libraries under
+APK-compatible filenames. Only its generated test binary's DT_NEEDED spelling
+changes. Remove these development fixtures from production packaging once the
+in-process acceptance stage is complete. Corresponding Ubuntu source and
+licence must accompany redistribution; this development APK is not a release.

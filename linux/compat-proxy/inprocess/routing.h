@@ -9,6 +9,7 @@ void inprocess_chain(int,siginfo_t *,void *);
 void inprocess_enter(uintptr_t,uintptr_t);
 extern int inprocess_status;
 extern int inprocess_output[2];
+void inprocess_mark(const char *,long);
 int inprocess_run_fds(char *const argv[],char *const env[],const int fds[2]);
 int inprocess_run(char *const argv[],char *const env[]);
 #endif

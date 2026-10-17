@@ -253,6 +253,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     struct adopt_thread *self=adopt_current();
 #ifdef MATON_IN_PROCESS
     if(!self) { inprocess_chain(sig,info,opaque); return; }
+    inprocess_mark("syscall",n);
     /* Resident libc calls must retain native clone/stack/TLS semantics. */
     if(backend_fs_read()==self->resident_fs && n!=SYS_rt_sigprocmask) {
         g[REG_RCX]=g[REG_RIP]; g[REG_RIP]=(uintptr_t)adopt_syscall_entry;
@@ -457,14 +458,28 @@ void inprocess_enter(uintptr_t entry,uintptr_t stack) {
 _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
 #endif
     struct adopt_thread *t=adopt_current();
+#ifdef MATON_IN_PROCESS
+    inprocess_mark("entry-record",(long)t);
+#endif
     t->regs[REG_RIP]=entry; t->regs[REG_RCX]=entry; t->regs[REG_RSP]=stack;
     t->regs[REG_EFL]=0x202;
     /* Initial linker entry does not inherit an application FP state. */
     __asm__ volatile("fxsave64 %0":"=m"(t->fp));
     t->xfeatures=0;
+#ifdef MATON_IN_PROCESS
+    inprocess_mark("entry-fp",0);
+    app_brk=0; /* Bionic does not use brk; never probe a zygote-blocked call. */
+#else
     app_brk=R(brk,0,0,0,0,0,0);
+#endif
+#ifdef MATON_IN_PROCESS
+    inprocess_mark("entry-tls",0);
+#endif
     backend_fs_write(0);
     atomic_store(&t->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+#ifdef MATON_IN_PROCESS
+    inprocess_mark("entry-jump",entry);
+#endif
     adopt_run(t);
     dispatch_off();
     signal_stack_release(t);
