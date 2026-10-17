@@ -11,3 +11,4 @@ bash "$ROOT/linux/packs/tests/run.sh"
 python3 "$ROOT/linux/packs/tests/java-source.py"
 python3 "$ROOT/linux/packs/tests/java-writer.py"
 make -C "$ROOT/linux/dbus-broker" -j4 OUT="$OUT/bus" check-inhibit check-portal-wire check-policy-wildcard
+bash "$ROOT/tests/packagename/run.sh" "$OUT/packagename"

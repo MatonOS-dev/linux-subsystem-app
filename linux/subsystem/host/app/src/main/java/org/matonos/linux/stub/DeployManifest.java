@@ -68,6 +68,8 @@ public final class DeployManifest {
         StringBuilder safe=new StringBuilder("flatpak");
         for(String part:parts) {
             safe.append('.');
+            // Android package segments must not start with a digit (branches like 25.08).
+            if(part.isEmpty()||(part.charAt(0)>='0'&&part.charAt(0)<='9'))safe.append('_');
             for(int i=0;i<part.length();i++) {
                 char c=part.charAt(i);
                 safe.append((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'?c:'_');
