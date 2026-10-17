@@ -94,16 +94,29 @@ done
 
 # Autotools cross build helper. Bionic needs _GNU_SOURCE-free POSIX builds;
 # the NDK wrapper defines its own defaults.
+# Autotools packages build out of tree under $BUILD: a configured source tree
+# records this output directory's absolute prefix in config.status, so an
+# in-source build would make a copied sources/ install into another tree.
+autotools_dir() { # name -> prints the per-package build directory
+  local src=$SRC/$1 dir=$BUILD/xwayland-stack/$1
+  if [[ -f $src/config.status ]]; then
+    make -C "$src" distclean >/dev/null 2>&1 || true
+    rm -f "$src/config.status" "$src/config.log"
+  fi
+  mkdir -p "$dir" && printf '%s\n' "$dir"
+}
+
 configure_build() { # name configure-args...
   local name=$1; shift
   local src=$SRC/$name
   [[ -d $src ]] || { tar -xf "$DOWN/$name.tar.xz" -C "$SRC" 2>/dev/null ||
     tar -xzf "$DOWN/$name.tar.gz" -C "$SRC"; }
-  if [[ ! -f $src/config.status ]]; then
-    (cd "$src" && ./configure --host=x86_64-linux-android --prefix="$PREFIX" "$@") || die "configure failed: $name"
+  local dir; dir=$(autotools_dir "$name")
+  if [[ ! -f $dir/config.status ]]; then
+    (cd "$dir" && "$src/configure" --host=x86_64-linux-android --prefix="$PREFIX" "$@") || die "configure failed: $name"
   fi
-  make -C "$src" -j"$JOBS" || die "make failed: $name"
-  make -C "$src" install || die "install failed: $name"
+  make -C "$dir" -j"$JOBS" || die "make failed: $name"
+  make -C "$dir" install || die "install failed: $name"
   echo "== $name installed"
 }
 
@@ -229,12 +242,13 @@ grep -Eq '_priv\[[1-9][0-9]*\]' "$GPG_SRC/src/syscfg/lock-obj-pub.x86_64-unknown
 crypto_build() {
   local name=$1 dirs=$2; shift 2
   local src=$SRC/$name
-  if [[ ! -f $src/config.status ]]; then
-    (cd "$src" && ./configure --host=x86_64-linux-android --prefix="$PREFIX" \
+  local dir; dir=$(autotools_dir "$name")
+  if [[ ! -f $dir/config.status ]]; then
+    (cd "$dir" && "$src/configure" --host=x86_64-linux-android --prefix="$PREFIX" \
       --libdir="$PREFIX/lib" --enable-shared --disable-static --disable-doc "$@")
   fi
-  make -C "$src" -j"$JOBS" SUBDIRS="$dirs" extra_ltoptions=-avoid-version
-  make -C "$src" install SUBDIRS="$dirs" extra_ltoptions=-avoid-version
+  make -C "$dir" -j"$JOBS" SUBDIRS="$dirs" extra_ltoptions=-avoid-version
+  make -C "$dir" install SUBDIRS="$dirs" extra_ltoptions=-avoid-version
 }
 crypto_build libgpg-error-1.51 'src' --disable-tests --disable-nls
 crypto_build libgcrypt-1.11.1 'compat mpi cipher random src' \
