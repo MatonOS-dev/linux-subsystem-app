@@ -11,6 +11,15 @@ public final class PackSeedTest {
   if(p.waitFor()!=0)throw new IOException(Arrays.toString(args));return text.trim();
  }
  static OstreePacks.Command cli(File repo){return args->{List<String> c=new ArrayList<>(Arrays.asList("ostree","--repo="+repo));Collections.addAll(c,args);return run(c.toArray(new String[0]));};}
+ static OstreePacks.Xattrs xattrs(){return (file,name)->{
+  String key=name.startsWith("user.")?name.substring(5):name;
+  try {
+   java.nio.file.attribute.UserDefinedFileAttributeView view=Files.getFileAttributeView(file.toPath(),java.nio.file.attribute.UserDefinedFileAttributeView.class);
+   if(view==null||!view.list().contains(key))return null;
+   java.nio.ByteBuffer value=java.nio.ByteBuffer.allocate(view.size(key));view.read(key,value);return Arrays.copyOf(value.array(),value.position());
+  } catch(NoSuchFileException missing) { return null; }
+ };}
+ static OstreePacks read(File repo,String rev)throws Exception{return OstreePacks.read(repo,rev,cli(repo),xattrs());}
  static List<String> mount(File packs,File root)throws Exception {
   root.mkdirs();
    List<String> names=new ArrayList<>(),paths=new ArrayList<>();
@@ -34,9 +43,9 @@ public final class PackSeedTest {
   cli(source).run("init","--mode=bare-user");
   byte[] large=new byte[1024*1024];new Random(42).nextBytes(large);Files.write(new File(files,"unchanged").toPath(),large);
   Files.write(new File(files,"changed").toPath(),large);Files.createSymbolicLink(new File(files,"link").toPath(),Path.of("unchanged"));
-  String a=OstreePacks.commitDeployed(tree,cli(source));OstreePacks old=OstreePacks.read(source,a,cli(source));old.write(packs);
+  String a=OstreePacks.commitDeployed(tree,cli(source));OstreePacks old=read(source,a);old.write(packs);
   String deployed=OstreePacks.commitDeployed(files,cli(source));
-  OstreePacks deployedPacks=OstreePacks.read(source,deployed,cli(source));
+  OstreePacks deployedPacks=read(source,deployed);
   for(ObjectPacks.Entry e:deployedPacks.entries)if(!e.kind.equals("dir")) {
    ObjectPacks.Entry original=old.entries.stream().filter(o->o.path.equals("/files"+e.path)).findFirst().orElseThrow();
    if(!e.checksum.equals(original.checksum))throw new AssertionError("Noncanonical deployed identity: "+e.path);
@@ -74,7 +83,7 @@ public final class PackSeedTest {
    long deltaSize;
    try(java.util.stream.Stream<Path> paths=Files.walk(new File(archive,"deltas").toPath())) {deltaSize=paths.filter(Files::isRegularFile).mapToLong(p->{try{return Files.size(p);}catch(IOException e){throw new java.io.UncheckedIOException(e);}}).sum();}
    if(delta[1]!=deltaSize)throw new AssertionError("Delta HTTP bytes differ: "+delta[1]+" != "+deltaSize);
-   OstreePacks fresh=OstreePacks.read(scratch,b,cli(scratch));File next=new File(root,"next");
+   OstreePacks fresh=read(scratch,b);File next=new File(root,"next");
    ObjectPacks.update(fresh.entries,index,baseCarriers,next,0.5);ObjectPacks.writeIndex(new File(next,"objects.index"),fresh.entries);
    for(ObjectPacks.Entry e:fresh.entries)if(e.kind.equals("file")){
     try(RandomAccessFile in=new RandomAccessFile(new File(next,e.pack),"r")){in.seek(e.offset);byte[] actual=new byte[(int)e.length];in.readFully(actual);

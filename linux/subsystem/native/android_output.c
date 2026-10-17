@@ -2,8 +2,6 @@
 
 #include <android/native_window_jni.h>
 #include <dlfcn.h>
-#include <errno.h>
-#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -19,36 +17,13 @@ static void resolve_set_buffer_with_release(void) {
   set_buffer_with_release = (SetBufferWithRelease)dlsym(RTLD_DEFAULT, "ASurfaceTransaction_setBufferWithRelease");
 }
 
-struct ReleaseWait { struct wlr_buffer* buffer; int fence; };
-
-static void* wait_release(void* opaque) {
-  struct ReleaseWait* wait = opaque;
-  if (wait->fence >= 0) {
-    struct pollfd pfd = { .fd = wait->fence, .events = POLLIN };
-    while (poll(&pfd, 1, -1) < 0 && errno == EINTR) {}
-    close(wait->fence);
-  }
-  if (release_dispatch) release_dispatch(wait->buffer);
-  else wlr_buffer_unlock(wait->buffer);
-  free(wait);
-  return NULL;
-}
-
 static void on_buffer_release(void* opaque, int fence_fd) {
-  struct ReleaseWait* wait = malloc(sizeof(*wait));
-  if (!wait) {
-    if (fence_fd >= 0) { struct pollfd pfd = { .fd=fence_fd, .events=POLLIN }; (void)poll(&pfd,1,0); close(fence_fd); }
-    if (release_dispatch) release_dispatch(opaque); else wlr_buffer_unlock(opaque);
-    return;
-  }
-  wait->buffer = opaque; wait->fence = fence_fd;
-  pthread_t thread;
-  if (pthread_create(&thread, NULL, wait_release, wait) == 0) pthread_detach(thread);
-  else {
-    if (wait->fence >= 0) { struct pollfd pfd = { .fd=wait->fence, .events=POLLIN }; (void)poll(&pfd,1,0); close(wait->fence); }
-    if (release_dispatch) release_dispatch(wait->buffer); else wlr_buffer_unlock(wait->buffer);
-    free(wait);
-  }
+  /* Never unlock after a failed allocation/thread creation or a zero-timeout
+   * poll: SurfaceFlinger may still be reading the buffer. The compositor owns
+   * the fence wait and can quarantine the buffer if it cannot track the fd. */
+  if (release_dispatch) release_dispatch(opaque, fence_fd);
+  else if (fence_fd < 0) wlr_buffer_unlock(opaque);
+  else close(fence_fd);
 }
 
 void maton_surface_output_set_release_dispatch(MatonBufferReleaseDispatch dispatch) {

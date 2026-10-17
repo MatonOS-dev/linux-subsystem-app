@@ -179,11 +179,10 @@ failure injection, and runtime architectures other than x86_64. The Flatpak
 acceptance check must use the actual stub launch path on a freshly booted image.
 No shared-tree or kernel changes are required.
 
-## Stage D1 WSI design and host prototype
+## Wayland WSI prototype
 
-See [WSI.md](WSI.md) for the AHB-backed Wayland recommendation, alternatives,
-process/fence ownership, Xwayland feasibility gates and exact D2 integration
-and VM acceptance list. `tests/run-wsi.sh OUT HEADERS` runs the internal host
-prototype and cross-compilation checks. `MATON_VK_WSI_PROTOTYPE=1` includes
-hidden prototype code in the DSO; it does not expose WSI extensions or commands.
-Default offscreen behavior remains the stages A–C interface.
+See [WSI.md](WSI.md) for the agreed dmabuf and explicit-sync design and current
+implementation status. `tests/run-wsi.sh OUT HEADERS` runs the internal host
+model and freestanding Wayland-symbol resolver checks. The prototype build does
+not expose WSI extensions or Vulkan surface/swapchain commands. Default
+offscreen behavior remains the stages A–C interface.

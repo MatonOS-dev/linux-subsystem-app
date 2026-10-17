@@ -20,7 +20,14 @@ public final class StagedPacks {
         OstreePacks.Command source=command(context,operation,sourceRepo,cancelled);
         // The real Flatpak repo is bare-user-only. Read its authenticated object
         // identities first; never change its config/mode or remote refs.
-        OstreePacks original=OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source);
+        OstreePacks.Xattrs objectXattrs=(file,name)->{
+            try { return android.system.Os.getxattr(file.getAbsolutePath(),name); }
+            catch(android.system.ErrnoException error) {
+                if(error.errno==android.system.OsConstants.ENODATA||error.errno==android.system.OsConstants.ENOENT)return null;
+                throw new IOException("Cannot read OSTree object xattr " + name,error);
+            }
+        };
+        OstreePacks original=OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source,objectXattrs);
         // The committed tree is the deployment's files/ exactly as deployed,
         // including the raw extra downloads apply_extra has not consumed (the
         // installer defers those to the stub). A separate bare-user repo keeps
@@ -29,7 +36,7 @@ public final class StagedPacks {
         OstreePacks.Command local=command(context,operation,localRepo,cancelled);
         local.run("init","--mode=bare-user");
         String commit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
-        OstreePacks fresh=OstreePacks.read(localRepo,commit,local);
+        OstreePacks fresh=OstreePacks.read(localRepo,commit,local,objectXattrs);
         List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> payloads=new ArrayList<>(fresh.entries);
         payloads.addAll(original.entries);
         output.mkdirs();
