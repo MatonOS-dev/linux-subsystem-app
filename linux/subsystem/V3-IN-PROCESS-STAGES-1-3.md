@@ -108,8 +108,9 @@ adapter. Complete creation/limit semantics need further compatibility work.
 Linux signal actions are recorded/reset without modifying ART handlers;
 arbitrary Linux signal delivery is stage 5. Arbitrary exit_group with live
 workers is still outside this diagnostic contract. Tests join ordinary workers
-and explicitly quiesce workers for exec. Plain fork's approved native fallback
-and fork+exec/spawn through same-app Android processes remain stage 6. No child
+and explicitly quiesce workers for exec. The later 2026-10-17 user decision requires eager plain-fork emulation
+in a same-app Android process; native fork of ART is forbidden. That and
+fork+exec/spawn through same-app Android processes remain stage 6. No child
 broker, wait/SIGCHLD transport or production process death is claimed.
 
 The trusted session configuration APIs are native entry points. The current

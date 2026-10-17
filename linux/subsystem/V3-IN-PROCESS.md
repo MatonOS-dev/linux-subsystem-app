@@ -225,7 +225,10 @@ in the same process. Host APK PID 3741 has UID 10078; this is a distinct stub
 identity. Evidence: `v3-inproc-out/ownuid-stage1.log` and
 `ownuid-stage1-activities.txt` in the assigned external build directory.
 
-The plain-fork policy supersedes the earlier blanket prohibition above:
-fork without exec may use native fork, without Android registration or the
-direct window path, and must log the app id. Fork+exec/spawn still requires
-a same-app Android child process. Neither path is implemented by stage one.
+The user decision of 2026-10-17 supersedes the earlier native-fork fallback:
+plain fork is emulated in another zygote-created same-app process, with eager
+mapping/state transfer at identical reserved addresses. Native fork of ART is
+forbidden. This and Android spawn/exec children remain stage 6.
+
+Current incomplete stages 4–5 work and validation:
+[V3-IN-PROCESS-STAGES-4-5.md](V3-IN-PROCESS-STAGES-4-5.md).
