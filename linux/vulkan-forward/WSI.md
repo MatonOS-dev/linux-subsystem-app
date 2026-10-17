@@ -1,13 +1,20 @@
 # Vulkan Wayland WSI
 
-Status on `vk-wayland-wsi`: **not implemented**. The ICD still exposes no
-`VK_KHR_surface`, `VK_KHR_wayland_surface`, or `VK_KHR_swapchain` commands.
-The host WSI model in `wsi.[ch]` is a test prototype, not a Vulkan
-implementation. Commit `4984170` adds a freestanding ELF resolver for the
-application's already-loaded `libwayland-client.so.0`; it does not create a
-Wayland surface or swapchain. The configured VM at `localhost:5556` was
-unavailable during this run, so no Vulkan app, resize, screenshot, or frame
-timing result is claimed.
+Status on `vk-wayland-wsi`: **surface stage implemented; swapchain and
+presentation are not implemented**. The prototype ICD now advertises
+`VK_KHR_surface` and `VK_KHR_wayland_surface`, accepts them at instance
+creation without forwarding them to Android, creates a surface wrapper around
+the app's existing `wl_display`/`wl_surface`, and reports graphics queue
+support, a single RGBA8 format and FIFO mode. Capabilities are provisional
+limits (1–4096 extent, 2–4 images), not yet connected to compositor configure
+or presentation feedback. `VK_KHR_swapchain` remains unadvertised and no image
+allocation, dmabuf transport, acquire/release, or present path exists.
+`wsi.[ch]` remains a host state-machine prototype. Commit `4984170` provides
+the freestanding ELF resolver for the application's already-loaded
+`libwayland-client.so.0`; this stage uses it to validate the supplied
+`wl_surface` proxy. No private buffer transport or Android Surface path is
+used. The configured VM at `localhost:5556` has not yet been checked for this
+stage, so no app, resize, screenshot, or frame-timing result is claimed.
 
 ## Required data and process path
 

@@ -1,9 +1,16 @@
 #include <vulkan/vulkan_core.h>
+#define VK_USE_PLATFORM_WAYLAND_KHR
+#include <vulkan/vulkan_wayland.h>
 #include <vulkan/vk_icd.h>
 #include "runtime.h"
 #include "backend.h"
 #include "../gpu-forward-spike/bridge.h"
 #include "dispatch.h"
+#ifndef MV_WSI_PROTOTYPE
+#define MV_WSI_PROTOTYPE 0
+#endif
+#include "wsi.h"
+#include "wayland_resolve.h"
 #define EXPORT __attribute__((visibility("default")))
 struct mv_instance;
 struct mv_device;
@@ -19,6 +26,7 @@ struct mv_instance {
     struct mv_handle base;
     VkAllocationCallbacks allocator;
     int custom, lock;
+    int wsi_surface_enabled, wsi_wayland_enabled;
     struct mv_handle *physical;
     struct mv_dispatch dispatch;
     PFN_vkDestroyInstance destroy;
@@ -36,6 +44,7 @@ struct mv_device {
     struct mv_dispatch dispatch;
     PFN_vkGetDeviceProcAddr gdpa;
 };
+static void mv_vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice,uint32_t *,VkQueueFamilyProperties *);
 static struct adopt_api *mv_adopt;
 static struct gpu_bridge *mv_bridge;
 static PFN_vkGetInstanceProcAddr mv_gipa;
@@ -73,6 +82,15 @@ static void *mv_new(struct mv_instance *i,size_t n) {
 static void mv_delete(struct mv_instance *i,void *p) {
     if(i->custom)i->allocator.pfnFree(i->allocator.pUserData,p);else mv_free(p);
 }
+#if MV_WSI_PROTOTYPE
+#include "wsi_vulkan.inc"
+#else
+static int mv_wsi_instance_extension(const char *name) {(void)name;return 0;}
+static VkResult mv_wsi_instance_extensions(uint32_t *count,VkExtensionProperties *out) {
+    (void)out;if(count)*count=0;return VK_SUCCESS;
+}
+static PFN_vkVoidFunction mv_wsi_lookup(const char *name) {(void)name;return 0;}
+#endif
 static VkPhysicalDevice mv_wrap(struct mv_instance *i,VkPhysicalDevice raw) {
     while(__atomic_exchange_n(&i->lock,1,__ATOMIC_ACQUIRE)){}
     struct mv_handle *h=i->physical;
@@ -86,15 +104,23 @@ static VkPhysicalDevice mv_wrap(struct mv_instance *i,VkPhysicalDevice raw) {
 static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAllocationCallbacks *a,VkInstance *out) {
     *out=VK_NULL_HANDLE;
     if(!mv_init())return VK_ERROR_INCOMPATIBLE_DRIVER;
-    if(info->enabledExtensionCount)return VK_ERROR_EXTENSION_NOT_PRESENT;
+    for(uint32_t j=0;j<info->enabledExtensionCount;j++)
+        if(!mv_wsi_instance_extension(info->ppEnabledExtensionNames[j]))return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(info->enabledLayerCount)return VK_ERROR_LAYER_NOT_PRESENT;
     if(a && (!a->pfnAllocation || !a->pfnFree || !a->pfnReallocation))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_instance seed={0};if(a){seed.custom=1;seed.allocator=*a;}
+    for(uint32_t j=0;j<info->enabledExtensionCount;j++) {
+        if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SURFACE_EXTENSION_NAME))seed.wsi_surface_enabled=1;
+        if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME))seed.wsi_wayland_enabled=1;
+    }
+    if(seed.wsi_wayland_enabled && !seed.wsi_surface_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
     struct mv_instance *i=mv_new(&seed,sizeof(*i));if(!i)return VK_ERROR_OUT_OF_HOST_MEMORY;
     i->custom=seed.custom;i->allocator=seed.allocator;
+    i->wsi_surface_enabled=seed.wsi_surface_enabled;i->wsi_wayland_enabled=seed.wsi_wayland_enabled;
     VkInstanceCreateInfo copy=*info;
     /* No extension pNext data or Linux callback may reach bionic. */
     copy.pNext=0;
+    copy.enabledExtensionCount=0;copy.ppEnabledExtensionNames=0;
     struct mv_scope s;
     if(!mv_enter(&s)){mv_delete(i,i);return VK_ERROR_INITIALIZATION_FAILED;}
     PFN_vkCreateInstance create=(PFN_vkCreateInstance)mv_gipa(0,"vkCreateInstance");
@@ -154,7 +180,10 @@ static int mv_extension_allowed(const char *name) {
     return 0;
 }
 /* Instance WSI/debug callbacks are deliberately hidden. */
-static VkResult mv_vkEnumerateInstanceExtensionProperties(const char *layer,uint32_t *n,VkExtensionProperties *p) {(void)p;*n=0;return layer?VK_ERROR_LAYER_NOT_PRESENT:VK_SUCCESS;}
+static VkResult mv_vkEnumerateInstanceExtensionProperties(const char *layer,uint32_t *n,VkExtensionProperties *p) {
+    if(layer){*n=0;return VK_ERROR_LAYER_NOT_PRESENT;}
+    return mv_wsi_instance_extensions(n,p);
+}
 static VkResult mv_vkEnumerateInstanceLayerProperties(uint32_t *n,VkLayerProperties *p) {(void)p;*n=0;return VK_SUCCESS;}
 static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physical,const char *layer,uint32_t *n,VkExtensionProperties *out) {
     if(layer){*n=0;return VK_ERROR_LAYER_NOT_PRESENT;}
@@ -176,12 +205,14 @@ static PFN_vkVoidFunction mv_vkGetInstanceProcAddr(VkInstance instance,const cha
 #include "device.inc"
 static PFN_vkVoidFunction mv_lookup(const char *name) {
     if(!name)return 0;
+    PFN_vkVoidFunction wsi=mv_wsi_lookup(name);if(wsi)return wsi;
 #include "lookup.inc"
     return 0;
 }
 static PFN_vkVoidFunction mv_vkGetInstanceProcAddr(VkInstance instance,const char *name) {
     if(!mv_init())return 0;
     PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
+    if(mv_wsi_lookup(name))return local;
     struct mv_scope s;if(!mv_enter(&s))return 0;
     PFN_vkVoidFunction remote=mv_gipa(instance?((struct mv_instance *)instance)->base.android:0,name);
     switch_back(&s);return remote?local:0;
