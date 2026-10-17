@@ -1,0 +1,7 @@
+{
+  "version": "1.4.341",
+  "Vulkan-Headers": "8876aad926b2e72bdefddc34885472d5332e2d20aa3ed57313466f0bc982cf3f",
+  "Vulkan-Loader": "9a8c6f1aace4a03641429a09bc823073f2375abf2d62ac5a4d38c46e732b2d85",
+  "Vulkan-Tools": "a7d94a95e8c4b4331ab291638b16d1ce622cee9a1e65389790af3d3fbe2f98b7",
+  "registry/vk.xml": "006807a47518e9ab23ecf7f4c95d936aab477a20d27a9a7ac23cedefb7210178"
+}
