@@ -153,11 +153,18 @@ public final class ObjectPacks {
     }
     /** Byte-for-byte Python zipfile output, including Unix attributes and alignment extras.
      * ZIP32 limits fail explicitly; no silently truncated offsets. */
-    private static void zip(File file,Collection<Entry> entries) throws Exception {
+    private static String zip(File file,Collection<Entry> entries) throws Exception {
         List<Entry> sorted=new ArrayList<>(entries);sorted.sort(Comparator.comparing(e->e.checksum));
         if(sorted.size()>65535)throw new IOException("ZIP64 pack required");
         ByteArrayOutputStream central=new ByteArrayOutputStream();
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");
         try(RandomAccessFile out=new RandomAccessFile(file,"rw")) {
+            OutputStream hashed=new OutputStream() {
+                @Override public void write(int value) throws IOException {out.write(value);digest.update((byte)value);}
+                @Override public void write(byte[] value,int offset,int length) throws IOException {
+                    out.write(value,offset,length);digest.update(value,offset,length);
+                }
+            };
             out.setLength(0);
             for(Entry e:sorted) {
                 if(e.source==null || !e.source.isFile() || !e.checksum.matches("[0-9a-f]{64}"))throw new IOException("Missing object payload");
@@ -175,9 +182,9 @@ public final class ObjectPacks {
                 ByteArrayOutputStream local=new ByteArrayOutputStream();
                 le(local,0x04034b50,4);le(local,20,2);le(local,0,2);le(local,0,2);le(local,0,2);le(local,33,2);
                 le(local,crc.getValue(),4);le(local,length,4);le(local,length,4);le(local,name.length,2);le(local,extra.size(),2);
-                local.write(name);extra.writeTo(local);out.write(local.toByteArray());
+                local.write(name);extra.writeTo(local);hashed.write(local.toByteArray());
                 e.offset=out.getFilePointer();e.length=length;
-                try(InputStream in=new BufferedInputStream(new FileInputStream(spool))){while((n=in.read(buffer))!=-1)out.write(buffer,0,n);}
+                try(InputStream in=new BufferedInputStream(new FileInputStream(spool))){while((n=in.read(buffer))!=-1)hashed.write(buffer,0,n);}
                 if(out.getFilePointer()!=e.offset+length)throw new IOException("Payload changed while packing");
                 le(central,0x02014b50,4);le(central,0x0314,2);le(central,20,2);le(central,0,2);le(central,0,2);le(central,0,2);le(central,33,2);
                 le(central,crc.getValue(),4);le(central,length,4);le(central,length,4);le(central,name.length,2);le(central,extra.size(),2);
@@ -187,15 +194,16 @@ public final class ObjectPacks {
             }
             long start=out.getFilePointer();
             if(start+central.size()>=0xffffffffL)throw new IOException("ZIP64 pack required");
-            out.write(central.toByteArray());ByteArrayOutputStream end=new ByteArrayOutputStream();
+            hashed.write(central.toByteArray());ByteArrayOutputStream end=new ByteArrayOutputStream();
             le(end,0x06054b50,4);le(end,0,2);le(end,0,2);le(end,sorted.size(),2);le(end,sorted.size(),2);
-            le(end,central.size(),4);le(end,start,4);le(end,0,2);out.write(end.toByteArray());
+            le(end,central.size(),4);le(end,start,4);le(end,0,2);hashed.write(end.toByteArray());
         }
+        return hex(digest.digest());
     }
     private static void emit(File directory,List<Entry> all,Collection<Entry> batch) throws Exception {
         File temp=File.createTempFile("pack-",".zip",directory);
         try {
-            zip(temp,batch);String name="pack-"+digest(temp)+".zip";
+            String name="pack-"+zip(temp,batch)+".zip";
             Files.move(temp.toPath(),new File(directory,name).toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             for(Entry e:batch)e.pack=name;propagate(all,batch);
         } finally {temp.delete();}
