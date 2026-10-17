@@ -20,6 +20,7 @@ final class DnsForwarder {
     private static final int MAX_PACKET = 65535;
     private static final int RESOLVER_TIMEOUT_MS = 10000;
     private static String socketPath;
+    private static AutoCloseable workLease;
     private static FileDescriptor udp, tcp;
     private static int uid;
     private static android.net.LocalServerSocket udpServer, tcpServer;
@@ -50,9 +51,11 @@ final class DnsForwarder {
         synchronized void close() { closed = true; closeQuietly(socket); }
     }
 
-    static synchronized String acquire(java.io.File runtime) {
+    static synchronized String acquire(java.io.File runtime) throws Exception {
         if (socketPath != null) return socketPath;
         try {
+            org.matonos.linux.WorkDirs.checkDnsPath(runtime);
+            workLease = org.matonos.linux.WorkDirs.keep(new java.io.File(runtime,"dns"));
             uid = android.os.Process.myUid();
             java.io.File directory = new java.io.File(runtime, "dns");
             if (!directory.isDirectory() && !directory.mkdirs())
@@ -69,7 +72,8 @@ final class DnsForwarder {
             worker.setDaemon(true); worker.start();
         } catch (Exception error) {
             Log.e(TAG, "Cannot bind the DNS forwarder", error);
-            closeQuietly(udpSocket); closeQuietly(tcpSocket); udp = tcp = null;
+            release();
+            throw error;
         }
         return socketPath;
     }
@@ -93,6 +97,8 @@ final class DnsForwarder {
         if (tcpServer != null) { try { tcpServer.close(); } catch (Exception ignored) { } tcpServer = null; }
         closeQuietly(udpSocket); closeQuietly(tcpSocket);
         udpSocket = tcpSocket = null; udp = tcp = null; socketPath = null;
+        if(workLease!=null)try{workLease.close();}catch(Exception ignored){}
+        workLease=null;
     }
 
     static synchronized String endpoint() {

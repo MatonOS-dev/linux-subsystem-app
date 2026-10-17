@@ -1,6 +1,7 @@
 package org.matonos.linux.stub;
 
 import android.app.Service;
+import org.matonos.linux.WorkDirs;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -67,9 +68,9 @@ public final class ExtraService extends Service {
     };
 
     /** Runs one apply_extra and streams its result; always closes the pipe. */
-    private void serve(ParcelFileDescriptor output) {
+    private synchronized void serve(ParcelFileDescriptor output) {
         try (OutputStream stream = new ParcelFileDescriptor.AutoCloseOutputStream(output)) {
-            try {
+            try (AutoCloseable lease = WorkDirs.keep(WorkDirs.directory(this,"extra-operation"))) {
                 File work = prepare();
                 ApplicationInfo info = getApplicationInfo();
                 byte[] index = readIndex(info);
@@ -83,7 +84,7 @@ public final class ExtraService extends Service {
                 File objects = packApplied(work);
                 String split = StubGenerator.extraSplitName(objects);
                 int revision = getPackageManager().getPackageInfo(getPackageName(), 0).baseRevisionCode;
-                File apk = StubGenerator.generateExtraUnsigned(getCacheDir(), getPackageName(), objects,
+                File apk = StubGenerator.generateExtraUnsigned(WorkDirs.directory(this,"extra-operation"), getPackageName(), objects,
                         revision, null, null, null);
                 try {
                     stream.write(ExtraProtocol.STATUS_OK);
@@ -146,7 +147,7 @@ public final class ExtraService extends Service {
     }
 
     private File packApplied(File applied) throws Exception {
-        File objects = new File(getCacheDir(), "extra-objects");
+        File objects = new File(WorkDirs.directory(this,"extra-operation"), "extra-objects");
         remove(objects); if (!objects.mkdirs()) throw new IOException("Cannot create extra pack directory");
         java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries =
                 org.matonos.linuxhost.stubgen.ObjectPacks.fromTree(applied, "/");
@@ -165,6 +166,12 @@ public final class ExtraService extends Service {
     }
     private static void writeLong(OutputStream out, long value) throws IOException {
         for (int shift = 56; shift >= 0; shift -= 8) out.write((int) (value >>> shift));
+    }
+
+    @Override public void onCreate() {
+        super.onCreate();
+        try { WorkDirs.sweep(WorkDirs.root(this)); }
+        catch(IOException e) { Log.w(TAG,"Cannot sweep stale extra work",e); }
     }
 
     @Override public IBinder onBind(Intent intent) {
@@ -187,8 +194,8 @@ public final class ExtraService extends Service {
 
     /** Always starts from an empty, package-private working directory. */
     private File prepare() throws IOException {
-        File work = new File(getDataDir(), "extra").getCanonicalFile();
-        if (!work.getParentFile().equals(getDataDir().getCanonicalFile()))
+        File work = new File(WorkDirs.directory(this,"extra-operation"), "extra").getCanonicalFile();
+        if (!work.getParentFile().equals(WorkDirs.directory(this,"extra-operation")))
             throw new IOException("Invalid extra working directory");
         remove(work);
         if (!work.mkdirs()) throw new IOException("Cannot create extra working directory");
@@ -265,7 +272,7 @@ public final class ExtraService extends Service {
      */
     private void runApplyExtra(File work) throws Exception {
         String mount = mountPoint();
-        File cache = getCacheDir().getCanonicalFile();
+        File cache = WorkDirs.directory(this,"extra-operation");
         ArrayList<String> command = new ArrayList<>();
         command.add(LoaderCommand.loader(this).getAbsolutePath());
         command.add("--parent-pid"); command.add(Integer.toString(Process.myPid()));

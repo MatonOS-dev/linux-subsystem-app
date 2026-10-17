@@ -1,6 +1,7 @@
 package org.matonos.linux.stub;
 
 import android.content.Context;
+import org.matonos.linux.WorkDirs;
 import android.content.ComponentName;
 import android.content.pm.*;
 import java.io.*;
@@ -11,7 +12,8 @@ import org.matonos.linuxhost.stubgen.StubGenerator;
 /** Rebuild Flatpak's disposable lookup metadata from PM's installed index APKs. */
 final class PackageDeployment {
     static File prepare(Context context,String appRef) throws Exception {
-        File root=new File(context.getCacheDir().getCanonicalFile(),"flatpak-launch");
+        File root=new File(WorkDirs.root(context),"flatpak-launch");
+        WorkDirs.keep(root); // Held until this one-launch process exits.
         // A process has one launch. A fresh tree also discards removed extensions.
         remove(root.toPath());Files.createDirectories(root.toPath());
         java.nio.file.Files.createFile(new File(root,".v3-store-root").toPath(),

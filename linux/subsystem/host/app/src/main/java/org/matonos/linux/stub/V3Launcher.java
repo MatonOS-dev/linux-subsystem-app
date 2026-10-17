@@ -1,6 +1,7 @@
 package org.matonos.linux.stub;
 
 import android.content.Context;
+import org.matonos.linux.WorkDirs;
 import android.util.Log;
 import org.json.JSONObject;
 import org.matonos.linux.PerAppRuntime;
@@ -43,7 +44,10 @@ final class V3Launcher {
         for (File directory : new File[]{home, cache, new File(home, ".config"), new File(home, ".local/share")})
             if (!directory.isDirectory() && !directory.mkdirs())
                 throw new java.io.IOException("Cannot create application directory " + directory);
-        File resolv = new File(cache, "v3-resolv.conf");
+        WorkDirs.sweep(WorkDirs.root(context));
+        File launchWork = WorkDirs.directory(context,"launch-maps");
+        WorkDirs.keep(launchWork); // Loader mappings live until process exit.
+        File resolv = new File(launchWork, "v3-resolv.conf");
         String dns = LoaderCommand.resolverAddress();
         LoaderCommand.writeResolv(resolv, dns);
         ArrayList<String> command = new ArrayList<>();
@@ -52,7 +56,7 @@ final class V3Launcher {
         if (new File(cache, "v3-trace").exists()) command.add("--trace");
         if (context.checkSelfPermission(android.Manifest.permission.INTERNET) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            LoaderCommand.addDns(command, dns, runtime.directory());
+            LoaderCommand.addDns(command, dns, WorkDirs.root(context));
         }
         File commandSocket=new File(runtime.directory(),"host-command");
         if(commandSocket.exists()&&!commandSocket.delete())throw new java.io.IOException("Cannot remove stale command socket");
@@ -67,7 +71,7 @@ final class V3Launcher {
             DependencyRepair repair=dependencyRepair;
             if(repair!=null)repair.repair(dependencyRef);else repairDependency(context,ref,dependencyRef);
         });
-        command.addAll(DeclaredPackages.arguments(packages,cache,true));
+        command.addAll(DeclaredPackages.arguments(packages,launchWork,true));
         File deployment=PackageDeployment.prepare(context,ref);
         java.util.Collections.addAll(command,
                 LoaderCommand.tool(context, LoaderCommand.FLATPAK_CLI).getAbsolutePath(),
