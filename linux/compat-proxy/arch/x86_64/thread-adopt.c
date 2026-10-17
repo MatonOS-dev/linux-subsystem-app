@@ -8,6 +8,7 @@
 #define _GNU_SOURCE
 #include "../../../gpu-forward-spike/spike3/adopt.h"
 #include "adopt.h"
+#include "../../adopt-map.h"
 #include <stddef.h>
 #include <pthread.h>
 #include <signal.h>
@@ -47,16 +48,40 @@ static size_t signal_stack_size;
 static long identity(uintptr_t *);
 static size_t live(void);
 static pthread_mutex_t identity_mutex=PTHREAD_MUTEX_INITIALIZER;
-static struct adopt_api api={.version=1,.current=adopt_current,.identity=identity,.live=live};
+static struct adopt_api api={.version=2,.current=adopt_current,.lookup=adopt_map_lookup,
+                             .identity=identity,.live=live};
+static int fs_fast;
 
+/* FSGSBASE is a CPU feature; the kernel advertises it in AT_HWCAP2 bit 1 and
+ * the launcher/ICD publish the same bit. rdfsbase is then a register read with
+ * no trap; without it we fall back to arch_prctl(ARCH_GET_FS) through the
+ * always-allowed raw gateway. */
 static uintptr_t backend_fs_read(void) {
-    uintptr_t fs; if(R(arch_prctl,0x1003,&fs,0,0,0,0)) __builtin_trap(); return fs;
+    uintptr_t fs=0;
+    if(fs_fast) { __asm__ volatile("rdfsbase %0":"=r"(fs)::"memory"); return fs; }
+    if(R(arch_prctl,0x1003,&fs,0,0,0,0)) __builtin_trap();
+    return fs;
 }
 static void backend_fs_write(uintptr_t fs) {
     if(R(arch_prctl,0x1002,fs,0,0,0,0)) __builtin_trap();
 }
+/* The user-dispatch selector is only ever read on this thread: by the kernel
+ * at syscall entry and by our own SIGSYS handler. Program order therefore
+ * suffices; a compiler barrier keeps the store from sinking past the code it
+ * must guard. No lock or CPU fence is needed. See
+ * Documentation/admin-guide/syscall-user-dispatch.rst. */
+static void selector_set(struct adopt_thread *t,unsigned char value) {
+    atomic_store_explicit(&t->selector,value,memory_order_relaxed);
+    atomic_signal_fence(memory_order_seq_cst);
+}
+/* Zero-initialised table memory for the FS map, from the raw gateway; never
+ * the resident or application malloc, which the SIGSYS handler cannot use. */
+static void *map_memory(size_t n) {
+    long p=R(mmap,0,n,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    return (unsigned long)p>=(unsigned long)-4095?0:(void *)p;
+}
 static long dispatch_on(struct adopt_thread *t) {
-    atomic_store(&t->selector,SYSCALL_DISPATCH_FILTER_ALLOW);
+    selector_set(t,SYSCALL_DISPATCH_FILTER_ALLOW);
     return R(prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_ON,
              proxy_raw,(uintptr_t)proxy_clone_entry-(uintptr_t)proxy_raw,&t->selector,0);
 }
@@ -79,12 +104,20 @@ static void signal_stack_release(struct adopt_thread *t) {
 }
 __attribute__((target("general-regs-only")))
 struct adopt_thread *adopt_current(void) {
+    /* Fast path: key on the current FS base. FS base 0 (the pre-TLS startup
+     * window) is never inserted, so a miss falls back to the tid scan and
+     * self-heals the map once the thread has a real TLS block. */
+    uintptr_t fs=backend_fs_read();
+    struct adopt_thread *found=adopt_map_lookup(fs);
+    if(found) return found;
     int tid=R(gettid,0,0,0,0,0,0);
     for(struct thread_chunk *c=atomic_load_explicit(&chunks,memory_order_acquire);c;
         c=atomic_load_explicit(&c->next,memory_order_acquire))
         for(unsigned i=0;i<CHUNK_THREADS;i++)
-            if(atomic_load_explicit(&c->entries[i].tid,memory_order_acquire)==tid)
+            if(atomic_load_explicit(&c->entries[i].tid,memory_order_acquire)==tid) {
+                adopt_map_bind(fs,&c->entries[i]);
                 return &c->entries[i];
+            }
     return NULL;
 }
 static struct adopt_thread *reserve(void) {
@@ -148,7 +181,10 @@ static void fork_rebase(struct adopt_thread *self) {
                 }
                 atomic_store(&c->entries[i].tid,0);
             }
+    adopt_map_reset();
     self->resident_fs=backend_fs_read();
+    adopt_map_bind(self->resident_fs,self);
+    adopt_map_bind(atomic_load(&self->app_fs),self);
     atomic_store(&self->tid,R(gettid,0,0,0,0,0,0));
 }
 static long resident_fork(struct adopt_thread *self,unsigned long flags,
@@ -185,6 +221,7 @@ extern char adopt_exit_return[];
 static void *start(void *arg) {
     struct adopt_thread *t=arg;
     t->resident_fs=backend_fs_read();
+    adopt_map_bind(t->resident_fs,t);
     if(signal_stack_install(t)) R(exit_group,193,0,0,0,0,0);
     int tid=R(gettid,0,0,0,0,0,0);
     atomic_store_explicit(&t->tid,tid,memory_order_release);
@@ -196,11 +233,13 @@ static void *start(void *arg) {
     R(rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
     if(dispatch_on(t)) R(exit_group,191,0,0,0,0,0);
     backend_fs_write(t->app_fs);
-    atomic_store(&t->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+    selector_set(t,SYSCALL_DISPATCH_FILTER_BLOCK);
     adopt_run(t);
     /* Exit gate restored our own stack and FS. Resident libc owns cleanup. */
     dispatch_off();
     signal_stack_release(t);
+    adopt_map_unbind(t->resident_fs,t);
+    adopt_map_unbind(atomic_load(&t->app_fs),t);
     atomic_store_explicit(&t->tid,0,memory_order_release);
     return NULL;
 }
@@ -241,12 +280,12 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     long n=info->si_syscall, result=-ENOSYS;
     struct adopt_thread *self=adopt_current();
     if(!self) R(exit_group,190,0,0,0,0,0);
-    atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_ALLOW);
+    selector_set(self,SYSCALL_DISPATCH_FILTER_ALLOW);
     uintptr_t interrupted=backend_fs_read();
     self->app_fs=interrupted;
     if(n==SYS_rt_sigreturn) {
         g[REG_RIP]=(uintptr_t)proxy_restore;
-        atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+        selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
         return;
     } else if(n==SYS_munmap && (uintptr_t)g[REG_RDI]<=(uintptr_t)g[REG_RSP] &&
               (uintptr_t)g[REG_RSP]-(uintptr_t)g[REG_RDI]<(uintptr_t)g[REG_RSI]) {
@@ -323,6 +362,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             if(!t) result=-EAGAIN;
             else {
                 t->app_fs=tls; t->child_tid=(flags&CLONE_CHILD_CLEARTID)?ctid:0;
+                adopt_map_bind(tls,t);
                 t->mask=*(unsigned long *)&uc->uc_sigmask;
                 t->robust=0; atomic_store(&t->ready,0);
                 for(unsigned i=0;i<23;i++) t->regs[i]=g[i];
@@ -335,7 +375,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                     size=*(const unsigned *)(fp+480);
                     t->xfeatures=*(const uint64_t *)(fp+472);
                 }
-                if(size>sizeof(t->fp)) {atomic_store(&t->tid,0);result=-EOPNOTSUPP;goto finish;}
+                if(size>sizeof(t->fp)) {atomic_store(&t->tid,0);adopt_map_unbind(tls,t);result=-EOPNOTSUPP;goto finish;}
                 for(unsigned i=0;i<size;i++) t->fp[i]=fp[i];
                 backend_fs_write(self->resident_fs);
                 pthread_attr_t attr; pthread_t thread;
@@ -347,7 +387,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                     pthread_attr_destroy(&attr);
                 }
                 backend_fs_write(interrupted);
-                if(error) {atomic_store(&t->tid,0);result=-error;}
+                if(error) {atomic_store(&t->tid,0);adopt_map_unbind(tls,t);result=-error;}
                 else {
                     while(!atomic_load_explicit(&t->ready,memory_order_acquire)) R(futex,&t->ready,0,0,0,0,0);
                     result=atomic_load(&t->tid);
@@ -377,16 +417,23 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         g[REG_RAX]=0; return;
     } else if(n==SYS_exit_group) R(exit_group,g[REG_RDI],0,0,0,0,0);
     else {
-        if(n==SYS_arch_prctl && g[REG_RDI]==0x1002) self->app_fs=g[REG_RSI];
+        /* The app may move its TLS base (glibc does this at startup). Rekey
+         * the FS map before the syscall makes the new base live. */
+        if(n==SYS_arch_prctl && g[REG_RDI]==0x1002) {
+            uintptr_t previous=atomic_load(&self->app_fs);
+            self->app_fs=g[REG_RSI];
+            adopt_map_unbind(previous,self);
+            adopt_map_bind(g[REG_RSI],self);
+        }
         g[REG_RCX]=g[REG_RIP];
         g[REG_RIP]=(uintptr_t)adopt_syscall_entry;
         g[REG_RAX]=n;
-        atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+        selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
         return;
     }
 finish:
     g[REG_RAX]=result;
-    atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+    selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
     return;
 vfork_retry:
     /* The signal frame must be consumed before the kernel changes stacks.
@@ -397,7 +444,7 @@ vfork_retry:
     g[REG_RCX]=g[REG_RIP];
     g[REG_RIP]=(uintptr_t)adopt_vfork_entry;
     g[REG_RAX]=n;
-    atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+    selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
 }
 void adopt_publish_exit(struct adopt_thread *self) {
     if(self->child_tid) {
@@ -422,10 +469,12 @@ _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     t->xfeatures=0;
     app_brk=R(brk,0,0,0,0,0,0);
     backend_fs_write(0);
-    atomic_store(&t->selector,SYSCALL_DISPATCH_FILTER_BLOCK);
+    selector_set(t,SYSCALL_DISPATCH_FILTER_BLOCK);
     adopt_run(t);
     dispatch_off();
     signal_stack_release(t);
+    adopt_map_unbind(t->resident_fs,t);
+    adopt_map_unbind(atomic_load(&t->app_fs),t);
     atomic_store_explicit(&t->tid,0,memory_order_release);
     pthread_exit(NULL);
 }
@@ -438,11 +487,14 @@ int adopt_install(void) {
     _Static_assert(ATOMIC_CHAR_LOCK_FREE==2,"signal-safe dispatch selector");
     struct adopt_thread *main=reserve();
     if(!main) return -1;
+    adopt_map_configure(map_memory);
+    fs_fast=(getauxval(AT_HWCAP2)&2)!=0;
     signal_stack_size=getauxval(AT_MINSIGSTKSZ);
     if(signal_stack_size>SIZE_MAX-65536) return -1;
     signal_stack_size+=65536;
     if(signal_stack_install(main)) return -1;
     main->resident_fs=backend_fs_read(); atomic_store(&main->tid,R(gettid,0,0,0,0,0,0));
+    adopt_map_bind(main->resident_fs,main);
     if(pthread_atfork(resident_prepare,resident_parent,resident_child)) return -1;
     force_clone=getenv("MATON_ADOPT_FORCE_CLONE")!=NULL;
     char value[32]; snprintf(value,sizeof(value),"%lx",(unsigned long)&api);

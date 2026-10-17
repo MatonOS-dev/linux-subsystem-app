@@ -30,6 +30,8 @@ struct adopt_thread {
 struct adopt_api {
     unsigned version;
     struct adopt_thread *(*current)(void);
+    /* v2: O(1), syscall-free lookup by the thread's current FS base. */
+    struct adopt_thread *(*lookup)(uintptr_t fs);
     long (*identity)(uintptr_t *);
     _Atomic unsigned clones,clone3s;
     size_t (*live)(void);
