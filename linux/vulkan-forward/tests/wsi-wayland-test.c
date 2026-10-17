@@ -18,7 +18,16 @@ static const struct wl_interface exported_registry={"wl_registry",1,2,0,2,0};
 
 static struct wl_proxy *fake_marshal(struct wl_proxy *p,uint32_t opcode,
         const struct wl_interface *iface,uint32_t version,uint32_t flags,...) {
-    (void)flags; va_list ap;va_start(ap,flags);
+    va_list ap;va_start(ap,flags);
+    if (opcode==0 && flags==1) {
+        assert(!iface && (p==&params_proxy || p==&buffer_proxy || p==&dmabuf_proxy));
+        assert(!p->dead);p->dead=1;va_end(ap);return 0;
+    }
+    assert(!flags);
+    if (p==(struct wl_proxy *)&display && opcode==1) {
+        assert(iface==&exported_registry && version==1 && !va_arg(ap,void *));
+        registry_proxy=(struct wl_proxy){iface,1,0};va_end(ap);return &registry_proxy;
+    }
     if (p==&registry_proxy && opcode==0) {
         uint32_t name=va_arg(ap,uint32_t);const char *iname=va_arg(ap,const char *);
         uint32_t v=va_arg(ap,uint32_t);void *id=va_arg(ap,void *);
@@ -56,9 +65,8 @@ static int fake_roundtrip(struct wl_display *d,struct wl_event_queue *q){
     ((void (*)(void *,struct wl_proxy *,uint32_t,const char *,uint32_t))registry_hooks[0])(registry_data,&registry_proxy,77,"zwp_linux_dmabuf_v1",4);return 0;
 }
 static int fake_dispatch(struct wl_display *d,struct wl_event_queue *q){assert(d==&display && q==&queue);return 0;}
-static struct wl_proxy *fake_get_registry(struct wl_display *d){assert(d==&display);registry_proxy=(struct wl_proxy){&exported_registry,1,0};return &registry_proxy;}
 static struct wl_proxy *fake_wrapper(struct wl_proxy *p){return p;}
-static void fake_wrapper_destroy(struct wl_proxy *p){assert(p==&dmabuf_proxy);}
+static void fake_wrapper_destroy(struct wl_proxy *p){assert(p==&dmabuf_proxy || p==(struct wl_proxy *)&display);}
 static void fake_set_queue(struct wl_proxy *p,struct wl_event_queue *q){assert(p && q==&queue);}
 static int fake_dummy;
 void *mv_wayland_symbol(const char *n){
@@ -70,7 +78,6 @@ void *mv_wayland_symbol(const char *n){
     if(!strcmp(n,"wl_event_queue_destroy"))return fake_queue_destroy;
     if(!strcmp(n,"wl_display_roundtrip_queue"))return fake_roundtrip;
     if(!strcmp(n,"wl_display_dispatch_queue_pending"))return fake_dispatch;
-    if(!strcmp(n,"wl_display_get_registry"))return fake_get_registry;
     if(!strcmp(n,"wl_proxy_create_wrapper"))return fake_wrapper;
     if(!strcmp(n,"wl_proxy_wrapper_destroy"))return fake_wrapper_destroy;
     if(!strcmp(n,"wl_proxy_set_queue"))return fake_set_queue;
