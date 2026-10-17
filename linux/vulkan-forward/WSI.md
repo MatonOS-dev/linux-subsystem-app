@@ -1,7 +1,10 @@
 # Vulkan Wayland WSI
 
 Status on `vk-wayland-wsi`: **surface stage implemented; swapchain and
-presentation are not implemented**. The prototype ICD now advertises
+presentation are not implemented**. The surface API remains prototype-only.
+A device probe verified that this VM's resident llvmpipe can export an Android
+Vulkan image as an `AHardwareBuffer` backed by a dma-buf; the ICD does not yet
+allocate or export swapchain buffers. The prototype ICD now advertises
 `VK_KHR_surface` and `VK_KHR_wayland_surface`, accepts them at instance
 creation without forwarding them to Android, creates a surface wrapper around
 the app's existing `wl_display`/`wl_surface`, and reports graphics queue
@@ -13,11 +16,8 @@ allocation, dmabuf transport, acquire/release, or present path exists.
 the freestanding ELF resolver for the application's already-loaded
 `libwayland-client.so.0`; this stage uses it to validate the supplied
 `wl_surface` proxy. No private buffer transport or Android Surface path is
-used. The VM check returned no devices attached at `localhost:5556`, so no
-app, resize, screenshot, or frame-timing result is claimed. This also leaves
-the resident Vulkan driver's external-memory extensions and exportable AHB
-behavior unknown; step 2 must wait for a running VM before choosing and
-documenting a verified allocation/export path.
+used. The VM remains reserved for another install test, so no APK install,
+resize, screenshot, or frame-timing result is claimed.
 
 ## Required data and process path
 
@@ -37,14 +37,24 @@ AHardwareBuffers and attaches them to SurfaceFlinger through
 No private AHB socket, private buffer transport, direct Android Surface per
 window, or in-process ART path is part of this design.
 
-The exact Vulkan allocation and export sequence is still unimplemented and
-must be documented when it is proven. Candidate Android-side allocation is
-`VK_ANDROID_external_memory_android_hardware_buffer` followed by native-handle
-dma-buf fd extraction; use `VK_EXT_external_memory_dma_buf` only if the
-resident driver exposes and validates it. Validate each format/modifier with
-the resident driver and the compositor's mapper metadata checks. The current
-compositor only accepts mapper-verified, single-plane formats; it does not
-prove that arbitrary Android Vulkan swapchain allocations are importable.
+The verified VM probe path is a Vulkan image with
+`VkExternalMemoryImageCreateInfo.handleTypes =
+VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID`, followed
+by dedicated memory allocation with `VkExportMemoryAllocateInfo` for the same
+handle type. After binding, the resident driver's
+`vkGetMemoryAndroidHardwareBufferANDROID` returned an AHB;
+`AHardwareBuffer_getNativeHandle` exposed two fds, with fd 0 reported as the
+buffer dma-buf and fd 1 as gralloc metadata. For a 256x256
+`VK_FORMAT_R8G8B8A8_UNORM` image, `AHardwareBuffer_describe` reported Android
+format `AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM` and stride 256 pixels.
+`vkGetImageDrmFormatModifierPropertiesEXT`, with
+`VK_EXT_image_drm_format_modifier` enabled, reported modifier `0` (linear).
+The compositor's existing format table maps Android RGBA_8888 to
+`DRM_FORMAT_ABGR8888`; this is the fourcc to advertise for that byte order.
+The probe did not prove the plane offset or pass the buffer through the
+compositor mapper validator, so full linux-dmabuf layout acceptance remains
+unverified. The alternate `VK_EXT_external_memory_dma_buf` path was enumerated
+by the driver but was not used.
 
 ## Synchronization and presentation
 
