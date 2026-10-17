@@ -12,24 +12,13 @@
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 
-#define MAX_DIMENSION 4096u
-#define MAX_BUFFERS 8u
-#define MAX_BYTES (64u*1024u*1024u)
-#define GLOBAL_BUFFERS 64u
-#define GLOBAL_BYTES (256u*1024u*1024u)
-#define MAX_SESSIONS 64u
 #define AHB_USAGE (AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY)
-/* All allocation/accounting/resource access stays on the compositor loop.
- * These process-wide bounds also include retired displays' locked buffers. */
-static uint32_t live_sessions, live_buffers;
-static uint64_t live_bytes;
 struct Session {
   struct wl_resource* resource;
   struct wl_listener surface_destroy;
   int fd;
-  uint32_t sequence, buffers, formats;
-  uint64_t bytes;
-  unsigned refs;
+  uint32_t sequence, formats;
+  size_t refs;
   bool alive;
 };
 struct Buffer {
@@ -38,18 +27,15 @@ struct Buffer {
   struct wl_listener release;
   struct Session* session;
   AHardwareBuffer* ahb;
-  uint64_t bytes;
 };
 static void session_unref(struct Session* s) {
   if(--s->refs)return;
-  live_sessions--;free(s);
+  free(s);
 }
 static void buffer_destroy(struct wlr_buffer* base) {
   struct Buffer* b=(struct Buffer*)base;
   wl_list_remove(&b->release.link);
   AHardwareBuffer_release(b->ahb);
-  live_buffers--;live_bytes-=b->bytes;
-  b->session->buffers--;b->session->bytes-=b->bytes;
   session_unref(b->session);
   wlr_buffer_finish(base);free(b);
 }
@@ -117,20 +103,16 @@ static int send_handle(AHardwareBuffer* buffer,int fd) {
 }
 static void create_buffer(struct wl_client* client,struct wl_resource* resource,uint32_t request,uint32_t width,uint32_t height,uint32_t format) {
   struct Session* s=wl_resource_get_user_data(resource);
-  uint64_t bytes=(uint64_t)width*height*4;
   if(!request || request<=s->sequence) {
     wl_resource_post_error(resource,0,"AHB request sequence must increase");return;
   }
   s->sequence=request;
   if(!s->alive){fail(s,request,MATON_AHB_SESSION_V1_FAILURE_SURFACE_LOST);return;}
-  if(!width || !height || width>MAX_DIMENSION || height>MAX_DIMENSION ||
+  if(!width || !height ||
       (format!=1 && format!=5) || !(s->formats&(1u<<format))) {
     fail(s,request,MATON_AHB_SESSION_V1_FAILURE_INVALID);return;
   }
-  if(s->buffers>=MAX_BUFFERS || bytes>MAX_BYTES-s->bytes ||
-      live_buffers>=GLOBAL_BUFFERS || bytes>GLOBAL_BYTES-live_bytes) {
-    fail(s,request,MATON_AHB_SESSION_V1_FAILURE_QUOTA);return;
-  }
+  if(s->refs==SIZE_MAX){fail(s,request,MATON_AHB_SESSION_V1_FAILURE_ALLOCATION);return;}
   struct Buffer* b=calloc(1,sizeof(*b));
   if(!b){wl_client_post_no_memory(client);return;}
   AHardwareBuffer_Desc desc={.width=width,.height=height,.layers=1,.format=format,.usage=AHB_USAGE};
@@ -138,9 +120,9 @@ static void create_buffer(struct wl_client* client,struct wl_resource* resource,
     free(b);fail(s,request,MATON_AHB_SESSION_V1_FAILURE_ALLOCATION);return;
   }
   AHardwareBuffer_Desc actual;AHardwareBuffer_describe(b->ahb,&actual);
-  bytes=(uint64_t)actual.stride*actual.height*4;
+  /* wlroots dimensions are signed int; never truncate a driver extent. */
   if(actual.width!=width || actual.height!=height || actual.layers!=1 || actual.format!=format ||
-      (actual.usage&AHB_USAGE)!=AHB_USAGE || actual.stride<width || bytes>MAX_BYTES-s->bytes || bytes>GLOBAL_BYTES-live_bytes) {
+      (actual.usage&AHB_USAGE)!=AHB_USAGE || actual.stride<width || width>INT32_MAX || height>INT32_MAX) {
     AHardwareBuffer_release(b->ahb);free(b);fail(s,request,MATON_AHB_SESSION_V1_FAILURE_ALLOCATION);return;
   }
   b->resource=wl_resource_create(client,&wl_buffer_interface,1,0);
@@ -152,8 +134,7 @@ static void create_buffer(struct wl_client* client,struct wl_resource* resource,
     close(s->fd);s->fd=-1;s->alive=false;
     fail(s,request,MATON_AHB_SESSION_V1_FAILURE_TRANSPORT);return;
   }
-  b->session=s;b->bytes=bytes;s->refs++;s->buffers++;s->bytes+=bytes;
-  live_buffers++;live_bytes+=bytes;
+  b->session=s;s->refs++;
   wlr_buffer_init(&b->base,&buffer_impl,(int)width,(int)height);
   b->release.notify=released;wl_signal_add(&b->base.events.release,&b->release);
   wl_resource_set_implementation(b->resource,&buffer_requests,b,buffer_resource_destroy);
@@ -161,7 +142,6 @@ static void create_buffer(struct wl_client* client,struct wl_resource* resource,
 }
 static const struct maton_ahb_session_v1_interface session_requests={.destroy=destroy_resource,.create_buffer=create_buffer};
 static void get_session(struct wl_client* client,struct wl_resource* resource,uint32_t id,struct wl_resource* surface) {
-  if(live_sessions>=MAX_SESSIONS){wl_resource_post_error(resource,0,"AHB session quota exceeded");return;}
   /* Wayland object arguments already belong to this client. Check explicitly
    * before accepting a lifetime authority. No numeric surface ID is reused on
    * another connection. */
@@ -176,10 +156,10 @@ static void get_session(struct wl_client* client,struct wl_resource* resource,ui
   if(!s){close(sockets[0]);close(sockets[1]);wl_client_post_no_memory(client);return;}
   s->resource=wl_resource_create(client,&maton_ahb_session_v1_interface,1,id);
   if(!s->resource){close(sockets[0]);close(sockets[1]);free(s);wl_client_post_no_memory(client);return;}
-  s->fd=sockets[0];s->alive=true;s->refs=1;live_sessions++;
+  s->fd=sockets[0];s->alive=true;s->refs=1;
   s->surface_destroy.notify=surface_destroy;wl_signal_add(&target->events.destroy,&s->surface_destroy);
   wl_resource_set_implementation(s->resource,&session_requests,s,session_destroy);
-  maton_ahb_session_v1_send_transport(s->resource,sockets[1],MAX_DIMENSION,MAX_BUFFERS,MAX_BYTES);
+  maton_ahb_session_v1_send_transport(s->resource,sockets[1],0,0,0);
   close(sockets[1]);
   for(uint32_t format=1;format<=5;format+=4) {
     AHardwareBuffer_Desc desc={.width=64,.height=64,.layers=1,.format=format,.usage=AHB_USAGE};

@@ -9,5 +9,5 @@ case "$(realpath -m "$out")/" in "$repo/"*) echo 'output must be external' >&2; 
 mkdir -p "$out"
 ${CC:-clang-21} -std=c11 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
  -I"$here" -I"$headers" "$here/buffer_release.c" "$here/tests/buffer_release_test.c" \
- -pthread -Wl,-l:libwayland-server.so.0,--wrap=wl_event_loop_add_fd -o "$out/buffer-release-test"
+ -pthread -Wl,-l:libwayland-server.so.0,--wrap=wl_event_loop_add_fd,--wrap=calloc -o "$out/buffer-release-test"
 "$out/buffer-release-test"

@@ -118,7 +118,7 @@ static void AHardwareBuffer_release(AHardwareBuffer* buffer) {
 
 static struct wl_compositor* compositor;
 static struct maton_ahb_manager_v1* manager;
-static struct wl_buffer* buffers[8];
+static struct wl_buffer* buffers[66];
 static unsigned allocated, failed, releases, last_reason;
 static int transport=-1;
 static void registry_global(void* data,struct wl_registry* registry,uint32_t name,const char* interface,uint32_t version) {
@@ -129,26 +129,27 @@ static void registry_global(void* data,struct wl_registry* registry,uint32_t nam
 static void registry_remove(void* data,struct wl_registry* registry,uint32_t name) {(void)data;(void)registry;(void)name;}
 static const struct wl_registry_listener registry_listener={registry_global,registry_remove};
 static void on_transport(void* data,struct maton_ahb_session_v1* session,int32_t fd,uint32_t dimension,uint32_t count,uint32_t bytes) {
-  (void)data;(void)session;assert(dimension==4096 && count==8 && bytes==64*1024*1024);transport=fd;
+  (void)data;(void)session;assert(dimension==0 && count==0 && bytes==0);transport=fd;
 }
 static unsigned formats;
+static uint32_t expected_width=64,expected_height=64;
 static void on_format(void* data,struct maton_ahb_session_v1* session,uint32_t format) {(void)data;(void)session;formats|=1u<<format;}
 static void on_ready(void* data,struct maton_ahb_session_v1* session) {(void)data;(void)session;}
 static void on_release(void* data,struct wl_buffer* buffer) {(void)data;(void)buffer;releases++;}
 static const struct wl_buffer_listener buffer_listener={on_release};
 static void on_allocated(void* data,struct maton_ahb_session_v1* session,uint32_t request,struct wl_buffer* buffer,uint32_t usage_lo,uint32_t usage_hi) {
   (void)data;(void)session;(void)request;(void)usage_hi;
-  assert(allocated<8 && transport>=0);
+  assert(allocated<66 && transport>=0);
   struct pollfd p={.fd=transport,.events=POLLIN};assert(poll(&p,1,1000)==1);
   AHardwareBuffer* ahb=NULL;
   assert(AHardwareBuffer_recvHandleFromUnixSocket(transport,&ahb)==0 && ahb);
   AHardwareBuffer_Desc desc;AHardwareBuffer_describe(ahb,&desc);
-  assert(desc.width==64 && desc.height==64 && desc.layers==1 && desc.format==1);
+  assert(desc.width==expected_width && desc.height==expected_height && desc.layers==1 && desc.format==1);
   assert((desc.usage&usage_lo)==usage_lo);
 #ifdef MATON_AHB_LINUX_CLIENT
   struct mv_scope scope;assert(switch_to_android(adoption,fast,&scope));
   VkImage image=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;
-  VkResult imported=mv_wsi_import_ahb(&driver,ahb,(VkExtent2D){64,64},VK_FORMAT_R8G8B8A8_UNORM,&image,&memory);
+  VkResult imported=mv_wsi_import_ahb(&driver,ahb,(VkExtent2D){desc.width,desc.height},VK_FORMAT_R8G8B8A8_UNORM,&image,&memory);
   if(image)driver.destroy(driver.device,image,NULL);
   if(memory)driver.free(driver.device,memory,NULL);
   switch_back(&scope);assert(imported==VK_SUCCESS);
@@ -230,10 +231,24 @@ int main(int argc,char** argv) {
   assert(wl_display_roundtrip(display)>=0 && transport>=0 && (formats&2));
   maton_ahb_session_v1_create_buffer(session,1,0,64,1);
   assert(wl_display_roundtrip(display)>=0 && failed==1 && last_reason==MATON_AHB_SESSION_V1_FAILURE_INVALID);
-  for(unsigned i=0;i<8;i++)maton_ahb_session_v1_create_buffer(session,i+2,64,64,1);
-  assert(wl_display_roundtrip(display)>=0 && allocated==8);
-  maton_ahb_session_v1_create_buffer(session,10,64,64,1);
-  assert(wl_display_roundtrip(display)>=0 && failed==2 && last_reason==MATON_AHB_SESSION_V1_FAILURE_QUOTA);
+  /* More live sessions and buffers than both former process-wide caps.
+   * Roundtrip each allocation so socket backpressure is not a quota test. */
+  int original_transport=transport;
+  struct maton_ahb_session_v1* sessions[65];
+  for(unsigned i=0;i<65;i++) {
+    sessions[i]=maton_ahb_manager_v1_get_session(manager,surface);
+    maton_ahb_session_v1_add_listener(sessions[i],&session_listener,NULL);
+    assert(wl_display_roundtrip(display)>=0);close(transport);
+  }
+  for(unsigned i=0;i<65;i++)maton_ahb_session_v1_destroy(sessions[i]);
+  transport=original_transport;
+  for(unsigned i=0;i<65;i++) {
+    maton_ahb_session_v1_create_buffer(session,i+2,64,64,1);
+    assert(wl_display_roundtrip(display)>=0 && allocated==i+1 && failed==1);
+  }
+  expected_width=4097;expected_height=1;
+  maton_ahb_session_v1_create_buffer(session,67,expected_width,expected_height,1);
+  assert(wl_display_roundtrip(display)>=0 && allocated==66 && failed==1);
   wl_surface_attach(surface,buffers[0],0,0);wl_surface_damage(surface,0,0,64,64);wl_surface_commit(surface);
   assert(wl_display_roundtrip(display)>=0 && !releases);
   wl_surface_attach(surface,NULL,0,0);wl_surface_commit(surface);
@@ -246,21 +261,21 @@ int main(int argc,char** argv) {
   maton_ahb_session_v1_add_listener(broken,&session_listener,NULL);
   assert(wl_display_roundtrip(display)>=0);close(transport);transport=-1;
   maton_ahb_session_v1_create_buffer(broken,1,64,64,1);
-  assert(wl_display_roundtrip(display)>=0 && failed==3 && last_reason==MATON_AHB_SESSION_V1_FAILURE_TRANSPORT);
+  assert(wl_display_roundtrip(display)>=0 && failed==2 && last_reason==MATON_AHB_SESSION_V1_FAILURE_TRANSPORT);
   maton_ahb_session_v1_destroy(broken);
   wl_surface_destroy(surface);
-  maton_ahb_session_v1_create_buffer(session,11,64,64,1);
-  assert(wl_display_roundtrip(display)>=0 && failed==4 && last_reason==MATON_AHB_SESSION_V1_FAILURE_SURFACE_LOST);
+  maton_ahb_session_v1_create_buffer(session,68,64,64,1);
+  assert(wl_display_roundtrip(display)>=0 && failed==3 && last_reason==MATON_AHB_SESSION_V1_FAILURE_SURFACE_LOST);
   maton_ahb_session_v1_destroy(session);
-  for(unsigned i=0;i<8;i++)wl_buffer_destroy(buffers[i]);
+  for(unsigned i=0;i<66;i++)wl_buffer_destroy(buffers[i]);
   maton_ahb_manager_v1_destroy(manager);wl_compositor_destroy(compositor);wl_registry_destroy(registry);
   assert(wl_display_roundtrip(display)>=0);wl_display_disconnect(display);
   assert(!kill(pid,SIGTERM));int status;assert(waitpid(pid,&status,0)==pid);
 #ifdef MATON_AHB_LINUX_CLIENT
   struct mv_scope scope;assert(switch_to_android(adoption,fast,&scope));
   destroy_device(driver.device,NULL);destroy_instance(vk_instance,NULL);switch_back(&scope);
-  puts("PASS resident TLS: Linux Wayland client received and imported 8 AHBs into resident Vulkan images");
+  puts("PASS resident TLS: Linux Wayland client received and imported 66 AHBs into resident Vulkan images");
 #endif
-  puts("PASS AHB protocol: separate processes, 8 complete handle transfers, typed scene source, delayed reader release, quotas, invalid extent, closed transport/SIGPIPE and surface loss");
+  puts("PASS AHB protocol: separate processes, 66 complete handle transfers, 66 live sessions, 4097-pixel width, typed scene source, delayed reader release, removed session/process quotas, invalid extent, closed transport/SIGPIPE and surface loss");
   return 0;
 }

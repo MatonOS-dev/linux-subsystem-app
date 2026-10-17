@@ -3,16 +3,17 @@
 #include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
 
-/* A stalled SurfaceFlinger must cost bounded storage and no extra threads.
- * Quarantined slots remain occupied until process exit: an error is not proof
- * that an Android reader has stopped. Backpressure occurs BEFORE submission. */
-#define RELEASE_CAPACITY 128
+/* Reservations are individually allocated on the loop thread, never moved.
+ * Binder callbacks retain stable addresses. Quarantined readers remain retained
+ * until process exit: allocation failure is not permission to unlock them. */
 enum State { FREE, RESERVED, READY, WATCHING, QUARANTINED };
 struct MatonBufferRelease {
+  struct MatonBufferRelease* next;
   enum State state;
   void* buffer;
   int fence;
@@ -24,7 +25,7 @@ static struct {
   struct wl_event_source* wake;
   int fd;
   void (*release)(void*);
-  struct MatonBufferRelease slots[RELEASE_CAPACITY];
+  struct MatonBufferRelease* slots;
 } pending = {.mutex=PTHREAD_MUTEX_INITIALIZER,.fd=-1};
 
 static void retire(struct MatonBufferRelease* slot) {
@@ -55,8 +56,7 @@ static int on_wake(int fd, uint32_t mask, void* data) {
   (void)mask;(void)data;
   uint64_t value;
   while(read(fd,&value,sizeof(value))<0 && errno==EINTR){}
-  for(unsigned i=0;i<RELEASE_CAPACITY;i++) {
-    struct MatonBufferRelease* slot=&pending.slots[i];
+  for(struct MatonBufferRelease* slot=pending.slots;slot;slot=slot->next) {
     pthread_mutex_lock(&pending.mutex);
     bool ready=slot->state==READY;
     if(ready)slot->state=WATCHING;
@@ -90,8 +90,7 @@ void maton_buffer_release_stop(void) {
   pending.wake=NULL;pending.loop=NULL;
   if(pending.fd>=0)close(pending.fd);
   pending.fd=-1;
-  for(unsigned i=0;i<RELEASE_CAPACITY;i++) {
-    struct MatonBufferRelease* slot=&pending.slots[i];
+  for(struct MatonBufferRelease* slot=pending.slots;slot;slot=slot->next) {
     if(slot->source){wl_event_source_remove(slot->source);slot->source=NULL;}
     if(slot->state!=FREE) {
       if(slot->fence>=0)close(slot->fence);
@@ -103,10 +102,13 @@ void maton_buffer_release_stop(void) {
 struct MatonBufferRelease* maton_buffer_release_reserve(void* buffer) {
   struct MatonBufferRelease* result=NULL;
   pthread_mutex_lock(&pending.mutex);
-  if(pending.loop && buffer)for(unsigned i=0;i<RELEASE_CAPACITY;i++) {
-    if(pending.slots[i].state==FREE) {
-      result=&pending.slots[i];result->state=RESERVED;result->buffer=buffer;result->fence=-1;break;
+  if(pending.loop && buffer) {
+    for(result=pending.slots;result && result->state!=FREE;result=result->next){}
+    if(!result) {
+      result=calloc(1,sizeof(*result));
+      if(result){result->next=pending.slots;pending.slots=result;}
     }
+    if(result){result->state=RESERVED;result->buffer=buffer;result->fence=-1;}
   }
   pthread_mutex_unlock(&pending.mutex);
   return result;

@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include <math.h>
 #include <sys/stat.h>
+#include <sys/system_properties.h>
 #include "dmabuf_import.h"
 #include "maton_renderer.h"
 #include "presenter.h"
@@ -1090,7 +1091,12 @@ static void* server_main(void* unused) {
   if(!server.backend||!server.renderer||!maton_ahb_allocator_init(&server.ahb_allocator))goto done;
   stage="renderer globals";if(!wlr_renderer_init_wl_display(server.renderer,server.display))goto done;
   stage="AHB transport";
-  if(release_ready && maton_surface_output_has_release() && !maton_ahb_protocol_create(server.display))goto done;
+  /* Incomplete ICD WSI must add no default protocol surface. Explicit opt-in
+   * is read once when starting the compositor. */
+  char ahb_wsi[PROP_VALUE_MAX]={0};
+  __system_property_get("debug.matonos.ahb_wsi",ahb_wsi);
+  if(!strcmp(ahb_wsi,"1") && release_ready &&
+      maton_surface_output_has_release() && !maton_ahb_protocol_create(server.display))goto done;
   stage="linux-dmabuf";if(!create_linux_dmabuf())goto done;
   wl_display_set_global_filter(server.display,global_filter,NULL);
   server.allocator=maton_ahb_allocator_base(&server.ahb_allocator);

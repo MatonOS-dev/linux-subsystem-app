@@ -38,7 +38,7 @@
     </enum>
     <request name="destroy" type="destructor"/>
     <request name="create_buffer">
-      <description summary="allocate bounded storage">
+      <description summary="allocate driver-backed storage">
         request is a client-chosen nonzero sequence, strictly increasing and
         never reused. A successful allocated event creates the wl_buffer; a
         failure creates no object. fd transfer can arrive before allocated.
@@ -50,6 +50,12 @@
       <arg name="format" type="uint" enum="format"/>
     </request>
     <event name="transport">
+      <description summary="dedicated handle channel">
+        Zero in a max field means no protocol policy limit. Allocation is
+        attempted with the driver; failure creates no buffer. Dimensions must
+        also be representable by the compositor's signed wlroots geometry.
+        The quota failure value is reserved and is currently never emitted.
+      </description>
       <arg name="socket" type="fd"/>
       <arg name="max_dimension" type="uint"/>
       <arg name="max_buffers" type="uint"/>

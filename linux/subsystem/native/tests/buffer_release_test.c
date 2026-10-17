@@ -23,7 +23,11 @@ static void* complete(void* p) {
   maton_buffer_release_complete(c->slot,c->fence);
   return NULL;
 }
-static int fail_add;
+static int fail_add, fail_allocate;
+void* __real_calloc(size_t,size_t);
+void* __wrap_calloc(size_t count,size_t size) {
+  return fail_allocate?NULL:__real_calloc(count,size);
+}
 struct wl_event_source* __real_wl_event_loop_add_fd(struct wl_event_loop*,int,uint32_t,wl_event_loop_fd_func_t,void*);
 struct wl_event_source* __wrap_wl_event_loop_add_fd(struct wl_event_loop* loop,int fd,uint32_t mask,wl_event_loop_fd_func_t callback,void* data) {
   if(fail_add)return NULL;
@@ -48,34 +52,33 @@ int main(void) {
   dispatch(loop);assert(released==1);close(signal);
   slot=maton_buffer_release_reserve(&buffer);assert(slot);
   maton_buffer_release_cancel(slot);
-  struct MatonBufferRelease* slots[128];
-  for(unsigned i=0;i<128;i++){slots[i]=maton_buffer_release_reserve(&buffer);assert(slots[i]);}
-  assert(!maton_buffer_release_reserve(&buffer));
-  for(unsigned i=0;i<128;i++)maton_buffer_release_complete(slots[i],-1);
-  assert(!maton_buffer_release_reserve(&buffer)); /* Remain occupied until loop dispatch. */
-  dispatch(loop);assert(released==129);
+  /* Grow well beyond the former 128-slot ceiling, including allocation
+   * failure before submission. A failed reservation must retain no buffer. */
+  struct MatonBufferRelease* slots[513];
+  for(unsigned i=0;i<513;i++){slots[i]=maton_buffer_release_reserve(&buffer);assert(slots[i]);}
+  fail_allocate=1;assert(!maton_buffer_release_reserve(&buffer));fail_allocate=0;
+  for(unsigned i=0;i<513;i++)maton_buffer_release_complete(slots[i],-1);
+  dispatch(loop);assert(released==514);
   slot=maton_buffer_release_reserve(&buffer);assert(slot);
   fence=eventfd(0,EFD_CLOEXEC|EFD_NONBLOCK);assert(fence>=0);
   maton_buffer_release_complete(slot,fence);fail_add=1;dispatch(loop);fail_add=0;
-  assert(released==129); /* epoll/OOM failure quarantines; no unsafe unlock. */
+  assert(released==514); /* epoll/OOM failure quarantines; no unsafe unlock. */
   int pipes[2];assert(!pipe(pipes));
   slot=maton_buffer_release_reserve(&buffer);assert(slot);
   maton_buffer_release_complete(slot,pipes[0]);dispatch(loop);close(pipes[1]);
-  dispatch(loop);assert(released==129); /* HUP is not a signaled sync_file. */
-  /* Two permanent quarantines consume capacity; all other reservations return. */
-  for(unsigned i=0;i<126;i++){slots[i]=maton_buffer_release_reserve(&buffer);assert(slots[i]);}
-  assert(!maton_buffer_release_reserve(&buffer));
-  for(unsigned i=0;i<125;i++)maton_buffer_release_cancel(slots[i]);
-  slot=slots[125]; /* callback outstanding across shutdown */
+  dispatch(loop);assert(released==514); /* HUP is not a signaled sync_file. */
+  /* Quarantines retain their readers but impose no capacity ceiling. */
+  for(unsigned i=0;i<513;i++){slots[i]=maton_buffer_release_reserve(&buffer);assert(slots[i]);}
+  for(unsigned i=0;i<512;i++)maton_buffer_release_cancel(slots[i]);
+  slot=slots[512]; /* callback outstanding across shutdown */
   maton_buffer_release_stop();
   fence=eventfd(0,EFD_CLOEXEC|EFD_NONBLOCK);assert(fence>=0);
-  maton_buffer_release_complete(slot,fence);assert(released==129);
+  maton_buffer_release_complete(slot,fence);assert(released==514);
   assert(!maton_buffer_release_reserve(&buffer));
   assert(maton_buffer_release_start(loop,release));
-  for(unsigned i=0;i<125;i++){slots[i]=maton_buffer_release_reserve(&buffer);assert(slots[i]);}
-  assert(!maton_buffer_release_reserve(&buffer));
-  for(unsigned i=0;i<125;i++)maton_buffer_release_cancel(slots[i]);
+  for(unsigned i=0;i<513;i++){slots[i]=maton_buffer_release_reserve(&buffer);assert(slots[i]);}
+  for(unsigned i=0;i<513;i++)maton_buffer_release_cancel(slots[i]);
   maton_buffer_release_stop();wl_event_loop_destroy(loop);
-  puts("PASS release: unsignaled/signaled fences, loop-thread dispatch, 128-slot backpressure, OOM/HUP quarantine, late callback and restart");
+  puts("PASS release: unsignaled/signaled fences, loop-thread dispatch, dynamic growth beyond 128, allocation failure, OOM/HUP quarantine, late callback and restart");
   return 0;
 }

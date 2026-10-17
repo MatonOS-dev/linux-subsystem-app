@@ -1,3 +1,46 @@
+# D2b progress: dynamic transport storage and default-off global
+
+D2b acceptance is **not met**. Loader-facing Wayland WSI, Vulkan synchronization
+and display-paced FIFO remain unimplemented; no vkcube/Zink presentation claim.
+
+The D2 transport policy caps have been removed: session resources and buffer
+resources allocate individually; session references use checked `size_t` counts.
+There are no per-session/process buffer or byte quotas and no session quota.
+AHB allocation is attempted for nonzero supported-format extents. A failure
+produces `failed(allocation)` without creating a wl_buffer. The compositor also
+rejects extents above INT32_MAX after allocation: wlroots' buffer width/height
+and scene geometry are signed integers. This is a representation requirement,
+not a security policy, driver limit or Vulkan surface capability answer. There
+is no 4096 limit and no row-byte multiplication/accounting to overflow.
+Transport max fields now send zero, documented as no protocol policy limit;
+the existing quota enum value is reserved, never emitted.
+
+Release reservations are stable individually allocated linked nodes, reused
+when free, with no count ceiling and no growing-array multiplication. Allocation
+failure rejects the reservation before Android submission. Binder callbacks still
+allocate nothing and never call wlroots. Unsafe fences/late shutdown readers
+remain quarantined, retaining the original buffer until process exit. Free nodes
+are cached at the process high-water mark; quarantine storage can grow if Android
+keeps failing. No memory-pressure policy or claimed security bound is invented.
+
+`maton_ahb_manager_v1` is **absent by default** from the actual compositor.
+The coordinator may opt in with `adb shell setprop debug.matonos.ahb_wsi 1`
+before starting a compositor instance; set it to `0` to disable for subsequent
+instances. The property is read at startup, and release tracking/API availability
+are still required. No ICD negotiation or Vulkan extension advertisement has
+been added. The isolated protocol test intentionally creates its own global.
+
+New test fixtures reserve 513 concurrent release readers and inject allocation
+failure, and request 66 simultaneous buffers (including a 4097-pixel-wide buffer) plus 66 live sessions, crossing
+every former count ceiling. The AHB tests require a device and are not a pixel
+presentation test. See the D2b final report for executed verification.
+
+The following is the historical D2 handover; its policy limits and statement
+about default advertisement are superseded above. Its WSI implementation gaps
+remain open.
+
+---
+
 # D2 partial: AHB transport and final-release prerequisites
 
 **D2 is incomplete. No usable Vulkan WSI or Zink window presentation yet.**
