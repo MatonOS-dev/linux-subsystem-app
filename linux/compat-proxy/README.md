@@ -173,16 +173,6 @@ Filters remain installed in the kernel and constrain raw operations; virtual
 answers are not a full interpreter for additional seccomp policies (TRAP has
 priority over ERRNO). Do not infer containment from these host tests.
 
-Round 5 inode publication: `linkat` preserves a final `/proc/self/fd/N`
-magic link when following the source. `AT_EMPTY_PATH` is translated to that
-proc form so publication does not require CAP_DAC_READ_SEARCH. Destination
-resolution, virtual mount identity and read-only checks still apply. Other
-proc-fd resolution (especially bind-mount sources) keeps its existing backing
-path behavior. `O_TMPFILE` and `renameat2` flags pass to the kernel after
-virtual path checks; `tests/publication.c` covers publication/replacement,
-fd duplication, NOREPLACE/EXCHANGE, EXDEV and EROFS. Round 13 below
-replaces the kernel O_TMPFILE/linkat replay described here.
-
 Bwrap loads now log outer argv and NUL-separated `--args` bundles through
 pread without consuming or changing the fd. `tests/flatpak-bwrap-host.py`
 accepts `COMPAT_STAGE2_LOG` to replay the logged outer ldconfig command.
@@ -259,27 +249,12 @@ The Java DnsForwarderTest checks the exact UID predicate, not real kernel
 credentials. Fresh enforcing-device testing must still confirm app-to-app
 Unix socket access under stock SELinux and real netd responses.
 
-Round 13 hard links on app-domain storage: `O_TMPFILE` now creates a unique
-`.matonos-tmp-<pid>-<counter>` file in the requested directory with `O_EXCL`
-and the requested mode (subject to the normal umask). It never asks the kernel
-to hard-link an app file. The hidden inode has a shared reference/publication
-record and a process-local fd table. `dup`, `dup2`/`dup3`, fcntl duplication,
-fork/vfork/posix_spawn, resident exec and CLOEXEC closure preserve that record.
-The last intercepted close, CLOEXEC closure or `exit_group` removes an
-unpublished file. Fork reserves child references before cloning and rolls
-back on failure. A small assembly clone retry preserves supplied child stacks;
-ordinary thread clones retain the existing native path.
-
-`linkat` following `/proc/self/fd/N` or `/proc/<pid>/fd/N`, and `AT_EMPTY_PATH`,
-publishes a tracked temporary inode with `renameat2(RENAME_NOREPLACE)`.
-Existing destinations return EEXIST and leave the hidden file available for
-retry. The open fd still refers to the same inode, and proc fd names reflect
-publication, including in an inheriting process. Re-publication through the fd
-returns EPERM, so it cannot move an already published inode. `O_TMPFILE|O_EXCL`
-remains unpublishable. Virtual mount EXDEV and read-only EROFS checks still
-precede the backing operation. Another pid's proc fd must be accessible and
-refer to a temporary inode tracked by the calling process (normally inherited
-across fork); there is no general cross-process fd-registration protocol.
+O_TMPFILE deliberately returns EOPNOTSUPP after normal virtual mount policy
+checks. Callers use named temporary files and rename; no anonymous-inode
+tracking, descriptor ownership, fork/exec hooks or proc-fd publication exists.
+Proc-fd link sources receive the same non-store refusal as other external paths.
+`tests/links.c` covers this fallback and `tests/publication.c` covers named
+publication and rename mount policy.
 
 Round 14 replaces the named-file copy fallback with a hidden inode store.
 On the first named link, the regular file moves atomically into
@@ -1311,47 +1286,3 @@ The inherited app syscall policy remains authoritative: on this checkout
 but does not bypass that denial. Host filesystems/kernels without xattrat
 return ENOSYS. Validation is on the host under the copied app filter, not a
 fresh MatonOS VM deployment; rerun Flatpak installation on the rebuilt image.
-
-Threaded O_TMPFILE publication (2026-10-17): the descriptor list is shared by
-all threads in a process. Its inserts, lookups, alias/reference updates,
-publication, cleanup, fork reservations and resident-exec serialization now
-use one signal-masked process lock. A fork child can discard an inherited
-parent lock owner; inode ownership/publication records remain shared across
-fork as before. Kernel close and duplication also run inside this lock:
-locking cleanup alone lets an intervening O_TMPFILE open reuse the descriptor,
-then the old close deletes the new temp record and its backing pathname.
-Reference reservation and restored descriptor counts check overflow; tracking
-uses dynamically allocated records with no fixed descriptor-count limit.
-Ordinary store operations release this lock before acquiring a store flock.
-The incremental counts/intents/recount protocol is unchanged.
-
-On b83cd4b, scheduling two opens between their list-head read and insertion
-loses a temp record. The host stress test then returns EXDEV: source_tmp cannot
-find its tracked inode, so store_link compares the proc-fd parent filesystem
-to the destination filesystem. Unrestricted baseline concurrency also crashes
-or hangs in list traversal. Delayed close returns independently expose stale
-publication records. This is not evidence of different backing filesystems
-inside installation/repo. Temp publication uses a direct NOREPLACE rename,
-not inode-store root selection.
-
-Unpublished descriptors now supply their actual temp pathname for mount
-identity, rather than the directory name recorded by open. Proc-fd logical
-names recognize self, the process PID, thread-self, and any TID in our own
-/proc/self/task directory. Numeric descriptor parsing checks overflow. Foreign
-process descriptor numbers are never trusted: publication still requires an
-inode matching our tracked descriptor table (including fork-inherited inodes).
-A verified numeric-fd fast path avoids statting every tracked descriptor;
-the inode-checked scan remains for inherited aliases using other numbers.
-
-`tests/tmpfile-threads.sh` (also in run.sh) runs eight workers for 1,000 rounds
-per worker, alternating own/cross-thread publication and all four proc forms.
-The next opens overlap the previous closes. It verifies inode identity,
-regular-file/no-follow behavior, contents, unlink/close cleanup, and rejection
-of a foreign child's non-inherited temp inode. Both fresh stores and an
-existing nested installation/repo/.v3-inodes store are covered beneath a
-virtual bind mount. Kernel linkat is denied by tests/link-deny throughout.
-`TMPFILE_SERIALIZED=1` isolates open-vs-close races by serializing publication
-and close in the test; TMPFILE_KEEP_ERRORS=1 collects subsequent errors for
-baseline tracing. Neither changes proxy behavior. Host coverage does not
-replace a fresh-image Firefox/Flathub pull; that VM integration check remains
-for the coordinator. No kernel, shared device-tree or image changes needed.

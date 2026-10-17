@@ -62,11 +62,6 @@ proxy_clone_after:
     call dns_fork_result
     mov 72(%rbp),%rdi
     call ipc_fork_result
-    cmpq $0,72(%rbp)
-    jge 1f
-    mov $-1,%rdi
-    call links_fork
-1:
     fxrstor64 (%rsp)
     mov %rbp,%rsp
     pop %rbp

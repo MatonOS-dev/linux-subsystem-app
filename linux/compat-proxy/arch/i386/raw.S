@@ -54,11 +54,6 @@ proxy_clone_after:
  mov 28(%ebp),%eax
  mov %eax,(%esp)
  call ipc_fork_result
- cmpl $0,28(%ebp)
- jge 1f
- movl $-1,(%esp)
- call links_fork
-1:
  fxrstor 16(%esp)
  mov %ebp,%esp
  popal

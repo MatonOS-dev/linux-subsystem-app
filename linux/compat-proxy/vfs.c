@@ -36,7 +36,7 @@ static char *join(const char *a,const char *b) {
 struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
 int proxy_diagnostic_fd=2;
-int vfs_private_fd(int fd){if(pack_private(fd)||state_private_fd(fd)||links_private_fd(fd))return 1;if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
+int vfs_private_fd(int fd){if(pack_private(fd)||state_private_fd(fd))return 1;if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
 static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(PROXY_SC_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
     int fd=(int)RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
@@ -159,7 +159,6 @@ static void fd_name_close(int fd){
 void vfs_fd_close(int fd){pack_close(fd);fd_name_close(fd);}
 long vfs_fd_dup(int from,int to){if(from==to)return 0;long e=pack_dup(from,to);if(e)return e;char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}return 0;}
 char *vfs_fd_name(int fd){
-    char *published=links_fd_name(fd);if(published)return published;
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
     for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==fd){
         if(!root)name=dupstr(p->path);

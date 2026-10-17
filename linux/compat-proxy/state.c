@@ -30,7 +30,7 @@ void state_string(struct state *s,char **p){
  if(n){state_bytes(s,*p,n);if(!s->error && ((*p)[n-1] || p_len(*p)!=n-1))s->error=-EINVAL;}
 }
 static void transfer(struct state *s){
- state_android=state_word(s,state_android);vfs_state(s);links_state(s);ipc_state(s);net_state(s);proxy_state(s);
+ state_android=state_word(s,state_android);vfs_state(s);ipc_state(s);net_state(s);proxy_state(s);
 }
 static unsigned decimal(char *p,uint64_t value){char r[24];unsigned n=0,k=0;do{r[n++]=value%10+'0';value/=10;}while(value);while(n)p[k++]=r[--n];p[k]=0;return k;}
 static int parse(const char *p,uint64_t *v){*v=0;if(!*p)return -EINVAL;for(;*p;p++){if(*p<'0'||*p>'9'||*v>(UINT64_MAX-9)/10)return -EINVAL;*v=*v*10+*p-'0';}return 0;}

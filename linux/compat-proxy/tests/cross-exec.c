@@ -38,7 +38,7 @@ int main(int argc,char **argv,char **env){
   CHECK(!semctl_(sem,16,3));int *memory=shmat_(shm);CHECK(memory!=(void *)-1);*memory=19;
   int fd=open("/v3-cross-file",O_RDONLY),alias=dup(fd),dead=open("/v3-cross-file",O_RDONLY|O_CLOEXEC);CHECK(fd>=0&&alias>=0&&dead>=0);
   struct message m={7,"from parent"};CHECK(!send_(msg,&m));
-  int tmp=open("/v3-cross-dir",O_TMPFILE|O_RDWR|O_CLOEXEC,0600);CHECK(tmp>=0);
+  int tmp=open("/v3-cross-dir/named",O_CREAT|O_TRUNC|O_RDWR|O_CLOEXEC,0600);CHECK(tmp>=0);
   int tmpalias=dup(tmp);CHECK(tmpalias>=0&&write(tmpalias,"inode",5)==5);
   char words[7][24];int values[]={sem,shm,msg,fd,alias,dead,tmpalias};for(unsigned i=0;i<7;i++)number(words[i],values[i]);
   pid_t child=fork();CHECK(child>=0);

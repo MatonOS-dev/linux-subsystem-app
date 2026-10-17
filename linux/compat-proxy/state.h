@@ -15,7 +15,6 @@ int state_exec(const char *,char *const *,char *const *);
 extern int state_android;
 int state_import(const char *,const char *);
 void vfs_state(struct state *);
-void links_state(struct state *);
 void ipc_state(struct state *);
 void net_state(struct state *);
 void proxy_state(struct state *);

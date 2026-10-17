@@ -17,7 +17,6 @@ char *vfs_temp_create(long *e){*e=0;return strdup(proxy_tmpdir);}
 size_t p_len(const char *p){return strlen(p);}
 void p_copy(void *d,const void *s,size_t n){memcpy(d,s,n);}
 /* raw.S's unused clone continuation. */
-void links_fork(int mode){(void)mode;}
 uintptr_t proxy_clone_resume;
 static long call(long nr,long x,long y,long z,long w){long a[6]={x,y,z,w,0,0};return ipc_call(nr,a);}
 int main(void){

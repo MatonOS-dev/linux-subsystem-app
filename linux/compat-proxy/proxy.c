@@ -190,18 +190,6 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_getxattrat || nr==PROXY_SC_listxattrat || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
-    /* Publish an unnamed inode via procfs: AT_EMPTY_PATH otherwise requires
-     * CAP_DAC_READ_SEARCH. Resolve the destination and mount policy normally. */
-    char empty_link[64];
-    if(nr==PROXY_SC_linkat && a[1] && !*(char *)(uintptr_t)a[1] && (a[4]&AT_EMPTY_PATH)){
-        char digits[24];size_t k=14;unsigned d=0;unsigned long n=(unsigned)fd;
-        p_copy(empty_link,"/proc/self/fd/",14);
-        do{digits[d++]=(char)('0'+n%10);n/=10;}while(n);
-        while(d)empty_link[k++]=digits[--d];
-        empty_link[k]=0;
-        a[1]=(long)empty_link;a[0]=AT_FDCWD;fd=AT_FDCWD;
-        a[4]=(a[4]&~AT_EMPTY_PATH)|AT_SYMLINK_FOLLOW;follow=VFS_FOLLOW_LINK_SOURCE;
-    }
     /* Other empty-path operations act on the original descriptor. */
     if(a[one] && !*(char *)(uintptr_t)a[one] && at){if(nr==PROXY_SC_readlinkat && links_fd_stored(fd))return -EINVAL;long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
@@ -262,7 +250,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==PROXY_SC_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==PROXY_SC_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
-    if(nr==PROXY_SC_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=links_open(p,a[2],a[3]);
+    if(nr==PROXY_SC_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=-EOPNOTSUPP;
     else if(nr==PROXY_SC_linkat)e=links_publish(p,q,a[4]);
     else if(nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2)e=links_name_call(nr,a,p,q);
     else if(nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
@@ -477,7 +465,7 @@ static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
             while(*p>='0'&&*p<='9'){value=value*10+(*p++-'0');}
             if(*p || value<first || value>last || value==(unsigned)fd || private_close_fd((int)value))continue;
             if(flags&4u)RAW(PROXY_SC_fcntl,value,F_SETFD,FD_CLOEXEC,0,0,0);
-            else {links_close_fd(value);dns_close(value);vfs_fd_close(value);net_close(value);sysctl_close(value);}
+            else {RAW(PROXY_SC_close,value,0,0,0,0,0);dns_close(value);vfs_fd_close(value);net_close(value);sysctl_close(value);}
         }
     }
 done:
@@ -527,7 +515,7 @@ static void exec_close_fds(void){
     char *buf=vfs_alloc(8192);if(!buf){RAW(PROXY_SC_close,fd,0,0,0,0,0);return;}
     for(;;){long n=RAW(PROXY_SC_getdents64,fd,buf,8192,0,0,0);if(n<=0)break;
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
-            if(valid && v!=fd){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){links_close_fd((int)v);dns_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
+            if(valid && v!=fd){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(PROXY_SC_close,v,0,0,0,0,0);dns_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
         }
     }
     vfs_free(buf);RAW(PROXY_SC_close,fd,0,0,0,0,0);
@@ -609,14 +597,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_getdents64:result=links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);break;
     case PROXY_SC_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_payload_fd_stat((int)a[0],(void *)(uintptr_t)a[1]);break;
     case PROXY_SC_exit:ipc_thread_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
-    case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=links_close_fd((int)a[0]);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
+    case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(PROXY_SC_close,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
         if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&vfs_private_fd((int)a[1]))){result=-EBADF;break;}
-        result=(nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)?links_dup_fd(nr,a):RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){links_close_fd((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
@@ -703,7 +691,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        result=links_fork(1);if(result){ipc_fork_result(result);break;}dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(result<0)links_fork(-1);if(!result)ipc_fork();break;
+        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result)ipc_fork();break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -712,16 +700,16 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(!(a[0]&CLONE_VM)){
             if(a[0]&CLONE_FILES){result=-ENOTSUP;break;}
             if(a[1])goto clone_retry;
-            unsigned long ns=a[0]&NS_FLAGS;result=ipc_fork_prepare();if(result)break;result=links_fork(1);if(result){ipc_fork_result(result);break;}
+            unsigned long ns=a[0]&NS_FLAGS;result=ipc_fork_prepare();if(result)break;
             dns_fork_prepare();
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
             dns_fork_result(result);ipc_fork_result(result);
-            if(result<0)links_fork(-1);
+
             if(!result){ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
-        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;result=links_fork(1);if(result){ipc_fork_result(result);break;}dns_fork_prepare();(*arch_signal_mask(uc))=~SIGSYS_BIT;}
+        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;dns_fork_prepare();(*arch_signal_mask(uc))=~SIGSYS_BIT;}
         namespace_clone_parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0);namespace_clone_flags=a[0]&NS_FLAGS;
         ARCH_CONTEXT(uc,ARCH_ARG1)=a[1];ARCH_CONTEXT(uc,ARCH_ARG2)=a[2];
         ARCH_CONTEXT(uc,ARCH_ARG3)=a[3];ARCH_CONTEXT(uc,ARCH_ARG4)=a[4];
