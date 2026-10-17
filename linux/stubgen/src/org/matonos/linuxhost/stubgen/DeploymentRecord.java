@@ -104,7 +104,11 @@ public final class DeploymentRecord {
         Files.createDirectories(version);
         Files.write(version.resolve("metadata"),metadata);Files.write(version.resolve("deploy"),deploy);
         Files.write(version.resolve(".ref"),new byte[0]);
-        link(version.resolve("files"),Path.of(mount));
+        // Flatpak opens this entry with RESOLVE_NO_SYMLINKS when it prepares
+        // the original runtime. Payload files are exposed by the loader's
+        // signed pack mount at mount, so the deployment scaffold only needs
+        // the real directory entry here.
+        Files.createDirectory(version.resolve("files"));
         link(branch.resolve("active"),Path.of(commit));
         String[] parts=ref.split("/");
         link(root.resolve(parts[0]).resolve(parts[1]).resolve("current"),Path.of(parts[2],parts[3]));
