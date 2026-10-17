@@ -91,6 +91,7 @@ static void *run(void *opaque) {
     inprocess_status=0;
     inprocess_enter(image.entry,image.stack);
     l->result=inprocess_status;
+    extern void inprocess_unload(void);inprocess_unload();
     return NULL;
 }
 int inprocess_run_fds(char *const argv[],char *const env[],const int fds[2]) {
