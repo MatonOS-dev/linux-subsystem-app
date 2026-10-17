@@ -174,3 +174,37 @@ main process, not an isolated host-service process.
 Full host proxy suite: run `linux/compat-proxy/tests/run.sh` in a disposable
 copy beside packs. Repo tests and `./build.sh` use the assigned external output.
 No AOSP, kernel, shared policy or bridge change is needed for this slice.
+
+## Verified slice, 2026-10-17
+
+The signed APK built with `./build.sh` passes static PIE and the pinned glibc
+loader/libc fixture through the subsystem APK's shared `StubActivity` in its
+main ART process on localhost:5556. Two independent diagnostic launches each
+run static + glibc twice. Linux prints PID 3741, argv `fixture`, environment
+`present`, and worker output; Java reports status 0 and main-looper callbacks
+in PID 3741 after both launches. `dumpsys activity activities` still shows that
+same process with resumed StubActivity windows. This verifies a resident JNI
+slice, not a Flatpak launch or production exit lifecycle.
+
+No generated stub is installed in this VM. Verification under a generated
+stub's separate UID is pending permission to install a diagnostic APK (the VM
+brief permits only subsystem APK updates). A signed, generated diagnostic stub
+is prepared outside the repository; no additional package has been installed.
+
+The WIP SIGSYS registration was unsafe on device: the inherited libc/ART
+signal trampoline faulted at FS+0x28 before the proxy handler. Direct kernel
+SIGSYS registration fixes this. Linker-startup FS=0 is also Bionic's resident
+FS=0, so it cannot identify resident calls. The filter exempts resident libc
+by instruction address instead. Legacy access/open/stat/readlink calls use
+modern at-family syscalls; any retry still trapped by the inherited filter
+returns ENOSYS rather than recursing to signal-stack exhaustion. These few
+translations are diagnostic coverage; the production dispatcher integration
+listed above remains mandatory.
+
+`inprocess/test.sh` now also layers an inherited TRAP filter over access and
+getpriority. Access must translate successfully; unsupported getpriority must
+return without recursive trapping. Static/glibc, status 37, repeat invocation,
+ART fault-action preservation, fixed-address rejection and cross-class rejection
+pass on host. The standalone proxy suite and repository suites pass; the signed
+APK passes alignment, signature and native dependency-closure checks. Device
+logs and complete build output live in the assigned external output directory.
