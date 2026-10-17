@@ -175,6 +175,7 @@ static long resident_fork(struct adopt_thread *self,unsigned long flags,
     backend_fs_write(app_fs);
     return pid<0?-error:pid;
 }
+#ifndef MATON_IN_PROCESS
 static void resident_prepare(void) {
     if(pthread_mutex_lock(&identity_mutex)) __builtin_trap();
     atomic_fetch_add(&api.fork_prepares,1);
@@ -189,6 +190,7 @@ static void resident_child(void) {
     atomic_fetch_add(&api.fork_children,1);
     if(pthread_mutex_unlock(&identity_mutex)) __builtin_trap();
 }
+#endif
 extern void adopt_run(struct adopt_thread *);
 extern char adopt_exit_return[];
 static void *start(void *arg) {
@@ -323,6 +325,9 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             exit_signal=g[REG_RDI]&CSIGNAL;
             flags=g[REG_RDI]&~CSIGNAL;stack=g[REG_RSI];tls=g[REG_R8];ptid=g[REG_RDX];ctid=g[REG_R10];
         }
+#ifdef MATON_IN_PROCESS
+        if(!(flags&CLONE_THREAD)) {result=-ENOSYS;goto finish;}
+#endif
         child_stack=stack?stack:(unsigned long)g[REG_RSP];
         if((flags&(CLONE_VM|CLONE_VFORK))==(CLONE_VM|CLONE_VFORK) && !(flags&CLONE_THREAD)) {
             unsigned long allowed=CLONE_VM|CLONE_VFORK|CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|CLONE_PARENT_SETTID;
@@ -484,7 +489,9 @@ int adopt_install(void) {
     signal_stack_size+=65536;
     if(signal_stack_install(main)) return -1;
     main->resident_fs=backend_fs_read(); atomic_store(&main->tid,R(gettid,0,0,0,0,0,0));
+#ifndef MATON_IN_PROCESS
     if(pthread_atfork(resident_prepare,resident_parent,resident_child)) return -1;
+#endif
     force_clone=getenv("MATON_ADOPT_FORCE_CLONE")!=NULL;
     char value[32]; snprintf(value,sizeof(value),"%lx",(unsigned long)&api);
 #ifndef MATON_IN_PROCESS

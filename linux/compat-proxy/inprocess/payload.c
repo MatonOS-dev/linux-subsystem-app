@@ -10,5 +10,5 @@ int main(int argc,char **argv) {
     printf("inprocess-payload pid=%d argv=%s env=%s\n",(int)getpid(),argv[1],getenv("INPROCESS_TEST"));
     pthread_t thread;void *answer;
     if(pthread_create(&thread,NULL,worker,(void *)42) || pthread_join(thread,&answer) || answer!=(void *)42)return 21;
-    return 0;
+    return argc>2 && !strcmp(argv[2],"status37")?37:0;
 }
