@@ -257,6 +257,10 @@ static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateI
     if(allocator&&(!allocator->pfnAllocation||!allocator->pfnReallocation||!allocator->pfnFree))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wayland_surface *surface=mv_wsi_surface((VkInstance)d->base.instance,info->surface);
     if(!surface)return VK_ERROR_SURFACE_LOST_KHR;
+    if(info->oldSwapchain) {
+        struct mv_wsi_live_context *old_live=mv_wsi_live(device,info->oldSwapchain);
+        if(!old_live||old_live->surface!=surface)return VK_ERROR_OUT_OF_DATE_KHR;
+    }
     if(!surface->sync)surface->sync=mv_wl_sync_surface_create(surface->dmabuf,surface->surface);
     if(!surface->sync)return VK_ERROR_FEATURE_NOT_PRESENT;
     struct mv_wsi_live_context *c=mv_alloc(sizeof(*c));if(!c)return VK_ERROR_OUT_OF_HOST_MEMORY;memset(c,0,sizeof(*c));
@@ -275,12 +279,15 @@ static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateI
     switch_back(&scope);
     if(!c->create_image||!c->get_requirements||!c->allocate_memory||!c->bind_image||!c->destroy_image||
        !c->free_memory||!c->get_ahb||!c->get_modifier||!c->get_layout){mv_free(c);return VK_ERROR_EXTENSION_NOT_PRESENT;}
-    mv_wsi_surface_resize(&c->surface->state,info->imageExtent);
+    VkExtent2D previous_extent=surface->state.extent;
+    uint64_t previous_generation=surface->state.generation;
+    mv_wsi_surface_resize(&surface->state,info->imageExtent);
     struct mv_wsi_ops ops={.context=c,.allocate=mv_wsi_live_allocate,.release=mv_wsi_live_release,
         .destroy=mv_wsi_live_destroy,.export_dmabuf=mv_wsi_live_export,.create_buffer=mv_wsi_live_create_buffer,
         .destroy_buffer=mv_wsi_live_destroy_buffer,.present=mv_wsi_live_present};
     struct mv_wsi_swapchain *chain=0;VkResult r=mv_wsi_create(&surface->state,info,&ops,&chain);
-    if(r){mv_free(c);return r;}*out=(VkSwapchainKHR)(uintptr_t)chain;return VK_SUCCESS;
+    if(r){surface->state.extent=previous_extent;surface->state.generation=previous_generation;mv_free(c);return r;}
+    *out=(VkSwapchainKHR)(uintptr_t)chain;return VK_SUCCESS;
 }
 static void mv_vkDestroySwapchainKHR(VkDevice device,VkSwapchainKHR swapchain,const VkAllocationCallbacks *allocator) {
     (void)allocator;struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return;

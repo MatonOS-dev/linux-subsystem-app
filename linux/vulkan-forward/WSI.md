@@ -63,11 +63,12 @@ the ICD.
 Only FIFO is advertised. The current acquire loop dispatches private-queue
 events and waits for released buffers, but it does not implement precise
 finite timeout accounting or frame-callback pacing. MAILBOX and IMMEDIATE
-are not advertised. Surface resize/configure is not yet propagated from the
-compositor to the ICD, so generation-based `VK_ERROR_OUT_OF_DATE_KHR` on an
-actual window resize is not verified or complete. Existing swapchain state
-does reject mismatched extents at creation and checks its generation on
-acquire/present.
+are not advertised. On swapchain recreation, a compatible `oldSwapchain`
+from the same Wayland surface is accepted. The new negotiated extent advances
+the surface generation, causing acquire/present on the retired chain to
+return `VK_ERROR_OUT_OF_DATE_KHR`; outstanding buffers can still drain before
+destruction. Host tests cover this transition. Actual window-resize/configure
+propagation through the compositor and app has not been verified in a VM.
 
 The explicit-sync protocol is a minimal private sync-file path. Driver support
 for exporting the semaphore fd has not been verified on the unavailable VM;

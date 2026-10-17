@@ -50,7 +50,6 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
        info->presentMode!=VK_PRESENT_MODE_FIFO_KHR)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     if(!s->extent.width || !s->extent.height || s->extent.width>4096 || s->extent.height>4096 ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
-    if(info->oldSwapchain)return VK_ERROR_FEATURE_NOT_PRESENT;
     if(!ops || !ops->allocate || !ops->release || !ops->destroy ||
        !ops->export_dmabuf || !ops->create_buffer || !ops->destroy_buffer || !ops->present)
         return VK_ERROR_INITIALIZATION_FAILED;

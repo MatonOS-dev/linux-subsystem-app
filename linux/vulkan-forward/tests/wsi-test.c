@@ -23,7 +23,7 @@ static struct message exchange(struct message m) {
     assert(recv(endpoint,&reply,sizeof(reply),0)==sizeof(reply));return reply;
 }
 static VkResult allocate(void *ctx,uint64_t surface,VkExtent2D e,VkFormat f,struct AHardwareBuffer **b,VkImage *image,VkDeviceMemory *memory,uint64_t *token) {
-    (void)ctx;assert(surface==42 && e.width==640 && e.height==480 && f==VK_FORMAT_R8G8B8A8_UNORM);
+    (void)ctx;assert(surface==42 && e.width && e.height && f==VK_FORMAT_R8G8B8A8_UNORM);
     *token=++allocations;*b=(void *)(uintptr_t)(0x1000+*token);
     if(allocations==fail_allocate)return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *image=(VkImage)(uintptr_t)(0x2000+*token);*memory=(VkDeviceMemory)(uintptr_t)(0x3000+*token);return VK_SUCCESS;
@@ -36,13 +36,13 @@ static VkResult export_dmabuf(void *ctx,struct AHardwareBuffer *b,VkImage image,
 }
 static VkResult create_buffer(void *ctx,VkExtent2D extent,uint32_t format,int fd,
         uint32_t stride,uint32_t offset,uint64_t modifier,void **buffer) {
-    (void)ctx;assert(extent.width==640 && extent.height==480 && format==0x34324241u);
+    (void)ctx;assert(extent.width && extent.height && format==0x34324241u);
     assert(fd==51 && stride==2560 && !offset && !modifier);buffer_attempts++;
     if(buffer_attempts==fail_buffer)return VK_ERROR_OUT_OF_HOST_MEMORY;
     *buffer=(void *)(uintptr_t)(0x5000+ ++buffers);return VK_SUCCESS;
 }
 static void destroy_buffer(void *ctx,void *buffer) {
-    (void)ctx;assert((uintptr_t)buffer>=0x5001 && (uintptr_t)buffer<=0x5004);buffer_destroys++;
+    (void)ctx;assert((uintptr_t)buffer>=0x5001 && (uintptr_t)buffer<=0x500a);buffer_destroys++;
 }
 static VkResult present(void *ctx,uint64_t surface,uint64_t buffer,uint64_t serial,void *wl_buffer,int fence_fd) {
     (void)ctx;assert(wl_buffer && fence_fd==123);struct message r=exchange((struct message){1,surface,buffer,serial});assert(r.op==1);return VK_SUCCESS;
@@ -118,12 +118,19 @@ int main(void) {
     mv_wsi_surface_resize(&s,(VkExtent2D){800,600});assert(mv_wsi_acquire(c,&a)==VK_ERROR_OUT_OF_DATE_KHR);
     for(unsigned i=0;i<2;i++){r=exchange((struct message){2,42,c->images[i].token,0});assert(!mv_wsi_release(c,r.buffer,r.serial));}
     s.alive=0;assert(mv_wsi_acquire(c,&a)==VK_ERROR_SURFACE_LOST_KHR);assert(!mv_wsi_destroy(c));assert(releases==6 && destroys==5 && buffer_destroys==4);
+    /* Recreating at a newly negotiated extent retires the old generation,
+     * while both swapchains remain independently destroyable. */
+    s.alive=1;mv_wsi_surface_resize(&s,(VkExtent2D){800,600});ci.imageExtent=(VkExtent2D){800,600};ci.oldSwapchain=VK_NULL_HANDLE;
+    struct mv_wsi_swapchain *old_chain=0,*new_chain=0;assert(!mv_wsi_create(&s,&ci,&ops,&old_chain));
+    ci.oldSwapchain=(VkSwapchainKHR)(uintptr_t)old_chain;mv_wsi_surface_resize(&s,(VkExtent2D){1024,768});ci.imageExtent=(VkExtent2D){1024,768};
+    assert(!mv_wsi_create(&s,&ci,&ops,&new_chain));assert(mv_wsi_acquire(old_chain,&a)==VK_ERROR_OUT_OF_DATE_KHR);
+    assert(!mv_wsi_acquire(new_chain,&a));mv_wsi_cancel_acquire(new_chain,a);assert(!mv_wsi_destroy(old_chain));assert(!mv_wsi_destroy(new_chain));
     struct mv_wsi_driver d={.properties=properties,.create=create_image,.allocate=allocate_memory,.bind=bind_memory,.destroy=destroy_image,.free=free_memory};
     last_ahb=(void *)(uintptr_t)123;VkImage image;VkDeviceMemory memory;
     assert(!mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory));destroy_image(0,image,0);free_memory(0,memory,0);
     fail_bind=1;assert(mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory)==VK_ERROR_DEVICE_LOST);assert(!image && !memory);
     assert(image_creates==2 && memory_allocs==2 && image_destroys==2 && memory_frees==2);
     struct message stop={.op=3};assert(send(endpoint,&stop,sizeof(stop),0)==sizeof(stop));close(endpoint);int result;assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
-    assert(exports==5 && buffers==4 && buffer_attempts==5);
+    assert(exports==9 && buffers==8 && buffer_attempts==9);
     puts("PASS WSI: AHB export metadata, dmabuf wl_buffer lifecycle, surface queries, enumeration, import rollback, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
 }
