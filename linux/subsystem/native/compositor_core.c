@@ -22,6 +22,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include "dmabuf_import.h"
+#include "ahb_buffer.h"
 #include "maton_renderer.h"
 #include "presenter.h"
 #include <wlr/types/wlr_compositor.h>
@@ -132,8 +133,16 @@ struct Command {
   float x, y, vs, hs;
   struct MatonSurfaceOutput* output;
   struct wlr_buffer* buffer;
+  int fence_fd;
   struct SocketSession* session;
   struct Command* next;
+};
+struct MatonSyncSurface {
+  struct wl_resource* resource;
+  struct wlr_surface* surface;
+  struct wl_listener commit, destroy;
+  struct wl_list link;
+  int pending_fd, acquire_fd;
 };
 struct Window {
   int id, width, height, activity, session;
@@ -170,6 +179,8 @@ struct Server {
   struct SocketSession* sessions;
   bool xw_done; unsigned xw_sent, xw_completed; bool xw_ok; char xw_display[128];
   struct wl_display* display;
+  struct wl_list sync_surfaces;
+  struct wl_global* sync_file_global;
   unsigned wsi_trace_count;
   struct wl_event_loop* loop;
   struct wlr_backend* backend;
@@ -198,6 +209,80 @@ struct Server {
 } server = { .mutex=PTHREAD_MUTEX_INITIALIZER, .ready_cond=PTHREAD_COND_INITIALIZER,
              .xw_cond=PTHREAD_COND_INITIALIZER,
              .event_fd=-1, .runtime_dir_fd=-1, .xwayland_dir_fd=-1 };
+
+/* Minimal sync_file acquire protocol used by the freestanding Vulkan ICD. */
+extern const struct wl_interface wl_surface_interface;
+static const struct wl_interface maton_sync_surface_interface;
+static const struct wl_interface *maton_sync_manager_types[]={&maton_sync_surface_interface,&wl_surface_interface};
+static const struct wl_message maton_sync_manager_methods[]={
+  {"destroy","1",NULL},{"get_surface_sync","no",maton_sync_manager_types},
+};
+static const struct wl_message maton_sync_surface_methods[]={
+  {"destroy","1",NULL},{"set_acquire_fence","h",NULL},
+};
+static const struct wl_interface maton_sync_surface_interface={
+  "maton_sync_surface_v1",1,2,maton_sync_surface_methods,0,NULL,
+};
+static const struct wl_interface maton_sync_file_interface={
+  "maton_sync_file_v1",1,2,maton_sync_manager_methods,0,NULL,
+};
+static void destroy_sync_surface(struct wl_resource* resource);
+static void sync_surface_commit(struct wl_listener* listener,void* data);
+static void sync_surface_destroy(struct wl_listener* listener,void* data);
+static void sync_surface_request_destroy(struct wl_client* client,struct wl_resource* resource) {(void)client;wl_resource_destroy(resource);}
+static void sync_set_acquire_fence(struct wl_client* client,struct wl_resource* resource,int fd) {
+  (void)client;struct MatonSyncSurface* sync=wl_resource_get_user_data(resource);
+  if(sync->pending_fd>=0)close(sync->pending_fd);sync->pending_fd=fd;
+}
+static const struct { void (*destroy)(struct wl_client*,struct wl_resource*); void (*set_acquire_fence)(struct wl_client*,struct wl_resource*,int); } maton_sync_surface_impl={
+  .destroy=sync_surface_request_destroy,
+  .set_acquire_fence=sync_set_acquire_fence,
+};
+static void sync_manager_destroy(struct wl_client* client,struct wl_resource* resource) {(void)client;wl_resource_destroy(resource);}
+static void sync_get_surface(struct wl_client* client,struct wl_resource* resource,uint32_t id,struct wl_resource* surface_resource) {
+  (void)resource;struct wlr_surface* surface=wlr_surface_from_resource(surface_resource);
+  if(!surface){wl_client_post_implementation_error(client,"sync_file requested for invalid wl_surface");return;}
+  struct MatonSyncSurface* sync=calloc(1,sizeof(*sync));if(!sync){wl_client_post_no_memory(client);return;}
+  sync->pending_fd=-1;sync->acquire_fd=-1;sync->surface=surface;
+  sync->resource=wl_resource_create(client,&maton_sync_surface_interface,1,id);
+  if(!sync->resource){free(sync);wl_client_post_no_memory(client);return;}
+  wl_list_init(&sync->link);wl_list_insert(&server.sync_surfaces,&sync->link);
+  sync->commit.notify=sync_surface_commit;wl_signal_add(&surface->events.commit,&sync->commit);
+  sync->destroy.notify=sync_surface_destroy;wl_signal_add(&surface->events.destroy,&sync->destroy);
+  wl_resource_set_implementation(sync->resource,&maton_sync_surface_impl,sync,destroy_sync_surface);
+}
+static const struct { void (*destroy)(struct wl_client*,struct wl_resource*); void (*get_surface_sync)(struct wl_client*,struct wl_resource*,uint32_t,struct wl_resource*); } maton_sync_manager_impl={
+  .destroy=sync_manager_destroy,.get_surface_sync=sync_get_surface,
+};
+static void bind_sync_file(struct wl_client* client,void* data,uint32_t version,uint32_t id) {
+  (void)data;struct wl_resource* resource=wl_resource_create(client,&maton_sync_file_interface,version>1?1:version,id);
+  if(!resource){wl_client_post_no_memory(client);return;}
+  wl_resource_set_implementation(resource,&maton_sync_manager_impl,NULL,NULL);
+}
+static void sync_surface_commit(struct wl_listener* listener,void* data) {
+  (void)data;struct MatonSyncSurface* sync=(void*)((char*)listener - offsetof(struct MatonSyncSurface,commit));
+  if(sync->pending_fd<0)return;
+  if(sync->surface->buffer&&(sync->surface->current.committed&WLR_SURFACE_STATE_BUFFER)) {
+    if(sync->acquire_fd>=0)close(sync->acquire_fd);sync->acquire_fd=sync->pending_fd;
+  } else close(sync->pending_fd);
+  sync->pending_fd=-1;
+}
+static void sync_surface_destroy(struct wl_listener* listener,void* data) {
+  (void)data;struct MatonSyncSurface* sync=(void*)((char*)listener - offsetof(struct MatonSyncSurface,destroy));
+  wl_resource_destroy(sync->resource);
+}
+static void destroy_sync_surface(struct wl_resource* resource) {
+  struct MatonSyncSurface* sync=wl_resource_get_user_data(resource);if(!sync)return;
+  if(sync->commit.link.prev){wl_list_remove(&sync->commit.link);wl_list_init(&sync->commit.link);}
+  if(sync->destroy.link.prev){wl_list_remove(&sync->destroy.link);wl_list_init(&sync->destroy.link);}
+  wl_list_remove(&sync->link);
+  if(sync->pending_fd>=0)close(sync->pending_fd);if(sync->acquire_fd>=0)close(sync->acquire_fd);free(sync);
+}
+int maton_sync_take_acquire(struct wlr_surface* surface) {
+  struct MatonSyncSurface* sync;
+  wl_list_for_each(sync,&server.sync_surfaces,link)if(sync->surface==surface){int fd=sync->acquire_fd;sync->acquire_fd=-1;return fd;}
+  return -1;
+}
 
 /* WindowActivity's built-in demo reserves ID 1. Real application windows
  * must never share it, including when the demo is opened after an app. */
@@ -302,7 +387,10 @@ static void enqueue(struct Command* c) {
   pthread_mutex_lock(&server.mutex);
   if (atomic_load(&server.stopping) && c->kind != CMD_STOP) {
     pthread_mutex_unlock(&server.mutex);
-    if (c->buffer) wlr_buffer_unlock(c->buffer);
+    /* A release with an unsignaled fence must stay locked even while the
+     * compositor is stopping. Leaking the lock is safer than early reuse. */
+    if (c->buffer && c->kind != CMD_RELEASE) wlr_buffer_unlock(c->buffer);
+    if (c->kind == CMD_RELEASE && c->fence_fd >= 0) close(c->fence_fd);
     if (c->output) { maton_surface_output_finish(c->output); free(c->output); }
     if (c->session) { close(c->session->fd); unlink(c->session->path); free(c->session); }
     free(c); return;
@@ -319,11 +407,37 @@ static void command(enum CommandKind kind,int id,int a,int b,int c,int64_t time,
                     struct wlr_buffer* buffer) {
   struct Command* cmd=calloc(1,sizeof(*cmd));
   if (!cmd) { if(buffer)wlr_buffer_unlock(buffer); if(output){maton_surface_output_finish(output);free(output);} return; }
+  cmd->fence_fd=-1;
   cmd->kind=kind;cmd->id=id;cmd->a=a;cmd->b=b;cmd->c=c;cmd->time=time;
   cmd->x=x;cmd->y=y;cmd->vs=vs;cmd->hs=hs;cmd->output=output;cmd->buffer=buffer;enqueue(cmd);
 }
-static void release_buffer(struct wlr_buffer* buffer) {
-  command(CMD_RELEASE,0,0,0,0,0,0,0,0,0,NULL,buffer);
+struct ReleaseFence {
+  struct wlr_buffer* buffer;
+  struct wl_event_source* source;
+};
+static int on_release_fence(int fd,uint32_t mask,void* data) {
+  struct ReleaseFence* release=data;
+  if(!(mask&(WL_EVENT_READABLE|WL_EVENT_HANGUP|WL_EVENT_ERROR)))return 0;
+  if(release->source)wl_event_source_remove(release->source);
+  close(fd);
+  wlr_buffer_unlock(release->buffer);
+  free(release);
+  return 0;
+}
+static void release_buffer(struct wlr_buffer* buffer,int fence_fd) {
+  struct Command* cmd=calloc(1,sizeof(*cmd));
+  if(!cmd){if(fence_fd>=0)close(fence_fd);return;}
+  cmd->kind=CMD_RELEASE;cmd->buffer=buffer;cmd->fence_fd=fence_fd;
+  enqueue(cmd);
+}
+static void track_release(struct wlr_buffer* buffer,int fd) {
+  if(fd<0){wlr_buffer_unlock(buffer);return;}
+  struct ReleaseFence* release=calloc(1,sizeof(*release));
+  if(!release){close(fd);return;}
+  release->buffer=buffer;
+  release->source=wl_event_loop_add_fd(server.loop,fd,
+      WL_EVENT_READABLE|WL_EVENT_HANGUP|WL_EVENT_ERROR,on_release_fence,release);
+  if(!release->source){close(fd);free(release);}
 }
 static void on_commit(struct wl_listener* l,void* data) {
   struct Window* w=window_from_listener(l,offsetof(struct Window,commit));
@@ -962,7 +1076,7 @@ static void process_commands(void) {
       if(server.seat->pointer_state.focused_surface!=ss->surface){server.pointer_focus=ss->surface;wlr_seat_pointer_notify_enter(server.seat,ss->surface,sx,sy);struct wlr_surface* root=window_root_surface(w);if(root&&server.seat->keyboard_state.focused_surface!=root){wlr_seat_keyboard_notify_enter(server.seat,root,NULL,0,&server.keyboard.modifiers);xwindow_activate(w);}}wlr_seat_pointer_notify_motion(server.seat,tm,sx,sy);activate_constraint();}else{clear_window_pointer(w);server.pointer_focus=NULL;wlr_seat_pointer_notify_clear_focus(server.seat);}struct PointerButtonEvent button_event={.time=tm,.window=w->id};maton_pointer_buttons_update(&server.pointer_buttons,ss ? (uint32_t)c->b : 0,notify_pointer_button,&button_event);/* Android reports wheel notches as +-1.0 (fractions on touchpads); the
        * discrete argument is value120, 120 per notch. */
       if(ss&&c->vs)wlr_seat_pointer_notify_axis(server.seat,tm,WL_POINTER_AXIS_VERTICAL_SCROLL,-c->vs*15.0,(int32_t)lroundf(-c->vs*120.0f),WL_POINTER_AXIS_SOURCE_WHEEL,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);if(ss&&c->hs)wlr_seat_pointer_notify_axis(server.seat,tm,WL_POINTER_AXIS_HORIZONTAL_SCROLL,-c->hs*15.0,(int32_t)lroundf(-c->hs*120.0f),WL_POINTER_AXIS_SOURCE_WHEEL,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);wlr_seat_pointer_notify_frame(server.seat);}break;
-    case CMD_RELEASE:if(c->buffer)wlr_buffer_unlock(c->buffer);break;
+    case CMD_RELEASE:if(c->buffer)track_release(c->buffer,c->fence_fd);else if(c->fence_fd>=0)close(c->fence_fd);break;
     case CMD_FULLSCREEN:if(w){
       if(w->xsurface)wlr_xwayland_surface_set_fullscreen(w->xsurface,c->a!=0);
       else if(w->toplevel&&w->toplevel->base->initialized)wlr_xdg_toplevel_set_fullscreen(w->toplevel,c->a!=0);
@@ -1080,6 +1194,11 @@ static void* server_main(void* unused) {
   wlr_log_init(WLR_ERROR,maton_wlr_log);
   server.display=wl_display_create();
   if(!server.display)goto done;server.loop=wl_display_get_event_loop(server.display);
+  wl_list_init(&server.sync_surfaces);
+  server.sync_file_global=wl_global_create(server.display,&maton_sync_file_interface,1,NULL,bind_sync_file);
+  if(!server.sync_file_global)__android_log_print(ANDROID_LOG_WARN,"MatonCompositor","Vulkan sync_file protocol unavailable");
+  if(!maton_ahb_buffer_global_create(server.display))
+    __android_log_print(ANDROID_LOG_WARN,"MatonCompositor","AHardwareBuffer transport protocol unavailable");
   server.wsi_trace_count=0;
   wl_display_add_protocol_logger(server.display,trace_wsi,&server.wsi_trace_count);
   server.new_client.notify=on_new_client;wl_display_add_client_created_listener(server.display,&server.new_client);

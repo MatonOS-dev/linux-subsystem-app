@@ -1,17 +1,14 @@
 #include "wsi.h"
 #include "runtime.h"
-#ifndef MV_WSI_PROTOTYPE
-#define MV_WSI_PROTOTYPE 0
-#endif
 void mv_wsi_surface_init(struct mv_wsi_surface *s,uint64_t token,VkExtent2D e) {
     *s=(struct mv_wsi_surface){token,1,e,token!=0};
 }
 void mv_wsi_surface_resize(struct mv_wsi_surface *s,VkExtent2D e) { s->extent=e;s->generation++; }
 VkBool32 mv_wsi_support(const struct mv_wsi_surface *s,VkQueueFlags flags,int ahb) {
-    return MV_WSI_PROTOTYPE && s->alive && ahb && (flags&VK_QUEUE_GRAPHICS_BIT)!=0;
+    return s->alive && ahb && (flags&VK_QUEUE_GRAPHICS_BIT)!=0;
 }
 VkResult mv_wsi_capabilities(const struct mv_wsi_surface *s,VkSurfaceCapabilitiesKHR *c) {
-    if(!MV_WSI_PROTOTYPE || !s->alive)return VK_ERROR_SURFACE_LOST_KHR;
+    if(!s->alive)return VK_ERROR_SURFACE_LOST_KHR;
     *c=(VkSurfaceCapabilitiesKHR){.minImageCount=2,.maxImageCount=4,
         .currentExtent=s->extent,.minImageExtent={1,1},.maxImageExtent={4096,4096},
         .maxImageArrayLayers=1,.supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
@@ -21,12 +18,10 @@ VkResult mv_wsi_capabilities(const struct mv_wsi_surface *s,VkSurfaceCapabilitie
     return VK_SUCCESS;
 }
 VkResult mv_wsi_formats(uint32_t *n,VkSurfaceFormatKHR *f) {
-    if(!MV_WSI_PROTOTYPE){*n=0;return VK_ERROR_EXTENSION_NOT_PRESENT;}
     if(!f){*n=1;return VK_SUCCESS;}if(!*n)return VK_INCOMPLETE;
     *n=1;*f=(VkSurfaceFormatKHR){VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};return VK_SUCCESS;
 }
 VkResult mv_wsi_modes(uint32_t *n,VkPresentModeKHR *m) {
-    if(!MV_WSI_PROTOTYPE){*n=0;return VK_ERROR_EXTENSION_NOT_PRESENT;}
     if(!m){*n=1;return VK_SUCCESS;}if(!*n)return VK_INCOMPLETE;
     *n=1;*m=VK_PRESENT_MODE_FIFO_KHR;return VK_SUCCESS;
 }
@@ -38,6 +33,7 @@ static VkResult status(struct mv_wsi_swapchain *c) {
 static void cleanup(struct mv_wsi_swapchain *c) {
     for(uint32_t i=0;i<c->count;i++){
         struct mv_wsi_image *b=&c->images[i];
+        if(b->wl_buffer && c->ops.destroy_buffer)c->ops.destroy_buffer(c->ops.context,b->wl_buffer);
         if(b->image || b->memory)c->ops.destroy(c->ops.context,b->image,b->memory);
         if(b->ahb)c->ops.release(c->ops.context,b->ahb,b->token);
     }
@@ -54,16 +50,25 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
        info->presentMode!=VK_PRESENT_MODE_FIFO_KHR)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     if(!s->extent.width || !s->extent.height || s->extent.width>4096 || s->extent.height>4096 ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
-    if(info->oldSwapchain)return VK_ERROR_FEATURE_NOT_PRESENT;
-    if(!ops || !ops->allocate || !ops->release || !ops->import || !ops->destroy || !ops->present)return VK_ERROR_INITIALIZATION_FAILED;
+    if(!ops || !ops->allocate || !ops->release || !ops->destroy ||
+       !ops->export_dmabuf || !ops->create_buffer || !ops->destroy_buffer || !ops->present)
+        return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wsi_swapchain *c=mv_alloc(sizeof(*c));if(!c)return VK_ERROR_OUT_OF_HOST_MEMORY;
     *c=(struct mv_wsi_swapchain){.surface=s,.ops=*ops,.generation=s->generation,.count=info->minImageCount};
     c->images=mv_alloc(c->count*sizeof(*c->images));if(!c->images){mv_free(c);return VK_ERROR_OUT_OF_HOST_MEMORY;}
     memset(c->images,0,c->count*sizeof(*c->images));
     for(uint32_t i=0;i<c->count;i++){
         struct mv_wsi_image *b=&c->images[i];
-        r=ops->allocate(ops->context,s->token,s->extent,info->imageFormat,&b->ahb,&b->token);
-        if(!r)r=ops->import(ops->context,b->ahb,s->extent,info->imageFormat,&b->image,&b->memory);
+        r=ops->allocate(ops->context,s->token,s->extent,info->imageFormat,
+                &b->ahb,&b->image,&b->memory,&b->token);
+        if(!r)r=ops->export_dmabuf(ops->context,b->ahb,b->image,&b->dmabuf_fd,
+                &b->drm_format,&b->stride,&b->offset,&b->modifier);
+        if(!r && (b->drm_format!=0x34324241u || !b->stride ||
+                  (b->modifier!=0 && b->modifier!=0x00ffffffffffffffull)))
+            r=VK_ERROR_FORMAT_NOT_SUPPORTED;
+        if(!r)r=ops->create_buffer(ops->context,b->ahb,s->extent,b->drm_format,b->dmabuf_fd,
+                b->stride,b->offset,b->modifier,&b->wl_buffer);
+        if(!r && !b->wl_buffer)r=VK_ERROR_INITIALIZATION_FAILED;
         if(r){cleanup(c);return r;}
     }
     *out=c;return VK_SUCCESS;
@@ -79,13 +84,16 @@ VkResult mv_wsi_acquire(struct mv_wsi_swapchain *c,uint32_t *index) {
     for(uint32_t i=0;i<c->count;i++)if(!c->images[i].state){c->images[i].state=1;*index=i;return VK_SUCCESS;}
     return VK_NOT_READY;
 }
-VkResult mv_wsi_present(struct mv_wsi_swapchain *c,uint32_t index) {
+void mv_wsi_cancel_acquire(struct mv_wsi_swapchain *c,uint32_t index) {
+    if(c&&index<c->count&&c->images[index].state==1)c->images[index].state=0;
+}
+VkResult mv_wsi_present(struct mv_wsi_swapchain *c,uint32_t index,int acquire_fence_fd) {
     VkResult r=status(c);if(r)return r;
     if(index>=c->count || c->images[index].state!=1)return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wsi_image *b=&c->images[index];
     if(c->serial==UINT64_MAX)return VK_ERROR_OUT_OF_DATE_KHR;
     uint64_t serial=++c->serial;
-    r=c->ops.present(c->ops.context,c->surface->token,b->token,serial);
+    r=c->ops.present(c->ops.context,c->surface->token,b->token,serial,b->wl_buffer,acquire_fence_fd);
     if(!r){b->serial=serial;b->state=2;}return r;
 }
 VkResult mv_wsi_release(struct mv_wsi_swapchain *c,uint64_t token,uint64_t serial) {
@@ -101,7 +109,6 @@ VkResult mv_wsi_destroy(struct mv_wsi_swapchain *c) {
 }
 VkResult mv_wsi_import_ahb(struct mv_wsi_driver *d,struct AHardwareBuffer *ahb,VkExtent2D e,VkFormat format,VkImage *image,VkDeviceMemory *memory) {
     *image=VK_NULL_HANDLE;*memory=VK_NULL_HANDLE;
-    if(!MV_WSI_PROTOTYPE)return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(!d || !ahb || !d->properties || !d->create || !d->allocate || !d->bind || !d->destroy || !d->free)return VK_ERROR_EXTENSION_NOT_PRESENT;
     VkAndroidHardwareBufferFormatPropertiesANDROID f={.sType=VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID};
     VkAndroidHardwareBufferPropertiesANDROID p={.sType=VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,.pNext=&f};

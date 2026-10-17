@@ -40,16 +40,37 @@ static VkResult mv_chain_copy(const void *source,VkBaseOutStructure **out) {
 }
 static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreateInfo *info,const VkAllocationCallbacks *a,VkDevice *out) {
     *out=0;struct mv_handle *h=(void *)physical;
-    for(uint32_t j=0;j<info->enabledExtensionCount;j++)
-        if(!mv_extension_allowed(info->ppEnabledExtensionNames[j]))return VK_ERROR_EXTENSION_NOT_PRESENT;
+    uint32_t forwarded_extensions=0;int swapchain_enabled=0;
+    for(uint32_t j=0;j<info->enabledExtensionCount;j++) {
+        const char *name=info->ppEnabledExtensionNames[j];
+        if(!strcmp(name,VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+            if(!h->instance->wsi_wayland_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
+            swapchain_enabled=1;
+        } else {
+            if(!mv_extension_allowed(name))return VK_ERROR_EXTENSION_NOT_PRESENT;
+            forwarded_extensions++;
+        }
+    }
     if(a && (!a->pfnAllocation || !a->pfnFree || !a->pfnReallocation))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_device seed={0};if(a){seed.custom=1;seed.allocator=*a;}
     struct mv_device *d=mv_dnew(&seed,sizeof(*d));if(!d)return VK_ERROR_OUT_OF_HOST_MEMORY;
-    d->custom=seed.custom;d->allocator=seed.allocator;d->base.instance=h->instance;d->base.device=d;
+    d->custom=seed.custom;d->allocator=seed.allocator;d->base.instance=h->instance;d->base.device=d;d->wsi_swapchain_enabled=swapchain_enabled;
+    for(uint32_t j=0;j<info->enabledExtensionCount;j++)if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME))d->wsi_sync_fd_enabled=1;
     VkDeviceCreateInfo copy=*info;
+    const char **extension_names=0;
+    if(swapchain_enabled) {
+        if(forwarded_extensions) {
+            extension_names=mv_alloc((size_t)forwarded_extensions*sizeof(*extension_names));
+            if(!extension_names){mv_dfree(d,d);return VK_ERROR_OUT_OF_HOST_MEMORY;}
+            uint32_t k=0;
+            for(uint32_t j=0;j<info->enabledExtensionCount;j++)
+                if(strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_EXTENSION_NAME))extension_names[k++]=info->ppEnabledExtensionNames[j];
+            copy.enabledExtensionCount=forwarded_extensions;copy.ppEnabledExtensionNames=extension_names;
+        } else { copy.enabledExtensionCount=0;copy.ppEnabledExtensionNames=0; }
+    }
     VkBaseOutStructure *chain=0;
     VkResult cr=mv_chain_copy(info->pNext,&chain);
-    if(cr!=VK_SUCCESS){mv_dfree(d,d);return cr;}
+    if(cr!=VK_SUCCESS){mv_free(extension_names);mv_dfree(d,d);return cr;}
     copy.pNext=chain;
     /* Validate each copied node independently; group handles now belong to
      * Android, while all other nodes must contain no callbacks/foreign handles. */
@@ -57,14 +78,14 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
         VkBaseOutStructure *next=p->pNext;p->pNext=0;
         int valid=p->sType==VK_STRUCTURE_TYPE_DEVICE_GROUP_DEVICE_CREATE_INFO || mv_chain_ok(p);
         p->pNext=next;
-        if(!valid){mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_FEATURE_NOT_PRESENT;}
+        if(!valid){mv_chain_free(chain);mv_free(extension_names);mv_dfree(d,d);return VK_ERROR_FEATURE_NOT_PRESENT;}
     }
-    for(uint32_t j=0;j<info->queueCreateInfoCount;j++)if(!mv_valid_VkDeviceQueueCreateInfo(&info->pQueueCreateInfos[j])){mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_FEATURE_NOT_PRESENT;}
-    struct mv_scope s;if(!mv_enter(&s)){mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_INITIALIZATION_FAILED;}
+    for(uint32_t j=0;j<info->queueCreateInfoCount;j++)if(!mv_valid_VkDeviceQueueCreateInfo(&info->pQueueCreateInfos[j])){mv_chain_free(chain);mv_free(extension_names);mv_dfree(d,d);return VK_ERROR_FEATURE_NOT_PRESENT;}
+    struct mv_scope s;if(!mv_enter(&s)){mv_chain_free(chain);mv_free(extension_names);mv_dfree(d,d);return VK_ERROR_INITIALIZATION_FAILED;}
     PFN_vkCreateDevice f=h->instance->create_device;
     VkDevice raw=0;VkResult r=f((VkPhysicalDevice)h->android,&copy,0,&raw);
     if(r==VK_SUCCESS){d->base.android=raw;d->gdpa=h->instance->gdpa;mv_load_device(d);}
-    switch_back(&s);mv_chain_free(chain);
+    switch_back(&s);mv_chain_free(chain);mv_free(extension_names);
     if(r!=VK_SUCCESS){mv_dfree(d,d);return r;}
     set_loader_magic_value(d);*out=(VkDevice)d;return VK_SUCCESS;
 }
@@ -145,6 +166,8 @@ static void mv_vkCmdExecuteCommands(VkCommandBuffer buffer,uint32_t n,const VkCo
 }
 static PFN_vkVoidFunction mv_lookup(const char *name);
 static PFN_vkVoidFunction mv_vkGetDeviceProcAddr(VkDevice device,const char *name) {
-    if(!device || !name)return 0;struct mv_device *d=(void *)device;PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
+    if(!device || !name)return 0;struct mv_device *d=(void *)device;
+    PFN_vkVoidFunction local=mv_wsi_device_lookup(device,name);if(local)return local;
+    local=mv_lookup(name);if(!local)return 0;
     struct mv_scope s;if(!mv_enter(&s))return 0;PFN_vkVoidFunction raw=d->gdpa(d->base.android,name);switch_back(&s);return raw?local:0;
 }

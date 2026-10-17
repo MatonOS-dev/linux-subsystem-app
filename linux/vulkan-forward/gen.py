@@ -22,7 +22,8 @@ for n,target in sorted(aliases.items()):
     while commands[target].get('alias'):target=commands[target].get('alias')
     selected.add(target)
     aliases[n]=target
-manual = {'vkCreateInstance','vkDestroyInstance','vkEnumeratePhysicalDevices','vkEnumeratePhysicalDeviceGroups','vkEnumerateInstanceVersion','vkEnumerateInstanceExtensionProperties','vkEnumerateInstanceLayerProperties','vkEnumerateDeviceExtensionProperties','vkEnumerateDeviceLayerProperties','vkGetInstanceProcAddr','vkGetDeviceProcAddr','vkCreateDevice','vkDestroyDevice','vkGetDeviceQueue','vkGetDeviceQueue2','vkAllocateCommandBuffers','vkFreeCommandBuffers','vkQueueSubmit','vkQueueSubmit2','vkCmdExecuteCommands','vkDestroyCommandPool'}
+wsi_device_commands = {'vkCreateSwapchainKHR','vkDestroySwapchainKHR','vkGetSwapchainImagesKHR','vkAcquireNextImageKHR','vkAcquireNextImage2KHR','vkQueuePresentKHR'}
+manual = {'vkCreateInstance','vkDestroyInstance','vkEnumeratePhysicalDevices','vkEnumeratePhysicalDeviceGroups','vkEnumerateInstanceVersion','vkEnumerateInstanceExtensionProperties','vkEnumerateInstanceLayerProperties','vkEnumerateDeviceExtensionProperties','vkEnumerateDeviceLayerProperties','vkGetInstanceProcAddr','vkGetDeviceProcAddr','vkCreateDevice','vkDestroyDevice','vkGetDeviceQueue','vkGetDeviceQueue2','vkAllocateCommandBuffers','vkFreeCommandBuffers','vkQueueSubmit','vkQueueSubmit2','vkCmdExecuteCommands','vkDestroyCommandPool'} | wsi_device_commands
 queries=[]
 for c in r.findall('./commands/command'):
     name=c.findtext('proto/name')
@@ -33,7 +34,7 @@ for c in r.findall('./commands/command'):
     assert all(p.findtext('type') not in ('VkInstance','VkDevice','VkQueue','VkCommandBuffer','VkPhysicalDevice') for p in params[1:]), name
     queries.append((name,c,params))
 out.mkdir(parents=True,exist_ok=True)
-fields=''.join(f'    PFN_{n} {n};\n' for n,_,_ in queries)+''.join(f'    PFN_{n} {n};\n' for n in sorted(manual) if n not in ('vkGetDeviceProcAddr',) and n in commands and commands[n].findtext('param/type') in ('VkDevice','VkQueue','VkCommandBuffer'))
+fields=''.join(f'    PFN_{n} {n};\n' for n,_,_ in queries)+''.join(f'    PFN_{n} {n};\n' for n in sorted(manual) if n not in ('vkGetDeviceProcAddr',) and n not in wsi_device_commands and n in commands and commands[n].findtext('param/type') in ('VkDevice','VkQueue','VkCommandBuffer'))
 (out/'dispatch.h').write_text('/* Generated from pinned vk.xml. */\nstruct mv_dispatch {\n'+fields+'};\n')
 lines=['/* Generated; no CPU-specific code. */']
 for n,c,ps in queries:
@@ -48,11 +49,11 @@ lines+=['static void mv_load_dispatch(struct mv_instance *i) {']
 for n,_,ps in queries:
     if ps[0].findtext('type')=='VkPhysicalDevice': lines += [f'    i->dispatch.{n}=(PFN_{n})mv_gipa(i->base.android,"{n}");']
 lines+=['}', 'static void mv_load_device(struct mv_device *d) {']
-for n,ps in [(n,ps) for n,_,ps in queries]+[(n,commands[n].findall('param')) for n in sorted(manual) if n in commands]:
+for n,ps in [(n,ps) for n,_,ps in queries]+[(n,commands[n].findall('param')) for n in sorted(manual) if n in commands and n not in wsi_device_commands]:
     if n!='vkGetDeviceProcAddr' and ps and ps[0].findtext('type') in ('VkDevice','VkQueue','VkCommandBuffer'): lines += [f'    d->dispatch.{n}=(PFN_{n})d->gdpa(d->base.android,"{n}");']
 lines+=['}']
 (out/'thunks.inc').write_text('\n'.join(lines)+'\n')
-names=sorted(manual|{n for n,_,_ in queries})
+names=sorted((manual-wsi_device_commands)|{n for n,_,_ in queries})
 assert core <= set(names), sorted(core-set(names))
 aliases={n:t for n,t in aliases.items() if t in names}
 for n,t in aliases.items():assert t in names

@@ -1,0 +1,16 @@
+<protocol name="maton_ahb_buffer_v1">
+  <interface name="maton_ahb_buffer_manager_v1" version="1">
+    <description summary="create wl_buffers backed directly by Android hardware buffers">
+      This private protocol transports an AHardwareBuffer over an AF_UNIX
+      socket and creates a zero-copy wl_buffer for the received allocation.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="create_buffer">
+      <arg name="id" type="new_id" interface="wl_buffer"/>
+      <arg name="transport" type="fd"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="format" type="uint"/>
+    </request>
+  </interface>
+</protocol>
