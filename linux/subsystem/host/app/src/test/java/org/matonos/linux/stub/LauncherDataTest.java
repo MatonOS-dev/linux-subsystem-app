@@ -102,6 +102,15 @@ public final class LauncherDataTest {
         assertNull("A symlinked icon is never read", data.icon);
     }
 
+    @Test public void doesNotScanForAnUnrelatedIcon() throws Exception {
+        Path deployment = Files.createTempDirectory("launcher-unrelated-icon");
+        desktop(deployment, APP_ID, "No Icon", "missing-icon", null);
+        png(deployment.resolve("export/share/icons/hicolor/64x64/apps/other-app.png"));
+
+        LauncherData data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
+        assertNull("Only the desktop icon name and app id are candidates", data.icon);
+    }
+
     private static Path appearanceIcon(Path root, String appId) {
         return root.resolve("export/share/icons/hicolor/64x64/apps").resolve(appId + ".png");
     }

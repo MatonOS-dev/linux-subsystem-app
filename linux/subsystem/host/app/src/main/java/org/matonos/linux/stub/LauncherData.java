@@ -188,16 +188,6 @@ public final class LauncherData {
                 byte[] icon = readPng(new File(new File(size, "apps"), name + ".png"));
                 if (icon != null) return icon;
             }
-        for (File size : sizes) {
-            File apps = new File(size, "apps");
-            File[] files = apps.listFiles();
-            if (files == null) continue;
-            Arrays.sort(files, Comparator.comparing(File::getName));
-            for (File file : files) {
-                byte[] icon = readPng(file);
-                if (icon != null) return icon;
-            }
-        }
         return null;
     }
 
