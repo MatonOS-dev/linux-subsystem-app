@@ -12,7 +12,7 @@
  * This is NOT the future Wayland extension nor an AHB transport emulator. */
 struct message { uint64_t op,surface,buffer,serial; };
 static int endpoint;
-static unsigned allocations,imports,destroys,releases,fail_import,fail_bind;
+static unsigned allocations,destroys,releases,fail_allocate,fail_bind;
 static unsigned exports,buffers,buffer_attempts,buffer_destroys,fail_buffer;
 static unsigned image_creates,memory_allocs,image_destroys,memory_frees;
 static struct AHardwareBuffer *last_ahb;
@@ -22,16 +22,14 @@ static struct message exchange(struct message m) {
     assert(send(endpoint,&m,sizeof(m),0)==sizeof(m));
     assert(recv(endpoint,&reply,sizeof(reply),0)==sizeof(reply));return reply;
 }
-static VkResult allocate(void *ctx,uint64_t surface,VkExtent2D e,VkFormat f,struct AHardwareBuffer **b,uint64_t *token) {
+static VkResult allocate(void *ctx,uint64_t surface,VkExtent2D e,VkFormat f,struct AHardwareBuffer **b,VkImage *image,VkDeviceMemory *memory,uint64_t *token) {
     (void)ctx;assert(surface==42 && e.width==640 && e.height==480 && f==VK_FORMAT_R8G8B8A8_UNORM);
-    *token=++allocations;*b=(void *)(uintptr_t)(0x1000+*token);return VK_SUCCESS;
+    *token=++allocations;*b=(void *)(uintptr_t)(0x1000+*token);
+    if(allocations==fail_allocate)return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    *image=(VkImage)(uintptr_t)(0x2000+*token);*memory=(VkDeviceMemory)(uintptr_t)(0x3000+*token);return VK_SUCCESS;
 }
 static void release(void *ctx,struct AHardwareBuffer *b,uint64_t token) { (void)ctx;assert((uintptr_t)b==0x1000+token);releases++; }
 static void destroy(void *ctx,VkImage image,VkDeviceMemory memory) { (void)ctx;assert(image && memory);destroys++; }
-static VkResult import(void *ctx,struct AHardwareBuffer *b,VkExtent2D e,VkFormat f,VkImage *image,VkDeviceMemory *memory) {
-    (void)ctx;(void)e;(void)f;imports++;if(imports==fail_import)return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    *image=(VkImage)(uintptr_t)b;*memory=(VkDeviceMemory)((uintptr_t)b+0x1000);return VK_SUCCESS;
-}
 static VkResult export_dmabuf(void *ctx,struct AHardwareBuffer *b,VkImage image,int *fd,
         uint32_t *format,uint32_t *stride,uint32_t *offset,uint64_t *modifier) {
     (void)ctx;assert(b && image);exports++;*fd=51;*format=0x34324241u;*stride=640*4;*offset=0;*modifier=0;return VK_SUCCESS;
@@ -95,7 +93,7 @@ int main(void) {
     VkSurfaceCapabilitiesKHR caps;assert(!mv_wsi_capabilities(&s,&caps));assert(caps.currentExtent.width==640 && caps.minImageCount==2);
     uint32_t n=0;assert(!mv_wsi_formats(&n,0) && n==1);VkSurfaceFormatKHR f; n=0;assert(mv_wsi_formats(&n,&f)==VK_INCOMPLETE);n=1;assert(!mv_wsi_formats(&n,&f));
     VkPresentModeKHR mode;n=1;assert(!mv_wsi_modes(&n,&mode) && mode==VK_PRESENT_MODE_FIFO_KHR);
-    struct mv_wsi_ops ops={.allocate=allocate,.release=release,.import=import,.destroy=destroy,
+    struct mv_wsi_ops ops={.allocate=allocate,.release=release,.destroy=destroy,
         .export_dmabuf=export_dmabuf,.create_buffer=create_buffer,.destroy_buffer=destroy_buffer,
         .present=present};
     VkSwapchainCreateInfoKHR ci={.sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,.minImageCount=2,
@@ -104,12 +102,12 @@ int main(void) {
         .compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,.presentMode=VK_PRESENT_MODE_FIFO_KHR};
     struct mv_wsi_swapchain *c=0;
     ci.presentMode=VK_PRESENT_MODE_MAILBOX_KHR;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_FORMAT_NOT_SUPPORTED && !c);ci.presentMode=mode;
-    fail_import=2;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_OUT_OF_DEVICE_MEMORY && !c);assert(releases==2 && destroys==1 && buffer_destroys==1);
-    fail_import=0;
+    fail_allocate=2;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_OUT_OF_DEVICE_MEMORY && !c);assert(releases==2 && destroys==1 && buffer_destroys==1);
+    fail_allocate=0;
     /* A failed Wayland buffer creation rolls back every earlier image and
      * wl_buffer, while the image whose callback failed is still released. */
     fail_buffer=3;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_OUT_OF_HOST_MEMORY && !c);
-    assert(allocations==4 && imports==4 && exports==3 && buffers==2);
+    assert(allocations==4 && exports==3 && buffers==2);
     assert(releases==4 && destroys==3 && buffer_destroys==2);
     fail_buffer=0;assert(!mv_wsi_create(&s,&ci,&ops,&c));VkImage images[2];n=1;assert(mv_wsi_images(c,&n,images)==VK_INCOMPLETE && n==1);n=2;assert(!mv_wsi_images(c,&n,images));assert(images[0]!=images[1]);
     uint32_t a,b;assert(!mv_wsi_acquire(c,&a));assert(!mv_wsi_present(c,a));assert(mv_wsi_present(c,a)==VK_ERROR_INITIALIZATION_FAILED);

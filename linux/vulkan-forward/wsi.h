@@ -11,9 +11,11 @@ struct mv_wsi_image { VkImage image; VkDeviceMemory memory; struct AHardwareBuff
     int dmabuf_fd; uint32_t drm_format, stride, offset; uint64_t modifier; };
 struct mv_wsi_ops {
     void *context;
-    VkResult (*allocate)(void *,uint64_t,VkExtent2D,VkFormat,struct AHardwareBuffer **,uint64_t *);
+    /* Allocate an exportable Android Vulkan image and return the referenced
+     * AHB obtained from its dedicated export memory. */
+    VkResult (*allocate)(void *,uint64_t,VkExtent2D,VkFormat,
+        struct AHardwareBuffer **,VkImage *,VkDeviceMemory *,uint64_t *);
     void (*release)(void *,struct AHardwareBuffer *,uint64_t);
-    VkResult (*import)(void *,struct AHardwareBuffer *,VkExtent2D,VkFormat,VkImage *,VkDeviceMemory *);
     void (*destroy)(void *,VkImage,VkDeviceMemory);
     /* Export the just-allocated AHB's verified dma-buf plane. The returned
      * fd is owned by the callback's platform boundary and must remain valid
