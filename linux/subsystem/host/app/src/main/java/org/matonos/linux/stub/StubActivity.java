@@ -180,10 +180,6 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         MAIN.removeCallbacks(END_SESSION);
         status=new TextView(this);status.setPadding(32,32,32,32);
         status.setText("Starting application…");setContentView(status);
-        if(getIntent().getBooleanExtra(InProcessLauncher.SELF_TEST,false)) {
-            InProcessLauncher.selfTest(this,getIntent().getStringExtra(InProcessLauncher.SELF_TEST_ID),this::message);
-            return;
-        }
         window=state!=null?state.getInt(WINDOW,0):getIntent().getIntExtra(WINDOW,0);
         int minimum=1;
         try {

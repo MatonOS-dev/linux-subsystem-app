@@ -79,7 +79,11 @@ final class V3Launcher {
                 "--no-a11y-bus", "--nofilesystem=host", "--nofilesystem=/tmp",
                 "--nodevice=all", "--device=dri",
                 "--env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1", "--env=GTK_CSD=0",
-                "--env=NO_AT_BRIDGE=1", ref.substring(4));
+                "--env=NO_AT_BRIDGE=1",
+                // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
+                "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
+                "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1",
+                ref.substring(4));
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
         env.clear();
@@ -124,12 +128,25 @@ final class V3Launcher {
                 int status = child.waitFor();
                 synchronized (V3Launcher.class) { exit = status; }
                 Log.i("MatonV3", "Loader exited: " + status);
+                endWithLinuxApp(context);
             } catch (InterruptedException failure) {
                 Thread.currentThread().interrupt();
                 synchronized (V3Launcher.class) { error = "Interrupted while waiting for loader"; }
             }
         }, "v3-exit").start();
         return getLaunchStatus();
+    }
+
+    /** The Android process lives exactly as long as its Linux app: when the
+     *  loader exits (clean exit or crash), close this app's tasks and end. */
+    private static void endWithLinuxApp(Context context) {
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            try {
+                android.app.ActivityManager am = context.getSystemService(android.app.ActivityManager.class);
+                for (android.app.ActivityManager.AppTask task : am.getAppTasks()) task.finishAndRemoveTask();
+            } catch (Exception failure) { Log.w("MatonV3", "Cannot close tasks after loader exit", failure); }
+            android.os.Process.killProcess(android.os.Process.myPid());
+        });
     }
 
     static void repairDependency(Context context,String appRef,String dependencyRef) throws Exception {
