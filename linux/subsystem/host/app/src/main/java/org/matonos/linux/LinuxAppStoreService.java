@@ -250,7 +250,7 @@ public final class LinuxAppStoreService extends Service {
                     try {op.installed=getPackageManager().getPackageInfo(packageFor(op.ref),0);}
                     catch(PackageManager.NameNotFoundException absent){op.installed=null;}
                     long packBytes=InstallTransaction.treeBytes(new File(
-                            org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,InstallTransaction.row(staged,op.ref)),"files"));
+                            org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,InstallTransaction.packageManifest(staged,op.ref)),"files"));
                     op.callback.onProgress(op.id,"packs",85,0,packBytes);
                     org.matonos.linux.stub.StagedPacks.build(LinuxAppStoreService.this,installation,InstallTransaction.packageManifest(staged,op.ref),
                             new File(op.packArtifacts,"objects"),()->op.cancelled,op.installed);
