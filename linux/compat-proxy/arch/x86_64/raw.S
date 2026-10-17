@@ -32,6 +32,32 @@ proxy_enter:
     mov %r13,%rsp
     xor %rdx,%rdx
     jmp *%r12
+/* Kernel-only vfork retry: RCX carries the syscall-clobbered return PC;
+ * R11 carries the kernel-decoded child SP before syscall. Reserve scratch
+ * outside the x86_64 ABI red zone, without knowing any libc stack layout.
+ * Parent recovers its continuation by raw TID (shared-stack child may have
+ * overwritten scratch); child touches only its own app stack, never records.
+ * Every non-syscall-clobbered register, including R9, is preserved. */
+.org 0x80
+.global adopt_vfork_entry
+.type adopt_vfork_entry,@function
+adopt_vfork_entry:
+    mov %rcx,-136(%r11)
+    syscall
+    jmp adopt_vfork_finish
+/* Ordinary syscalls run after sigreturn, so blocking waits retain native
+ * signal interruption/restart semantics. Reserve space below the red zone
+ * only after the old signal frame has been consumed. RCX is syscall-clobbered. */
+.org 0xa0
+.global adopt_syscall_entry
+.type adopt_syscall_entry,@function
+adopt_syscall_entry:
+    lea -256(%rsp),%rsp
+    mov %rcx,120(%rsp)
+    syscall
+    mov 120(%rsp),%rcx
+    lea 256(%rsp),%rsp
+    jmp *%rcx
 /* Retry clone on the application's stack, retaining its continuation even
  * when the kernel switches to a posix_spawn child stack. */
 .org 0x100
@@ -81,4 +107,58 @@ proxy_clone_after:
 .type dns_fork_result,@function
 dns_fork_result:
     ret
+.text
+.global adopt_vfork_finish
+.type adopt_vfork_finish,@function
+adopt_vfork_finish:
+    lea -256(%rsp),%rsp
+    pushfq
+    test %rax,%rax
+    jz 9f
+    push %rax
+    push %rdi
+    push %rsi
+    push %rdx
+    push %r8
+    push %r9
+    push %r10
+    push %r11
+    push %rbx
+    push %rbp
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    mov %rsp,%r12
+    and $-16,%rsp
+    call adopt_vfork_parent
+    mov %r12,%rsp
+    mov %rax,%rcx
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %rbp
+    pop %rbx
+    pop %r11
+    pop %r10
+    pop %r9
+    pop %r8
+    pop %rdx
+    pop %rsi
+    pop %rdi
+    pop %rax
+    popfq
+    lea 256(%rsp),%rsp
+    jmp *%rcx
+9:
+    popfq
+    lea 256(%rsp),%rsp
+    mov -136(%rsp),%rcx
+    jmp *%rcx
+/* Normal freestanding proxy builds do not use the adoption retry. */
+.weak adopt_vfork_parent
+.type adopt_vfork_parent,@function
+adopt_vfork_parent:
+    ud2
 .section .note.GNU-stack,"",@progbits
