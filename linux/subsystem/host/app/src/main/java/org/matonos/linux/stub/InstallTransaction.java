@@ -351,7 +351,7 @@ public final class InstallTransaction {
         }
     }
     /** Count allocated blocks once per inode, including hardlinked checkouts. */
-    static long allocatedBytes(File root)throws Exception {
+    public static long allocatedBytes(File root)throws Exception {
         java.util.Set<String> seen=new java.util.HashSet<>();
         long[] bytes={0};
         try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(root.toPath())) {

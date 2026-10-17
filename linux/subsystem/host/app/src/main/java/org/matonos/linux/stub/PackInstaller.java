@@ -47,6 +47,10 @@ public final class PackInstaller implements PackSessionPlan.Installer {
             }
             session.fsync(output);
         }
+        // PackageInstaller has its durable copy now. Releasing this staged APK
+        // before writing the next split keeps the session from duplicating the
+        // entire staged split set on disk.
+        if(!apk.delete() && apk.exists())throw new IOException("Cannot release staged session artifact: "+name);
     }
     @Override public synchronized void remove(String split) throws Exception {session.removeSplit(split);}
     @Override public synchronized void commit() throws Exception {

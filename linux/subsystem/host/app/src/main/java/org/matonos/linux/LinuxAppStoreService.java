@@ -445,6 +445,16 @@ public final class LinuxAppStoreService extends Service {
         }
         addContentPacks(op,pkg,work,objects,artifacts,installed,prior,full,revision,desired,available);
         if(launchable)for(String split:prior)if(split.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX))desired.add(split);
+        // Everything needed after this point is now in the pack artifacts,
+        // generated APKs, or the captured launcher values. Drop only this
+        // package's Flatpak installation subtree; the operation root (and its
+        // .v3-store-root marker) remains intact for other package rows.
+        File stagingRoot=new File(new File(WorkDirs.root(this),"flatpak-staging"),op.stagingId);
+        long beforeRelease=InstallTransaction.allocatedBytes(stagingRoot);
+        WorkDirs.remove(installation);
+        long afterRelease=InstallTransaction.allocatedBytes(stagingRoot);
+        Log.i(TAG,"Released Flatpak installation for "+packageRef+": allocated operation bytes "+
+                beforeRelease+" -> "+afterRelease+"; available="+stagingRoot.getUsableSpace());
         runPackSession(op,pkg,artifacts,plan(installed!=null,
                 installed==null?0:installed.getLongVersionCode(),prior,desired,available,full));
         final boolean applyExtra=hasExtra;
