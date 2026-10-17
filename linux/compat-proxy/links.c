@@ -119,7 +119,7 @@ static int writable_tree(const char *source,const char *target){
 }
 
 /* Stores are private, filesystem-local trees. Counts are persistent; only
- * legacy dirty stores or corrupt/missing metadata require a full recount. */
+ * corrupt or missing count metadata (signalled by the dirty marker) requires a full recount. */
 static int component(const char *p){
  for(size_t i=0;p[i];i++)if((i==0 || p[i-1]=='/') && p[i]=='.'){
   const char *q=".v3-inodes";size_t j=0;while(q[j] && p[i+j]==q[j])j++;
