@@ -2,7 +2,7 @@ import org.matonos.linux.stub.DeployManifest;
 
 /** Every Flatpak ref must map to a name StubGenerator accepts (numeric branches included). */
 public final class PackageNameTest {
-    private static final String VALID = "[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+";
+    private static final String VALID = "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+";
     public static void main(String[] args) throws Exception {
         String[] refs = {
             "app/org.mozilla.firefox/x86_64/stable",

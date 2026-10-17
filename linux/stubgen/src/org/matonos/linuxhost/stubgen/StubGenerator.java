@@ -213,7 +213,7 @@ public final class StubGenerator {
             throw new IllegalArgumentException("Invalid Flatpak ref");
         if (remote == null || remote.length() > 128 || !remote.matches("[A-Za-z0-9._-]+"))
             throw new IllegalArgumentException("Invalid Flatpak remote");
-        if (packageName == null || packageName.length() > 255 || !packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
+        if (packageName == null || packageName.length() > 255 || !packageName.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"))
             throw new IllegalArgumentException("Invalid stub package name");
         if (output == null) throw new IllegalArgumentException("Output APK is required");
 
@@ -273,7 +273,7 @@ public final class StubGenerator {
     }
     public static File generatePack(File workDir, String packageName, File pack, File output,int revision) throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
-        if(!packageName.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+"))
+        if(!packageName.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"))
             throw new IllegalArgumentException("Invalid package name");
         String name=pack.getName();
         if(!name.matches("pack-[0-9a-f]{64}\\.zip"))throw new IllegalArgumentException("Invalid pack name");
@@ -435,7 +435,7 @@ public final class StubGenerator {
     }
 
     private static boolean packageName(String pkg) {
-        return pkg!=null&&pkg.matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+");
+        return pkg!=null&&pkg.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+");
     }
 
     /** Legacy compatibility: no commit info, no images. */
