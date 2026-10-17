@@ -1,0 +1,83 @@
+From: MatonOS <dev@matonos.local>
+Subject: [PATCH] Xwayland 24.1.13: make classic ShmAttach fail cleanly without SysV IPC
+
+Android kernels have no SysV shared memory (CONFIG_SYSVIPC is not set) and an
+Android app's seccomp filter traps shmat()/shmctl() with SECCOMP_RET_TRAP, so
+the server dies from SIGSYS instead of the attach returning an error. Support
+cannot be probed at runtime, so ProcShmAttach now returns the BadAccess a
+failed attach would produce and never calls shmat()/shmctl(). The fd path
+(ShmAttachFd/ShmCreateSegment, SHM_FD_PASSING) is unaffected and remains the
+way clients share images with the server.
+
+Scoped to the pinned standalone Xwayland Android build. Recheck on upgrades.
+---
+--- a/Xext/shm.c	2026-10-17 17:33:35.753356751 +0200
++++ b/Xext/shm.c	2026-10-17 17:33:41.703741039 +0200
+@@ -371,9 +371,6 @@
+ static int
+ ProcShmAttach(ClientPtr client)
+ {
+-    SHMSTAT_TYPE buf;
+-    ShmDescPtr shmdesc;
+-
+     REQUEST(xShmAttachReq);
+ 
+     REQUEST_SIZE_MATCH(xShmAttachReq);
+@@ -382,49 +379,14 @@
+         client->errorValue = stuff->readOnly;
+         return BadValue;
+     }
+-    for (shmdesc = Shmsegs; shmdesc; shmdesc = shmdesc->next) {
+-        if (!SHMDESC_IS_FD(shmdesc) && shmdesc->shmid == stuff->shmid)
+-            break;
+-    }
+-    if (shmdesc) {
+-        if (!stuff->readOnly && !shmdesc->writable)
+-            return BadAccess;
+-        shmdesc->refcnt++;
+-    }
+-    else {
+-        shmdesc = malloc(sizeof(ShmDescRec));
+-        if (!shmdesc)
+-            return BadAlloc;
+-#ifdef SHM_FD_PASSING
+-        shmdesc->is_fd = FALSE;
+-#endif
+-        shmdesc->addr = shmat(stuff->shmid, 0,
+-                              stuff->readOnly ? SHM_RDONLY : 0);
+-        if ((shmdesc->addr == ((char *) -1)) || SHMSTAT(stuff->shmid, &buf)) {
+-            free(shmdesc);
+-            return BadAccess;
+-        }
+-
+-        /* The attach was performed with root privs. We must
+-         * do manual checking of access rights for the credentials
+-         * of the client */
+-
+-        if (shm_access(client, &(SHM_PERM(buf)), stuff->readOnly) == -1) {
+-            shmdt(shmdesc->addr);
+-            free(shmdesc);
+-            return BadAccess;
+-        }
+-
+-        shmdesc->shmid = stuff->shmid;
+-        shmdesc->refcnt = 1;
+-        shmdesc->writable = !stuff->readOnly;
+-        shmdesc->size = SHM_SEGSZ(buf);
+-        shmdesc->next = Shmsegs;
+-        Shmsegs = shmdesc;
+-    }
+-    if (!AddResource(stuff->shmseg, ShmSegType, (void *) shmdesc))
+-        return BadAlloc;
+-    return Success;
++    /* Android has no SysV shared memory: the kernel is built without
++     * CONFIG_SYSVIPC and the app seccomp filter traps shmat()/shmctl()
++     * (SECCOMP_RET_TRAP -> SIGSYS), which aborts this server. Those calls
++     * cannot be used to probe for support, so report the BadAccess a failed
++     * attach produces. Shared-memory image transfers use the fd path
++     * (ShmAttachFd/ShmCreateSegment) instead. */
++    client->errorValue = stuff->shmid;
++    return BadAccess;
+ }
+ 
+  /*ARGSUSED*/ static int

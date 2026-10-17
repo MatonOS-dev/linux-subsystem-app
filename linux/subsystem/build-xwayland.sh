@@ -303,9 +303,14 @@ EOF
 # Keep indirect GLX disabled (the default):
 # the EGL provider supports direct clients and needs no *_dri.so modules.
 # SHA1 comes from the bionic libgcrypt built into this Xwayland prefix.
-# MIT-SHM off: the kernel has no SysV IPC and each app's SysV segments live in
-# the v3 proxy's virtual view, which Xwayland cannot see. Without the
-# extension X11 clients always use plain image transfers.
+# MIT-SHM on, fd path only: the kernel has no SysV IPC and each app's SysV
+# segments live in the v3 proxy's virtual view, which Xwayland cannot see.
+# shm.c's classic ShmAttach calls shmat/shmctl; the app seccomp filter traps
+# those with SIGSYS (not ENOSYS), which would abort the server, so
+# xwayland-shm-nosysv.patch makes ProcShmAttach return a clean BadAccess
+# without calling them. ShmAttachFd and ShmCreateSegment carry a memfd over
+# SCM_RIGHTS (SHM_FD_PASSING from XTRANS_SEND_FDS) and mmap it, so clients
+# that speak MIT-SHM 1.2 still get shared-memory image transfers.
 [[ -d $SRC/xwayland-24.1.13 ]] || tar -xf "$DOWN/xwayland-24.1.13.tar.xz" -C "$SRC"
 GLX_PATCH=$ROOT/xwayland-egl-glx.patch
 if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$GLX_PATCH" >/dev/null 2>&1; then
@@ -320,8 +325,17 @@ if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$IDS_PATC
 elif ! patch --dry-run --batch --reverse -p1 -d "$SRC/xwayland-24.1.13" < "$IDS_PATCH" >/dev/null 2>&1; then
   die 'Xwayland Popen ids patch neither applies nor is already applied'
 fi
+# No SysV IPC on Android: classic ShmAttach's shmat/shmctl are trapped by
+# seccomp (SIGSYS), so return a clean BadAccess instead of aborting. The fd
+# path (ShmAttachFd/ShmCreateSegment) still provides shared-memory transfers.
+SHM_PATCH=$ROOT/xwayland-shm-nosysv.patch
+if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$SHM_PATCH" >/dev/null 2>&1; then
+  patch --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$SHM_PATCH"
+elif ! patch --dry-run --batch --reverse -p1 -d "$SRC/xwayland-24.1.13" < "$SHM_PATCH" >/dev/null 2>&1; then
+  die 'Xwayland shm-nosysv patch neither applies nor is already applied'
+fi
 configure_meson xwayland "$SRC/xwayland-24.1.13" \
-  -Dglx=true -Dglamor=true -Dxv=false -Ddri3=true -Dmitshm=false \
+  -Dglx=true -Dglamor=true -Dxv=false -Ddri3=true -Dmitshm=true \
   -Dsecure-rpc=false \
   -Dxwayland_ei=false -Dxdmcp=false -Dsystemd_notify=false \
   -Dlibdecor=false -Dxvfb=false -Dsha1=libgcrypt \

@@ -73,9 +73,10 @@ library. APK size remains to be recorded after Gradle completes.
 
 All sources are pinned under sources/downloads and verified by SHA-256 in
 build-xwayland.sh. They build for bionic x86_64 with NDK r30/API 35 into
-xstage/x86_64; nothing upstream is patched (bionic gaps are handled by
-build glue: an empty libpthread archive, a values.h shim, and a
-target-generated libgpg-error lock header). X11 licenses are MIT/HPND-style
+xstage/x86_64; only Xwayland is patched (the xwayland-*.patch files recorded
+below), everything else is upstream plus build glue for bionic gaps: an empty
+libpthread archive, a values.h shim, and a target-generated libgpg-error lock
+header. X11 licenses are MIT/HPND-style
 per project; freetype uses its FTL (BSD-style) license option. Crypto
 library licenses are recorded below.
 
@@ -113,11 +114,26 @@ freetype 2.14.1 (required by libXfont2; FTL license, PNG/Bzip2/Brotli off)
   SHA-256: 32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc
 libXfont2 2.0.9 (Xwayland font backend)
   SHA-256: f042a370666815e7b941e9b7019024755bd1c6c2954afbfa515af378251799e2
-Xwayland 24.1.13 (standalone X server; built with GLX/glamor/DRI3/Xv off,
+Xwayland 24.1.13 (standalone X server; MIT-SHM enabled for the fd path only,
 SHA1 from the bionic libgcrypt built in xstage/x86_64)
   source: https://www.x.org/releases/individual/xserver/xwayland-24.1.13.tar.xz
   SHA-256: 173aea3d6f79609164c04528e1c8e4c9b60fcd59391c3c9dad4667297d727fb6
-  binary: xstage/x86_64/bin/Xwayland, 1,882,896 bytes bionic x86_64 ELF
+  patches: xwayland-egl-glx.patch (epoxy server GLX, no DRI modules),
+    xwayland-popen-ids.patch (skip no-op setgid/setuid, SIGSYS-safety),
+    xwayland-shm-nosysv.patch (classic ShmAttach returns BadAccess)
+  binary: xstage/x86_64/bin/Xwayland, 2,452,984 bytes bionic x86_64 ELF
+  MIT-SHM: build-xwayland.sh passes -Dmitshm=true so the extension advertises
+    version 1.2. Classic ShmAttach carries a SysV shmid: this kernel has no
+    CONFIG_SYSVIPC (bionic shmget -> ENOSYS) and an Android app's seccomp
+    filter traps shmat/shmctl with SECCOMP_RET_TRAP, which would abort the
+    server with SIGSYS rather than return an error. xwayland-shm-nosysv.patch
+    therefore makes ProcShmAttach report BadAccess without calling those
+    syscalls, matching what a failed attach produces on a SysV-less host; the
+    client sees a clean error and falls back to plain image transfers. MIT-SHM
+    1.2's fd requests (ShmAttachFd, ShmCreateSegment) pass a sealable memfd
+    over SCM_RIGHTS (SHM_FD_PASSING from XTRANS_SEND_FDS) and mmap it server
+    side, unaffected by the patch, so shm-capable clients still get
+    shared-memory image transport without SysV.
 
 wlroots 0.20.2 now builds with -Dxwayland=enabled; its xcb dependencies and
 the xwayland.pc dependency (with have_* feature variables) resolve from
