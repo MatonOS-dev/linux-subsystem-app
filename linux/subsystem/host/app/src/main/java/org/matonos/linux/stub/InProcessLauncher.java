@@ -10,6 +10,7 @@ import java.io.InputStreamReader;
 /** Stage-one JNI entry: no fork/exec, no process-wide cwd, environment or fd edits. */
 final class InProcessLauncher {
     static final String SELF_TEST = "org.matonos.linux.IN_PROCESS_SELF_TEST";
+    static final String LIFECYCLE_TEST = "org.matonos.linux.IN_PROCESS_LIFECYCLE_TEST";
     static final String SELF_TEST_ID = "org.matonos.linux.IN_PROCESS_TEST_ID";
     private static boolean loaded;
     private static synchronized void load(Context context) throws Exception {
@@ -19,6 +20,55 @@ final class InProcessLauncher {
         }
     }
     private static native int nativeRunInProcess(String[] argv, String[] env, int[] fds);
+
+    /** Test-only fixed payloads. Production launch switches in stage seven. */
+    static void lifecycleTest(android.app.Activity activity, String mode, String testId) {
+        if (!java.util.Arrays.asList("clean", "fault", "group-main", "group-worker", "thread-main").contains(mode))
+            throw new IllegalArgumentException("Unknown lifecycle fixture");
+        android.content.SharedPreferences state = activity.getSharedPreferences("inprocess-lifecycle", 0);
+        if (testId == null) throw new IllegalArgumentException("Lifecycle test requires an attempt id");
+        if (testId.equals(state.getString("attempt", ""))) {
+            // ActivityManager can recreate a crashed activity. A Linux death
+            // must not leave that replacement process hosting an idle stub.
+            Log.i("MatonInProcess", "Lifecycle removing recreated task id=" + testId);
+            activity.finishAndRemoveTask();
+            android.os.Process.killProcess(android.os.Process.myPid());
+            return;
+        }
+        if (!state.edit().putString("attempt", testId).remove("exit").commit()) return;
+        new Thread(() -> {
+            try {
+                load(activity);
+                File dir = LoaderCommand.nativeLibraryDir(activity);
+                String executable = new File(dir, "libmatonos-inprocess-glibc.so").getAbsolutePath();
+                String[] argv = {new File(dir, "libmatonos-inprocess-ld.so").getAbsolutePath(),
+                        "--inhibit-cache", "--library-path", dir.getAbsolutePath(), executable, "fixture", mode};
+                Log.i("MatonInProcess", "Lifecycle start mode=" + mode + " id=" + testId +
+                        " ART pid=" + android.os.Process.myPid());
+                // Use an owned /dev/null fd; never duplicate over ART's stdio.
+                try (ParcelFileDescriptor sink = ParcelFileDescriptor.open(new File("/dev/null"),
+                        ParcelFileDescriptor.MODE_WRITE_ONLY)) {
+                    int status = nativeRunInProcess(argv, new String[]{"INPROCESS_TEST=present"},
+                            new int[]{sink.getFd(), sink.getFd()});
+                    if (!state.edit().putInt("exit", status).commit())
+                        throw new java.io.IOException("Cannot record Linux exit");
+                    Log.i("MatonInProcess", "Lifecycle cleaned mode=" + mode + " status=" + status +
+                            " ART pid=" + android.os.Process.myPid());
+                }
+                activity.runOnUiThread(() -> {
+                    try {
+                        org.matonos.linux.PerAppRuntime runtime = StubService.runtime();
+                        if (runtime != null) runtime.close();
+                        activity.finishAndRemoveTask();
+                        Log.i("MatonInProcess", "Lifecycle ending Android process mode=" + mode);
+                    } finally { android.os.Process.killProcess(android.os.Process.myPid()); }
+                });
+            } catch (Throwable failure) {
+                Log.e("MatonInProcess", "Lifecycle failed mode=" + mode, failure);
+                android.os.Process.killProcess(android.os.Process.myPid());
+            }
+        }, "inprocess-lifecycle").start();
+    }
 
     static void selfTest(Context context, String testId, java.util.function.Consumer<String> result) {
         final String id = testId == null ? "default" : testId;
