@@ -1,141 +1,173 @@
-# Vulkan forwarder — stage A (query-only)
+# Vulkan forwarder — stage B, offscreen
 
-Linux ICD experiment forwarding instance/physical-device queries to the resident
-Android Vulkan loader in a MatonOS system based on AOSP. **Not ready for Flatpak
-use:** the unmodified Khronos loader rejects this stage because it has no device
-entry points. The requested `vulkaninfo --summary` result is blocked (see below).
-No compute, render, musl, WSI or Zink work is part of this stage.
+Freestanding Linux ICD forwarding to the resident Android Vulkan loader on
+MatonOS (based on AOSP). Stage B passes unmodified `vulkaninfo --summary`, four
+adopted-thread compute, and triangle readback on the existing lavapipe VM.
+Musl execution and a Zink run belong to stage C and have not been started.
+This experiment is not a Vulkan conformance or production-readiness claim.
 
-## Design
+## Dispatch and ownership
 
-`icd.c` exports only the three ICD entry points and negotiates interface 5.
-`gen.py` verifies the pinned `vk.xml` SHA-256 before emitting 18 physical query
-thunks, dispatch-table fields and a 28-command lookup table. Selection is core
-Vulkan 1.0–1.4, instance and physical-query level; extension allowlist is empty.
-All WSI/surface/swapchain/device commands return NULL. Proc lookup also asks the
-Android loader, so an absent driver command is never returned. The Android
-instance version is capped at 1.4; property/feature/query payloads come directly
-from the driver. Empty extension lists are the intersection with our empty
-allowlist; no extension or layer support is invented. This is an incomplete
-query-only API, **not** a conformant Vulkan 1.4 implementation.
+Only the three ICD entry points are exported; interface version 5 is negotiated.
+The pinned Khronos v1.4.341 registry is SHA-256 verified before generation.
+All 234 core 1.0–1.4 commands are covered. There are 283 canonical commands,
+68 extension aliases (351 lookup names), 262 generated plain-C thunks, and 21
+manual adapters. `coverage.txt` in the external output lists every name.
+`extensions.txt` explicitly lists 69 device extensions for offscreen Zink
+requirements and optional paths. Enumeration intersects this with the Android
+driver's list and preserves revisions; all 69 are present on this VM. Instance
+ICD extension/layer lists are empty. No WSI, surface, swapchain, external-handle,
+or debug-callback command is forwarded. The Khronos loader independently exposes
+its own four instance extensions, which appear in `vulkaninfo`.
 
-Instances and physical devices have allocated wrappers headed by
-`VK_LOADER_DATA`, initialized with the ICD magic expected by the loader.
-Physical-device wrappers are cached per instance under an atomic lock; repeated
-and group enumeration return identical wrappers. Group arrays are rewritten on
-the Linux side, including their returned dispatchable handles. Android handles
-never escape these paths. Other generated physical queries have no nested
-input/output dispatchable handles; generation rejects unhandled direct handle
-parameters. This generator is deliberately not a general device/pNext adapter.
+Instance, physical-device, device, queue, and command-buffer wrappers begin with
+`VK_LOADER_DATA`. Every call unwraps its receiver; non-dispatchable handles pass
+through. Physical devices and queues retain identity across enumerations and
+queue getters. Device/command-pool destruction and explicit command-buffer free
+release child wrappers. Manual adapters rewrite device-group physical-device
+chains, submit/submit2 command-buffer arrays, and secondary command-buffer arrays.
+Command-buffer wrappers are allocated before calling Android so allocation failure
+cannot leak newly allocated Android buffers.
 
-`MATON_GPU_BRIDGE` provides Android dlopen/dlsym. `MATON_THREAD_ADOPT` is the
-spike-3 v1 adoption API. Initialization opens `/system/lib64/libvulkan.so` on
-resident TLS and caches instance query pointers during instance creation.
-Generated thunks are plain C: `switch_to_android()`, typed call, `switch_back()`.
-Missing bridge/adoption fails with a diagnostic and NULL/error; there is no
-owner-thread-only fallback. Per-thread syscall-dispatch selector state is saved
-and restored with TLS. No Linux allocation callback reaches Android: Android
-creation/destruction use NULL callbacks. App callbacks allocate/free our wrappers
-on app TLS, or the mmap allocator supplies them. Instance create pNext is removed
-because this stage enables no extensions and must not forward Linux callbacks.
+Generated dispatch tables cache Android entry points per instance/device. Calls
+use `switch_to_android()`, a typed Android call, then `switch_back()`. Alias
+spellings fall back to Android extension entry points when a canonical pointer
+is absent. ProcAddr returns only allowlisted names also found by Android.
+Driver feature/property payloads are preserved; the instance API ceiling is 1.4.
 
-The x86_64 backend owns all CPU instructions and raw syscall numbers. It uses
-WRFSBASE only when the kernel's AT_HWCAP2 grants it, otherwise arch_prctl. Its
-minimal adoption-ABI prefix is checked against the provider's real header by
-`abi-test.c`; it never inspects libc TCBs. Arm64/riscv64 headers are compile-only,
-fail-closed stubs: later implementations need TPIDR_EL0/tp and real adoption.
-No arch ifdefs or assembly appear in core/generated code. Atomics use compiler
-builtins. The syscall mmap-per-allocation allocator has checked size addition,
-max_align_t alignment, no shared mutable state or arbitrary arena/thread cap.
+No Linux allocation callback enters bionic. Android receives NULL allocators;
+app `pAllocator` allocates/frees our dispatchable wrappers on app TLS, using the
+instance/device allocator as appropriate. With no app allocator, each allocation
+owns an mmap mapping; there is no fixed arena, thread cap, or libc allocator.
+Temporary copies also use mmap. This deliberately does not make the app's
+callbacks account for Android driver allocations.
 
-The DSO builds with `-ffreestanding -nostdlib -fno-stack-protector -fno-builtin
--fvisibility=hidden`. No libc code is linked or bundled, no libc functions or
-compiler TLS are imported, and it has **zero DT_NEEDED**. One weak data symbol,
-`environ`, reads the standard process environment supplied by the app's libc;
-glibc and musl both provide this data ABI. If it is unavailable, initialization
-fails closed. This is a deliberate data-only bootstrap dependency, not a claim
-of zero undefined symbols. Static musl loading remains untested, deferred with
-the rest of stage B/C.
+## Chains and callbacks
 
-## Reproduce
+The generator walks selected registry structures to validate input structures,
+including nested structure arrays. Unknown input pNext types, callback-bearing
+nodes, and unhandled embedded dispatchable handles fail closed with
+`VK_ERROR_FEATURE_NOT_PRESENT` (void commands return without forwarding).
+The whitelist covers the selected core and extension structures; it does not
+promise future extension compatibility. Output query chains remain Android
+query payloads; physical-device group outputs are specially rewritten.
 
-All source downloads/build products go outside this repository. Prerequisites:
-clang 21, llvm-readelf 21, Python 3.12+, C/C++ host compilers, CMake >=3.22.1,
-curl, ripgrep. Dependency tarballs and vk.xml are pinned in `pins.json`.
+Device-create chains are copied without mutating application memory.
+`VkDeviceGroupDeviceCreateInfo` physical-device arrays are unwrapped in the copy.
+Khronos `VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO` nodes contain Linux loader
+bookkeeping/callbacks and are stripped: the Android loader supplies its own.
+Device-memory-report callbacks and other unallowlisted nodes are rejected.
+Instance-create pNext is stripped entirely: v1 forwards no instance extensions,
+and Linux debug/direct-driver-loading callbacks must never reach bionic.
 
-```
-OUT=/path/out/vk-forward
+## libc-free bootstrap and architecture
+
+There are **zero DT_NEEDED entries and zero undefined symbols**. Build flags are
+`-ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden`;
+the linker also enforces `--no-undefined`. No libc code or TLS is linked/bundled.
+Our memcpy/memset/memcmp/strcmp and raw-syscall allocator are self-contained.
+
+The launcher publishes a read-only anonymous mapping named
+`maton-gpu-bootstrap`, with the version magic, bridge/adoption pointers, and the
+kernel AT_HWCAP2 FSGSBASE permission. `bootstrap.h` defines this small ABI.
+The ICD discovers it via `/proc/self/maps`, without `environ`, getenv, auxv
+libc helpers, fixed virtual addresses, or reserved descriptors. The launcher
+continues publishing environment variables for the older spike clients.
+Missing publication/adoption fails with a diagnostic, not a wrong-TLS call.
+Read access to the process's maps is required; unavailable proc access fails
+closed. This discovery is process-local plumbing, not a security boundary.
+
+Only `arch/x86_64/backend.h` contains CPU instructions/syscall numbers. The
+backend saves/restores the adoption syscall-dispatch selector and FS pointer.
+Compiler atomic builtins provide synchronization. Arm64/riscv64 backends are
+compile-only, fail-closed slots; the core, validators and generated thunks compile
+for both targets, but runtime TPIDR_EL0/tp switching/adoption is not implemented.
+
+The alleged stage-A FSGSBASE denial could not be reproduced. A rebuilt untouched
+stage-A benchmark, run under the untouched stage-A launcher, already exercises
+WRFSBASE (157.4 ns versus 664.5 ns arch_prctl). The guest's `/proc/self/auxv` has
+AT_HWCAP2=2; the new probe also reads it correctly. No kernel/auxv permission fix
+was justified. The new ICD selects WRFSBASE from the launcher's kernel permission
+publication. Latest 100,000-pair measurement: **163.9 ns WRFSBASE**, **639.7 ns
+arch_prctl**, including adoption lookup/selector operations, excluding Vulkan.
+
+## Build and reproduce
+
+Keep all build products outside the repository. Prerequisites: clang/llvm-readelf
+21, Python, glslangValidator (test shaders), CMake and host C/C++ tools.
+`pins.json` pins Headers/Loader/Tools v1.4.341 tarballs and vk.xml. Stage-B tests
+reuse the unchanged pinned source-built glibc loader/tools from stage A.
+
+```sh
+OUT=/absolute/external/output
 CMAKE=/path/to/cmake bash linux/vulkan-forward/build-tools.sh "$OUT"
-bash linux/vulkan-forward/tests/run.sh "$OUT/build" "$OUT/src/Vulkan-Headers-1.4.341"
+HEADERS="$OUT/src/Vulkan-Headers-1.4.341"
+bash linux/vulkan-forward/tests/run.sh "$OUT/build" "$HEADERS"
+bash linux/vulkan-forward/tests/build-offscreen.sh "$OUT/tests" "$HEADERS" "$OUT/loader-build"
 ```
 
-`build.sh` builds the DSO, checks DT_NEEDED, and compiles both core units and
-all generated code with `--target=aarch64-linux-gnu` and `riscv64-linux-gnu`.
-`tests/run.sh` checks the exports/undefined symbol, exercises helpers and
-allocation from eight threads, validates the adoption ABI, and checks missing
-bridge refusal. `coverage.txt`, `dynamic.txt`, and `symbols.txt` are output evidence.
-No AOSP, Gradle, kernel, image, APK or subsystem/Java changes are needed.
+`build.sh` checks ELF dependencies and cross-compiles runtime/core/generated code
+for aarch64-linux-gnu and riscv64-linux-gnu. `tests/run.sh` checks the three exports,
+zero undefined symbols, helper/allocator behavior (8 threads × 1,000 iterations),
+adoption ABI offsets, and absent-bridge refusal. Test shaders are compiled to
+SPIR-V and embedded at build time; this run used glslang 15.1.0.
 
-Build the spike launcher with `spike3/build-android.sh` in a scratch copy of
-`linux/gpu-forward-spike`, `linux/compat-proxy`, and `linux/packs` (preserve sibling
-layout). This existing script writes its own build directories, so use a copy
-outside the repository. It compiles with NDK r30 and `-DMATON_ADOPT`.
+Build `gpu-forward-spike/spike3/build-android.sh` from an external scratch copy of
+`gpu-forward-spike`, `compat-proxy`, and `packs`, preserving sibling layout.
+It builds the NDK r30 `-DMATON_ADOPT` launcher. Push that launcher as `launcher-b`,
+our ICD/tests and the pinned `vulkaninfo` under `/data/local/tmp/vk/`. Supply glibc's
+`ld-linux-x86-64.so.2`, libc/libm/libstdc++/libgcc_s and the pinned
+`libvulkan.so.1.4.341` (`libvulkan.so.1` symlink) in that directory's `lib/`.
+The ICD JSON (`maton.json`) is:
 
-Use only `/data/local/tmp/vk/` in the already-running VM. Push the launcher as
-`launcher`, `libmaton_vulkan.so`, `query-test`, `switch-bench`, and `vulkaninfo`.
-Push host `ld-linux-x86-64.so.2` there, and host libc/libm/libstdc++/libgcc_s plus
-the pinned loader's `libvulkan.so.1.4.341` into `lib/`. Add
-`lib/libvulkan.so.1 -> libvulkan.so.1.4.341`. JSON:
-
-```
+```json
 {"file_format_version":"1.0.0","ICD":{"library_path":"/data/local/tmp/vk/libmaton_vulkan.so","api_version":"1.4.0"}}
 ```
 
-Inside that directory, launch each glibc test via:
+Run inside `/data/local/tmp/vk/`:
 
+```sh
+VK_ICD_FILENAMES=/data/local/tmp/vk/maton.json ./launcher-b ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./vulkaninfo --summary
+VK_ICD_FILENAMES=/data/local/tmp/vk/maton.json ./launcher-b ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./offscreen
+./launcher-b ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./query-test ./libmaton_vulkan.so
+./launcher-b ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./switch-bench
+MATON_QUERY_NO_ADOPT=1 ./launcher-b ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./query-test ./libmaton_vulkan.so
 ```
-./launcher ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./query-test ./libmaton_vulkan.so
-./launcher ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./switch-bench
-MATON_QUERY_NO_ADOPT=1 ./launcher ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./query-test ./libmaton_vulkan.so
-VK_ICD_FILENAMES=/data/local/tmp/vk/maton.json VK_LOADER_DEBUG=error,warn ./launcher ./ld-linux-x86-64.so.2 --inhibit-cache --library-path /data/local/tmp/vk/lib ./vulkaninfo --summary
-```
 
-## Results and blocker (2026-10-17)
+The missing-adoption test asks the launcher to omit adoption from its publication;
+unsetting the app's environment after startup no longer changes that capability.
+No APK installation, protected app data, reboot, or image change is needed.
+If deleting large VM artifacts, run `sm fstrim` afterwards.
 
-Host helper, allocator concurrency, ABI, fail-closed, ELF and cross-compile checks
-PASS. Direct ICD VM tests PASS: one `llvmpipe (LLVM 21.1.8, 256 bits)` device,
-driver API 1.4.354, instance API capped to 1.4.0, properties via pNext,
-features, format/memory/queue queries, stable physical/group handles, default
-allocator plus app allocator (2 allocations/2 frees).
+## Results and remaining scope
 
-100,000 TLS round trips on this VM: arch_prctl **654.0 ns/call**, WRFSBASE
-**157.7 ns/call**. Includes adoption lookup and selector exchange/restore;
-excludes actual Vulkan execution. VM noise makes this an observation, not a
-performance guarantee. No validation layers were built.
+All acceptance commands pass. Device: `llvmpipe (LLVM 21.1.8, 256 bits)`, API
+1.4.354. Four adopted threads each fill/dispatch/read back 1,024 correct uints.
+Queue submissions are mutex-serialized as Vulkan requires for a shared queue;
+fence waits and resource work run concurrently. Two threads use submit2; one
+executes a secondary buffer. Wrapper callbacks verify an app TLS sentinel and
+balance at 11/11 (including a rejected callback-chain device creation).
+Queue getters return the same wrapper and device-group creation succeeds.
+Triangle: 64×64 RGBA8, 1,152 red pixels, byte sum 1,338,240,
+FNV-1a `66d859cf714c4d25`; every pixel's channels are checked.
+No validation layers were built or run.
 
-**`vulkaninfo --summary` FAILS:** pinned Khronos Vulkan-Loader 1.4.341 logs
-`Unable to load vkGetDeviceProcAddr` then `Failed to find required entrypoints`
-and `vkCreateInstance failed with ERROR_INCOMPATIBLE_DRIVER`. Independently,
-Vulkan-Tools 1.4.341 `AppGpu` creates a logical device and image resources before
-printing even the summary. Meeting that acceptance test requires device-level
-forwarding/wrapping and the resource-query path, beyond this stage's
-instance/physical-only scope. The loader/tools were not patched to mask this.
-No full-loader success, compute/render/musl coverage, or deployability is claimed.
+The explicit extension list follows [Mesa's Zink requirements](https://docs.mesa3d.org/drivers/zink.html)
+plus optional dynamic-state/pipeline paths. It deliberately excludes
+`VK_KHR_swapchain_mutable_format` and the external-memory/DRI path. A future Zink
+run still needs its actual feature/limit/format checks, loader integration under
+musl, and appropriate offscreen platform setup. Desktop presentation requires
+the later WSI/ANativeWindow/AHB work; do not infer Zink compatibility from these
+tests. No musl loader build or Zink execution was attempted.
 
-## Future packaging (documentation only)
+Future packaging is documentation only: existing `gpu-forward-spike/flatpak/metadata.in`
+describes `org.freedesktop.Platform.GL.maton`. Install `lib/libmaton_vulkan.so`
+and `share/vulkan/icd.d/maton_icd.json` there, substituting `@GL_EXTENSION_DIR@`
+in the existing template. Expose it only through the adoption launcher for
+apps granted `--device=dri`/all; others retain Mesa software. No Java/subsystem
+or Flatpak permission integration is changed here.
 
-The existing `gpu-forward-spike/flatpak/metadata.in` describes
-`org.freedesktop.Platform.GL.maton`. In that GL extension root install
-`lib/libmaton_vulkan.so` and `share/vulkan/icd.d/maton_icd.json`, substituting
-`@GL_EXTENSION_DIR@` in the JSON template with its mounted extension directory.
-That template now records the 1.4 registry ceiling. The Linux app must be started
-through the adoption-capable launcher and given that JSON only when permitted
-`--device=dri`/all. Other apps keep Mesa software. No packaging or permission
-plumbing has been enabled in this stage; do not ship this query-only ICD as a
-working replacement. Future device forwarding must wrap device/queue/command
-buffer handles and handle dispatchable handles inside relevant pNext chains.
-
-Open risks: full Linux-loader device initialization, arm64/riscv64 adoption,
-static-musl loader/bootstrap, signal/reentrancy behavior during driver calls,
-real app SELinux/seccomp confinement, and non-lavapipe hardware are unverified.
-No shared-tree or kernel changes requested. Zink investigation is deferred.
+Still unverified: real GPU drivers, actual Flatpak SELinux/seccomp context,
+signal/reentrant calls during a switched-TLS call, extension execution beyond
+the exercised paths, allocation failure injection, and runtime architectures
+other than x86_64. No shared-tree or kernel changes are required.

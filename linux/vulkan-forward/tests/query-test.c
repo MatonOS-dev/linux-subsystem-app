@@ -17,7 +17,7 @@ static void *VKAPI_CALL reallocate(void *user,void *p,size_t n,size_t align,VkSy
 static void VKAPI_CALL release(void *user,void *p) {assert(user==&allocations);frees++;free(p);}
 int main(int argc,char **argv) {
     assert(argc==2);int absent_adoption=getenv("MATON_QUERY_NO_ADOPT")!=0;
-    if(absent_adoption)unsetenv("MATON_THREAD_ADOPT");
+
     void *lib=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);
     if(!lib){fprintf(stderr,"%s\n",dlerror());return 1;}
     PFN_vk_icdNegotiateLoaderICDInterfaceVersion negotiate=(void *)dlsym(lib,"vk_icdNegotiateLoaderICDInterfaceVersion");
@@ -39,7 +39,7 @@ int main(int argc,char **argv) {
         LOAD(vkGetPhysicalDeviceProperties);LOAD(vkGetPhysicalDeviceProperties2);LOAD(vkGetPhysicalDeviceFeatures2);
         LOAD(vkGetPhysicalDeviceMemoryProperties);LOAD(vkGetPhysicalDeviceQueueFamilyProperties);LOAD(vkGetPhysicalDeviceFormatProperties);
         LOAD(vkEnumerateDeviceExtensionProperties);
-        assert(!gipa(instance,"vkCreateDevice"));assert(!gipa(instance,"vkCreateSwapchainKHR"));
+        assert(gipa(instance,"vkCreateDevice"));assert(!gipa(instance,"vkCreateSwapchainKHR"));
         uint32_t n=0;assert(vkEnumeratePhysicalDevices(instance,&n,0)==VK_SUCCESS && n);
         VkPhysicalDevice *devices=calloc(n,sizeof(*devices)),*again=calloc(n,sizeof(*again));
         assert(vkEnumeratePhysicalDevices(instance,&n,devices)==VK_SUCCESS);
@@ -55,7 +55,10 @@ int main(int argc,char **argv) {
         VkPhysicalDeviceMemoryProperties memory;vkGetPhysicalDeviceMemoryProperties(devices[0],&memory);assert(memory.memoryTypeCount);
         uint32_t queues=0;vkGetPhysicalDeviceQueueFamilyProperties(devices[0],&queues,0);assert(queues);
         VkFormatProperties format;vkGetPhysicalDeviceFormatProperties(devices[0],VK_FORMAT_R8G8B8A8_UNORM,&format);assert(format.optimalTilingFeatures);
-        uint32_t ext=100;assert(vkEnumerateDeviceExtensionProperties(devices[0],0,&ext,0)==VK_SUCCESS && !ext);
+        uint32_t ext=0;assert(vkEnumerateDeviceExtensionProperties(devices[0],0,&ext,0)==VK_SUCCESS && ext);
+        VkExtensionProperties *ep=calloc(ext,sizeof(*ep));assert(vkEnumerateDeviceExtensionProperties(devices[0],0,&ext,ep)==VK_SUCCESS);
+        if(!pass)for(uint32_t j=0;j<ext;j++){assert(!strstr(ep[j].extensionName,"surface") && !strstr(ep[j].extensionName,"swapchain"));printf("allowed driver extension %s revision %u\n",ep[j].extensionName,ep[j].specVersion);}
+        uint32_t small=1;assert(vkEnumerateDeviceExtensionProperties(devices[0],0,&small,ep)==VK_INCOMPLETE && small==1);free(ep);
         uint32_t groups=0;assert(vkEnumeratePhysicalDeviceGroups(instance,&groups,0)==VK_SUCCESS && groups);
         VkPhysicalDeviceGroupProperties *gp=calloc(groups,sizeof(*gp));
         for(uint32_t j=0;j<groups;j++)gp[j].sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GROUP_PROPERTIES;

@@ -6,7 +6,10 @@
 #include <sys/syscall.h>
 #include <sys/auxv.h>
 #include <elf.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
 #include "bridge.h"
+#include "bootstrap.h"
 #ifdef MATON_ADOPT
 #include "spike3/adopt.h"
 #endif
@@ -29,6 +32,17 @@ int main(int argc, char **argv) {
 #else
     shadow_publish();
 #endif
+    /* Discoverable without importing the application's libc data symbols.
+     * Read-only, process-local capability publication for freestanding ICDs. */
+    struct maton_gpu_bootstrap *bootstrap = mmap(NULL, 4096, PROT_READ|PROT_WRITE,
+                           MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (bootstrap == MAP_FAILED) return 6;
+    bootstrap->magic=MATON_GPU_BOOTSTRAP_MAGIC;
+    snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",getenv("MATON_GPU_BRIDGE"));
+    snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%s",getenv("MATON_QUERY_NO_ADOPT") ? "0" : (getenv("MATON_THREAD_ADOPT") ? getenv("MATON_THREAD_ADOPT") : "0"));
+    snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",getauxval(AT_HWCAP2)&2);
+    if (prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, bootstrap, 4096,
+              MATON_GPU_BOOTSTRAP_NAME) || mprotect(bootstrap,4096,PROT_READ)) return 6;
     struct image image;
     if (proxy_load(argv[1], argv + 1, environ, &image)) return 4;
     /* PROXY_LIBRARY has no entry-stack auxv import. Preserve the kernel's
