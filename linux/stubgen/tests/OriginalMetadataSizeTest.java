@@ -8,7 +8,7 @@ import org.matonos.linuxhost.stubgen.*;
 public final class OriginalMetadataSizeTest {
  public static void main(String[] args)throws Exception {
   File repo=new File(args[0]),out=new File(args[2]);out.mkdirs();
-  OstreePacks original=OstreePacks.read(repo,args[1],PackSeedTest.cli(repo));
+  OstreePacks original=PackSeedTest.read(repo,args[1]);
   ObjectPacks.initial(original.entries,out,ObjectPacks.DEFAULT_PACK_SIZE);
   ObjectPacks.writeIndex(new File(out,"original.index"),original.entries);
   original.writeOriginal(new File(out,"original.ostree"));

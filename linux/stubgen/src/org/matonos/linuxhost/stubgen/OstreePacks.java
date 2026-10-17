@@ -5,22 +5,25 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.*;
-import java.util.regex.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-/** Bare-user reader. Binary GVariant framing for metadata; stock CLI for file headers.
+/** Bare-user reader. Binary GVariant framing for metadata; stock CLI for tree traversal.
  * No checkout, filename listing parser, or Android/native dependency. */
 public final class OstreePacks {
     public interface Command { String run(String... arguments) throws Exception; }
+    public interface Xattrs { byte[] get(File file, String name) throws IOException; }
     public final List<ObjectPacks.Entry> entries = new ArrayList<>();
     public final Map<String,byte[]> metadata = new HashMap<>();
     private final Map<String,byte[]> original = new TreeMap<>();
     private final File repo;
     private final Command cli;
+    private final Xattrs xattrs;
     private String commit;
-    private OstreePacks(File repo, Command cli) { this.repo=repo; this.cli=cli; }
+    private OstreePacks(File repo, Command cli, Xattrs xattrs) { this.repo=repo; this.cli=cli; this.xattrs=xattrs; }
 
-    public static OstreePacks read(File repo, String revision, Command cli) throws Exception {
-        OstreePacks result=new OstreePacks(repo,cli);
+    public static OstreePacks read(File repo, String revision, Command cli, Xattrs xattrs) throws Exception {
+        OstreePacks result=new OstreePacks(repo,cli,xattrs);
         result.commit=cli.run("rev-parse",revision).trim();
         checksum(result.commit);
         byte[][] c=tuple(result.object(result.commit,"commit"),
@@ -98,16 +101,28 @@ public final class OstreePacks {
         for(byte[] raw:array(t[0])) {
             byte[][] f=tuple(raw,new int[]{1,1},new int[]{-1,-1});
             String name=child(prefix,f[0]),sum=hex(f[1]);
-            // Only the fixed header and balanced xattr variant are consumed. The
-            // CLI's unescaped filename/target suffix is deliberately ignored.
-            String text=cli.run("ls","--dironly","--checksum","--xattrs",commit,"--",name);
-            Matcher head=Pattern.compile("^([-l])([0-7]+) +([0-9]+) +([0-9]+) +[0-9]+ +([0-9a-f]{64}) +\\{ ").matcher(text);
-            if(!head.find() || !sum.equals(head.group(5)))throw new IOException("Unexpected ostree file header");
-            int mode=Integer.parseInt(head.group(2),8) | (head.group(1).equals("l")?0120000:0100000);
-            ObjectPacks.Entry e=new ObjectPacks.Entry(name,sum,head.group(1).equals("l")?"symlink":"file",mode);
-            e.uid=(int)Long.parseLong(head.group(3));e.gid=(int)Long.parseLong(head.group(4));
-            e.xattrs=new Attributes(text,head.end()).read();
             File payload=path(sum,"file");
+            byte[] rawMeta=xattrs.get(payload,"user.ostreemeta");
+            int uid,gid,mode;byte[] packedXattrs;
+            if(rawMeta!=null) {
+                byte[][] attributes=tuple(rawMeta,new int[]{4,4,4,1},new int[]{4,4,4,-1});
+                for(byte[] attribute:array(attributes[3]))tuple(attribute,new int[]{1,1},new int[]{-1,-1});
+                uid=be(attributes[0]);gid=be(attributes[1]);mode=be(attributes[2]);packedXattrs=attributes[3];
+            } else {
+                // bare-user-only objects deliberately have no user.ostreemeta.
+                // Preserve support for those repositories; normal bare-user
+                // repositories stay entirely in-process.
+                String text=cli.run("ls","--dironly","--checksum",commit,"--",name);
+                Matcher head=Pattern.compile("^([-l])([0-7]+) +([0-9]+) +([0-9]+) +[0-9]+ +([0-9a-f]{64})").matcher(text);
+                if(!head.find()||!sum.equals(head.group(5)))throw new IOException("Unexpected ostree file header");
+                mode=Integer.parseInt(head.group(2),8)|(head.group(1).equals("l")?0120000:0100000);
+                uid=(int)Long.parseLong(head.group(3));gid=(int)Long.parseLong(head.group(4));packedXattrs=new byte[0];
+            }
+            int fileType=mode&0170000;
+            String kind=fileType==0120000?"symlink":fileType==0100000?"file":null;
+            if(kind==null)throw new IOException("Unsupported OSTree file mode for "+sum);
+            ObjectPacks.Entry e=new ObjectPacks.Entry(name,sum,kind,mode);
+            e.uid=uid;e.gid=gid;e.xattrs=packedXattrs;
             if(e.kind.equals("file"))e.source=payload;
             else if(Files.isSymbolicLink(payload.toPath())) {
                 e.target=Files.readSymbolicLink(payload.toPath()).toString();
@@ -167,38 +182,5 @@ public final class OstreePacks {
         int w=1;while(width(Math.addExact(n,elements.size()*w))>w)w=width(n+elements.size()*w);
         ByteArrayOutputStream out=new ByteArrayOutputStream();for(byte[] b:elements)out.write(b);
         int end=0;for(byte[] b:elements){end+=b.length;for(int i=0;i<w;i++)out.write(end>>>(8*i));}return out.toByteArray();
-    }
-    /** Restricted GLib a(ayay) printer grammar; rejects anything else. */
-    private static final class Attributes {
-        final String s;int p;
-        Attributes(String s,int p){this.s=s;this.p=p;}
-        void ws(){while(p<s.length()&&Character.isWhitespace(s.charAt(p)))p++;}
-        boolean token(String t){ws();if(s.startsWith(t,p)){p+=t.length();return true;}return false;}
-        void need(String t)throws IOException{if(!token(t))throw new IOException("Unsupported ostree xattr output at "+p);}
-        byte[] read()throws IOException {
-            token("@a(ayay)");need("[");List<byte[]> tuples=new ArrayList<>();
-            if(!token("]")){do{need("(");byte[] k=bytes();need(",");byte[] v=bytes();need(")");
-                int n=k.length+v.length,w=1;while(width(n+w)>w)w=width(n+w);
-                ByteArrayOutputStream b=new ByteArrayOutputStream();b.write(k);b.write(v);for(int i=0;i<w;i++)b.write(k.length>>>(8*i));tuples.add(b.toByteArray());
-            }while(token(","));need("]");}need("}");return framed(tuples);
-        }
-        byte[] bytes()throws IOException {
-            token("@ay");ByteArrayOutputStream b=new ByteArrayOutputStream();
-            if(token("b")) {
-                ws();if(p>=s.length()||(s.charAt(p)!='\''&&s.charAt(p)!='"'))throw new IOException("Invalid bytestring");
-                char quote=s.charAt(p++);boolean done=false;
-                while(p<s.length()) {char c=s.charAt(p++);if(c==quote){done=true;break;}
-                    if(c=='\\'){if(p>=s.length())throw new IOException("Truncated escape");c=s.charAt(p++);
-                        int i="abtnvfr".indexOf(c);if(i>=0)c=(char)new int[]{7,8,9,10,11,12,13}[i];
-                        else if(c>='0'&&c<='7'){int n=c-'0';for(int j=0;j<2&&p<s.length()&&s.charAt(p)>='0'&&s.charAt(p)<='7';j++)n=n*8+s.charAt(p++)-'0';c=(char)n;}
-                        else if(c!='\\'&&c!='\''&&c!='"')throw new IOException("Unknown GLib escape");
-                    }
-                    if(c>255)throw new IOException("Non-byte bytestring");b.write(c);
-                }if(!done)throw new IOException("Unterminated bytestring");b.write(0);return b.toByteArray();
-            }
-            need("[");if(!token("]")){token("byte");do{ws();if(!s.startsWith("0x",p)||p+4>s.length())throw new IOException("Expected byte hex");
-                try{b.write(Integer.parseInt(s.substring(p+2,p+4),16));}catch(NumberFormatException e){throw new IOException(e);}p+=4;
-            }while(token(","));need("]");}return b.toByteArray();
-        }
     }
 }

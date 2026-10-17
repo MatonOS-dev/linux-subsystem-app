@@ -27,8 +27,16 @@ public class SourceHarness {
    Process p=pb.start();String out=new String(p.getInputStream().readAllBytes(),StandardCharsets.UTF_8);
    if(p.waitFor()!=0)throw new IOException("ostree failed");return out;
   };
+  OstreePacks.Xattrs xattrs=(file,name)->{
+   String key=name.startsWith("user.")?name.substring(5):name;
+   try {
+    java.nio.file.attribute.UserDefinedFileAttributeView view=java.nio.file.Files.getFileAttributeView(file.toPath(),java.nio.file.attribute.UserDefinedFileAttributeView.class);
+    if(view==null||!view.list().contains(key))return null;
+    java.nio.ByteBuffer value=java.nio.ByteBuffer.allocate(view.size(key));view.read(key,value);return Arrays.copyOf(value.array(),value.position());
+   } catch(java.nio.file.NoSuchFileException missing) { return null; }
+  };
   String rev=a[1];if(a.length>3)rev=OstreePacks.commitDeployed(new File(a[3]),cli);
-  OstreePacks.read(new File(a[0]),rev,cli).write(new File(a[2]));System.out.println(rev);
+  OstreePacks.read(new File(a[0]),rev,cli,xattrs).write(new File(a[2]));System.out.println(rev);
  }
 }''')
     java=ROOT/'linux/stubgen/src/org/matonos/linuxhost/stubgen'
