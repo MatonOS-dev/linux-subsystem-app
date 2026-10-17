@@ -5,8 +5,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /** Bare-user reader. Binary GVariant framing for metadata; stock CLI for tree traversal.
  * No checkout, filename listing parser, or Android/native dependency. */
@@ -109,14 +107,17 @@ public final class OstreePacks {
                 for(byte[] attribute:array(attributes[3]))tuple(attribute,new int[]{1,1},new int[]{-1,-1});
                 uid=be(attributes[0]);gid=be(attributes[1]);mode=be(attributes[2]);packedXattrs=attributes[3];
             } else {
-                // bare-user-only objects deliberately have no user.ostreemeta.
-                // Preserve support for those repositories; normal bare-user
-                // repositories stay entirely in-process.
-                String text=cli.run("ls","--dironly","--checksum",commit,"--",name);
-                Matcher head=Pattern.compile("^([-l])([0-7]+) +([0-9]+) +([0-9]+) +[0-9]+ +([0-9a-f]{64})").matcher(text);
-                if(!head.find()||!sum.equals(head.group(5)))throw new IOException("Unexpected ostree file header");
-                mode=Integer.parseInt(head.group(2),8)|(head.group(1).equals("l")?0120000:0100000);
-                uid=(int)Long.parseLong(head.group(3));gid=(int)Long.parseLong(head.group(4));packedXattrs=new byte[0];
+                // bare-user-only objects carry no user.ostreemeta: OSTree takes
+                // the mode from the object file itself, uid/gid 0, no xattrs.
+                java.nio.file.Path object=payload.toPath();
+                if(Files.isSymbolicLink(object))mode=0120777;
+                else {
+                    int bits=0;
+                    for(java.nio.file.attribute.PosixFilePermission permission:Files.getPosixFilePermissions(object))
+                        bits|=1<<(8-permission.ordinal());
+                    mode=0100000|bits;
+                }
+                uid=0;gid=0;packedXattrs=new byte[0];
             }
             int fileType=mode&0170000;
             String kind=fileType==0120000?"symlink":fileType==0100000?"file":null;
