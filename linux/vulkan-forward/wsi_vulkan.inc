@@ -45,7 +45,7 @@ static VkResult mv_vkCreateWaylandSurfaceKHR(VkInstance instance,const VkWayland
     *out=VK_NULL_HANDLE;
     if (!instance || !info || info->sType!=VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR ||
         info->pNext || info->flags || !info->display || !info->surface ||
-        (allocator && (!allocator->pfnAllocation || !allocator->pfnFree)))
+        (allocator && (!allocator->pfnAllocation || !allocator->pfnReallocation || !allocator->pfnFree)))
         return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_instance *i=(void *)instance;
     if (!i->wsi_surface_enabled || !i->wsi_wayland_enabled) return VK_ERROR_EXTENSION_NOT_PRESENT;

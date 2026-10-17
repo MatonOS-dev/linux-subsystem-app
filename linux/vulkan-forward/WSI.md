@@ -13,8 +13,11 @@ allocation, dmabuf transport, acquire/release, or present path exists.
 the freestanding ELF resolver for the application's already-loaded
 `libwayland-client.so.0`; this stage uses it to validate the supplied
 `wl_surface` proxy. No private buffer transport or Android Surface path is
-used. The configured VM at `localhost:5556` has not yet been checked for this
-stage, so no app, resize, screenshot, or frame-timing result is claimed.
+used. The VM check returned no devices attached at `localhost:5556`, so no
+app, resize, screenshot, or frame-timing result is claimed. This also leaves
+the resident Vulkan driver's external-memory extensions and exportable AHB
+behavior unknown; step 2 must wait for a running VM before choosing and
+documenting a verified allocation/export path.
 
 ## Required data and process path
 
