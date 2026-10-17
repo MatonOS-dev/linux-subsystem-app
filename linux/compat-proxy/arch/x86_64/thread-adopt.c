@@ -53,24 +53,41 @@ static size_t signal_stack_size;
 #ifdef MATON_IN_PROCESS
 static _Atomic int exec_stopping;
 static long exec_owner;
+static _Atomic int group_exiting;
+static _Atomic long group_owner;
+/* The runner cannot release VMAs until every adopted pthread has left. */
+void inprocess_wait_threads(void) {
+    while(live()) {
+        struct timespec pause={0,1000000};
+        R(nanosleep,&pause,0,0,0,0,0);
+    }
+}
+static int stopping_other(struct adopt_thread *t) {
+    long tid=atomic_load(&t->tid);
+    if(atomic_load(&group_exiting))return tid!=atomic_load(&group_owner);
+    return atomic_load(&exec_stopping) && tid!=exec_owner;
+}
+/* Bounded nudges cover a blocked dispatcher and its return/startup race.
+ * Never flood a SA_NODEFER handler with recursive wakeups. */
+static void stop_others(long owner) {
+    for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
+        for(unsigned i=0;i<CHUNK_THREADS;i++) {
+            struct adopt_thread *t=&c->entries[i];int tid=atomic_load(&t->tid);
+            int phase=atomic_load(&t->exec_kicked);
+            if(tid>0 && tid!=owner &&
+               (phase==0 || (phase==1 && t->resident_sp &&
+               atomic_load(&t->selector)==SYSCALL_DISPATCH_FILTER_BLOCK)) &&
+               atomic_compare_exchange_strong(&t->exec_kicked,&phase,phase+1))
+                R(tgkill,R(getpid,0,0,0,0,0,0),tid,SIGSYS,0,0,0);
+        }
+}
 int inprocess_quiesce(void) {
+    if(atomic_load(&group_exiting))return -ECANCELED;
     exec_owner=R(gettid,0,0,0,0,0,0);
     atomic_store(&exec_stopping,1);
     while(live()>1) {
-        for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
-            for(unsigned i=0;i<CHUNK_THREADS;i++) {
-                struct adopt_thread *t=&c->entries[i];int tid=atomic_load(&t->tid);
-                if(tid>0 && tid!=exec_owner) {
-                    int phase=atomic_load(&t->exec_kicked);
-                    /* One wakeup interrupts a blocking dispatcher call. A
-                     * second, only after app entry, covers startup/return
-                     * races. SA_NODEFER must never receive a signal flood. */
-                    if((phase==0 || (phase==1 && t->resident_sp &&
-                       atomic_load(&t->selector)==SYSCALL_DISPATCH_FILTER_BLOCK)) &&
-                       atomic_compare_exchange_strong(&t->exec_kicked,&phase,phase+1))
-                        R(tgkill,R(getpid,0,0,0,0,0,0),tid,SIGSYS,0,0,0);
-                }
-            }
+        if(atomic_load(&group_exiting) && exec_owner!=atomic_load(&group_owner))return -ECANCELED;
+        stop_others(exec_owner);
         struct timespec pause={0,10000000};
         R(nanosleep,&pause,0,0,0,0,0);
     }
@@ -325,7 +342,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
 #ifdef MATON_IN_PROCESS
     if(!self) { inprocess_chain(sig,info,opaque); return; }
     if(info->si_code<=0) {
-        if(!atomic_load(&exec_stopping) || atomic_load(&self->tid)==exec_owner ||
+        if(!stopping_other(self) ||
            atomic_load(&self->selector)!=SYSCALL_DISPATCH_FILTER_BLOCK || !self->resident_sp)return;
         atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_ALLOW);
         goto app_exit;
@@ -411,7 +428,8 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
                     for(unsigned i=512;i<576;i++)fp[i]=0;
                     *(uint64_t *)(fp+512)=3;
                 }
-                self->robust=0;self->child_tid=0;self->app_fs=0;
+                self->robust=0;self->child_tid=0;
+                adopt_map_unbind(atomic_load(&self->app_fs),self);self->app_fs=0;
                 backend_fs_write(0);
                 g[REG_RIP]=entry[0];g[REG_RSP]=entry[1];g[REG_RDX]=0;g[REG_RAX]=0;
                 atomic_store(&self->selector,SYSCALL_DISPATCH_FILTER_BLOCK);return;
@@ -445,7 +463,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             flags=g[REG_RDI]&~CSIGNAL;stack=g[REG_RSI];tls=g[REG_R8];ptid=g[REG_RDX];ctid=g[REG_R10];
         }
 #ifdef MATON_IN_PROCESS
-        if(atomic_load(&exec_stopping)){result=-EAGAIN;goto finish;}
+        if(atomic_load(&exec_stopping) || atomic_load(&group_exiting)){result=-EAGAIN;goto finish;}
         if(!(flags&CLONE_THREAD)) {result=-ENOSYS;goto finish;}
 #endif
         child_stack=stack?stack:(unsigned long)g[REG_RSP];
@@ -517,8 +535,18 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     else if(n==SYS_set_tid_address) { self->child_tid=g[REG_RDI]; result=R(gettid,0,0,0,0,0,0); }
 #ifdef MATON_IN_PROCESS
     else if(n==SYS_exit_group) {
-        /* The first slice requires joined workers. Group shutdown follows. */
-        inprocess_status=(int)g[REG_RDI];
+        /* Only the first group exit selects status. Losers leave immediately;
+         * otherwise two exit callers could wait forever for each other. */
+        long zero=0,tid=atomic_load(&self->tid);
+        if(atomic_compare_exchange_strong(&group_owner,&zero,tid)) {
+            inprocess_status=(int)g[REG_RDI];
+            atomic_store(&group_exiting,1);
+            while(live()>1) {
+                stop_others(tid);
+                struct timespec pause={0,1000000};
+                R(nanosleep,&pause,0,0,0,0,0);
+            }
+        }
         goto app_exit;
     }
     else if(n==SYS_execve || n==SYS_execveat || n==SYS_fork || n==SYS_vfork) result=-ENOSYS;
@@ -560,7 +588,7 @@ app_exit:
     }
 finish:
 #ifdef MATON_IN_PROCESS
-    if(atomic_load(&exec_stopping) && atomic_load(&self->tid)!=exec_owner)goto app_exit;
+    if(stopping_other(self))goto app_exit;
 #endif
     g[REG_RAX]=result;
     selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
@@ -602,6 +630,8 @@ _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     __asm__ volatile("fxsave64 %0":"=m"(t->fp));
     t->xfeatures=0;
 #ifdef MATON_IN_PROCESS
+    atomic_store(&group_owner,0);atomic_store(&group_exiting,0);
+    atomic_store(&exec_stopping,0);
     app_brk=0; /* Bionic does not use brk; never probe a zygote-blocked call. */
 #else
     app_brk=R(brk,0,0,0,0,0,0);

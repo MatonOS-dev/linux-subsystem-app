@@ -10,6 +10,9 @@ for mode in static glibc; do
     timeout 30 "$out/test" "$out/$mode-payload" fixture
     INHERITED_FILTER=1 timeout 30 "$out/test" "$out/$mode-payload" fixture
     EXPECTED_STATUS=37 timeout 30 "$out/test" "$out/$mode-payload" fixture status37
+    for lifecycle in group-main group-worker thread-main group-race; do
+        EXPECTED_STATUS=37 timeout 30 "$out/test" "$out/$mode-payload" fixture "$lifecycle"
+    done
  done
 
 python3 "$root/build-fixtures.py" "$out/pinned"

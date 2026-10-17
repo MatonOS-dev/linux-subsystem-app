@@ -107,6 +107,7 @@ static void *run(void *opaque) {
     if(adopt_install()){l->result=-ENOTSUP;return NULL;}
     inprocess_status=0;
     inprocess_enter(image.entry,image.stack);
+    extern void inprocess_wait_threads(void);inprocess_wait_threads();
     l->result=inprocess_status;
     extern void inprocess_forget_image(void);inprocess_forget_image();
     return NULL;

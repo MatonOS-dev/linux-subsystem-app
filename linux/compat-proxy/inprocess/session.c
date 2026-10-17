@@ -218,7 +218,12 @@ int resident_session_exec(struct resident_session *s,const char *path,char *cons
     struct resident_session staged={0};
     e=resident_session_image(&staged,maps);
     if(e){while(staged.areas){struct area *a=staged.areas;staged.areas=a->next;vfs_free(a);}extern void inprocess_unload(void);inprocess_unload();atomic_flag_clear(&s->exec_lock);return e;}
-    extern int inprocess_quiesce(void);inprocess_quiesce();
+    extern int inprocess_quiesce(void);e=inprocess_quiesce();
+    if(e){
+        while(staged.areas){struct area *a=staged.areas;staged.areas=a->next;R(munmap,a->lo,a->hi-a->lo,0,0,0,0);vfs_free(a);}
+        extern void inprocess_forget_image(void);inprocess_forget_image();
+        atomic_flag_clear(&s->exec_lock);return e;
+    }
     while(s->areas){struct area *a=s->areas;s->areas=a->next;R(munmap,a->lo,a->hi-a->lo,0,0,0,0);vfs_free(a);}
     s->areas=staged.areas;
     for(struct descriptor *d=s->fds,*next;d;d=next){next=d->next;if(d->flags&FD_CLOEXEC)close_fd(s,d->number);}

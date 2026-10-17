@@ -16,13 +16,16 @@
 #include <sys/mount.h>
 #include <sched.h>
 extern char **environ;
-static _Atomic int parked,busy;
+static _Atomic int parked,busy,racers;
 static int futex_word;
 static void *busy_worker(void *arg){(void)arg;atomic_store(&busy,1);for(;;)__asm__ volatile("pause");return NULL;}
 static void *exec_worker(void *arg){(void)arg;atomic_store(&parked,1);for(;;)syscall(SYS_futex,&futex_word,FUTEX_WAIT,0,NULL,NULL,0);return NULL;}
+static void *exit_racer(void *arg){(void)arg;atomic_fetch_add(&racers,1);while(atomic_load(&racers)<2)sched_yield();syscall(SYS_exit_group,37);return NULL;}
+static void *exit_worker(void *arg){(void)arg;syscall(SYS_exit_group,37);return NULL;}
 static void *worker(void *arg){puts("inprocess-worker");return arg;}
 int main(int argc,char **argv) {
     if(argc<2 || strcmp(argv[1],"fixture") || !getenv("INPROCESS_TEST") || strcmp(getenv("INPROCESS_TEST"),"present"))return 20;
+    if(argc>2 && !strcmp(argv[2],"fault")){*(volatile int *)0=1;return 52;}
     if(access("/",F_OK))return 22;
     if(getenv("RESIDENT_MAP")) {
         void *foreign=(void *)strtoul(getenv("RESIDENT_MAP"),NULL,16);
@@ -42,6 +45,20 @@ int main(int argc,char **argv) {
     printf("inprocess-payload pid=%d argv=%s env=%s\n",(int)getpid(),argv[1],getenv("INPROCESS_TEST"));
     pthread_t thread;void *answer;
     if(pthread_create(&thread,NULL,worker,(void *)42) || pthread_join(thread,&answer) || answer!=(void *)42)return 21;
+    if(argc>2 && !strcmp(argv[2],"group-race")) {
+        pthread_t a,b;
+        if(pthread_create(&a,NULL,exit_racer,NULL) || pthread_create(&b,NULL,exit_racer,NULL))return 53;
+        for(;;)sched_yield();
+    }
+    if(argc>2 && (!strcmp(argv[2],"group-main") || !strcmp(argv[2],"group-worker") || !strcmp(argv[2],"thread-main"))) {
+        pthread_t waiting,spinning;
+        if(pthread_create(&waiting,NULL,exec_worker,NULL) || pthread_create(&spinning,NULL,busy_worker,NULL))return 50;
+        while(!atomic_load(&parked) || !atomic_load(&busy))sched_yield();
+        if(!strcmp(argv[2],"group-main"))syscall(SYS_exit_group,37);
+        pthread_t exiting;if(pthread_create(&exiting,NULL,exit_worker,NULL))return 51;
+        if(!strcmp(argv[2],"thread-main"))syscall(SYS_exit,0);
+        for(;;)syscall(SYS_futex,&futex_word,FUTEX_WAIT,0,NULL,NULL,0);
+    }
     if(argc>2 && !strcmp(argv[2],"exec0")) {
         if(argc!=7)return 30;
         pthread_t waiting;if(pthread_create(&waiting,NULL,exec_worker,NULL))return 46;
