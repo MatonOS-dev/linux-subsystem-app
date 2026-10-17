@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "backend.h"
+#include "../gpu-forward-spike/bootstrap.h"
 void *memcpy(void *d,const void *s,size_t n) {unsigned char *a=d;const unsigned char *b=s;while(n--)*a++=*b++;return d;}
 void *memset(void *d,int c,size_t n) {unsigned char *a=d;while(n--)*a++=(unsigned char)c;return d;}
 int memcmp(const void *a,const void *b,size_t n) {const unsigned char *x=a,*y=b;while(n--){if(*x!=*y)return *x-*y;x++;y++;}return 0;}
@@ -13,13 +14,29 @@ void *mv_alloc(size_t n) {
     p->length=n+sizeof(*p);return p+1;
 }
 void mv_free(void *p) {if(p){union block *h=(union block *)p-1;mv_unmap(h,h->length);}}
-/* Data-only process environment ABI provided by both glibc and musl. No libc
- * functions, TLS variables, or code are imported. Missing symbol fails closed. */
-extern char **environ __attribute__((weak));
+/* Named read-only launcher mapping: no libc data/code dependency. */
 const char *mv_env(const char *key) {
-    if(!&environ || !environ)return 0;
-    for(char **e=environ;*e;e++) {size_t i=0;while(key[i] && key[i]==(*e)[i])i++;if(!key[i] && (*e)[i]=='=')return *e+i+1;}
-    return 0;
+    long fd=mv_open("/proc/self/maps");if(fd<0)return 0;
+    char line[4096];size_t n=0;const char *result=0;
+    for(;;) {
+        char c;if(mv_read(fd,&c,1)!=1)break;
+        if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
+        line[n]=0;
+        const char *tag="[anon:maton-gpu-bootstrap]";int found=0;
+        for(size_t j=0;j<n;j++){size_t k=0;while(tag[k] && j+k<n && line[j+k]==tag[k])k++;if(!tag[k]){found=1;break;}}
+        if(found){
+            size_t j=0;while(line[j] && line[j]!='-')j++;line[j]=0;
+            const struct maton_gpu_bootstrap *p=(void *)mv_hex(line);
+            if(p && p->magic==MATON_GPU_BOOTSTRAP_MAGIC) {
+                result=!strcmp(key,"MATON_GPU_BRIDGE")?p->bridge:
+                       !strcmp(key,"MATON_THREAD_ADOPT")?p->adopt:
+                       !strcmp(key,"MATON_FAST_TLS")?p->fast:0;
+            }
+            break;
+        }
+        n=0;
+    }
+    mv_close(fd);return result;
 }
 uintptr_t mv_hex(const char *s) {
     uintptr_t n=0;if(!s)return 0;

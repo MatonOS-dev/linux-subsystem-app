@@ -20,6 +20,6 @@ symbols=subprocess.check_output(['llvm-readelf-21','--dyn-syms',str(out/'libmato
 exports={s.split()[-1] for s in symbols.splitlines() if 'GLOBAL DEFAULT' in s}
 assert exports=={'vk_icdGetInstanceProcAddr','vk_icdGetPhysicalDeviceProcAddr','vk_icdNegotiateLoaderICDInterfaceVersion'},exports
 undefined=[s.split()[-1] for s in symbols.splitlines() if ' UND ' in s and ('WEAK' in s or 'GLOBAL' in s)]
-assert undefined==['environ'],undefined
-print('PASS: three ICD exports; only undefined symbol is weak data-only environ')
+assert undefined==[],undefined
+print('PASS: three ICD exports; zero undefined symbols')
 PY

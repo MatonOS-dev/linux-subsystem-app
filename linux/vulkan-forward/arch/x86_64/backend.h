@@ -18,6 +18,9 @@ static inline long mv_sys(long n,long a,long b,long c,long d,long e,long f) {
     __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b),"d"(c),"r"(r10),"r"(r8),"r"(r9):"rcx","r11","memory");
     return r;
 }
+static inline long mv_open(const char *p) {return mv_sys(257,-100,(long)p,0,0,0,0);}
+static inline long mv_read(long fd,void *p,size_t n) {return mv_sys(0,fd,(long)p,n,0,0,0);}
+static inline void mv_close(long fd) {mv_sys(3,fd,0,0,0,0,0);}
 static inline void *mv_map(size_t n) {
     long p=mv_sys(9,0,n,3,0x22,-1,0);
     return (unsigned long)p>=(unsigned long)-4095?0:(void *)p;

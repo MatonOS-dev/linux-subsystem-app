@@ -6,11 +6,14 @@
 #include "dispatch.h"
 #define EXPORT __attribute__((visibility("default")))
 struct mv_instance;
+struct mv_device;
 struct mv_handle {
     VK_LOADER_DATA loader;
     void *android;
     struct mv_instance *instance;
     struct mv_handle *next;
+    struct mv_device *device;
+    VkCommandPool pool;
 };
 struct mv_instance {
     struct mv_handle base;
@@ -21,6 +24,17 @@ struct mv_instance {
     PFN_vkDestroyInstance destroy;
     PFN_vkEnumeratePhysicalDevices enumerate;
     PFN_vkEnumeratePhysicalDeviceGroups groups;
+    PFN_vkCreateDevice create_device;
+    PFN_vkGetDeviceProcAddr gdpa;
+    PFN_vkEnumerateDeviceExtensionProperties extensions;
+};
+struct mv_device {
+    struct mv_handle base;
+    VkAllocationCallbacks allocator;
+    int custom, lock;
+    struct mv_handle *children;
+    struct mv_dispatch dispatch;
+    PFN_vkGetDeviceProcAddr gdpa;
 };
 static struct adopt_api *mv_adopt;
 static struct gpu_bridge *mv_bridge;
@@ -41,7 +55,7 @@ static int mv_init(void) {
     }
     mv_bridge=(void *)mv_hex(mv_env("MATON_GPU_BRIDGE"));
     mv_adopt=(void *)mv_hex(mv_env("MATON_THREAD_ADOPT"));
-    mv_fast=mv_fast_tls();
+    mv_fast=mv_hex(mv_env("MATON_FAST_TLS"))!=0;
     struct mv_scope s;
     if(mv_bridge && mv_bridge->version==1 && mv_enter(&s)) {
         void *lib=mv_bridge->open("/system/lib64/libvulkan.so",2);
@@ -67,6 +81,7 @@ static VkPhysicalDevice mv_wrap(struct mv_instance *i,VkPhysicalDevice raw) {
     __atomic_store_n(&i->lock,0,__ATOMIC_RELEASE);
     return (VkPhysicalDevice)h;
 }
+#include "validate.inc"
 #include "thunks.inc"
 static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAllocationCallbacks *a,VkInstance *out) {
     *out=VK_NULL_HANDLE;
@@ -90,6 +105,9 @@ static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAll
         i->destroy=(PFN_vkDestroyInstance)mv_gipa(raw,"vkDestroyInstance");
         i->enumerate=(PFN_vkEnumeratePhysicalDevices)mv_gipa(raw,"vkEnumeratePhysicalDevices");
         i->groups=(PFN_vkEnumeratePhysicalDeviceGroups)mv_gipa(raw,"vkEnumeratePhysicalDeviceGroups");
+        i->create_device=(PFN_vkCreateDevice)mv_gipa(raw,"vkCreateDevice");
+        i->gdpa=(PFN_vkGetDeviceProcAddr)mv_gipa(raw,"vkGetDeviceProcAddr");
+        i->extensions=(PFN_vkEnumerateDeviceExtensionProperties)mv_gipa(raw,"vkEnumerateDeviceExtensionProperties");
         mv_load_dispatch(i);
     }
     switch_back(&s);
@@ -130,12 +148,32 @@ static VkResult mv_vkEnumerateInstanceVersion(uint32_t *v) {
     VkResult r=VK_SUCCESS;if(f)r=f(v);else *v=VK_API_VERSION_1_0;
     switch_back(&s);if(*v>VK_API_VERSION_1_4)*v=VK_API_VERSION_1_4;return r;
 }
-/* Stage A allowlist is empty: the intersection with any driver list is empty. */
+#include "extensions.inc"
+static int mv_extension_allowed(const char *name) {
+    for(size_t j=0;j<sizeof(mv_extensions)/sizeof(*mv_extensions);j++)if(!strcmp(name,mv_extensions[j]))return 1;
+    return 0;
+}
+/* Instance WSI/debug callbacks are deliberately hidden. */
 static VkResult mv_vkEnumerateInstanceExtensionProperties(const char *layer,uint32_t *n,VkExtensionProperties *p) {(void)p;*n=0;return layer?VK_ERROR_LAYER_NOT_PRESENT:VK_SUCCESS;}
 static VkResult mv_vkEnumerateInstanceLayerProperties(uint32_t *n,VkLayerProperties *p) {(void)p;*n=0;return VK_SUCCESS;}
-static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice h,const char *l,uint32_t *n,VkExtensionProperties *p) {(void)h;return mv_vkEnumerateInstanceExtensionProperties(l,n,p);}
+static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physical,const char *layer,uint32_t *n,VkExtensionProperties *out) {
+    if(layer){*n=0;return VK_ERROR_LAYER_NOT_PRESENT;}
+    struct mv_handle *h=(void *)physical;struct mv_scope s;
+    if(!mv_enter(&s))return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkEnumerateDeviceExtensionProperties f=h->instance->extensions;
+    uint32_t count=0;VkResult r=f(h->android,0,&count,0);switch_back(&s);if(r!=VK_SUCCESS)return r;
+    VkExtensionProperties *all=mv_alloc((size_t)count*sizeof(*all));if(!all)return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if(!mv_enter(&s)){mv_free(all);return VK_ERROR_INITIALIZATION_FAILED;}
+    r=f(h->android,0,&count,all);switch_back(&s);
+    if(r!=VK_SUCCESS){mv_free(all);return r;}
+    uint32_t written=0,capacity=out?*n:0;
+    for(uint32_t j=0;j<count;j++)if(mv_extension_allowed(all[j].extensionName)){if(out && written<capacity)out[written]=all[j];written++;}
+    *n=out && written>capacity?capacity:written;mv_free(all);
+    return out && written>capacity?VK_INCOMPLETE:VK_SUCCESS;
+}
 static VkResult mv_vkEnumerateDeviceLayerProperties(VkPhysicalDevice h,uint32_t *n,VkLayerProperties *p) {(void)h;return mv_vkEnumerateInstanceLayerProperties(n,p);}
 static PFN_vkVoidFunction mv_vkGetInstanceProcAddr(VkInstance instance,const char *name);
+#include "device.inc"
 static PFN_vkVoidFunction mv_lookup(const char *name) {
     if(!name)return 0;
 #include "lookup.inc"
