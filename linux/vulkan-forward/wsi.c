@@ -63,10 +63,10 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
                 &b->ahb,&b->image,&b->memory,&b->token);
         if(!r)r=ops->export_dmabuf(ops->context,b->ahb,b->image,&b->dmabuf_fd,
                 &b->drm_format,&b->stride,&b->offset,&b->modifier);
-        if(!r && (b->dmabuf_fd<0 || b->drm_format!=0x34324241u || !b->stride ||
+        if(!r && (b->drm_format!=0x34324241u || !b->stride ||
                   (b->modifier!=0 && b->modifier!=0x00ffffffffffffffull)))
             r=VK_ERROR_FORMAT_NOT_SUPPORTED;
-        if(!r)r=ops->create_buffer(ops->context,s->extent,b->drm_format,b->dmabuf_fd,
+        if(!r)r=ops->create_buffer(ops->context,b->ahb,s->extent,b->drm_format,b->dmabuf_fd,
                 b->stride,b->offset,b->modifier,&b->wl_buffer);
         if(!r && !b->wl_buffer)r=VK_ERROR_INITIALIZATION_FAILED;
         if(r){cleanup(c);return r;}

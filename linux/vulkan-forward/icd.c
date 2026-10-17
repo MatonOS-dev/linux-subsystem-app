@@ -49,6 +49,7 @@ static PFN_vkGetInstanceProcAddr mv_gipa;
 static void *(*mv_ahb_native_handle)(const struct AHardwareBuffer *);
 static void (*mv_ahb_describe)(const struct AHardwareBuffer *,void *);
 static void (*mv_ahb_release)(struct AHardwareBuffer *);
+static int (*mv_ahb_send_socket)(const struct AHardwareBuffer *,int);
 static int mv_fast, mv_state;
 static int mv_enter(struct mv_scope *s) {
     if(switch_to_android(mv_adopt,mv_fast,s))return 1;
@@ -75,6 +76,7 @@ static int mv_init(void) {
             mv_ahb_native_handle=(void *)mv_bridge->symbol(android,"AHardwareBuffer_getNativeHandle");
             mv_ahb_describe=(void *)mv_bridge->symbol(android,"AHardwareBuffer_describe");
             mv_ahb_release=(void *)mv_bridge->symbol(android,"AHardwareBuffer_release");
+            mv_ahb_send_socket=(void *)mv_bridge->symbol(android,"AHardwareBuffer_sendHandleToUnixSocket");
         }
         switch_back(&s);
     }

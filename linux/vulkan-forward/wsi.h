@@ -22,7 +22,7 @@ struct mv_wsi_ops {
      * until destroy_buffer; it is not closed by the state machine. */
     VkResult (*export_dmabuf)(void *,struct AHardwareBuffer *,VkImage,
         int *,uint32_t *,uint32_t *,uint32_t *,uint64_t *);
-    VkResult (*create_buffer)(void *,VkExtent2D,uint32_t,int,uint32_t,uint32_t,uint64_t,void **);
+    VkResult (*create_buffer)(void *,struct AHardwareBuffer *,VkExtent2D,uint32_t,int,uint32_t,uint32_t,uint64_t,void **);
     void (*destroy_buffer)(void *,void *);
     /* Enqueue only after render completion; D1 has no GPU sync integration.
      * Failure MUST mean not enqueued. Success retains the buffer until release. */

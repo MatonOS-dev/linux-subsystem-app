@@ -30,9 +30,9 @@ struct mv_wl_dmabuf {
     struct wl_display *display;
     struct wl_event_queue *queue;
     struct wl_proxy *registry, *proxy, *wrapper;
-    struct wl_proxy *sync_manager;
-    uint32_t global_name, sync_global_name;
-    int version, sync_version;
+    struct wl_proxy *sync_manager, *ahb_manager;
+    uint32_t global_name, sync_global_name, ahb_global_name;
+    int version, sync_version, ahb_version;
 };
 struct mv_wl_buffer { struct wl_proxy *proxy; int released; };
 struct mv_wl_sync_surface { struct wl_proxy *proxy; struct wl_display *display; };
@@ -84,6 +84,14 @@ static int resolve(void) {
 }
 
 static const struct wl_interface params_interface, buffer_interface;
+static const struct wl_interface ahb_manager_interface;
+static const struct wl_interface *ahb_create_types[] = { &buffer_interface };
+static const struct wl_message ahb_manager_methods[] = {
+    {"destroy", "1", 0}, {"create_buffer", "nhuuu", ahb_create_types},
+};
+static const struct wl_interface ahb_manager_interface = {
+    "maton_ahb_buffer_manager_v1", 1, 2, ahb_manager_methods, 0, 0,
+};
 static const struct wl_message sync_manager_methods[] = {
     {"destroy", "1", 0}, {"get_surface_sync", "no", sync_manager_types},
 };
@@ -133,12 +141,15 @@ static void registry_global(void *data, struct wl_proxy *registry, uint32_t name
         d->global_name=name; d->version=version>4?4:(int)version;
     } else if (!d->sync_global_name && !strcmp(interface,"maton_sync_file_v1")) {
         d->sync_global_name=name; d->sync_version=version>1?1:(int)version;
+    } else if (!d->ahb_global_name && !strcmp(interface,"maton_ahb_buffer_manager_v1")) {
+        d->ahb_global_name=name; d->ahb_version=version>1?1:(int)version;
     }
 }
 static void registry_remove(void *data, struct wl_proxy *registry, uint32_t name) {
     (void)registry; struct mv_wl_dmabuf *d=data;
     if (d->global_name==name) { d->global_name=0; d->version=0; }
     if (d->sync_global_name==name) { d->sync_global_name=0; d->sync_version=0; }
+    if (d->ahb_global_name==name) { d->ahb_global_name=0; d->ahb_version=0; }
 }
 static void (*const registry_listener[])(void) = {
     (void (*)(void))registry_global, (void (*)(void))registry_remove,
@@ -160,18 +171,24 @@ struct mv_wl_dmabuf *mv_wl_dmabuf_create(struct wl_display *display) {
     destroy_wrapper(display_wrapper); if (!d->registry) goto fail;
     set_queue(d->registry,d->queue);
     if (add_listener(d->registry,(void (**)(void))registry_listener,d)) goto fail;
-    if (roundtrip(display,d->queue)<0 || !d->global_name || d->version<2) goto fail;
-    d->proxy=marshal(d->registry,0,&dmabuf_interface,(uint32_t)d->version,0,
-            d->global_name,dmabuf_interface.name,(uint32_t)d->version,(void *)0);
-    if (!d->proxy) goto fail;
-    set_queue(d->proxy,d->queue);
+    if (roundtrip(display,d->queue)<0 || ((!d->global_name || d->version<2) && !d->ahb_global_name)) goto fail;
+    if (d->global_name && d->version>=2) {
+        d->proxy=marshal(d->registry,0,&dmabuf_interface,(uint32_t)d->version,0,
+                d->global_name,dmabuf_interface.name,(uint32_t)d->version,(void *)0);
+        if (!d->proxy) goto fail;
+        set_queue(d->proxy,d->queue);
+    }
+    if (d->ahb_global_name && d->ahb_version>0) {
+        d->ahb_manager=marshal(d->registry,0,&ahb_manager_interface,(uint32_t)d->ahb_version,0,
+                d->ahb_global_name,ahb_manager_interface.name,(uint32_t)d->ahb_version,(void *)0);
+        if (d->ahb_manager) set_queue(d->ahb_manager,d->queue);
+    }
     if(d->sync_global_name && d->sync_version>0) {
         d->sync_manager=marshal(d->registry,0,&sync_manager_interface,(uint32_t)d->sync_version,0,
                 d->sync_global_name,sync_manager_interface.name,(uint32_t)d->sync_version,(void *)0);
         if(d->sync_manager)set_queue(d->sync_manager,d->queue);
     }
-    d->wrapper=create_wrapper(d->proxy); if (!d->wrapper) goto fail;
-    set_queue(d->wrapper,d->queue);
+    if(d->proxy) { d->wrapper=create_wrapper(d->proxy); if (!d->wrapper) goto fail; set_queue(d->wrapper,d->queue); }
     return d;
 fail:
     mv_wl_dmabuf_destroy(d); return 0;
@@ -181,11 +198,13 @@ void mv_wl_dmabuf_destroy(struct mv_wl_dmabuf *d) {
     if (d->wrapper) destroy_wrapper(d->wrapper);
     if (d->proxy) marshal(d->proxy,0,0,proxy_version(d->proxy),1);
     if (d->sync_manager) marshal(d->sync_manager,0,0,proxy_version(d->sync_manager),1);
+    if (d->ahb_manager) marshal(d->ahb_manager,0,0,proxy_version(d->ahb_manager),1);
     if (d->registry) proxy_destroy(d->registry);
     if (d->queue) queue_destroy(d->queue);
     mv_free(d);
 }
 int mv_wl_dmabuf_version(const struct mv_wl_dmabuf *d) { return d?d->version:0; }
+int mv_wl_has_ahb_buffer(const struct mv_wl_dmabuf *d) { return d && d->ahb_manager; }
 int mv_wl_dmabuf_dispatch(struct mv_wl_dmabuf *d) {
     if (!d || !d->display || !d->queue || !dispatch_pending) return -1;
     return dispatch_pending(d->display,d->queue);
@@ -197,7 +216,7 @@ int mv_wl_dmabuf_dispatch_one(struct mv_wl_dmabuf *d) {
 
 struct mv_wl_buffer *mv_wl_dmabuf_create_buffer(struct mv_wl_dmabuf *d,
         uint32_t width,uint32_t height,uint32_t format,const struct mv_wl_plane *planes,uint32_t n) {
-    if (!d || !d->proxy || !width || !height || !planes || !n || n>4) return 0;
+    if (!d || !d->proxy || !d->wrapper || !width || !height || !planes || !n || n>4) return 0;
     struct wl_proxy *params=marshal(d->wrapper,1,&params_interface,
             (uint32_t)d->version,0,(void *)0);
     if (!params) return 0;
@@ -220,6 +239,21 @@ struct mv_wl_buffer *mv_wl_dmabuf_create_buffer(struct mv_wl_dmabuf *d,
     b->proxy=raw; b->released=0;
     if (add_listener(raw,(void (**)(void))buffer_listener,b)) {
         marshal(raw,0,0,proxy_version(raw),1); mv_free(b); return 0;
+    }
+    return b;
+}
+struct mv_wl_buffer *mv_wl_ahb_create_buffer(struct mv_wl_dmabuf *d,
+        uint32_t width,uint32_t height,uint32_t format,int transport_fd) {
+    if(!d||!d->ahb_manager||!width||!height||transport_fd<0)return 0;
+    struct wl_proxy *raw=marshal(d->ahb_manager,1,&buffer_interface,1,0,(void *)0,
+            transport_fd,width,height,format);
+    if(!raw)return 0;
+    set_queue(raw,d->queue);
+    struct mv_wl_buffer *b=mv_alloc(sizeof(*b));
+    if(!b){marshal(raw,0,0,proxy_version(raw),1);return 0;}
+    b->proxy=raw;b->released=0;
+    if(add_listener(raw,(void (**)(void))buffer_listener,b)){
+        marshal(raw,0,0,proxy_version(raw),1);mv_free(b);return 0;
     }
     return b;
 }

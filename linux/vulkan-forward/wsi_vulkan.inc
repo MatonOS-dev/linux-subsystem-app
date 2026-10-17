@@ -71,7 +71,20 @@ static void mv_wsi_live_destroy(void *opaque,VkImage image,VkDeviceMemory memory
 }
 static VkResult mv_wsi_live_export(void *opaque,struct AHardwareBuffer *ahb,VkImage image,int *fd,
         uint32_t *format,uint32_t *stride,uint32_t *offset,uint64_t *modifier) {
-    struct mv_wsi_live_context *c=opaque;struct mv_scope scope;if(!mv_ahb_native_handle||!mv_ahb_describe||!mv_enter(&scope))return VK_ERROR_EXTENSION_NOT_PRESENT;
+    struct mv_wsi_live_context *c=opaque;
+    *fd=-1;*format=0x34324241u;*stride=0;*offset=0;*modifier=0;
+    struct mv_scope scope;
+    /* The private AHB transport is authoritative when available. Do not
+     * inspect or assume any native-handle fd in that case. */
+    if(mv_wl_has_ahb_buffer(c->surface->dmabuf) && mv_ahb_send_socket) {
+        if(!mv_ahb_describe||!mv_enter(&scope))return VK_ERROR_EXTENSION_NOT_PRESENT;
+        struct mv_ahb_desc desc={0};mv_ahb_describe(ahb,&desc);
+        switch_back(&scope);
+        if(!desc.width||!desc.height||desc.stride>UINT32_MAX/4)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        *stride=desc.stride*4;
+        return VK_SUCCESS;
+    }
+    if(!mv_ahb_native_handle||!mv_ahb_describe||!mv_enter(&scope))return VK_ERROR_EXTENSION_NOT_PRESENT;
     struct mv_ahb_desc desc={0};mv_ahb_describe(ahb,&desc);
     const struct mv_native_handle *native=mv_ahb_native_handle(ahb);
     VkImageDrmFormatModifierPropertiesEXT mp={.sType=VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT};
@@ -83,10 +96,22 @@ static VkResult mv_wsi_live_export(void *opaque,struct AHardwareBuffer *ahb,VkIm
     if(!r){*fd=native->data[0];*format=0x34324241u;*stride=(uint32_t)layout.rowPitch;*offset=(uint32_t)layout.offset;*modifier=mp.drmFormatModifier;}
     switch_back(&scope);return r;
 }
-static VkResult mv_wsi_live_create_buffer(void *opaque,VkExtent2D extent,uint32_t format,int fd,
+static VkResult mv_wsi_live_create_buffer(void *opaque,struct AHardwareBuffer *ahb,VkExtent2D extent,uint32_t format,int fd,
         uint32_t stride,uint32_t offset,uint64_t modifier,void **buffer) {
     struct mv_wsi_live_context *c=opaque;struct mv_wl_plane plane={.fd=fd,.index=0,.offset=offset,.stride=stride,.modifier=modifier};
     if(format!=0x34324241u)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    if(mv_wl_has_ahb_buffer(c->surface->dmabuf) && mv_ahb_send_socket) {
+        int pair[2];if(mv_socketpair(pair)<0)return VK_ERROR_OUT_OF_HOST_MEMORY;
+        struct mv_scope scope;
+        if(!mv_enter(&scope)){mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_INITIALIZATION_FAILED;}
+        int rc=mv_ahb_send_socket(ahb,pair[1]);
+        switch_back(&scope);
+        if(rc) {mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_OUT_OF_HOST_MEMORY;}
+        *buffer=mv_wl_ahb_create_buffer(c->surface->dmabuf,extent.width,extent.height,format,pair[0]);
+        mv_close(pair[0]);mv_close(pair[1]);
+        return *buffer?VK_SUCCESS:VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    if(fd<0||!stride)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     *buffer=mv_wl_dmabuf_create_buffer(c->surface->dmabuf,extent.width,extent.height,format,&plane,1);
     return *buffer?VK_SUCCESS:VK_ERROR_OUT_OF_HOST_MEMORY;
 }

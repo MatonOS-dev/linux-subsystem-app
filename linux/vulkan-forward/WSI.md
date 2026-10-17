@@ -4,7 +4,8 @@ Status on `vk-wayland-wsi`: production WSI is now compiled into the ICD. The
 ICD resolves the app's already-loaded `libwayland-client.so.0` from its ELF
 link map, exposes Wayland surface queries, allocates swapchain images through
 the resident Android Vulkan driver, exports their dma-bufs, creates
-`zwp_linux_dmabuf_v1` buffers on a private event queue, and submits
+`maton_ahb_buffer_v1` buffers on a private event queue (with
+`zwp_linux_dmabuf_v1` as a standard-client and compositor fallback), and submits
 presentations with an explicit `sync_file` acquire fence. The compositor
 passes that fd to `ASurfaceTransaction_setBuffer`; its existing SurfaceFlinger
 release-fence tracking delays ordinary `wl_buffer.release` until reuse is
@@ -37,14 +38,25 @@ Each swapchain image is an Android Vulkan image created with
 `VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT`, a dedicated exportable
 `VK_ANDROID_external_memory_android_hardware_buffer` allocation, and the
 resident driver's linear modifier. `vkGetMemoryAndroidHardwareBufferANDROID`
-provides the AHB; native-handle fd 0 is passed to linux-dmabuf as the image
-dma-buf. The ICD validates AHB RGBA8 format, modifier, plane offset, and row
-pitch against the AHB stride, then sends DRM fourcc `DRM_FORMAT_ABGR8888`
-(numeric `0x34324241`), one plane, modifier 0, and the measured stride/offset
-to `zwp_linux_dmabuf_v1`. This is the selected export path; the enumerated
-`VK_EXT_external_memory_dma_buf` alternative is not used. The resident-driver
-probe established that path for one VM llvmpipe configuration, but the
-compositor's mapper acceptance has not been verified in a running VM.
+provides the AHB. When the compositor advertises the private
+`maton_ahb_buffer_v1` global, the ICD creates a fresh `AF_UNIX/SOCK_SEQPACKET`
+socketpair per image, calls stock `AHardwareBuffer_sendHandleToUnixSocket`
+through its Android TLS bridge on one endpoint, and sends the peer endpoint in
+`maton_ahb_buffer_manager_v1.create_buffer`. The compositor receives the same
+AHB with `AHardwareBuffer_recvHandleFromUnixSocket`, checks its dimensions,
+one layer and RGBA8 format, and retains it directly in the wlroots buffer.
+No native-handle fd number or minigbm dma-buf import is involved in this
+primary path. The compositor presents the received AHB directly to
+SurfaceFlinger; frames remain zero-copy.
+
+The standard fallback remains the verified
+`VK_ANDROID_external_memory_android_hardware_buffer` → native-handle plane
+fd → `zwp_linux_dmabuf_v1` path. It checks RGBA8 format, linear modifier, plane
+offset and row pitch against the AHB stride, then uses DRM fourcc
+`DRM_FORMAT_ABGR8888` (`0x34324241`), one plane and the measured stride/offset.
+`VK_EXT_external_memory_dma_buf` is not used. The native-handle fallback was
+probed on one VM llvmpipe configuration; runtime validation of the new AHB
+transport still requires the VM.
 
 ## Fence flow and limits
 
@@ -81,8 +93,9 @@ and WSI surface creation fails if it is absent.
 ## Tests and follow-up
 
 Host tests cover state transitions, rollback, command interception,
-libwayland symbol resolution, private queue registry/buffer creation, and
-sync-file request/attach/damage/commit wire encoding. The WSI production build
+libwayland symbol resolution, private queue registry/buffer creation,
+socketpair-backed AHB transport request encoding, and sync-file
+request/attach/damage/commit wire encoding. The WSI production build
 checks zero `DT_NEEDED` and cross-compiles shared code for aarch64 and
 riscv64. The native `maton_compositor` target was built in the isolated
 `vkwsi-out` directory. Exact commands and results are in the run report.

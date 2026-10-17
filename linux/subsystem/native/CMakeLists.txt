@@ -15,9 +15,10 @@ set(MATON_STAGE "${MATON_COMPOSITOR_BUILD}/stage/x86_64")
 set(MATON_XSTAGE "${MATON_COMPOSITOR_BUILD}/xstage/x86_64")
 set(MATON_WAYLAND_SCANNER "${MATON_COMPOSITOR_BUILD}/host/bin/wayland-scanner")
 set(MATON_XDG_XML "${MATON_COMPOSITOR_BUILD}/host/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml")
+set(MATON_AHB_XML "${MATON_COMPOSITOR_ROOT}/native/protocol/maton-ahb-buffer-v1.xml")
 set(MATON_WLROOTS_INCLUDE "${MATON_COMPOSITOR_BUILD}/sources/src/wlroots-0.20.2/include")
 
-foreach(required "${MATON_WAYLAND_SCANNER}" "${MATON_XDG_XML}")
+foreach(required "${MATON_WAYLAND_SCANNER}" "${MATON_XDG_XML}" "${MATON_AHB_XML}")
   if(NOT EXISTS "${required}")
     message(FATAL_ERROR "Missing ${required}; build the pinned compositor dependencies first")
   endif()
@@ -35,6 +36,12 @@ add_custom_command(OUTPUT "${GENERATED}/wayland-protocols/xdg-shell-enum.h"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED}/wayland-protocols"
   COMMAND "${MATON_WAYLAND_SCANNER}" enum-header "${MATON_XDG_XML}" "${GENERATED}/wayland-protocols/xdg-shell-enum.h"
   DEPENDS "${MATON_XDG_XML}" VERBATIM)
+add_custom_command(OUTPUT "${GENERATED}/maton-ahb-buffer-v1-server-protocol.h"
+  COMMAND "${MATON_WAYLAND_SCANNER}" server-header "${MATON_AHB_XML}" "${GENERATED}/maton-ahb-buffer-v1-server-protocol.h"
+  DEPENDS "${MATON_AHB_XML}" VERBATIM)
+add_custom_command(OUTPUT "${GENERATED}/maton-ahb-buffer-v1-protocol.c"
+  COMMAND "${MATON_WAYLAND_SCANNER}" private-code "${MATON_AHB_XML}" "${GENERATED}/maton-ahb-buffer-v1-protocol.c"
+  DEPENDS "${MATON_AHB_XML}" VERBATIM)
 
 foreach(lib wlroots wayland-server wayland-client pixman-1 xkbcommon drm)
   if(lib STREQUAL "wlroots")
@@ -47,9 +54,10 @@ foreach(lib wlroots wayland-server wayland-client pixman-1 xkbcommon drm)
 endforeach()
 
 add_library(maton_compositor SHARED
-  compositor_core.c android_keymap.c jni_shim.cpp android_buffer.c android_output.c dmabuf_import.c dmabuf_metadata.cpp maton_renderer.c presenter.c test_client.c
+  compositor_core.c android_keymap.c jni_shim.cpp android_buffer.c ahb_buffer.c android_output.c dmabuf_import.c dmabuf_metadata.cpp maton_renderer.c presenter.c test_client.c
   "${GENERATED}/xdg-shell-protocol.c" "${GENERATED}/xdg-shell-client-protocol.h"
-  "${GENERATED}/wayland-protocols/xdg-shell-enum.h")
+  "${GENERATED}/wayland-protocols/xdg-shell-enum.h"
+  "${GENERATED}/maton-ahb-buffer-v1-protocol.c" "${GENERATED}/maton-ahb-buffer-v1-server-protocol.h")
 target_compile_features(maton_compositor PRIVATE c_std_11 cxx_std_17)
 target_compile_definitions(maton_compositor PRIVATE WLR_USE_UNSTABLE)
 target_include_directories(maton_compositor PRIVATE

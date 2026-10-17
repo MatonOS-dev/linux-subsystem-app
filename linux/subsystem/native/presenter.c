@@ -3,6 +3,7 @@
 #include "android_buffer.h"
 #include "android_output.h"
 #include "dmabuf_import.h"
+#include "ahb_buffer.h"
 #include "maton_renderer.h"
 
 #include <android/data_space.h>
@@ -141,10 +142,12 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
 
   struct wlr_scene_surface* scene_surface = wlr_scene_surface_try_from_buffer(node);
   uint32_t seq = scene_surface ? scene_surface->surface->current.seq : 0;
-  AHardwareBuffer* ahb = maton_dmabuf_ahb(buffer);
+  AHardwareBuffer* ahb = maton_ahb_buffer_get(buffer);
+  bool direct_ahb = ahb != NULL;
+  if (!ahb) ahb = maton_dmabuf_ahb(buffer);
   /* Defence in depth: never send a dma-buf whose actual mapper metadata
    * cannot describe its planes, even if it passed protocol-time validation. */
-  if (ahb && !maton_dmabuf_layout_safe(ahb)) ahb = NULL;
+  if (ahb && !direct_ahb && !maton_dmabuf_layout_safe(ahb)) ahb = NULL;
   bool opaque = false;
   if (ahb) {
     struct wlr_dmabuf_attributes attrs;

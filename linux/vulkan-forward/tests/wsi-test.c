@@ -34,9 +34,9 @@ static VkResult export_dmabuf(void *ctx,struct AHardwareBuffer *b,VkImage image,
         uint32_t *format,uint32_t *stride,uint32_t *offset,uint64_t *modifier) {
     (void)ctx;assert(b && image);exports++;*fd=51;*format=0x34324241u;*stride=640*4;*offset=0;*modifier=0;return VK_SUCCESS;
 }
-static VkResult create_buffer(void *ctx,VkExtent2D extent,uint32_t format,int fd,
+static VkResult create_buffer(void *ctx,struct AHardwareBuffer *ahb,VkExtent2D extent,uint32_t format,int fd,
         uint32_t stride,uint32_t offset,uint64_t modifier,void **buffer) {
-    (void)ctx;assert(extent.width && extent.height && format==0x34324241u);
+    (void)ctx;assert(ahb && extent.width && extent.height && format==0x34324241u);
     assert(fd==51 && stride==2560 && !offset && !modifier);buffer_attempts++;
     if(buffer_attempts==fail_buffer)return VK_ERROR_OUT_OF_HOST_MEMORY;
     *buffer=(void *)(uintptr_t)(0x5000+ ++buffers);return VK_SUCCESS;

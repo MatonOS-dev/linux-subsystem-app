@@ -22,6 +22,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include "dmabuf_import.h"
+#include "ahb_buffer.h"
 #include "maton_renderer.h"
 #include "presenter.h"
 #include <wlr/types/wlr_compositor.h>
@@ -1196,6 +1197,8 @@ static void* server_main(void* unused) {
   wl_list_init(&server.sync_surfaces);
   server.sync_file_global=wl_global_create(server.display,&maton_sync_file_interface,1,NULL,bind_sync_file);
   if(!server.sync_file_global)__android_log_print(ANDROID_LOG_WARN,"MatonCompositor","Vulkan sync_file protocol unavailable");
+  if(!maton_ahb_buffer_global_create(server.display))
+    __android_log_print(ANDROID_LOG_WARN,"MatonCompositor","AHardwareBuffer transport protocol unavailable");
   server.wsi_trace_count=0;
   wl_display_add_protocol_logger(server.display,trace_wsi,&server.wsi_trace_count);
   server.new_client.notify=on_new_client;wl_display_add_client_created_listener(server.display,&server.new_client);

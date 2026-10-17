@@ -29,6 +29,11 @@ int mv_wl_dmabuf_dispatch_one(struct mv_wl_dmabuf *dmabuf);
 struct mv_wl_buffer *mv_wl_dmabuf_create_buffer(struct mv_wl_dmabuf *dmabuf,
         uint32_t width, uint32_t height, uint32_t format,
         const struct mv_wl_plane *planes, uint32_t plane_count);
+/* Preferred MatonOS fast path. transport_fd is one end of a socketpair whose
+ * peer has already received AHardwareBuffer_sendHandleToUnixSocket(). */
+struct mv_wl_buffer *mv_wl_ahb_create_buffer(struct mv_wl_dmabuf *dmabuf,
+        uint32_t width, uint32_t height, uint32_t format, int transport_fd);
+int mv_wl_has_ahb_buffer(const struct mv_wl_dmabuf *dmabuf);
 void mv_wl_buffer_destroy(struct mv_wl_buffer *buffer);
 int mv_wl_buffer_released(const struct mv_wl_buffer *buffer);
 void mv_wl_buffer_clear_released(struct mv_wl_buffer *buffer);
