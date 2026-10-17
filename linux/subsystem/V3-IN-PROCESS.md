@@ -19,7 +19,7 @@ entire production syscall dispatcher.
 | execve/execveat and shebang | `proxy_load` replaces user entry context; `state_exec` kernel-execs a peer for cross-class images | Needs change: image ownership, rollback, Linux-thread quiescence, per-image TLS/signal reset; never kernel-exec ART; stage-one rejects exec and ET_EXEC |
 | Flatpak Bionic entry and bwrap | Flatpak helper enters Bionic linker, forks/execs bwrap and final ELF | Needs design: remove helper process assumptions and either execute setup as a library or collapse exec hops into image replacement; do not execute Bionic startup again inside ART |
 | Namespaces/mounts | Proxy emulates user/mount namespaces and mount table/path resolution | Handled by proxy, needs change to dispatch from adopted threads and keep cwd purely virtual |
-| return from main, exit/exit_group, atexit | Linux libc runs its own atexit, then proxy forwards process exit | Needs change: JNI exit gate restores resident FS/stack and returns status; stage-one handles clean exit after workers join; general group shutdown remains |
+| return from main, exit/exit_group, atexit | Linux libc runs its own atexit, then proxy forwards process exit | Needs change: JNI exit gate restores resident FS/stack and returns status for cleanup; production then ends the owning Android process; the diagnostic alone keeps ART alive to verify return; general group shutdown remains |
 | Linux pthread creation, TLS, robust lists, clear-child-tid, rseq | Freestanding proxy raw-clones; spike-3 creates resident pthreads and adopts Linux registers/TLS | Needs change: adoption backend now uses thread-local seccomp TRAP, not syscall-user-dispatch; registry is keyed by kernel TID, no libc TCB offsets |
 | SIGSYS | Standalone installs one resident action, virtualizes application action and masks | Needs change: preserve previous resident SIGSYS action; route only adopted threads; never allow payload to replace proxy action |
 | SIGSEGV/SIGBUS, ART implicit checks, sigchain | Standalone resets signal actions on install/exec | Needs design: per-Linux-image actions with fault routing by thread ownership; retain ART handlers on ART threads; runner does not call `proxy_install` or reset them |
@@ -29,7 +29,7 @@ entire production syscall dispatcher.
 | File table, fd numbers, CLOEXEC | Proxy tracks virtual pack fds and closes real CLOEXEC fds at exec | Needs design: reserve logical Linux fd namespace, own only Linux descriptions; never close ART Binder/Surface/event fds; fixture output uses passed duplicate fds, no dup2 on ART stdio |
 | cwd, umask, rlimits | `vfs_chdir` also changes real cwd; other changes can be process-wide | Needs change: virtual cwd/umask/limits, apply creation masks in proxy, reject unsafe global operations; no JNI chdir/setenv/setrlimit |
 | mmap hints/MAP_FIXED, brk | Loader protects only its fixed resident range; standalone brk belongs to process | Needs change: track ART versus Linux VMAs, reject foreign unmap/remap/fixed collisions; runner accepts only PIE, freezes Linux brk so libc falls back to mmap |
-| fork/vfork, children | Standalone fork paths and adoption spike support children | Needs design: resident atfork/ART safety, child registry reset, Linux-only exec in real child; initial JNI slice rejects fork/vfork |
+| fork/vfork, children | Standalone fork paths and adoption spike support children | Needs design: same-app Android child-process broker, Linux state snapshot and wait/SIGCHLD transport; never native-fork ART; initial JNI slice rejects fork/vfork |
 | ABI changes | Separate i386 peer loader uses kernel exec | Needs design: cannot switch ART process to i386; explicitly reject in JNI until same-process compat execution is designed |
 
 ## Entry and ownership
@@ -49,7 +49,11 @@ precedence over inherited ERRNO for payload syscalls, but raw gateways must
 still use calls allowed by the inherited filter. The filter permits the
 resident raw gateway and resident libc executable mapping. This is routing,
 not a security boundary: the existing stub UID/SELinux sandbox is the boundary.
-Resident libc needs native clone continuations and its own pthread TLS. An
+Resident libc needs native clone continuations and its own pthread TLS.
+On Bionic, the libc/ART SIGSYS trampoline can touch FS before our handler
+restores it; the JNI runner therefore installs SIGSYS directly and never
+changes ART SIGSEGV/SIGBUS actions. This still needs an audit against future
+ART SIGSYS ownership changes. An
 application clone is decoded from the kernel ABI and fulfilled by a resident
 pthread; the new worker then adopts Linux TLS/registers. Signal handlers and
 FS switching must never invoke compiler TLS, stack protectors or lazy PLT
@@ -57,14 +61,17 @@ binding while application FS is installed.
 
 The new backend is compiled under `MATON_IN_PROCESS`; the existing spike and
 standalone proxy retain their behaviour. The process-wide SIGSYS action is
-installed through resident sigaction, preserves the prior action, and routes
+installed with the kernel rt_sigaction ABI and a raw restorer, preserves the
+prior kernel action, and routes
 unowned threads to it. SIGSEGV/SIGBUS are untouched in this first slice. Signal
 mask changes retain deliverable SIGSYS. This must be tested with ART's sigchain
 on device; host glibc is not an adequate substitute.
 
 A clean exit gates through sigreturn to restore resident FS/stack, performs
 Linux robust-list/clear-child-tid cleanup, lets resident pthread cleanup run,
-and returns the Linux exit status to Java. Initial images require joined
+and returns the Linux exit status to Java for cleanup. Production must then
+terminate this Android process; only diagnostics retain it for responsiveness
+checks. Initial images require joined
 workers. Unjoined-worker exit_group is **not yet safe**: group cancellation,
 wait-for-quiescence and resource release are prerequisites for arbitrary apps.
 The initial runner rejects fixed-address ET_EXEC to protect ART mappings and
@@ -95,15 +102,37 @@ need a complete per-session resource ledger before long-lived repeat use.
 4. Implement Linux group exit, signal action/delivery ownership, resource
    teardown and repeated-session tests. Test ART GC, Binder, looper, Surfaces,
    Linux fault death and relaunch, including exit from a worker.
-5. Support app-requested real children (Firefox content/GPU processes). Fork
-   through a resident/ART-safe boundary; children rebase the adoption/session
-   registries and never call inherited Java objects or Binder/libgui state.
-   Their exec replaces only their own Linux image, with the child bootstrap
-   carrying mounts/fds/proxy state. Parent owns all Android windows. Children
-   reach them over the existing Wayland/X11 sockets; GPU children use an
-   authenticated parent GPU/surface channel and pass buffer/fence fds. Direct
-   inherited ART Surface pointers are invalid as a child interface. This needs
-   an explicit child bootstrap and atfork audit before Firefox testing.
+5. Every app-requested Linux process (fork/clone without CLONE_VM,
+   posix_spawn, vfork+exec) must run inside another zygote-created Android
+   process of the same stub app. Generate private service slots with
+   `android:process=":linux_child_N"`; a same-UID authenticated broker assigns
+   a free slot, starts its service and transfers a bootstrap through Binder
+   descriptors. A finite manifest slot pool needs explicit exhaustion behavior
+   (EAGAIN), never a native-fork fallback. Each service owns ART, Binder,
+   compositor and its per-window Surfaces; GPU/content children can use the
+   direct Android window path too. No inherited Java object or Surface pointer
+   crosses processes. Surface/window IDs and descriptors cross authenticated
+   IPC where required.
+
+   Spawn/exec bootstraps carry argv/env, virtual mounts/cwd/umask/limits,
+   logical fd descriptions and shared mapping handles. General fork is harder:
+   another zygote process has its own ASLR/ART mappings, so restoring Linux
+   VMAs/registers at identical addresses needs a conflict-checked snapshot
+   protocol and shared-file-description/CoW semantics. This is unresolved,
+   mandatory work; native fork is not an acceptable shortcut. vfork suspends
+   the Linux caller until child exec/exit acknowledgment. Maintain a broker
+   parent/child registry with virtual Linux identity, exit status, wait/waitid
+   and SIGCHLD delivery; Binder death must also report crashes and unexpected
+   process loss. Process-directed Linux signals route to the target session.
+   Tests must cover orphan/reparent behavior and parent death.
+
+   On clean Linux exit, quiesce its Linux threads, release windows/resources,
+   report status to its broker parent, then terminate the owning Android
+   process. Crashes may terminate it immediately; Binder death completes the
+   parent's wait state. No production stub/service lingers or restarts after
+   payload death. The stage-one diagnostic intentionally returns to live ART
+   for two runs and looper checks before this final lifecycle step: it proves
+   a cleanup gate, not production exit policy.
 6. Switch `V3Launcher` to JNI after those invariants pass and keep the old
    ProcessBuilder launch only behind an explicitly named temporary development
    switch during transition. Delete that path and the switch once Flatpak and
@@ -117,7 +146,7 @@ TLS and use the stub's actual per-window Surface. This removes the current
 cross-process Surface limitation. It does not by itself provide Vulkan WSI:
 window-to-Surface lifetime, acquire/present synchronization, buffer ownership,
 resize/destruction and resident callback entry still need their forwarder
-implementation. App-created GPU children retain the socket/fd route above.
+implementation. Each Android child process owns its own libgui/Surface path; cross-process GPU/window ownership still requires explicit authenticated fd/ID transport.
 
 ## Tests and diagnostic switch
 
