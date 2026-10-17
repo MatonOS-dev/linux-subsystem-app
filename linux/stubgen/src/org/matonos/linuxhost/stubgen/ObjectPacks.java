@@ -171,11 +171,10 @@ public final class ObjectPacks {
                 long length=PlaceholderFiles.size(e.source), start=out.getFilePointer();
                 if(length>=0xffffffffL || start>=0xffffffffL)throw new IOException("ZIP64 pack required");
                 CRC32 crc=new CRC32();byte[] buffer=new byte[65536];int n;
-                File spool=File.createTempFile("object-",".tmp",file.getParentFile());
-                try {
-                try(InputStream in=PlaceholderFiles.open(e.source);OutputStream copy=new BufferedOutputStream(new FileOutputStream(spool))) {
-                    while((n=in.read(buffer))!=-1){copy.write(buffer,0,n);crc.update(buffer,0,n);}
-                }
+                // The CRC precedes the data in the local header and the pack
+                // hash is streamed, so the payload is read twice rather than
+                // spooled or patched afterwards.
+                try(InputStream in=PlaceholderFiles.open(e.source)){while((n=in.read(buffer))!=-1)crc.update(buffer,0,n);}
                 byte[] name=e.checksum.getBytes(StandardCharsets.US_ASCII);
                 int pad=(int)(-(start+30+name.length+4)&4095);
                 ByteArrayOutputStream extra=new ByteArrayOutputStream();le(extra,0x4d54,2);le(extra,pad,2);extra.write(new byte[pad]);
@@ -184,13 +183,13 @@ public final class ObjectPacks {
                 le(local,crc.getValue(),4);le(local,length,4);le(local,length,4);le(local,name.length,2);le(local,extra.size(),2);
                 local.write(name);extra.writeTo(local);hashed.write(local.toByteArray());
                 e.offset=out.getFilePointer();e.length=length;
-                try(InputStream in=new BufferedInputStream(new FileInputStream(spool))){while((n=in.read(buffer))!=-1)hashed.write(buffer,0,n);}
-                if(out.getFilePointer()!=e.offset+length)throw new IOException("Payload changed while packing");
+                CRC32 written=new CRC32();
+                try(InputStream in=PlaceholderFiles.open(e.source)){while((n=in.read(buffer))!=-1){hashed.write(buffer,0,n);written.update(buffer,0,n);}}
+                if(written.getValue()!=crc.getValue() || out.getFilePointer()!=e.offset+length)throw new IOException("Payload changed while packing");
                 le(central,0x02014b50,4);le(central,0x0314,2);le(central,20,2);le(central,0,2);le(central,0,2);le(central,0,2);le(central,33,2);
                 le(central,crc.getValue(),4);le(central,length,4);le(central,length,4);le(central,name.length,2);le(central,extra.size(),2);
                 le(central,0,2);le(central,0,2);le(central,0,2);le(central,(long)(e.mode&65535)<<16,4);le(central,start,4);
                 central.write(name);extra.writeTo(central);
-                } finally {spool.delete();}
             }
             long start=out.getFilePointer();
             if(start+central.size()>=0xffffffffL)throw new IOException("ZIP64 pack required");
