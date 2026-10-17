@@ -62,9 +62,9 @@ public final class StagedPacks {
             dependencies.add(new org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency(dependency,row.getString("origin"),row.getString("mount")));
         }
         org.matonos.linuxhost.stubgen.DeploymentRecord record=new org.matonos.linuxhost.stubgen.DeploymentRecord(
-                ref,commit,manifest.getString("origin"),Files.readAllBytes(new File(deployment,"metadata").toPath()),
-                Files.readAllBytes(new File(deployment,"deploy").toPath()),
-                Files.readAllBytes(new File(sourceRepo,"objects/"+commit.substring(0,2)+"/"+commit.substring(2)+".commit").toPath()),dependencies,manifest.getString("mount"));
+                ref,commit,manifest.getString("origin"),org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(deployment,"metadata")),
+                org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(deployment,"deploy")),
+                org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(sourceRepo,"objects/"+commit.substring(0,2)+"/"+commit.substring(2)+".commit")),dependencies,manifest.getString("mount"));
         Files.write(new File(output,"deployment.bin").toPath(),record.encode());
     }
     /** Flatpak authenticates downloads. Check repository content before packing. */

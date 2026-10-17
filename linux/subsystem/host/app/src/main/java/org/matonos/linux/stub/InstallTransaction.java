@@ -293,7 +293,7 @@ public final class InstallTransaction {
                 manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             }
             if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,
-                    Files.readAllBytes(new File(DeployManifest.stagedDeployment(installation,manifest),"metadata").toPath())))
+                    org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(DeployManifest.stagedDeployment(installation,manifest),"metadata"))))
                 throw new java.io.IOException("Pulled deployment differs from planned Flatpak commit");
             StagedPacks.verify(context,installation,()->cancelled.get());
             report("staging",-1,"Temporary operation allocated bytes after pull: "+allocatedBytes(operationDirectory())+

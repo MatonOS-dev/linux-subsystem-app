@@ -2,6 +2,7 @@ package org.matonos.linux.stub;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -88,7 +89,7 @@ public final class DeployManifest {
         if (!metadataFile.getCanonicalPath().startsWith(root)
                 || Files.isSymbolicLink(metadataFile.toPath()) || !metadataFile.isFile())
             throw new IOException("Staged app metadata escapes the private installation");
-        byte[] metadata = Files.readAllBytes(metadataFile.toPath());
+        byte[] metadata = PlaceholderFiles.readAllBytes(metadataFile);
         if (metadata.length == 0 || metadata.length > 128 * 1024)
             throw new IOException("Staged app metadata is empty or too large");
         return new String(metadata, StandardCharsets.UTF_8);
@@ -145,7 +146,7 @@ public final class DeployManifest {
     private static Deployment read(File version, String ref, String remote) throws Exception {
         byte[] data;
         try {
-            data = Files.readAllBytes(new File(version, "deploy").toPath());
+            data = PlaceholderFiles.readAllBytes(new File(version, "deploy"));
         } catch (Exception error) {
             throw new IOException("Cannot read staged deployment metadata", error);
         }
