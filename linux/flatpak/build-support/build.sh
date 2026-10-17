@@ -163,7 +163,6 @@ fi
 if [ "$START_AT" != flatpak ]; then
 mkdir -p "$BUILD/ostree"; cd "$BUILD/ostree"
 if [ ! -x "$SRC/ostree/configure" ]; then
-  REPO=$(CDPATH= cd -- "$HERE/.." && pwd)
   ALPINE_SCRATCH=${ALPINE_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
   ALPINE_WORK=$(CDPATH= cd -- "$(dirname "$CACHE")" && pwd)
   [ -d "$ALPINE_SCRATCH/rootfs/x86_64" ] || { echo "Alpine rootfs missing: $ALPINE_SCRATCH/rootfs/x86_64" >&2; exit 1; }
@@ -172,7 +171,7 @@ if [ ! -x "$SRC/ostree/configure" ]; then
   [ -e "$ALPINE_WORK/inputs" ] || ln -s "$ALPINE_SCRATCH/inputs" "$ALPINE_WORK/inputs"
   SCRATCH="$ALPINE_WORK" ARCH=x86_64 ALPINE_INPUTS_DIR="$ALPINE_WORK/inputs" \
     GPGME_LITE_SRC="$SRC/DullPGP" ALPINE_SRC_ROOT="/scratch/$(basename "$CACHE")/src" \
-    "$REPO/flatpak/alpine-enter.sh" sh -c 'cd "$ALPINE_SRC_ROOT/ostree" && ACLOCAL_PATH="$ALPINE_SRC_ROOT/DullPGP" NOCONFIGURE=1 ./autogen.sh'
+    "$HERE/alpine-enter.sh" sh -c 'cd "$ALPINE_SRC_ROOT/ostree" && ACLOCAL_PATH="$ALPINE_SRC_ROOT/DullPGP" NOCONFIGURE=1 ./autogen.sh'
 fi
 ac_cv_c_undeclared_builtin_options='none needed' "$SRC/ostree/configure" --host="$HOST" --prefix="$PREFIX" --libdir="$PREFIX/lib" --disable-shared --enable-static --with-curl --with-gpgme --without-soup --without-soup3 --without-selinux --without-libmount --without-avahi --disable-rofiles-fuse --disable-man --disable-installed-tests --without-composefs --with-crypto=glib CC="$CC" CFLAGS="$COMPAT_CFLAGS -I$PREFIX/include/gpgme-lite" LIBS="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/36/libc++.a" PKG_CONFIG="$PKG_CONFIG" PKG_CONFIG_LIBDIR="$PKG_CONFIG_LIBDIR"
 printf '#include "config.h"\n' > "$BUILD/ostree/libglnx-config.h"
