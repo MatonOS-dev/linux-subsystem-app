@@ -28,4 +28,7 @@ python3 tests/i386-dns.py
 
 python3 tests/i386-resolver.py
 
-timeout 15 build/linux-layer-v3-i386 --android-filter "$PWD/build/i386-p1/nofollow"
+fixture=$(mktemp -d "$PWD/build/i386-nofollow.XXXXXX")
+touch "$fixture/.v3-store-root"
+timeout 15 build/linux-layer-v3-i386 --android-filter "$PWD/build/i386-p1/nofollow" "$fixture"
+rm -r "$fixture"

@@ -260,13 +260,12 @@ Round 14 replaces the named-file copy fallback with a hidden inode store.
 On the first named link, the regular file moves atomically into
 `<private-tree>/.v3-inodes/i-<128-bit-random-id>` and both names become
 symlinks to that same backing file. Subsequent links add another name.
-The store lives in the highest ancestor on the same filesystem owned by the
-caller, writable/searchable by its owner, and without group/other write bits.
-An owner-owned regular `.v3-store-root` file (checked without following
-symlinks) instead selects the nearest marked eligible ancestor, even when
-an unmarked store already exists below it. Both link names must select the
-same store or linking returns EXDEV. Without a valid marker, existing store
-selection is unchanged. The marker stays visible; payload mutation, removal,
+The store exists only beneath the nearest owner-owned regular
+`.v3-store-root` (checked without following symlinks). Both names must be
+under that same marker. Without a marker, link/linkat use the kernel result
+and never create a store. Root-move target rewriting and its recovery journal
+are removed; symlink-era stores must not be relocated while in use.
+The marker stays visible; payload mutation, removal,
 renaming and alias creation are refused with EPERM. The owner creates it
 before starting the proxy; no old stores are migrated.
 
@@ -306,12 +305,6 @@ mutations currently recount all store objects (an optimization opportunity).
 This protects against process death, rather than promising power-loss
 transactions; the journal and directory updates are not fsync-ordered.
 
-Store-root rename carries a relocation journal with the directory and repairs
-absolute store targets under its existing lock. Repair is idempotent after
-process death, and cwd identity is rechecked so relative paths follow a moved
-working directory. Store-root RENAME_EXCHANGE is currently ENOTSUP; ordinary
-file-name exchange continues through the kernel and count reconciliation.
-
 Remaining limits: all same-filesystem subdirectories of a tree must remain readable during recount;
 permission-denied recovery fails closed. Raw/unintercepted changes to names
 are outside the protocol. The first conversion has a rename-to-symlink gap
@@ -319,29 +312,9 @@ for raw observers; proxied open/metadata/listing operations serialize against
 it. Pre-existing native hard links are not imported as extra logical names.
 These are compatibility limits; the proxy is not a security boundary.
 
-Round-13 temporary-file limits remain: `.matonos-tmp-*` files are discoverable
-and report physical nlink 1 before publication. Abrupt death, direct SYS_exit,
-untracked fd transfers/manipulation, and moving a containing directory can
-leave temporary files/shared reference records. Descriptor-table mutation and
-fork continuation remain unsynchronized. CLONE_FILES without CLONE_VM returns
-ENOTSUP; existing thread/CLONE_FS limits remain. Cleanup is best effort when
-kernel permissions deny unlink.
-
-`tests/run.sh` runs both publication fixtures under the copied app filter and
-a preceding kernel filter returning EACCES for every linkat. The denial wrapper
-first proves a raw linkat gets EACCES before launching the proxy. Tests cover
-Flatpak-style proc-fd publication, AT_EMPTY_PATH, EEXIST/retry, rejection of a
-second publication, duplicate-last-close cleanup, O_EXCL, child-first and
-parent-first closure, resident exec/CLOEXEC, exit cleanup, failed clone rollback,
-posix_spawn, shared named inodes with timestamps/mode/data, outside-tree and
-symlink rejection, EXDEV, EROFS and renameat2 behavior. `tests/hardlinks.c`
-adds shared-write, O_NOFOLLOW, statx/lstat/fstat/nlink, hidden-listing,
-same-inode rename, last-unlink/open-fd lifetime, fork/exec concurrency and
-independent loader-process tests, plus a store-root move and move-back.
-Host-created interrupted transactions verify conversion restoration, orphan
-collection, and interrupted store relocation on the next access. Host tests do not
-reproduce SELinux. Combined round-13/14 host suite and the NDK r30/API-36 freestanding
-loader build passed; no adb/device/image test was performed.
+`tests/run.sh` verifies named temp fallback, unmarked kernel hardlink behavior,
+marker scoping and protection, shared-write and metadata semantics, independent
+processes, conversion recovery and incremental counts. No VM was used.
 
 Round 15 GPU sysfs: at startup the freestanding loader reads the five
 `vendor.maton.graphics.{vendor,device,driver,render_node,mode}` properties

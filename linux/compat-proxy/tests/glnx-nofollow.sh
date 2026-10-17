@@ -20,5 +20,6 @@ cc -no-pie -O2 -Wl,--gc-sections -Ibuild/glnx-host -I"$src" $(pkg-config --cflag
     tests/glnx-nofollow.c build/glnx-host/{chase,fdio,errors}.o \
     $(pkg-config --libs gio-unix-2.0) -o build/glnx-nofollow
 fixture=$(mktemp -d "$PWD/build/glnx-fixture.XXXXXX")
+touch "$fixture/.v3-store-root"
 trap 'rm -r "$fixture"' EXIT
 timeout 20 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/glnx-nofollow" "$fixture"

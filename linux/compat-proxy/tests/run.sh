@@ -35,6 +35,7 @@ timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/static" >build/stat
 cat build/static.out
 
 mkdir -p build/legacy-fixture build/nested-fixture
+rm -f build/fixture-dir/hard-symlink
 ln -sfn /virtual-v3/fixture build/fixture-dir/absolute
 ln -sfn fixture build/fixture-dir/relative
 for test in legacy paths; do
@@ -120,23 +121,21 @@ cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sectio
 build/store-marker "$marker_fixture/outer"
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$marker_fixture" --markers >build/markers.out 2>build/markers.log
 cat build/markers.out
-# Inspect real symlink targets outside the proxy, where stores remain visible.
+# Inspect stores outside the proxy; unmarked roots must stay untouched.
 python3 - "$marker_fixture" <<'PYMARKERS'
 import pathlib, sys, shutil
 root=pathlib.Path(sys.argv[1]).resolve()
-for name, boundary in [('outer/deep','outer'), ('outer/nested/deep','outer/nested'), ('plain/deep',''), ('symlink/deep',''), ('foreign/deep','')]:
-    target=(root/name/'a').readlink()
-    assert target.parent == root/boundary/'.v3-inodes', (name,target)
+for name, boundary in [('outer/deep','outer'), ('outer/nested/deep','outer/nested')]:
+    assert (root/name/'a').readlink().parent == root/boundary/'.v3-inodes'
+for name in ('plain','symlink','foreign'):
+    assert not (root/name/'deep/b').exists()
+assert not (root/'.v3-inodes').exists()
 assert not (root/'outer/deep/.v3-inodes').exists()
-# Direct owner cleanup, as Java does, must reclaim the entire operation store.
-before=set((root/'.v3-inodes').iterdir())
-shutil.rmtree(root/'outer')
-assert set((root/'.v3-inodes').iterdir()) == before
-assert not list(root.glob('**/i-*')) or all(p.parent == root/'.v3-inodes' for p in root.glob('**/i-*'))
 shutil.rmtree(root)
 PYMARKERS
-printf 'PASS nearest/nested markers, legacy selection, ignored markers and owner cleanup\n'
+printf 'PASS nearest/nested markers and no unmarked stores\n'
 hardlinks_fixture=$(mktemp -d "$PWD/build/hardlinks-fixture.XXXXXX")
+touch "$hardlinks_fixture/.v3-store-root"
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$hardlinks_fixture" >build/hardlinks-test.out 2>build/hardlinks-test.log
 if [[ -n ${MATON_TEST_GLNX_SOURCE:-} ]]; then bash tests/glnx-nofollow.sh; fi
 cat build/hardlinks-test.out
@@ -146,6 +145,7 @@ test "$(find "$hardlinks_fixture/.v3-inodes" -type f ! -name lock | wc -l)" -eq 
 rm -r "$hardlinks_fixture"
 
 crash_fixture=$(mktemp -d "$PWD/build/crash-fixture.XXXXXX")
+touch "$crash_fixture/.v3-store-root"
 python3 - "$crash_fixture" <<'PYCRASH'
 import pathlib, sys
 root=pathlib.Path(sys.argv[1]).resolve()
@@ -167,6 +167,7 @@ test ! -e "$crash_fixture/.v3-inodes/conversion"
 rm -r "$crash_fixture"
 
 independent_fixture=$(mktemp -d "$PWD/build/independent-fixture.XXXXXX")
+touch "$independent_fixture/.v3-store-root"
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --prepare >build/independent-test.out 2>build/independent-test.log
 independent_pids=()
 for i in {1..8}; do
@@ -177,23 +178,6 @@ for pid in "${independent_pids[@]}"; do wait "$pid"; done
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --check >>build/independent-test.out 2>>build/independent-test.log
 cat build/independent-test.out
 rm -r "$independent_fixture"
-
-move_fixture=$(mktemp -d "$PWD/build/move-fixture.XXXXXX")
-python3 - "$move_fixture" <<'PYMOVE'
-import pathlib, sys
-root=pathlib.Path(sys.argv[1]).resolve()
-old=root.with_name(root.name+'.old')
-store=root/'.v3-inodes'; store.mkdir(mode=0o700)
-(root/'restored').write_text('ordinary file')
-(store/'i-survivor').write_text('moved inode')
-(root/'survivor').symlink_to(old/'.v3-inodes/i-survivor')
-(store/'move').write_bytes(str(old).encode()+b'\0'+str(root).encode()+b'\0')
-(store/'dirty').touch()
-PYMOVE
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$move_fixture" --recover >build/move-test.out 2>build/move-test.log
-test ! -e "$move_fixture/.v3-inodes/move"
-printf 'PASS interrupted store-root rename recovery\n'
-rm -r "$move_fixture"
 
 bash tests/links-incremental.sh
 # Mixed-class exec requires a non-writable peer-loader directory.

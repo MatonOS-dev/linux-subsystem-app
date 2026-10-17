@@ -17,18 +17,6 @@
 #include <signal.h>
 #endif
 static size_t number(char *out,unsigned long value){char b[24];size_t n=0,k=0;do{b[n++]=(char)('0'+value%10);value/=10;}while(value);while(n)out[k++]=b[--n];return k;}
-/* Conservative generic app-tree predicate: a shared parent owned by the
- * real caller, owner-writable/searchable, with no group/other write bits.
- * This is compatibility policy, not a replacement for UID/SELinux checks. */
-static int writable_tree(const char *source,const char *target){
- if(source[0]!='/' || target[0]!='/')return 0;
- size_t common=0;for(size_t i=0;source[i] && target[i] && source[i]==target[i];i++)if(source[i]=='/')common=i;
- if(!common || common>=PATH_MAX)return 0;
- char parent[PATH_MAX];p_copy(parent,source,common);parent[common]=0;
- struct proxy_stat st;long uid=RAW(PROXY_SC_geteuid,0,0,0,0,0,0);
- return !arch_stat_at(AT_FDCWD,parent,&st,AT_SYMLINK_NOFOLLOW) && S_ISDIR(st.st_mode) && st.st_uid==(uid_t)uid && (st.st_mode&0300)==0300 && !(st.st_mode&0022) && !RAW(PROXY_SC_faccessat,AT_FDCWD,parent,W_OK|X_OK,0,0,0);
-}
-
 /* Stores are private, filesystem-local trees. Counts are persistent; only
  * corrupt or missing count metadata (signalled by the dirty marker) requires a full recount. */
 static int component(const char *p){
@@ -47,18 +35,13 @@ static int private_dir(const char *p,dev_t dev){struct proxy_stat st;return !arc
 static int marked(const char *dir){char name[PATH_MAX];struct proxy_stat st;return catpath(name,dir,".v3-store-root") && !arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_uid==(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0);}
 int links_marker(const char *path){const char *name=path;for(const char *p=path;*p;p++)if(*p=='/')name=p+1;return p_equal(name,".v3-store-root");}
 static int tree(char *root,const char *path){
- struct proxy_stat st;char up[PATH_MAX],fallback[PATH_MAX];int selected=0;
- if(!parent(root,path) || arch_stat_at(AT_FDCWD,root,&st,0)<0 || !private_dir(root,st.st_dev))return 0;
+ struct proxy_stat st;char up[PATH_MAX];
+ if(!parent(root,path) || arch_stat_at(AT_FDCWD,root,&st,0)<0)return 0;
  for(;;){
-  if(marked(root))return 1;
-  if(!selected){char store[PATH_MAX];struct proxy_stat own;
-   p_copy(fallback,root,p_len(root)+1);
-   if(catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&own,AT_SYMLINK_NOFOLLOW) && S_ISDIR(own.st_mode))selected=1;
-  }
-  if(!parent(up,root) || p_equal(up,root) || !private_dir(up,st.st_dev))break;
+  if(marked(root))return private_dir(root,st.st_dev);
+  if(!parent(up,root) || p_equal(up,root))return 0;
   p_copy(root,up,p_len(up)+1);
  }
- p_copy(root,fallback,p_len(fallback)+1);return 1;
 }
 int links_target(const char *name,char *out){long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,name,out,PATH_MAX-1,0,0);if(n<=0)return 0;out[n]=0;if(out[0]!='/' || !component(out))return 0;struct proxy_stat st;return !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);}
 static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0) || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
@@ -144,26 +127,10 @@ static long begin_intent(const char *root,const char *store,const char *p,const 
  if(!r && (j->object[0][0] || j->object[1][0]))r=journal_write(store,"intent",j,sizeof(*j));
  vfs_free(j);return r;
 }
-/* A store-root rename carries a journal inside the renamed directory.
- * Rewriting absolute targets is idempotent, including after process death. */
-static long rewrite_names(const char *dir,const char *oldroot,const char *newroot,const char *store,dev_t dev){
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,dir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;
- char *buf=vfs_alloc(4096),*path=vfs_alloc(PATH_MAX),*target=vfs_alloc(PATH_MAX),*replacement=vfs_alloc(PATH_MAX);long r=0,n;
- if(!buf || !path || !target || !replacement){r=-ENOMEM;goto end;}
- while((n=RAW(PROXY_SC_getdents64,fd,buf,4096,0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){r=-EIO;goto end;}char *name=(void *)(d+19);off+=len;if(p_equal(name,".") || p_equal(name,"..") || p_equal(name,".v3-inodes"))continue;if(!catpath(path,dir,name)){r=-ENAMETOOLONG;goto end;}struct proxy_stat st;r=arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(S_ISDIR(st.st_mode) && st.st_dev==dev){r=rewrite_names(path,oldroot,newroot,store,dev);if(r)goto end;}else if(S_ISLNK(st.st_mode)){long k=RAW(PROXY_SC_readlinkat,AT_FDCWD,path,target,PATH_MAX-1,0,0);if(k<0){r=k;goto end;}target[k]=0;size_t a=p_len(oldroot),b=p_len(newroot),j=0;while(j<a && target[j]==oldroot[j])j++;if(j==a && target[j]=='/' && links_hidden(target+j+1)){size_t tail=p_len(target+a);if(b+tail>=PATH_MAX){r=-ENAMETOOLONG;goto end;}p_copy(replacement,newroot,b);p_copy(replacement+b,target+a,tail+1);char temp[PATH_MAX];if(!catpath(temp,store,"fix")){r=-ENAMETOOLONG;goto end;}RAW(PROXY_SC_unlinkat,AT_FDCWD,temp,0,0,0,0);r=RAW(PROXY_SC_symlinkat,replacement,AT_FDCWD,temp,0,0,0);if(!r)r=RAW(PROXY_SC_renameat2,AT_FDCWD,temp,AT_FDCWD,path,0,0);if(r)goto end;}}}}
- if(n<0)r=n;
-end:RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(buf);vfs_free(path);vfs_free(target);vfs_free(replacement);return r;
-}
-static long move_recovery(const char *root,const char *store){
- char journal[PATH_MAX];if(!catpath(journal,store,"move"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,journal,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd==-ENOENT)return 0;if(fd<0)return fd;
- char *data=vfs_alloc(PATH_MAX*2);if(!data){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}long n=RAW(PROXY_SC_read,fd,data,PATH_MAX*2-1,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);long r=0;if(n>0){data[n]=0;size_t k=p_len(data);if(k+1<(size_t)n && !p_equal(root,data)){struct proxy_stat st;r=arch_stat_at(AT_FDCWD,root,&st,0);if(!r)r=rewrite_names(root,data,root,store,st.st_dev);}}else if(n<0)r=n;
- vfs_free(data);if(!r)r=RAW(PROXY_SC_unlinkat,AT_FDCWD,journal,0,0,0,0);return r;
-}
 struct recount_record {struct recount_record *next;dev_t dev;ino_t ino;};
 static struct recount_record *recounted;
 static long recover(const char *root,const char *store){
- long moving=move_recovery(root,store);if(moving)return moving;
- moving=finish_intent(store);if(moving && moving!=-EIO)return moving;
+ long moving=finish_intent(store);if(moving && moving!=-EIO)return moving;
  char marker[PATH_MAX];struct proxy_stat markerstat;if(!catpath(marker,store,"dirty"))return -ENAMETOOLONG;int changed=moving==-EIO || !arch_stat_at(AT_FDCWD,marker,&markerstat,AT_SYMLINK_NOFOLLOW);
  /* An interrupted first conversion restores its original name before GC. */
  char journal[PATH_MAX];if(!catpath(journal,store,"conversion"))return -ENAMETOOLONG;
@@ -203,7 +170,7 @@ static long store_link(const char *source,const char *target){
  char sourceparent[PATH_MAX];if(!parent(sourceparent,source) || !parent(destparent,target))return -ENAMETOOLONG;
  long r=arch_stat_at(AT_FDCWD,sourceparent,&src,0);if(r)return r;
  r=arch_stat_at(AT_FDCWD,destparent,&dst,0);if(r)return r;if(src.st_dev!=dst.st_dev)return -EXDEV;
- if(!writable_tree(source,target) || !tree(root,source))return -EPERM;
+ if(!tree(root,source))return RAW(PROXY_SC_linkat,AT_FDCWD,source,AT_FDCWD,target,0,0);
  char other[PATH_MAX];if(!tree(other,target) || !p_equal(root,other))return -EXDEV;
  long lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r)goto end;
  r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(S_ISLNK(src.st_mode) && !links_target(source,object)){r=-EPERM;goto end;}
@@ -219,19 +186,8 @@ static long store_link(const char *source,const char *target){
  r=RAW(PROXY_SC_symlinkat,object,AT_FDCWD,target,0,0,0);{long clean=finish_intent(store);if(!r)r=clean;}
 end:unlock(lock);return r;
 }
-static long move_root(long nr,proxy_arg_t *a,const char *p,const char *q){
- char store[PATH_MAX],next[PATH_MAX],journal[PATH_MAX];struct proxy_stat st;
- if(!q || !catpath(store,p,".v3-inodes") || arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return -ENOSYS;
- if(nr==PROXY_SC_renameat2 && (a[4]&RENAME_EXCHANGE))return -ENOTSUP;
- if(!catpath(next,q,".v3-inodes") || !catpath(journal,store,"move"))return -ENAMETOOLONG;
- long lock=store_lock(p,store);if(lock<0)return lock;long r=recover(p,store);if(r)goto end;
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,journal,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0){r=fd;goto end;}char *data=vfs_alloc(PATH_MAX*2);if(!data){RAW(PROXY_SC_close,fd,0,0,0,0,0);r=-ENOMEM;goto end;}size_t pn=p_len(p)+1,qn=p_len(q)+1;p_copy(data,p,pn);p_copy(data+pn,q,qn);r=RAW(PROXY_SC_write,fd,data,pn+qn,0,0,0);vfs_free(data);RAW(PROXY_SC_close,fd,0,0,0,0,0);if(r!=(long)(pn+qn)){r=r<0?r:-EIO;goto end;}
- r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r)r=recover(q,next);else recover(p,store);
-end:unlock(lock);return r;
-}
 long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
  char root[PATH_MAX],other[PATH_MAX],store[PATH_MAX];
- if(q){long moved=move_root(nr,a,p,q);if(moved!=-ENOSYS)return moved;}
  if(q && (nr==PROXY_SC_renameat || (nr==PROXY_SC_renameat2 && !(a[4]&RENAME_NOREPLACE)))){char left[PATH_MAX],right[PATH_MAX];if(links_target(p,left) && links_target(q,right) && p_equal(left,right))return 0;}
  if(nr==PROXY_SC_unlinkat && (a[2]&AT_REMOVEDIR))remove_empty_store(p);
  if(!tree(root,p))return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
@@ -278,5 +234,7 @@ void links_payload_fd_stat(int fd,void *wire){struct proxy_stat s;arch_stat_deco
 
 long links_publish(const char *source,const char *target,long flags){
  if(flags&~AT_SYMLINK_FOLLOW)return -EINVAL;
+ char root[PATH_MAX],other[PATH_MAX];
+ if(!tree(root,source) || !tree(other,target))return RAW(PROXY_SC_linkat,AT_FDCWD,source,AT_FDCWD,target,flags,0);
  return store_link(source,target);
 }

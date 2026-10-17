@@ -2,7 +2,7 @@
 import pathlib, subprocess, tempfile, os, signal, time
 base=pathlib.Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='incremental-',dir=base/'build') as tmp:
-    root=pathlib.Path(tmp).resolve();(root/'src').mkdir(mode=0o700);(root/'dst').mkdir(mode=0o700);(root/'.v3-inodes').mkdir(mode=0o700)
+    root=pathlib.Path(tmp).resolve();(root/'.v3-store-root').touch();(root/'src').mkdir(mode=0o700);(root/'dst').mkdir(mode=0o700);(root/'.v3-inodes').mkdir(mode=0o700)
     for i in range(20000): (root/'src'/str(i)).touch()
     for i in range(5000): (root/'dst'/str(i)).touch()
     args=[str(base/'build/link-deny'),str(base/'build/links-test-loader'),'--android-filter',str(base/'build/links-incremental-test'),str(root)]
@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='incremental-',dir=base/'build') as tmp:
     assert not backing.exists() and not pathlib.Path(str(backing)+'.count').exists()
 
 with tempfile.TemporaryDirectory(prefix='incremental-corrupt-',dir=base/'build') as tmp:
-    root=pathlib.Path(tmp).resolve();store=root/'.v3-inodes';store.mkdir(mode=0o700);(root/'src').mkdir(mode=0o700)
+    root=pathlib.Path(tmp).resolve();(root/'.v3-store-root').touch();store=root/'.v3-inodes';store.mkdir(mode=0o700);(root/'src').mkdir(mode=0o700)
     for i in range(2):
         obj=store/('i-'+str(i));obj.touch();(root/'src'/str(i)).symlink_to(obj)
         pathlib.Path(str(obj)+'.count').write_bytes(b'x' if i==0 else (1).to_bytes(8,'little'))

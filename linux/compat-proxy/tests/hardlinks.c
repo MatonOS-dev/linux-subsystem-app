@@ -29,11 +29,11 @@ int main(int argc,char **argv){
   errno=0;CHECK(link("outer/deep/a","sibling/b")==-1 && errno==EXDEV);
   errno=0;CHECK(link("outer/deep/a","outer/nested/c")==-1 && errno==EXDEV);
   t=open("plain/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  CHECK(link("plain/deep/a","plain/deep/b")==0);
+  errno=0;CHECK(link("plain/deep/a","plain/deep/b")==-1 && errno==EACCES);
   t=open("symlink/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  CHECK(link("symlink/deep/a","symlink/deep/b")==0);
+  errno=0;CHECK(link("symlink/deep/a","symlink/deep/b")==-1 && errno==EACCES);
   t=open("foreign/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  CHECK(link("foreign/deep/a","foreign/deep/b")==0);
+  errno=0;CHECK(link("foreign/deep/a","foreign/deep/b")==-1 && errno==EACCES);
   const char *m="outer/.v3-store-root";
   t=open(m,O_RDONLY);CHECK(t>=0);close(t);
   DIR *d=opendir("outer");CHECK(d!=NULL);int seen=0;struct dirent *e;while((e=readdir(d)))if(!strcmp(e->d_name,".v3-store-root"))seen=1;closedir(d);CHECK(seen);
@@ -99,9 +99,8 @@ CHECK(lremovexattr("a","user.nofollow")==0);
  char buf[20];errno=0;CHECK(readlink("a",buf,sizeof(buf))==-1 && errno==EINVAL);int second=open("b",O_RDWR|O_NOFOLLOW);CHECK(second>=0);CHECK(pwrite(second,"other",5,0)==5 && pread(fd,buf,5,0)==5 && !memcmp(buf,"other",5));
  CHECK(chmod("b",0600)==0 && fstat(fd,&b)==0 && (b.st_mode&0777)==0600);struct timespec times[2]={{100,123},{200,456}};CHECK(utimensat(AT_FDCWD,"b",times,AT_SYMLINK_NOFOLLOW)==0 && fstat(fd,&b)==0 && b.st_mtim.tv_nsec==456);
  DIR *d=opendir(".");CHECK(d!=NULL);int seen=0;struct dirent *e;while((e=readdir(d))){CHECK(strcmp(e->d_name,".v3-inodes"));if(!strcmp(e->d_name,"a") || !strcmp(e->d_name,"b")){CHECK(e->d_type==DT_REG);seen++;}}closedir(d);CHECK(seen==2);errno=0;CHECK(open(".v3-inodes",O_RDONLY|O_DIRECTORY)==-1 && errno==ENOENT);
- struct stat shm; if(!stat("/dev/shm",&shm) && shm.st_dev!=a.st_dev){char target[128];snprintf(target,sizeof(target),"/dev/shm/v3-hardlinks-%ld",(long)getpid());errno=0;CHECK(link("a",target)==-1 && errno==EXDEV);}
+ struct stat shm; if(!stat("/dev/shm",&shm) && shm.st_dev!=a.st_dev){char target[128];snprintf(target,sizeof(target),"/dev/shm/v3-hardlinks-%ld",(long)getpid());errno=0;CHECK(link("a",target)==-1 && errno==EACCES);}
  CHECK(rename("a","b")==0 && lstat("a",&b)==0 && b.st_nlink==2);CHECK(rename("b","c")==0 && lstat("c",&b)==0 && b.st_nlink==2);CHECK(unlink("a")==0 && fstat(fd,&b)==0 && b.st_nlink==1);
- char moved[4096];CHECK(strlen(argv[1])+7<sizeof(moved));snprintf(moved,sizeof(moved),"%s.moved",argv[1]);CHECK(rename(argv[1],moved)==0 && stat("c",&a)==0 && a.st_nlink==1);CHECK(rename(moved,argv[1])==0 && stat("c",&a)==0 && a.st_nlink==1);
  for(int i=0;i<8;i++){pid_t p=fork();CHECK(p>=0);if(!p){char name[32];snprintf(name,sizeof(name),"child-%d",i);execl(argv[0],argv[0],argv[1],"--link",name,NULL);_exit(3);}}
  for(int i=0;i<8;i++){int status;CHECK(wait(&status)>0 && status==0);}CHECK(stat("c",&a)==0 && a.st_nlink==9);
  for(int i=0;i<8;i++){char name[32];snprintf(name,sizeof(name),"child-%d",i);CHECK(unlink(name)==0);}CHECK(unlink("c")==0 && fstat(fd,&b)==0 && b.st_nlink==0);close(fd);close(second);

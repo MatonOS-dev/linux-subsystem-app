@@ -21,7 +21,8 @@ int main(int argc,char **argv){
  char cwd[1024];CHECK(getcwd(cwd,sizeof(cwd)) && !strcmp(cwd,"/alias-v3/nested"));CHECK(chdir("/virtual-v3/nested")==0);CHECK(getcwd(cwd,sizeof(cwd)) && !strcmp(cwd,"/virtual-v3/nested"));
  f=open("/virtual-v3/absolute",O_RDONLY);CHECK(f>=0);close(f);f=open("/virtual-v3/relative",O_RDONLY);CHECK(f>=0);close(f);
  struct stat st;CHECK(lstat("/virtual-v3/absolute",&st)==0 && S_ISLNK(st.st_mode));
- errno=0;CHECK(linkat(AT_FDCWD,"/virtual-v3/absolute",AT_FDCWD,"/virtual-v3/hard-symlink",0)==-1 && errno==EPERM);
+ CHECK(linkat(AT_FDCWD,"/virtual-v3/absolute",AT_FDCWD,"/virtual-v3/hard-symlink",0)==0);
+ CHECK(lstat("/virtual-v3/hard-symlink",&st)==0 && S_ISLNK(st.st_mode));CHECK(unlink("/virtual-v3/hard-symlink")==0);
  errno=0;CHECK(open("/virtual-v3/absolute",O_CREAT|O_EXCL|O_WRONLY,0600)==-1 && errno==EEXIST);
  errno=0;CHECK(mkdir("/virtual-v3/absolute",0700)==-1 && errno==EEXIST);
  errno=0;CHECK(open("/virtual-v3/fixture/",O_RDONLY)==-1 && errno==ENOTDIR);
