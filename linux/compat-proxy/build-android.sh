@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Freestanding fixed-address x86_64 ELF: no bionic/linker dependency.
+# Production x86_64 loader: bionic stays resident for optional GPU thread adoption.
 set -euo pipefail
 source_dir=$(cd "$(dirname "$0")" && pwd)
 aosp_root=${MATON_AOSP_ROOT:-/mnt/data/aosp}
@@ -17,7 +17,7 @@ mkdir -p "$output/freestanding/gpu-forward-spike/spike3"
 cp "$source_dir/../gpu-forward-spike/"{bootstrap.h,bridge.h} "$output/freestanding/gpu-forward-spike/"
 cp "$source_dir/../gpu-forward-spike/spike3/adopt.h" "$output/freestanding/gpu-forward-spike/spike3/"
 python3 "$build_source/gen-policy.py"
-"$compiler" -DMATON_GPU_BRIDGE -fPIE -no-pie -mcmodel=large -Wl,--image-base=0x600000000000 -Wl,-z,now -Wl,--section-start=.proxy_gateway=0x600000300000 \
+"$compiler" -DMATON_GPU_BRIDGE -fPIE -pie -mcmodel=large -Wl,--image-base=0x600000000000 -Wl,-z,now -Wl,--section-start=.proxy_gateway=0x600000300000 \
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
   "$build_source"/adopt-map.c "$build_source"/arch/x86_64/thread-adopt.c \

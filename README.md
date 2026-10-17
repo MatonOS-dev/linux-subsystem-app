@@ -56,6 +56,16 @@ all outside the source tree. Android instrumentation tests require a device.
 `python3 tests/scan-history.py` checks all reachable history, including deleted
 blobs, for signing/private-key filenames and private-key/JKS contents.
 
+The host APK build also compiles the offscreen Vulkan forwarder and packages its
+ICD library and manifest. It needs the pinned Vulkan-Headers/Loader/Tools sources;
+`build.sh` fetches them into the external output when absent. Set `CMAKE` to the
+repo's pinned CMake binary (the MatonOS integration build uses
+`/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake`). The production x86_64
+loader is Android-linked for bionic thread adoption and accepts `--gpu-bridge`
+only on the v3 Flatpak launch path. `VK_DRIVER_FILES` points apps at this ICD,
+which forwards offscreen Vulkan calls to the Android loader; Mesa app ICD
+fallback is disabled in this mode. i386 and host test loaders stay freestanding.
+
 ## Split boundaries and provenance
 
 History was extracted using `git filter-repo` on a fresh, non-local clone of

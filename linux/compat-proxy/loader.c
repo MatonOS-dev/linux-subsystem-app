@@ -1,4 +1,4 @@
-/* Linux layer v3: resident x86_64 ELF loader. No libc calls after entry. */
+/* Linux layer v3: resident ELF loader. The proxy payload path is libc-free. */
 #include "proxy.h"
 #include "state.h"
 #include "vfs.h"

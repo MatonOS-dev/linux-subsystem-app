@@ -47,6 +47,34 @@ def packageFlatpakPlan = tasks.register('packageFlatpakPlan', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn packageFlatpakPlan }
 
+def vulkanOutput = System.getenv('MATON_VULKAN_OUT') ?: "$aospRoot/out/matonos/vulkan-forward"
+def vulkanHeaders = System.getenv('MATON_VULKAN_HEADERS') ?: "$vulkanOutput/src/Vulkan-Headers-1.4.341"
+def vulkanJni = new File(layout.buildDirectory.get().asFile, 'generated/vulkanJni/x86_64')
+def vulkanAssets = new File(layout.buildDirectory.get().asFile, 'generated/vulkanAssets')
+def buildVulkanForward = tasks.register('buildVulkanForward', Exec) {
+    inputs.files fileTree('../../../vulkan-forward') { exclude 'build/**' }
+    outputs.files new File(vulkanOutput, 'libmaton_vulkan.so'), new File(vulkanOutput, 'maton_icd.json')
+    outputs.upToDateWhen { false }
+    environment 'CMAKE', System.getenv('CMAKE') ?: '/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake'
+    commandLine 'bash', file('../../../vulkan-forward/build.sh').absolutePath, vulkanOutput, vulkanHeaders
+}
+def packageVulkanForward = tasks.register('packageVulkanForward', Copy) {
+    dependsOn buildVulkanForward
+    from(new File(vulkanOutput, 'libmaton_vulkan.so')) { into 'vulkanJni/x86_64' }
+    from(new File(vulkanOutput, 'maton_icd.json')) { into 'vulkanAssets/vulkan' }
+    into layout.buildDirectory.dir('generated')
+    doLast {
+        def manifest = new File(vulkanAssets, 'vulkan/maton_icd.json')
+        def json = manifest.getText('UTF-8')
+        def buildPath = new File(vulkanOutput, 'libmaton_vulkan.so').absolutePath
+        def source = '"library_path": "' + buildPath + '"'
+        def target = '"library_path": "/run/maton/vulkan/libmaton_vulkan.so"'
+        if (!json.contains(source)) throw new GradleException('Vulkan ICD build path was not present in its manifest')
+        manifest.setText(json.replace(source, target), 'UTF-8')
+    }
+}
+tasks.named('preBuild').configure { dependsOn packageVulkanForward }
+
 def v3Root = file('../../../compat-proxy')
 def v3Output = System.getenv('MATON_V3_ANDROID_OUT') ?: "$aospRoot/out/matonos/compat-proxy"
 def v3Jni = new File(layout.buildDirectory.get().asFile, 'generated/v3Jni')
@@ -142,6 +170,7 @@ android {
             keepDebugSymbols += '**/libmatonos-flatpak.so'
             keepDebugSymbols += '**/libmatonos-app-flatpak.so'
             keepDebugSymbols += '**/libmatonos-app-bwrap.so'
+            keepDebugSymbols += '**/libmaton_vulkan.so'
         }
     }
     signingConfigs {
@@ -170,10 +199,12 @@ android {
             jniLibs.srcDir brokerJni
             jniLibs.srcDir v3Jni
             jniLibs.srcDir planJni
+            jniLibs.srcDir new File(layout.buildDirectory.get().asFile, 'generated/vulkanJni')
             jniLibs.srcDir new File(layout.buildDirectory.get().asFile, 'generated/flatpakJni')
             jniLibs.srcDir new File(pipewireOutput, 'jniLibs')
             assets.srcDir pipewireAssets
             assets.srcDir flatpakAssets
+            assets.srcDir vulkanAssets
         }
     }
 }

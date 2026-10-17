@@ -3,10 +3,14 @@
 
 # Linux layer v3 — syscall compatibility proxy
 
-Experimental x86_64 resident ELF loader and static library. Android's inherited
+The x86_64 resident ELF loader and static library. Android's inherited
 seccomp filter, UID and SELinux restrictions stay in force. No real namespace,
 mount, ptrace, or Android change. The virtual filesystem is compatibility
-state, **not containment**. Do not wire this into production stubs yet.
+state, **not containment**. Production stubs launch the Android-linked loader
+from `V3Launcher`; its optional `--gpu-bridge` mode installs x86_64 thread
+adoption and the read-only GPU bootstrap before entering the Linux payload.
+The i386 loader remains freestanding and does not accept this option. Host
+test binaries remain static and do not include the Android bridge backend.
 
 Build/test: `./build.sh`, `./tests/run.sh` (host cc, -Wall -Wextra -Werror).
 Outputs: `build/linux-layer-v3`, `build/liblinux-layer-v3.a`.
@@ -24,6 +28,13 @@ Android filesystem permissions, or prove embedding into an already filtered
 process. Input hashes are in `build/policy-inputs.sha256`. The full syscall
 complement, with translation/virtual/ENOSYS classifications, is generated in
 `build/trapped-syscalls.{json,md}` on each build.
+
+`build-android.sh` produces the production x86_64 loader as an Android-linked
+executable so bionic remains resident while adopted Linux threads call the
+Vulkan bridge. The normal launch path still enters through `proxy_enter`; only
+`--gpu-bridge` selects adoption. That option also publishes the bridge and
+adoption pointers in the named read-only `maton-gpu-bootstrap` mapping used by
+the freestanding Vulkan ICD.
 
 Legacy path calls translate to the allowed *at syscalls before replay. Other
 translations include dup2 (including same-fd validation), getpgrp, pipe,
