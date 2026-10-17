@@ -8,6 +8,7 @@
 #include "dispatch.h"
 #include "wsi.h"
 #include "wayland_resolve.h"
+#include "wsi_wayland.h"
 #define EXPORT __attribute__((visibility("default")))
 struct mv_instance;
 struct mv_device;
@@ -186,6 +187,14 @@ static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physica
     if(r!=VK_SUCCESS){mv_free(all);return r;}
     uint32_t written=0,capacity=out?*n:0;
     for(uint32_t j=0;j<count;j++)if(mv_extension_allowed(all[j].extensionName)){if(out && written<capacity)out[written]=all[j];written++;}
+    if(h->instance->wsi_wayland_enabled) {
+        if(out && written<capacity) {
+            memset(&out[written],0,sizeof(out[written]));
+            memcpy(out[written].extensionName,VK_KHR_SWAPCHAIN_EXTENSION_NAME,sizeof(VK_KHR_SWAPCHAIN_EXTENSION_NAME));
+            out[written].specVersion=VK_KHR_SWAPCHAIN_SPEC_VERSION;
+        }
+        written++;
+    }
     *n=out && written>capacity?capacity:written;mv_free(all);
     return out && written>capacity?VK_INCOMPLETE:VK_SUCCESS;
 }

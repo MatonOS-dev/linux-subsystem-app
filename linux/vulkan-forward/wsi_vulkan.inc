@@ -2,6 +2,7 @@ struct mv_wayland_surface {
     struct mv_instance *instance;
     struct wl_display *display;
     struct wl_surface *surface;
+    struct mv_wl_dmabuf *dmabuf;
     int custom_allocator;
     VkAllocationCallbacks allocator;
 };
@@ -11,8 +12,14 @@ static const char *const mv_wsi_instance_names[] = {
     VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
 };
 
+static int mv_wsi_wayland_available(void) {
+    return mv_wayland_symbol("wl_proxy_marshal_flags") &&
+        mv_wayland_symbol("wl_proxy_get_version") &&
+        mv_wayland_symbol("wl_registry_interface");
+}
+
 static int mv_wsi_instance_extension(const char *name) {
-    if (!name) return 0;
+    if (!name || !mv_wsi_wayland_available()) return 0;
     for (size_t i=0;i<sizeof(mv_wsi_instance_names)/sizeof(*mv_wsi_instance_names);i++)
         if (!strcmp(name,mv_wsi_instance_names[i])) return 1;
     return 0;
@@ -20,6 +27,7 @@ static int mv_wsi_instance_extension(const char *name) {
 
 static VkResult mv_wsi_instance_extensions(uint32_t *count,VkExtensionProperties *out) {
     if (!count) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!mv_wsi_wayland_available()) { *count=0; return VK_SUCCESS; }
     uint32_t capacity=out?*count:0;
     uint32_t written=sizeof(mv_wsi_instance_names)/sizeof(*mv_wsi_instance_names);
     if (out) {
@@ -60,6 +68,12 @@ static VkResult mv_vkCreateWaylandSurfaceKHR(VkInstance instance,const VkWayland
         s->custom_allocator=1;s->allocator=*allocator;
     }
     s->instance=i;s->display=info->display;s->surface=info->surface;
+    s->dmabuf=mv_wl_dmabuf_create(info->display);
+    if (!s->dmabuf) {
+        if (s->custom_allocator) s->allocator.pfnFree(s->allocator.pUserData,s);
+        else mv_delete(i,s);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
     *out=(VkSurfaceKHR)s;return VK_SUCCESS;
 }
 
@@ -67,6 +81,7 @@ static void mv_vkDestroySurfaceKHR(VkInstance instance,VkSurfaceKHR surface,cons
     (void)allocator;
     struct mv_wayland_surface *s=mv_wsi_surface(instance,surface);
     if (s) {
+        mv_wl_dmabuf_destroy(s->dmabuf);
         if (s->custom_allocator) s->allocator.pfnFree(s->allocator.pUserData,s);
         else mv_delete(s->instance,s);
     }
