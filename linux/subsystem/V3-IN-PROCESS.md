@@ -208,3 +208,18 @@ ART fault-action preservation, fixed-address rejection and cross-class rejection
 pass on host. The standalone proxy suite and repository suites pass; the signed
 APK passes alignment, signature and native dependency-closure checks. Device
 logs and complete build output live in the assigned external output directory.
+
+## Generated-stub acceptance, 2026-10-17
+
+The prepared diagnostic APK was installed on localhost:5556 under
+`flatpak.org.matonos.InProcessTest`, UID 10114. Static PIE and pinned glibc
+each ran twice in its main ART process, PID 4388, with status zero and a
+responsive main looper. A second new-task activity repeats these assertions
+in the same process. Host APK PID 3741 has UID 10078; this is a distinct stub
+identity. Evidence: `v3-inproc-out/ownuid-stage1.log` and
+`ownuid-stage1-activities.txt` in the assigned external build directory.
+
+The plain-fork policy supersedes the earlier blanket prohibition above:
+fork without exec may use native fork, without Android registration or the
+direct window path, and must log the app id. Fork+exec/spawn still requires
+a same-app Android child process. Neither path is implemented by stage one.
