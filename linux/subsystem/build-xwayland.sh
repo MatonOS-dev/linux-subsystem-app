@@ -25,19 +25,18 @@ SRC=$SOURCES/src
 DOWN=$SOURCES/downloads
 COMPOSITOR_PREFIX=$BUILD/stage/x86_64
 COMPOSITOR_HOST=$BUILD/host
-FLATPAK_PREFIX=${MATON_XWAYLAND_CRYPTO_PREFIX:-$AOSP/out/matonos/flatpak-ndk/prefix}
 mkdir -p "$BUILD" "$PREFIX" "$SRC"
 CC=$TOOLCHAIN/bin/x86_64-linux-android${API}-clang
 CXX=$TOOLCHAIN/bin/x86_64-linux-android${API}-clang++
 STRIP=$TOOLCHAIN/bin/llvm-strip
 
-export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig:$COMPOSITOR_PREFIX/lib/pkgconfig:$COMPOSITOR_PREFIX/lib64/pkgconfig:$COMPOSITOR_PREFIX/share/pkgconfig:$COMPOSITOR_HOST/lib/pkgconfig:$COMPOSITOR_HOST/lib/x86_64-linux-gnu/pkgconfig:$COMPOSITOR_HOST/share/pkgconfig:$FLATPAK_PREFIX/lib/pkgconfig"
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig:$COMPOSITOR_PREFIX/lib/pkgconfig:$COMPOSITOR_PREFIX/lib64/pkgconfig:$COMPOSITOR_PREFIX/share/pkgconfig:$COMPOSITOR_HOST/lib/pkgconfig:$COMPOSITOR_HOST/lib/x86_64-linux-gnu/pkgconfig:$COMPOSITOR_HOST/share/pkgconfig"
 export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
 # Meson sees the cross file below; autotools projects get the toolchain via
 # environment variables. No sysroot flag: the NDK wrappers carry it.
 export CC=$CC CXX=$CXX CPP="$CC -E" AR=$TOOLCHAIN/bin/llvm-ar \
   STRIP=$STRIP RANLIB=$TOOLCHAIN/bin/llvm-ranlib LD=$TOOLCHAIN/bin/ld.lld
-export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig:$COMPOSITOR_PREFIX/lib/pkgconfig:$COMPOSITOR_PREFIX/lib64/pkgconfig:$COMPOSITOR_PREFIX/share/pkgconfig:$COMPOSITOR_HOST/lib/pkgconfig:$COMPOSITOR_HOST/lib/x86_64-linux-gnu/pkgconfig:$COMPOSITOR_HOST/share/pkgconfig:$FLATPAK_PREFIX/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig:$COMPOSITOR_PREFIX/lib/pkgconfig:$COMPOSITOR_PREFIX/lib64/pkgconfig:$COMPOSITOR_PREFIX/share/pkgconfig:$COMPOSITOR_HOST/lib/pkgconfig:$COMPOSITOR_HOST/lib/x86_64-linux-gnu/pkgconfig:$COMPOSITOR_HOST/share/pkgconfig"
 export PATH="$PREFIX/bin:$COMPOSITOR_HOST/bin:$PATH"
 
 # Android provides pthreads in libc, not libpthread. Upstream projects
@@ -59,6 +58,8 @@ EOF
 
 # Pinned archives; sizes and hashes are recorded in UPSTREAMS.
 for entry in \
+  'libgpg-error-1.51:be0f1b2db6b93eed55369cdf79f19f72750c8c7c39fc20b577e724545427e6b2' \
+  'libgcrypt-1.11.1:24e91c9123a46c54e8371f3a3a2502f1198f2893fbfbf59af95bc1c21499b00e' \
   'xorgproto-2025.1:56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8' \
   'xtrans-1.6.0:faafea166bf2451a173d9d593352940ec6404145c5d1da5c213423ce4d359e92' \
   'util-macros-1.20.2:9ac269eba24f672d7d7b3574e4be5f333d13f04a7712303b1821b2a51ac82e8e' \
@@ -86,6 +87,7 @@ for entry in \
   fi
   archive=$DOWN/$name.tar.xz
   [[ -s $archive ]] || archive=$DOWN/$name.tar.gz
+  [[ -s $archive ]] || archive=$DOWN/$name.tar.bz2
   [[ -s $archive ]] || die "missing pinned source archive $archive"
   echo "$hash  $archive" | sha256sum -c - >/dev/null || die "checksum mismatch: $name"
 done
@@ -208,10 +210,35 @@ configure_build libXfont2-2.0.9
 configure_meson libxcvt "$SRC/libxcvt-0.1.3"
 # libxshmfence: MIT-SHM sync fences; miext/sync includes its header.
 configure_build libxshmfence-1.3.3
-# Meson's cross pkg-config search misses the external flatpak prefix that
-# provides bionic libgcrypt; mirror its pc files (absolute paths inside).
-cp "$FLATPAK_PREFIX/lib/pkgconfig/libgcrypt.pc" \
-   "$FLATPAK_PREFIX/lib64/pkgconfig/gpg-error.pc" "$PREFIX/lib/pkgconfig/"
+# Build SHA1 dependencies here, independently of the musl Flatpak stack.
+# Generate the lock ABI from an NDK-compiled PTHREAD_MUTEX_INITIALIZER object;
+# upstream configure only invokes this generator automatically for GNU/musl.
+for name in libgpg-error-1.51 libgcrypt-1.11.1; do
+  [[ -d $SRC/$name ]] || tar -xf "$DOWN/$name.tar.bz2" -C "$SRC"
+done
+GPG_SRC=$SRC/libgpg-error-1.51
+(cd "$GPG_SRC" && LOCK_ABI_VERSION=1 host=x86_64-unknown-linux-android \
+  host_alias=x86_64-linux-android CC="$CC" OBJDUMP="$TOOLCHAIN/bin/llvm-objdump" \
+  ac_ext=c ac_objext=o AWK=awk sh src/gen-lock-obj.sh \
+  > src/syscfg/lock-obj-pub.x86_64-unknown-linux-android.h)
+# Fail early if the generator could not read the target object's size.
+grep -Eq '_priv\[[1-9][0-9]*\]' "$GPG_SRC/src/syscfg/lock-obj-pub.x86_64-unknown-linux-android.h" ||
+  die 'cannot determine bionic pthread mutex size'
+# -avoid-version keeps both the filename and DT_SONAME unversioned for APK JNI.
+# Limit recursive builds to the library directories (no tools/docs/tests).
+crypto_build() {
+  local name=$1 dirs=$2; shift 2
+  local src=$SRC/$name
+  if [[ ! -f $src/config.status ]]; then
+    (cd "$src" && ./configure --host=x86_64-linux-android --prefix="$PREFIX" \
+      --libdir="$PREFIX/lib" --enable-shared --disable-static --disable-doc "$@")
+  fi
+  make -C "$src" -j"$JOBS" SUBDIRS="$dirs" extra_ltoptions=-avoid-version
+  make -C "$src" install SUBDIRS="$dirs" extra_ltoptions=-avoid-version
+}
+crypto_build libgpg-error-1.51 'src' --disable-tests --disable-nls
+crypto_build libgcrypt-1.11.1 'compat mpi cipher random src' \
+  --with-libgpg-error-prefix="$PREFIX" --disable-asm
 
 # GPU rendering (glamor + DRI3). Mesa lives in /vendor and its Android build
 # has no EGL GBM platform, so Xwayland gets three small forwarding libraries
@@ -275,7 +302,7 @@ EOF
 # The patch uses epoxy for server GL dispatch and removes the DRI fallback.
 # Keep indirect GLX disabled (the default):
 # the EGL provider supports direct clients and needs no *_dri.so modules.
-# SHA1 comes from the bionic libgcrypt the Flatpak stack already ships.
+# SHA1 comes from the bionic libgcrypt built into this Xwayland prefix.
 # MIT-SHM off: the kernel has no SysV IPC and each app's SysV segments live in
 # the v3 proxy's virtual view, which Xwayland cannot see. Without the
 # extension X11 clients always use plain image transfers.

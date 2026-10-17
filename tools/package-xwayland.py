@@ -26,8 +26,7 @@ for source in sorted((x/'lib').iterdir()):
 for name in ['libEGL.so','libGLESv2.so','libgbm.so']:
     copy(x/'lib/xwayland-egl'/name,'libmatonos-xwayland-'+name[3:],name)
 # The server uses Bionic crypto; these are distinct from the static musl CLI.
-crypto=Path(os.environ.get('MATON_XWAYLAND_CRYPTO_PREFIX',str(build.parent/'flatpak-ndk/prefix')))
-for sub,name in [('lib','libgcrypt.so'),('lib64','libgpg-error.so')]:copy(crypto/sub/name,name,name)
+for name in ['libgcrypt.so','libgpg-error.so']:copy(x/'lib'/name,name,name)
 shutil.copytree(build/'xkb-data/system_ext/share/xkeyboard-config-2',assets/'xkb',symlinks=False)
 # Preserve upstream copyright/licence notices with the runtime.
 for source in (build/'sources/src').iterdir():
@@ -37,7 +36,7 @@ for source in (build/'sources/src').iterdir():
             if notice.is_file():
                 target=assets/'licenses'/source.name/notice.name
                 target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(notice,target)
-crypto_sources=Path(os.environ.get('MATON_XWAYLAND_CRYPTO_SOURCES',str(crypto.parent)))
+crypto_sources=build/'sources/src'
 for name in ['libgcrypt-1.11.1','libgpg-error-1.51']:
     source=crypto_sources/name
     for notice in ['COPYING','COPYING.LIB','AUTHORS']:

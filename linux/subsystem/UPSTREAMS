@@ -74,9 +74,10 @@ library. APK size remains to be recorded after Gradle completes.
 All sources are pinned under sources/downloads and verified by SHA-256 in
 build-xwayland.sh. They build for bionic x86_64 with NDK r30/API 35 into
 xstage/x86_64; nothing upstream is patched (bionic gaps are handled by
-build glue: an empty libpthread archive, a values.h shim, and pkg-config
-mirroring of libgcrypt). Licenses are MIT/HPND-style per project; freetype
-is used under its FTL (BSD-style) license option.
+build glue: an empty libpthread archive, a values.h shim, and a
+target-generated libgpg-error lock header). X11 licenses are MIT/HPND-style
+per project; freetype uses its FTL (BSD-style) license option. Crypto
+library licenses are recorded below.
 
 xorgproto 2025.1 (all X protocol headers, incl. xwaylandproto)
   source: https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2025.1.tar.xz
@@ -113,7 +114,7 @@ freetype 2.14.1 (required by libXfont2; FTL license, PNG/Bzip2/Brotli off)
 libXfont2 2.0.9 (Xwayland font backend)
   SHA-256: f042a370666815e7b941e9b7019024755bd1c6c2954afbfa515af378251799e2
 Xwayland 24.1.13 (standalone X server; built with GLX/glamor/DRI3/Xv off,
-SHA1 from the bionic libgcrypt the Flatpak stack already ships)
+SHA1 from the bionic libgcrypt built in xstage/x86_64)
   source: https://www.x.org/releases/individual/xserver/xwayland-24.1.13.tar.xz
   SHA-256: 173aea3d6f79609164c04528e1c8e4c9b60fcd59391c3c9dad4667297d727fb6
   binary: xstage/x86_64/bin/Xwayland, 1,882,896 bytes bionic x86_64 ELF
@@ -130,16 +131,20 @@ APK asset; the server is built with xkb_bin_dir=., and the C launcher supplies
 GL forwarders retain their original SONAMEs through private runtime symlinks.
 No new upstream source changes are needed for this packaging.
 
-Inherited Bionic SHA1 dependencies (deliberately retained during packaging;
-these are separate from the static musl Flatpak build):
+Standalone bionic SHA1 dependencies (separate from static musl Flatpak):
 libgcrypt 1.11.1, LGPL-2.1-or-later library (COPYING.LIB)
   source: https://gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.1.tar.bz2
   SHA-256: 24e91c9123a46c54e8371f3a3a2502f1198f2893fbfbf59af95bc1c21499b00e
 libgpg-error 1.51, LGPL-2.1-or-later library (COPYING.LIB)
   source: https://gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2
   SHA-256: be0f1b2db6b93eed55369cdf79f19f72750c8c7c39fc20b577e724545427e6b2
-The inherited build uses libgcrypt's shared lib/ and libgpg-error's lib64/;
-MATON_XWAYLAND_CRYPTO_PREFIX selects that Bionic prefix. Keep its source
-notices beside the prefix (or set MATON_XWAYLAND_CRYPTO_SOURCES). This change
-reuses that prepared dependency build; an empty-cache crypto bootstrap is
-not claimed. Other X11 source hashes and recipes remain above/in build-xwayland.sh.
+build-xwayland.sh cross-builds libgpg-error first, then libgcrypt, with NDK
+r30/API 35 into xstage/x86_64/lib. Shared libraries use libtool -avoid-version
+so DT_SONAME and APK filenames remain libgpg-error.so and libgcrypt.so.
+The upstream gen-lock-obj.sh generator compiles PTHREAD_MUTEX_INITIALIZER
+with the target NDK compiler and reads its size with llvm-objdump; its output
+is selected as syscfg/lock-obj-pub.x86_64-unknown-linux-android.h. No host
+pthread layout is assumed. Documentation/tests/tools are excluded by limiting
+recursive builds to library directories; libgcrypt assembly is disabled.
+Both pkg-config files resolve within xstage/x86_64, without an inherited
+prefix. Packaging includes COPYING, COPYING.LIB and AUTHORS from both sources.
