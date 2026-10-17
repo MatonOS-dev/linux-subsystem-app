@@ -139,6 +139,12 @@ static long dispatch_on(struct adopt_thread *t) {
 }
 static void dispatch_off(void) {
 #ifdef MATON_IN_PROCESS
+    /* A stopper can have read our tid before we publish zero. Consume no
+     * late wakeup after removing ownership: it would chain into ART's prior
+     * SIGSYS action. This resident pthread is about to die; its filter and
+     * blocked pending wakeups die with it. */
+    unsigned long mask=1UL<<(SIGSYS-1);
+    R(rt_sigprocmask,SIG_BLOCK,&mask,0,8,0,0);
     return; /* Thread-local seccomp ends with the resident pthread. */
 #endif
     if(R(prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_OFF,0,0,0,0)) __builtin_trap();

@@ -15,6 +15,12 @@ for mode in static glibc; do
     done
  done
 
+# Competing group-exit callers can leave a late SIGSYS nudge pending during
+# resident pthread cleanup. Exercise repeated ownership removal, not just exit.
+for attempt in {1..20}; do
+    EXPECTED_STATUS=37 timeout 30 "$out/test" "$out/glibc-payload" fixture group-race
+done
+
 python3 "$root/build-fixtures.py" "$out/pinned"
 timeout 30 "$out/test" "$out/pinned/libmatonos-inprocess-ld.so" --inhibit-cache --library-path "$out/pinned" "$out/pinned/libmatonos-inprocess-glibc.so" fixture
 # Fixed-address and cross-class loads must fail without replacing the resident.
