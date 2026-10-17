@@ -91,18 +91,22 @@ underlying damage and image-format/view paths are implemented.
 
 ## Remaining implementation and verification
 
-- Add Wayland instance extensions, `vkCreateWaylandSurfaceKHR`, surface query
-  commands, and Vulkan swapchain entrypoints without forwarding Linux pointers
-  or callback chains into bionic.
-- Allocate external buffers through Android Vulkan, export and validate their
-  dma-buf metadata, create `wl_buffer`s, and preserve correct image layouts,
-  visibility and queue ownership across the Android/Linux boundary.
+- Promote the prototype Wayland surface API into tested ICD behavior, and add
+  the swapchain entrypoints without forwarding Linux callbacks or unsafe
+  pointer chains into bionic.
+- Integrate the verified AHB + explicit linear DRM modifier path into ICD
+  swapchain allocation, export the native-handle dma-buf fd, and validate its
+  metadata through the compositor mapper before advertising support.
+- Create each `wl_buffer` through `zwp_linux_dmabuf_v1` on a private event
+  queue, preserving image layouts, visibility and queue ownership across the
+  Android/Linux boundary.
 - Implement compositor explicit-sync and presentation feedback through the
   existing SurfaceControl presenter and release-fence lifecycle.
-- Test Vulkan WSI state and wire encoding on the host; then boot the VM and run
+- Test Vulkan WSI state and wire encoding on the host; then, once the VM is
+  released, install the APK and run
   pinned Vulkan-Tools 1.4.341 `vkcube --wsi wayland`, resize, compare FIFO and
-  MAILBOX timing, run Zink EGL Wayland, and collect screenshots. The VM endpoint
-  was not available for this run.
+  MAILBOX timing, run Zink EGL Wayland, and collect screenshots. The VM is
+  currently reserved by a coordinator install test.
 - Verify on hardware with each supported resident Vulkan driver and with no
   DRM node. Unsupported buffer layouts or synchronization features must stay
   unadvertised.
