@@ -24,6 +24,3 @@ bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"
 
 chmod 0755 "$output/libmatonos-v3-loader.so"
 
-INPROCESS_ANDROID=1 INPROCESS_CC="$compiler" bash "$source_dir/inprocess/build.sh" "$output/inprocess"
-cp "$output/inprocess/libmatonos-inprocess.so" "$output/"
-python3 "$source_dir/inprocess/build-fixtures.py" "$output"
