@@ -322,8 +322,6 @@ public final class InstallTransaction {
                 throw new java.io.IOException("Pulled deployment differs from planned Flatpak commit");
             StagedPacks.verify(context,installation,()->cancelled.get());
             long payload=metadataSize(node.info.metadata,"xa.installed-size");if(payload>0)verifiedPayloadBytes+=payload;
-            report("staging",-1,-1,-1,"Temporary operation allocated bytes after pull: "+allocatedBytes(operationDirectory())+
-                    "; available: "+root.getUsableSpace());
         }
         private void cliProgress(InstallProgress parser,long total,long packageBytes,String... args)throws Exception {
             java.util.List<String> tail=new ArrayList<>();tail.add(LoaderCommand.tool(context,LoaderCommand.FLATPAK_CLI).getAbsolutePath());java.util.Collections.addAll(tail,args);
