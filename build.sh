@@ -21,6 +21,7 @@ export MATON_AOSP_ROOT=${MATON_AOSP_ROOT:-$MATON_BUILD_ROOT}
 export MATON_NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
 export MATON_ANDROID_NDK=$MATON_NDK ANDROID_NDK=$MATON_NDK
 export MATON_COMPOSITOR_BUILD=${MATON_COMPOSITOR_BUILD:-$MATON_SUBSYSTEM_OUT/deps/compositor}
+export MATON_COMPOSITOR_JNI_LIBS=$MATON_COMPOSITOR_BUILD/jniLibs
 export MATON_PIPEWIRE_BUILD=${MATON_PIPEWIRE_BUILD:-$MATON_SUBSYSTEM_OUT/deps/pipewire}
 export MATON_V3_ANDROID_OUT=${MATON_V3_ANDROID_OUT:-$MATON_SUBSYSTEM_OUT/deps/linux-subsystem-app/loader}
 OUTPUT=$MATON_SUBSYSTEM_OUT
@@ -58,4 +59,5 @@ python3 "$ROOT/tools/prepare-host-apk.py" "$OUTPUT/gradle/app/outputs/apk/releas
 "$SDK_TOOLS/apksigner" sign --ks "$MATON_SIGNING_STORE_FILE" --ks-key-alias "$MATON_SIGNING_KEY_ALIAS" --ks-pass "file:$MATON_SIGNING_PASSWORD_FILE" --out "$OUTPUT/MatonLinuxSubsystem.apk" "$OUTPUT/aligned.apk"
 "$SDK_TOOLS/apksigner" verify --verbose --print-certs "$OUTPUT/MatonLinuxSubsystem.apk"
 "$SDK_TOOLS/zipalign" -c -P 16 4 "$OUTPUT/MatonLinuxSubsystem.apk"
+python3 "$ROOT/tools/check-apk-needed.py" "$OUTPUT/MatonLinuxSubsystem.apk" "$MATON_NDK"
 echo "Signed APK: $OUTPUT/MatonLinuxSubsystem.apk"

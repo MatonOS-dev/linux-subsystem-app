@@ -161,7 +161,9 @@ android {
     sourceSets {
         main {
             java.srcDirs += file('../../../stubgen/src')
-            jniLibs.srcDirs += file(System.getenv('MATON_COMPOSITOR_JNI_LIBS') ?: "$aospRoot/out/matonos/compositor/jniLibs")
+            def compositorJni = System.getenv('MATON_COMPOSITOR_JNI_LIBS')
+            if (!compositorJni) throw new GradleException('MATON_COMPOSITOR_JNI_LIBS is not set (build through ./build.sh)')
+            jniLibs.srcDirs += file(compositorJni)
             jniLibs.srcDir new File(xwaylandOutput, 'jni')
             assets.srcDir new File(xwaylandOutput, 'assets')
             jniLibs.srcDir brokerJni
