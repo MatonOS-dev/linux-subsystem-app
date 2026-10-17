@@ -499,6 +499,9 @@ static void dispatch_app(int sig,siginfo_t *info,void *ctx) {
     struct kernel_action action=chained;
     if(action.handler==1 && info->si_code<=0) return;
     if(action.handler<=1) { /* SIGSYS default is fatal, including ignored synchronous SIGSYS. */
+        /* Name the cause before dying: no tombstone is written for this process. */
+        proxy_log("fatal-sigsys",info->si_syscall,info->si_code);
+        proxy_log("fatal-sigsys-pc",0,(long)ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC));
         RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);return;
     }
     if(action.flags&SA_RESETHAND) chained.handler=0;
@@ -522,6 +525,14 @@ static void exec_close_fds(void){
 }
 #include "host-command.c"
 
+/* Syscalls neither emulated nor allowed by Android: report each number once,
+ * without --trace, so an app failing on ENOSYS names the missing syscall. */
+static void unhandled_once(long id,long kernel_nr){
+    static unsigned long seen[(PROXY_SC_count+63)/64];
+    if(id>=0 && id<PROXY_SC_count){unsigned long bit=1UL<<(id%64);
+        if(__atomic_fetch_or(&seen[id/64],bit,__ATOMIC_RELAXED)&bit)return;}
+    proxy_log("unhandled",kernel_nr,id);
+}
 static void handler(int sig,siginfo_t *info,void *opaque) {
     ucontext_t *uc=opaque;
     volatile unsigned char *selector=dispatch_selector;
@@ -771,6 +782,7 @@ clone_retry:
 finish:
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace)proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
+    else if(result==-ENOSYS)unhandled_once(original,info->si_syscall);
 clean_mask:
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
     (*arch_signal_mask(uc))&=~SIGSYS_BIT;
