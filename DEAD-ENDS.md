@@ -30,8 +30,14 @@ project owner. The code is preserved only as tags, not branches.
   (`AHardwareBuffer_sendHandleToUnixSocket`), with release tracking, for a
   Vulkan swapchain without a per-window Android `Surface`.
 - **Why rejected:** under the native-process model GPU clients present
-  through standard `linux-dmabuf` (wrapped as AHBs by `dmabuf_import.c`, zero
-  copy) with explicit-sync fences. No client needs the private transport.
+  through standard `linux-dmabuf` with explicit-sync fences. No client needs
+  compositor-allocated buffers pushed to it.
+- **Still dead:** the compositor allocating AHBs and pushing them to clients.
+- **Revived by the project owner (2026-10-17), opposite direction:**
+  *client-allocated* AHBs passed to the compositor as `wl_buffer`s
+  (`maton_ahb_buffer_v1`, stock `AHardwareBuffer_sendHandleToUnixSocket`),
+  replacing the minigbm-fork dma-buf wrapping and the native-handle-fd-0
+  assumption. `linux-dmabuf` stays for standard clients.
 
 ## Related rejected direction
 
