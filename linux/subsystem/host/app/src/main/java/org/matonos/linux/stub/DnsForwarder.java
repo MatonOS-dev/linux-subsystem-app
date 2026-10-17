@@ -64,8 +64,10 @@ final class DnsForwarder {
             Os.chmod(directory.getCanonicalPath(), 0700);
             shortPath = org.matonos.linux.ShortSocketPath.open(directory);
             String path = new java.io.File(directory, "forwarder").getCanonicalPath();
-            udpSocket = listener(path + ".udp", android.net.LocalSocket.SOCKET_SEQPACKET);
-            tcpSocket = listener(path + ".tcp", android.net.LocalSocket.SOCKET_STREAM);
+            udpSocket = listener(shortPath.path("forwarder.udp"), path + ".udp",
+                    android.net.LocalSocket.SOCKET_SEQPACKET);
+            tcpSocket = listener(shortPath.path("forwarder.tcp"), path + ".tcp",
+                    android.net.LocalSocket.SOCKET_STREAM);
             udp = udpSocket.getFileDescriptor(); tcp = tcpSocket.getFileDescriptor();
             udpServer = new android.net.LocalServerSocket(udp);
             tcpServer = new android.net.LocalServerSocket(tcp);
@@ -80,13 +82,13 @@ final class DnsForwarder {
         return socketPath;
     }
 
-    private static android.net.LocalSocket listener(String path, int type) throws Exception {
-        java.io.File file = new java.io.File(path);
+    private static android.net.LocalSocket listener(String bindPath, String filesystemPath, int type) throws Exception {
+        java.io.File file = new java.io.File(filesystemPath);
         if (file.exists() && !file.delete()) throw new java.io.IOException("Stale DNS socket");
         android.net.LocalSocket socket = new android.net.LocalSocket(type);
         try {
-            socket.bind(new android.net.LocalSocketAddress(path, android.net.LocalSocketAddress.Namespace.FILESYSTEM));
-            Os.chmod(path, 0600);
+            socket.bind(new android.net.LocalSocketAddress(bindPath, android.net.LocalSocketAddress.Namespace.FILESYSTEM));
+            Os.chmod(filesystemPath, 0600);
             return socket;
         } catch (Exception error) { closeQuietly(socket); throw error; }
     }
