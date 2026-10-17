@@ -1,6 +1,7 @@
 package org.matonos.linuxhost.stubgen;
 
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -57,8 +58,45 @@ public final class InstallHandoffTest {
                 java.nio.file.StandardCopyOption.REPLACE_EXISTING));
         File apk=new File(out,"handoff.apk");
         StubGenerator.generatePackage(out,APP,"fixture","Editor",new byte[]{1},Collections.emptyList(),
-                appName,apk,null,Collections.emptyList(),new LinkedHashMap<>(),false,"/app");
+                appName,apk,null,Collections.emptyList(),new LinkedHashMap<>(),true,"/app");
+        assertResourcesTableAligned(apk);
+        File payload=new File(out,"carrier-payload");Files.write(payload.toPath(),new byte[]{1,2,3});
+        ObjectPacks.Entry row=new ObjectPacks.Entry("/file",COMMIT,"file",0100644);row.source=payload;
+        File packDir=new File(out,"carrier-packs");ObjectPacks.initial(Collections.singletonList(row),packDir,4096);
+        File carrier=new File(out,"carrier.apk");LinkedHashMap<String,byte[]> appended=new LinkedHashMap<>();
+        appended.put("AndroidManifest.xml",new byte[]{1});appended.put("resources.arsc",new byte[]{1,2,3,4});
+        ObjectPacks.carrier(new File(packDir,row.pack),carrier,appended);
+        assertResourcesTableAligned(carrier);
         System.out.println("Generated APK: "+apk.getAbsolutePath());
+    }
+
+    private static void assertResourcesTableAligned(File apk) throws Exception {
+        try(RandomAccessFile zip=new RandomAccessFile(apk,"r")) {
+            long offset=0;boolean found=false;
+            while(offset+30<=zip.length()) {
+                zip.seek(offset);int signature=readInt(zip);
+                if(signature!=0x04034b50)break;
+                zip.seek(offset+8);int method=readShortLE(zip);
+                zip.seek(offset+18);long compressed=Integer.toUnsignedLong(readInt(zip));
+                zip.seek(offset+26);
+                int nameLength=readShortLE(zip),extraLength=readShortLE(zip);
+                zip.seek(offset+30);
+                byte[] name=new byte[nameLength];zip.readFully(name);
+                long dataOffset=offset+30+nameLength+extraLength;
+                if("resources.arsc".equals(new String(name,java.nio.charset.StandardCharsets.US_ASCII))) {
+                    if(method!=0||dataOffset%4!=0)throw new AssertionError("resources.arsc must be STORED and four-byte aligned");
+                    found=true;
+                }
+                offset=dataOffset+compressed;
+            }
+            if(!found)throw new AssertionError("APK omitted resources.arsc");
+        }
+    }
+    private static int readInt(RandomAccessFile input) throws Exception {
+        return input.readUnsignedByte()|input.readUnsignedByte()<<8|input.readUnsignedByte()<<16|input.readUnsignedByte()<<24;
+    }
+    private static int readShortLE(RandomAccessFile input) throws Exception {
+        return input.readUnsignedByte()|input.readUnsignedByte()<<8;
     }
 
     private static JSONObject row(String ref,String mount) throws Exception {

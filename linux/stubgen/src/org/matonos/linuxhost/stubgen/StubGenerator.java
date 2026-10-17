@@ -9,7 +9,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FilterOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
@@ -195,7 +197,7 @@ public final class StubGenerator {
         File unsigned=File.createTempFile("matonos-stub-meta-",".apk",workDir);
         try {
             if(launchable)writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages);
-            else try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
+            else try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
                 put(zip,"AndroidManifest.xml",manifest.encode());put(zip,"classes.dex",emptyDex());
             }
             sign(unsigned,output);return output;
@@ -263,7 +265,7 @@ public final class StubGenerator {
     private static void writeIndexUnsigned(File unsigned,String pkg,File objects,int revision) throws Exception {
         BinaryManifest encoder=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
         encoder.revisionCode=revision;
-        try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
+        try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
             put(zip,"AndroidManifest.xml",encoder.packManifest(indexSplitName(objects)));
             for(String name:indexAssets(objects))
                 put(zip,"assets/matonos/"+name,java.nio.file.Files.readAllBytes(new File(objects,name).toPath()));
@@ -337,7 +339,7 @@ public final class StubGenerator {
         manifest.revisionCode=revision;
         File unsigned=File.createTempFile("matonos-launcher-",".apk",workDir);
         try {
-            try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(unsigned))) {
+            try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
                 put(zip,"AndroidManifest.xml",manifest.launcherManifest(split,clean,mimes,0x7f020000));
                 put(zip,"resources.arsc",iconResourceTable(pkg,2));
                 put(zip,"res/drawable/foreground.png",iconPng);
@@ -594,7 +596,7 @@ public final class StubGenerator {
         encoder.packs = packs;
         encoder.dependencyPackages=dependencyPackages;
         byte[] manifest = encoder.encode();
-        try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
+        try (AlignedZipOutputStream zip = new AlignedZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);
             // Supply a real drawable resource so Android launchers can resolve the app icon.
             put(zip, "resources.arsc", iconResourceTable(pkg));
@@ -686,10 +688,45 @@ public final class StubGenerator {
         ZipEntry entry = new ZipEntry(name);
         // Android's package parser reads binary XML directly from the APK; keep it uncompressed.
         // Store all v1 contents for a simpler, deterministic ZIP layout.
+        if ("resources.arsc".equals(name) && zip instanceof AlignedZipOutputStream) {
+            byte[] extra = alignmentExtra(((AlignedZipOutputStream) zip).bytesWritten(), name);
+            if (extra.length != 0) entry.setExtra(extra);
+        }
         CRC32 crc = new CRC32(); crc.update(bytes);
         entry.setMethod(ZipEntry.STORED); entry.setSize(bytes.length);
         entry.setCompressedSize(bytes.length); entry.setCrc(crc.getValue());
         zip.putNextEntry(entry); zip.write(bytes); zip.closeEntry();
+    }
+
+    /** Pad stored resource tables to the four-byte offset required by PackageManager. */
+    static byte[] alignmentExtra(long localHeaderOffset, String name) {
+        int nameLength = name.getBytes(StandardCharsets.UTF_8).length;
+        int padding = (int) (-(localHeaderOffset + 30 + nameLength + 4) & 3);
+        if (padding == 0) return new byte[0];
+        byte[] extra = new byte[4 + padding];
+        put16(extra, 0, 0xd935); // private ZIP extra field used only for alignment padding
+        put16(extra, 2, padding);
+        return extra;
+    }
+
+    private static final class AlignedZipOutputStream extends ZipOutputStream {
+        private final CountingOutputStream counter;
+        AlignedZipOutputStream(OutputStream output) {
+            this(new CountingOutputStream(output));
+        }
+        private AlignedZipOutputStream(CountingOutputStream output) {
+            super(output); counter = output;
+        }
+        long bytesWritten() { return counter.count; }
+    }
+
+    private static final class CountingOutputStream extends FilterOutputStream {
+        long count;
+        CountingOutputStream(OutputStream output) { super(output); }
+        @Override public void write(int value) throws IOException { out.write(value); count++; }
+        @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+            out.write(bytes, offset, length); count += length;
+        }
     }
 
     /** Read-only attestation: do not mint a replacement key during verification. */

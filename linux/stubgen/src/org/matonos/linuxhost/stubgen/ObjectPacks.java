@@ -272,14 +272,16 @@ public final class ObjectPacks {
             // New local entries start where the original central directory was,
             // so every indexed payload offset (all below central) is unchanged.
             long[] offsets=new long[entries.size()];long[] crcs=new long[entries.size()];long[] sizes=new long[entries.size()];
+            byte[][] extras=new byte[entries.size()][];
             int index=0;
             for(java.util.Map.Entry<String,byte[]> row:entries.entrySet()) {
                 byte[] name=row.getKey().getBytes(StandardCharsets.US_ASCII);byte[] data=row.getValue();CRC32 crc=new CRC32();crc.update(data);
                 offsets[index]=out.getFilePointer();crcs[index]=crc.getValue();sizes[index]=data.length;
+                extras[index]=alignmentExtra(offsets[index],row.getKey(),name.length);
                 ByteArrayOutputStream local=new ByteArrayOutputStream();
                 le(local,0x04034b50,4);le(local,20,2);le(local,0,2);le(local,0,2);le(local,0,2);le(local,33,2);
-                le(local,crc.getValue(),4);le(local,data.length,4);le(local,data.length,4);le(local,name.length,2);le(local,0,2);
-                local.write(name);local.write(data);out.write(local.toByteArray());index++;
+                le(local,crc.getValue(),4);le(local,data.length,4);le(local,data.length,4);le(local,name.length,2);le(local,extras[index].length,2);
+                local.write(name);local.write(extras[index]);local.write(data);out.write(local.toByteArray());index++;
             }
             long centralStart=out.getFilePointer();left=size;
             while(left>0){int n=in.read(buffer,0,(int)Math.min(left,buffer.length));if(n<0)throw new EOFException();out.write(buffer,0,n);left-=n;}
@@ -288,8 +290,8 @@ public final class ObjectPacks {
                 byte[] name=row.getKey().getBytes(StandardCharsets.US_ASCII);
                 ByteArrayOutputStream c=new ByteArrayOutputStream();
                 le(c,0x02014b50,4);le(c,0x0314,2);le(c,20,2);le(c,0,2);le(c,0,2);le(c,0,2);le(c,33,2);
-                le(c,crcs[index],4);le(c,sizes[index],4);le(c,sizes[index],4);le(c,name.length,2);le(c,0,2);
-                le(c,0,2);le(c,0,2);le(c,0,2);le(c,0100644L<<16,4);le(c,offsets[index],4);c.write(name);
+                le(c,crcs[index],4);le(c,sizes[index],4);le(c,sizes[index],4);le(c,name.length,2);le(c,extras[index].length,2);
+                le(c,0,2);le(c,0,2);le(c,0,2);le(c,0100644L<<16,4);le(c,offsets[index],4);c.write(name);c.write(extras[index]);
                 out.write(c.toByteArray());appended+=c.size();index++;
             }
             if(out.getFilePointer()>=0xffffffffL || size+appended>=0xffffffffL)throw new IOException("ZIP64 carrier required");
@@ -297,6 +299,14 @@ public final class ObjectPacks {
             e.putInt(12,(int)(size+appended));e.putInt(16,(int)centralStart);
             out.write(end);
         }
+    }
+    private static byte[] alignmentExtra(long localHeaderOffset,String name,int nameLength) throws IOException {
+        if(!"resources.arsc".equals(name))return new byte[0];
+        int padding=(int)(-(localHeaderOffset+30+nameLength+4)&3);
+        if(padding==0)return new byte[0];
+        ByteArrayOutputStream extra=new ByteArrayOutputStream(4+padding);
+        le(extra,0xd935,2);le(extra,padding,2);extra.write(new byte[padding]);
+        return extra.toByteArray();
     }
     private ObjectPacks() { }
 }
