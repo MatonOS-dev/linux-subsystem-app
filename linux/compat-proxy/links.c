@@ -33,18 +33,36 @@ struct descriptor {
 };
 static struct descriptor *descriptors;
 static unsigned long serial;
+/* Process-wide descriptor bookkeeping, also used from SIGSYS handlers. Mask
+ * signals to prevent reentry; a fork child discards a vanished parent's lock.
+ * Shared inode records still retain their cross-process publication CAS. */
+static unsigned long descriptor_owner;
+static proxy_sigmask_t descriptor_lock(void){
+ proxy_sigmask_t all=~UINT64_C(0),mask=0;
+ RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
+ unsigned long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+ for(;;){unsigned long owner=__atomic_load_n(&descriptor_owner,__ATOMIC_RELAXED);
+  if(!owner || owner!=pid){if(__atomic_compare_exchange_n(&descriptor_owner,&owner,pid,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return mask;}
+  __asm__ volatile("pause");
+ }
+}
+static void descriptor_unlock(proxy_sigmask_t mask){
+ __atomic_store_n(&descriptor_owner,0,__ATOMIC_RELEASE);
+ RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+}
+
 
 static struct descriptor *find(int fd) {
     for(struct descriptor *p=descriptors;p;p=p->next)
         if(p->fd==fd)return p;
     return NULL;
 }
-char *links_fd_name(int fd) {
+static char *links_fd_name_locked(int fd) {
     struct descriptor *d=find(fd);
-    if(!d || __atomic_load_n(&d->tmp->published,__ATOMIC_ACQUIRE)!=1)return NULL;
+    if(!d || __atomic_load_n(&d->tmp->published,__ATOMIC_ACQUIRE)==-1)return NULL;
     return vfs_reverse(d->tmp->path);
 }
-void links_close(int fd) {
+static void links_close_locked(int fd) {
     struct descriptor **p=&descriptors;
     while(*p){
         struct descriptor *d=*p;
@@ -61,32 +79,41 @@ void links_close(int fd) {
         return;
     }
 }
-long links_dup(int from,int to) {
+static int reserve_reference(struct temporary *t){
+ unsigned refs=__atomic_load_n(&t->refs,__ATOMIC_RELAXED);
+ do {if(refs==~0U)return 0;}
+ while(!__atomic_compare_exchange_n(&t->refs,&refs,refs+1,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED));
+ return 1;
+}
+static long links_dup_locked(int from,int to) {
     if(from==to)return 0;
     struct descriptor *d=find(from),*copy=NULL;
     if(d){
         copy=vfs_alloc(sizeof(*copy));
         if(!copy)return -ENOMEM;
         *copy=(struct descriptor){NULL,to,d->tmp};
-        __atomic_add_fetch(&d->tmp->refs,1,__ATOMIC_RELAXED);
+        if(!reserve_reference(d->tmp)){vfs_free(copy);return -EOVERFLOW;}
     }
-    links_close(to);
+    links_close_locked(to);
     if(copy){copy->next=descriptors;descriptors=copy;}
     return 0;
 }
 /* Reserve child references BEFORE cloning, so a parent closing immediately
  * cannot delete the child's inode. A failed clone rolls the reservation back. */
-void links_fork(int delta) {
+static long links_fork_locked(int delta) {
     for(struct descriptor *d=descriptors;d;d=d->next){
-        if(delta>0)__atomic_add_fetch(&d->tmp->refs,1,__ATOMIC_RELAXED);
-        else __atomic_sub_fetch(&d->tmp->refs,1,__ATOMIC_RELAXED);
+        if(delta>0){if(!reserve_reference(d->tmp)){
+            for(struct descriptor *p=descriptors;p!=d;p=p->next)__atomic_sub_fetch(&p->tmp->refs,1,__ATOMIC_RELAXED);
+            return -EOVERFLOW;
+        }}else __atomic_sub_fetch(&d->tmp->refs,1,__ATOMIC_RELAXED);
     }
+    return 0;
 }
-void links_exit(void) {
-    while(descriptors)links_close(descriptors->fd);
+static void links_exit_locked(void) {
+    while(descriptors)links_close_locked(descriptors->fd);
 }
 static size_t number(char *out,unsigned long value){char b[24];size_t n=0,k=0;do{b[n++]=(char)('0'+value%10);value/=10;}while(value);while(n)out[k++]=b[--n];return k;}
-long links_open(const char *dir,long flags,long mode){
+static long links_open_locked(const char *dir,long flags,long mode){
  if(!(flags&O_RDWR) && !(flags&O_WRONLY))return -EINVAL;
  struct proxy_stat st;long r=arch_stat_at(AT_FDCWD,dir,&st,0);if(r<0)return r;if(!S_ISDIR(st.st_mode))return -ENOTDIR;
  size_t n=p_len(dir);if(n+70>=PATH_MAX)return -ENAMETOOLONG;
@@ -105,7 +132,21 @@ long links_open(const char *dir,long flags,long mode){
 }
 /* Proc magic links may name any pid: match the underlying inode against our
  * inherited fd table, rather than trusting the numeric descriptor alone. */
-static struct temporary *source_tmp(const char *source){struct proxy_stat st;if(arch_stat_at(AT_FDCWD,source,&st,0)<0)return NULL;for(struct descriptor *d=descriptors;d;d=d->next){struct proxy_stat own;if(!arch_stat_fd(d->fd,&own) && own.st_dev==st.st_dev && own.st_ino==st.st_ino)return d->tmp;}return NULL;}
+static struct temporary *source_tmp(const char *source){
+ struct proxy_stat st;if(arch_stat_at(AT_FDCWD,source,&st,0)<0)return NULL;
+ /* Usually the numeric fd is ours. Verify its inode before trusting it;
+  * another process may use the same number for an unrelated file. */
+ const char *last=source;for(const char *p=source;*p;p++)if(*p=='/')last=p+1;
+ unsigned fd=0;int valid=*last!=0;
+ for(const char *p=last;valid && *p;p++){
+  unsigned digit=(unsigned)(*p-'0');
+  if(digit>9 || fd>(2147483647U-digit)/10)valid=0;else fd=fd*10+digit;
+ }
+ struct descriptor *candidate=valid?find((int)fd):NULL;
+ if(candidate){struct proxy_stat own;if(!arch_stat_fd(candidate->fd,&own) && own.st_dev==st.st_dev && own.st_ino==st.st_ino)return candidate->tmp;}
+ for(struct descriptor *d=descriptors;d;d=d->next){struct proxy_stat own;if(d!=candidate && !arch_stat_fd(d->fd,&own) && own.st_dev==st.st_dev && own.st_ino==st.st_ino)return d->tmp;}
+ return NULL;
+}
 /* Conservative generic app-tree predicate: a shared parent owned by the
  * real caller, owner-writable/searchable, with no group/other write bits.
  * This is compatibility policy, not a replacement for UID/SELinux checks. */
@@ -345,7 +386,8 @@ long links_dents(long fd,void *buf,long size){
  if(n>0){path[n++]='/';path[n++]='.';path[n]=0;if(tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock);return r;}}}
  long r=dents_locked(fd,buf,size);if(lock>=0)unlock(lock);return r;
 }
-long links_publish(const char *source,const char *target,long flags){
+static long links_publish_locked(const char *source,const char *target,long flags,int *handled){
+ *handled=1;
  if(flags&~AT_SYMLINK_FOLLOW)return -EINVAL;
  struct temporary *t=(flags&AT_SYMLINK_FOLLOW)?source_tmp(source):NULL;
  if(t){
@@ -356,17 +398,17 @@ long links_publish(const char *source,const char *target,long flags){
   if(!r)p_copy(t->path,target,p_len(target)+1);
   __atomic_store_n(&t->published,r?0:1,__ATOMIC_RELEASE);return r;
  }
- return store_link(source,target);
+ *handled=0;return 0;
 }
 
 void links_payload_fd_stat(int fd,void *wire){struct proxy_stat s;arch_stat_decode(&s,wire);links_fd_stat(fd,&s);arch_stat_nlink(wire,s.st_nlink);}
 
 #include "state.h"
-int links_private_fd(int fd){for(struct descriptor *d=descriptors;d;d=d->next)if(d->tmp->backing==fd)return 1;return 0;}
-void links_state(struct state *s){
+static int links_private_fd_locked(int fd){for(struct descriptor *d=descriptors;d;d=d->next)if(d->tmp->backing==fd)return 1;return 0;}
+static void links_state_locked(struct state *s){
  serial=state_word(s,serial);
  uint64_t count=0;for(struct descriptor *d=descriptors;d;d=d->next)count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_word(s,count);if(count>SIZE_MAX/sizeof(struct descriptor)){s->error=-EOVERFLOW;return;}
  if(!s->reading){for(struct descriptor *d=descriptors;d;d=d->next){state_word(s,d->fd);state_word(s,d->tmp->backing);}return;}
  for(uint64_t i=0;i<count&&!s->error;i++){
   int fd=state_word(s,0),backing=state_word(s,0);struct temporary *tmp=NULL;
@@ -375,5 +417,35 @@ void links_state(struct state *s){
   if(!tmp){long m=RAW(PROXY_SC_mmap,0,sizeof(*tmp),PROT_READ|PROT_WRITE,MAP_SHARED,backing,0);if((unsigned long)m>=(unsigned long)-4095){s->error=m;return;}tmp=(void *)m;}
   struct descriptor *d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}*d=(struct descriptor){descriptors,fd,tmp};descriptors=d;
  }
- struct descriptor *d=descriptors;while(d){struct descriptor *next=d->next;if(!state_live(d->fd))links_close(d->fd);d=next;}
+ struct descriptor *d=descriptors;while(d){struct descriptor *next=d->next;if(!state_live(d->fd))links_close_locked(d->fd);d=next;}
+}
+
+char *links_fd_name(int fd){proxy_sigmask_t mask=descriptor_lock();char *result=links_fd_name_locked(fd);descriptor_unlock(mask);return result;}
+
+long links_fork(int delta){proxy_sigmask_t mask=descriptor_lock();long r=links_fork_locked(delta);descriptor_unlock(mask);return r;}
+
+void links_exit(void){proxy_sigmask_t mask=descriptor_lock();links_exit_locked();descriptor_unlock(mask);}
+
+long links_open(const char *dir,long flags,long mode){proxy_sigmask_t mask=descriptor_lock();long result=links_open_locked(dir,flags,mode);descriptor_unlock(mask);return result;}
+
+long links_publish(const char *source,const char *target,long flags){proxy_sigmask_t mask=descriptor_lock();int handled;long result=links_publish_locked(source,target,flags,&handled);descriptor_unlock(mask);return handled?result:store_link(source,target);}
+
+int links_private_fd(int fd){proxy_sigmask_t mask=descriptor_lock();int result=links_private_fd_locked(fd);descriptor_unlock(mask);return result;}
+
+void links_state(struct state *s){proxy_sigmask_t mask=descriptor_lock();links_state_locked(s);descriptor_unlock(mask);}
+
+/* Retire tracking before a concurrent tmpfile open can reuse the kernel fd.
+ * Locking only links_close() after close(2) can unlink the NEW temp inode. */
+long links_close_fd(int fd){
+ proxy_sigmask_t mask=descriptor_lock();
+ long r=RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ if(!r)links_close_locked(fd);
+ descriptor_unlock(mask);return r;
+}
+long links_dup_fd(long nr,proxy_arg_t *a){
+ proxy_sigmask_t mask=descriptor_lock();
+ long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+ if(r>=0){long e=links_dup_locked((int)a[0],(int)r);
+  if(e){RAW(PROXY_SC_close,r,0,0,0,0,0);links_close_locked((int)r);r=e;}}
+ descriptor_unlock(mask);return r;
 }

@@ -3,9 +3,9 @@
 #define LINKS_H
 long links_open(const char *,long,long);
 long links_publish(const char *,const char *,long);
-void links_close(int);
-long links_dup(int,int);
-void links_fork(int);
+long links_close_fd(int);
+long links_dup_fd(long,proxy_arg_t *);
+long links_fork(int);
 void links_exit(void);
 char *links_fd_name(int);
 struct proxy_stat; struct statx;

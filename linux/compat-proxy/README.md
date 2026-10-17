@@ -1295,3 +1295,47 @@ The inherited app syscall policy remains authoritative: on this checkout
 but does not bypass that denial. Host filesystems/kernels without xattrat
 return ENOSYS. Validation is on the host under the copied app filter, not a
 fresh MatonOS VM deployment; rerun Flatpak installation on the rebuilt image.
+
+Threaded O_TMPFILE publication (2026-10-17): the descriptor list is shared by
+all threads in a process. Its inserts, lookups, alias/reference updates,
+publication, cleanup, fork reservations and resident-exec serialization now
+use one signal-masked process lock. A fork child can discard an inherited
+parent lock owner; inode ownership/publication records remain shared across
+fork as before. Kernel close and duplication also run inside this lock:
+locking cleanup alone lets an intervening O_TMPFILE open reuse the descriptor,
+then the old close deletes the new temp record and its backing pathname.
+Reference reservation and restored descriptor counts check overflow; tracking
+uses dynamically allocated records with no fixed descriptor-count limit.
+Ordinary store operations release this lock before acquiring a store flock.
+The incremental counts/intents/recount protocol is unchanged.
+
+On b83cd4b, scheduling two opens between their list-head read and insertion
+loses a temp record. The host stress test then returns EXDEV: source_tmp cannot
+find its tracked inode, so store_link compares the proc-fd parent filesystem
+to the destination filesystem. Unrestricted baseline concurrency also crashes
+or hangs in list traversal. Delayed close returns independently expose stale
+publication records. This is not evidence of different backing filesystems
+inside installation/repo. Temp publication uses a direct NOREPLACE rename,
+not inode-store root selection.
+
+Unpublished descriptors now supply their actual temp pathname for mount
+identity, rather than the directory name recorded by open. Proc-fd logical
+names recognize self, the process PID, thread-self, and any TID in our own
+/proc/self/task directory. Numeric descriptor parsing checks overflow. Foreign
+process descriptor numbers are never trusted: publication still requires an
+inode matching our tracked descriptor table (including fork-inherited inodes).
+A verified numeric-fd fast path avoids statting every tracked descriptor;
+the inode-checked scan remains for inherited aliases using other numbers.
+
+`tests/tmpfile-threads.sh` (also in run.sh) runs eight workers for 1,000 rounds
+per worker, alternating own/cross-thread publication and all four proc forms.
+The next opens overlap the previous closes. It verifies inode identity,
+regular-file/no-follow behavior, contents, unlink/close cleanup, and rejection
+of a foreign child's non-inherited temp inode. Both fresh stores and an
+existing nested installation/repo/.v3-inodes store are covered beneath a
+virtual bind mount. Kernel linkat is denied by tests/link-deny throughout.
+`TMPFILE_SERIALIZED=1` isolates open-vs-close races by serializing publication
+and close in the test; TMPFILE_KEEP_ERRORS=1 collects subsequent errors for
+baseline tracing. Neither changes proxy behavior. Host coverage does not
+replace a fresh-image Firefox/Flathub pull; that VM integration check remains
+for the coordinator. No kernel, shared device-tree or image changes needed.

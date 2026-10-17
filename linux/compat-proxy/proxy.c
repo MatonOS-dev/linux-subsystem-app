@@ -476,7 +476,7 @@ static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
             while(*p>='0'&&*p<='9'){value=value*10+(*p++-'0');}
             if(*p || value<first || value>last || value==(unsigned)fd || private_close_fd((int)value))continue;
             if(flags&4u)RAW(PROXY_SC_fcntl,value,F_SETFD,FD_CLOEXEC,0,0,0);
-            else {RAW(PROXY_SC_close,value,0,0,0,0,0);dns_close(value);links_close(value);vfs_fd_close(value);net_close(value);sysctl_close(value);}
+            else {links_close_fd(value);dns_close(value);vfs_fd_close(value);net_close(value);sysctl_close(value);}
         }
     }
 done:
@@ -526,7 +526,7 @@ static void exec_close_fds(void){
     char *buf=vfs_alloc(8192);if(!buf){RAW(PROXY_SC_close,fd,0,0,0,0,0);return;}
     for(;;){long n=RAW(PROXY_SC_getdents64,fd,buf,8192,0,0,0);if(n<=0)break;
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
-            if(valid && v!=fd){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(PROXY_SC_close,v,0,0,0,0,0);dns_close((int)v);links_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
+            if(valid && v!=fd){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){links_close_fd((int)v);dns_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
         }
     }
     vfs_free(buf);RAW(PROXY_SC_close,fd,0,0,0,0,0);
@@ -611,11 +611,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();links_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
-    case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(nr,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);links_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
+    case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=links_close_fd((int)a[0]);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
         if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&vfs_private_fd((int)a[1]))){result=-EBADF;break;}
-        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=links_dup((int)a[0],(int)result);if(tracked>=0)tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);links_close((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+        result=(nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)?links_dup_fd(nr,a):RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){links_close_fd((int)result);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
@@ -702,7 +702,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        links_fork(1);dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(result<0)links_fork(-1);if(!result)ipc_fork();break;
+        result=links_fork(1);if(result){ipc_fork_result(result);break;}dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(result<0)links_fork(-1);if(!result)ipc_fork();break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -711,7 +711,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(!(a[0]&CLONE_VM)){
             if(a[0]&CLONE_FILES){result=-ENOTSUP;break;}
             if(a[1])goto clone_retry;
-            unsigned long ns=a[0]&NS_FLAGS;result=ipc_fork_prepare();if(result)break;links_fork(1);
+            unsigned long ns=a[0]&NS_FLAGS;result=ipc_fork_prepare();if(result)break;result=links_fork(1);if(result){ipc_fork_result(result);break;}
             dns_fork_prepare();
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
             dns_fork_result(result);ipc_fork_result(result);
@@ -720,7 +720,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             break;
         }
 clone_retry:
-        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;links_fork(1);dns_fork_prepare();(*arch_signal_mask(uc))=~SIGSYS_BIT;}
+        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;result=links_fork(1);if(result){ipc_fork_result(result);break;}dns_fork_prepare();(*arch_signal_mask(uc))=~SIGSYS_BIT;}
         namespace_clone_parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0);namespace_clone_flags=a[0]&NS_FLAGS;
         ARCH_CONTEXT(uc,ARCH_ARG1)=a[1];ARCH_CONTEXT(uc,ARCH_ARG2)=a[2];
         ARCH_CONTEXT(uc,ARCH_ARG3)=a[3];ARCH_CONTEXT(uc,ARCH_ARG4)=a[4];
