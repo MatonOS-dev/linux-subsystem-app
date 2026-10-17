@@ -9,6 +9,8 @@ cc=${CC:-clang-21}
 flags=(-std=c11 -g -Wall -Wextra -Werror -fno-builtin -fno-stack-protector -DMV_WSI_PROTOTYPE=1 -I"$here" -I"$here/arch/x86_64" -I"$headers/include")
 "$cc" "${flags[@]}" -fsanitize=address,undefined "$here/runtime.c" "$here/wsi.c" "$here/tests/wsi-test.c" -o "$out/wsi-test"
 "$out/wsi-test"
+"$cc" "${flags[@]}" -fsanitize=address,undefined "$here/tests/wsi-wayland-test.c" -o "$out/wsi-wayland-test"
+"$out/wsi-wayland-test"
 "$cc" "${flags[@]}" -I"$here" "$here/runtime.c" "$here/wayland_resolve.c" "$here/tests/wayland-resolve-test.c" -ldl -o "$out/wayland-resolve-test"
 "$out/wayland-resolve-test"
 "$cc" "${flags[@]}" -UMV_WSI_PROTOTYPE "$here/runtime.c" "$here/wsi.c" "$here/tests/wsi-disabled.c" -o "$out/wsi-disabled"

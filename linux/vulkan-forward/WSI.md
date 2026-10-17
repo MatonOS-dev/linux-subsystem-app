@@ -1,7 +1,9 @@
 # Vulkan Wayland WSI
 
-Status on `vk-wayland-wsi`: **surface stage implemented; swapchain and
-presentation are not implemented**. The surface API remains prototype-only.
+Status on `vk-wayland-wsi`: **surface stage and a freestanding dmabuf client
+helper are implemented; Vulkan swapchain and presentation are not implemented**.
+The surface API remains prototype-only, and the helper is not wired into the
+Vulkan entry points.
 A device probe verified that this VM's resident llvmpipe can export an Android
 Vulkan image as an `AHardwareBuffer` backed by a dma-buf; the ICD does not yet
 allocate or export swapchain buffers. The prototype ICD now advertises
@@ -10,8 +12,8 @@ creation without forwarding them to Android, creates a surface wrapper around
 the app's existing `wl_display`/`wl_surface`, and reports graphics queue
 support, a single RGBA8 format and FIFO mode. Capabilities are provisional
 limits (1–4096 extent, 2–4 images), not yet connected to compositor configure
-or presentation feedback. `VK_KHR_swapchain` remains unadvertised and no image
-allocation, dmabuf transport, acquire/release, or present path exists.
+or presentation feedback. `VK_KHR_swapchain` remains unadvertised; no image
+allocation, per-swapchain `wl_buffer`, acquire/release, or present path exists.
 `wsi.[ch]` remains a host state-machine prototype. Commit `4984170` provides
 the freestanding ELF resolver for the application's already-loaded
 `libwayland-client.so.0`; this stage uses it to validate the supplied
@@ -36,6 +38,13 @@ AHardwareBuffers and attaches them to SurfaceFlinger through
 `ASurfaceTransaction_setBuffer`. GPU frames are never composited or read back.
 No private AHB socket, private buffer transport, direct Android Surface per
 window, or in-process ART path is part of this design.
+
+`wsi_wayland.c` resolves the libwayland-client marshaling, queue, listener,
+wrapper and registry APIs, binds `zwp_linux_dmabuf_v1` on a private event queue,
+and issues `create_params`, one `add` per plane, and `create_immed` for a
+`wl_buffer`. Its host mock checks the linear one-plane request values and
+release event. This is only the transport primitive: no Vulkan image currently
+calls it, and the app's surface is not yet attached or committed through it.
 
 The verified VM probe path is a Vulkan image with
 `VkExternalMemoryImageCreateInfo.handleTypes =
