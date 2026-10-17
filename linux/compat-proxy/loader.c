@@ -15,18 +15,6 @@
 #define DOWN(x) ((x)&~(PAGE-1))
 #define UP(x) (((x)+PAGE-1)&~(PAGE-1))
 #define STACK_SIZE (4UL<<20)
-#ifdef MATON_IN_PROCESS
-/* First slice has no exec hops: one main, interpreter and entry stack. */
-static uintptr_t resident_maps[6];
-void inprocess_image_maps(uintptr_t out[6]) {p_copy(out,resident_maps,sizeof(resident_maps));}
-void inprocess_forget_image(void) {for(unsigned i=0;i<6;i++)resident_maps[i]=0;}
-void inprocess_unload(void) {
-    for(unsigned i=0;i<6;i+=2)if(resident_maps[i+1]) {
-        RAW(PROXY_SC_munmap,resident_maps[i],resident_maps[i+1],0,0,0,0);
-        resident_maps[i+1]=0;
-    }
-}
-#endif
 struct mapped { uintptr_t entry, phdr, base, area, size, target; unsigned phnum; char interp[4096]; };
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
@@ -73,7 +61,6 @@ failed:
     RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;
 }
 static uintptr_t inherited_aux[64];
-void inprocess_aux(unsigned type,uintptr_t value){if(type<64)inherited_aux[type]=value;}
 uintptr_t proxy_aux(unsigned type){return type<64?inherited_aux[type]:0;}
 static int bad(long n) { return (unsigned long)n >= (unsigned long)-4095; }
 /* Preflight both ELF classes before MAP_FIXED or a kernel exec of our peer.
@@ -161,11 +148,6 @@ static int map_elf(const char *path,struct mapped *out) {
         if(UP(ph[i].p_vaddr+ph[i].p_memsz)>high) high=UP(ph[i].p_vaddr+ph[i].p_memsz);
     }
     if(high<=low) goto done;
-#ifdef MATON_IN_PROCESS
-    /* Fixed executable addresses may belong to ART. Enable only after an
-     * atomic MAP_FIXED_NOREPLACE reservation/ownership design is integrated. */
-    if(eh.e_type!=ET_DYN) {error=-ENOTSUP;goto done;}
-#endif
     /* Refuse collision with the resident proxy rather than overwriting it. */
     if(eh.e_type==ET_EXEC && high>ARCH_RESIDENT_LO && low<ARCH_RESIDENT_HI) goto done;
     /* Stage away from the caller, including fixed-address executables. */
@@ -314,11 +296,6 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     for(unsigned i=0;i<ec;i++) *v++=ev[i];
     *v++=0; p_copy(v,aux,sizeof(aux));
     vfs_free(av);vfs_free(ev);commit_elf(&main);commit_elf(&interp);
-#ifdef MATON_IN_PROCESS
-    resident_maps[0]=main.area;resident_maps[1]=main.size;
-    resident_maps[2]=interp.area;resident_maps[3]=interp.size;
-    resident_maps[4]=stack;resident_maps[5]=stack_size;
-#endif
     image->entry=entry;image->stack=sp;return 0;
 failed:
     if(main.size)RAW(PROXY_SC_munmap,main.area,main.size,0,0,0,0);

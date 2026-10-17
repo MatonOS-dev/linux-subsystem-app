@@ -191,9 +191,6 @@ char *vfs_proc_fd_name(const char *path){
 return NULL;
 }
 static char *basepath(int fd,long *error){if(fd==AT_FDCWD){
-#ifdef MATON_IN_PROCESS
-if(cwd)return dupstr(cwd);
-#endif
 if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct proxy_stat named,actual;if(host && !pack_stat(host,&named) && S_ISDIR(named.st_mode)){vfs_free(global);vfs_free(host);return dupstr(cwd);}int valid=host && !arch_stat_at(AT_FDCWD,host,&named,0) && !arch_stat_at(AT_FDCWD,".",&actual,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
     if(pack_is_directory(fd)==0){*error=-ENOTDIR;return NULL;}
     char *tracked=vfs_fd_name(fd);if(tracked)return tracked;
@@ -365,16 +362,9 @@ long vfs_chdir(int fd,const char *path){long e=0;void *identity=NULL;char *host;
     if(path)host=vfs_resolve_mount(fd,path,1,&e,&identity);
     else {char proc[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)proc[k++]=digits[--d];proc[k]=0;host=readlink_dynamic(proc,&e);}
     if(!host)return e;
-#ifdef MATON_IN_PROCESS
-    /* Validate through the same pack-aware resolver without changing ART cwd. */
-    struct proxy_stat st;
-    e=pack_stat(host,&st);if(e==-ENOSYS)e=arch_stat_at(AT_FDCWD,host,&st,0);
-    if(!e && !S_ISDIR(st.st_mode))e=-ENOTDIR;
-#else
     long packed=path?pack_open(host,O_RDONLY|O_DIRECTORY|O_CLOEXEC):-ENOSYS;
     if(path && packed!=-ENOSYS){e=packed<0?packed:RAW(PROXY_SC_fchdir,packed,0,0,0,0,0);if(packed>=0){pack_close(packed);RAW(PROXY_SC_close,packed,0,0,0,0,0);}}
     else e=path?RAW(PROXY_SC_chdir,host,0,0,0,0,0):RAW(PROXY_SC_fchdir,fd,0,0,0,0,0);
-#endif
     if(!e){struct mount *m=identity;char *logical=!path?vfs_fd_name(fd):NULL;if(!logical)logical=m?join(m->target,host+(p_len(m->source)==1?0:p_len(m->source))):vfs_reverse(host);
         if(logical && m && root && prefix(logical,root)){char *q=dupstr(logical+p_len(root));vfs_free(logical);logical=q;if(logical && !*logical){vfs_free(logical);logical=dupstr("/");}}
         if(!logical)e=-ENOMEM;else {vfs_free(cwd);cwd=logical;}}
@@ -570,19 +560,3 @@ void vfs_state(struct state *s){
 
 #include "pack-vfd.c"
 
-#ifdef MATON_IN_PROCESS
-void vfs_resident_reset(void) {
-    while(temp_locks){struct temp_lock *l=temp_locks;temp_locks=l->next;RAW(PROXY_SC_close,l->fd,0,0,0,0,0);vfs_free(l);}
-    while(pack_fds){struct pack_fd *f=pack_fds;pack_fds=f->next;vfs_free(f);}
-    while(pack_mounts){struct pack_mount *m=pack_mounts;pack_mounts=m->next;
-        if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);
-        if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);
-        if(m->directory>=0)RAW(PROXY_SC_close,m->directory,0,0,0,0,0);
-        while(m->files){struct pack_file *p=m->files;m->files=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p->name);vfs_free(p);}
-        mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m);
-    }
-    while(table){struct mount *m=table;table=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);}
-    vfs_free(root);root=NULL;vfs_free(cwd);cwd=NULL;vfs_free(executable);executable=NULL;
-    stacked_oldroot=0;hide_resolver=0;
-}
-#endif

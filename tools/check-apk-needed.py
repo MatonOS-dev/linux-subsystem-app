@@ -21,11 +21,6 @@ with zipfile.ZipFile(apk) as z:
         if n.endswith('assets/xwayland/libraries.json') or n == 'assets/xwayland/libraries.json':
             links = json.loads(z.read(n))
     available = set(libs) | set(links) | system
-    # The diagnostic Linux libc is entered by the explicit, packaged glibc
-    # loader. Its dependency on that already-loaded ELF is not a Bionic DSO
-    # lookup. Do not extend this exception to ordinary APK native libraries.
-    fixture_loader = 'libmatonos-inprocess-ld.so'
-    fixture_libc = 'libt.so'
     missing = []
     with tempfile.TemporaryDirectory() as tmp:
         for name, entry in sorted(libs.items()):
@@ -35,8 +30,6 @@ with zipfile.ZipFile(apk) as z:
             for line in out.splitlines():
                 if '(NEEDED)' in line:
                     needed = line.split('[', 1)[1].split(']', 1)[0]
-                    if name == fixture_libc and needed == 'ld-linux-x86-64.so.2' and fixture_loader in libs:
-                        continue
                     if needed not in available:
                         missing.append(f'{name} needs {needed}')
 if missing:
