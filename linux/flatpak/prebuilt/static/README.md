@@ -1,18 +1,16 @@
-> v3.5: linuxd is retired. Any linuxd/shared-store paths below describe the
-> historical design. See [current ownership and device checks](../../../../docs/RETIRE-LINUXD.md).
-
 # Bionic Flatpak tool inputs
 
-The directory name is retained for build-input stability. The payload is bionic.
-`tools/build-flatpak-helpers.sh` builds matonos-app-tool (installed as
-matonos-app-flatpak and matonos-app-bwrap). HELPERS.sha256 fingerprints their
-compiler, flags and included sources. SOURCE records upstream multicall/portal
-provenance; later in-tree artifact hashes supersede the original helper hashes.
+The directory name is retained for build-input stability. The payload is Bionic.
+`tools/build-flatpak-helpers.sh` builds the APK helper entry points, installed as
+matonos-app-flatpak and matonos-app-bwrap. `HELPERS.sha256` fingerprints their
+compiler, flags and included sources. `SOURCE` records the pinned multicall
+sources and the SHA-256 of `x86_64/matonos-flatpak`.
 
-Build fork commit `4cce363` in `~/matonos/repos/flatpak` using
-`~/matonos/repos/MatonOS_apexs/flatpak/build.sh`; copy its generated
-`flatpak/out/matonos-flatpak` into this directory before building the APK.
-This packaging move is v3.5.
-The old bwrap/app-exec binaries, the Flatpak portal (v1/v2) and the SysV
-preload libraries are deleted.
-No fallback launch artifacts are shipped.
+Build with `linux/flatpak/build-support/fetch.sh` and `build.sh`, keeping cache,
+build and output directories outside this repository. Copy the verified
+`OUT_DIR/matonos-flatpak` to `x86_64/` and `OUT_DIR/SOURCE` here, or use the root
+`./build.sh --build-dependencies` to do that as part of a signed APK build.
+The fixed runtime prefix, runtime path audit and two-directory comparison are
+in [REPRODUCIBILITY.md](../../build-support/REPRODUCIBILITY.md).
+
+No legacy store, portal or fallback launch artifacts are shipped.

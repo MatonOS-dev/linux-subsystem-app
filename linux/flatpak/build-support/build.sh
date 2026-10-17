@@ -4,7 +4,16 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CACHE=${CACHE_DIR:-$HERE/cache}
 SRC=$CACHE/src
 BUILD=${BUILD_DIR:-$HERE/build}
-PREFIX=${PREFIX:-$BUILD/prefix}
+# Runtime paths must never name the staging tree. Keep build/prefix for APK
+# consumers; DESTDIR supplies the filesystem root used only while installing.
+INSTALL_PREFIX=/usr
+PREFIX=$BUILD/prefix
+DESTDIR=$BUILD/stage
+export DESTDIR
+export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1767225600}
+export ZERO_AR_DATE=1
+export ARFLAGS=crD
+export LC_ALL=C TZ=UTC
 OUT=${OUT_DIR:-$HERE/out}
 JOBS=${JOBS:-4}
 [ "$JOBS" -le 4 ] || { echo 'JOBS must be <= 4' >&2; exit 2; }
@@ -25,15 +34,19 @@ for exe in "$CC" "$CXX" "$AR" "$STRIP" "$READELF" "$CMAKE" "$NINJA"; do
   [ -x "$exe" ] || { echo "Missing build tool: $exe" >&2; exit 1; }
 done
 [ -f "$MESON" ] || { echo "Missing Meson module: $MESON" >&2; exit 1; }
-mkdir -p "$BUILD" "$PREFIX" "$OUT"
+mkdir -p "$BUILD" "$PREFIX" "$OUT" "$DESTDIR"
+ln -sfn ../prefix "$DESTDIR/usr"
 rm -f "$OUT/flatpak" "$OUT/ostree" "$OUT/bwrap" \
   "$OUT/flatpak.unstripped" "$OUT/ostree.unstripped" "$OUT/bwrap.unstripped" \
   "$OUT/matonos-flatpak" "$OUT/matonos-flatpak.unstripped" \
   "$OUT/matonos-flatpak-store" "$OUT/SOURCE"
 export PATH="$(dirname "$NINJA"):$PATH"
 export CC CXX AR RANLIB=$TOOL/llvm-ranlib STRIP
-export CFLAGS='-O2 -fPIC'
-export CXXFLAGS='-O2 -fPIC -stdlib=libc++'
+# Map each independently located input, including generated/copied sources.
+MESON_SRC=$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$SRC" "$BUILD/component")
+REPRO_FLAGS="-ffile-prefix-map=$MESON_SRC=./src -fdebug-prefix-map=$MESON_SRC=./src -ffile-prefix-map=$SRC=./src -fdebug-prefix-map=$SRC=./src -ffile-prefix-map=$BUILD=./build -fdebug-prefix-map=$BUILD=./build -ffile-prefix-map=$HERE=./build-support -fdebug-prefix-map=$HERE=./build-support -ffile-prefix-map=$NDK=./ndk -fdebug-prefix-map=$NDK=./ndk"
+export CFLAGS="-O2 -fPIC $REPRO_FLAGS"
+export CXXFLAGS="$CFLAGS -stdlib=libc++"
 COMPAT_CFLAGS="$CFLAGS -include $SRC/bionic-fill.h"
 COMPAT_CXXFLAGS="$CXXFLAGS -include $SRC/bionic-fill.h"
 export CPPFLAGS="-I$SRC/e2fsprogs-headers/usr/include"
@@ -41,9 +54,9 @@ export LDFLAGS="-L$PREFIX/lib -Wl,-Bstatic -lc++_static -lc++abi -Wl,-Bdynamic"
 export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
 export PKG_CONFIG_PATH=
 PKG_CONFIG_STATIC="$BUILD/pkg-config-static"
-cat > "$PKG_CONFIG_STATIC" <<'EOF'
+cat > "$PKG_CONFIG_STATIC" <<EOF
 #!/bin/sh
-exec /usr/bin/pkg-config --static "$@"
+exec /usr/bin/pkg-config --define-variable=prefix="$PREFIX" --static "\$@"
 EOF
 chmod +x "$PKG_CONFIG_STATIC"
 export PKG_CONFIG="$PKG_CONFIG_STATIC"
@@ -84,27 +97,33 @@ Version: 1.47.0
 Libs:
 Cflags: -I\${includedir}
 EOF
+stage_metadata() {
+  # Relocate build-only metadata without changing compiled runtime paths.
+  # This metadata is consumed by the build and is never packaged.
+  find "$PREFIX" -name '*.pc' -exec sed -i "s|=/usr|=$PREFIX|g; s| /usr/| $PREFIX/|g; s|-L/usr/|-L$PREFIX/|g; s|-I/usr/|-I$PREFIX/|g" {} +
+  find "$PREFIX/lib" -name '*.la' -exec sed -i "s|'/usr/lib|'$PREFIX/lib|g; s| -L/usr/lib| -L$PREFIX/lib|g; s| /usr/lib/| $PREFIX/lib/|g" {} +
+}
 meson() { python3 "$MESON" "$@"; }
-MCOMMON="--cross-file $BUILD/android.ini --prefix $PREFIX --libdir lib --default-library static --prefer-static"
+MCOMMON="--cross-file $BUILD/android.ini --prefix $INSTALL_PREFIX --sysconfdir /etc --localstatedir /var --libdir lib --default-library static --prefer-static"
 
 START_AT=${START_AT:-all}
 if [ "$START_AT" = all ]; then
 mkdir -p "$BUILD/libffi"; cd "$BUILD/libffi"
-"$SRC/libffi/configure" --host="$HOST" --prefix="$PREFIX" --disable-shared --enable-static CFLAGS="$CFLAGS"
-make -j"$JOBS"; make install
-"$CMAKE" -S "$SRC/pcre2" -B "$BUILD/pcre2" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DBUILD_SHARED_LIBS=OFF -DPCRE2_BUILD_TESTS=OFF -DPCRE2_BUILD_PCRE2_8=ON -DPCRE2_BUILD_PCRE2_16=OFF -DPCRE2_BUILD_PCRE2_32=OFF
-"$CMAKE" --build "$BUILD/pcre2" --target install --parallel "$JOBS"
+"$SRC/libffi/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --disable-shared --enable-static CFLAGS="$CFLAGS"
+make -j"$JOBS"; make install; stage_metadata
+"$CMAKE" -S "$SRC/pcre2" -B "$BUILD/pcre2" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DBUILD_SHARED_LIBS=OFF -DPCRE2_BUILD_TESTS=OFF -DPCRE2_BUILD_PCRE2_8=ON -DPCRE2_BUILD_PCRE2_16=OFF -DPCRE2_BUILD_PCRE2_32=OFF
+"$CMAKE" --build "$BUILD/pcre2" --target install --parallel "$JOBS"; stage_metadata
 meson setup "$BUILD/glib" "$SRC/glib" $MCOMMON -Dtests=false -Dman-pages=disabled -Dintrospection=disabled -Ddocumentation=false -Dselinux=disabled
-"$NINJA" -C "$BUILD/glib" -j "$JOBS" install
-"$CMAKE" -S "$SRC/zstd/build/cmake" -B "$BUILD/zstd" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF -DZSTD_BUILD_SHARED=OFF
-"$CMAKE" --build "$BUILD/zstd" --target install --parallel "$JOBS"
+"$NINJA" -C "$BUILD/glib" -j "$JOBS" install; stage_metadata
+"$CMAKE" -S "$SRC/zstd/build/cmake" -B "$BUILD/zstd" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF -DZSTD_BUILD_SHARED=OFF
+"$CMAKE" --build "$BUILD/zstd" --target install --parallel "$JOBS"; stage_metadata
 meson setup "$BUILD/libxml2" "$SRC/libxml2" $MCOMMON -Ddocs=disabled -Dpython=disabled -Dminimum=false -Doutput=enabled -Dzlib=enabled
-"$NINJA" -C "$BUILD/libxml2" -j "$JOBS" install
+"$NINJA" -C "$BUILD/libxml2" -j "$JOBS" install; stage_metadata
 meson setup "$BUILD/json-glib" "$SRC/json-glib" $MCOMMON -Dtests=false -Dman=false -Dintrospection=disabled
-"$NINJA" -C "$BUILD/json-glib" -j "$JOBS" install
+"$NINJA" -C "$BUILD/json-glib" -j "$JOBS" install; stage_metadata
 meson setup "$BUILD/libxmlb" "$SRC/libxmlb" $MCOMMON -Dtests=false -Dcli=false -Dintrospection=false -Dgtkdoc=false
-"$NINJA" -C "$BUILD/libxmlb" -j "$JOBS" install
-"$CMAKE" -S "$SRC/boringssl" -B "$BUILD/boringssl" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DBUILD_TESTING=OFF -DOPENSSL_NO_ASM=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+"$NINJA" -C "$BUILD/libxmlb" -j "$JOBS" install; stage_metadata
+"$CMAKE" -S "$SRC/boringssl" -B "$BUILD/boringssl" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DBUILD_TESTING=OFF -DOPENSSL_NO_ASM=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 "$CMAKE" --build "$BUILD/boringssl" --parallel "$JOBS" --target crypto ssl
 mkdir -p "$PREFIX/lib" "$PREFIX/include/openssl"
 cp "$BUILD/boringssl/libcrypto.a" "$PREFIX/lib/"; cp "$BUILD/boringssl/libssl.a" "$PREFIX/lib/"
@@ -112,7 +131,7 @@ cp -R "$SRC/boringssl/include/openssl/." "$PREFIX/include/openssl/"
 mkdir -p "$BUILD/boringssl-headers/src"
 ln -sfn "$SRC/boringssl/include" "$BUILD/boringssl-headers/src/include"
 if [ ! -d "$BUILD/gpgme-lite-src" ]; then cp -R "$SRC/DullPGP" "$BUILD/gpgme-lite-src"; fi
-(cd "$BUILD/gpgme-lite-src" && make clean && make -j"$JOBS" CC="$CC" AR="$AR" CFLAGS="$CFLAGS" BSSL_SRC="$BUILD/boringssl-headers" BSSL_LIBDIR="$PREFIX/lib" PREFIX="$PREFIX" LIBDIR="$PREFIX/lib" INCLUDEDIR="$PREFIX/include/gpgme-lite")
+(cd "$BUILD/gpgme-lite-src" && make clean && make -j"$JOBS" CC="$CC" AR="$AR" CFLAGS="$CFLAGS" BSSL_SRC="$BUILD/boringssl-headers" BSSL_LIBDIR="$PREFIX/lib" PREFIX="$INSTALL_PREFIX" LIBDIR="$INSTALL_PREFIX/lib" INCLUDEDIR="$INSTALL_PREFIX/include/gpgme-lite")
 install -D -m644 "$BUILD/gpgme-lite-src/libgpgme-lite.a" "$PREFIX/lib/libgpgme-lite.a"
 install -d "$PREFIX/include/gpgme-lite"; cp "$SRC/DullPGP/include/"*.h "$PREFIX/include/gpgme-lite/"
 cat > "$PREFIX/lib/pkgconfig/gpgme.pc" <<EOF
@@ -137,27 +156,27 @@ Cflags: -I\${includedir}
 EOF
 
 mkdir -p "$BUILD/libseccomp"; cd "$BUILD/libseccomp"
-"$SRC/libseccomp/configure" --host="$HOST" --prefix="$PREFIX" --disable-shared --enable-static --disable-python --disable-tests CFLAGS="$CFLAGS"
-make -j"$JOBS"; make install
+"$SRC/libseccomp/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --disable-shared --enable-static --disable-python --disable-tests CFLAGS="$CFLAGS"
+make -j"$JOBS"; make install; stage_metadata
 if [ ! -d "$BUILD/libcap-src" ]; then cp -R "$SRC/libcap" "$BUILD/libcap-src"; fi
-make -C "$BUILD/libcap-src/libcap" -j"$JOBS" CC="$CC" AR="$AR" RANLIB="$RANLIB" prefix="$PREFIX" lib=lib LIBDIR="$PREFIX/lib" SHARED=no PTHREADS=no BUILD_CC=cc
-make -C "$BUILD/libcap-src/libcap" install-static CC="$CC" AR="$AR" RANLIB="$RANLIB" prefix="$PREFIX" lib=lib LIBDIR="$PREFIX/lib" SHARED=no PTHREADS=no BUILD_CC=cc
+make -C "$BUILD/libcap-src/libcap" -j"$JOBS" CC="$CC" AR="$AR" RANLIB="$RANLIB" prefix="$INSTALL_PREFIX" lib=lib LIBDIR="$INSTALL_PREFIX/lib" SHARED=no PTHREADS=no BUILD_CC=cc
+make -C "$BUILD/libcap-src/libcap" install-static FAKEROOT="$DESTDIR" CC="$CC" AR="$AR" RANLIB="$RANLIB" prefix="$INSTALL_PREFIX" lib=lib LIBDIR="$INSTALL_PREFIX/lib" SHARED=no PTHREADS=no BUILD_CC=cc; stage_metadata
 meson setup "$BUILD/bubblewrap" "$SRC/bubblewrap" $MCOMMON -Dtests=false -Dman=disabled -Dc_args="$COMPAT_CFLAGS"
 "$NINJA" -C "$BUILD/bubblewrap" -j "$JOBS"
 
 mkdir -p "$BUILD/libarchive"; cd "$BUILD/libarchive"
-"$SRC/libarchive/configure" --host="$HOST" --prefix="$PREFIX" --disable-shared --enable-static --without-openssl --without-nettle --without-mbedtls --without-lzo2 --without-bz2lib --without-lz4 --without-zstd --without-xml2 CPPFLAGS="-I$SRC/libarchive/contrib/android/include $CPPFLAGS" CFLAGS="$CFLAGS"
-make -j"$JOBS"; make install
+"$SRC/libarchive/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --disable-shared --enable-static --without-openssl --without-nettle --without-mbedtls --without-lzo2 --without-bz2lib --without-lz4 --without-zstd --without-xml2 CPPFLAGS="-I$SRC/libarchive/contrib/android/include $CPPFLAGS" CFLAGS="$CFLAGS"
+make -j"$JOBS"; make install; stage_metadata
 mkdir -p "$BUILD/curl"; cd "$BUILD/curl"
-"$SRC/curl/configure" --host="$HOST" --prefix="$PREFIX" --disable-shared --enable-static --with-ssl="$PREFIX" --with-zlib="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" --with-ca-path=/apex/com.android.conscrypt/cacerts --without-ca-bundle --without-ca-fallback --disable-ftp --enable-file --disable-websockets --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet --disable-tftp --disable-pop3 --disable-imap --disable-smb --disable-smtp --disable-gopher --disable-mqtt --without-libssh2 --without-nghttp2 --without-libidn2 --without-libpsl --without-brotli CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" LDFLAGS="$LDFLAGS -lstdc++ -pthread" LIBS='-lstdc++ -pthread'
-make -j"$JOBS"; make install
+"$SRC/curl/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --disable-shared --enable-static --with-ssl="$PREFIX" --with-zlib="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" --with-ca-path=/apex/com.android.conscrypt/cacerts --without-ca-bundle --without-ca-fallback --disable-ftp --enable-file --disable-websockets --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet --disable-tftp --disable-pop3 --disable-imap --disable-smb --disable-smtp --disable-gopher --disable-mqtt --without-libssh2 --without-nghttp2 --without-libidn2 --without-libpsl --without-brotli CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" LDFLAGS="$LDFLAGS -lstdc++ -pthread" LIBS='-lstdc++ -pthread'
+make -j"$JOBS"; make install; stage_metadata
 # Configure probes need -lstdc++ with BoringSSL, but Android resolves that
 # compatibility name to libc++_shared. The final CLIs explicitly link NDK
 # libc++.a, so drop the probe-only token from libtool dependency metadata.
 sed -i '/^dependency_libs=/ s/[[:space:]]-lstdc++//g' "$PREFIX/lib/libcurl.la"
 sed -i 's/[[:space:]]-lstdc++//g' "$PREFIX/lib/pkgconfig/libcurl.pc"
-"$CMAKE" -S "$SRC/liblzma" -B "$BUILD/liblzma" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DBUILD_SHARED_LIBS=OFF -DXZ_TOOL_XZ=OFF -DXZ_TOOL_LZMADEC=OFF -DXZ_TOOL_LZMAINFO=OFF -DXZ_DOC=OFF -DXZ_NLS=OFF
-"$CMAKE" --build "$BUILD/liblzma" --target install --parallel "$JOBS"
+"$CMAKE" -S "$SRC/liblzma" -B "$BUILD/liblzma" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DBUILD_SHARED_LIBS=OFF -DXZ_TOOL_XZ=OFF -DXZ_TOOL_LZMADEC=OFF -DXZ_TOOL_LZMAINFO=OFF -DXZ_DOC=OFF -DXZ_NLS=OFF
+"$CMAKE" --build "$BUILD/liblzma" --target install --parallel "$JOBS"; stage_metadata
 fi
 
 if [ "$START_AT" != flatpak ]; then
@@ -173,10 +192,10 @@ if [ ! -x "$SRC/ostree/configure" ]; then
     GPGME_LITE_SRC="$SRC/DullPGP" ALPINE_SRC_ROOT="/scratch/$(basename "$CACHE")/src" \
     "$HERE/alpine-enter.sh" sh -c 'cd "$ALPINE_SRC_ROOT/ostree" && ACLOCAL_PATH="$ALPINE_SRC_ROOT/DullPGP" NOCONFIGURE=1 ./autogen.sh'
 fi
-ac_cv_c_undeclared_builtin_options='none needed' "$SRC/ostree/configure" --host="$HOST" --prefix="$PREFIX" --libdir="$PREFIX/lib" --disable-shared --enable-static --with-curl --with-gpgme --without-soup --without-soup3 --without-selinux --without-libmount --without-avahi --disable-rofiles-fuse --disable-man --disable-installed-tests --without-composefs --with-crypto=glib CC="$CC" CFLAGS="$COMPAT_CFLAGS -I$PREFIX/include/gpgme-lite" LIBS="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/36/libc++.a" PKG_CONFIG="$PKG_CONFIG" PKG_CONFIG_LIBDIR="$PKG_CONFIG_LIBDIR"
+ac_cv_c_undeclared_builtin_options='none needed' "$SRC/ostree/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --libdir="$INSTALL_PREFIX/lib" --disable-shared --enable-static --with-curl --with-gpgme --without-soup --without-soup3 --without-selinux --without-libmount --without-avahi --disable-rofiles-fuse --disable-man --disable-installed-tests --without-composefs --with-crypto=glib CC="$CC" CFLAGS="$COMPAT_CFLAGS -I$PREFIX/include/gpgme-lite" LIBS="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/36/libc++.a" PKG_CONFIG="$PKG_CONFIG" PKG_CONFIG_LIBDIR="$PKG_CONFIG_LIBDIR"
 printf '#include "config.h"\n' > "$BUILD/ostree/libglnx-config.h"
 make -j"$JOBS" ostree
-make install
+make install; stage_metadata
 # libtool may fold dependency archives into a static convenience archive.
 # Keep only relocatable object members in the public libostree archive.
 OSTREE_ARCHIVE="$PREFIX/lib/libostree-1.a"
@@ -191,8 +210,8 @@ fi
 
 fi
 
-FLATPAK_CFLAGS="-O2 -fPIC -include $SRC/bionic-fill.h"
-FLATPAK_CXXFLAGS="-O2 -fPIC -stdlib=libc++ -include $SRC/bionic-fill.h"
+FLATPAK_CFLAGS="$COMPAT_CFLAGS"
+FLATPAK_CXXFLAGS="$COMPAT_CXXFLAGS"
 # system_dbus_proxy names a path that is deliberately NOT shipped: since v1 the
 # stub-hosted per-app bus (dbus-java + broker) filters D-Bus, so no app uses
 # xdg-dbus-proxy. Leaving the option unset would build Flatpak's bundled copy.
@@ -202,6 +221,10 @@ python3 "$HERE/make-multicall.py" "$BUILD" "$OUT/matonos-flatpak.unstripped" "$T
 "$STRIP" --strip-all "$OUT/matonos-flatpak.unstripped" -o "$OUT/matonos-flatpak"
 rm -f "$OUT/matonos-flatpak.unstripped"
 
+if strings "$OUT/matonos-flatpak" | LC_ALL=C grep -E '/home/|/mnt/'; then
+  echo 'Host path leaked into matonos-flatpak' >&2
+  exit 1
+fi
 python3 "$HERE/license-gate.py"
 {
   echo 'flatpak-bionic source manifest'; cat "$HERE/sources.lock"; echo
