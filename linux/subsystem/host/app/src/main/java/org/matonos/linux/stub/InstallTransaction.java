@@ -171,7 +171,7 @@ public final class InstallTransaction {
             cache=requireDirectory(root,"cache");tmp=requireDirectory(root,"tmp");run=requireDirectory(root,"run");
             String dns=LoaderCommand.resolverAddress();File resolv=new File(run,"install-resolv.conf");LoaderCommand.writeResolv(resolv,dns);
             prefix.add(LoaderCommand.loader(context).getAbsolutePath());prefix.add("--parent-pid");prefix.add(Integer.toString(android.os.Process.myPid()));
-            LoaderCommand.addDns(prefix,dns,run);LoaderCommand.addResolvMaps(prefix,resolv);
+            LoaderCommand.addDns(prefix,dns,context.getCacheDir().getCanonicalFile());LoaderCommand.addResolvMaps(prefix,resolv);
             File descriptor=new File(root,"origin.flatpakrepo");
             if(!origin.url.isEmpty())Files.write(descriptor.toPath(),origin.flatpakrepo().getBytes(StandardCharsets.UTF_8));
             if(configure) {
