@@ -165,6 +165,8 @@ static void mv_vkCmdExecuteCommands(VkCommandBuffer buffer,uint32_t n,const VkCo
 }
 static PFN_vkVoidFunction mv_lookup(const char *name);
 static PFN_vkVoidFunction mv_vkGetDeviceProcAddr(VkDevice device,const char *name) {
-    if(!device || !name)return 0;struct mv_device *d=(void *)device;PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
+    if(!device || !name)return 0;struct mv_device *d=(void *)device;
+    PFN_vkVoidFunction local=mv_wsi_device_lookup(name);if(local)return local;
+    local=mv_lookup(name);if(!local)return 0;
     struct mv_scope s;if(!mv_enter(&s))return 0;PFN_vkVoidFunction raw=d->gdpa(d->base.android,name);switch_back(&s);return raw?local:0;
 }

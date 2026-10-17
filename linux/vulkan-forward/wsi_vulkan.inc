@@ -158,3 +158,9 @@ static PFN_vkVoidFunction mv_wsi_lookup(const char *name) {
 #undef MV_WSI_PROC
     return 0;
 }
+
+/* Filled by the swapchain adapter; device WSI is never an Android forwarder. */
+static PFN_vkVoidFunction mv_wsi_device_lookup(const char *name) {
+    (void)name;
+    return 0;
+}

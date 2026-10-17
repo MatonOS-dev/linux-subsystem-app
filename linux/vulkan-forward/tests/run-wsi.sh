@@ -6,6 +6,16 @@ headers=${2:?pinned Vulkan-Headers v1.4.341 source}
 # build.sh validates output location before any test output is written.
 unset MATON_VK_WSI_PROTOTYPE MV_WSI_PROTOTYPE
 bash "$here/build.sh" "$out" "$headers"
+python3 - "$out" <<'PY'
+import pathlib, sys
+out=pathlib.Path(sys.argv[1])
+commands={'vkCreateSwapchainKHR','vkDestroySwapchainKHR','vkGetSwapchainImagesKHR',
+          'vkAcquireNextImageKHR','vkAcquireNextImage2KHR','vkQueuePresentKHR'}
+for name in commands:
+    for generated in ('dispatch.h','lookup.inc','thunks.inc'):
+        assert name not in (out/generated).read_text(), (name, generated)
+print('PASS WSI device commands bypass generated Android dispatch')
+PY
 cc=${CC:-clang-21}
 flags=(-std=c11 -g -Wall -Wextra -Werror -fno-builtin -fno-stack-protector -I"$here" -I"$here/arch/x86_64" -I"$headers/include")
 "$cc" "${flags[@]}" -fsanitize=address,undefined "$here/runtime.c" "$here/wsi.c" "$here/tests/wsi-test.c" -o "$out/wsi-test"
