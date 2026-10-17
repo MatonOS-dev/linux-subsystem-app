@@ -192,6 +192,9 @@ public final class ExtraService extends Service {
             throw new IOException("Invalid extra working directory");
         remove(work);
         if (!work.mkdirs()) throw new IOException("Cannot create extra working directory");
+        java.nio.file.Files.createFile(new File(work,".v3-store-root").toPath(),
+                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
         return work;
     }
 

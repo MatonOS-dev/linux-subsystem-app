@@ -23,3 +23,5 @@ long links_dents(long,void *,long);
 #endif
 
 int links_private_fd(int);
+
+int links_marker(const char *);

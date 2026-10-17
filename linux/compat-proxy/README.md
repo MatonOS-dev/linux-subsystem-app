@@ -287,6 +287,22 @@ On the first named link, the regular file moves atomically into
 symlinks to that same backing file. Subsequent links add another name.
 The store lives in the highest ancestor on the same filesystem owned by the
 caller, writable/searchable by its owner, and without group/other write bits.
+An owner-owned regular `.v3-store-root` file (checked without following
+symlinks) instead selects the nearest marked eligible ancestor, even when
+an unmarked store already exists below it. Both link names must select the
+same store or linking returns EXDEV. Without a valid marker, existing store
+selection is unchanged. The marker stays visible; payload mutation, removal,
+renaming and alias creation are refused with EPERM. The owner creates it
+before starting the proxy; no old stores are migrated.
+
+Installer and repair staging mark the operation root before commands run.
+Discovery probes, package/delta scratch repositories and StagedPacks' pack-repo
+remain below that boundary, so Java's whole-operation cleanup removes backing
+inodes and count sidecars too. Disposable launch metadata (`flatpak-launch`)
+and the extra-data service's `extra` work tree have their own markers.
+Persistent app homes/caches are not disposable operation trees. Pack artifacts
+and stub-generation scratch are Java-only outputs, not proxied repositories.
+
 Both names must share such a private directory. Source ownership remains
 required. Filesystem and virtual-mount boundaries return EXDEV; read-only
 virtual mounts retain EROFS. Ordinary symlinks without AT_SYMLINK_FOLLOW and

@@ -93,7 +93,50 @@ timeout 20 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/bu
 cat build/links-test.out
 rm -r "$links_fixture"
 
+# Keep each private fixture its own legacy boundary, including when build/
+# is a symlink to an external output tree with private ancestors.
+chmod g+w build
 cc -no-pie -O2 -Wall -Wextra -Werror tests/hardlinks.c -o build/hardlinks-test
+marker_fixture=$(mktemp -d "$PWD/build/marker-fixture.XXXXXX")
+python3 - "$marker_fixture" <<'PYMARKERS'
+import os, pathlib, sys
+root=pathlib.Path(sys.argv[1]).resolve()
+for name in ('outer/deep', 'outer/nested/deep', 'sibling', 'plain/deep', 'symlink/deep', 'foreign/deep'):
+    (root/name).mkdir(parents=True, mode=0o700)
+for directory in root.rglob('*'):
+    if directory.is_dir(): directory.chmod(0o700)
+for name in ('outer', 'outer/nested', 'sibling'):
+    (root/name/'.v3-store-root').touch(mode=0o600)
+(root/'symlink/.v3-store-root').symlink_to(root/'outer/.v3-store-root')
+foreign=root/'foreign/.v3-store-root'
+foreign.touch(mode=0o600)
+if os.geteuid()==0:
+    os.chown(foreign, 65534, -1)
+else:
+    foreign.unlink()
+    foreign.symlink_to('/etc/passwd')
+    print('SKIP foreign-owned regular marker fixture requires root; symlink covered')
+PYMARKERS
+cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/store-marker.c -o build/store-marker
+build/store-marker "$marker_fixture/outer"
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$marker_fixture" --markers >build/markers.out 2>build/markers.log
+cat build/markers.out
+# Inspect real symlink targets outside the proxy, where stores remain visible.
+python3 - "$marker_fixture" <<'PYMARKERS'
+import pathlib, sys, shutil
+root=pathlib.Path(sys.argv[1]).resolve()
+for name, boundary in [('outer/deep','outer'), ('outer/nested/deep','outer/nested'), ('plain/deep',''), ('symlink/deep',''), ('foreign/deep','')]:
+    target=(root/name/'a').readlink()
+    assert target.parent == root/boundary/'.v3-inodes', (name,target)
+assert not (root/'outer/deep/.v3-inodes').exists()
+# Direct owner cleanup, as Java does, must reclaim the entire operation store.
+before=set((root/'.v3-inodes').iterdir())
+shutil.rmtree(root/'outer')
+assert set((root/'.v3-inodes').iterdir()) == before
+assert not list(root.glob('**/i-*')) or all(p.parent == root/'.v3-inodes' for p in root.glob('**/i-*'))
+shutil.rmtree(root)
+PYMARKERS
+printf 'PASS nearest/nested markers, legacy selection, ignored markers and owner cleanup\n'
 hardlinks_fixture=$(mktemp -d "$PWD/build/hardlinks-fixture.XXXXXX")
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$hardlinks_fixture" >build/hardlinks-test.out 2>build/hardlinks-test.log
 if [[ -n ${MATON_TEST_GLNX_SOURCE:-} ]]; then bash tests/glnx-nofollow.sh; fi
@@ -154,6 +197,8 @@ printf 'PASS interrupted store-root rename recovery\n'
 rm -r "$move_fixture"
 
 bash tests/links-incremental.sh
+# Mixed-class exec requires a non-writable peer-loader directory.
+chmod g-w build
 
 COMPAT_GPU_SKIP_BUILD=1 bash tests/gpu-host.sh
 

@@ -172,7 +172,24 @@ int links_hidden(const char *p){return component(p);}
 static int catpath(char *out,const char *a,const char *b){size_t n=p_len(a),m=p_len(b);if(n+m+2>PATH_MAX)return 0;p_copy(out,a,n);out[n++]='/';p_copy(out+n,b,m+1);return 1;}
 static int parent(char *out,const char *path){size_t n=p_len(path);if(n>=PATH_MAX)return 0;p_copy(out,path,n+1);while(n>1 && out[n-1]!='/')n--;if(n>1)n--;out[n]=0;return 1;}
 static int private_dir(const char *p,dev_t dev){struct proxy_stat st;return !arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && S_ISDIR(st.st_mode) && st.st_dev==dev && st.st_uid==(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0) && (st.st_mode&0300)==0300 && !(st.st_mode&0022);}
-static int tree(char *root,const char *path){struct proxy_stat st;char up[PATH_MAX];if(!parent(root,path) || arch_stat_at(AT_FDCWD,root,&st,0)<0 || !private_dir(root,st.st_dev))return 0;for(;;){char store[PATH_MAX];struct proxy_stat own;if(catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&own,AT_SYMLINK_NOFOLLOW) && S_ISDIR(own.st_mode))break;if(!parent(up,root) || p_equal(up,root) || !private_dir(up,st.st_dev))break;p_copy(root,up,p_len(up)+1);}return 1;}
+/* A marker is ordinary visible metadata, but only its owner may establish it
+ * outside the payload. Never follow a symlink when recognizing a boundary. */
+static int marked(const char *dir){char name[PATH_MAX];struct proxy_stat st;return catpath(name,dir,".v3-store-root") && !arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_uid==(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0);}
+int links_marker(const char *path){const char *name=path;for(const char *p=path;*p;p++)if(*p=='/')name=p+1;return p_equal(name,".v3-store-root");}
+static int tree(char *root,const char *path){
+ struct proxy_stat st;char up[PATH_MAX],fallback[PATH_MAX];int selected=0;
+ if(!parent(root,path) || arch_stat_at(AT_FDCWD,root,&st,0)<0 || !private_dir(root,st.st_dev))return 0;
+ for(;;){
+  if(marked(root))return 1;
+  if(!selected){char store[PATH_MAX];struct proxy_stat own;
+   p_copy(fallback,root,p_len(root)+1);
+   if(catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&own,AT_SYMLINK_NOFOLLOW) && S_ISDIR(own.st_mode))selected=1;
+  }
+  if(!parent(up,root) || p_equal(up,root) || !private_dir(up,st.st_dev))break;
+  p_copy(root,up,p_len(up)+1);
+ }
+ p_copy(root,fallback,p_len(fallback)+1);return 1;
+}
 int links_target(const char *name,char *out){long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,name,out,PATH_MAX-1,0,0);if(n<=0)return 0;out[n]=0;if(out[0]!='/' || !component(out))return 0;struct proxy_stat st;return !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);}
 static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0) || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
 static void unlock(long fd){RAW(PROXY_SC_flock,fd,LOCK_UN,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
@@ -317,6 +334,7 @@ static long store_link(const char *source,const char *target){
  long r=arch_stat_at(AT_FDCWD,sourceparent,&src,0);if(r)return r;
  r=arch_stat_at(AT_FDCWD,destparent,&dst,0);if(r)return r;if(src.st_dev!=dst.st_dev)return -EXDEV;
  if(!writable_tree(source,target) || !tree(root,source))return -EPERM;
+ char other[PATH_MAX];if(!tree(other,target) || !p_equal(root,other))return -EXDEV;
  long lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r)goto end;
  r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(S_ISLNK(src.st_mode) && !links_target(source,object)){r=-EPERM;goto end;}
  struct proxy_stat exists;if(!arch_stat_at(AT_FDCWD,target,&exists,AT_SYMLINK_NOFOLLOW)){r=-EEXIST;goto end;}

@@ -348,6 +348,9 @@ public final class InstallTransaction {
         cleanup(context,id);
         for(String name:new String[]{"installation","home","cache","tmp","run"})
             if(!new File(operation,name).mkdirs())throw new java.io.IOException("Cannot create private staging "+name);
+        java.nio.file.Files.createFile(new File(operation,".v3-store-root").toPath(),
+                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
         if(repair)Files.write(new File(operation,"repair").toPath(),new byte[]{1});
     }
     public static void cleanup(Context context,String id) {

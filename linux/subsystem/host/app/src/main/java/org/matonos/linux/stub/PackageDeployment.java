@@ -14,6 +14,9 @@ final class PackageDeployment {
         File root=new File(context.getCacheDir().getCanonicalFile(),"flatpak-launch");
         // A process has one launch. A fresh tree also discards removed extensions.
         remove(root.toPath());Files.createDirectories(root.toPath());
+        java.nio.file.Files.createFile(new File(root,".v3-store-root").toPath(),
+                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
         java.util.List<DeclaredPackages.Entry> packages=DeclaredPackages.resolve(context,null);
         if(!packages.get(0).record.ref.equals(appRef))throw new IOException("Installed deployment ref mismatch");
         for(int i=0;i<packages.size();i++) {

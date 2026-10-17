@@ -2,7 +2,7 @@
 """Inspect real kernel VMAs, sharing and permission-denied copy fallbacks."""
 import pathlib,subprocess,select,os
 base=pathlib.Path(__file__).resolve().parents[1]
-root=base/'build/loader-maps';root.mkdir(exist_ok=True)
+root=(base/'build/loader-maps').resolve();root.mkdir(exist_ok=True)
 def run(*a):subprocess.run(list(map(str,a)),check=True)
 run('cc','-O2','-Wall','-Wextra','-Werror',base/'tests/mmap-deny.c','-o',root/'deny')
 run('cc','-O2','-Wall','-Wextra','-Werror','-DREFUSAL=EPERM',base/'tests/mmap-deny.c','-o',root/'deny-perm')
