@@ -1,9 +1,20 @@
 # D1: Linux WSI over resident Vulkan and Android presentation
 
-Status: host contract prototype, **not usable Vulkan WSI**. Based on main
-`db7177b`. No VM use, compositor/Java changes, AOSP changes, or packaging.
-The existing loader dispatch still hides every WSI extension and entrypoint.
-D2 must meet the gates below before enabling any of them.
+Status: host contract prototype, **not usable Vulkan WSI**. The loader still
+hides every WSI extension and entrypoint. D2's Vulkan ICD, private AHB
+transport, Wayland proxy integration, sync protocols, Java lifecycle wiring,
+and VM acceptance are not implemented. Do not enable these extensions.
+
+One compositor safety fix has landed while investigating D2: SurfaceFlinger's
+release fence now transfers to the Wayland event loop, which unlocks the
+wlroots buffer only when that fd becomes readable or reports a terminal error.
+The previous detached-thread and zero-timeout fallback could unlock while the
+display server still held the buffer. If allocation, queueing, or event-source
+registration fails, the fence is closed and the buffer remains locked (a
+retained buffer is safer than reuse during a display read). This is a
+release-lifetime fix for the existing presenter; it does not provide the
+Vulkan acquire/present contract. There is still no SurfaceFlinger presentation
+feedback or frame pacing path.
 
 ## Observed pipeline and process boundaries
 

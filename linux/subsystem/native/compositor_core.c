@@ -132,6 +132,7 @@ struct Command {
   float x, y, vs, hs;
   struct MatonSurfaceOutput* output;
   struct wlr_buffer* buffer;
+  int fence_fd;
   struct SocketSession* session;
   struct Command* next;
 };
@@ -302,7 +303,10 @@ static void enqueue(struct Command* c) {
   pthread_mutex_lock(&server.mutex);
   if (atomic_load(&server.stopping) && c->kind != CMD_STOP) {
     pthread_mutex_unlock(&server.mutex);
-    if (c->buffer) wlr_buffer_unlock(c->buffer);
+    /* A release with an unsignaled fence must stay locked even while the
+     * compositor is stopping. Leaking the lock is safer than early reuse. */
+    if (c->buffer && c->kind != CMD_RELEASE) wlr_buffer_unlock(c->buffer);
+    if (c->kind == CMD_RELEASE && c->fence_fd >= 0) close(c->fence_fd);
     if (c->output) { maton_surface_output_finish(c->output); free(c->output); }
     if (c->session) { close(c->session->fd); unlink(c->session->path); free(c->session); }
     free(c); return;
@@ -319,11 +323,37 @@ static void command(enum CommandKind kind,int id,int a,int b,int c,int64_t time,
                     struct wlr_buffer* buffer) {
   struct Command* cmd=calloc(1,sizeof(*cmd));
   if (!cmd) { if(buffer)wlr_buffer_unlock(buffer); if(output){maton_surface_output_finish(output);free(output);} return; }
+  cmd->fence_fd=-1;
   cmd->kind=kind;cmd->id=id;cmd->a=a;cmd->b=b;cmd->c=c;cmd->time=time;
   cmd->x=x;cmd->y=y;cmd->vs=vs;cmd->hs=hs;cmd->output=output;cmd->buffer=buffer;enqueue(cmd);
 }
-static void release_buffer(struct wlr_buffer* buffer) {
-  command(CMD_RELEASE,0,0,0,0,0,0,0,0,0,NULL,buffer);
+struct ReleaseFence {
+  struct wlr_buffer* buffer;
+  struct wl_event_source* source;
+};
+static int on_release_fence(int fd,uint32_t mask,void* data) {
+  struct ReleaseFence* release=data;
+  if(!(mask&(WL_EVENT_READABLE|WL_EVENT_HANGUP|WL_EVENT_ERROR)))return 0;
+  if(release->source)wl_event_source_remove(release->source);
+  close(fd);
+  wlr_buffer_unlock(release->buffer);
+  free(release);
+  return 0;
+}
+static void release_buffer(struct wlr_buffer* buffer,int fence_fd) {
+  struct Command* cmd=calloc(1,sizeof(*cmd));
+  if(!cmd){if(fence_fd>=0)close(fence_fd);return;}
+  cmd->kind=CMD_RELEASE;cmd->buffer=buffer;cmd->fence_fd=fence_fd;
+  enqueue(cmd);
+}
+static void track_release(struct wlr_buffer* buffer,int fd) {
+  if(fd<0){wlr_buffer_unlock(buffer);return;}
+  struct ReleaseFence* release=calloc(1,sizeof(*release));
+  if(!release){close(fd);return;}
+  release->buffer=buffer;
+  release->source=wl_event_loop_add_fd(server.loop,fd,
+      WL_EVENT_READABLE|WL_EVENT_HANGUP|WL_EVENT_ERROR,on_release_fence,release);
+  if(!release->source){close(fd);free(release);}
 }
 static void on_commit(struct wl_listener* l,void* data) {
   struct Window* w=window_from_listener(l,offsetof(struct Window,commit));
@@ -962,7 +992,7 @@ static void process_commands(void) {
       if(server.seat->pointer_state.focused_surface!=ss->surface){server.pointer_focus=ss->surface;wlr_seat_pointer_notify_enter(server.seat,ss->surface,sx,sy);struct wlr_surface* root=window_root_surface(w);if(root&&server.seat->keyboard_state.focused_surface!=root){wlr_seat_keyboard_notify_enter(server.seat,root,NULL,0,&server.keyboard.modifiers);xwindow_activate(w);}}wlr_seat_pointer_notify_motion(server.seat,tm,sx,sy);activate_constraint();}else{clear_window_pointer(w);server.pointer_focus=NULL;wlr_seat_pointer_notify_clear_focus(server.seat);}struct PointerButtonEvent button_event={.time=tm,.window=w->id};maton_pointer_buttons_update(&server.pointer_buttons,ss ? (uint32_t)c->b : 0,notify_pointer_button,&button_event);/* Android reports wheel notches as +-1.0 (fractions on touchpads); the
        * discrete argument is value120, 120 per notch. */
       if(ss&&c->vs)wlr_seat_pointer_notify_axis(server.seat,tm,WL_POINTER_AXIS_VERTICAL_SCROLL,-c->vs*15.0,(int32_t)lroundf(-c->vs*120.0f),WL_POINTER_AXIS_SOURCE_WHEEL,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);if(ss&&c->hs)wlr_seat_pointer_notify_axis(server.seat,tm,WL_POINTER_AXIS_HORIZONTAL_SCROLL,-c->hs*15.0,(int32_t)lroundf(-c->hs*120.0f),WL_POINTER_AXIS_SOURCE_WHEEL,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);wlr_seat_pointer_notify_frame(server.seat);}break;
-    case CMD_RELEASE:if(c->buffer)wlr_buffer_unlock(c->buffer);break;
+    case CMD_RELEASE:if(c->buffer)track_release(c->buffer,c->fence_fd);else if(c->fence_fd>=0)close(c->fence_fd);break;
     case CMD_FULLSCREEN:if(w){
       if(w->xsurface)wlr_xwayland_surface_set_fullscreen(w->xsurface,c->a!=0);
       else if(w->toplevel&&w->toplevel->base->initialized)wlr_xdg_toplevel_set_fullscreen(w->toplevel,c->a!=0);
