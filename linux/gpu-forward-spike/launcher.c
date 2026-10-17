@@ -41,6 +41,7 @@ int main(int argc, char **argv) {
     snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",getenv("MATON_GPU_BRIDGE"));
     snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%s",getenv("MATON_QUERY_NO_ADOPT") ? "0" : (getenv("MATON_THREAD_ADOPT") ? getenv("MATON_THREAD_ADOPT") : "0"));
     snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",getauxval(AT_HWCAP2)&2);
+    snprintf(bootstrap->wsi,sizeof(bootstrap->wsi),"%s",getenv("MATON_WSI_HELPER") ? getenv("MATON_WSI_HELPER") : "0");
     if (prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, bootstrap, 4096,
               MATON_GPU_BOOTSTRAP_NAME) || mprotect(bootstrap,4096,PROT_READ)) return 6;
     struct image image;

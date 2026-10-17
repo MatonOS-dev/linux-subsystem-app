@@ -7,5 +7,7 @@
 struct maton_gpu_bootstrap {
     uint64_t magic;
     char bridge[32], adopt[32], fast[32];
+    /* Optional Linux Wayland WSI helper vtable address (hex), or "0". */
+    char wsi[32];
 };
 #endif

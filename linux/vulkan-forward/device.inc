@@ -41,7 +41,8 @@ static VkResult mv_chain_copy(const void *source,VkBaseOutStructure **out) {
 static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreateInfo *info,const VkAllocationCallbacks *a,VkDevice *out) {
     *out=0;struct mv_handle *h=(void *)physical;
     for(uint32_t j=0;j<info->enabledExtensionCount;j++)
-        if(!mv_extension_allowed(info->ppEnabledExtensionNames[j]))return VK_ERROR_EXTENSION_NOT_PRESENT;
+        if(!mv_extension_allowed(info->ppEnabledExtensionNames[j]) &&
+           !mv_wsi_device_extension(info->ppEnabledExtensionNames[j]))return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(a && (!a->pfnAllocation || !a->pfnFree || !a->pfnReallocation))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_device seed={0};if(a){seed.custom=1;seed.allocator=*a;}
     struct mv_device *d=mv_dnew(&seed,sizeof(*d));if(!d)return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -60,11 +61,30 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
         if(!valid){mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_FEATURE_NOT_PRESENT;}
     }
     for(uint32_t j=0;j<info->queueCreateInfoCount;j++)if(!mv_valid_VkDeviceQueueCreateInfo(&info->pQueueCreateInfos[j])){mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_FEATURE_NOT_PRESENT;}
-    struct mv_scope s;if(!mv_enter(&s)){mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_INITIALIZATION_FAILED;}
+    /* Android must never see our WSI extension names; it instead needs the AHB
+     * import extension enabled behind the application's back. */
+    const char **names=0;
+#if MV_WSI_PROTOTYPE
+    uint32_t keep=0;
+    for(uint32_t j=0;j<info->enabledExtensionCount;j++)
+        if(!mv_wsi_device_extension(info->ppEnabledExtensionNames[j]))keep++;
+    int add_ahb=mv_wsi_bootstrap_helper() && mv_android_has_device_extension(h,mv_ahb_extension);
+    uint32_t total=keep+(add_ahb?1u:0);
+    if(total){
+        names=mv_alloc((size_t)total*sizeof(*names));
+        if(!names){mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_OUT_OF_HOST_MEMORY;}
+        uint32_t w=0;
+        for(uint32_t j=0;j<info->enabledExtensionCount;j++)
+            if(!mv_wsi_device_extension(info->ppEnabledExtensionNames[j]))names[w++]=info->ppEnabledExtensionNames[j];
+        if(add_ahb)names[w++]=mv_ahb_extension;
+    }
+    copy.enabledExtensionCount=total;copy.ppEnabledExtensionNames=names;
+#endif
+    struct mv_scope s;if(!mv_enter(&s)){mv_free((void *)names);mv_chain_free(chain);mv_dfree(d,d);return VK_ERROR_INITIALIZATION_FAILED;}
     PFN_vkCreateDevice f=h->instance->create_device;
     VkDevice raw=0;VkResult r=f((VkPhysicalDevice)h->android,&copy,0,&raw);
     if(r==VK_SUCCESS){d->base.android=raw;d->gdpa=h->instance->gdpa;mv_load_device(d);}
-    switch_back(&s);mv_chain_free(chain);
+    switch_back(&s);mv_free((void *)names);mv_chain_free(chain);
     if(r!=VK_SUCCESS){mv_dfree(d,d);return r;}
     set_loader_magic_value(d);*out=(VkDevice)d;return VK_SUCCESS;
 }
@@ -145,6 +165,9 @@ static void mv_vkCmdExecuteCommands(VkCommandBuffer buffer,uint32_t n,const VkCo
 }
 static PFN_vkVoidFunction mv_lookup(const char *name);
 static PFN_vkVoidFunction mv_vkGetDeviceProcAddr(VkDevice device,const char *name) {
-    if(!device || !name)return 0;struct mv_device *d=(void *)device;PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
+    if(!device || !name)return 0;
+    /* Loader-facing WSI device commands are implemented in this DSO. */
+    PFN_vkVoidFunction wsi=mv_wsi_lookup(name);if(wsi)return wsi;
+    struct mv_device *d=(void *)device;PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
     struct mv_scope s;if(!mv_enter(&s))return 0;PFN_vkVoidFunction raw=d->gdpa(d->base.android,name);switch_back(&s);return raw?local:0;
 }

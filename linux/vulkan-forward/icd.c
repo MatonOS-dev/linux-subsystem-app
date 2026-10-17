@@ -83,18 +83,86 @@ static VkPhysicalDevice mv_wrap(struct mv_instance *i,VkPhysicalDevice raw) {
 }
 #include "validate.inc"
 #include "thunks.inc"
+#include "wsi-loader.inc"
+/* Loader-facing Wayland WSI. The Linux helper vtable is published through the
+ * launcher bootstrap; the resident adapters below bracket bionic TLS and use
+ * only raw Android function pointers, never a Linux callback. */
+static const struct mv_wsi_helper *mv_wsi_bootstrap_helper(void) {
+#if MV_WSI_PROTOTYPE
+    const char *value=mv_env("MATON_WSI_HELPER");
+    if(!value)return 0;
+    uintptr_t address=mv_hex(value);
+    if(!address)return 0;
+    const struct mv_wsi_helper *helper=(const void *)address;
+    return helper->version==1?helper:0;
+#else
+    return 0;
+#endif
+}
+#if MV_WSI_PROTOTYPE
+static const char mv_ahb_extension[]="VK_ANDROID_external_memory_android_hardware_buffer";
+static int mv_android_has_device_extension(struct mv_handle *h,const char *name) {
+    struct mv_scope scope;if(!mv_enter(&scope))return 0;
+    PFN_vkEnumerateDeviceExtensionProperties f=h->instance->extensions;
+    uint32_t count=0;VkResult r=f?f(h->android,0,&count,0):VK_ERROR_INITIALIZATION_FAILED;
+    switch_back(&scope);
+    if(r!=VK_SUCCESS || !count)return 0;
+    VkExtensionProperties *all=mv_alloc((size_t)count*sizeof(*all));
+    if(!all)return 0;
+    if(!mv_enter(&scope)){mv_free(all);return 0;}
+    r=f(h->android,0,&count,all);switch_back(&scope);
+    int found=0;
+    if(r==VK_SUCCESS)for(uint32_t j=0;j<count;j++)if(!strcmp(all[j].extensionName,name)){found=1;break;}
+    mv_free(all);return found;
+}
+static VkResult mv_wsi_bridged_query(VkPhysicalDevice physical,const VkPhysicalDeviceImageFormatInfo2 *info,
+    VkImageFormatProperties2 *out) {
+    struct mv_handle *h=(void *)physical;struct mv_scope scope;
+    if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkGetPhysicalDeviceImageFormatProperties2 query=h->instance->dispatch.vkGetPhysicalDeviceImageFormatProperties2;
+    VkResult r=query?query(h->android,info,out):VK_ERROR_INITIALIZATION_FAILED;
+    switch_back(&scope);return r;
+}
+static VkResult mv_wsi_resident_import(VkDevice device,struct AHardwareBuffer *ahb,VkExtent2D extent,
+    VkFormat format,VkImage *image,VkDeviceMemory *memory) {
+    struct mv_device *d=(void *)device;struct mv_scope scope;
+    if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID properties=(PFN_vkGetAndroidHardwareBufferPropertiesANDROID)d->gdpa(d->base.android,"vkGetAndroidHardwareBufferPropertiesANDROID");
+    PFN_vkCreateImage create=(PFN_vkCreateImage)d->gdpa(d->base.android,"vkCreateImage");
+    PFN_vkAllocateMemory allocate=(PFN_vkAllocateMemory)d->gdpa(d->base.android,"vkAllocateMemory");
+    PFN_vkBindImageMemory bind=(PFN_vkBindImageMemory)d->gdpa(d->base.android,"vkBindImageMemory");
+    PFN_vkDestroyImage destroy=(PFN_vkDestroyImage)d->gdpa(d->base.android,"vkDestroyImage");
+    PFN_vkFreeMemory free=(PFN_vkFreeMemory)d->gdpa(d->base.android,"vkFreeMemory");
+    struct mv_wsi_driver driver={d->base.android,properties,create,allocate,bind,destroy,free};
+    VkResult r=mv_wsi_import_ahb(&driver,ahb,extent,format,image,memory);
+    switch_back(&scope);return r;
+}
+static void mv_wsi_resident_release(VkDevice device,VkImage image,VkDeviceMemory memory) {
+    struct mv_device *d=(void *)device;struct mv_scope scope;
+    if(!mv_enter(&scope))return;
+    PFN_vkDestroyImage destroy=(PFN_vkDestroyImage)d->gdpa(d->base.android,"vkDestroyImage");
+    PFN_vkFreeMemory free=(PFN_vkFreeMemory)d->gdpa(d->base.android,"vkFreeMemory");
+    if(image && destroy)destroy(d->base.android,image,0);
+    if(memory && free)free(d->base.android,memory,0);
+    switch_back(&scope);
+}
+#endif
 static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAllocationCallbacks *a,VkInstance *out) {
     *out=VK_NULL_HANDLE;
     if(!mv_init())return VK_ERROR_INCOMPATIBLE_DRIVER;
-    if(info->enabledExtensionCount)return VK_ERROR_EXTENSION_NOT_PRESENT;
+    for(uint32_t j=0;j<info->enabledExtensionCount;j++)
+        if(!mv_wsi_instance_extension(info->ppEnabledExtensionNames[j]))return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(info->enabledLayerCount)return VK_ERROR_LAYER_NOT_PRESENT;
     if(a && (!a->pfnAllocation || !a->pfnFree || !a->pfnReallocation))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_instance seed={0};if(a){seed.custom=1;seed.allocator=*a;}
     struct mv_instance *i=mv_new(&seed,sizeof(*i));if(!i)return VK_ERROR_OUT_OF_HOST_MEMORY;
     i->custom=seed.custom;i->allocator=seed.allocator;
     VkInstanceCreateInfo copy=*info;
-    /* No extension pNext data or Linux callback may reach bionic. */
+    /* No extension pNext data or Linux callback may reach bionic. Our WSI
+     * extensions are ours alone and are backed by the Linux helper. */
     copy.pNext=0;
+    copy.enabledExtensionCount=0;
+    copy.ppEnabledExtensionNames=0;
     struct mv_scope s;
     if(!mv_enter(&s)){mv_delete(i,i);return VK_ERROR_INITIALIZATION_FAILED;}
     PFN_vkCreateInstance create=(PFN_vkCreateInstance)mv_gipa(0,"vkCreateInstance");
@@ -153,8 +221,12 @@ static int mv_extension_allowed(const char *name) {
     for(size_t j=0;j<sizeof(mv_extensions)/sizeof(*mv_extensions);j++)if(!strcmp(name,mv_extensions[j]))return 1;
     return 0;
 }
-/* Instance WSI/debug callbacks are deliberately hidden. */
-static VkResult mv_vkEnumerateInstanceExtensionProperties(const char *layer,uint32_t *n,VkExtensionProperties *p) {(void)p;*n=0;return layer?VK_ERROR_LAYER_NOT_PRESENT:VK_SUCCESS;}
+/* Instance WSI/debug callbacks are deliberately hidden; only the helper-backed
+ * Wayland surface set is exposed when a helper is present. */
+static VkResult mv_vkEnumerateInstanceExtensionProperties(const char *layer,uint32_t *n,VkExtensionProperties *p) {
+    if(layer){*n=0;return VK_ERROR_LAYER_NOT_PRESENT;}
+    return mv_wsi_enumerate_instance_extensions(n,p);
+}
 static VkResult mv_vkEnumerateInstanceLayerProperties(uint32_t *n,VkLayerProperties *p) {(void)p;*n=0;return VK_SUCCESS;}
 static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physical,const char *layer,uint32_t *n,VkExtensionProperties *out) {
     if(layer){*n=0;return VK_ERROR_LAYER_NOT_PRESENT;}
@@ -168,6 +240,9 @@ static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physica
     if(r!=VK_SUCCESS){mv_free(all);return r;}
     uint32_t written=0,capacity=out?*n:0;
     for(uint32_t j=0;j<count;j++)if(mv_extension_allowed(all[j].extensionName)){if(out && written<capacity)out[written]=all[j];written++;}
+    /* Our own helper-backed device extensions are advertised independently of
+     * the resident driver's list; the driver list may not contain them. */
+    for(uint32_t j=0;j<mv_wsi_device_extension_count();j++){if(out && written<capacity)mv_wsi_device_extension_at(j,&out[written]);written++;}
     *n=out && written>capacity?capacity:written;mv_free(all);
     return out && written>capacity?VK_INCOMPLETE:VK_SUCCESS;
 }
@@ -181,6 +256,8 @@ static PFN_vkVoidFunction mv_lookup(const char *name) {
 }
 static PFN_vkVoidFunction mv_vkGetInstanceProcAddr(VkInstance instance,const char *name) {
     if(!mv_init())return 0;
+    /* Loader-facing WSI lives entirely in this DSO and has no Android remote. */
+    PFN_vkVoidFunction wsi=mv_wsi_lookup(name);if(wsi)return wsi;
     PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
     struct mv_scope s;if(!mv_enter(&s))return 0;
     PFN_vkVoidFunction remote=mv_gipa(instance?((struct mv_instance *)instance)->base.android:0,name);
