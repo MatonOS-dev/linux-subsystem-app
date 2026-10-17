@@ -78,7 +78,7 @@ public final class OstreePacks {
         checksum(sum); return new File(repo,"objects/"+sum.substring(0,2)+"/"+sum.substring(2)+"."+type);
     }
     private byte[] object(String sum,String type) throws Exception {
-        byte[] raw=Files.readAllBytes(path(sum,type).toPath());
+        byte[] raw=PlaceholderFiles.readAllBytes(path(sum,type));
         if(!ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(raw)).equals(sum))
             throw new IOException("OSTree metadata checksum mismatch");
         metadata.put(sum,raw);
@@ -112,7 +112,7 @@ public final class OstreePacks {
             else if(Files.isSymbolicLink(payload.toPath())) {
                 e.target=Files.readSymbolicLink(payload.toPath()).toString();
             } else {
-                byte[] target=Files.readAllBytes(payload.toPath());
+                byte[] target=PlaceholderFiles.readAllBytes(payload);
                 if(target.length==0 || target[target.length-1]!=0)throw new IOException("Invalid bare-user symlink");
                 e.target=new String(target,0,target.length-1,StandardCharsets.UTF_8);
             }

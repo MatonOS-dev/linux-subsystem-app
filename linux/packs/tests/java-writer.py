@@ -35,7 +35,7 @@ public class PackHarness {
   ObjectPacks.writeMetadata(new File(out,"objects.ostree"),metadata);
  }
 }''')
-    run('javac','-d',str(base),str(JAVA),str(JAVA.with_name('PackLaunch.java')),str(harness))
+    run('javac','-d',str(base),str(JAVA),str(JAVA.with_name('PackLaunch.java')),str(JAVA.with_name('PlaceholderFiles.java')),str(harness))
     def table(path, rows):
         path.write_text(''.join('\t'.join(str(r.get(k,'')) for k in ('path','checksum','kind','mode','uid','gid','target','source','xattrs','pack','offset','length'))+'\n' for r in rows))
     def commit(n):

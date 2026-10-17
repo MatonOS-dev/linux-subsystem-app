@@ -95,7 +95,7 @@ public final class ObjectPacks {
                 Entry e=new Entry(path,pathChecksum(path,"dir"),"dir",0100755);entries.add(e);
                 fromTreeInto(child,relative+name+"/",prefix,entries);
             } else if(Files.isRegularFile(from,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                Entry e=new Entry(path,checksum(child),"file",child.canExecute()?0100755:0100644);e.source=child;entries.add(e);
+                Entry e=new Entry(path,checksum(child),"file",PlaceholderFiles.resolve(child).canExecute()?0100755:0100644);e.source=child;entries.add(e);
             } else throw new IOException("Unsupported tree entry "+path);
         }
     }
@@ -105,7 +105,7 @@ public final class ObjectPacks {
     }
     private static String checksum(File file) throws Exception {
         MessageDigest digest=MessageDigest.getInstance("SHA-256");
-        try(InputStream in=new BufferedInputStream(new FileInputStream(file))) {
+        try(InputStream in=PlaceholderFiles.open(file)) {
             byte[] buffer=new byte[65536];int n;while((n=in.read(buffer))!=-1)digest.update(buffer,0,n);
         }
         return hex(digest.digest());
@@ -161,10 +161,10 @@ public final class ObjectPacks {
             out.setLength(0);
             for(Entry e:sorted) {
                 if(e.source==null || !e.source.isFile() || !e.checksum.matches("[0-9a-f]{64}"))throw new IOException("Missing object payload");
-                long length=e.source.length(), start=out.getFilePointer();
+                long length=PlaceholderFiles.size(e.source), start=out.getFilePointer();
                 if(length>=0xffffffffL || start>=0xffffffffL)throw new IOException("ZIP64 pack required");
                 CRC32 crc=new CRC32();byte[] buffer=new byte[65536];int n;
-                try(InputStream in=new BufferedInputStream(new FileInputStream(e.source))){while((n=in.read(buffer))!=-1)crc.update(buffer,0,n);}
+                try(InputStream in=PlaceholderFiles.open(e.source)){while((n=in.read(buffer))!=-1)crc.update(buffer,0,n);}
                 byte[] name=e.checksum.getBytes(StandardCharsets.US_ASCII);
                 int pad=(int)(-(start+30+name.length+4)&4095);
                 ByteArrayOutputStream extra=new ByteArrayOutputStream();le(extra,0x4d54,2);le(extra,pad,2);extra.write(new byte[pad]);
@@ -174,7 +174,7 @@ public final class ObjectPacks {
                 local.write(name);extra.writeTo(local);out.write(local.toByteArray());
                 e.offset=out.getFilePointer();e.length=length;
                 CRC32 written=new CRC32();
-                try(InputStream in=new BufferedInputStream(new FileInputStream(e.source))){while((n=in.read(buffer))!=-1){out.write(buffer,0,n);written.update(buffer,0,n);}}
+                try(InputStream in=PlaceholderFiles.open(e.source)){while((n=in.read(buffer))!=-1){out.write(buffer,0,n);written.update(buffer,0,n);}}
                 if(written.getValue()!=crc.getValue() || out.getFilePointer()!=e.offset+length)throw new IOException("Payload changed while packing");
                 le(central,0x02014b50,4);le(central,0x0314,2);le(central,20,2);le(central,0,2);le(central,0,2);le(central,0,2);le(central,33,2);
                 le(central,crc.getValue(),4);le(central,length,4);le(central,length,4);le(central,name.length,2);le(central,extra.size(),2);
@@ -208,7 +208,7 @@ public final class ObjectPacks {
         for(List<Entry> group:groups.values()) {
             group.sort((a,b)->UTF8.compare(a.path,b.path));
             for(Entry e:group) {
-                long n=e.source.length();if(!batch.isEmpty()&&n>targetSize-size){emit(directory,entries,batch);batch.clear();size=0;}
+                long n=PlaceholderFiles.size(e.source);if(!batch.isEmpty()&&n>targetSize-size){emit(directory,entries,batch);batch.clear();size=0;}
                 batch.add(e);size+=n;
             }
         }

@@ -1,6 +1,7 @@
 package org.matonos.linux.stub;
 
 import org.json.JSONObject;
+import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 import org.matonos.linuxhost.stubgen.StubGenerator;
 
 import java.io.ByteArrayOutputStream;
@@ -151,7 +152,7 @@ public final class LauncherData {
         if (root == null) return null;
         File desktop = desktopFile(new File(root, "export/share/applications"), appId);
         if (desktop == null) return null;
-        byte[] content = Files.readAllBytes(desktop.toPath());
+        byte[] content = PlaceholderFiles.readAllBytes(desktop);
         if (content.length == 0 || content.length > 1024 * 1024) throw new IOException("Desktop entry is too large");
         StubGenerator.DesktopEntry entry = StubGenerator.parseDesktop(new String(content, StandardCharsets.UTF_8));
         byte[] icon = exportIcon(root, appId, entry.iconName);
@@ -212,10 +213,10 @@ public final class LauncherData {
 
     private static byte[] readPng(File file) throws IOException {
         if (!regular(file)) return null;
-        long length = file.length();
+        long length = PlaceholderFiles.size(file);
         if (length <= 0 || length > MAX_ICON_BYTES) return null;
         byte[] bytes = new byte[(int) length];
-        try (InputStream in = Files.newInputStream(file.toPath())) {
+        try (InputStream in = PlaceholderFiles.open(file)) {
             int read = 0;
             while (read < bytes.length) {
                 int count = in.read(bytes, read, bytes.length - read);
