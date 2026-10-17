@@ -19,6 +19,7 @@ typedef void (*destroy_fn)(struct wl_proxy *);
 typedef struct wl_event_queue *(*queue_create_fn)(struct wl_display *);
 typedef void (*queue_destroy_fn)(struct wl_event_queue *);
 typedef int (*roundtrip_fn)(struct wl_display *, struct wl_event_queue *);
+typedef int (*dispatch_pending_fn)(struct wl_display *, struct wl_event_queue *);
 typedef struct wl_proxy *(*get_registry_fn)(struct wl_display *);
 typedef struct wl_proxy *(*wrapper_fn)(struct wl_proxy *);
 typedef void (*wrapper_destroy_fn)(struct wl_proxy *);
@@ -40,6 +41,7 @@ static destroy_fn proxy_destroy;
 static queue_create_fn queue_create;
 static queue_destroy_fn queue_destroy;
 static roundtrip_fn roundtrip;
+static dispatch_pending_fn dispatch_pending;
 static get_registry_fn get_registry;
 static wrapper_fn create_wrapper;
 static wrapper_destroy_fn destroy_wrapper;
@@ -50,7 +52,7 @@ static int resolved;
 static void *sym(const char *name) { return mv_wayland_symbol(name); }
 static int resolve(void) {
     if (resolved) return marshal && proxy_version && add_listener && proxy_destroy &&
-        queue_create && queue_destroy && roundtrip && get_registry && create_wrapper &&
+        queue_create && queue_destroy && roundtrip && dispatch_pending && get_registry && create_wrapper &&
         destroy_wrapper && set_queue && registry_interface;
     resolved = 1;
     marshal=(marshal_fn)sym("wl_proxy_marshal_flags");
@@ -60,13 +62,14 @@ static int resolve(void) {
     queue_create=(queue_create_fn)sym("wl_display_create_queue");
     queue_destroy=(queue_destroy_fn)sym("wl_event_queue_destroy");
     roundtrip=(roundtrip_fn)sym("wl_display_roundtrip_queue");
+    dispatch_pending=(dispatch_pending_fn)sym("wl_display_dispatch_queue_pending");
     get_registry=(get_registry_fn)sym("wl_display_get_registry");
     create_wrapper=(wrapper_fn)sym("wl_proxy_create_wrapper");
     destroy_wrapper=(wrapper_destroy_fn)sym("wl_proxy_wrapper_destroy");
     set_queue=(set_queue_fn)sym("wl_proxy_set_queue");
     registry_interface=(const struct wl_interface *)sym("wl_registry_interface");
     return marshal && proxy_version && add_listener && proxy_destroy && queue_create &&
-        queue_destroy && roundtrip && get_registry && create_wrapper && destroy_wrapper &&
+        queue_destroy && roundtrip && dispatch_pending && get_registry && create_wrapper && destroy_wrapper &&
         set_queue && registry_interface;
 }
 
@@ -91,7 +94,7 @@ static const struct wl_message params_events[] = {
 };
 static const struct wl_message buffer_events[] = {{"release", "", 0}};
 static const struct wl_interface params_interface = {
-    "zwp_linux_buffer_params_v1", 4, 4, params_methods, 2, params_events,
+    "zwp_linux_buffer_params_v1", 5, 4, params_methods, 2, params_events,
 };
 static const struct wl_interface buffer_interface = {
     "wl_buffer", 1, 1, 0, 1, buffer_events,
@@ -146,6 +149,10 @@ void mv_wl_dmabuf_destroy(struct mv_wl_dmabuf *d) {
     mv_free(d);
 }
 int mv_wl_dmabuf_version(const struct mv_wl_dmabuf *d) { return d?d->version:0; }
+int mv_wl_dmabuf_dispatch(struct mv_wl_dmabuf *d) {
+    if (!d || !d->display || !d->queue || !dispatch_pending) return -1;
+    return dispatch_pending(d->display,d->queue);
+}
 
 struct mv_wl_buffer *mv_wl_dmabuf_create_buffer(struct mv_wl_dmabuf *d,
         uint32_t width,uint32_t height,uint32_t format,const struct mv_wl_plane *planes,uint32_t n) {

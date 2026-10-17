@@ -55,6 +55,7 @@ static int fake_roundtrip(struct wl_display *d,struct wl_event_queue *q){
     assert(d==&display && q==&queue && registry_hooks);roundtrips++;
     ((void (*)(void *,struct wl_proxy *,uint32_t,const char *,uint32_t))registry_hooks[0])(registry_data,&registry_proxy,77,"zwp_linux_dmabuf_v1",4);return 0;
 }
+static int fake_dispatch(struct wl_display *d,struct wl_event_queue *q){assert(d==&display && q==&queue);return 0;}
 static struct wl_proxy *fake_get_registry(struct wl_display *d){assert(d==&display);registry_proxy=(struct wl_proxy){&exported_registry,1,0};return &registry_proxy;}
 static struct wl_proxy *fake_wrapper(struct wl_proxy *p){return p;}
 static void fake_wrapper_destroy(struct wl_proxy *p){assert(p==&dmabuf_proxy);}
@@ -68,6 +69,7 @@ void *mv_wayland_symbol(const char *n){
     if(!strcmp(n,"wl_display_create_queue"))return fake_queue_create;
     if(!strcmp(n,"wl_event_queue_destroy"))return fake_queue_destroy;
     if(!strcmp(n,"wl_display_roundtrip_queue"))return fake_roundtrip;
+    if(!strcmp(n,"wl_display_dispatch_queue_pending"))return fake_dispatch;
     if(!strcmp(n,"wl_display_get_registry"))return fake_get_registry;
     if(!strcmp(n,"wl_proxy_create_wrapper"))return fake_wrapper;
     if(!strcmp(n,"wl_proxy_wrapper_destroy"))return fake_wrapper_destroy;
@@ -79,6 +81,7 @@ void *mv_alloc(size_t n){return __builtin_malloc(n);}
 void mv_free(void *p){__builtin_free(p);}
 int main(void){
     struct mv_wl_dmabuf *d=mv_wl_dmabuf_create(&display);assert(d && mv_wl_dmabuf_version(d)==4);
+    assert(mv_wl_dmabuf_dispatch(d)==0);
     struct mv_wl_plane plane={.fd=51,.index=0,.offset=0,.stride=1024,.modifier=0};
     struct mv_wl_buffer *b=mv_wl_dmabuf_create_buffer(d,256,256,0x34324241,&plane,1);
     assert(b && !mv_wl_buffer_released(b));
