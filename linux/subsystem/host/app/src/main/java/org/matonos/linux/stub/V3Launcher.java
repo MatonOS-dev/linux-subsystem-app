@@ -27,6 +27,21 @@ final class V3Launcher {
     private static Process process;
     private static Integer exit;
     private static String error;
+    private static final java.util.Set<Runnable> statusListeners =
+            new java.util.concurrent.CopyOnWriteArraySet<>();
+
+    static void addLaunchStatusListener(Runnable listener) {
+        boolean terminal;
+        synchronized (V3Launcher.class) {
+            terminal = exit != null || error != null;
+            if (!terminal) statusListeners.add(listener);
+        }
+        if (terminal) listener.run();
+    }
+    static void removeLaunchStatusListener(Runnable listener) { statusListeners.remove(listener); }
+    private static void notifyLaunchStatusChanged() {
+        for (Runnable listener : statusListeners) listener.run();
+    }
     static synchronized JSONObject launch(Context context, String ref)
             throws Exception {
         if (process != null) return getLaunchStatus();
@@ -127,11 +142,13 @@ final class V3Launcher {
             try {
                 int status = child.waitFor();
                 synchronized (V3Launcher.class) { exit = status; }
+                notifyLaunchStatusChanged();
                 Log.i("MatonV3", "Loader exited: " + status);
                 endWithLinuxApp(context);
             } catch (InterruptedException failure) {
                 Thread.currentThread().interrupt();
                 synchronized (V3Launcher.class) { error = "Interrupted while waiting for loader"; }
+                notifyLaunchStatusChanged();
             }
         }, "v3-exit").start();
         return getLaunchStatus();

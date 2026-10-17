@@ -16,6 +16,8 @@ import org.json.JSONObject;
 /** Shared activity code runs in the generated app's own package and task. */
 public final class StubActivity extends Activity implements SurfaceHolder.Callback, org.matonos.linux.PerAppRuntime.WindowHost {
     private volatile boolean foreground;
+    private volatile int window;
+    private volatile boolean destroyed;
     private static final String WINDOW = "org.matonos.linuxhost.WINDOW_ID";
     /** After the last window closes, the session lives this long for a new
      * one: an app answering a close with a save dialog, switching modes
@@ -23,6 +25,12 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
      * an app start activities shortly after its own finished. */
     private static final long LAST_WINDOW_GRACE_MS = 10_000;
     private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable launchStatusChanged = () -> runOnUiThread(() -> {
+        if (!destroyed) finish();
+    });
+    private final Runnable noWindowNotice = () -> {
+        if (!destroyed && window == 0) message("Application is running, but no window has appeared.");
+    };
     private static final Runnable END_SESSION = () -> {
         // killProcess bypasses Service.onDestroy: explicitly close native
         // runtime children before ending the per-app host.
@@ -97,9 +105,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private android.os.PowerManager.WakeLock portalWake;
     private boolean stopped;
     private String ref;
-    private volatile int window;
     private boolean attached;
-    private volatile boolean destroyed;
     private TextView status;
     // Captured mice expose deltas as X/Y on Android; some sources also
     // provide explicit RELATIVE axes. Captured touchpads use RELATIVE axes.
@@ -163,14 +169,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
                 JSONObject result=V3Launcher.launch(this, ref);
                 if (!result.optBoolean("ok")) { message(result.optString("error","Application could not start"));return; }
                 message("Waiting for the application window…");
-                int seconds=0;
-                while (!destroyed) {
-                    Thread.sleep(1000);
-                    if (!V3Launcher.getLaunchStatus().optBoolean("ok")) {
-                        runOnUiThread(() -> { if(!destroyed)finish(); }); break;
-                    }
-                    if (++seconds==30 && window==0) message("Application is running, but no window has appeared.");
-                }
+                MAIN.postDelayed(noWindowNotice, 30_000);
             } catch(Exception error) { failure("Cannot start application",error); }
         }, "flatpak-stub-launch").start();
     }
@@ -202,6 +201,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     }
     private void startRuntimeAndConnect() {
         try {
+            V3Launcher.addLaunchStatusListener(launchStatusChanged);
             startForegroundService(new Intent(this, StubService.class).putExtra(HostContract.EXTRA_FLATPAK_REF, ref));
             launchLocally();
         } catch(Exception error) { failure("Cannot start the app runtime",error); }
@@ -297,6 +297,8 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     @Override protected void onPause() { foreground = false; super.onPause(); }
     @Override protected void onDestroy(){
         destroyed=true;
+        MAIN.removeCallbacks(noWindowNotice);
+        V3Launcher.removeLaunchStatusListener(launchStatusChanged);
         if(window!=0)SHOWING.remove(window,this);
         if(runtime!=null)runtime.clearWindowHost(this);
         setInhibited(false);
