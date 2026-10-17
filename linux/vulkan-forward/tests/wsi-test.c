@@ -61,6 +61,35 @@ static void query_tests(struct mv_wsi_surface *s) {
     assert(mv_wsi_query_limits(physical,format_query,0,0,0xb00,&limits)==VK_ERROR_FORMAT_NOT_SUPPORTED);
     assert(!limits.format_count);
 }
+/* Linux Wayland helper vtable mock: the ICD sees only an opaque token and the
+ * negotiated protocol format/usage set. */
+static unsigned helper_creates,helper_destroys;
+static VkResult helper_create(void *ctx,void *display,void *surface,uint64_t *token,
+    uint32_t *formats,uint32_t *count,uint64_t *usage) {
+    (void)ctx;assert(display==(void *)(uintptr_t)0x1000 && surface==(void *)(uintptr_t)0x2000);
+    formats[0]=1;formats[1]=5;*count=2;*usage=0xb00;*token=99;helper_creates++;return VK_SUCCESS;
+}
+static void helper_destroy(void *ctx,uint64_t token) { (void)ctx;assert(token==99);helper_destroys++; }
+static const struct mv_wsi_ops *helper_ops(void *ctx,uint64_t token) { (void)ctx;(void)token;return 0; }
+static void helper_tests(void) {
+    struct mv_wsi_surface n;VkSurfaceCapabilitiesKHR caps;
+    struct mv_wsi_helper helper={1,0,helper_create,helper_destroy,helper_ops,0,0};
+    struct mv_wsi_helper bad=helper;bad.version=2;
+    assert(mv_wsi_surface_negotiate(&n,&bad,(void *)(uintptr_t)0x1000,(void *)(uintptr_t)0x2000)==VK_ERROR_EXTENSION_NOT_PRESENT);
+    struct mv_wsi_helper missing=helper;missing.surface_destroy=0;
+    assert(mv_wsi_surface_negotiate(&n,&missing,(void *)(uintptr_t)0x1000,(void *)(uintptr_t)0x2000)==VK_ERROR_EXTENSION_NOT_PRESENT);
+    assert(!mv_wsi_surface_negotiate(&n,&helper,(void *)(uintptr_t)0x1000,(void *)(uintptr_t)0x2000));
+    assert(n.alive && n.helper==&helper && n.token==99 && n.transport_format_count==2 &&
+        n.transport_formats[0]==1 && n.transport_formats[1]==5 && n.transport_usage==0xb00 && !n.limits.format_count);
+    assert(!mv_wsi_support(&n,VK_QUEUE_GRAPHICS_BIT,1));
+    query_fault=0;query_calls=0;
+    assert(!mv_wsi_surface_attach_device(&n,(VkPhysicalDevice)(uintptr_t)7,format_query));
+    assert(query_calls==2 && n.limits.format_count==2 && mv_wsi_support(&n,VK_QUEUE_GRAPHICS_BIT,1));
+    n.extent=(VkExtent2D){640,480};assert(!mv_wsi_capabilities(&n,&caps) && caps.currentExtent.width==640);
+    mv_wsi_surface_retire(&n);assert(helper_destroys==1 && !n.alive && n.token==0);
+    assert(mv_wsi_surface_attach_device(&n,(VkPhysicalDevice)(uintptr_t)7,format_query)==VK_ERROR_SURFACE_LOST_KHR);
+    query_fault=0;query_calls=0;
+}
 static int endpoint;
 static unsigned allocations,imports,destroys,releases,fail_import,fail_bind;
 static unsigned image_creates,memory_allocs,image_destroys,memory_frees;
@@ -83,6 +112,19 @@ static VkResult import(void *ctx,struct AHardwareBuffer *b,VkExtent2D e,VkFormat
 }
 static VkResult present(void *ctx,uint64_t surface,uint64_t buffer,uint64_t serial) {
     (void)ctx;struct message r=exchange((struct message){1,surface,buffer,serial});assert(r.op==1);return VK_SUCCESS;
+}
+/* FIFO pacing hook: model a frame callback that has released one queued
+ * buffer. With pace_release=0 it reports VK_TIMEOUT (no callback). */
+static struct mv_wsi_swapchain *pace_chain;
+static int pace_release;
+static VkResult pace(void *ctx,uint64_t surface,uint64_t timeout) {
+    (void)ctx;(void)timeout;assert(surface==42 && pace_chain);
+    if(!pace_release)return VK_TIMEOUT;
+    for(uint32_t i=0;i<pace_chain->count;i++)if(pace_chain->images[i].state==2){
+        struct message r=exchange((struct message){2,42,pace_chain->images[i].token,0});
+        assert(!mv_wsi_release(pace_chain,r.buffer,r.serial));return VK_SUCCESS;
+    }
+    return VK_SUCCESS;
 }
 static VkResult properties(VkDevice d,const struct AHardwareBuffer *b,VkAndroidHardwareBufferPropertiesANDROID *p) {
     (void)d;assert(b==last_ahb);p->allocationSize=8192;p->memoryTypeBits=8;
@@ -122,6 +164,7 @@ static void run_endpoint(int fd) {
     _exit(1);
 }
 int main(void) {
+    helper_tests();
     int sockets[2];assert(!socketpair(AF_UNIX,SOCK_SEQPACKET,0,sockets));pid_t child=fork();assert(child>=0);
     if(!child){close(sockets[0]);run_endpoint(sockets[1]);}
     close(sockets[1]);endpoint=sockets[0];
@@ -132,7 +175,7 @@ int main(void) {
     VkSurfaceCapabilitiesKHR caps;assert(!mv_wsi_capabilities(&s,&caps));assert(caps.currentExtent.width==640 && caps.minImageCount==2 && !caps.maxImageCount && caps.maxImageExtent.width==16384);
     uint32_t n=0;assert(!mv_wsi_formats(&s,&n,0) && n==1);VkSurfaceFormatKHR f; n=0;assert(mv_wsi_formats(&s,&n,&f)==VK_INCOMPLETE);n=1;assert(!mv_wsi_formats(&s,&n,&f));
     VkPresentModeKHR mode;n=1;assert(!mv_wsi_modes(&n,&mode) && mode==VK_PRESENT_MODE_FIFO_KHR);
-    struct mv_wsi_ops ops={0,allocate,release,import,destroy,present};
+    struct mv_wsi_ops ops={0,allocate,release,import,destroy,present,pace};
     VkSwapchainCreateInfoKHR ci={.sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,.minImageCount=2,
         .imageFormat=f.format,.imageColorSpace=f.colorSpace,.imageExtent={640,480},.imageArrayLayers=1,
         .imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
@@ -145,17 +188,33 @@ int main(void) {
     fail_import=0;assert(!mv_wsi_create(&s,&ci,&ops,&c));VkImage images[2];n=1;assert(mv_wsi_images(c,&n,images)==VK_INCOMPLETE && n==1);n=2;assert(!mv_wsi_images(c,&n,images));assert(images[0]!=images[1]);
     uint32_t a,b;assert(!mv_wsi_acquire(c,&a));assert(!mv_wsi_present(c,a));assert(mv_wsi_present(c,a)==VK_ERROR_INITIALIZATION_FAILED);
     assert(!mv_wsi_acquire(c,&b) && a!=b);assert(!mv_wsi_present(c,b));assert(mv_wsi_acquire(c,&a)==VK_NOT_READY);
+    pace_chain=c;pace_release=0;assert(mv_wsi_acquire_paced(c,&a,1000)==VK_TIMEOUT);
     assert(mv_wsi_destroy(c)==VK_NOT_READY);
     struct message r=exchange((struct message){2,42,c->images[0].token,0});assert(mv_wsi_release(c,r.buffer,r.serial+1)==VK_ERROR_INITIALIZATION_FAILED);assert(!mv_wsi_release(c,r.buffer,r.serial));assert(mv_wsi_release(c,r.buffer,r.serial)==VK_ERROR_INITIALIZATION_FAILED);
     assert(!mv_wsi_acquire(c,&a) && a==0);assert(!mv_wsi_present(c,a));assert(mv_wsi_release(c,r.buffer,r.serial)==VK_ERROR_INITIALIZATION_FAILED);
     mv_wsi_surface_resize(&s,(VkExtent2D){800,600});assert(mv_wsi_acquire(c,&a)==VK_ERROR_OUT_OF_DATE_KHR);
     for(unsigned i=0;i<2;i++){r=exchange((struct message){2,42,c->images[i].token,0});assert(!mv_wsi_release(c,r.buffer,r.serial));}
     s.alive=0;assert(mv_wsi_acquire(c,&a)==VK_ERROR_SURFACE_LOST_KHR);assert(!mv_wsi_destroy(c));assert(releases==4 && destroys==3);
+    /* FIFO pacing over frame callbacks and oldSwapchain retirement. */
+    s.alive=1;mv_wsi_surface_resize(&s,(VkExtent2D){640,480});
+    struct mv_wsi_swapchain *c2=0;assert(!mv_wsi_create(&s,&ci,&ops,&c2));
+    pace_chain=c2;pace_release=0;uint32_t p=0,q=0;
+    assert(!mv_wsi_acquire(c2,&p));assert(!mv_wsi_present(c2,p));
+    assert(!mv_wsi_acquire(c2,&q) && p!=q);assert(!mv_wsi_present(c2,q));
+    assert(mv_wsi_acquire(c2,&p)==VK_NOT_READY);
+    assert(mv_wsi_acquire_paced(c2,&p,1000)==VK_TIMEOUT);
+    pace_release=1;assert(!mv_wsi_acquire_paced(c2,&p,UINT64_MAX));pace_release=0;
+    for(unsigned i=0;i<2;i++)if(c2->images[i].state==2){r=exchange((struct message){2,42,c2->images[i].token,0});assert(!mv_wsi_release(c2,r.buffer,r.serial));}
+    assert(!mv_wsi_destroy(c2));
+    struct mv_wsi_swapchain *c3=0;assert(!mv_wsi_create(&s,&ci,&ops,&c3));
+    assert(!mv_wsi_acquire(c3,&p));assert(!mv_wsi_present(c3,p));
+    assert(mv_wsi_destroy(c3)==VK_NOT_READY);
+    mv_wsi_retire(c3);assert(!mv_wsi_destroy(c3));
     struct mv_wsi_driver d={.properties=properties,.create=create_image,.allocate=allocate_memory,.bind=bind_memory,.destroy=destroy_image,.free=free_memory};
     last_ahb=(void *)(uintptr_t)123;VkImage image;VkDeviceMemory memory;
     assert(!mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory));destroy_image(0,image,0);free_memory(0,memory,0);
     fail_bind=1;assert(mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory)==VK_ERROR_DEVICE_LOST);assert(!image && !memory);
     assert(image_creates==2 && memory_allocs==2 && image_destroys==2 && memory_frees==2);
     struct message stop={.op=3};assert(send(endpoint,&stop,sizeof(stop),0)==sizeof(stop));close(endpoint);int result;assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
-    puts("PASS WSI: resident external-image queries, negotiated formats, uncapped image count, surface queries, enumeration, import rollback, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
+    puts("PASS WSI: resident external-image queries, negotiated formats, uncapped image count, surface queries, enumeration, import rollback, FIFO frame pacing, oldSwapchain retirement, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
 }

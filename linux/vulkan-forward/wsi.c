@@ -56,6 +56,44 @@ VkResult mv_wsi_query_limits(VkPhysicalDevice physical,PFN_vkGetPhysicalDeviceIm
 void mv_wsi_surface_init(struct mv_wsi_surface *s,uint64_t token,VkExtent2D e) {
     *s=(struct mv_wsi_surface){.token=token,.generation=1,.extent=e,.alive=token!=0};
 }
+/* Bind the live Wayland transport session. Only the helper (Linux TLS, with
+ * libwayland/libc) touches the actual wl_display/wl_surface and the handle
+ * socket; the ICD keeps an opaque token and the negotiated format/usage set. */
+VkResult mv_wsi_surface_negotiate(struct mv_wsi_surface *s,const struct mv_wsi_helper *h,
+    void *display,void *surface) {
+    *s=(struct mv_wsi_surface){0};
+    if(!MV_WSI_PROTOTYPE || !h || h->version!=1 || !h->surface_create ||
+       !h->surface_destroy || !h->surface_ops)return VK_ERROR_EXTENSION_NOT_PRESENT;
+    uint64_t token=0,usage=0;uint32_t formats[2]={0},count=0;
+    VkResult r=h->surface_create(h->context,display,surface,&token,formats,&count,&usage);
+    if(r)return r;
+    if(!token || !count || count>2|| !usage) {
+        if(token)h->surface_destroy(h->context,token);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    s->helper=h;s->token=token;s->alive=1;s->generation=1;
+    s->transport_usage=usage;s->transport_format_count=count;
+    for(uint32_t i=0;i<count;i++)s->transport_formats[i]=formats[i];
+    return VK_SUCCESS;
+}
+void mv_wsi_surface_retire(struct mv_wsi_surface *s) {
+    if(s->alive && s->helper && s->helper->surface_destroy)
+        s->helper->surface_destroy(s->helper->context,s->token);
+    s->alive=0;s->helper=0;s->token=0;s->limits.format_count=0;
+}
+/* Resident query: map the negotiated protocol formats through the driver's
+ * external-image-format answer for the exact physical device. */
+VkResult mv_wsi_surface_attach_device(struct mv_wsi_surface *s,VkPhysicalDevice physical,
+    PFN_vkGetPhysicalDeviceImageFormatProperties2 query) {
+    if(!MV_WSI_PROTOTYPE || !s->alive)return VK_ERROR_SURFACE_LOST_KHR;
+    if(!s->transport_format_count)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    struct mv_wsi_limits limits;
+    VkResult r=mv_wsi_query_limits(physical,query,s->transport_format_count,
+        s->transport_formats,s->transport_usage,&limits);
+    if(r)return r;
+    s->limits=limits;s->driver_device=physical;
+    return VK_SUCCESS;
+}
 void mv_wsi_surface_resize(struct mv_wsi_surface *s,VkExtent2D e) { s->extent=e;s->generation++; }
 VkBool32 mv_wsi_support(const struct mv_wsi_surface *s,VkQueueFlags flags,int ahb) {
     return MV_WSI_PROTOTYPE && s->alive && s->limits.format_count && ahb && (flags&VK_QUEUE_GRAPHICS_BIT)!=0;
@@ -115,7 +153,6 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
        info->presentMode!=VK_PRESENT_MODE_FIFO_KHR)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     if(!s->extent.width || !s->extent.height || s->extent.width>caps.maxImageExtent.width || s->extent.height>caps.maxImageExtent.height ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
-    if(info->oldSwapchain)return VK_ERROR_FEATURE_NOT_PRESENT;
     if(!ops || !ops->allocate || !ops->release || !ops->import || !ops->destroy || !ops->present)return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wsi_swapchain *c=mv_alloc(sizeof(*c));if(!c)return VK_ERROR_OUT_OF_HOST_MEMORY;
     *c=(struct mv_wsi_swapchain){.surface=s,.ops=*ops,.generation=s->generation,.count=info->minImageCount};
@@ -130,6 +167,10 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     }
     *out=c;return VK_SUCCESS;
 }
+/* Successful creation of a replacement retires the old swapchain; its
+ * acquired images stay valid until presented/released, and its wl_buffers
+ * retire on their own, so only this model flag changes. */
+void mv_wsi_retire(struct mv_wsi_swapchain *c) { if(c)c->retired=1; }
 VkResult mv_wsi_images(struct mv_wsi_swapchain *c,uint32_t *n,VkImage *images) {
     if(!images){*n=c->count;return VK_SUCCESS;}
     uint32_t len=*n<c->count?*n:c->count;
@@ -140,6 +181,18 @@ VkResult mv_wsi_acquire(struct mv_wsi_swapchain *c,uint32_t *index) {
     VkResult r=status(c);if(r)return r;
     for(uint32_t i=0;i<c->count;i++)if(!c->images[i].state){c->images[i].state=1;*index=i;return VK_SUCCESS;}
     return VK_NOT_READY;
+}
+/* FIFO pacing: block until a released image becomes free. A NULL pace hook
+ * (e.g. the mock endpoint) degrades to the nonblocking answer. */
+VkResult mv_wsi_acquire_paced(struct mv_wsi_swapchain *c,uint32_t *index,uint64_t timeout_ns) {
+    for(;;){
+        VkResult r=mv_wsi_acquire(c,index);
+        if(r!=VK_NOT_READY)return r;
+        if(!c->ops.pace)return VK_NOT_READY;
+        r=c->ops.pace(c->ops.context,c->surface->token,timeout_ns);
+        if(r==VK_TIMEOUT)return VK_TIMEOUT;
+        if(r)return r;
+    }
 }
 VkResult mv_wsi_present(struct mv_wsi_swapchain *c,uint32_t index) {
     VkResult r=status(c);if(r)return r;
@@ -158,7 +211,14 @@ VkResult mv_wsi_release(struct mv_wsi_swapchain *c,uint64_t token,uint64_t seria
     return VK_ERROR_INITIALIZATION_FAILED;
 }
 VkResult mv_wsi_destroy(struct mv_wsi_swapchain *c) {
-    for(uint32_t i=0;i<c->count;i++)if(c->images[i].state==2)return VK_NOT_READY;
+    /* A retired swapchain no longer has an owner that can drain it: release
+     * its queued images too. A live swapchain still refuses to drop images a
+     * presenter may be reading. */
+    if(c->retired) {
+        for(uint32_t i=0;i<c->count;i++)c->images[i].state=0;
+    } else {
+        for(uint32_t i=0;i<c->count;i++)if(c->images[i].state==2)return VK_NOT_READY;
+    }
     cleanup(c);return VK_SUCCESS;
 }
 VkResult mv_wsi_import_ahb(struct mv_wsi_driver *d,struct AHardwareBuffer *ahb,VkExtent2D e,VkFormat format,VkImage *image,VkDeviceMemory *memory) {
