@@ -60,7 +60,12 @@ int state_exec(const char *path,char *const *args,char *const *env){
  long fd=pack_open(resolved,O_RDONLY|O_CLOEXEC);if(fd==-ENOSYS)fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(resolved);if(fd<0)return fd;
  unsigned char elf[20];long got=pack_pread(fd,elf,sizeof(elf),0);pack_close(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);
  if(got!=sizeof(elf)||elf[0]!=127||elf[1]!='E'||elf[2]!='L'||elf[3]!='F')return 0;
- int target=arch_handoff_class(elf);if(!target)return 0;if(target<0)return -ENOEXEC;
+ int target=arch_handoff_class(elf);if(!target)return 0;
+#ifdef MATON_IN_PROCESS
+ /* A peer kernel exec would replace ART, not just the Linux image. */
+ return -ENOEXEC;
+#endif
+ if(target<0)return -ENOEXEC;
  char self[4096];long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,"/proc/self/exe",self,sizeof(self)-1,0,0);if(n<=0)return -ENOEXEC;self[n]=0;
  while(n && self[n-1]!='/')n--;
  if(!n)return -ENOEXEC;
