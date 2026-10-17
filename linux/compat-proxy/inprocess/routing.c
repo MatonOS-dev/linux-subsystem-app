@@ -18,15 +18,14 @@
 #include <dlfcn.h>
 int inprocess_status;
 int inprocess_output[2]={1,2};
-void inprocess_mark(const char *label,long number) {
-    char line[128];unsigned n=0;
-    while(*label && n<90)line[n++]=*label++;
-    line[n++]=' ';if(number<0){line[n++]='-';number=-number;}
-    char digits[24];unsigned d=0;do{digits[d++]='0'+number%10;number/=10;}while(number && d<24);
-    while(d)line[n++]=digits[--d];line[n++]='\n';
-    proxy_raw(SYS_write,inprocess_output[1],(long)line,n,0,0,0);
-}
-static struct sigaction previous;
+/* Kernel ABI: libc/sigchain trampolines may read FS before our handler can
+ * restore it. Install only SIGSYS directly; leave ART fault actions intact. */
+static struct resident_signal_action {
+    void (*handler)(int,siginfo_t *,void *);
+    unsigned long flags;
+    void (*restorer)(void);
+    unsigned long mask;
+} previous;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int signals_ready;
 static uintptr_t libc_lo,libc_hi;
@@ -40,20 +39,22 @@ int inprocess_signals(void (*handler)(int,siginfo_t *,void *)) {
         libc_lo=(uintptr_t)eh+ph[i].p_vaddr;libc_hi=libc_lo+ph[i].p_memsz;
     }
     if(!libc_lo || (libc_lo>>32)!=(libc_hi>>32))return -ENOTSUP;
-    struct sigaction action={0};
-    action.sa_sigaction=handler;
-    action.sa_flags=SA_SIGINFO|SA_ONSTACK|SA_NODEFER;
-    sigemptyset(&action.sa_mask);
-    /* Use resident libc so ART's sigchain can retain its claimed actions. */
-    if(sigaction(SIGSYS,&action,&previous))return -errno;
+    extern void proxy_restore(void);
+    struct resident_signal_action action={handler,SA_SIGINFO|SA_ONSTACK|SA_NODEFER|0x04000000UL,
+                                 proxy_restore,0};
+    long error=proxy_raw(SYS_rt_sigaction,SIGSYS,(long)&action,(long)&previous,8,0,0);
+    if(error)return (int)error;
     signals_ready=1;return 0;
 }
 void inprocess_chain(int sig,siginfo_t *info,void *context) {
-    if(previous.sa_flags&SA_SIGINFO) {
-        if(previous.sa_sigaction)previous.sa_sigaction(sig,info,context);
-    } else if(previous.sa_handler!=SIG_DFL && previous.sa_handler!=SIG_IGN)
-        previous.sa_handler(sig);
-    else __builtin_trap(); /* Preserve fatal semantics for unexpected traps. */
+    if(previous.flags&SA_SIGINFO) {
+        if(previous.handler)previous.handler(sig,info,context);
+    } else if((void *)previous.handler!=(void *)SIG_DFL &&
+              (void *)previous.handler!=(void *)SIG_IGN) {
+        union { void (*extended)(int,siginfo_t *,void *); void (*simple)(int); } action;
+        action.extended=previous.handler;
+        action.simple(sig);
+    } else __builtin_trap();
 }
 long inprocess_filter(void) {
     extern char proxy_clone_entry[];
@@ -88,18 +89,14 @@ struct launch { char *const *argv;char *const *env;int result; };
 static void *run(void *opaque) {
     struct launch *l=opaque;
     struct image image;
-    inprocess_mark("mapping",0);
     l->result=proxy_load(l->argv[0],l->argv,l->env,&image);
     if(l->result)return NULL;
-    inprocess_mark("mapped",image.entry);
     /* Auxv comes from ART's process, never from the JNI caller's stack. */
     uintptr_t *p=(uintptr_t *)image.stack; p+=*p+2;while(*p)p++;
     for(Elf64_auxv_t *a=(void *)(p+1);a->a_type;a++)
         if(a->a_type==AT_HWCAP || a->a_type==AT_HWCAP2 || a->a_type==AT_SYSINFO_EHDR)
             a->a_un.a_val=getauxval(a->a_type);
-    inprocess_mark("installing",0);
     if(adopt_install()){l->result=-ENOTSUP;return NULL;}
-    inprocess_mark("entering",0);
     inprocess_status=0;
     inprocess_enter(image.entry,image.stack);
     l->result=inprocess_status;

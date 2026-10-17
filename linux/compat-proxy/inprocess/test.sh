@@ -8,6 +8,7 @@ for mode in static glibc; do
     flags=();[[ $mode != static ]] || flags+=(-static-pie)
     cc -O2 -Wall -Wextra -Werror -pthread "${flags[@]}" "$root/payload.c" -o "$out/$mode-payload"
     timeout 30 "$out/test" "$out/$mode-payload" fixture
+    INHERITED_FILTER=1 timeout 30 "$out/test" "$out/$mode-payload" fixture
     EXPECTED_STATUS=37 timeout 30 "$out/test" "$out/$mode-payload" fixture status37
  done
 
