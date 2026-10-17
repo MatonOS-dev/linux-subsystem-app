@@ -1,4 +1,5 @@
 #include "presenter.h"
+#include "ahb_protocol.h"
 
 #include "android_buffer.h"
 #include "android_output.h"
@@ -141,16 +142,17 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
 
   struct wlr_scene_surface* scene_surface = wlr_scene_surface_try_from_buffer(node);
   uint32_t seq = scene_surface ? scene_surface->surface->current.seq : 0;
-  AHardwareBuffer* ahb = maton_dmabuf_ahb(buffer);
+  AHardwareBuffer* private_ahb = maton_ahb_protocol_buffer(buffer);
+  AHardwareBuffer* ahb = private_ahb ? private_ahb : maton_dmabuf_ahb(buffer);
   /* Defence in depth: never send a dma-buf whose actual mapper metadata
    * cannot describe its planes, even if it passed protocol-time validation. */
-  if (ahb && !maton_dmabuf_layout_safe(ahb)) ahb = NULL;
+  if (ahb && !private_ahb && !maton_dmabuf_layout_safe(ahb)) ahb = NULL;
   bool opaque = false;
   if (ahb) {
     struct wlr_dmabuf_attributes attrs;
     if (wlr_buffer_get_dmabuf(buffer, &attrs)) opaque = maton_dmabuf_format_opaque(attrs.format);
     if (buffer != l->shown) {
-      maton_transaction_set_buffer(t, l->control, ahb, buffer, -1);
+      if (!maton_transaction_set_buffer(t, l->control, ahb, buffer, -1)) { walk->pending = true; return; }
       l->shown = buffer;
       l->shown_source = NULL;
     }
@@ -166,7 +168,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
       } else walk->pending = true;
       return;
     }
-    maton_transaction_set_buffer(t, l->control, maton_ahb_from_wlr_buffer(copy), copy, -1);
+    if (!maton_transaction_set_buffer(t, l->control, maton_ahb_from_wlr_buffer(copy), copy, -1)) { walk->pending = true; return; }
     l->shown = copy;
     l->shown_source = buffer;
     l->shown_seq = seq;

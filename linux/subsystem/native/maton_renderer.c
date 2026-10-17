@@ -1,4 +1,5 @@
 #include "maton_renderer.h"
+#include "ahb_protocol.h"
 
 #include <stdlib.h>
 #include <wlr/interfaces/wlr_buffer.h>
@@ -49,7 +50,7 @@ static struct wlr_texture* texture_from_buffer(struct wlr_renderer* r, struct wl
     return wlr_texture_from_buffer(m->pixman, buffer);
   }
   struct wlr_dmabuf_attributes attrs;
-  if (!wlr_buffer_get_dmabuf(buffer, &attrs)) return wlr_texture_from_buffer(m->pixman, buffer);
+  if (!maton_ahb_protocol_buffer(buffer) && !wlr_buffer_get_dmabuf(buffer, &attrs)) return wlr_texture_from_buffer(m->pixman, buffer);
   struct StubTexture* stub = calloc(1, sizeof(*stub));
   if (!stub) return NULL;
   wlr_texture_init(&stub->base, r, &stub_texture_impl, (uint32_t)buffer->width, (uint32_t)buffer->height);

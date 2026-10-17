@@ -1,6 +1,6 @@
 # D1: Linux WSI over resident Vulkan and Android presentation
 
-Status: host contract prototype, **not usable Vulkan WSI**. Based on main
+Status: host contract prototype plus [partial D2 transport/release work](D2-STATUS.md), **not usable Vulkan WSI**. Based on main
 `db7177b`. No VM use, compositor/Java changes, AOSP changes, or packaging.
 The existing loader dispatch still hides every WSI extension and entrypoint.
 D2 must meet the gates below before enabling any of them.

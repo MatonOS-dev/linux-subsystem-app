@@ -3,6 +3,8 @@
 #endif
 #include "android_buffer.h"
 #include "android_output.h"
+#include "buffer_release.h"
+#include "ahb_protocol.h"
 #include "compositor_core.h"
 #include "us_keymap.h"
 #include "android_keymap.h"
@@ -124,7 +126,7 @@ struct XwaylandSession {
   struct wl_listener ready, new_surface, destroy;
   struct XwaylandSession* next;
 };
-enum CommandKind { CMD_STOPPED, CMD_ATTACH, CMD_DETACH, CMD_RESIZE, CMD_KEY, CMD_MOTION, CMD_RELEASE, CMD_CLOSE, CMD_STOP, CMD_ADD_SESSION, CMD_ADD_XWAYLAND, CMD_FULLSCREEN, CMD_RELATIVE, CMD_CAPTURE_LOST };
+enum CommandKind { CMD_STOPPED, CMD_ATTACH, CMD_DETACH, CMD_RESIZE, CMD_KEY, CMD_MOTION, CMD_CLOSE, CMD_STOP, CMD_ADD_SESSION, CMD_ADD_XWAYLAND, CMD_FULLSCREEN, CMD_RELATIVE, CMD_CAPTURE_LOST };
 struct Command {
   enum CommandKind kind;
   int id, a, b, c;
@@ -322,9 +324,7 @@ static void command(enum CommandKind kind,int id,int a,int b,int c,int64_t time,
   cmd->kind=kind;cmd->id=id;cmd->a=a;cmd->b=b;cmd->c=c;cmd->time=time;
   cmd->x=x;cmd->y=y;cmd->vs=vs;cmd->hs=hs;cmd->output=output;cmd->buffer=buffer;enqueue(cmd);
 }
-static void release_buffer(struct wlr_buffer* buffer) {
-  command(CMD_RELEASE,0,0,0,0,0,0,0,0,0,NULL,buffer);
-}
+static void release_buffer(void* buffer) { wlr_buffer_unlock(buffer); }
 static void on_commit(struct wl_listener* l,void* data) {
   struct Window* w=window_from_listener(l,offsetof(struct Window,commit));
   struct wlr_output_event_commit* event=data;
@@ -962,7 +962,6 @@ static void process_commands(void) {
       if(server.seat->pointer_state.focused_surface!=ss->surface){server.pointer_focus=ss->surface;wlr_seat_pointer_notify_enter(server.seat,ss->surface,sx,sy);struct wlr_surface* root=window_root_surface(w);if(root&&server.seat->keyboard_state.focused_surface!=root){wlr_seat_keyboard_notify_enter(server.seat,root,NULL,0,&server.keyboard.modifiers);xwindow_activate(w);}}wlr_seat_pointer_notify_motion(server.seat,tm,sx,sy);activate_constraint();}else{clear_window_pointer(w);server.pointer_focus=NULL;wlr_seat_pointer_notify_clear_focus(server.seat);}struct PointerButtonEvent button_event={.time=tm,.window=w->id};maton_pointer_buttons_update(&server.pointer_buttons,ss ? (uint32_t)c->b : 0,notify_pointer_button,&button_event);/* Android reports wheel notches as +-1.0 (fractions on touchpads); the
        * discrete argument is value120, 120 per notch. */
       if(ss&&c->vs)wlr_seat_pointer_notify_axis(server.seat,tm,WL_POINTER_AXIS_VERTICAL_SCROLL,-c->vs*15.0,(int32_t)lroundf(-c->vs*120.0f),WL_POINTER_AXIS_SOURCE_WHEEL,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);if(ss&&c->hs)wlr_seat_pointer_notify_axis(server.seat,tm,WL_POINTER_AXIS_HORIZONTAL_SCROLL,-c->hs*15.0,(int32_t)lroundf(-c->hs*120.0f),WL_POINTER_AXIS_SOURCE_WHEEL,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);wlr_seat_pointer_notify_frame(server.seat);}break;
-    case CMD_RELEASE:if(c->buffer)wlr_buffer_unlock(c->buffer);break;
     case CMD_FULLSCREEN:if(w){
       if(w->xsurface)wlr_xwayland_surface_set_fullscreen(w->xsurface,c->a!=0);
       else if(w->toplevel&&w->toplevel->base->initialized)wlr_xdg_toplevel_set_fullscreen(w->toplevel,c->a!=0);
@@ -1083,12 +1082,15 @@ static void* server_main(void* unused) {
   server.wsi_trace_count=0;
   wl_display_add_protocol_logger(server.display,trace_wsi,&server.wsi_trace_count);
   server.new_client.notify=on_new_client;wl_display_add_client_created_listener(server.display,&server.new_client);
-  maton_surface_output_set_release_dispatch(release_buffer);
+  /* Release callbacks only wake this loop; wlroots is never touched on Binder threads. */
+  bool release_ready=maton_buffer_release_start(server.loop,release_buffer);
   stage="event loop";server.event_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
   if(server.event_fd<0||!wl_event_loop_add_fd(server.loop,server.event_fd,WL_EVENT_READABLE,on_event_fd,NULL))goto done;
   stage="backend and renderer";server.backend=wlr_headless_backend_create(server.loop);server.renderer=maton_renderer_create(wlr_pixman_renderer_create(),&server.dmabuf_formats);
   if(!server.backend||!server.renderer||!maton_ahb_allocator_init(&server.ahb_allocator))goto done;
   stage="renderer globals";if(!wlr_renderer_init_wl_display(server.renderer,server.display))goto done;
+  stage="AHB transport";
+  if(release_ready && maton_surface_output_has_release() && !maton_ahb_protocol_create(server.display))goto done;
   stage="linux-dmabuf";if(!create_linux_dmabuf())goto done;
   wl_display_set_global_filter(server.display,global_filter,NULL);
   server.allocator=maton_ahb_allocator_base(&server.ahb_allocator);
@@ -1156,6 +1158,7 @@ done:
   if(server.keyboard_initialized)wlr_keyboard_finish(&server.keyboard);server.keyboard_initialized=0;
   if(server.seat)wlr_seat_destroy(server.seat);server.seat=NULL;server.pointer_buttons=0;server.pointer_focus=NULL;server.pointer_window=0;
   if(server.allocator)wlr_allocator_destroy(server.allocator);server.allocator=NULL;
+  maton_buffer_release_stop();
   if(server.renderer)wlr_renderer_destroy(server.renderer);server.renderer=NULL;
   /* The renderer reports these as its dma-buf formats: free it after. */
   wlr_drm_format_set_finish(&server.dmabuf_formats);

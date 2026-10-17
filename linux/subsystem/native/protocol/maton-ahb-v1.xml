@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="maton_ahb_v1">
+  <copyright>Copyright 2026 MatonOS contributors. SPDX-License-Identifier: MIT</copyright>
+  <interface name="maton_ahb_manager_v1" version="1">
+    <description summary="private AHardwareBuffer transport, not Vulkan WSI">
+      Buffers use complete nativewindow handle serialization on a dedicated
+      SOCK_SEQPACKET socket, never Wayland's byte stream or gralloc metadata.
+      This protocol alone does not promise FIFO pacing or Vulkan image layouts.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="get_session">
+      <arg name="id" type="new_id" interface="maton_ahb_session_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+  <interface name="maton_ahb_session_v1" version="1">
+    <description summary="one surface on the client's existing connection">
+      The server creates a socketpair and transfers one endpoint in transport.
+      Only this session writes handles to its other endpoint. A client must
+      receive exactly one AHardwareBuffer per allocated event, in event order,
+      using AHardwareBuffer_recvHandleFromUnixSocket on resident bionic TLS.
+      Client render work and external-memory ownership release MUST complete
+      before wl_surface.commit. There is no implicit render synchronization.
+      A buffer may be reused only after wl_buffer.release, including final
+      SurfaceFlinger fence completion. Session destruction closes transport but
+      existing wl_buffers keep their own storage until their final reader ends.
+    </description>
+    <enum name="format">
+      <entry name="rgba8" value="1" summary="AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM"/>
+      <entry name="bgra8" value="5" summary="HAL_PIXEL_FORMAT_BGRA_8888"/>
+    </enum>
+    <enum name="failure">
+      <entry name="invalid" value="1"/>
+      <entry name="quota" value="2"/>
+      <entry name="allocation" value="3"/>
+      <entry name="transport" value="4"/>
+      <entry name="surface_lost" value="5"/>
+    </enum>
+    <request name="destroy" type="destructor"/>
+    <request name="create_buffer">
+      <description summary="allocate bounded storage">
+        request is a client-chosen nonzero sequence, strictly increasing and
+        never reused. A successful allocated event creates the wl_buffer; a
+        failure creates no object. fd transfer can arrive before allocated.
+        The handle socket is read-only to clients. No pointer crosses the wire.
+      </description>
+      <arg name="request" type="uint"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="format" type="uint" enum="format"/>
+    </request>
+    <event name="transport">
+      <arg name="socket" type="fd"/>
+      <arg name="max_dimension" type="uint"/>
+      <arg name="max_buffers" type="uint"/>
+      <arg name="max_bytes" type="uint"/>
+    </event>
+    <event name="format"><arg name="format" type="uint" enum="format"/></event>
+    <event name="ready"/>
+    <event name="allocated">
+      <arg name="request" type="uint"/>
+      <arg name="buffer" type="new_id" interface="wl_buffer"/>
+      <arg name="usage_lo" type="uint"/>
+      <arg name="usage_hi" type="uint"/>
+    </event>
+    <event name="failed"><arg name="request" type="uint"/><arg name="reason" type="uint" enum="failure"/></event>
+  </interface>
+</protocol>

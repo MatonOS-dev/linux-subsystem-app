@@ -36,6 +36,12 @@ add_custom_command(OUTPUT "${GENERATED}/wayland-protocols/xdg-shell-enum.h"
   COMMAND "${MATON_WAYLAND_SCANNER}" enum-header "${MATON_XDG_XML}" "${GENERATED}/wayland-protocols/xdg-shell-enum.h"
   DEPENDS "${MATON_XDG_XML}" VERBATIM)
 
+set(MATON_AHB_XML "${MATON_COMPOSITOR_ROOT}/native/protocol/maton-ahb-v1.xml")
+add_custom_command(OUTPUT "${GENERATED}/maton-ahb-v1-server-protocol.h" "${GENERATED}/maton-ahb-v1-protocol.c"
+  COMMAND "${MATON_WAYLAND_SCANNER}" server-header "${MATON_AHB_XML}" "${GENERATED}/maton-ahb-v1-server-protocol.h"
+  COMMAND "${MATON_WAYLAND_SCANNER}" private-code "${MATON_AHB_XML}" "${GENERATED}/maton-ahb-v1-protocol.c"
+  DEPENDS "${MATON_AHB_XML}" VERBATIM)
+
 foreach(lib wlroots wayland-server wayland-client pixman-1 xkbcommon drm)
   if(lib STREQUAL "wlroots")
     find_library(MATON_${lib}_LIB NAMES wlroots-0.20 wlroots PATHS "${MATON_STAGE}/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH REQUIRED)
@@ -47,7 +53,8 @@ foreach(lib wlroots wayland-server wayland-client pixman-1 xkbcommon drm)
 endforeach()
 
 add_library(maton_compositor SHARED
-  compositor_core.c android_keymap.c jni_shim.cpp android_buffer.c android_output.c dmabuf_import.c dmabuf_metadata.cpp maton_renderer.c presenter.c test_client.c
+  compositor_core.c android_keymap.c jni_shim.cpp android_buffer.c android_output.c buffer_release.c ahb_protocol.c dmabuf_import.c dmabuf_metadata.cpp maton_renderer.c presenter.c test_client.c
+  "${GENERATED}/maton-ahb-v1-protocol.c" "${GENERATED}/maton-ahb-v1-server-protocol.h"
   "${GENERATED}/xdg-shell-protocol.c" "${GENERATED}/xdg-shell-client-protocol.h"
   "${GENERATED}/wayland-protocols/xdg-shell-enum.h")
 target_compile_features(maton_compositor PRIVATE c_std_11 cxx_std_17)
