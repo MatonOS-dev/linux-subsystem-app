@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/eventfd.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -38,6 +39,7 @@ static int worker_started;
 static int stopping;
 static int udp_fd = -1;
 static int tcp_fd = -1;
+static int wake_fd = -1;
 static uint32_t service_uid;
 static int service_port;
 static struct in_addr service_address;
@@ -254,8 +256,11 @@ static void *forwarder_main(void *unused) {
         int stop = stopping;
         pthread_mutex_unlock(&state_lock);
         if (stop) break;
-        struct pollfd fds[] = {{.fd = udp_fd, .events = POLLIN}, {.fd = tcp_fd, .events = POLLIN}};
-        int ready = poll(fds, 2, 500);
+        struct pollfd fds[] = {{.fd = udp_fd, .events = POLLIN},
+                               {.fd = tcp_fd, .events = POLLIN},
+                               {.fd = wake_fd, .events = POLLIN}};
+        int ready = poll(fds, 3, -1);
+        if (ready > 0 && (fds[2].revents & POLLIN)) break;
         if (ready > 0 && (fds[0].revents & POLLIN)) serve_udp();
         if (ready > 0 && (fds[1].revents & POLLIN)) serve_tcp();
     }
@@ -291,10 +296,16 @@ Java_org_matonos_linux_stub_DnsForwarder_nativeStart(JNIEnv *env, jclass clazz) 
         if (tcp_fd >= 0) close(tcp_fd);
         udp_fd = tcp_fd = -1; pthread_mutex_unlock(&state_lock); return NULL;
     }
+    wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (wake_fd < 0) {
+        close(udp_fd); close(tcp_fd); udp_fd = tcp_fd = -1;
+        pthread_mutex_unlock(&state_lock); return NULL;
+    }
     stopping = 0;
     dns_token_bucket_init(&rate_bucket, DNS_RATE_CAPACITY, DNS_RATE_PER_SECOND, monotonic_ns());
     if (pthread_create(&worker, NULL, forwarder_main, NULL) != 0) {
-        close(udp_fd); close(tcp_fd); udp_fd = tcp_fd = -1;
+        close(udp_fd); close(tcp_fd); close(wake_fd);
+        udp_fd = tcp_fd = wake_fd = -1;
         pthread_mutex_unlock(&state_lock); return NULL;
     }
     worker_started = 1;
@@ -309,11 +320,14 @@ Java_org_matonos_linux_stub_DnsForwarder_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&state_lock);
     if (!worker_started) { pthread_mutex_unlock(&state_lock); return; }
     stopping = 1;
+    uint64_t wake = 1;
+    (void)write(wake_fd, &wake, sizeof(wake));
     shutdown(udp_fd, SHUT_RDWR); shutdown(tcp_fd, SHUT_RDWR);
     pthread_mutex_unlock(&state_lock);
     pthread_join(worker, NULL);
     pthread_mutex_lock(&state_lock);
-    close(udp_fd); close(tcp_fd); udp_fd = tcp_fd = -1;
+    close(udp_fd); close(tcp_fd); close(wake_fd);
+    udp_fd = tcp_fd = wake_fd = -1;
     worker_started = 0;
     pthread_mutex_unlock(&state_lock);
 }
