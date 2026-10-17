@@ -30,7 +30,10 @@ main(int argc, char **argv)
 {
   const char *invoked_as = basename(argv[0]);
 
-  if (strcmp(invoked_as, "matonos-flatpak") != 0)
+  /* The APK ships this binary as a native library, libmatonos-flatpak.so;
+   * both names select applets from argv[1]. */
+  if (strcmp(invoked_as, "matonos-flatpak") != 0 &&
+      strcmp(invoked_as, "libmatonos-flatpak.so") != 0)
     return dispatch(invoked_as, argc, argv);
 
   if (argc < 2)
