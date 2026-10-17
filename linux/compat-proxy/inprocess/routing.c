@@ -17,6 +17,7 @@
 #include <elf.h>
 #include <dlfcn.h>
 int inprocess_status;
+struct resident_session *inprocess_session;
 int inprocess_output[2]={1,2};
 /* Kernel ABI: libc/sigchain trampolines may read FS before our handler can
  * restore it. Install only SIGSYS directly; leave ART fault actions intact. */
@@ -88,9 +89,16 @@ long inprocess_filter(void) {
 struct launch { char *const *argv;char *const *env;int result; };
 static void *run(void *opaque) {
     struct launch *l=opaque;
+    extern void inprocess_aux(unsigned,uintptr_t);
+    inprocess_aux(AT_HWCAP,getauxval(AT_HWCAP));
+    inprocess_aux(AT_HWCAP2,getauxval(AT_HWCAP2));
+    inprocess_aux(AT_SYSINFO_EHDR,getauxval(AT_SYSINFO_EHDR));
     struct image image;
     l->result=proxy_load(l->argv[0],l->argv,l->env,&image);
     if(l->result)return NULL;
+    uintptr_t maps[6];extern void inprocess_image_maps(uintptr_t[6]);
+    inprocess_image_maps(maps);
+    if(resident_session_image(inprocess_session,maps)){extern void inprocess_unload(void);inprocess_unload();l->result=-ENOMEM;return NULL;}
     /* Auxv comes from ART's process, never from the JNI caller's stack. */
     uintptr_t *p=(uintptr_t *)image.stack; p+=*p+2;while(*p)p++;
     for(Elf64_auxv_t *a=(void *)(p+1);a->a_type;a++)
@@ -100,7 +108,7 @@ static void *run(void *opaque) {
     inprocess_status=0;
     inprocess_enter(image.entry,image.stack);
     l->result=inprocess_status;
-    extern void inprocess_unload(void);inprocess_unload();
+    extern void inprocess_forget_image(void);inprocess_forget_image();
     return NULL;
 }
 int inprocess_run_fds(char *const argv[],char *const env[],const int fds[2]) {
@@ -108,9 +116,12 @@ int inprocess_run_fds(char *const argv[],char *const env[],const int fds[2]) {
     /* One image per stub; concurrent launches must not share proxy state. */
     if(pthread_mutex_trylock(&lock))return -EBUSY;
     inprocess_output[0]=fds[0];inprocess_output[1]=fds[1];
+    inprocess_session=resident_session_begin(fds);
+    if(!inprocess_session){pthread_mutex_unlock(&lock);return -ENOMEM;}
     struct launch l={argv,env,0};pthread_t thread;
     int e=pthread_create(&thread,NULL,run,&l);
     if(!e)e=pthread_join(thread,NULL);
+    resident_session_end(inprocess_session);inprocess_session=NULL;
     pthread_mutex_unlock(&lock);
     return e?-e:l.result;
 }

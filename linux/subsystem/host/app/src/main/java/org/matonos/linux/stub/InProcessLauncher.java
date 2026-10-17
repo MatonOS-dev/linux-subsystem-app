@@ -37,7 +37,7 @@ final class InProcessLauncher {
                 File dir = LoaderCommand.nativeLibraryDir(context);
                 final int pid = android.os.Process.myPid();
                 for (int run = 0; run < 2; run++) {
-                    for (String mode : new String[]{"static", "glibc"}) {
+                    for (String mode : new String[]{"static", "glibc", "exec"}) {
                         ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
                         Thread output = new Thread(() -> {
                             try (BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -47,10 +47,16 @@ final class InProcessLauncher {
                             } catch (Exception failure) { Log.e("MatonInProcess", "Output failed", failure); }
                         }, "inprocess-output");
                         output.start();
-                        String executable = new File(dir, "libmatonos-inprocess-" + mode + ".so").getAbsolutePath();
+                        String executable = new File(dir, "libmatonos-inprocess-" + (mode.equals("exec") ? "glibc" : mode) + ".so").getAbsolutePath();
                         String[] argv = mode.equals("static") ? new String[]{executable, "fixture"} :
                                 new String[]{new File(dir, "libmatonos-inprocess-ld.so").getAbsolutePath(),
                                     "--inhibit-cache", "--library-path", dir.getAbsolutePath(), executable, "fixture"};
+                        if (mode.equals("exec")) {
+                            argv = new String[]{new File(dir, "libmatonos-inprocess-ld.so").getAbsolutePath(),
+                                "--inhibit-cache", "--library-path", dir.getAbsolutePath(), executable, "fixture", "exec0",
+                                new File(dir, "libmatonos-inprocess-ld.so").getAbsolutePath(), dir.getAbsolutePath(),
+                                executable, new File(dir, "libmatonos-inprocess-static.so").getAbsolutePath()};
+                        }
                         int status;
                         try {
                             status = nativeRunInProcess(argv, new String[]{"INPROCESS_TEST=present"},

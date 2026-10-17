@@ -27,3 +27,19 @@ _start:
 ASM
 cc -m32 -nostdlib -static -Wl,--build-id=none "$out/peer.S" -o "$out/peer"
 EXPECTED_STATUS=-8 timeout 30 "$out/test" "$out/peer" fixture
+
+timeout 30 "$out/test" "$out/pinned/libmatonos-inprocess-ld.so" --inhibit-cache --library-path "$out/pinned" "$out/pinned/libmatonos-inprocess-glibc.so" fixture exec0 "$out/pinned/libmatonos-inprocess-ld.so" "$out/pinned" "$out/pinned/libmatonos-inprocess-glibc.so" "$out/pinned/libmatonos-inprocess-static.so"
+# Tiny real STORED ZIP/index fixture for the callable production pack path.
+python3 - "$out" <<'PY'
+import pathlib,struct,sys,zipfile
+out=pathlib.Path(sys.argv[1]); bundle=out/'pack-fixture';bundle.mkdir(exist_ok=True)
+with zipfile.ZipFile(bundle/'fixture.zip','w',compression=zipfile.ZIP_STORED) as z:z.writestr('data',b'0123456789abcdef')
+def string(s):
+ b=s.encode();return struct.pack('<I',len(b))+b
+data=b'MTPKIDX1'+struct.pack('<I',2)
+for path,kind,mode,offset,length in [('/','dir',0o40755,0,0),('/data','file',0o100644,34,16)]:
+ data+=b''.join(string(s) for s in [path,'0'*64,'fixture.zip' if kind=='file' else '',kind,''])+struct.pack('<IQQIII',0,offset,length,0,0,mode)
+(bundle/'objects.index').write_bytes(data)
+PY
+cc -O2 -Wall -Wextra -Werror -pthread "$root/session-test.c" -L"$out" -lmatonos-inprocess -Wl,-rpath,"$out" -o "$out/session-test"
+timeout 30 "$out/session-test" "$out/pack-fixture/objects.index" "$out/pack-fixture"

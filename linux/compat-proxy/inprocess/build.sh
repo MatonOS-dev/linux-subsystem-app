@@ -20,9 +20,10 @@ done
 "$compiler" -fPIC -c "$root/arch/x86_64/raw.S" -o "$out/raw.o"
 "$compiler" -fPIC -c "$root/arch/x86_64/adopt.S" -o "$out/adopt.o"
 "$compiler" -fPIC -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror -c "$root/inprocess/routing.c" -o "$out/routing.o"
+"$compiler" -fPIC -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror -c "$root/inprocess/session.c" -o "$out/session.o"
 extra=()
 if [[ ${INPROCESS_ANDROID:-0} == 1 ]]; then
     "$compiler" -fPIC -O2 -Wall -Wextra -Werror -c "$root/inprocess/jni.c" -o "$out/jni.o"
     extra+=("$out/jni.o")
 fi
-"$compiler" -shared -Wl,-Bsymbolic,-z,now "${extra[@]}" "$out"/{loader,proxy,vfs,links,net,sysvipc,state,adoption,adopt-map,raw,adopt,routing}.o -pthread -ldl -o "$out/libmatonos-inprocess.so"
+"$compiler" -shared -Wl,-Bsymbolic,-z,now "${extra[@]}" "$out"/{loader,proxy,vfs,links,net,sysvipc,state,adoption,adopt-map,raw,adopt,routing,session}.o -pthread -ldl -o "$out/libmatonos-inprocess.so"
