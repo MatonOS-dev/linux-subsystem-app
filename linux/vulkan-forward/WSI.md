@@ -64,6 +64,11 @@ import acceptance remains unverified. The alternate
 `VK_EXT_external_memory_dma_buf` path was enumerated by the driver but was not
 used.
 
+Reproduce the resident-driver probe with
+`tests/run-ahb-export-probe.sh OUT NDK HEADERS ADB`; it only pushes and runs a
+standalone probe under `/data/local/tmp/wsi/` and does not install an APK or
+access subsystem app data.
+
 ## Synchronization and presentation
 
 The ICD must attach the real Android acquire `sync_file` to every Wayland
