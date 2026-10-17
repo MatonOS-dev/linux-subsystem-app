@@ -28,4 +28,4 @@ pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pc
 e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
 gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
 
-4b7b12f6a25a39869c9ce1cc024650f974015546fb28ba912a338dff482f34fc  matonos-flatpak
+cb14fef2ba523aae19817e88e93b9bc323066677d0a1eb578405e9141f96e3fb  matonos-flatpak
