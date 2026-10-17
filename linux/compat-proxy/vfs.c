@@ -169,18 +169,23 @@ char *vfs_fd_name(int fd){
     fd_names_unlock(mask);return name;
 }
 static int self_proc(const char *path){
-    if(prefix(path,"/proc/self"))return 1;
-    char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;
-    unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
-    do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);
-    while(d)name[k++]=digits[--d];
-    name[k]=0;return prefix(path,name);
+    if(prefix(path,"/proc/self") || prefix(path,"/proc/thread-self"))return 1;
+    if(!prefix(path,"/proc") || path[5]!='/')return 0;
+    /* A numeric /proc/<tid> belongs to us only if it appears in our task
+     * directory. Never trust another process's descriptor number. */
+    const char *n=path+6;size_t count=0;
+    while(n[count]>='0' && n[count]<='9')count++;
+    if(!count || (n[count] && n[count]!='/') || count>SIZE_MAX-17)return 0;
+    char *task=vfs_alloc(count+17);if(!task)return 0;
+    p_copy(task,"/proc/self/task/",16);p_copy(task+16,n,count);task[16+count]=0;
+    struct proxy_stat st;int own=!arch_stat_at(AT_FDCWD,task,&st,0) && S_ISDIR(st.st_mode);
+    vfs_free(task);return own;
 }
 char *vfs_proc_fd_name(const char *path){
     if(!self_proc(path))return NULL;
     for(size_t i=0;path[i];i++)if(path[i]=='/' && path[i+1]=='f' && path[i+2]=='d' && path[i+3]=='/'){
         const char *n=path+i+4;unsigned fd=0;if(!*n)return NULL;
-        while(*n>='0' && *n<='9'){if(fd>214748364U)return NULL;fd=fd*10+(*n++-'0');}
+        while(*n>='0' && *n<='9'){unsigned digit=(unsigned)(*n++-'0');if(fd>(2147483647U-digit)/10)return NULL;fd=fd*10+digit;}
         if(*n)return NULL;
         return vfs_fd_name((int)fd);
     }

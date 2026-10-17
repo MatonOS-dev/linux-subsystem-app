@@ -85,6 +85,8 @@ build/dns-translation
 # Real Unix tests run when the host permits socket bind.
 python3 tests/dns-host.py --skip-unavailable
 
+bash tests/tmpfile-threads.sh
+
 cc -no-pie -O2 -Wall -Wextra -Werror tests/links.c -o build/links-test
 links_fixture=$(mktemp -d "$PWD/build/links-fixture.XXXXXX")
 timeout 20 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/links-test" "$links_fixture" >build/links-test.out 2>build/links-test.log
