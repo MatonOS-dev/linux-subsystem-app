@@ -73,7 +73,8 @@ public final class ExtraService extends Service {
             try (AutoCloseable lease = WorkDirs.keep(WorkDirs.directory(this,"extra-operation"))) {
                 File work = prepare();
                 ApplicationInfo info = getApplicationInfo();
-                byte[] index = readIndex(info);
+                java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> index =
+                        org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(readIndex(info));
                 Map<String, String> carriers = carriers(info);
                 if (!hasExtra(index)) {
                     stream.write(ExtraProtocol.STATUS_NONE);
@@ -113,18 +114,18 @@ public final class ExtraService extends Service {
         }
     }
 
-    private static boolean hasExtra(byte[] index) throws IOException {
-        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(index))
+    private static boolean hasExtra(java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> index) {
+        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : index)
             if (entry.path.equals("/extra") || entry.path.startsWith("/extra/")) return true;
         return false;
     }
-    private static boolean hasFile(byte[] index, String path) throws IOException {
-        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(index))
+    private static boolean hasFile(java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> index, String path) {
+        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : index)
             if (entry.path.equals(path) && entry.kind.equals("file")) return true;
         return false;
     }
-    private static void materialize(byte[] index, Map<String,String> carriers, File destination) throws IOException {
-        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(index)) {
+    private static void materialize(java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> index, Map<String,String> carriers, File destination) throws IOException {
+        for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : index) {
             String path=entry.path;
             if (!path.equals("/extra") && !path.startsWith("/extra/")) continue;
             String name=path.substring("/extra".length()); if(name.startsWith("/"))name=name.substring(1);
