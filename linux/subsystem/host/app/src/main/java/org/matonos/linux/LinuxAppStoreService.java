@@ -465,8 +465,10 @@ public final class LinuxAppStoreService extends Service {
                 java.util.List<String> installedNow=after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames);
                 java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
                 desired2.add(index);
-                for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:contentEntries(objects))
-                    if(row.kind.equals("file"))desired2.add("pack_"+row.pack.substring(5,69));
+                for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:contentEntries(objects))if(row.kind.equals("file")) {
+                    String split="pack_"+row.pack.substring(5,69);
+                    if(!desired2.contains(split))desired2.add(split);
+                }
                 if(applied!=null){String split=applied.getName().replace(".apk","");desired2.add(split);available2.add(split);}
                 if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
                 runPackSession(op,pkg,artifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
