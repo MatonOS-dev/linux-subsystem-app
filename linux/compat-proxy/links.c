@@ -318,11 +318,12 @@ long links_path_call(long nr,proxy_arg_t *args,const char *p){
   lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r){unlock(lock);return r;}
  }
  proxy_arg_t a[6];p_copy(a,args,sizeof(a));int stored=links_target(p,object);
- if(stored){r=ensure_count(root,store,object);if(r)goto end;if(nr==PROXY_SC_readlinkat){r=-EINVAL;goto end;}a[1]=(long)object;
-  if(nr==PROXY_SC_openat)a[2]&=~O_NOFOLLOW;
-  if(nr==PROXY_SC_newfstatat || nr==PROXY_SC_utimensat || nr==PROXY_SC_faccessat2)a[3]&=~AT_SYMLINK_NOFOLLOW;
-  if(nr==PROXY_SC_fchownat)a[4]&=~AT_SYMLINK_NOFOLLOW;
-  if(nr==PROXY_SC_statx)a[2]&=~AT_SYMLINK_NOFOLLOW;
+ if(stored){r=ensure_count(root,store,object);if(r)goto end;if(nr==PROXY_SC_readlinkat){r=-EINVAL;goto end;}
+  /* Only the final stored name is substituted. Keep flags intact: the
+   * backing inode is already regular, so the kernel enforces NOFOLLOW,
+   * O_EXCL, O_DIRECTORY and unknown flag semantics itself. */
+  int path0=nr==PROXY_SC_getxattr || nr==PROXY_SC_lgetxattr || nr==PROXY_SC_listxattr || nr==PROXY_SC_llistxattr || nr==PROXY_SC_setxattr || nr==PROXY_SC_lsetxattr || nr==PROXY_SC_removexattr || nr==PROXY_SC_lremovexattr || nr==PROXY_SC_truncate || nr==PROXY_SC_statfs;
+  a[path0?0:1]=(long)object;
  }
  r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
  if(!r && stored && nr==PROXY_SC_newfstatat)arch_stat_nlink((void *)(uintptr_t)a[2],read_count(object));
@@ -331,6 +332,8 @@ end:if(lock>=0)unlock(lock);return r;
 }
 static void refresh(const char *object){char root[PATH_MAX],store[PATH_MAX];size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock>=0){if(!recover(root,store)){struct proxy_stat st;if(!arch_stat_at(AT_FDCWD,object,&st,0))ensure_count(root,store,object);}unlock(lock);}}
 void links_recover_path(const char *path){char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;if(!tree(root,path) || !catpath(store,root,".v3-inodes") || arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return;long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock);}}
+/* Inspect the kernel fd target, not its virtual display name. */
+int links_fd_stored(int fd){char proc[80]="/proc/self/fd/",path[PATH_MAX];size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-1,0,0);if(n<=0)return 0;path[n]=0;struct proxy_stat st;return component(path) && !arch_stat_fd(fd,&st) && S_ISREG(st.st_mode);}
 void links_fd_stat(int fd,struct proxy_stat *st){char proc[80]="/proc/self/fd/",path[PATH_MAX];size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-1,0,0);if(n>0){path[n]=0;links_stat(path,st);}}
 void links_stat(const char *object,struct proxy_stat *st){if(component(object) && S_ISREG(st->st_mode)){refresh(object);st->st_nlink=read_count(object);}}
 void links_statx(const char *object,struct statx *st){if(component(object) && S_ISREG(arch_statx_mode(st))){refresh(object);arch_statx_nlink(st,read_count(object));}}

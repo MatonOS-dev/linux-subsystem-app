@@ -94,7 +94,9 @@ rm -r "$links_fixture"
 cc -no-pie -O2 -Wall -Wextra -Werror tests/hardlinks.c -o build/hardlinks-test
 hardlinks_fixture=$(mktemp -d "$PWD/build/hardlinks-fixture.XXXXXX")
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$hardlinks_fixture" >build/hardlinks-test.out 2>build/hardlinks-test.log
+if [[ -n ${MATON_TEST_GLNX_SOURCE:-} ]]; then bash tests/glnx-nofollow.sh; fi
 cat build/hardlinks-test.out
+printf 'PASS no-follow stored-name and real-symlink regression checks\n'
 # Backing objects and count sidecars disappear after the final name.
 test "$(find "$hardlinks_fixture/.v3-inodes" -type f ! -name lock | wc -l)" -eq 0
 rm -r "$hardlinks_fixture"

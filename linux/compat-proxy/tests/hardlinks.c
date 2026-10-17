@@ -1,9 +1,12 @@
 #define _GNU_SOURCE
 #include <sys/stat.h>
+#include <sys/xattr.h>
+#include <sys/inotify.h>
 #include <sys/wait.h>
 #include <sys/syscall.h>
 #include <linux/stat.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <errno.h>
@@ -20,6 +23,54 @@ int main(int argc,char **argv){
  CHECK(argc==2);int fd=open("a",O_CREAT|O_RDWR|O_EXCL,0640);CHECK(fd>=0);CHECK(write(fd,"first",5)==5);CHECK(link("a","b")==0);
  struct stat a,b;CHECK(lstat("a",&a)==0 && stat("b",&b)==0 && S_ISREG(a.st_mode) && a.st_ino==b.st_ino && a.st_nlink==2);CHECK(fstat(fd,&b)==0 && b.st_nlink==2);
  struct statx sx;CHECK(statx(AT_FDCWD,"b",AT_SYMLINK_NOFOLLOW,STATX_BASIC_STATS,&sx)==0 && S_ISREG(sx.stx_mode) && sx.stx_nlink==2);CHECK(statx(fd,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&sx)==0 && sx.stx_nlink==2);
+ /* libglnx fallback: inspect an O_PATH no-follow fd, then reopen it. */
+ int dir=open(".",O_PATH|O_DIRECTORY);CHECK(dir>=0);
+ char absolute[4096];CHECK(getcwd(absolute,sizeof(absolute))!=NULL);CHECK(strlen(absolute)+3<sizeof(absolute));strcat(absolute,"/b");
+ for(int i=0;i<4;i++){
+  const char *name=i&1?absolute:"b";int base=i&1?AT_FDCWD:dir;
+  int probe=openat(base,name,(i&2?O_RDONLY:O_PATH)|O_NOFOLLOW|O_CLOEXEC);CHECK(probe>=0);
+  CHECK(statx(probe,"",AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW,STATX_BASIC_STATS,&sx)==0 && S_ISREG(sx.stx_mode) && sx.stx_nlink==2);
+  CHECK(fstatat(probe,"",&b,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)==0 && S_ISREG(b.st_mode) && b.st_nlink==2);
+  CHECK(fstat(probe,&b)==0 && S_ISREG(b.st_mode) && b.st_nlink==2);
+  char proc[80],content[8];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",probe);
+  int reopened=open(proc,O_RDONLY|O_CLOEXEC);CHECK(reopened>=0);CHECK(read(reopened,content,5)==5 && !memcmp(content,"first",5));close(reopened);
+  errno=0;CHECK(readlinkat(probe,"",content,sizeof(content))==-1 && errno==EINVAL);close(probe);
+ }
+ char target[20];errno=0;CHECK(readlinkat(dir,"b",target,sizeof(target))==-1 && errno==EINVAL);
+ CHECK(symlink("b","real-symlink")==0);CHECK(readlinkat(dir,"real-symlink",target,sizeof(target))==1 && target[0]=='b');
+ int real=openat(dir,"real-symlink",O_PATH|O_NOFOLLOW);CHECK(real>=0);
+ CHECK(statx(real,"",AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW,STATX_BASIC_STATS,&sx)==0 && S_ISLNK(sx.stx_mode));
+ CHECK(readlinkat(real,"",target,sizeof(target))==1 && target[0]=='b');close(real);
+ errno=0;CHECK(openat(dir,"real-symlink",O_RDONLY|O_NOFOLLOW)==-1 && errno==ELOOP);
+ CHECK(unlink("real-symlink")==0);
+ CHECK(fchownat(dir,"b",getuid(),getgid(),AT_SYMLINK_NOFOLLOW)==0);
+ CHECK(syscall(SYS_faccessat2,dir,"b",R_OK,AT_SYMLINK_NOFOLLOW)==0);
+ /* fchmodat2 is newer than some libc headers. */
+ errno=0;long cm=syscall(452,dir,"b",0640,AT_SYMLINK_NOFOLLOW);CHECK(cm==0 || (cm==-1 && errno==ENOSYS));
+ CHECK(lsetxattr("b","user.nofollow","ok",2,0)==0);
+ char value[256];CHECK(lgetxattr("a","user.nofollow",value,sizeof(value))==2 && !memcmp(value,"ok",2));
+ CHECK(llistxattr("b",value,sizeof(value))>0);
+ struct {uint64_t value;uint32_t size,flags;} xa={(uintptr_t)value,sizeof(value),0};
+ errno=0;long xr=syscall(464,dir,"b",AT_SYMLINK_NOFOLLOW,"user.nofollow",&xa,sizeof(xa));
+ CHECK(xr==2 || (xr==-1 && errno==ENOSYS));
+ if(xr==2){
+  CHECK(syscall(465,dir,"b",AT_SYMLINK_NOFOLLOW,value,sizeof(value))>0);
+  xa.value=(uintptr_t)"at";xa.size=2;
+  CHECK(syscall(463,dir,"a",AT_SYMLINK_NOFOLLOW,"user.nofollow-at",&xa,sizeof(xa))==0);
+  CHECK(lgetxattr("b","user.nofollow-at",value,sizeof(value))==2 && !memcmp(value,"at",2));
+  CHECK(syscall(466,dir,"b",AT_SYMLINK_NOFOLLOW,"user.nofollow-at")==0);
+ }
+CHECK(lremovexattr("a","user.nofollow")==0);
+ struct {struct file_handle h;unsigned char data[128];} handle={.h.handle_bytes=128};int mount_id;
+ errno=0;long hr=name_to_handle_at(dir,"b",&handle.h,&mount_id,0);int he=errno;
+ /* Compare no-follow and follow calls, including filesystems without handles. */
+ struct {struct file_handle h;unsigned char data[128];} follow_handle={.h.handle_bytes=128};int follow_mount;
+ errno=0;long fr=name_to_handle_at(dir,"b",&follow_handle.h,&follow_mount,AT_SYMLINK_FOLLOW);
+ CHECK(hr==fr && (hr==0?(mount_id==follow_mount && handle.h.handle_bytes==follow_handle.h.handle_bytes && !memcmp(handle.data,follow_handle.data,handle.h.handle_bytes)):he==errno));
+ int notify=inotify_init1(IN_NONBLOCK|IN_CLOEXEC);CHECK(notify>=0);
+ int watch=inotify_add_watch(notify,"b",IN_MODIFY|IN_DONT_FOLLOW);CHECK(watch>=0);
+ CHECK(pwrite(fd,"first",5,0)==5);char events[256];CHECK(read(notify,events,sizeof(events))>0);close(notify);
+ close(dir);
  char buf[20];errno=0;CHECK(readlink("a",buf,sizeof(buf))==-1 && errno==EINVAL);int second=open("b",O_RDWR|O_NOFOLLOW);CHECK(second>=0);CHECK(pwrite(second,"other",5,0)==5 && pread(fd,buf,5,0)==5 && !memcmp(buf,"other",5));
  CHECK(chmod("b",0600)==0 && fstat(fd,&b)==0 && (b.st_mode&0777)==0600);struct timespec times[2]={{100,123},{200,456}};CHECK(utimensat(AT_FDCWD,"b",times,AT_SYMLINK_NOFOLLOW)==0 && fstat(fd,&b)==0 && b.st_mtim.tv_nsec==456);
  DIR *d=opendir(".");CHECK(d!=NULL);int seen=0;struct dirent *e;while((e=readdir(d))){CHECK(strcmp(e->d_name,".v3-inodes"));if(!strcmp(e->d_name,"a") || !strcmp(e->d_name,"b")){CHECK(e->d_type==DT_REG);seen++;}}closedir(d);CHECK(seen==2);errno=0;CHECK(open(".v3-inodes",O_RDONLY|O_DIRECTORY)==-1 && errno==ENOENT);
