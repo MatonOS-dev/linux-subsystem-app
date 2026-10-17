@@ -20,6 +20,8 @@ public final class InstallTransaction {
     private static final String TAG = "MatonInstall";
     private static final java.util.regex.Pattern OPERATION_ID =
             java.util.regex.Pattern.compile("[A-Za-z0-9_-]{1,64}");
+    private static final java.util.regex.Pattern INDEX_SPLIT =
+            java.util.regex.Pattern.compile("index_[0-9a-f]{64}");
     private static final int MAX_LINE = 2048;
 
     /** Notified exactly once, on the worker thread, after the worker is done. */
@@ -289,7 +291,7 @@ public final class InstallTransaction {
                 report("staging",-1,-1,-1,"Original update base payload budget: "+originalBytes);
                 if(originalBytes>root.getUsableSpace())throw new java.io.IOException("Insufficient space for original update base");
                 org.matonos.linuxhost.stubgen.PackSeed.seed(originalEntries,new File(original.get(3)),new File(installation,"repo"),()->cancelled.get());
-                for(int i=0;i<pkg.splitNames.length;i++)if(pkg.splitNames[i].matches("index_[0-9a-f]{64}")) {
+                for(int i=0;i<pkg.splitNames.length;i++)if(INDEX_SPLIT.matcher(pkg.splitNames[i]).matches()) {
                     try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(pkg.applicationInfo.splitSourceDirs[i])) {
                         java.util.zip.ZipEntry metadata=zip.getEntry("assets/matonos/original.ostree");
                         if(metadata==null)throw new java.io.IOException("Installed index lacks original metadata");
