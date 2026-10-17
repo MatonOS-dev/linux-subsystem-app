@@ -112,7 +112,7 @@ void raw_main(uintptr_t *stack) {
         unsigned i=0;while(prefix[i] && prefix[i]==(*env)[i]) i++;
         if(!prefix[i]) {uintptr_t p=0;for(const char *s=*env+i;*s;s++) p=p*16+(*s>='a'?*s-'a'+10:*s-'0');api=(void *)p;}
     }
-    CHECK(api && api->version==1);
+    CHECK(api && api->version==2 && api->lookup);
     main_tls.self=(uintptr_t)&main_tls;main_tls.marker=0xabcde;adopt_fs_write((uintptr_t)&main_tls);
     struct {void (*fn)(int);unsigned long flags;void (*restore)(void);unsigned long mask;} sa={gate,0x04000000,raw_restore,0};
     CHECK(raw(13,10,(long)&sa,0,8,0,0)==0);

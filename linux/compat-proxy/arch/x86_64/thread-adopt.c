@@ -22,6 +22,9 @@
 #include <linux/sched.h>
 #include <limits.h>
 #include <errno.h>
+#ifndef SYS_USER_DISPATCH
+#define SYS_USER_DISPATCH 2
+#endif
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -53,6 +56,14 @@ static pthread_mutex_t identity_mutex=PTHREAD_MUTEX_INITIALIZER;
 static struct adopt_api api={.version=2,.current=adopt_current,.lookup=adopt_map_lookup,
                              .identity=identity,.live=live};
 static int fs_fast;
+static struct {
+    uintptr_t handler;
+    unsigned long flags;
+    void (*restorer)(void);
+    unsigned long mask;
+} prior_sigsys;
+
+uintptr_t adopt_api_address(void) { return (uintptr_t)&api; }
 
 /* FSGSBASE is a CPU feature; the kernel advertises it in AT_HWCAP2 bit 1 and
  * the launcher/ICD publish the same bit. rdfsbase is then a register read with
@@ -279,7 +290,15 @@ static void robust_exit(struct adopt_thread *t) {
     owner_died(pending,copy.futex_offset,atomic_load(&t->tid));
 }
 static void trap(int sig,siginfo_t *info,void *opaque) {
-    (void)sig;
+    if(info->si_code!=SYS_USER_DISPATCH) {
+        if(prior_sigsys.handler>1) {
+            if(prior_sigsys.flags&SA_SIGINFO)
+                ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+            else ((void (*)(int))prior_sigsys.handler)(sig);
+            return;
+        }
+        R(exit_group,191,0,0,0,0,0);
+    }
     ucontext_t *uc=opaque;
     greg_t *g=uc->uc_mcontext.gregs;
     long n=info->si_syscall, result=-ENOSYS;
@@ -505,10 +524,13 @@ int adopt_install(void) {
     adopt_map_bind(main->resident_fs,main);
     if(pthread_atfork(resident_prepare,resident_parent,resident_child)) return -1;
     force_clone=getenv("MATON_ADOPT_FORCE_CLONE")!=NULL;
+#ifndef MATON_GPU_BRIDGE
     char value[32]; snprintf(value,sizeof(value),"%lx",(unsigned long)&api);
     setenv("MATON_THREAD_ADOPT",value,1);
+#endif
     /* The restorer must be in the always-allowed raw gateway. Dispatch resets
      * on fork/clone/exec, unlike an irreversible seccomp filter. */
+    if(R(rt_sigaction,SIGSYS,0,&prior_sigsys,8,0,0)) return -1;
     struct {
         void (*handler)(int,siginfo_t *,void *);
         unsigned long flags;
