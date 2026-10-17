@@ -13,6 +13,7 @@ flags=(-std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -fno-stack-protector -I"$
 "$cc" "${flags[@]}" -I"$headers/include" "$here/tests/query-test.c" -ldl -o "$out/query-test"
 env -u MATON_GPU_BRIDGE -u MATON_THREAD_ADOPT "$out/query-test" "$out/libmaton_vulkan.so"
 "$cc" "${flags[@]}" "$here/tests/switch-bench.c" "$here/runtime.c" -o "$out/switch-bench"
+bash "$here/tests/switch-bench.sh" "$out"
 python3 - "$out" <<'PY'
 import pathlib, subprocess, sys
 out=pathlib.Path(sys.argv[1])

@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 bash build.sh
-cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector -fno-builtin -Wl,-z,now -DMATON_ADOPT launcher.c ../compat-proxy/arch/x86_64/thread-adopt.c ../compat-proxy/arch/x86_64/adopt.S build/{loader,proxy,vfs,links,net,sysvipc,state,raw}.o -pthread -ldl -o build/launcher-adopt
+cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector -fno-builtin -Wl,-z,now -DMATON_ADOPT launcher.c ../compat-proxy/arch/x86_64/thread-adopt.c ../compat-proxy/adopt-map.c ../compat-proxy/arch/x86_64/adopt.S build/{loader,proxy,vfs,links,net,sysvipc,state,raw}.o -pthread -ldl -o build/launcher-adopt
 cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector spike3/fork-test.c spike3/thunk.c -pthread -o build/adopt-fork-test
 cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector spike3/test.c spike3/thunk.c -pthread -lm -o build/adopt-test
 launch=("$PWD/build/launcher-adopt")

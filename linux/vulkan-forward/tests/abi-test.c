@@ -9,4 +9,5 @@
 #define CHECK(f) _Static_assert(offsetof(struct provider_thread,f)==offsetof(struct adopt_thread,f),"adoption offset " #f)
 CHECK(resident_fs);CHECK(selector);CHECK(app_fs);
 _Static_assert(offsetof(struct provider_api,current)==offsetof(struct adopt_api,current),"current offset");
+_Static_assert(offsetof(struct provider_api,lookup)==offsetof(struct adopt_api,lookup),"lookup offset");
 int main(void){return 0;}
