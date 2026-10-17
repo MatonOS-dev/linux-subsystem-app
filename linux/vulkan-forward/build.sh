@@ -12,7 +12,7 @@ flags=(-std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builti
 wsi=()
 if [[ ${MATON_VK_WSI_PROTOTYPE:-0} == 1 ]]; then
   flags+=(-DMV_WSI_PROTOTYPE=1)
-  wsi+=("$here/wsi.c")
+  wsi+=("$here/wsi.c" "$here/wayland_resolve.c")
 fi
 "$cc" "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "${wsi[@]}" -o "$out/libmaton_vulkan.so"
 readelf=${READELF:-llvm-readelf-21}
