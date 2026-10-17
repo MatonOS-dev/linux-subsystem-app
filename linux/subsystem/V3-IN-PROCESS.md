@@ -1,5 +1,11 @@
 # V3 Linux images in the stub's ART process
 
+Current stages 1–3 implementation and acceptance evidence:
+[V3-IN-PROCESS-STAGES-1-3.md](V3-IN-PROCESS-STAGES-1-3.md).
+The stage-one text below is historical; its pending fd/VMA/exec items and
+permission restriction are superseded by that report. Full Flatpak production
+launch still uses ProcessBuilder until stages 4–7 pass.
+
 Stage 1, 2026-10-17. Full Flatpak/Firefox in-process launch does **not** work
 in this revision. `V3Launcher` still starts that chain with ProcessBuilder.
 The new JNI route runs diagnostic Linux images in the calling stub's main
