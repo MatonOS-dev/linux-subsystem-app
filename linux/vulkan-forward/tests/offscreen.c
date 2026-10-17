@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "shaders.h"
+#ifndef MATON_TEST_LIBC
+#define MATON_TEST_LIBC "glibc"
+#endif
 #define CHECK(x) do{VkResult r_=(x);if(r_!=VK_SUCCESS){fprintf(stderr,"%s:%d %s: %d\n",__FILE__,__LINE__,#x,r_);exit(1);}}while(0)
 #define REQUIRE(x) do{if(!(x)){fprintf(stderr,"%s:%d %s failed\n",__FILE__,__LINE__,#x);exit(1);}}while(0)
 static _Thread_local unsigned app_tls;
@@ -52,4 +55,4 @@ int main(void){app_tls=0xcafe;VkInstance instance;VkApplicationInfo app={.sType=
  REQUIRE(vkCreateDevice(physical,&di,&allocator,&refused)==VK_ERROR_FEATURE_NOT_PRESENT);di.pNext=saved;
  CHECK(vkCreateDevice(physical,&di,&allocator,&dev));printf("Enabled %u allowlisted driver extensions\n",extcount);free(names);free(extensions);
  REQUIRE(!vkGetDeviceProcAddr(dev,"vkCreateSwapchainKHR"));
- vkGetDeviceQueue(dev,family,0,&queue);REQUIRE(queue);VkDeviceQueueInfo2 qinfo={.sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2,.queueFamilyIndex=family,.queueIndex=0};VkQueue again;vkGetDeviceQueue2(dev,&qinfo,&again);REQUIRE(again==queue);pthread_t threads[4];for(uintptr_t j=0;j<4;j++)REQUIRE(!pthread_create(&threads[j],0,compute,(void *)j));for(unsigned j=0;j<4;j++)REQUIRE(!pthread_join(threads[j],0));triangle();CHECK(vkDeviceWaitIdle(dev));vkDestroyDevice(dev,&allocator);REQUIRE(allocations==frees);printf("PASS app-TLS wrapper allocator callbacks %u/%u; device-group pNext, queue identity, submit/submit2, secondary buffers\n",allocations,frees);vkDestroyInstance(instance,0);puts("PASS offscreen compute/render (glibc, pinned Khronos loader)");}
+ vkGetDeviceQueue(dev,family,0,&queue);REQUIRE(queue);VkDeviceQueueInfo2 qinfo={.sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2,.queueFamilyIndex=family,.queueIndex=0};VkQueue again;vkGetDeviceQueue2(dev,&qinfo,&again);REQUIRE(again==queue);pthread_t threads[4];for(uintptr_t j=0;j<4;j++)REQUIRE(!pthread_create(&threads[j],0,compute,(void *)j));for(unsigned j=0;j<4;j++)REQUIRE(!pthread_join(threads[j],0));triangle();CHECK(vkDeviceWaitIdle(dev));vkDestroyDevice(dev,&allocator);REQUIRE(allocations==frees);printf("PASS app-TLS wrapper allocator callbacks %u/%u; device-group pNext, queue identity, submit/submit2, secondary buffers\n",allocations,frees);vkDestroyInstance(instance,0);puts("PASS offscreen compute/render (" MATON_TEST_LIBC ", pinned Khronos loader)");}

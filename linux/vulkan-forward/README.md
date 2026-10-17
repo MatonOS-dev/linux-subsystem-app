@@ -1,9 +1,11 @@
-# Vulkan forwarder — stage B, offscreen
+# Vulkan forwarder — offscreen stages A–C
 
 Freestanding Linux ICD forwarding to the resident Android Vulkan loader on
 MatonOS (based on AOSP). Stage B passes unmodified `vulkaninfo --summary`, four
 adopted-thread compute, and triangle readback on the existing lavapipe VM.
-Musl execution and a Zink run belong to stage C and have not been started.
+Stage C also passes dynamic musl compute/render and Mesa Zink surfaceless GL 4.6
+core/compatibility plus GLES 3.2. See [STAGE-C.md](STAGE-C.md) for pins, exact
+reproduction, capability audit, and limitations.
 This experiment is not a Vulkan conformance or production-readiness claim.
 
 ## Dispatch and ownership
@@ -13,9 +15,9 @@ The pinned Khronos v1.4.341 registry is SHA-256 verified before generation.
 All 234 core 1.0–1.4 commands are covered. There are 283 canonical commands,
 68 extension aliases (351 lookup names), 262 generated plain-C thunks, and 21
 manual adapters. `coverage.txt` in the external output lists every name.
-`extensions.txt` explicitly lists 69 device extensions for offscreen Zink
+`extensions.txt` explicitly lists 71 device extensions for offscreen Zink
 requirements and optional paths. Enumeration intersects this with the Android
-driver's list and preserves revisions; all 69 are present on this VM. Instance
+driver's list and preserves revisions; all 71 are present on this VM. Instance
 ICD extension/layer lists are empty. No WSI, surface, swapchain, external-handle,
 or debug-callback command is forwarded. The Khronos loader independently exposes
 its own four instance extensions, which appear in `vulkaninfo`.
@@ -154,11 +156,10 @@ No validation layers were built or run.
 
 The explicit extension list follows [Mesa's Zink requirements](https://docs.mesa3d.org/drivers/zink.html)
 plus optional dynamic-state/pipeline paths. It deliberately excludes
-`VK_KHR_swapchain_mutable_format` and the external-memory/DRI path. A future Zink
-run still needs its actual feature/limit/format checks, loader integration under
-musl, and appropriate offscreen platform setup. Desktop presentation requires
-the later WSI/ANativeWindow/AHB work; do not infer Zink compatibility from these
-tests. No musl loader build or Zink execution was attempted.
+`VK_KHR_swapchain_mutable_format` and the external-memory/DRI path. Stage C
+verifies offscreen Zink using Mesa profiles and surfaceless EGL, and verifies
+libc independence with a dynamic musl loader; details are in STAGE-C.md. Desktop
+presentation still requires the later WSI/ANativeWindow/AHB work.
 
 Future packaging is documentation only: existing `gpu-forward-spike/flatpak/metadata.in`
 describes `org.freedesktop.Platform.GL.maton`. Install `lib/libmaton_vulkan.so`

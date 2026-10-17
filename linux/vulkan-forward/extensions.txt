@@ -69,3 +69,6 @@ VK_EXT_subgroup_size_control
 VK_EXT_texel_buffer_alignment
 VK_EXT_image_robustness
 VK_EXT_pipeline_robustness
+# Stage C: driver-reported Zink optional feature paths (no callbacks/WSI).
+VK_KHR_shader_float_controls2
+VK_EXT_legacy_vertex_attributes
