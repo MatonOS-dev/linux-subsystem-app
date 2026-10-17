@@ -231,8 +231,8 @@ public final class LinuxAppStoreService extends Service {
         java.nio.file.Files.createDirectories(op.stubWork.toPath());
         InstallTransaction.prepare(this,op.stagingId,"repair".equals(op.kind));
         InstallTransaction.Callback stagedCallback=new InstallTransaction.Callback() {
-            @Override public void onProgress(String operationId,String phase,int percent,String line) {
-                try { op.callback.onProgress(op.id,phase,percent,-1,-1); }
+            @Override public void onProgress(String operationId,String phase,int percent,long bytesDone,long bytesTotal,String line) {
+                try { op.callback.onProgress(op.id,phase,percent,bytesDone,bytesTotal); }
                 catch(Exception e) { Log.w(TAG,"Cannot deliver install progress",e); }
             }
             @Override public void onComplete(String operationId,String manifest) {
@@ -249,10 +249,15 @@ public final class LinuxAppStoreService extends Service {
                     java.nio.file.Files.createDirectory(op.packArtifacts.toPath());
                     try {op.installed=getPackageManager().getPackageInfo(packageFor(op.ref),0);}
                     catch(PackageManager.NameNotFoundException absent){op.installed=null;}
+                    long packBytes=InstallTransaction.treeBytes(new File(
+                            org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,InstallTransaction.row(staged,op.ref)),"files"));
+                    op.callback.onProgress(op.id,"packs",85,0,packBytes);
                     org.matonos.linux.stub.StagedPacks.build(LinuxAppStoreService.this,installation,InstallTransaction.packageManifest(staged,op.ref),
                             new File(op.packArtifacts,"objects"),()->op.cancelled,op.installed);
                     if(op.cancelled)throw new java.io.IOException("Install cancelled");
+                    op.callback.onProgress(op.id,"packs",90,packBytes,packBytes);
                     installDeclaredPackages(op);
+                    op.callback.onProgress(op.id,"Android package install",95,-1,-1);
                     installFinalStub(op);
                 } catch(Throwable e) {
                     Log.e(TAG,"Staged install failed for "+op.ref,e);
