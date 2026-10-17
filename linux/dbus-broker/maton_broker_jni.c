@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include "../subsystem/native/short_socket_path.h"
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static Broker *g_broker;
@@ -29,6 +30,8 @@ struct start_args {
     char *policy;
     char *portal;
     char *secret;
+    int socket_dir_fd;
+    int portal_dir_fd;
 };
 
 /* MBP1 capability handshake to the in-process portal backend. */
@@ -53,7 +56,19 @@ static int connect_portal(const char *path, const char *secret) {
 
 static void free_args(struct start_args *a) {
     if (!a) return;
+    if (a->socket_dir_fd >= 0) close(a->socket_dir_fd);
+    if (a->portal_dir_fd >= 0) close(a->portal_dir_fd);
     free(a->socket); free(a->policy); free(a->portal); free(a->secret); free(a);
+}
+
+static int shorten_socket_path(char **path, int *dirfd) {
+    char short_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
+    if (maton_socket_path_open(short_path, sizeof(short_path), *path, dirfd) < 0)
+        return -1;
+    char *copy = strdup(short_path);
+    if (!copy) { close(*dirfd); *dirfd = -1; return -1; }
+    free(*path); *path = copy;
+    return 0;
 }
 
 static char *dup_string(JNIEnv *env, jstring value) {
@@ -69,7 +84,9 @@ static char *dup_string(JNIEnv *env, jstring value) {
 static void *run_broker(void *data) {
     struct start_args *a = data;
     GError *error = NULL;
-    Broker *broker = broker_new(a->socket, a->policy, &error);
+    Broker *broker = shorten_socket_path(&a->socket, &a->socket_dir_fd) == 0 &&
+            shorten_socket_path(&a->portal, &a->portal_dir_fd) == 0
+            ? broker_new(a->socket, a->policy, &error) : NULL;
     int backend = broker ? connect_portal(a->portal, a->secret) : -1;
     /* JNI runs in the authenticated stub itself. Its UID is the session
      * identity; the old executable's environment is absent in an app process. */
@@ -105,6 +122,7 @@ Java_org_matonos_linux_runtime_NativeBroker_nativeStart(JNIEnv *env, jclass claz
 
     struct start_args *a = calloc(1, sizeof(*a));
     if (!a) return JNI_FALSE;
+    a->socket_dir_fd = a->portal_dir_fd = -1;
     a->socket = dup_string(env, socket);
     a->policy = dup_string(env, policy);
     a->portal = dup_string(env, portal);

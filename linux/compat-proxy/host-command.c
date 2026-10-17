@@ -8,6 +8,9 @@
 #define HC_MAX (1024*1024)
 #define HC_FDS 16
 static const char *host_command_socket;
+static char host_command_short[sizeof(((struct sockaddr_un *)0)->sun_path)];
+static char host_command_name[NAME_MAX+1];
+static long host_command_dir = -1;
 static int host_command_started;
 static volatile int hc_stopping;
 #ifdef HOST_COMMAND_TEST
@@ -184,7 +187,7 @@ fail:
     hc_io(socket,&error,4,1);RAW(PROXY_SC_exit_group,1,0,0,0,0,0);
 }
 static void hc_server(int listener,char *const *env,long parent) {
-    hc_parent(parent);hc_close_except(&listener,1);
+    hc_parent(parent);int keep[]={listener,(int)host_command_dir};hc_close_except(keep,2);
     long workers[128]={0};
     while(!hc_stopping){
         for(int i=0;i<128;i++)if(workers[i]&&RAW(PROXY_SC_wait4,workers[i],0,WNOHANG,0,0,0)!=0)workers[i]=0;
@@ -203,10 +206,25 @@ static void hc_server(int listener,char *const *env,long parent) {
     }
     for(int i=0;i<128;i++)if(workers[i])RAW(PROXY_SC_kill,workers[i],SIGTERM,0,0,0,0);
     for(int i=0;i<128;i++)if(workers[i])RAW(PROXY_SC_wait4,workers[i],0,0,0,0,0);
-    RAW(PROXY_SC_unlinkat,AT_FDCWD,host_command_socket,0,0,0,0);RAW(PROXY_SC_exit_group,0,0,0,0,0,0);
+    RAW(PROXY_SC_unlinkat,host_command_dir,host_command_name,0,0,0,0);RAW(PROXY_SC_exit_group,0,0,0,0,0,0);
 }
 int proxy_host_command(const char *path) {
-    if(!path||path[0]!='/'||p_len(path)>=sizeof(((struct sockaddr_un *)0)->sun_path))return -EINVAL;
+    if(!path||path[0]!='/')return -EINVAL;
+    size_t n=p_len(path);if(!n||n>=PATH_MAX)return -ENAMETOOLONG;
+    const char *slash=path+n;while(slash>path&&*slash!='/')slash--;
+    size_t tail=n-(size_t)(slash-path)-1;if(!tail||tail>NAME_MAX)return -EINVAL;
+    p_copy(host_command_name,slash+1,tail);host_command_name[tail]=0;
+    char directory[PATH_MAX];p_copy(directory,path,(size_t)(slash-path));directory[slash-path]=0;
+    if(!directory[0]){directory[0]='/';directory[1]=0;}
+    size_t at=0;const char *prefix="/proc/self/fd/";while(*prefix)host_command_short[at++]=*prefix++;
+    char digits[24];int nd=0;unsigned long fd;
+    host_command_dir=RAW(PROXY_SC_openat,AT_FDCWD,directory,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);
+    if(host_command_dir<0)return (int)host_command_dir;
+    fd=(unsigned long)host_command_dir;
+    do{digits[nd++]=(char)('0'+fd%10);fd/=10;}while(fd);while(nd)host_command_short[at++]=digits[--nd];
+    host_command_short[at++]='/';
+    if(at+tail>=sizeof(host_command_short)){RAW(PROXY_SC_close,host_command_dir,0,0,0,0,0);host_command_dir=-1;return -ENAMETOOLONG;}
+    p_copy(host_command_short+at,host_command_name,tail+1);
     host_command_socket=path;return 0;
 }
 void proxy_host_snapshot(char *const *env) {
@@ -227,11 +245,11 @@ void proxy_host_snapshot(char *const *env) {
 #endif
     host_command_started=1;
     long socket=RAW(PROXY_SC_socket,AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,0,0,0);if(socket<0)return;
-    struct sockaddr_un address={.sun_family=AF_UNIX};p_copy(address.sun_path,host_command_socket,p_len(host_command_socket)+1);
+    struct sockaddr_un address={.sun_family=AF_UNIX};p_copy(address.sun_path,host_command_short,p_len(host_command_short)+1);
     /* Launcher removes stale sockets before bootstrapping this runtime. */
-    if(RAW(PROXY_SC_bind,socket,&address,sizeof(address),0,0,0)<0||RAW(PROXY_SC_fchmodat,AT_FDCWD,host_command_socket,0600,0,0,0)<0||RAW(PROXY_SC_listen,socket,16,0,0,0,0)<0){RAW(PROXY_SC_close,socket,0,0,0,0,0);return;}
+    if(RAW(PROXY_SC_bind,socket,&address,offsetof(struct sockaddr_un,sun_path)+p_len(host_command_short)+1,0,0,0)<0||RAW(PROXY_SC_fchmodat,host_command_dir,host_command_name,0600,0,0,0)<0||RAW(PROXY_SC_listen,socket,16,0,0,0,0)<0){RAW(PROXY_SC_close,socket,0,0,0,0,0);return;}
     long parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0),pid=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
     if(!pid)hc_server((int)socket,env,parent);
     RAW(PROXY_SC_close,socket,0,0,0,0,0);
-    if(pid<0)RAW(PROXY_SC_unlinkat,AT_FDCWD,host_command_socket,0,0,0,0);
+    if(pid<0)RAW(PROXY_SC_unlinkat,host_command_dir,host_command_name,0,0,0,0);
 }

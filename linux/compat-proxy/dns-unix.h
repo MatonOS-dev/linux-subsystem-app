@@ -6,7 +6,7 @@
 #include <time.h>
 static int unix_call(long,proxy_arg_t [6],long *);
 static struct sockaddr_in dns_endpoint;
-static char dns_path[sizeof(((struct sockaddr_un *)0)->sun_path)-4];
+static char dns_path[4096];
 struct dns_socket {unsigned refs;int type,active,connected;struct sockaddr_in local;};
 struct dns_fd {int fd;struct dns_socket *socket;struct dns_fd *next;};
 struct dns_watch {int epoll,fd;struct epoll_event event;struct dns_watch *next;};
@@ -114,8 +114,20 @@ static long dns_convert(int fd,struct dns_socket *s){
      * A full listener backlog fails promptly rather than hanging a syscall. */
     long sock=RAW(PROXY_SC_socket,AF_UNIX,(s->type==SOCK_DGRAM?SOCK_SEQPACKET:SOCK_STREAM)|SOCK_CLOEXEC|SOCK_NONBLOCK,0,0,0,0);
     if(sock<0)return sock;
-    struct sockaddr_un address={.sun_family=AF_UNIX};size_t n=p_len(dns_path);p_copy(address.sun_path,dns_path,n);p_copy(address.sun_path+n,s->type==SOCK_DGRAM?".udp":".tcp",5);
-    long result=RAW(PROXY_SC_connect,sock,&address,offsetof(struct sockaddr_un,sun_path)+n+5,0,0,0);
+    size_t n=p_len(dns_path);char *slash=dns_path+n;while(slash>dns_path&&*slash!='/')slash--;
+    if(slash==dns_path){RAW(PROXY_SC_close,sock,0,0,0,0,0);return -EINVAL;}
+    *slash=0;long dir=RAW(PROXY_SC_openat,AT_FDCWD,dns_path,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);*slash='/';
+    if(dir<0){RAW(PROXY_SC_close,sock,0,0,0,0,0);return dir;}
+    struct sockaddr_un address={.sun_family=AF_UNIX};char path[sizeof(address.sun_path)];
+    size_t at=0;const char *prefix="/proc/self/fd/";while(*prefix)path[at++]=*prefix++;
+    char digits[24];int nd=0;unsigned long value=(unsigned long)dir;
+    do{digits[nd++]=(char)('0'+value%10);value/=10;}while(value);
+    while(nd)path[at++]=digits[--nd];
+    size_t tail=p_len(slash);if(at+tail+5>sizeof(path)){RAW(PROXY_SC_close,dir,0,0,0,0,0);RAW(PROXY_SC_close,sock,0,0,0,0,0);return -ENAMETOOLONG;}
+    p_copy(path+at,slash,tail);at+=tail;p_copy(path+at,s->type==SOCK_DGRAM?".udp":".tcp",5);
+    p_copy(address.sun_path,path,at+5);
+    long result=RAW(PROXY_SC_connect,sock,&address,offsetof(struct sockaddr_un,sun_path)+at+5,0,0,0);
+    RAW(PROXY_SC_close,dir,0,0,0,0,0);
     if(result<0){RAW(PROXY_SC_close,sock,0,0,0,0,0);return result;}
     /* Authenticate both directions; a stale/replaced socket cannot grant a
      * different UID access to queries. Android's UID owns the path. */

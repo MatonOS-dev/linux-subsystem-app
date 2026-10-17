@@ -10,8 +10,8 @@ import java.util.*;
 
 /** SCM_RIGHTS client for the proxy's resident sandbox snapshot. Never host exec. */
 final class SandboxCommandSpawner implements HostCommandBackend.Spawner {
-    private final File path;
-    SandboxCommandSpawner(File directory){path=new File(directory,"host-command");}
+    private final org.matonos.linux.ShortSocketPath shortPath;
+    SandboxCommandSpawner(File directory) throws Exception {shortPath=org.matonos.linux.ShortSocketPath.open(directory);}
     static byte[] request(byte[] cwd,List<byte[]> argv,Map<Integer,FileDescriptor> fds,Map<String,String> env,int flags) throws IOException {
         ByteArrayOutputStream body=new ByteArrayOutputStream();
         for(int target:fds.keySet())body.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(target).array());
@@ -27,7 +27,7 @@ final class SandboxCommandSpawner implements HostCommandBackend.Spawner {
     @Override public HostCommandBackend.Child spawn(byte[] cwd,List<byte[]> argv,Map<Integer,FileDescriptor> fds,Map<String,String> env,int flags) throws Exception {
         byte[] request=request(cwd,argv,fds,env,flags);LocalSocket socket=new LocalSocket();
         try {
-            socket.connect(new LocalSocketAddress(path.getAbsolutePath(),LocalSocketAddress.Namespace.FILESYSTEM));
+            socket.connect(new LocalSocketAddress(shortPath.path("host-command"),LocalSocketAddress.Namespace.FILESYSTEM));
             if(socket.getPeerCredentials().getUid()!=Process.myUid())throw new IOException("Wrong sandbox UID");
             socket.setSoTimeout(5000);
             socket.setFileDescriptorsForSend(fds.isEmpty()?null:fds.values().toArray(new FileDescriptor[0]));
@@ -38,10 +38,10 @@ final class SandboxCommandSpawner implements HostCommandBackend.Spawner {
     }
     @Override public void close(){
         try(LocalSocket socket=new LocalSocket()){
-            socket.connect(new LocalSocketAddress(path.getAbsolutePath(),LocalSocketAddress.Namespace.FILESYSTEM));
+            socket.connect(new LocalSocketAddress(shortPath.path("host-command"),LocalSocketAddress.Namespace.FILESYSTEM));
             if(socket.getPeerCredentials().getUid()!=Process.myUid())return;
             socket.getOutputStream().write(ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN).putInt(0x314d4348).putInt(0).putInt(0).putInt(0).putInt(0).putInt(4).array());
-        }catch(Exception ignored){}
+        }catch(Exception ignored){}finally{try{shortPath.close();}catch(IOException ignored){}}
     }
     private static final class Child implements HostCommandBackend.Child {
         final LocalSocket socket; final int pid;

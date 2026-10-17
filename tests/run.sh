@@ -2,6 +2,9 @@
 set -Eeuo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:?output directory outside the repository required}
+mkdir -p "$OUT"
+cc -O2 -Wall -Wextra -Werror "$ROOT/tests/short-socket-path.c" -o "$OUT/short-socket-path"
+"$OUT/short-socket-path"
 bash "$ROOT/tests/workdirs/run.sh" "$OUT/workdirs"
 bash "$ROOT/linux/stubgen/tests/run-tests.sh" "${MATON_AOSP_ROOT:-/}" "$OUT/stubgen"
 bash "$ROOT/tests/placeholder/run.sh" "$OUT/placeholder"

@@ -21,6 +21,30 @@ import java.util.UUID;
 @RunWith(AndroidJUnit4.class)
 public final class MatonLocalTransportInstrumentedTest {
     @Test
+    public void testFilesystemSocketThroughShortPathInLongDirectory() throws Exception {
+        File root = new File(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+                .getTargetContext().getCacheDir(), "long-socket-" + UUID.randomUUID());
+        File directory = root;
+        for (int i = 0; i < 5; i++) directory = new File(directory, "p".repeat(40));
+        org.junit.Assert.assertTrue(directory.mkdirs());
+        org.junit.Assert.assertTrue(directory.getAbsolutePath().length() > 200);
+        try (ShortSocketPath serverPath = ShortSocketPath.open(directory);
+             ShortSocketPath clientPath = ShortSocketPath.open(directory);
+             LocalSocket bound = new LocalSocket();
+             LocalSocket client = new LocalSocket()) {
+            bound.bind(new LocalSocketAddress(serverPath.path("endpoint"), LocalSocketAddress.Namespace.FILESYSTEM));
+            try (LocalServerSocket server = new LocalServerSocket(bound.getFileDescriptor())) {
+                client.connect(new LocalSocketAddress(clientPath.path("endpoint"), LocalSocketAddress.Namespace.FILESYSTEM));
+                try (LocalSocket accepted = server.accept()) {
+                    org.junit.Assert.assertEquals(Process.myUid(), accepted.getPeerCredentials().getUid());
+                }
+            }
+        } finally {
+            WorkDirs.remove(root);
+        }
+    }
+
+    @Test
     public void testAcceptedSocketReportsPeerUid() throws Exception {
         String name = "maton-portal-test-" + UUID.randomUUID();
         try (LocalServerSocket server = new LocalServerSocket(name);

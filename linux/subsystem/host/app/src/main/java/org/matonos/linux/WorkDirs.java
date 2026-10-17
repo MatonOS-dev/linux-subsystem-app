@@ -2,7 +2,6 @@ package org.matonos.linux;
 
 import android.content.Context;
 import java.io.*;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
@@ -21,14 +20,13 @@ public final class WorkDirs {
         Files.createDirectories(result.toPath());
         return result;
     }
-    /** Linux sockaddr_un.sun_path has 108 bytes including the trailing NUL.
-     * Android permits 223-byte package names: /data/data/<223>/no_backup/work
-     * plus /dns/forwarder.udp is 267 bytes, so not all legal names fit. Never
-     * truncate or silently omit DNS: check the actual canonical path in bytes. */
+    /** Check only the final component; the directory is reached through a held fd. */
     public static void checkDnsPath(File root) throws IOException {
-        int bytes = new File(root, "dns/forwarder.udp").getCanonicalPath()
-                .getBytes(StandardCharsets.UTF_8).length;
-        if (bytes >= 108) throw new IOException("DNS socket path exceeds AF_UNIX limit: " + bytes + " bytes (maximum 107)");
+        for (String name : new String[]{"forwarder.udp", "forwarder.tcp"}) {
+            int bytes = new File(new File(root, "dns"), name).getName()
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (bytes >= 108) throw new IOException("DNS socket name exceeds AF_UNIX limit: " + bytes + " bytes (maximum 107)");
+        }
     }
     public static synchronized AutoCloseable keep(File directory) throws IOException {
         Path path = directory.getCanonicalFile().toPath();
