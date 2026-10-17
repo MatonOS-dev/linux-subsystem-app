@@ -38,6 +38,7 @@ static VkResult status(struct mv_wsi_swapchain *c) {
 static void cleanup(struct mv_wsi_swapchain *c) {
     for(uint32_t i=0;i<c->count;i++){
         struct mv_wsi_image *b=&c->images[i];
+        if(b->wl_buffer && c->ops.destroy_buffer)c->ops.destroy_buffer(c->ops.context,b->wl_buffer);
         if(b->image || b->memory)c->ops.destroy(c->ops.context,b->image,b->memory);
         if(b->ahb)c->ops.release(c->ops.context,b->ahb,b->token);
     }
@@ -55,7 +56,9 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     if(!s->extent.width || !s->extent.height || s->extent.width>4096 || s->extent.height>4096 ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
     if(info->oldSwapchain)return VK_ERROR_FEATURE_NOT_PRESENT;
-    if(!ops || !ops->allocate || !ops->release || !ops->import || !ops->destroy || !ops->present)return VK_ERROR_INITIALIZATION_FAILED;
+    if(!ops || !ops->allocate || !ops->release || !ops->import || !ops->destroy ||
+       !ops->export_dmabuf || !ops->create_buffer || !ops->destroy_buffer || !ops->present)
+        return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wsi_swapchain *c=mv_alloc(sizeof(*c));if(!c)return VK_ERROR_OUT_OF_HOST_MEMORY;
     *c=(struct mv_wsi_swapchain){.surface=s,.ops=*ops,.generation=s->generation,.count=info->minImageCount};
     c->images=mv_alloc(c->count*sizeof(*c->images));if(!c->images){mv_free(c);return VK_ERROR_OUT_OF_HOST_MEMORY;}
@@ -64,6 +67,14 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
         struct mv_wsi_image *b=&c->images[i];
         r=ops->allocate(ops->context,s->token,s->extent,info->imageFormat,&b->ahb,&b->token);
         if(!r)r=ops->import(ops->context,b->ahb,s->extent,info->imageFormat,&b->image,&b->memory);
+        if(!r)r=ops->export_dmabuf(ops->context,b->ahb,b->image,&b->dmabuf_fd,
+                &b->drm_format,&b->stride,&b->offset,&b->modifier);
+        if(!r && (b->dmabuf_fd<0 || b->drm_format!=0x34324241u || !b->stride ||
+                  (b->modifier!=0 && b->modifier!=0x00ffffffffffffffull)))
+            r=VK_ERROR_FORMAT_NOT_SUPPORTED;
+        if(!r)r=ops->create_buffer(ops->context,s->extent,b->drm_format,b->dmabuf_fd,
+                b->stride,b->offset,b->modifier,&b->wl_buffer);
+        if(!r && !b->wl_buffer)r=VK_ERROR_INITIALIZATION_FAILED;
         if(r){cleanup(c);return r;}
     }
     *out=c;return VK_SUCCESS;

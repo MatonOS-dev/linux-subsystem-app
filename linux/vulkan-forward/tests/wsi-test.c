@@ -13,6 +13,7 @@
 struct message { uint64_t op,surface,buffer,serial; };
 static int endpoint;
 static unsigned allocations,imports,destroys,releases,fail_import,fail_bind;
+static unsigned exports,buffers,buffer_destroys;
 static unsigned image_creates,memory_allocs,image_destroys,memory_frees;
 static struct AHardwareBuffer *last_ahb;
 static VkImage last_image;
@@ -30,6 +31,18 @@ static void destroy(void *ctx,VkImage image,VkDeviceMemory memory) { (void)ctx;a
 static VkResult import(void *ctx,struct AHardwareBuffer *b,VkExtent2D e,VkFormat f,VkImage *image,VkDeviceMemory *memory) {
     (void)ctx;(void)e;(void)f;imports++;if(imports==fail_import)return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *image=(VkImage)(uintptr_t)b;*memory=(VkDeviceMemory)((uintptr_t)b+0x1000);return VK_SUCCESS;
+}
+static VkResult export_dmabuf(void *ctx,struct AHardwareBuffer *b,VkImage image,int *fd,
+        uint32_t *format,uint32_t *stride,uint32_t *offset,uint64_t *modifier) {
+    (void)ctx;assert(b && image);exports++;*fd=51;*format=0x34324241u;*stride=640*4;*offset=0;*modifier=0;return VK_SUCCESS;
+}
+static VkResult create_buffer(void *ctx,VkExtent2D extent,uint32_t format,int fd,
+        uint32_t stride,uint32_t offset,uint64_t modifier,void **buffer) {
+    (void)ctx;assert(extent.width==640 && extent.height==480 && format==0x34324241u);
+    assert(fd==51 && stride==2560 && !offset && !modifier);*buffer=(void *)(uintptr_t)(0x5000+ ++buffers);return VK_SUCCESS;
+}
+static void destroy_buffer(void *ctx,void *buffer) {
+    (void)ctx;assert((uintptr_t)buffer>=0x5001 && (uintptr_t)buffer<=0x5004);buffer_destroys++;
 }
 static VkResult present(void *ctx,uint64_t surface,uint64_t buffer,uint64_t serial) {
     (void)ctx;struct message r=exchange((struct message){1,surface,buffer,serial});assert(r.op==1);return VK_SUCCESS;
@@ -80,14 +93,16 @@ int main(void) {
     VkSurfaceCapabilitiesKHR caps;assert(!mv_wsi_capabilities(&s,&caps));assert(caps.currentExtent.width==640 && caps.minImageCount==2);
     uint32_t n=0;assert(!mv_wsi_formats(&n,0) && n==1);VkSurfaceFormatKHR f; n=0;assert(mv_wsi_formats(&n,&f)==VK_INCOMPLETE);n=1;assert(!mv_wsi_formats(&n,&f));
     VkPresentModeKHR mode;n=1;assert(!mv_wsi_modes(&n,&mode) && mode==VK_PRESENT_MODE_FIFO_KHR);
-    struct mv_wsi_ops ops={0,allocate,release,import,destroy,present};
+    struct mv_wsi_ops ops={.allocate=allocate,.release=release,.import=import,.destroy=destroy,
+        .export_dmabuf=export_dmabuf,.create_buffer=create_buffer,.destroy_buffer=destroy_buffer,
+        .present=present};
     VkSwapchainCreateInfoKHR ci={.sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,.minImageCount=2,
         .imageFormat=f.format,.imageColorSpace=f.colorSpace,.imageExtent={640,480},.imageArrayLayers=1,
         .imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,.presentMode=VK_PRESENT_MODE_FIFO_KHR};
     struct mv_wsi_swapchain *c=0;
     ci.presentMode=VK_PRESENT_MODE_MAILBOX_KHR;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_FORMAT_NOT_SUPPORTED && !c);ci.presentMode=mode;
-    fail_import=2;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_OUT_OF_DEVICE_MEMORY && !c);assert(releases==2 && destroys==1);
+    fail_import=2;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_OUT_OF_DEVICE_MEMORY && !c);assert(releases==2 && destroys==1 && buffer_destroys==1);
     fail_import=0;assert(!mv_wsi_create(&s,&ci,&ops,&c));VkImage images[2];n=1;assert(mv_wsi_images(c,&n,images)==VK_INCOMPLETE && n==1);n=2;assert(!mv_wsi_images(c,&n,images));assert(images[0]!=images[1]);
     uint32_t a,b;assert(!mv_wsi_acquire(c,&a));assert(!mv_wsi_present(c,a));assert(mv_wsi_present(c,a)==VK_ERROR_INITIALIZATION_FAILED);
     assert(!mv_wsi_acquire(c,&b) && a!=b);assert(!mv_wsi_present(c,b));assert(mv_wsi_acquire(c,&a)==VK_NOT_READY);
@@ -96,12 +111,13 @@ int main(void) {
     assert(!mv_wsi_acquire(c,&a) && a==0);assert(!mv_wsi_present(c,a));assert(mv_wsi_release(c,r.buffer,r.serial)==VK_ERROR_INITIALIZATION_FAILED);
     mv_wsi_surface_resize(&s,(VkExtent2D){800,600});assert(mv_wsi_acquire(c,&a)==VK_ERROR_OUT_OF_DATE_KHR);
     for(unsigned i=0;i<2;i++){r=exchange((struct message){2,42,c->images[i].token,0});assert(!mv_wsi_release(c,r.buffer,r.serial));}
-    s.alive=0;assert(mv_wsi_acquire(c,&a)==VK_ERROR_SURFACE_LOST_KHR);assert(!mv_wsi_destroy(c));assert(releases==4 && destroys==3);
+    s.alive=0;assert(mv_wsi_acquire(c,&a)==VK_ERROR_SURFACE_LOST_KHR);assert(!mv_wsi_destroy(c));assert(releases==4 && destroys==3 && buffer_destroys==3);
     struct mv_wsi_driver d={.properties=properties,.create=create_image,.allocate=allocate_memory,.bind=bind_memory,.destroy=destroy_image,.free=free_memory};
     last_ahb=(void *)(uintptr_t)123;VkImage image;VkDeviceMemory memory;
     assert(!mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory));destroy_image(0,image,0);free_memory(0,memory,0);
     fail_bind=1;assert(mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory)==VK_ERROR_DEVICE_LOST);assert(!image && !memory);
     assert(image_creates==2 && memory_allocs==2 && image_destroys==2 && memory_frees==2);
     struct message stop={.op=3};assert(send(endpoint,&stop,sizeof(stop),0)==sizeof(stop));close(endpoint);int result;assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
-    puts("PASS WSI: surface queries, enumeration, import rollback, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
+    assert(exports==3 && buffers==3);
+    puts("PASS WSI: AHB export metadata, dmabuf wl_buffer lifecycle, surface queries, enumeration, import rollback, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
 }

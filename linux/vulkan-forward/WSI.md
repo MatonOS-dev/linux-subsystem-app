@@ -1,7 +1,8 @@
 # Vulkan Wayland WSI
 
-Status on `vk-wayland-wsi`: **surface stage and a freestanding dmabuf client
-helper are implemented; Vulkan swapchain and presentation are not implemented**.
+Status on `vk-wayland-wsi`: **surface stage, the freestanding dmabuf client,
+and a host-tested per-image export/buffer lifecycle are implemented; production
+Vulkan swapchain entrypoints and presentation are not implemented**.
 The surface API remains prototype-only, and the helper is not wired into the
 Vulkan entry points.
 A device probe verified that this VM's resident llvmpipe can export an Android
@@ -43,8 +44,11 @@ window, or in-process ART path is part of this design.
 wrapper and registry APIs, binds `zwp_linux_dmabuf_v1` on a private event queue,
 and issues `create_params`, one `add` per plane, and `create_immed` for a
 `wl_buffer`. Its host mock checks the linear one-plane request values and
-release event. This is only the transport primitive: no Vulkan image currently
-calls it, and the app's surface is not yet attached or committed through it.
+release event. The host swapchain model now requires each allocated image to
+export a dma-buf plane and create a corresponding Wayland buffer. It validates
+the verified ABGR8888 linear one-plane layout and destroys created buffers
+during rollback and swapchain teardown. These hooks are not yet connected to
+the Android resident Vulkan driver or Wayland helper in production.
 
 The verified VM probe path is a Vulkan image with
 `VkExternalMemoryImageCreateInfo.handleTypes =
@@ -107,7 +111,9 @@ underlying damage and image-format/view paths are implemented.
 
 - Promote the prototype Wayland surface API into tested ICD behavior, and add
   the swapchain entrypoints without forwarding Linux callbacks or unsafe
-  pointer chains into bionic.
+  pointer chains into bionic. The ICD needs resident-driver callbacks for AHB
+  export and image layout metadata, plus Linux-thread callbacks to create and
+  destroy the matching `wl_buffer` objects.
 - Integrate the verified AHB + explicit linear DRM modifier path into ICD
   swapchain allocation, export the native-handle dma-buf fd, and validate its
   metadata through the compositor mapper before advertising support.
