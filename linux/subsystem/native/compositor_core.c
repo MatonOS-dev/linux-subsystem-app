@@ -58,6 +58,7 @@
 #include <wlr/util/region.h>
 #include "window_fit.h"
 #include "xwayland_lifetime.h"
+#include "short_socket_path.h"
 
 extern void* maton_wayland_test_client(void*);
 
@@ -109,7 +110,8 @@ static void trace_wsi(void* data,enum wl_protocol_logger_type direction,
 
 struct SocketSession {
   int id, fd;
-  char path[108];
+  int directory_fd;
+  char path[PATH_MAX];
   struct SocketSession* next;
 };
 struct XwaylandSession {
@@ -160,7 +162,7 @@ struct Server {
   pthread_cond_t xw_cond;
   pthread_t thread;
   atomic_bool started, stopping, demo_started;
-  int event_fd, ready, ok;
+  int event_fd, ready, ok, runtime_dir_fd, xwayland_dir_fd;
   char socket_name[108], runtime_dir[512];
   struct Command* first;
   struct Command* last;
@@ -195,7 +197,7 @@ struct Server {
   struct wlr_drm_format_set dmabuf_formats;
 } server = { .mutex=PTHREAD_MUTEX_INITIALIZER, .ready_cond=PTHREAD_COND_INITIALIZER,
              .xw_cond=PTHREAD_COND_INITIALIZER,
-             .event_fd=-1 };
+             .event_fd=-1, .runtime_dir_fd=-1, .xwayland_dir_fd=-1 };
 
 /* WindowActivity's built-in demo reserves ID 1. Real application windows
  * must never share it, including when the demo is opened after an app. */
@@ -1159,15 +1161,21 @@ done:
   wlr_drm_format_set_finish(&server.dmabuf_formats);
   maton_egl_uploader_finish(&server.uploader);if(server.backend)wlr_backend_destroy(server.backend);server.backend=NULL;
   if(server.display)wl_display_destroy(server.display);server.display=NULL;server.loop=NULL;
-  while(server.sessions){struct SocketSession* s=server.sessions;server.sessions=s->next;unlink(s->path);free(s);}
-  if(server.event_fd>=0)close(server.event_fd);server.event_fd=-1;return NULL;
+  while(server.sessions){struct SocketSession* s=server.sessions;server.sessions=s->next;unlink(s->path);if(s->directory_fd>=0)close(s->directory_fd);free(s);}
+  if(server.event_fd>=0)close(server.event_fd);server.event_fd=-1;
+  if(server.runtime_dir_fd>=0)close(server.runtime_dir_fd);server.runtime_dir_fd=-1;
+  if(server.xwayland_dir_fd>=0)close(server.xwayland_dir_fd);server.xwayland_dir_fd=-1;
+  return NULL;
 }
 bool maton_core_start(const char* socket_name,const char* runtime_dir){
   bool expected=false;if(!atomic_compare_exchange_strong(&server.started,&expected,true)){pthread_mutex_lock(&server.mutex);bool ok=server.ok;pthread_mutex_unlock(&server.mutex);return ok;}
   if(!socket_name||!runtime_dir||strlen(socket_name)>=sizeof(server.socket_name)||strlen(runtime_dir)>=sizeof(server.runtime_dir))goto fail;
-  strcpy(server.socket_name,socket_name);strcpy(server.runtime_dir,runtime_dir);
+  strcpy(server.socket_name,socket_name);
   if(mkdir(runtime_dir,0700)&&errno!=EEXIST)goto fail;
-  if(chmod(runtime_dir,0700)||setenv("XDG_RUNTIME_DIR",runtime_dir,1))goto fail;
+  if(chmod(runtime_dir,0700))goto fail;
+  server.runtime_dir_fd=maton_socket_dir_open(runtime_dir);
+  if(server.runtime_dir_fd<0)goto fail;
+  if(maton_socket_dir_path(server.runtime_dir,sizeof(server.runtime_dir),server.runtime_dir_fd)<0||setenv("XDG_RUNTIME_DIR",server.runtime_dir,1))goto fail;
   char path[640];snprintf(path,sizeof(path),"%s/%s",runtime_dir,socket_name);unlink(path);
   pthread_mutex_lock(&server.mutex);server.ready=server.ok=0;pthread_mutex_unlock(&server.mutex);
   atomic_store(&server.stopping,false);
@@ -1179,7 +1187,9 @@ bool maton_core_start(const char* socket_name,const char* runtime_dir){
     if(server.ready&&server.ok&&server.event_fd>=0){uint64_t one=1;(void)write(server.event_fd,&one,sizeof(one));}
   }
   pthread_mutex_unlock(&server.mutex);if(!ok){pthread_join(server.thread,NULL);pthread_mutex_lock(&server.mutex);server.started=false;server.ready=server.ok=0;pthread_mutex_unlock(&server.mutex);}return ok;
-fail:atomic_store(&server.started,false);return false;
+fail:
+  if(server.runtime_dir_fd>=0){close(server.runtime_dir_fd);server.runtime_dir_fd=-1;}
+  atomic_store(&server.started,false);return false;
 }
 void maton_core_stop(void){if(!atomic_load(&server.started))return;atomic_store(&server.stopping,true);if(server.event_fd>=0){uint64_t one=1;(void)write(server.event_fd,&one,sizeof(one));}pthread_join(server.thread,NULL);pthread_mutex_lock(&server.mutex);server.ready=server.ok=0;atomic_store(&server.started,false);pthread_mutex_unlock(&server.mutex);atomic_store(&server.stopping,false);atomic_store(&server.demo_started,false);}
 void maton_core_launch_demo(void){bool expected=false;if(atomic_compare_exchange_strong(&server.demo_started,&expected,true)){pthread_t t;if(!pthread_create(&t,NULL,maton_wayland_test_client,NULL))pthread_detach(t);}}
@@ -1197,6 +1207,9 @@ bool maton_core_xwayland_init(const char* socket_dir,const char* xwayland_path) 
   if(!socket_dir||!xwayland_path||strlen(socket_dir)>=sizeof(server.xwayland_dir)||
       strlen(xwayland_path)>=sizeof(server.xwayland_path))return false;
   strcpy(server.xwayland_dir,socket_dir);
+  server.xwayland_dir_fd=open(socket_dir,O_PATH|O_DIRECTORY);
+  if(server.xwayland_dir_fd<0)return false;
+  if(maton_socket_dir_path(server.xwayland_dir,sizeof(server.xwayland_dir),server.xwayland_dir_fd)<0)return false;
   strcpy(server.xwayland_path,xwayland_path);
   /* Only consulted from the Wayland thread; Xwayland sessions are created
    * after the server starts, so the environment is in place in time. */
@@ -1253,12 +1266,16 @@ bool maton_core_add_session(int id,const char* path) {
       !atomic_load(&server.started)||atomic_load(&server.stopping))return false;
   struct SocketSession* s=calloc(1,sizeof(*s));struct Command* c=calloc(1,sizeof(*c));
   if(!s||!c){free(s);free(c);return false;}
-  s->id=id;strcpy(s->path,path);
+  s->id=id;strcpy(s->path,path);s->directory_fd=-1;
   s->fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);
-  struct sockaddr_un address={.sun_family=AF_UNIX};strcpy(address.sun_path,path);
+  char directory[PATH_MAX];snprintf(directory,sizeof(directory),"%s",path);char *slash=strrchr(directory,'/');
+  if(!slash||!slash[1]){free(s);free(c);return false;}const char *name=slash+1;*slash=0;
+  s->directory_fd=maton_socket_dir_open(directory);
+  struct sockaddr_un address={.sun_family=AF_UNIX};
+  if(s->directory_fd<0||maton_socket_path(address.sun_path,sizeof(address.sun_path),s->directory_fd,name)<0){if(s->directory_fd>=0)close(s->directory_fd);free(s);free(c);return false;}
   unlink(path);
   if(s->fd<0||bind(s->fd,(struct sockaddr*)&address,sizeof(address))||chmod(path,0600)||listen(s->fd,128)){
-    if(s->fd>=0)close(s->fd);unlink(path);free(s);free(c);return false;
+    if(s->fd>=0)close(s->fd);close(s->directory_fd);unlink(path);free(s);free(c);return false;
   }
   /* Accept registration runs on the Wayland thread. Connections arriving
    * before it runs wait in this listening socket's backlog. */

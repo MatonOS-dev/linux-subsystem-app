@@ -29,6 +29,7 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
     private final LocalSocket bound=new LocalSocket();
     private final LocalServerSocket server;
     private final File path;
+    private final ShortSocketPath shortPath;
     private final HostCommandBackend commands;
     private final PortalBackend backend=new PortalBackend(this);
     private final byte[] secret=new byte[32];
@@ -42,7 +43,8 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
         this.context=context;this.changed=changed;this.launcher=launcher;
         new java.security.SecureRandom().nextBytes(secret);
         path=new File(directory,"portal-backend");if(path.exists()&&!path.delete())throw new IOException("Stale portal socket");
-        bound.bind(new LocalSocketAddress(path.getAbsolutePath(),LocalSocketAddress.Namespace.FILESYSTEM));Os.chmod(path.getAbsolutePath(),0600);
+        shortPath=ShortSocketPath.open(directory);
+        bound.bind(new LocalSocketAddress(shortPath.path("portal-backend"),LocalSocketAddress.Namespace.FILESYSTEM));Os.chmod(path.getAbsolutePath(),0600);
         server=new LocalServerSocket(bound.getFileDescriptor());new Thread(this::serve,"java-portals").start();
     }
     String secret() {StringBuilder s=new StringBuilder();for(byte b:secret)s.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return s.toString();}
@@ -74,6 +76,7 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
             try {if(client!=null)client.close();}catch(Exception ignored){}
             try {server.close();}catch(Exception ignored){}
             try {bound.close();}catch(Exception ignored){}
+            try {shortPath.close();}catch(Exception ignored){}
         }
     }
     private void run(LocalSocket socket) throws Exception {

@@ -22,7 +22,8 @@ long proxy_raw(long nr,long a,long b,long c,long d,long e,long f){
  if(nr==SYS_ppoll){struct timespec *t=(void *)c;assert(t->tv_sec==0 && t->tv_nsec<=10000000);return ++polls==2?1:0;}
  if(nr==SYS_rt_sigprocmask){if(c)*(unsigned long *)c=0;return 0;}
  if(nr==SYS_socket){if(a==AF_UNIX){kind=b&~(SOCK_CLOEXEC|SOCK_NONBLOCK);assert(kind==SOCK_SEQPACKET || kind==SOCK_STREAM);}return next_fd++;}
- if(nr==SYS_connect){const struct sockaddr_un *u=(void *)b;if(u->sun_family==AF_UNIX){assert(c==(long)(offsetof(struct sockaddr_un,sun_path)+strlen(u->sun_path)+1));assert(!strcmp(u->sun_path,kind==SOCK_STREAM?"/tmp/dns.tcp":"/tmp/dns.udp"));unix_connects++;}return 0;}
+ if(nr==SYS_openat){assert(a==AT_FDCWD && !strcmp((const char *)b,"/tmp"));return next_fd++;}
+ if(nr==SYS_connect){const struct sockaddr_un *u=(void *)b;if(u->sun_family==AF_UNIX){assert(c==(long)(offsetof(struct sockaddr_un,sun_path)+strlen(u->sun_path)+1));assert(strstr(u->sun_path,kind==SOCK_STREAM?"/dns.tcp":"/dns.udp"));assert(!strncmp(u->sun_path,"/proc/self/fd/",14));unix_connects++;}return 0;}
  if(nr==SYS_getuid)return 1234;
  if(nr==SYS_getsockopt){if(c==SO_PEERCRED){struct ucred *u=(void *)d;u->uid=bad_peer?999:1234;*(unsigned *)e=sizeof(*u);}else {memset((void *)d,0,8);*(unsigned *)e=8;}return 0;}
  if(nr==SYS_setsockopt){options++;return 0;}

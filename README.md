@@ -131,11 +131,27 @@ There are no age heuristics or storage caps.
 The Linux application's XDG cache and temporary/cache environment paths stay
 purgeable. Its loader-mapped resolver file and extracted pack-launch metadata
 live in `work/launch-maps`; deployment metadata lives in `work/flatpak-launch`.
-DNS paths are checked as UTF-8 bytes before binding: `sun_path` needs a NUL in
-108 bytes. Android's 223-byte package-name limit permits a 267-byte canonical
-`/data/data/<package>/no_backup/work/dns/forwarder.udp`, so legal long stub
-names cannot all fit. Oversized paths fail explicitly rather than silently
-omitting DNS; no path truncation or external socket directory is used.
+AF_UNIX endpoints use a short path through a held directory descriptor:
+`/proc/self/fd/<dirfd>/<name>`. The descriptor stays open for the listener or
+client lifetime, so the kernel resolves the endpoint inside the original
+private app directory while `sun_path` remains below its 108-byte limit.
+Only the final component is length-checked. No names are truncated or hashed,
+and no socket directories are created outside app-private storage.
+
+Socket site audit:
+
+| Site | Handling |
+| --- | --- |
+| Stub DNS listener (`DnsForwarder`) | Java opens the private DNS directory with `O_PATH`; both listeners bind via its short path. The original path is passed to the Linux payload. |
+| DNS payload connect (`compat-proxy/dns-unix.h`) | The proxy opens the resolved host parent directory and connects through its own short `/proc/self/fd` path. The fd remains open through connect. |
+| Wayland compositor socket (`compositor_core.c`) | The compositor holds the runtime directory fd and sets `XDG_RUNTIME_DIR` to its short proc-fd path before wlroots binds. |
+| Per-session compositor socket (`nativeAddSession`) | The compositor opens and retains the parent directory fd, then binds through the short path. |
+| Xwayland socket directory/client | The compositor uses a held directory fd for its Xwayland connection; the child inherits the directory fd while using the same short directory path. Linux payload clients still name the real private runtime path and the compat proxy resolves it on its own side. |
+| PipeWire and Pulse sockets | PipeWire holds the runtime directory fd and uses its short proc-fd directory for XDG, PipeWire and Pulse runtime paths. |
+| Session bus | The in-process native broker opens and retains the parent directory fd, then binds the bus through a short path. |
+| Java portal backend | The Java listener binds through a held directory handle; native broker independently opens and retains the parent fd for its connection. |
+| Host-command control socket | Java clients connect through a held directory handle. The compat-proxy listener opens its own parent fd and binds through its own short path. |
+| Other AF_UNIX uses | The remaining test-only LocalSockets use abstract names or socketpairs; no additional filesystem bind/connect path sites were found. |
 
 The staging-completion callback previously caught post-download exceptions
 without logging them. Terminal result processing marked an operation completed
@@ -147,10 +163,12 @@ This source audit identifies missing diagnostics and a callback-loss path; the
 historical VM incident's exact exception cannot be proven without its stack
 trace. No VM was touched for this change.
 
-`tests/run.sh` includes WorkDirs host tests for canonical private storage,
-107/108-byte socket boundaries, maximum package-name rejection, keeping live
-work, deleting stale siblings/released work, missing-tree errors, and symlink
-containment. Runtime integration checks on a fresh image: install Firefox under
+`tests/run.sh` includes a host bind/connect regression in an absolute
+directory over 200 bytes, plus WorkDirs checks for canonical private storage,
+legal long package paths, keeping live work, deleting stale siblings/released
+work, missing-tree errors, and symlink containment. An Android instrumentation
+test binds and connects through independently opened directory descriptors.
+Runtime integration checks on a fresh image: install Firefox under
 storage pressure and clear app caches while packs are built; confirm work stays
 under `no_backup/work` and the operation reports success or an explicit failure.
 Interrupt an install, restart the service or reboot, and confirm stale work is

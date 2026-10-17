@@ -21,6 +21,7 @@ final class DnsForwarder {
     private static final int RESOLVER_TIMEOUT_MS = 10000;
     private static String socketPath;
     private static AutoCloseable workLease;
+    private static org.matonos.linux.ShortSocketPath shortPath;
     private static FileDescriptor udp, tcp;
     private static int uid;
     private static android.net.LocalServerSocket udpServer, tcpServer;
@@ -61,6 +62,7 @@ final class DnsForwarder {
             if (!directory.isDirectory() && !directory.mkdirs())
                 throw new java.io.IOException("Cannot create DNS directory");
             Os.chmod(directory.getCanonicalPath(), 0700);
+            shortPath = org.matonos.linux.ShortSocketPath.open(directory);
             String path = new java.io.File(directory, "forwarder").getCanonicalPath();
             udpSocket = listener(path + ".udp", android.net.LocalSocket.SOCKET_SEQPACKET);
             tcpSocket = listener(path + ".tcp", android.net.LocalSocket.SOCKET_STREAM);
@@ -97,6 +99,8 @@ final class DnsForwarder {
         if (tcpServer != null) { try { tcpServer.close(); } catch (Exception ignored) { } tcpServer = null; }
         closeQuietly(udpSocket); closeQuietly(tcpSocket);
         udpSocket = tcpSocket = null; udp = tcp = null; socketPath = null;
+        if(shortPath!=null)try{shortPath.close();}catch(Exception ignored){}
+        shortPath=null;
         if(workLease!=null)try{workLease.close();}catch(Exception ignored){}
         workLease=null;
     }

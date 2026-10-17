@@ -14,10 +14,8 @@ public class WorkDirsTest {
             File root=WorkDirs.root(context);
             if(!root.equals(new File(base,"no_backup/work").getCanonicalFile()))throw new AssertionError("Wrong root");
             WorkDirs.checkDnsPath(new File("/data/data/org.matonos.linux/no_backup/work"));
-            rejects(()->WorkDirs.checkDnsPath(new File("/data/data/"+"p".repeat(223)+"/no_backup/work")));
-            String suffix="/dns/forwarder.udp";
-            WorkDirs.checkDnsPath(new File("/"+"p".repeat(107-1-suffix.length())));
-            rejects(()->WorkDirs.checkDnsPath(new File("/"+"p".repeat(108-1-suffix.length()))));
+            WorkDirs.checkDnsPath(new File("/data/data/"+"p".repeat(223)+"/no_backup/work"));
+            WorkDirs.checkDnsPath(new File("/"+"p".repeat(1000)));
             File live=new File(root,"flatpak-staging/live"), stale=new File(root,"flatpak-staging/stale");
             Files.createDirectories(live.toPath()); Files.createDirectories(stale.toPath());
             Files.writeString(new File(live,"payload").toPath(),"keep");

@@ -11,10 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/port-config.h>
 #include <spa/utils/names.h>
+#include "short_socket_path.h"
 
 #define TAG "MatonAudio"
 #define LOG(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
@@ -42,6 +45,7 @@ static struct {
     bool reported_playback;
     int16_t samples[FRAMES * 2];
 } audio;
+static int runtime_dir_fd = -1;
 
 /* Bounded single producer/single consumer queue: never block a PipeWire loop. */
 static aaudio_data_callback_result_t android_data(AAudioStream *stream, void *user,
@@ -245,12 +249,16 @@ JNIEXPORT jboolean JNICALL Java_org_matonos_linux_runtime_NativeAudio_nativeStar
     char *slash = strrchr(libraries,'/');
     if (!slash) goto done;
     *slash = 0; // Also works for APK!/lib/x86_64 paths (page-aligned JNI entries).
+    runtime_dir_fd = maton_socket_dir_open(run);
+    if (runtime_dir_fd < 0) goto done;
+    char short_runtime[64];
+    if (maton_socket_dir_path(short_runtime, sizeof(short_runtime), runtime_dir_fd) < 0) goto done;
     if (setenv("SPA_SUPPORT_LIB", "libspa-support", 1) ||
             setenv("PIPEWIRE_MODULE_DIR", libraries, 1) || setenv("SPA_PLUGIN_DIR",libraries,1) ||
-            setenv("PIPEWIRE_RUNTIME_DIR",run,1) || setenv("PULSE_RUNTIME_PATH",run,1) ||
-            setenv("XDG_RUNTIME_DIR",run,1)) goto done;
+            setenv("PIPEWIRE_RUNTIME_DIR",short_runtime,1) ||
+            setenv("XDG_RUNTIME_DIR",short_runtime,1)) goto done;
     // Pulse expects PULSE_RUNTIME_PATH itself to contain native.
-    char pulse[4096]; snprintf(pulse,sizeof(pulse),"%s/pulse",run);
+    char pulse[80]; snprintf(pulse,sizeof(pulse),"%s/pulse",short_runtime);
     if (setenv("PULSE_RUNTIME_PATH",pulse,1)) goto done;
     char logfile[4096]; snprintf(logfile,sizeof(logfile),"%s/pipewire.log",run);
     if (setenv("PIPEWIRE_LOG",logfile,1) || setenv("PIPEWIRE_LOG_COLOR","false",1)) goto done;
@@ -300,6 +308,7 @@ fail:
     LOG("Cannot start embedded PipeWire: %s",strerror(errno));
     stop();
 done:
+    if (!success && runtime_dir_fd >= 0) { close(runtime_dir_fd); runtime_dir_fd = -1; }
     (*env)->ReleaseStringUTFChars(env,config,conf);
     (*env)->ReleaseStringUTFChars(env,runtime,run);
     return success ? JNI_TRUE : JNI_FALSE;
@@ -308,4 +317,5 @@ JNIEXPORT void JNICALL Java_org_matonos_linux_runtime_NativeAudio_nativeStop(
         JNIEnv *env, jclass clazz) {
     (void)env; (void)clazz;
     stop();
+    if (runtime_dir_fd >= 0) { close(runtime_dir_fd); runtime_dir_fd = -1; }
 }
