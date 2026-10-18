@@ -22,7 +22,6 @@ struct adopt_thread {
     unsigned long mask;
     _Alignas(64) unsigned char fp[16384];
     uint64_t xfeatures;
-    uintptr_t vfork_resume;
     stack_t prior_signal_stack;
     void *signal_stack;
     _Atomic int exec_kicked; /* Resident exec: at most two wakeups, never a signal flood. */
