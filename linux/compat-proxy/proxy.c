@@ -870,6 +870,10 @@ int proxy_install(int android) {
     if(android) {emit("v3 installing android filter\n");r=arch_app_install();if(r) return (int)r;emit("v3 android filter installed\n");}
     unsigned libc_count=0;
     struct arch_ip_range *libc=resident_libc_ranges(&libc_count);
+    if(proxy_trace) {
+        proxy_log("resident-libc-ranges",libc_count,libc_count?(long)libc[0].begin:0);
+        for(unsigned i=0;i<libc_count;i++) proxy_log("resident-libc-range",(long)libc[i].begin,(long)libc[i].end);
+    }
     return arch_filter_install(libc,libc_count);
 }
 
