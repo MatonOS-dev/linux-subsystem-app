@@ -102,15 +102,16 @@ long pack_open(const char *path,int flags){
  struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;
  if(flags&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC) || (flags&O_TMPFILE)==O_TMPFILE)return -EROFS;
  mtp_object o;long e=pack_object(m,path,&o);if(e)return e;
- if(p_equal(o.kind,"symlink"))return -ELOOP;
+ int path_only=(flags&O_PATH)!=0;
+ if(p_equal(o.kind,"symlink")&&!(path_only&&(flags&O_NOFOLLOW)))return -ELOOP;
  int dir=p_equal(o.kind,"dir");if((flags&O_DIRECTORY)&&!dir)return -ENOTDIR;
- int source=m->directory;if(!dir){struct pack_file *p=m->files;while(p&&!p_equal(p->name,o.pack))p=p->next;if(!p)return -EIO;source=p->fd;}
+ int source=m->directory;if(!dir&&!path_only){struct pack_file *p=m->files;while(p&&!p_equal(p->name,o.pack))p=p->next;if(!p)return -EIO;source=p->fd;}
  /* dup shares an open file description. Reopen the pinned carrier first so
   * independent OPENs do not move each other's positions; aliases still dup. */
  char proc[64]="/proc/self/fd/";gpu_number(proc+14,source);
- long carrier=RAW(PROXY_SC_openat,AT_FDCWD,proc,O_RDONLY|O_CLOEXEC,0,0,0);if(carrier<0)return carrier;
+ long carrier=RAW(PROXY_SC_openat,AT_FDCWD,proc,(path_only?O_PATH:O_RDONLY)|O_CLOEXEC,0,0,0);if(carrier<0)return carrier;
  long fd=RAW(PROXY_SC_fcntl,carrier,(flags&O_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,0,0,0,0);RAW(PROXY_SC_close,carrier,0,0,0,0,0);if(fd<0)return fd;
- e=RAW(PROXY_SC_lseek,fd,dir?0:o.offset,SEEK_SET,0,0,0);
+ e=path_only?0:RAW(PROXY_SC_lseek,fd,dir?0:o.offset,SEEK_SET,0,0,0);
  struct pack_fd *f=e<0?NULL:vfs_alloc(sizeof(*f));if(!f){RAW(PROXY_SC_close,fd,0,0,0,0,0);return e<0?e:-ENOMEM;}
  uint64_t root_dev,root_ino;int root_identity;pack_root_identity(m,&o,path,&root_dev,&root_ino,&root_identity);
  *f=(struct pack_fd){.next=pack_fds,.fd=fd,.mount=m,.object=o,.root_dev=root_dev,.root_ino=root_ino,.root_identity=root_identity};pack_fds=f;return fd;
@@ -172,6 +173,7 @@ static long pack_call_unlocked(long nr,proxy_arg_t *a,int *handled){
  int fd=nr==PROXY_SC_mmap?a[4]:a[0];struct pack_fd *f=pack_find(fd);*handled=0;if(!f)return 0;
  uint64_t start=f->object.offset,len=f->object.length;int dir=p_equal(f->object.kind,"dir");long r;*handled=1;
  switch(nr){
+ case PROXY_SC_readlinkat:if(a[1]&&!*(char *)(uintptr_t)a[1]&&(f->object.mode&S_IFMT)==S_IFLNK){size_t n=p_len(f->object.target);if(n>(size_t)a[3])n=a[3];p_copy((void *)(uintptr_t)a[2],f->object.target,n);return n;}break;
  case PROXY_SC_getdents64:{
   if(!dir)return -ENOTDIR;
   long cursor=RAW(PROXY_SC_lseek,fd,0,SEEK_CUR,0,0,0);if(cursor<0)return cursor;
