@@ -26,7 +26,7 @@ run('cc','-static','-O2','-Wall','-Wextra','-Werror',base/'tests/pack-vfd.c','-o
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-int main(void){int parent=open("/",O_RDONLY|O_DIRECTORY);if(parent<0)return 1;struct stat st;if(fstatat(parent,"packed",&st,AT_SYMLINK_NOFOLLOW)||!S_ISDIR(st.st_mode)||lstat("/packed",&st)||!S_ISDIR(st.st_mode))return 2;struct statx sx;if(syscall(SYS_statx,parent,"packed",AT_SYMLINK_NOFOLLOW,STATX_TYPE,&sx)||!(sx.stx_mode&S_IFDIR))return 3;int path=openat(parent,"packed",O_PATH|O_NOFOLLOW|O_DIRECTORY);if(path<0||fstat(path,&st)||!S_ISDIR(st.st_mode))return 4;close(path);int dir=openat(parent,"packed",O_RDONLY|O_DIRECTORY);if(dir<0)return 5;char buf[4096];int found=0;for(;;){int n=syscall(SYS_getdents64,dir,buf,sizeof(buf));if(n<0)return 6;if(!n)break;for(int p=0;p<n;){struct linux_dirent64{unsigned long long ino;long long off;unsigned short reclen;unsigned char type;char name[];}*e=(void*)(buf+p);if(!strcmp(e->name,"data"))found=1;p+=e->reclen;}}if(!found)return 7;if(access("/packed",R_OK|X_OK))return 8;close(dir);close(parent);puts("packed root stat/lstat/statx/openat O_PATH/getdents/access PASS");return 0;}
+int main(int argc,char**argv){const char*parent_path=argc>1?argv[1]:"/";const char*name=argc>2?argv[2]:"packed";const char*entry=argc>3?argv[3]:"data";char pathbuf[128];snprintf(pathbuf,sizeof(pathbuf),"%s/%s",!strcmp(parent_path,"/")?"":parent_path,name);int parent=open(parent_path,O_PATH|O_DIRECTORY);if(parent<0)return 1;struct stat st;if(fstatat(parent,name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISDIR(st.st_mode)||lstat(pathbuf,&st)||!S_ISDIR(st.st_mode))return 2;struct statx sx;if(syscall(SYS_statx,parent,name,AT_SYMLINK_NOFOLLOW,STATX_TYPE,&sx)||!(sx.stx_mode&S_IFDIR))return 3;int path=openat(parent,name,O_PATH|O_NOFOLLOW|O_DIRECTORY);if(path<0||fstat(path,&st)||!S_ISDIR(st.st_mode))return 4;close(path);int dir=openat(parent,name,O_RDONLY|O_DIRECTORY);if(dir<0)return 5;char buf[4096];int found=0;for(;;){int n=syscall(SYS_getdents64,dir,buf,sizeof(buf));if(n<0)return 6;if(!n)break;for(int p=0;p<n;){struct linux_dirent64{unsigned long long ino;long long off;unsigned short reclen;unsigned char type;char name[];}*e=(void*)(buf+p);if(!strcmp(e->name,entry))found=1;p+=e->reclen;}}if(!found)return 7;if(access(pathbuf,R_OK|X_OK))return 8;close(dir);close(parent);puts("packed root stat/lstat/statx/openat O_PATH/getdents/access PASS");return 0;}
 ''')
 run('cc','-static','-O2','-Wall','-Wextra','-Werror','-include','sys/syscall.h',root/'root-dir.c','-o',src/'probe-root-dir')
 (root/'static.c').write_text('#include <stdio.h>\nint main(void){puts("static pack ELF PASS");return 0;}\n')
@@ -50,6 +50,8 @@ for row in rows:
 proxy=[base/'build/linux-layer-v3','--android-filter','--pack-mount','/packed',bundle/'objects.index',bundle]
 def guest(*args):return output(*proxy,*args)
 for binary in ('static','dynamic','script','probe','probe-root-dir'):print(guest('/packed/'+binary).decode(),end='\n',flush=True)
+empty=root/'empty-runtime-files';empty.mkdir()
+print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'--map',empty,'/newroot','/usr/probe-root-dir','/newroot','usr','data').decode(),end='',flush=True)
 for name in ('data','large','link','nested/leaf'):
  data=(src/name).read_bytes();assert guest('/bin/cat','/packed/'+name)==data
  digest=guest('/usr/bin/sha256sum','/packed/'+name).decode().split()[0];assert digest==hashlib.sha256(data).hexdigest()
@@ -75,7 +77,6 @@ scaffold=root/'scaffold';scaffold.mkdir()
 for name in ('usr','bin','lib','lib64','etc','sbin','proc','dev'):(scaffold/name).symlink_to('/'+name)
 assert b'static pack ELF PASS' in output(base/'build/linux-layer-v3','--android-filter','--root',scaffold,'--pack-mount','/packed',bundle/'objects.index',bundle,'/packed/static')
 print('pack mount overlays an existing --root scaffold PASS',flush=True)
-empty=root/'empty-runtime-files';empty.mkdir()
 other=root/'other-src';(other/'share').mkdir(parents=True);(other/'share'/'unrelated').write_text('another /usr pack\n')
 other_repo=root/'other-repo';run('ostree','init','--repo='+str(other_repo),'--mode=bare-user');run('ostree','commit','--repo='+str(other_repo),'-b','fixture','--tree=dir='+str(other),'-m','other /usr pack')
 other_rev=output('ostree','rev-parse','--repo='+str(other_repo),'fixture').decode().strip();other_bundle=root/'other-bundle'
