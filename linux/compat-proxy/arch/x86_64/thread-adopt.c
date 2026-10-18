@@ -33,6 +33,7 @@
 #include <sys/auxv.h>
 #include <sys/uio.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
+extern void proxy_log(const char *,long,long);
 extern char proxy_clone_entry[],adopt_vfork_entry[];
 extern void proxy_restore(void);
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
@@ -294,7 +295,18 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     greg_t *g=uc->uc_mcontext.gregs;
     long result=-ENOSYS;
     struct adopt_thread *self=adopt_current();
-    if(!self) { R(exit_group,190,0,0,0,0,0); __builtin_unreachable(); }
+    if(!self) {
+        uintptr_t fs=backend_fs_read();
+        long tid=R(gettid,0,0,0,0,0,0);
+        proxy_log("adopt-miss-tid",tid,(long)fs);
+        proxy_log("adopt-miss-map",(long)adopt_map_lookup(fs),(long)live());
+        if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+            ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+            return;
+        }
+        R(exit_group,190,0,0,0,0,0);
+        __builtin_unreachable();
+    }
     uintptr_t interrupted=backend_fs_read();
     self->app_fs=interrupted;
     if(n==SYS_munmap && (uintptr_t)g[REG_RDI]<=(uintptr_t)g[REG_RSP] &&
