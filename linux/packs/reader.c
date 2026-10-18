@@ -44,6 +44,36 @@ int mtp_index_open_buffer(const void *bytes,size_t length,mtp_index **out,mtp_al
         if(o->offset>UINT64_MAX-o->length)goto fail;
     }
     if(p!=end)goto fail;
+    /* A pack describes the contents of a tree, but OSTree indexes may omit
+     * the tree root itself. Keep the root in the same object table as every
+     * other path so stat/open/access/readdir all take their ordinary path. */
+    int has_root=0;
+    for(uint32_t i=0;i<n;i++)if(!strcmp(idx->items[i].path,"/")){has_root=1;break;}
+    if(!has_root) {
+        if(n==UINT32_MAX || (size_t)n+1>SIZE_MAX/sizeof(*idx->items))goto fail;
+        mtp_object *items=alloc(context,((size_t)n+1)*sizeof(*items));
+        if(!items)goto fail;
+        memcpy(items,idx->items,(size_t)n*sizeof(*items));
+        dealloc(context,idx->items);
+        idx->items=items;
+        mtp_object root={0};
+        root.path=idx->alloc(context,2);
+        root.checksum=idx->alloc(context,1);
+        root.pack=idx->alloc(context,1);
+        root.kind=idx->alloc(context,4);
+        root.target=idx->alloc(context,1);
+        if(!root.path||!root.checksum||!root.pack||!root.kind||!root.target) {
+            idx->dealloc(context,(void *)root.path);idx->dealloc(context,(void *)root.checksum);
+            idx->dealloc(context,(void *)root.pack);idx->dealloc(context,(void *)root.kind);
+            idx->dealloc(context,(void *)root.target);goto fail;
+        }
+        memcpy((char *)root.path,"/",2);((char *)root.checksum)[0]=0;
+        ((char *)root.pack)[0]=0;memcpy((char *)root.kind,"dir",4);
+        ((char *)root.target)[0]=0;
+        root.mode=0040000|0755;
+        idx->items[n]=root;
+        idx->count=(size_t)n+1;
+    }
     *out=idx;return 0;
 fail: mtp_index_close(idx);return -1;
 }
