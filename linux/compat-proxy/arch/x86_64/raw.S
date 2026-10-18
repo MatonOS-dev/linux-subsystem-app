@@ -25,10 +25,6 @@ proxy_restore:
 proxy_enter:
     mov %rdi,%r12
     mov %rsi,%r13
-    mov $158,%rax
-    mov $0x1002,%rdi
-    xor %rsi,%rsi
-    syscall
     mov %r13,%rsp
     xor %rdx,%rdx
     jmp *%r12
@@ -45,19 +41,6 @@ adopt_vfork_entry:
     mov %rcx,-136(%r11)
     syscall
     jmp adopt_vfork_finish
-/* Ordinary syscalls run after sigreturn, so blocking waits retain native
- * signal interruption/restart semantics. Reserve space below the red zone
- * only after the old signal frame has been consumed. RCX is syscall-clobbered. */
-.org 0xa0
-.global adopt_syscall_entry
-.type adopt_syscall_entry,@function
-adopt_syscall_entry:
-    lea -256(%rsp),%rsp
-    mov %rcx,120(%rsp)
-    syscall
-    mov 120(%rsp),%rcx
-    lea 256(%rsp),%rsp
-    jmp *%rcx
 /* Retry clone on the application's stack, retaining its continuation even
  * when the kernel switches to a posix_spawn child stack. */
 .org 0x100

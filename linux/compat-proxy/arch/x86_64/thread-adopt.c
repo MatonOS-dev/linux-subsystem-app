@@ -1,7 +1,7 @@
 /* Optional resident-libc backend for the isolated v3.5 adoption launcher.
  * This file deliberately links libc; never include it in the freestanding
- * proxy build. User dispatch is reversible syscall routing, not a security
- * boundary or production proxy policy. Reserve SIGSYS and use signal gates.
+ * proxy build. Seccomp routes the Linux ABI calls that need resident
+ * bookkeeping; reserve SIGSYS and use signal gates.
  * No instrumentation, stack protector, compiler TLS, or lazy PLT resolution
  * may execute with the wrong FS. All resident pthread symbols are bound at
  * startup by the build's -z now. */
@@ -17,14 +17,15 @@
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <sys/prctl.h>
+#include <linux/seccomp.h>
+#ifndef SYS_SECCOMP
+#define SYS_SECCOMP 1
+#endif
 #include <linux/futex.h>
 #include <sched.h>
 #include <linux/sched.h>
 #include <limits.h>
 #include <errno.h>
-#ifndef SYS_USER_DISPATCH
-#define SYS_USER_DISPATCH 2
-#endif
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -32,7 +33,8 @@
 #include <sys/auxv.h>
 #include <sys/uio.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
-extern char proxy_clone_entry[],adopt_vfork_entry[],adopt_syscall_entry[];
+extern void proxy_log(const char *,long,long);
+extern char proxy_clone_entry[],adopt_vfork_entry[];
 extern void proxy_restore(void);
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
 /* Chunk size controls allocation granularity, not registry capacity. Published
@@ -78,28 +80,11 @@ static uintptr_t backend_fs_read(void) {
 static void backend_fs_write(uintptr_t fs) {
     if(R(arch_prctl,0x1002,fs,0,0,0,0)) __builtin_trap();
 }
-/* The user-dispatch selector is only ever read on this thread: by the kernel
- * at syscall entry and by our own SIGSYS handler. Program order therefore
- * suffices; a compiler barrier keeps the store from sinking past the code it
- * must guard. No lock or CPU fence is needed. See
- * Documentation/admin-guide/syscall-user-dispatch.rst. */
-static void selector_set(struct adopt_thread *t,unsigned char value) {
-    atomic_store_explicit(&t->selector,value,memory_order_relaxed);
-    atomic_signal_fence(memory_order_seq_cst);
-}
 /* Zero-initialised table memory for the FS map, from the raw gateway; never
  * the resident or application malloc, which the SIGSYS handler cannot use. */
 static void *map_memory(size_t n) {
     long p=R(mmap,0,n,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     return (unsigned long)p>=(unsigned long)-4095?0:(void *)p;
-}
-static long dispatch_on(struct adopt_thread *t) {
-    selector_set(t,SYSCALL_DISPATCH_FILTER_ALLOW);
-    return R(prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_ON,
-             proxy_raw,(uintptr_t)proxy_clone_entry-(uintptr_t)proxy_raw,&t->selector,0);
-}
-static void dispatch_off(void) {
-    if(R(prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_OFF,0,0,0,0)) __builtin_trap();
 }
 static long signal_stack_install(struct adopt_thread *t) {
     if(R(sigaltstack,0,&t->prior_signal_stack,0,0,0,0)) return -1;
@@ -185,8 +170,7 @@ static size_t live(void) {
     return count;
 }
 static void fork_rebase(struct adopt_thread *self) {
-    /* Fork has one surviving thread and user dispatch is off in the child.
-     * Retain mappings (including the caller's parked resident stack) but
+    /* Retain mappings (including the caller's parked resident stack) but
      * discard every vanished identity/reservation. No parent memory changes. */
     for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
         for(unsigned i=0;i<CHUNK_THREADS;i++)
@@ -213,7 +197,6 @@ static long resident_fork(struct adopt_thread *self,unsigned long flags,
         fork_rebase(self);
         self->child_tid=(flags&CLONE_CHILD_CLEARTID)?ctid:0;
         if(flags&CLONE_CHILD_SETTID) *(int *)ctid=atomic_load(&self->tid);
-        if(dispatch_on(self)) R(exit_group,192,0,0,0,0,0);
     } else if(pid>0 && (flags&CLONE_PARENT_SETTID)) *(int *)ptid=pid;
     backend_fs_write(app_fs);
     return pid<0?-error:pid;
@@ -247,12 +230,9 @@ static void *start(void *arg) {
     while(atomic_load_explicit(&t->ready,memory_order_acquire)!=2) R(futex,&t->ready,0,1,0,0,0);
     unsigned long mask=t->mask;
     R(rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
-    if(dispatch_on(t)) R(exit_group,191,0,0,0,0,0);
     backend_fs_write(t->app_fs);
-    selector_set(t,SYSCALL_DISPATCH_FILTER_BLOCK);
     adopt_run(t);
     /* Exit gate restored our own stack and FS. Resident libc owns cleanup. */
-    dispatch_off();
     signal_stack_release(t);
     adopt_map_unbind(t->resident_fs,t);
     adopt_map_unbind(atomic_load(&t->app_fs),t);
@@ -290,7 +270,7 @@ static void robust_exit(struct adopt_thread *t) {
     owner_died(pending,copy.futex_offset,atomic_load(&t->tid));
 }
 static void trap(int sig,siginfo_t *info,void *opaque) {
-    if(info->si_code!=SYS_USER_DISPATCH) {
+    if(info->si_code!=SYS_SECCOMP) {
         if(prior_sigsys.handler>1) {
             if(prior_sigsys.flags&SA_SIGINFO)
                 ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
@@ -299,20 +279,37 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         }
         R(exit_group,191,0,0,0,0,0);
     }
-    ucontext_t *uc=opaque;
-    greg_t *g=uc->uc_mcontext.gregs;
-    long n=info->si_syscall, result=-ENOSYS;
-    struct adopt_thread *self=adopt_current();
-    if(!self) R(exit_group,190,0,0,0,0,0);
-    selector_set(self,SYSCALL_DISPATCH_FILTER_ALLOW);
-    uintptr_t interrupted=backend_fs_read();
-    self->app_fs=interrupted;
-    if(n==SYS_rt_sigreturn) {
-        g[REG_RIP]=(uintptr_t)proxy_restore;
-        selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
+    long n=info->si_syscall;
+    /* Only Linux process/thread ABI calls need adoption. Other trapped calls
+     * belong to the compatibility proxy's seccomp handler. */
+    if(n!=SYS_brk && n!=SYS_munmap && n!=SYS_rt_sigaction && n!=SYS_rt_sigprocmask &&
+       n!=SYS_fork && n!=SYS_vfork && n!=SYS_clone && n!=SYS_clone3 &&
+       n!=SYS_set_robust_list && n!=SYS_get_robust_list && n!=SYS_rseq &&
+       n!=SYS_set_tid_address && n!=SYS_exit && n!=SYS_exit_group && n!=SYS_arch_prctl) {
+        if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO))
+            ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+        else R(exit_group,191,0,0,0,0,0);
         return;
     }
-    else if(n==SYS_munmap && (uintptr_t)g[REG_RDI]<=(uintptr_t)g[REG_RSP] &&
+    ucontext_t *uc=opaque;
+    greg_t *g=uc->uc_mcontext.gregs;
+    long result=-ENOSYS;
+    struct adopt_thread *self=adopt_current();
+    if(!self) {
+        uintptr_t fs=backend_fs_read();
+        long tid=R(gettid,0,0,0,0,0,0);
+        proxy_log("adopt-miss-tid",tid,(long)fs);
+        proxy_log("adopt-miss-map",(long)adopt_map_lookup(fs),(long)live());
+        if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+            ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+            return;
+        }
+        R(exit_group,190,0,0,0,0,0);
+        __builtin_unreachable();
+    }
+    uintptr_t interrupted=backend_fs_read();
+    self->app_fs=interrupted;
+    if(n==SYS_munmap && (uintptr_t)g[REG_RDI]<=(uintptr_t)g[REG_RSP] &&
               (uintptr_t)g[REG_RSP]-(uintptr_t)g[REG_RDI]<(uintptr_t)g[REG_RSI]) {
         /* The kernel permits unmap-self followed by exit without any stack
          * access. SIGSYS runs on our own altstack; consume that live frame
@@ -452,26 +449,23 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             adopt_map_unbind(previous,self);
             adopt_map_bind(g[REG_RSI],self);
         }
-        g[REG_RCX]=g[REG_RIP];
-        g[REG_RIP]=(uintptr_t)adopt_syscall_entry;
-        g[REG_RAX]=n;
-        selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
-        return;
+        if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+            ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+            return;
+        }
+        result=-ENOSYS;
     }
 finish:
     g[REG_RAX]=result;
-    selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
     return;
 vfork_retry:
     /* The signal frame must be consumed before the kernel changes stacks.
-     * No child-side C, FS switch, registry access or resident atfork operation.
-     * Kernel user-dispatch reset on clone/exec makes this safe before exec. */
+     * No child-side C, FS switch, registry access or resident atfork operation. */
     atomic_fetch_add(&api.vforks,1);
     self->vfork_resume=g[REG_RIP];
     g[REG_RCX]=g[REG_RIP];
     g[REG_RIP]=(uintptr_t)adopt_vfork_entry;
     g[REG_RAX]=n;
-    selector_set(self,SYSCALL_DISPATCH_FILTER_BLOCK);
 }
 void adopt_publish_exit(struct adopt_thread *self) {
     if(self->child_tid) {
@@ -496,9 +490,7 @@ _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     t->xfeatures=0;
     app_brk=R(brk,0,0,0,0,0,0);
     backend_fs_write(0);
-    selector_set(t,SYSCALL_DISPATCH_FILTER_BLOCK);
     adopt_run(t);
-    dispatch_off();
     signal_stack_release(t);
     adopt_map_unbind(t->resident_fs,t);
     adopt_map_unbind(atomic_load(&t->app_fs),t);
@@ -511,7 +503,6 @@ int adopt_install(void) {
     _Static_assert(offsetof(struct adopt_thread,xfeatures)==16640,"xfeatures assembly layout");
     _Static_assert(ATOMIC_INT_LOCK_FREE==2,"signal-safe registry atomics");
     _Static_assert(ATOMIC_POINTER_LOCK_FREE==2,"signal-safe FS publication");
-    _Static_assert(ATOMIC_CHAR_LOCK_FREE==2,"signal-safe dispatch selector");
     struct adopt_thread *main=reserve();
     if(!main) return -1;
     adopt_map_configure(map_memory);
@@ -528,8 +519,8 @@ int adopt_install(void) {
     char value[32]; snprintf(value,sizeof(value),"%lx",(unsigned long)&api);
     setenv("MATON_THREAD_ADOPT",value,1);
 #endif
-    /* The restorer must be in the always-allowed raw gateway. Dispatch resets
-     * on fork/clone/exec, unlike an irreversible seccomp filter. */
+    /* The proxy owns seccomp routing; this handler adopts only Linux thread
+     * ABI operations that require resident bookkeeping. */
     if(R(rt_sigaction,SIGSYS,0,&prior_sigsys,8,0,0)) return -1;
     struct {
         void (*handler)(int,siginfo_t *,void *);
@@ -538,5 +529,5 @@ int adopt_install(void) {
         unsigned long mask;
     } action={trap,SA_SIGINFO|SA_ONSTACK|0x04000000UL,proxy_restore,0};
     if(R(rt_sigaction,SIGSYS,&action,0,8,0,0)) return -1;
-    return dispatch_on(main);
+    return 0;
 }

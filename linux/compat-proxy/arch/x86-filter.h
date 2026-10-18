@@ -25,7 +25,8 @@ static int arch_app_install(void) {
     struct sock_fprog prog={(unsigned short)n,bpf};
     return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
 }
-static int arch_filter_install(void) {
+struct arch_ip_range { uint64_t begin, end; };
+static int arch_filter_install(const struct arch_ip_range *libc_ranges, unsigned libc_count) {
     struct sock_filter bpf[2048];unsigned n=0;
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT);
@@ -56,6 +57,25 @@ static int arch_filter_install(void) {
     ADD(BPF_ALU|BPF_AND|BPF_K,0,0,0xff00);
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
+    /* Resident bionic must be able to implement the Android-owned pthread,
+     * allocator and signal machinery. This is a routing exemption only: the
+     * Linux payload is not a security boundary. Binder/ioctl was denied above.
+     * Bionic is native x86_64; never grant its ranges to the i386 branch. */
+    if(!peer) for(unsigned r=0;r<libc_count;r++) {
+        uint64_t lo=libc_ranges[r].begin, end=libc_ranges[r].end;
+        /* Each BPF check compares one high word: split at 4 GiB boundaries. */
+        for(uint64_t hi;lo<end;lo=hi) {
+            hi=((lo>>32)+1)<<32; if(!hi || hi>end) hi=end;
+            /* A piece ending on the boundary has no upper check in its low word. */
+            int capped=(uint32_t)hi!=0;
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,capped?4:3,(uint32_t)(lo>>32));
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+            ADD(BPF_JMP|BPF_JGE|BPF_K,0,capped?2:1,(uint32_t)lo);
+            if(capped) ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,(uint32_t)hi);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
+    }
     /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
     uint64_t ip=peer?gateway+0x42:arch_gateway_pc(0);
     /* Symbol immediately after the syscall: no instruction-size assumptions. */

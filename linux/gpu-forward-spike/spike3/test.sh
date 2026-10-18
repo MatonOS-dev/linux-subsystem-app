@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [[ -z ${SPIKE3_LOADER:-} ]]; then
+  echo 'SKIP resident adoption suite: provide a separate SPIKE3_LOADER and SPIKE3_LIBRARY_PATH; using host libc for both resident and payload invalidates the libc-IP exemption test'
+  exit 0
+fi
 bash build.sh
 cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector -fno-builtin -Wl,-z,now -DMATON_ADOPT launcher.c ../compat-proxy/arch/x86_64/thread-adopt.c ../compat-proxy/adopt-map.c ../compat-proxy/arch/x86_64/adopt.S build/{loader,proxy,vfs,links,net,sysvipc,state,raw}.o -pthread -ldl -o build/launcher-adopt
 cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector spike3/fork-test.c spike3/thunk.c -pthread -o build/adopt-fork-test

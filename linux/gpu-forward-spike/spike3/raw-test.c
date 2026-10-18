@@ -35,18 +35,17 @@ static uintptr_t marker(void) {uintptr_t p;__asm__ volatile("mov %%fs:8,%0":"=r"
 static long kernel_tid(void) {return raw(186,0,0,0,0,0,0);}
 static void gate(int sig) {
     struct adopt_thread *t=api->current();CHECK(t && sig==10);
-    unsigned char personality=atomic_exchange(&t->selector,0);
     uintptr_t prior=adopt_fs_read();adopt_fs_write(t->app_fs);
     CHECK(marker()==0xabcde);atomic_fetch_add(&signals,1);
-    adopt_fs_write(prior);atomic_store(&t->selector,personality);
+    adopt_fs_write(prior);
 }
 static uintptr_t identity(void) {
     struct adopt_thread *t=api->current();CHECK(t && atomic_load(&t->tid)==kernel_tid());
-    atomic_store(&t->selector,0);uintptr_t fs=adopt_fs_read();
+    uintptr_t fs=adopt_fs_read();
     adopt_fs_write(t->resident_fs);
     CHECK(raw(234,raw(39,0,0,0,0,0,0),kernel_tid(),10,0,0,0)==0);
     uintptr_t id;CHECK(api->identity(&id)==kernel_tid());
-    adopt_fs_write(fs);atomic_store(&t->selector,1);
+    adopt_fs_write(fs);
     CHECK(marker()==0xabcde);return id;
 }
 _Noreturn void raw_child(struct child *c) {
