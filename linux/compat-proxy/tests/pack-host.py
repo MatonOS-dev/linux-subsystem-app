@@ -122,12 +122,25 @@ message:.ascii "exec-packed PT_INTERP PASS\\n"
  app_repo=root/'exec-app-repo';run('ostree','init','--repo='+str(app_repo),'--mode=bare-user');run('ostree','commit','--repo='+str(app_repo),'-b','fixture','--tree=dir='+str(app_src),'-m','packed exec app')
  app_rev=output('ostree','rev-parse','--repo='+str(app_repo),'fixture').decode().strip();app_bundle=root/'exec-app-bundle'
  run(sys.executable,base.parent/'packs/pack.py','pack','--repo',app_repo,'--commit',app_rev,'--out',app_bundle)
- runtime_src=root/'exec-runtime-src';(runtime_src/'bin').mkdir(parents=True);(runtime_src/'usr/lib64').mkdir(parents=True)
+ runtime_src=root/'exec-runtime-deploy'/'files';(runtime_src/'bin').mkdir(parents=True);(runtime_src/'usr/lib64').mkdir(parents=True)
  (runtime_src/'lib64').symlink_to('usr/lib64')
  linker=runtime_src/'usr/lib64/ld-linux-x86-64.so.2';shutil.copyfile(os.path.realpath('/lib64/ld-linux-x86-64.so.2'),linker);linker.chmod(0o755)
  runtime_repo=root/'exec-runtime-repo';run('ostree','init','--repo='+str(runtime_repo),'--mode=bare-user');run('ostree','commit','--repo='+str(runtime_repo),'-b','fixture','--tree=dir='+str(runtime_src),'-m','packed exec runtime')
  runtime_rev=output('ostree','rev-parse','--repo='+str(runtime_repo),'fixture').decode().strip();runtime_bundle=root/'exec-runtime-bundle'
  run(sys.executable,base.parent/'packs/pack.py','pack','--repo',runtime_repo,'--commit',runtime_rev,'--out',runtime_bundle)
+ probe_src=root/'packed-path-probe.c'
+ probe_src.write_text(r'''#define _GNU_SOURCE
+#include <assert.h>
+#include <fcntl.h>
+#include <linux/stat.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(int argc,char **argv){if(argc!=3)return 2;int dir=open(argv[1],O_PATH|O_NOFOLLOW|O_CLOEXEC|O_DIRECTORY);struct statx sx;if(dir<0||statx(dir,"",AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW,STATX_TYPE|STATX_INO|STATX_MNT_ID,&sx)||!S_ISDIR(sx.stx_mode)||(sx.stx_mask&STATX_MNT_ID)==0||sx.stx_mnt_id==0)return 3;int link=open(argv[2],O_PATH|O_NOFOLLOW|O_CLOEXEC);char target[64];if(link<0||statx(link,"",AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW,STATX_TYPE|STATX_INO|STATX_MNT_ID,&sx)||!S_ISLNK(sx.stx_mode)||(sx.stx_mask&STATX_MNT_ID)==0||sx.stx_mnt_id==0)return 4;ssize_t n=readlinkat(link,"",target,sizeof(target));if(n!=9||memcmp(target,"usr/lib64",9))return 5;puts("PASS physical deployment files/ O_PATH directory/symlink chase through pack index");return 0;}
+''')
+ path_probe=root/'packed-path-probe';run('cc','-static','-O2','-Wall','-Wextra','-Werror',probe_src,'-o',path_probe)
+ print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',runtime_bundle/'objects.index',runtime_bundle,path_probe,runtime_src/'bin',runtime_src/'lib64').decode(),end='',flush=True)
  harness_src=root/'pivot-exec.c'
  harness_src.write_text(r'''#define _GNU_SOURCE
 #include <errno.h>

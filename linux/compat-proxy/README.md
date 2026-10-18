@@ -321,9 +321,15 @@ directories and files preserve their indexed type in `fstat`/empty-path
 `statx`; an indexed symlink opened with `O_PATH|O_NOFOLLOW` is represented as
 a symlink fd, and `readlinkat(fd, "")` returns its indexed target. Such a
 descriptor remains usable as a dirfd through the existing virtual fd-name
-tracking. The pivot/exec fixture includes Flatpak's bwrap usr-merge links
+tracking. Physical Flatpak deployment `files/<relative-path>` probes map back
+to the mounted pack index, since Flatpak checks these paths before bwrap
+applies its binds. Packed statx advertises a synthetic mount ID unique to
+each live pack mount, which libglnx requires alongside type and inode when
+validating a chased `O_PATH` fd. The pivot/exec fixture includes Flatpak's
+bwrap usr-merge links
 (`bin -> usr/bin`, `lib64 -> usr/lib64`) and exercises the packed directory
-and symlink chase before loading the packed ELF interpreter.
+and symlink chase through both the physical deployment path and pivot root
+before loading the packed ELF interpreter.
 
 Tests cover marker scoping, concurrent independent proxies, shared writes and
 metadata, same-inode rename, root relocation with relative indices, final-unlink
