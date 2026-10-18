@@ -30,8 +30,15 @@ static struct pack_fd *pack_find(int fd){for(struct pack_fd *f=pack_fds;f;f=f->n
 uint64_t pack_slice_start(int fd){struct pack_fd *f=pack_find(fd);return f?f->object.offset:0;}
 int pack_is_directory(int fd){struct pack_fd *f=pack_find(fd);return f?p_equal(f->object.kind,"dir"):-1;}
 int pack_private(int fd){for(struct pack_mount *m=pack_mounts;m;m=m->next){if(m->directory==fd||m->io_fd==fd)return 1;for(struct pack_file *p=m->files;p;p=p->next)if(p->fd==fd)return 1;}return 0;}
-static struct pack_mount *pack_lookup(const char *path){struct pack_mount *best=NULL;for(struct pack_mount *m=pack_mounts;m;m=m->next)if(prefix(path,m->target)&&(!best||p_len(m->target)>p_len(best->target)))best=m;return best;}
-static int pack_object(struct pack_mount *m,const char *path,mtp_object *o){const char *key=path+p_len(m->target);return mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;}
+/* Path operations arrive here after vfs_resolve_mount has translated their
+ * virtual name to the backing path. Pack indexes describe the virtual tree,
+ * so reverse that translation before looking up an object. This matters for
+ * runtimes whose files/ tree is empty on disk and exists only in an OSTree
+ * pack: a bind of files/ at /usr must still expose indexed /usr children. */
+static char *pack_virtual_path(const char *path,int *staging){char *virtual=vfs_reverse(path);if(staging)*staging=0;if(virtual&&prefix(virtual,"/newroot")){if(staging)*staging=1;const char *suffix=virtual+8;char *rootless=dupstr(*suffix?suffix:"/");vfs_free(virtual);return rootless;}return virtual;}
+int pack_mount_root(const char *path){char *virtual=pack_virtual_path(path,NULL);if(!virtual)return 0;int found=0;for(struct pack_mount *m=pack_mounts;m;m=m->next)if(p_equal(virtual,m->target)){found=1;break;}vfs_free(virtual);return found;}
+static struct pack_mount *pack_lookup(const char *path){int staging=0;char *virtual=pack_virtual_path(path,&staging);if(!virtual)return NULL;struct pack_mount *best=NULL,*fallback=NULL;size_t best_length=0,fallback_length=0;for(struct pack_mount *m=pack_mounts;m;m=m->next){size_t length=p_len(m->target);if(!prefix(virtual,m->target))continue;if(!fallback||length>fallback_length){fallback=m;fallback_length=length;}if(best&&length<best_length)continue;const char *key=virtual+length;mtp_object object;if(mtp_lookup(m->index,*key?key:"/",&object))continue;if(!best||length>best_length){best=m;best_length=length;}}int mount_root=fallback&&p_equal(virtual,fallback->target);vfs_free(virtual);return best?best:((staging||mount_root)?NULL:fallback);}
+static int pack_object(struct pack_mount *m,const char *path,mtp_object *o){char *virtual=pack_virtual_path(path,NULL);if(!virtual)return -ENOMEM;if(!prefix(virtual,m->target)){vfs_free(virtual);return -ENOENT;}const char *key=virtual+p_len(m->target);int r=mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;vfs_free(virtual);return r;}
 static uint64_t pack_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;for(const char *p=o->checksum;*p;p++)v=(v^(unsigned char)*p)*1099511628211ULL;return v;}
 static void pack_metadata(const mtp_object *o,void *wire,int extended){
  uint64_t size=p_equal(o->kind,"symlink")?p_len(o->target):o->length;
