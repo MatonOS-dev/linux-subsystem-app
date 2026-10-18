@@ -109,8 +109,10 @@ long pack_open(const char *path,int flags){
  int source=m->directory;if(!dir&&!path_only){struct pack_file *p=m->files;while(p&&!p_equal(p->name,o.pack))p=p->next;if(!p)return -EIO;source=p->fd;}
  /* dup shares an open file description. Reopen the pinned carrier first so
   * independent OPENs do not move each other's positions; aliases still dup. */
- char proc[64]="/proc/self/fd/";gpu_number(proc+14,source);
- long carrier=RAW(PROXY_SC_openat,AT_FDCWD,proc,(path_only?O_PATH:O_RDONLY)|O_CLOEXEC,0,0,0);if(carrier<0)return carrier;
+ long carrier;
+ if(source==m->directory){carrier=RAW(PROXY_SC_openat,source,".",(path_only?O_PATH:O_RDONLY)|O_DIRECTORY|O_CLOEXEC,0,0,0);}
+ else {char proc[64]="/proc/self/fd/";gpu_number(proc+14,source);carrier=RAW(PROXY_SC_openat,AT_FDCWD,proc,O_RDONLY|O_CLOEXEC,0,0,0);}
+ if(carrier<0)return carrier;
  long fd=RAW(PROXY_SC_fcntl,carrier,(flags&O_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,0,0,0,0);RAW(PROXY_SC_close,carrier,0,0,0,0,0);if(fd<0)return fd;
  e=path_only?0:RAW(PROXY_SC_lseek,fd,dir?0:o.offset,SEEK_SET,0,0,0);
  struct pack_fd *f=e<0?NULL:vfs_alloc(sizeof(*f));if(!f){RAW(PROXY_SC_close,fd,0,0,0,0,0);return e<0?e:-ENOMEM;}
