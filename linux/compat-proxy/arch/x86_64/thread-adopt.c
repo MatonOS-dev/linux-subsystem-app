@@ -34,7 +34,7 @@
 #include <sys/uio.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
 extern void proxy_log(const char *,long,long);
-extern char proxy_clone_entry[],adopt_vfork_entry[];
+extern char proxy_clone_entry[];
 extern void proxy_restore(void);
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
 /* Chunk size controls allocation granularity, not registry capacity. Published
@@ -146,13 +146,6 @@ static struct adopt_thread *reserve(void) {
         link=&c->next;
     }
 }
-/* Parent-only continuation recovery. The vfork child never reads records. */
-__attribute__((target("general-regs-only")))
-uintptr_t adopt_vfork_parent(void) {
-    struct adopt_thread *t=adopt_current();
-    if(!t) __builtin_trap();
-    return t->vfork_resume;
-}
 static long clone_reject(const char *line,long error) {
     size_t n=0;while(line[n]) n++;
     R(write,2,line,n,0,0,0);
@@ -187,33 +180,20 @@ static void fork_rebase(struct adopt_thread *self) {
     adopt_map_bind(atomic_load(&self->app_fs),self);
     atomic_store(&self->tid,R(gettid,0,0,0,0,0,0));
 }
-static long resident_fork(struct adopt_thread *self,unsigned long flags,
-                          uintptr_t ptid,uintptr_t ctid) {
-    uintptr_t app_fs=self->app_fs;
+/* Called by the proxy's successful process-clone continuation, while the
+ * child still has the application's FS base. Keep this hook x86_64-local:
+ * the freestanding proxy links a weak no-op when adoption is absent. */
+__attribute__((target("general-regs-only")))
+void adopt_fork_child(void) {
+    struct adopt_thread *self=adopt_current();
+    if(!self) __builtin_trap();
+    uintptr_t app_fs=backend_fs_read();
     backend_fs_write(self->resident_fs);
-    pid_t pid=fork();
-    int error=errno;
-    if(!pid) {
-        fork_rebase(self);
-        self->child_tid=(flags&CLONE_CHILD_CLEARTID)?ctid:0;
-        if(flags&CLONE_CHILD_SETTID) *(int *)ctid=atomic_load(&self->tid);
-    } else if(pid>0 && (flags&CLONE_PARENT_SETTID)) *(int *)ptid=pid;
+    fork_rebase(self);
+    /* Raw proxy clones bypass libc's pthread_atfork handlers. Discard a mutex
+     * possibly owned by a vanished thread before identity() can use it. */
+    identity_mutex=(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
     backend_fs_write(app_fs);
-    return pid<0?-error:pid;
-}
-static void resident_prepare(void) {
-    if(pthread_mutex_lock(&identity_mutex)) __builtin_trap();
-    atomic_fetch_add(&api.fork_prepares,1);
-}
-static void resident_parent(void) {
-    atomic_fetch_add(&api.fork_parents,1);
-    if(pthread_mutex_unlock(&identity_mutex)) __builtin_trap();
-}
-static void resident_child(void) {
-    if(gettid()!=R(gettid,0,0,0,0,0,0) || getpid()!=R(getpid,0,0,0,0,0,0))
-        __builtin_trap();
-    atomic_fetch_add(&api.fork_children,1);
-    if(pthread_mutex_unlock(&identity_mutex)) __builtin_trap();
 }
 extern void adopt_run(struct adopt_thread *);
 extern char adopt_exit_return[];
@@ -283,7 +263,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     /* Only Linux process/thread ABI calls need adoption. Other trapped calls
      * belong to the compatibility proxy's seccomp handler. */
     if(n!=SYS_brk && n!=SYS_munmap && n!=SYS_rt_sigaction && n!=SYS_rt_sigprocmask &&
-       n!=SYS_fork && n!=SYS_vfork && n!=SYS_clone && n!=SYS_clone3 &&
+       n!=SYS_clone && n!=SYS_clone3 &&
        n!=SYS_set_robust_list && n!=SYS_get_robust_list && n!=SYS_rseq &&
        n!=SYS_set_tid_address && n!=SYS_exit && n!=SYS_exit_group && n!=SYS_arch_prctl) {
         if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO))
@@ -340,12 +320,9 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             }
         }
     }
-    else if(n==SYS_fork) result=resident_fork(self,0,0,0);
-    else if(n==SYS_vfork) {g[REG_R11]=g[REG_RSP];goto vfork_retry;}
     else if(n==SYS_clone3 || n==SYS_clone) {
         unsigned long flags,stack,tls,ptid,ctid;
         unsigned long exit_signal;
-        unsigned long child_stack;
         if(n==SYS_clone3 && force_clone) {result=-ENOSYS;goto finish;}
         if(n==SYS_clone3) {
             atomic_fetch_add(&api.clone3s,1);
@@ -364,18 +341,12 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
             exit_signal=g[REG_RDI]&CSIGNAL;
             flags=g[REG_RDI]&~CSIGNAL;stack=g[REG_RSI];tls=g[REG_R8];ptid=g[REG_RDX];ctid=g[REG_R10];
         }
-        child_stack=stack?stack:(unsigned long)g[REG_RSP];
-        if((flags&(CLONE_VM|CLONE_VFORK))==(CLONE_VM|CLONE_VFORK) && !(flags&CLONE_THREAD)) {
-            unsigned long allowed=CLONE_VM|CLONE_VFORK|CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|CLONE_PARENT_SETTID;
-            if(n==SYS_clone3) allowed|=CLONE_CLEAR_SIGHAND;
-            if((flags&~allowed) || exit_signal!=SIGCHLD) {result=REJECT("vfork flags/signal",EINVAL);goto finish;}
-            g[REG_R11]=child_stack;
-            goto vfork_retry;
-        }
-        if(!(flags&(CLONE_VM|CLONE_THREAD)) && exit_signal==SIGCHLD &&
-           !(flags&~(unsigned long)(CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|CLONE_PARENT_SETTID))) {
-            result=resident_fork(self,flags,ptid,ctid);
-            goto finish;
+        if(!(flags&CLONE_THREAD)) {
+            if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+                ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+                return;
+            }
+            result=-ENOSYS;goto finish;
         }
         if(exit_signal) {result=REJECT("unsupported process clone/signal",EINVAL);goto finish;}
         unsigned long required=CLONE_VM|CLONE_SIGHAND|CLONE_THREAD|CLONE_SETTLS|CLONE_FS|CLONE_FILES|CLONE_SYSVSEM;
@@ -458,14 +429,6 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
 finish:
     g[REG_RAX]=result;
     return;
-vfork_retry:
-    /* The signal frame must be consumed before the kernel changes stacks.
-     * No child-side C, FS switch, registry access or resident atfork operation. */
-    atomic_fetch_add(&api.vforks,1);
-    self->vfork_resume=g[REG_RIP];
-    g[REG_RCX]=g[REG_RIP];
-    g[REG_RIP]=(uintptr_t)adopt_vfork_entry;
-    g[REG_RAX]=n;
 }
 void adopt_publish_exit(struct adopt_thread *self) {
     if(self->child_tid) {
@@ -513,7 +476,6 @@ int adopt_install(void) {
     if(signal_stack_install(main)) return -1;
     main->resident_fs=backend_fs_read(); atomic_store(&main->tid,R(gettid,0,0,0,0,0,0));
     adopt_map_bind(main->resident_fs,main);
-    if(pthread_atfork(resident_prepare,resident_parent,resident_child)) return -1;
     force_clone=getenv("MATON_ADOPT_FORCE_CLONE")!=NULL;
 #ifndef MATON_GPU_BRIDGE
     char value[32]; snprintf(value,sizeof(value),"%lx",(unsigned long)&api);
