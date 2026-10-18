@@ -20,7 +20,7 @@ static char *pack_chr(const char *s,int c){do{if(*s==c)return (char *)s;}while(*
 #undef strchr
 typedef uint64_t pack_lock_word __attribute__((aligned(8)));
 struct pack_file {struct pack_file *next;char *name;int fd;};
-struct pack_mount {struct pack_mount *next;int io_fd;pack_lock_word *io_owner;char *target;mtp_index *index;void *blob;size_t size;struct pack_file *files;int directory;};
+struct pack_mount {struct pack_mount *next;int io_fd;pack_lock_word *io_owner;char *target;mtp_index *index;void *blob;size_t size;struct pack_file *files;int directory;uint64_t root_dev,root_ino;int root_identity;};
 struct pack_fd {struct pack_fd *next;int fd;struct pack_mount *mount;mtp_object object;};
 static struct pack_mount *pack_mounts;
 static struct pack_fd *pack_fds;
@@ -40,12 +40,15 @@ int pack_mount_root(const char *path){char *virtual=pack_virtual_path(path,NULL)
 static struct pack_mount *pack_lookup(const char *path){int staging=0;char *virtual=pack_virtual_path(path,&staging);if(!virtual)return NULL;struct pack_mount *best=NULL,*fallback=NULL;size_t best_length=0,fallback_length=0;for(struct pack_mount *m=pack_mounts;m;m=m->next){size_t length=p_len(m->target);if(!prefix(virtual,m->target))continue;if(!fallback||length>fallback_length){fallback=m;fallback_length=length;}if(best&&length<best_length)continue;const char *key=virtual+length;mtp_object object;if(mtp_lookup(m->index,*key?key:"/",&object))continue;if(!best||length>best_length){best=m;best_length=length;}}int mount_root=fallback&&p_equal(virtual,fallback->target);vfs_free(virtual);return best?best:((staging||mount_root)?NULL:fallback);}
 static int pack_object(struct pack_mount *m,const char *path,mtp_object *o){char *virtual=pack_virtual_path(path,NULL);if(!virtual)return -ENOMEM;if(!prefix(virtual,m->target)){vfs_free(virtual);return -ENOENT;}const char *key=virtual+p_len(m->target);int r=mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;vfs_free(virtual);return r;}
 static uint64_t pack_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;for(const char *p=o->checksum;*p;p++)v=(v^(unsigned char)*p)*1099511628211ULL;return v;}
-static void pack_metadata(const mtp_object *o,void *wire,int extended){
+static uint64_t pack_object_ino(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_ino:pack_ino(o);}
+static uint64_t pack_object_dev(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_dev:0;}
+static void pack_metadata(const struct pack_mount *m,const mtp_object *o,void *wire,int extended){
  uint64_t size=p_equal(o->kind,"symlink")?p_len(o->target):o->length;
- if(extended)arch_statx_synthesize(wire,o->mode,o->uid,o->gid,size,pack_ino(o));
- else arch_stat_synthesize(wire,o->mode,o->uid,o->gid,size,pack_ino(o));
+ uint64_t dev=pack_object_dev(m,o),ino=pack_object_ino(m,o);
+ if(extended){arch_statx_synthesize(wire,o->mode,o->uid,o->gid,size,ino);arch_statx_device(wire,dev);}
+ else {arch_stat_synthesize(wire,o->mode,o->uid,o->gid,size,ino);((struct stat *)wire)->st_dev=dev;}
 }
-int pack_stat(const char *path,struct proxy_stat *st){struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;mtp_object o;int r=pack_object(m,path,&o);if(!r)*st=(struct proxy_stat){.st_mode=o.mode,.st_uid=o.uid,.st_size=o.length,.st_ino=pack_ino(&o),.st_nlink=1};return r;}
+int pack_stat(const char *path,struct proxy_stat *st){struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;mtp_object o;int r=pack_object(m,path,&o);if(!r)*st=(struct proxy_stat){.st_mode=o.mode,.st_uid=o.uid,.st_size=o.length,.st_dev=pack_object_dev(m,&o),.st_ino=pack_object_ino(m,&o),.st_nlink=1};return r;}
 char *pack_link(const char *path,long *error,int *handled){struct pack_mount *m=pack_lookup(path);*handled=m!=NULL;if(!m)return NULL;mtp_object o;*error=pack_object(m,path,&o);if(*error)return NULL;if(!p_equal(o.kind,"symlink")){*error=-EINVAL;return NULL;}return dupstr(o.target);}
 long pack_mount(const char *target,const char *index,const char *directory){
  if(!target||target[0]!='/')return -EINVAL;
@@ -76,7 +79,15 @@ long pack_mount(const char *target,const char *index,const char *directory){
   if(!p){char *path=join(directory,o->pack);if(!path){e=-ENOMEM;break;}fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY,0,0,0);vfs_free(path);if(fd<0){e=fd;break;}p=vfs_alloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);e=-ENOMEM;break;}*p=(struct pack_file){m->files,dupstr(o->pack),fd};m->files=p;if(!p->name){e=-ENOMEM;break;}}
   if(arch_stat_fd(p->fd,&st)||(uint64_t)st.st_size<o->offset+o->length)e=-EINVAL;
  }
- if(!e){e=proxy_mount(m->target,m->target);if(!e)table->flags=MS_RDONLY;}
+ if(!e){
+  /* The indexed root overlays the real files/ directory. Keep its kernel
+   * identity so a directory fd passed to bwrap --bind-fd matches the path
+   * after the emulated bind, just as it does for a real mount. */
+  char *backing=physical(m->target);struct proxy_stat root_stat;
+  if(backing&&!arch_stat_at(AT_FDCWD,backing,&root_stat,0)&&S_ISDIR(root_stat.st_mode)){m->root_dev=root_stat.st_dev;m->root_ino=root_stat.st_ino;m->root_identity=1;}
+  vfs_free(backing);
+  e=proxy_mount(m->target,m->target);if(!e)table->flags=MS_RDONLY;
+ }
  if(e){if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);while(m->files){struct pack_file *p=m->files;m->files=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p->name);vfs_free(p);}if(m->directory>=0)RAW(PROXY_SC_close,m->directory,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m);return e;}
  m->next=pack_mounts;pack_mounts=m;return 0;
 }
@@ -120,7 +131,7 @@ static long pack_access(const mtp_object *o,int mode,int effective){
 long pack_path(long nr,proxy_arg_t *a,const char *path,int *handled){
  struct pack_mount *m=pack_lookup(path);*handled=m!=NULL;if(!m)return 0;
  switch(nr){case PROXY_SC_openat:return pack_open(path,a[2]);
- case PROXY_SC_newfstatat:case PROXY_SC_statx:{mtp_object o;long e=pack_object(m,path,&o);if(!e)pack_metadata(&o,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx);return e;}
+ case PROXY_SC_newfstatat:case PROXY_SC_statx:{mtp_object o;long e=pack_object(m,path,&o);if(!e)pack_metadata(m,&o,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx);return e;}
  case PROXY_SC_readlinkat:{mtp_object o;long e=pack_object(m,path,&o);if(e)return e;if(!p_equal(o.kind,"symlink"))return -EINVAL;size_t n=p_len(o.target);if(n>(size_t)a[3])n=a[3];p_copy((void *)(uintptr_t)a[2],o.target,n);return n;}
  case PROXY_SC_faccessat:case PROXY_SC_faccessat2:{if(a[2]&~7)return -EINVAL;mtp_object o;long e=pack_object(m,path,&o);if(e)return e;return pack_access(&o,a[2],nr==PROXY_SC_faccessat2&&(a[3]&AT_EACCESS));}
  default:return -EROFS;
@@ -164,14 +175,14 @@ static long pack_call_unlocked(long nr,proxy_arg_t *a,int *handled){
    else {size_t c=cursor-2;if(!mtp_readdir(f->mount->index,f->object.path,&c,&name,&o))break;next=c+2;}
    size_t n=p_len(name);if(n>UINT16_MAX-27)return used?(long)used:-EOVERFLOW;size_t size=(19+n+1+7)&~(size_t)7;
    if(size>(uint64_t)a[2]-used){if(!used)return -EINVAL;break;}
-   unsigned char *b=(void *)((uintptr_t)a[1]+used);uint64_t ino=pack_ino(&o),cookie=next;uint16_t reclen=size;
+   unsigned char *b=(void *)((uintptr_t)a[1]+used);uint64_t ino=pack_object_ino(f->mount,&o),cookie=next;uint16_t reclen=size;
    p_copy(b,&ino,8);p_copy(b+8,&cookie,8);p_copy(b+16,&reclen,2);b[18]=(o.mode>>12)&15;p_copy(b+19,name,n+1);for(size_t k=20+n;k<size;k++)b[k]=0;
    used+=size;cursor=next;
   }
   r=RAW(PROXY_SC_lseek,fd,cursor,SEEK_SET,0,0,0);return r<0?r:(long)used;
  }
- case PROXY_SC_fstat:pack_metadata(&f->object,(void *)(uintptr_t)a[1],0);return 0;
- case PROXY_SC_newfstatat:case PROXY_SC_statx:if(a[1]&&!*(char *)(uintptr_t)a[1]&&(a[nr==PROXY_SC_statx?2:3]&AT_EMPTY_PATH)){pack_metadata(&f->object,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx);return 0;}break;
+ case PROXY_SC_fstat:pack_metadata(f->mount,&f->object,(void *)(uintptr_t)a[1],0);return 0;
+ case PROXY_SC_newfstatat:case PROXY_SC_statx:if(a[1]&&!*(char *)(uintptr_t)a[1]&&(a[nr==PROXY_SC_statx?2:3]&AT_EMPTY_PATH)){pack_metadata(f->mount,&f->object,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx);return 0;}break;
  case PROXY_SC_lseek:{int64_t off=a[1],base=0;if(a[2]==SEEK_CUR){r=RAW(PROXY_SC_lseek,fd,0,SEEK_CUR,0,0,0);if(r<0)return r;base=r-start;}else if(a[2]==SEEK_END)base=len;else if(a[2]!=SEEK_SET)return -EINVAL;if((off>0&&base>INT64_MAX-off)||(off<0&&base<INT64_MIN-off))return -EOVERFLOW;off+=base;if(off<0)return -EINVAL;if((uint64_t)off>INT64_MAX-start)return -EOVERFLOW;r=RAW(PROXY_SC_lseek,fd,start+off,SEEK_SET,0,0,0);return r<0?r:r-(int64_t)start;}
  case PROXY_SC_pread64:return pack_pread(fd,(void *)(uintptr_t)a[1],a[2],a[3]);
  case PROXY_SC_read:{if(dir)return -EISDIR;r=RAW(PROXY_SC_lseek,fd,0,SEEK_CUR,0,0,0);if(r<0)return r;uint64_t left=(uint64_t)r<start || (uint64_t)r-start>=len?0:len-((uint64_t)r-start);size_t n=a[2];if(n>left)n=left;return RAW(nr,fd,a[1],n,0,0,0);}
