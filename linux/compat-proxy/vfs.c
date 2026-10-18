@@ -368,7 +368,8 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
         vfs_free(root);root=next;vfs_free(oldroot_view);oldroot_view=next_oldroot;if(next_cwd){vfs_free(cwd);cwd=next_cwd;}return 0;}
     vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;
 }
-long vfs_proc_open(const char *path){size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
+static int proc_pack_fd(const char *path){if(!self_proc(path))return -1;for(size_t i=0;path[i];i++)if(path[i]=='/'&&path[i+1]=='f'&&path[i+2]=='d'&&path[i+3]=='/'){const char *p=path+i+4;if(!*p)return -1;unsigned fd=0;for(;*p;p++){if(*p<'0'||*p>'9'||fd>(2147483647U-(unsigned)(*p-'0'))/10)return -1;fd=fd*10+(unsigned)(*p-'0');}return (int)fd;}return -1;}
+long vfs_proc_open(const char *path,int flags){int source=proc_pack_fd(path);if(source>=0&&pack_tracked(source)){char *name=vfs_fd_name(source);if(name){long fd=pack_open(name,flags);if(fd!=-ENOSYS){if(fd>=0)vfs_fd_record((int)fd,AT_FDCWD,name);vfs_free(name);return fd;}vfs_free(name);}}size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
     long fd=RAW(PROXY_SC_memfd_create,"v3-mountinfo",1,0,0,0,0);if(fd<0)return fd;
     const char *header="1 0 0:1 / ",*middle=" rw,nosuid - tmpfs compat-proxy rw\n";
     /* Virtual view required by bwrap's post-bind verification. Stable IDs are

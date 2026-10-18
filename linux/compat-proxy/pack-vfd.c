@@ -28,6 +28,7 @@ static struct pack_fd *pack_fds;
 static void *pack_alloc(void *c,size_t n){(void)c;return vfs_alloc(n);}
 static void pack_free(void *c,void *p){(void)c;vfs_free(p);}
 static struct pack_fd *pack_find(int fd){for(struct pack_fd *f=pack_fds;f;f=f->next)if(f->fd==fd)return f;return NULL;}
+int pack_tracked(int fd){return pack_find(fd)!=NULL;}
 uint64_t pack_slice_start(int fd){struct pack_fd *f=pack_find(fd);return f?f->object.offset:0;}
 int pack_is_directory(int fd){struct pack_fd *f=pack_find(fd);return f?p_equal(f->object.kind,"dir"):-1;}
 int pack_private(int fd){for(struct pack_mount *m=pack_mounts;m;m=m->next){if(m->directory==fd||m->io_fd==fd)return 1;for(struct pack_file *p=m->files;p;p=p->next)if(p->fd==fd)return 1;}return 0;}
