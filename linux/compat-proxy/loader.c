@@ -74,14 +74,56 @@ failed:
 static uintptr_t inherited_aux[64];
 uintptr_t proxy_aux(unsigned type){return type<64?inherited_aux[type]:0;}
 static int bad(long n) { return (unsigned long)n >= (unsigned long)-4095; }
+/* Keep exec path diagnostics opt-in: these mirror the translation used by
+ * openat and make pack lookup failures visible in the Android trace. */
+static void loader_trace_path(const char *tag,const char *path){
+    if(!proxy_trace)return;
+    RAW(PROXY_SC_write,proxy_diagnostic_fd,tag,p_len(tag),0,0,0);
+    if(path)RAW(PROXY_SC_write,proxy_diagnostic_fd,path,p_len(path),0,0,0);
+    RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
+}
+static void loader_trace_resolve(const char *path,const char *stage){
+    if(!proxy_trace)return;
+    long error=0;void *mount=NULL;
+    char *resolved=vfs_resolve_mount(AT_FDCWD,path,1,&error,&mount);
+    proxy_log(stage,resolved?1:error,mount!=NULL);
+    if(resolved){
+        loader_trace_path("v3 exec resolved ",resolved);
+        char *packed=vfs_reverse_pack(resolved);
+        loader_trace_path("v3 exec pack-object ",packed?packed:"(no reverse pack path)");
+        if(packed)vfs_free(packed);
+        struct proxy_stat st;long ps=pack_stat(resolved,&st);
+        proxy_log("exec-pack-stat",ps,ps?0:st.st_mode);
+        long fd=pack_open(resolved,O_RDONLY|O_CLOEXEC);
+        proxy_log("exec-pack-open",fd,0);
+        if(fd>=0)pack_close((int)fd);
+        /* Match path_call's newfstatat path: resolve the original virtual
+         * name first, then pass that translated name to the pack handler. */
+        long stat_error=0;void *stat_mount=NULL;
+        char *stat_path=vfs_resolve_mount(AT_FDCWD,path,1,&stat_error,&stat_mount);
+        /* pack_path synthesizes the architecture's native stat wire layout. */
+        struct stat wire_stat;
+        proxy_arg_t a[6]={(long)AT_FDCWD,(long)stat_path,(long)&wire_stat,0,0,0};int handled=0;
+        long sr=stat_path?pack_path(PROXY_SC_newfstatat,a,stat_path,&handled):stat_error;
+        proxy_log("exec-openat-stat-compare",handled?sr:-ENOSYS,handled);
+        if(stat_path)vfs_free(stat_path);
+        vfs_free(resolved);
+    } else loader_trace_path("v3 exec unresolved ",path);
+}
 /* Preflight both ELF classes before MAP_FIXED or a kernel exec of our peer.
  * Use fixed-width ELF records, not the current backend's native typedefs. */
 static int validate_exec(const char *path,int interpreter,unsigned depth) {
     if(depth>1)return -ELIBBAD;
     long error=0;
     char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);
+    if(proxy_trace){
+        proxy_log("exec-validate-resolve",resolved?1:error,depth);
+        if(resolved){loader_trace_path("v3 exec validate resolved ",resolved);
+            char *object=vfs_reverse_pack(resolved);loader_trace_path("v3 exec validate pack-object ",object?object:"(none)");if(object)vfs_free(object);}
+    }
     if(!resolved)return error;
     long fd=loader_open(resolved);
+    if(proxy_trace)proxy_log("exec-validate-open",fd,depth);
     if(fd<0){vfs_free(resolved);return fd;}
     struct proxy_stat st;
     error=pack_stat(resolved,&st);
@@ -134,8 +176,13 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
         }
     }
     if(!loads || !has_phdr)goto done;
-    error=interp[0]?validate_exec(interp,bits,depth+1):0;
+    if(interp[0]){
+        loader_trace_path("v3 exec validate PT_INTERP ",interp);
+        error=validate_exec(interp,bits,depth+1);
+        if(proxy_trace)proxy_log("exec-validate-interp",error,depth);
+    }else error=0;
 done:
+    if(proxy_trace)proxy_log("exec-validate-result",error,depth);
     loader_close(fd);return error;
 }
 static int map_elf(const char *path,struct mapped *out) {
@@ -234,6 +281,7 @@ static uintptr_t stack_string(uintptr_t *cursor,const char *s) {
 }
 static int load_inner(const char *path,char *const *argv,char *const *env,struct image *image,unsigned depth) {
     if(depth>4) return -ELOOP;
+    loader_trace_resolve(path,"exec-resolve");
     char header[256];long path_error=0;
     char *resolved=vfs_resolve(AT_FDCWD,path,1,&path_error);
     if(!resolved)return (int)path_error;
@@ -266,8 +314,9 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         args[n]=NULL;
         int r=load_inner(interpreter,args,env,image,depth+1);vfs_free(args);return r;
     }
-    int checked=validate_exec(path,0,0);if(checked)return checked;
-    int handoff=state_exec(path,argv,env);if(handoff)return handoff;
+    int checked=validate_exec(path,0,0);if(checked){if(proxy_trace)proxy_log("exec-validate",checked,0);return checked;}
+    if(proxy_trace)proxy_log("exec-validate",0,0);
+    int handoff=state_exec(path,argv,env);if(handoff){if(proxy_trace)proxy_log("exec-state",handoff,0);return handoff;}
     size_t ac=0,ec=0,total=65536;
     while(argv && argv[ac]){size_t n=p_len(argv[ac]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)return -E2BIG;total+=n+1+sizeof(uintptr_t);ac++;}
     while(env && env[ec]){size_t n=p_len(env[ec]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)return -E2BIG;total+=n+1+sizeof(uintptr_t);ec++;}
@@ -282,13 +331,15 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     for(size_t i=0;i<ec;i++)ev[i]=stack_string(&cur,env[i]);
     char *translated=vfs_resolve(AT_FDCWD,path,1,&path_error);
     if(!translated){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);vfs_free(av);vfs_free(ev);return (int)path_error;}
-    struct mapped main={0},interp={0};int r=map_elf(translated,&main);vfs_free(translated);
+    struct mapped main={0},interp={0};int r=map_elf(translated,&main);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-main",r,main.size);
     if(r)goto failed;
     uintptr_t entry=main.entry;
     if(main.interp[0]){
+        loader_trace_path("v3 exec PT_INTERP ",main.interp);
+        loader_trace_resolve(main.interp,"interp-resolve");
         translated=vfs_resolve(AT_FDCWD,main.interp,1,&path_error);
         if(!translated){r=path_error;goto failed;}
-        r=map_elf(translated,&interp);vfs_free(translated);if(r)goto failed;entry=interp.entry;
+        r=map_elf(translated,&interp);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-interp",r,interp.size);if(r)goto failed;entry=interp.entry;
     }
     uintptr_t execfn=stack_string(&cur,path),platform=stack_string(&cur,ARCH_PLATFORM);
     cur-=16; uintptr_t random=cur;
@@ -309,6 +360,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     vfs_free(av);vfs_free(ev);commit_elf(&main);commit_elf(&interp);
     image->entry=entry;image->stack=sp;return 0;
 failed:
+    if(proxy_trace)proxy_log("exec-load-failed",r,0);
     if(main.size)RAW(PROXY_SC_munmap,main.area,main.size,0,0,0,0);
     if(interp.size)RAW(PROXY_SC_munmap,interp.area,interp.size,0,0,0,0);
     RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);

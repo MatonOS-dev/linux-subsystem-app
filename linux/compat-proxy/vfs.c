@@ -235,6 +235,23 @@ restart:;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);
+        /* Android's host root does not provide the FHS top-level aliases
+         * that Flatpak payloads inherit from a Linux root (lib64 -> usr/lib64,
+         * lib -> usr/lib, bin -> usr/bin, sbin -> usr/sbin). When a pivoted
+         * payload asks for one and the emulated root has no real entry, keep
+         * resolution inside the mounted runtime tree. Real symlinks/files
+         * still win because this only runs after an ENOENT lookup. */
+        if(!target && root && e==-ENOENT){
+            const char *alias=NULL;
+            if(p_equal(out,"/lib64"))alias="/usr/lib64";
+            else if(p_equal(out,"/lib"))alias="/usr/lib";
+            else if(p_equal(out,"/bin"))alias="/usr/bin";
+            else if(p_equal(out,"/sbin"))alias="/usr/sbin";
+            if(alias){char *head=dupstr(alias);char *replacement=head?join(head,input+i):NULL;
+                vfs_free(head);vfs_free(host);
+                if(!replacement){*error=-ENOMEM;goto fail;}
+                vfs_free(input);vfs_free(out);input=replacement;goto restart;}
+        }
         if(!target && input[i]=='/'){struct proxy_stat st;long status=pack_stat(host,&st);if(status==-ENOSYS)status=arch_stat_at(AT_FDCWD,host,&st,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
         /* proc fd magic links point to backing objects, outside a pivoted
          * pathname root. They are not ordinary payload absolute symlinks. */

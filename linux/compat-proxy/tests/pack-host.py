@@ -97,4 +97,52 @@ other_repo=root/'other-repo';run('ostree','init','--repo='+str(other_repo),'--mo
 other_rev=output('ostree','rev-parse','--repo='+str(other_repo),'fixture').decode().strip();other_bundle=root/'other-bundle'
 run(sys.executable,base.parent/'packs/pack.py','pack','--repo',other_repo,'--commit',other_rev,'--out',other_bundle)
 print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'--pack-mount','/usr',other_bundle/'objects.index',other_bundle,'--map',empty,'/newroot','/newroot/usr/probe-dir-mount').decode(),end='',flush=True)
+if sys.platform.startswith('linux'):
+ app_src=root/'exec-app';(app_src/'bin').mkdir(parents=True)
+ asm=root/'exec-packed.S'
+ asm.write_text(''' .global _start
+.text
+_start:
+ mov $1,%rax
+ mov $1,%rdi
+ lea message(%rip),%rsi
+ mov $27,%rdx
+ syscall
+ mov $60,%rax
+ xor %rdi,%rdi
+ syscall
+.section .rodata
+message:.ascii "exec-packed PT_INTERP PASS\\n"
+''')
+ obj=root/'exec-packed.o';exe=app_src/'bin/x'
+ run('as','--64',asm,'-o',obj)
+ run('ld','-pie','-dynamic-linker','/lib64/ld-linux-x86-64.so.2','-e','_start','-o',exe,obj)
+ assert b'/lib64/ld-linux-x86-64.so.2' in output('readelf','-l',exe)
+ script=app_src/'bin/script';script.write_text('#!/app/bin/x\n');script.chmod(0o755)
+ app_repo=root/'exec-app-repo';run('ostree','init','--repo='+str(app_repo),'--mode=bare-user');run('ostree','commit','--repo='+str(app_repo),'-b','fixture','--tree=dir='+str(app_src),'-m','packed exec app')
+ app_rev=output('ostree','rev-parse','--repo='+str(app_repo),'fixture').decode().strip();app_bundle=root/'exec-app-bundle'
+ run(sys.executable,base.parent/'packs/pack.py','pack','--repo',app_repo,'--commit',app_rev,'--out',app_bundle)
+ runtime_src=root/'exec-runtime-src';(runtime_src/'lib64').mkdir(parents=True)
+ linker=runtime_src/'lib64/ld-linux-x86-64.so.2';shutil.copyfile(os.path.realpath('/lib64/ld-linux-x86-64.so.2'),linker);linker.chmod(0o755)
+ runtime_repo=root/'exec-runtime-repo';run('ostree','init','--repo='+str(runtime_repo),'--mode=bare-user');run('ostree','commit','--repo='+str(runtime_repo),'-b','fixture','--tree=dir='+str(runtime_src),'-m','packed exec runtime')
+ runtime_rev=output('ostree','rev-parse','--repo='+str(runtime_repo),'fixture').decode().strip();runtime_bundle=root/'exec-runtime-bundle'
+ run(sys.executable,base.parent/'packs/pack.py','pack','--repo',runtime_repo,'--commit',runtime_rev,'--out',runtime_bundle)
+ harness_src=root/'pivot-exec.c'
+ harness_src.write_text(r'''#define _GNU_SOURCE
+#include <errno.h>
+#include <stdio.h>
+#include <sys/mount.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+extern char **environ;
+int main(int argc,char **argv){if(argc!=3)return 2;char app[4096],usr[4096],old[4096];snprintf(app,sizeof(app),"%s/app",argv[1]);snprintf(usr,sizeof(usr),"%s/usr",argv[1]);snprintf(old,sizeof(old),"%s/oldroot",argv[1]);if(mount("/app",app,NULL,MS_BIND,NULL)||mount("/usr",usr,NULL,MS_BIND,NULL)||syscall(SYS_pivot_root,argv[1],old)||chdir("/")){perror("packed pivot setup");return 3;}char *args[]={argv[2],NULL};execve(argv[2],args,environ);perror("packed pivot execve");return 4;}
+''')
+ harness=root/'pivot-exec';run('cc','-static','-O2','-Wall','-Wextra','-Werror',harness_src,'-o',harness)
+ pivot_root=root/'pivot-root'
+ for name in ('app','usr','oldroot'):(pivot_root/name).mkdir(parents=True,exist_ok=True)
+ exec_proxy=[base/'build/linux-layer-v3','--android-filter','--pack-mount','/app',app_bundle/'objects.index',app_bundle,'--pack-mount','/usr',runtime_bundle/'objects.index',runtime_bundle]
+ for target in ('/app/bin/x','/app/bin/script'):
+  result=output(*exec_proxy,harness,pivot_root,target).decode()
+  assert result=='exec-packed PT_INTERP PASS\n',(target,result)
+ print('PASS packed ELF and shebang after emulated bind/pivot; PT_INTERP loaded from /usr pack',flush=True)
 print('ALL pack host checks PASS',flush=True)
