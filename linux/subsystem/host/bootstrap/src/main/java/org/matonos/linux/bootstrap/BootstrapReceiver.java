@@ -15,11 +15,18 @@ public final class BootstrapReceiver extends BroadcastReceiver {
     private static final String ACTION_BOOTSTRAP = "org.matonos.linux.BOOTSTRAP";
     private static final String HOST_PACKAGE = "org.matonos.linux";
     private static PowerManager.WakeLock installWakeLock;
+    /** One install per process: boot and launcher triggers can arrive together. Cleared only on
+     *  failure; success replaces this process with the real host. */
+    private static boolean installing;
 
     @Override public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
         if (!Intent.ACTION_BOOT_COMPLETED.equals(action) && !ACTION_BOOTSTRAP.equals(action)) return;
         // Only the bootstrap APK has this receiver: if it runs, the real host is not installed.
+        synchronized (BootstrapReceiver.class) {
+            if (installing) { Log.i(TAG, "Subsystem install already in progress"); return; }
+            installing = true;
+        }
         final PendingResult pending = goAsync();
         Thread worker = new Thread(() -> install(context, pending), "MatonBootstrapInstall");
         worker.start();
@@ -58,6 +65,7 @@ public final class BootstrapReceiver extends BroadcastReceiver {
             }
         } catch (Exception e) {
             Log.e(TAG, "Embedded subsystem install failed", e);
+            synchronized (BootstrapReceiver.class) { installing = false; }
             if (sessionId >= 0) {
                 try { context.getPackageManager().getPackageInstaller().abandonSession(sessionId); }
                 catch (Exception ignored) { }
