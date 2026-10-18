@@ -182,6 +182,14 @@ static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-usern
 static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)return -EINVAL;unsigned limit=0;size_t k=0;for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10)return -ERANGE;limit=limit*10+digit;}if(!k || (k<len && !(k+1==len && buf[k]=='\n')))return -EINVAL;long r=RAW(PROXY_SC_write,fd,buf,len,0,0,0);if(r>=0)userns_remaining=limit;return r;}
 
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
+/* filename_create() checks the dentry before the mount's read-only flag.
+ * Do the same for virtual packed entries as well as host-backed paths. */
+static int path_exists(const char *path) {
+    struct proxy_stat st;
+    long r=pack_stat(path,&st);
+    if(r!=-ENOSYS)return r==0;
+    return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0;
+}
 static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
     int at=(one==1 && nr!=PROXY_SC_inotify_add_watch) || (nr==PROXY_SC_symlinkat && one==2);
@@ -200,19 +208,16 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path);if(synthetic!=-ENOSYS)return synthetic;}
     long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
     char *q=NULL;
+    int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
+    int exclusive_create=nr==PROXY_SC_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL);
+    if(nr==PROXY_SC_mkdirat && path_exists(p)){e=-EEXIST;goto done;}
+    if(exclusive_create && path_exists(p)){e=-EEXIST;goto done;}
+    if(create_readonly_open && path_exists(p))a[2]&=~O_CREAT;
     int packed=0;e=pack_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;pack_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
     int writing=nr==PROXY_SC_setxattr || nr==PROXY_SC_lsetxattr || nr==PROXY_SC_removexattr || nr==PROXY_SC_lremovexattr || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
     if((writing || nr==PROXY_SC_truncate) && (links_marker(p) || (q && links_marker(q)))){e=-EPERM;goto done;}
-    if(nr==PROXY_SC_mkdirat){struct proxy_stat existing;if(!arch_stat_at(AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW)){e=-EEXIST;goto done;}}
-    /* Exclusive creation checks existence before mount write permission.
-     * bwrap probes an already bound file this way before mounting a new
-     * source over it. Never open/truncate the read-only backing inode. */
-    if(nr==PROXY_SC_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL)){
-        struct proxy_stat existing;
-        if(!arch_stat_at(AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW)){e=-EEXIST;goto done;}
-    }
     if(writing){e=vfs_mount_readonly(pm);int create_pack_root=pack_mount_root(p)&&(nr==PROXY_SC_mkdirat||(nr==PROXY_SC_openat&&(a[2]&O_CREAT)));if(e && create_pack_root)e=0;if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
     /* bwrap reads the overflow IDs for its uid maps; Android's policy denies

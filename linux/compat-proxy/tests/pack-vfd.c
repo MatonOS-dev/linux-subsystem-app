@@ -48,6 +48,9 @@ int main(int argc,char **argv){
  int pipefd[2];assert(!pipe(pipefd));a=14;assert(splice(fd,&a,pipefd[1],NULL,100,0)==2&&a==16);assert(read(pipefd[0],buf,20)==2&&!memcmp(buf,"ef",2));close(pipefd[0]);close(pipefd[1]);close(out);
  ro(write(fd,"x",1),EBADF);ro(ftruncate(fd,0),EBADF);ro(fallocate(fd,0,0,1),EBADF);
  ro(open("/packed/new",O_CREAT|O_WRONLY,0600),EROFS);ro(unlink("/packed/data"),EROFS);ro(rename("/packed/data","/packed/new"),EROFS);ro(mkdir("/packed/new",0700),EROFS);ro(rmdir("/packed/nested"),EROFS);ro(symlink("data","/packed/new"),EROFS);ro(link("/packed/data","/packed/new"),EROFS);ro(chmod("/packed/data",0600),EROFS);ro(chown("/packed/data",0,0),EROFS);ro(utimensat(AT_FDCWD,"/packed/data",NULL,0),EROFS);ro(setxattr("/packed/data","user.test","x",1,0),EROFS);
+ ro(mkdirat(AT_FDCWD,"/packed/nested",0700),EEXIST);ro(mkdirat(AT_FDCWD,"/packed/missing",0700),EROFS);
+ ro(open("/packed/data",O_CREAT|O_EXCL|O_RDONLY,0600),EEXIST);
+ int existing_create=open("/packed/data",O_CREAT|O_RDONLY,0600);assert(existing_create>=0);assert(read(existing_create,buf,1)==1&&buf[0]=='0');close(existing_create);
  char temporary[]="/tmp/pack-vfd-XXXXXX";int t=mkstemp(temporary);assert(t>=0);close(t);ro(rename(temporary,"/packed/new"),EROFS);ro(link(temporary,"/packed/new"),EROFS);unlink(temporary);
  close(alias);close(fd);puts("pack fd/path/vector/transfer/mmap/fork/exec/EROFS PASS");return 0;
 }
