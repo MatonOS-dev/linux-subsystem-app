@@ -313,6 +313,24 @@ Pre-existing native hardlink aliases are not imported. Recounts require readable
 same-filesystem directories. Android SELinux integration still needs a fresh
 image test; no VM was touched for this change.
 
+Packed path descriptors (exec-packed, 2026-10-18): indexed `O_PATH` opens use
+a real kernel `O_PATH` descriptor and retain the indexed object alongside it.
+This matters to libglnx's checked `openat2` fallback: `statx` can see a packed
+entry, but the following `openat(O_PATH|O_NOFOLLOW)` must also succeed. Packed
+directories and files preserve their indexed type in `fstat`/empty-path
+`statx`; an indexed symlink opened with `O_PATH|O_NOFOLLOW` is represented as
+a symlink fd, and `readlinkat(fd, "")` returns its indexed target. Such a
+descriptor remains usable as a dirfd through the existing virtual fd-name
+tracking. Physical Flatpak deployment `files/<relative-path>` probes map back
+to the mounted pack index, since Flatpak checks these paths before bwrap
+applies its binds. Packed statx advertises a synthetic mount ID unique to
+each live pack mount, which libglnx requires alongside type and inode when
+validating a chased `O_PATH` fd. The pivot/exec fixture includes Flatpak's
+bwrap usr-merge links
+(`bin -> usr/bin`, `lib64 -> usr/lib64`) and exercises the packed directory
+and symlink chase through both the physical deployment path and pivot root
+before loading the packed ELF interpreter.
+
 Tests cover marker scoping, concurrent independent proxies, shared writes and
 metadata, same-inode rename, root relocation with relative indices, final-unlink
 GC, O_PATH/proc-fd reopen, real symlinks and raw regular-file/statx checks outside
