@@ -19,6 +19,16 @@ int main(void){struct stat st;if(stat("/usr/lib/x86_64-linux-gnu/GL",&st)||!S_IS
 ''')
 run('cc','-static','-O2','-Wall','-Wextra','-Werror','-include','string.h',root/'dir-mount.c','-o',src/'probe-dir-mount')
 run('cc','-static','-O2','-Wall','-Wextra','-Werror',base/'tests/pack-vfd.c','-o',src/'probe')
+(root/'root-dir.c').write_text(r'''#define _GNU_SOURCE
+#include <dirent.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(void){int parent=open("/",O_RDONLY|O_DIRECTORY);if(parent<0)return 1;struct stat st;if(fstatat(parent,"packed",&st,AT_SYMLINK_NOFOLLOW)||!S_ISDIR(st.st_mode)||lstat("/packed",&st)||!S_ISDIR(st.st_mode))return 2;struct statx sx;if(syscall(SYS_statx,parent,"packed",AT_SYMLINK_NOFOLLOW,STATX_TYPE,&sx)||!(sx.stx_mode&S_IFDIR))return 3;int path=openat(parent,"packed",O_PATH|O_NOFOLLOW|O_DIRECTORY);if(path<0||fstat(path,&st)||!S_ISDIR(st.st_mode))return 4;close(path);int dir=openat(parent,"packed",O_RDONLY|O_DIRECTORY);if(dir<0)return 5;char buf[4096];int found=0;for(;;){int n=syscall(SYS_getdents64,dir,buf,sizeof(buf));if(n<0)return 6;if(!n)break;for(int p=0;p<n;){struct linux_dirent64{unsigned long long ino;long long off;unsigned short reclen;unsigned char type;char name[];}*e=(void*)(buf+p);if(!strcmp(e->name,"data"))found=1;p+=e->reclen;}}if(!found)return 7;if(access("/packed",R_OK|X_OK))return 8;close(dir);close(parent);puts("packed root stat/lstat/statx/openat O_PATH/getdents/access PASS");return 0;}
+''')
+run('cc','-static','-O2','-Wall','-Wextra','-Werror','-include','sys/syscall.h',root/'root-dir.c','-o',src/'probe-root-dir')
 (root/'static.c').write_text('#include <stdio.h>\nint main(void){puts("static pack ELF PASS");return 0;}\n')
 run('cc','-static',root/'static.c','-o',src/'static')
 run('cc',base/'tests/loader-maps.c','-o',src/'maps')
@@ -39,7 +49,7 @@ for row in rows:
   with zipfile.ZipFile(bundle/row['pack']) as z:assert all(i.compress_type==zipfile.ZIP_STORED for i in z.infolist())
 proxy=[base/'build/linux-layer-v3','--android-filter','--pack-mount','/packed',bundle/'objects.index',bundle]
 def guest(*args):return output(*proxy,*args)
-for binary in ('static','dynamic','script','probe'):print(guest('/packed/'+binary).decode(),end='\n',flush=True)
+for binary in ('static','dynamic','script','probe','probe-root-dir'):print(guest('/packed/'+binary).decode(),end='\n',flush=True)
 for name in ('data','large','link','nested/leaf'):
  data=(src/name).read_bytes();assert guest('/bin/cat','/packed/'+name)==data
  digest=guest('/usr/bin/sha256sum','/packed/'+name).decode().split()[0];assert digest==hashlib.sha256(data).hexdigest()
