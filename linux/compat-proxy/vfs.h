@@ -17,6 +17,7 @@ char *vfs_proc_fd_name(const char *);
 void vfs_executable(const char *);
 char *vfs_exe(void);
 char *vfs_reverse(const char *);
+char *vfs_reverse_pack(const char *);
 long vfs_mount(const char *,const char *,const char *,unsigned long);
 long vfs_unmount(const char *);
 long vfs_root(const char *);

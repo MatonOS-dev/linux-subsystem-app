@@ -62,6 +62,11 @@ timeout 15 build/linux-layer-v3 --android-filter --root "$PWD/build/root-scaffol
 grep -qx root-pipe-ok build/root-scaffold.out
 printf 'PASS --root host-side symlink scaffold\n'
 
+cc -no-pie -O2 -Wall -Wextra -Werror tests/oldroot-source.c -o build/oldroot-source
+cp build/oldroot-source build/root-scaffold/oldroot-source
+timeout 15 build/linux-layer-v3 --android-filter --root "$PWD/build/root-scaffold" /oldroot-source >build/oldroot-source.out 2>build/oldroot-source.log
+cat build/oldroot-source.out
+
 mkdir -p build/process-parent build/process-child
 printf 'parent\n' >build/process-parent/fixture
 printf 'child\n' >build/process-child/fixture
