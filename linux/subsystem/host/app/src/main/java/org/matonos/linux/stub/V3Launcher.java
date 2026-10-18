@@ -95,7 +95,10 @@ final class V3Launcher {
         File deployment=PackageDeployment.prepare(context,ref);
         java.util.Collections.addAll(command,
                 LoaderCommand.tool(context, LoaderCommand.FLATPAK_CLI).getAbsolutePath(),
-                "--user", "run", "--socket=wayland", "--socket=x11", "--no-documents-portal",
+                // The session bus is the stub's private broker, which enforces the app's
+                // bus policy itself: bind it directly instead of starting xdg-dbus-proxy.
+                "--user", "run", "--socket=wayland", "--socket=x11", "--socket=session-bus",
+                "--no-documents-portal",
                 "--no-a11y-bus", "--nofilesystem=host", "--nofilesystem=/tmp",
                 "--nodevice=all", "--device=dri",
                 "--env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1", "--env=GTK_CSD=0",
