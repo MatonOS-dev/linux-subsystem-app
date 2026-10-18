@@ -95,6 +95,7 @@ struct mount {struct mount *next;char *source,*target;unsigned long flags;};
 static struct mount *table;
 static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
+static char *oldroot_view;
 static int stacked_oldroot;
 static int hide_resolver;
 void vfs_network_payload(int isolated){
@@ -129,6 +130,10 @@ char *vfs_reverse(const char *path){
     char *p=best?join(best->target,path+(n==1?0:n)):dupstr(path);
     if(p && root && prefix(p,root)){char *q=dupstr(p+p_len(root));vfs_free(p);p=q;if(p && !*p){vfs_free(p);p=dupstr("/");}}
     return p;
+}
+char *vfs_reverse_pack(const char *path){
+    char *p=vfs_reverse(path);if(!p || !oldroot_view || !prefix(p,oldroot_view))return p;
+    const char *relative=p+p_len(oldroot_view);char *q=dupstr(*relative?relative:"/");vfs_free(p);return q;
 }
 static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}int handled=0;long pe=0;char *packed=pack_link(path,&pe,&handled);if(handled){vfs_free(s);*error=pe;return packed;}long r=RAW(PROXY_SC_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
 struct fd_name {struct fd_name *next;int fd;char *path;};
@@ -329,20 +334,38 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
         vfs_free(virtual_source);
     }vfs_free(src);vfs_free(dest);return e;
 }
-long vfs_unmount(const char *target){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
+long vfs_unmount(const char *target){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;char *oldroot_global=oldroot_view?(root?join(root,oldroot_view):dupstr(oldroot_view)):NULL;if(oldroot_global && p_equal(dest,oldroot_global)){vfs_free(oldroot_view);oldroot_view=NULL;}vfs_free(oldroot_global);struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
 long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(PROXY_SC_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;}
 long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
     stacked_oldroot=p_equal(target,old);
-    if(!p_equal(target,old)){char *oldhost=physical(root?root:"/");char *dest=global_target(old,&e);if(!dest || !oldhost){vfs_free(next);vfs_free(dest);vfs_free(oldhost);return -ENOMEM;}struct mount *prior=table;
+    if(!p_equal(target,old)){char *oldhost=physical(root?root:"/");char *dest=global_target(old,&e);
+        if(!dest || !oldhost){vfs_free(next);vfs_free(dest);vfs_free(oldhost);return -ENOMEM;}struct mount *prior=table;
         e=proxy_mount(oldhost,dest);
         if(!e)for(struct mount *m=prior;m;m=m->next){
             const char *relative=m->target;
-            if(root){if(!prefix(relative,root))continue;relative+=p_len(root);}
+            /* Preserve the complete pre-pivot pathname view. Most entries
+             * are stored below root; bootstrap roots can also have explicit
+             * top-level aliases (for example /usr and /etc) outside it. */
+            if(root && prefix(relative,root))relative+=p_len(root);
             if(!*relative || p_equal(relative,"/"))continue;
             char *alias=join(dest,relative);if(!alias){e=-ENOMEM;break;}
             e=proxy_mount(m->source,alias);vfs_free(alias);if(e)break;table->flags=m->flags;
         }
-        vfs_free(dest);vfs_free(oldhost);if(e){vfs_free(next);return e;}}
+        char *next_cwd=NULL;
+        if(!e && cwd){char *oldcwd=root?join(root,cwd):dupstr(cwd);if(!oldcwd)e=-ENOMEM;
+            else if(prefix(oldcwd,next)){const char *relative=oldcwd+p_len(next);next_cwd=dupstr(*relative?relative:"/");}
+            else {char *oldglobal=join(dest,cwd);if(oldglobal && prefix(oldglobal,next)){const char *relative=oldglobal+p_len(next);next_cwd=dupstr(*relative?relative:"/");}vfs_free(oldglobal);}
+            vfs_free(oldcwd);if(!next_cwd && !e)e=-ENOMEM;}
+        if(!e){proxy_sigmask_t mask=fd_names_lock();for(struct fd_name *f=fd_names;f;f=f->next){
+            if(prefix(f->path,next))continue;
+            const char *relative=f->path;
+            if(root && prefix(relative,root)){relative+=p_len(root);if(!*relative)relative="/";}
+            char *rebased=join(dest,relative);if(!rebased){e=-ENOMEM;break;}
+            vfs_free(f->path);f->path=rebased;
+        }fd_names_unlock(mask);}
+        char *next_oldroot=NULL;if(!e && prefix(dest,next)){const char *relative=dest+p_len(next);next_oldroot=dupstr(*relative?relative:"/");if(!next_oldroot)e=-ENOMEM;}
+        vfs_free(dest);vfs_free(oldhost);if(e){vfs_free(next_cwd);vfs_free(next_oldroot);vfs_free(next);return e;}
+        vfs_free(root);root=next;vfs_free(oldroot_view);oldroot_view=next_oldroot;if(next_cwd){vfs_free(cwd);cwd=next_cwd;}return 0;}
     vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;
 }
 long vfs_proc_open(const char *path){size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
@@ -531,7 +554,7 @@ void vfs_gpu_init(void){
 #include "state.h"
 static void pack_state(struct state *);
 void vfs_state(struct state *s){
- pack_state(s);
+ pack_state(s);state_string(s,&oldroot_view);
  state_string(s,&root);state_string(s,&cwd);state_string(s,&executable);
  stacked_oldroot=state_word(s,stacked_oldroot);hide_resolver=state_word(s,hide_resolver);
  for(unsigned i=0;i<2;i++)state_string(s,&gpu_poll_sources[i]);
