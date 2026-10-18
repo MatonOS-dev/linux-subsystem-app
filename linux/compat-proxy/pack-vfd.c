@@ -21,7 +21,7 @@ static char *pack_chr(const char *s,int c){do{if(*s==c)return (char *)s;}while(*
 typedef uint64_t pack_lock_word __attribute__((aligned(8)));
 struct pack_file {struct pack_file *next;char *name;int fd;};
 struct pack_mount {struct pack_mount *next;int io_fd;pack_lock_word *io_owner;char *target;mtp_index *index;void *blob;size_t size;struct pack_file *files;int directory;uint64_t root_dev,root_ino;int root_identity;};
-struct pack_fd {struct pack_fd *next;int fd;struct pack_mount *mount;mtp_object object;};
+struct pack_fd {struct pack_fd *next;int fd;struct pack_mount *mount;mtp_object object;uint64_t root_dev,root_ino;int root_identity;};
 static struct pack_mount *pack_mounts;
 static struct pack_fd *pack_fds;
 static void *pack_alloc(void *c,size_t n){(void)c;return vfs_alloc(n);}
@@ -42,13 +42,17 @@ static int pack_object(struct pack_mount *m,const char *path,mtp_object *o){char
 static uint64_t pack_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;for(const char *p=o->checksum;*p;p++)v=(v^(unsigned char)*p)*1099511628211ULL;return v;}
 static uint64_t pack_object_ino(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_ino:pack_ino(o);}
 static uint64_t pack_object_dev(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_dev:0;}
-static void pack_metadata(const struct pack_mount *m,const mtp_object *o,void *wire,int extended){
+static void pack_root_identity(const struct pack_mount *m,const mtp_object *o,const char *path,uint64_t *dev,uint64_t *ino,int *valid){
+ *dev=pack_object_dev(m,o);*ino=pack_object_ino(m,o);*valid=m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/");
+ if(*valid&&path){struct proxy_stat actual;if(!arch_stat_at(AT_FDCWD,path,&actual,0)&&S_ISDIR(actual.st_mode)){*dev=actual.st_dev;*ino=actual.st_ino;}}
+}
+static void pack_metadata(const struct pack_mount *m,const mtp_object *o,void *wire,int extended,uint64_t root_dev,uint64_t root_ino,int root_identity){
  uint64_t size=p_equal(o->kind,"symlink")?p_len(o->target):o->length;
- uint64_t dev=pack_object_dev(m,o),ino=pack_object_ino(m,o);
+ uint64_t dev=root_identity?root_dev:pack_object_dev(m,o),ino=root_identity?root_ino:pack_object_ino(m,o);
  if(extended){arch_statx_synthesize(wire,o->mode,o->uid,o->gid,size,ino);arch_statx_device(wire,dev);}
  else {arch_stat_synthesize(wire,o->mode,o->uid,o->gid,size,ino);((struct stat *)wire)->st_dev=dev;}
 }
-int pack_stat(const char *path,struct proxy_stat *st){struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;mtp_object o;int r=pack_object(m,path,&o);if(!r)*st=(struct proxy_stat){.st_mode=o.mode,.st_uid=o.uid,.st_size=o.length,.st_dev=pack_object_dev(m,&o),.st_ino=pack_object_ino(m,&o),.st_nlink=1};return r;}
+int pack_stat(const char *path,struct proxy_stat *st){struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;mtp_object o;int r=pack_object(m,path,&o);if(!r){uint64_t dev,ino;int valid;pack_root_identity(m,&o,path,&dev,&ino,&valid);*st=(struct proxy_stat){.st_mode=o.mode,.st_uid=o.uid,.st_size=o.length,.st_dev=valid?dev:pack_object_dev(m,&o),.st_ino=valid?ino:pack_object_ino(m,&o),.st_nlink=1};}return r;}
 char *pack_link(const char *path,long *error,int *handled){struct pack_mount *m=pack_lookup(path);*handled=m!=NULL;if(!m)return NULL;mtp_object o;*error=pack_object(m,path,&o);if(*error)return NULL;if(!p_equal(o.kind,"symlink")){*error=-EINVAL;return NULL;}return dupstr(o.target);}
 long pack_mount(const char *target,const char *index,const char *directory){
  if(!target||target[0]!='/')return -EINVAL;
@@ -107,7 +111,8 @@ long pack_open(const char *path,int flags){
  long fd=RAW(PROXY_SC_fcntl,carrier,(flags&O_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,0,0,0,0);RAW(PROXY_SC_close,carrier,0,0,0,0,0);if(fd<0)return fd;
  e=RAW(PROXY_SC_lseek,fd,dir?0:o.offset,SEEK_SET,0,0,0);
  struct pack_fd *f=e<0?NULL:vfs_alloc(sizeof(*f));if(!f){RAW(PROXY_SC_close,fd,0,0,0,0,0);return e<0?e:-ENOMEM;}
- *f=(struct pack_fd){pack_fds,fd,m,o};pack_fds=f;return fd;
+ uint64_t root_dev,root_ino;int root_identity;pack_root_identity(m,&o,path,&root_dev,&root_ino,&root_identity);
+ *f=(struct pack_fd){.next=pack_fds,.fd=fd,.mount=m,.object=o,.root_dev=root_dev,.root_ino=root_ino,.root_identity=root_identity};pack_fds=f;return fd;
 }
 long pack_pread(int fd,void *buf,size_t size,int64_t off){struct pack_fd *f=pack_find(fd);if(!f)return RAW(PROXY_SC_pread64,fd,buf,size,off,0,0);if(off<0)return -EINVAL;if(!p_equal(f->object.kind,"file"))return -EISDIR;if((uint64_t)off>=f->object.length)return 0;uint64_t left=f->object.length-off;if(size>left)size=left;return RAW(PROXY_SC_pread64,fd,buf,size,f->object.offset+off,0,0);}
 static long pack_access(const mtp_object *o,int mode,int effective){
@@ -131,7 +136,7 @@ static long pack_access(const mtp_object *o,int mode,int effective){
 long pack_path(long nr,proxy_arg_t *a,const char *path,int *handled){
  struct pack_mount *m=pack_lookup(path);*handled=m!=NULL;if(!m)return 0;
  switch(nr){case PROXY_SC_openat:return pack_open(path,a[2]);
- case PROXY_SC_newfstatat:case PROXY_SC_statx:{mtp_object o;long e=pack_object(m,path,&o);if(!e)pack_metadata(m,&o,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx);return e;}
+ case PROXY_SC_newfstatat:case PROXY_SC_statx:{mtp_object o;long e=pack_object(m,path,&o);if(!e){uint64_t dev,ino;int valid;pack_root_identity(m,&o,path,&dev,&ino,&valid);pack_metadata(m,&o,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx,dev,ino,valid);}return e;}
  case PROXY_SC_readlinkat:{mtp_object o;long e=pack_object(m,path,&o);if(e)return e;if(!p_equal(o.kind,"symlink"))return -EINVAL;size_t n=p_len(o.target);if(n>(size_t)a[3])n=a[3];p_copy((void *)(uintptr_t)a[2],o.target,n);return n;}
  case PROXY_SC_faccessat:case PROXY_SC_faccessat2:{if(a[2]&~7)return -EINVAL;mtp_object o;long e=pack_object(m,path,&o);if(e)return e;return pack_access(&o,a[2],nr==PROXY_SC_faccessat2&&(a[3]&AT_EACCESS));}
  default:return -EROFS;
@@ -175,14 +180,14 @@ static long pack_call_unlocked(long nr,proxy_arg_t *a,int *handled){
    else {size_t c=cursor-2;if(!mtp_readdir(f->mount->index,f->object.path,&c,&name,&o))break;next=c+2;}
    size_t n=p_len(name);if(n>UINT16_MAX-27)return used?(long)used:-EOVERFLOW;size_t size=(19+n+1+7)&~(size_t)7;
    if(size>(uint64_t)a[2]-used){if(!used)return -EINVAL;break;}
-   unsigned char *b=(void *)((uintptr_t)a[1]+used);uint64_t ino=pack_object_ino(f->mount,&o),cookie=next;uint16_t reclen=size;
+   unsigned char *b=(void *)((uintptr_t)a[1]+used);uint64_t ino=cursor<2&&f->root_identity?f->root_ino:pack_object_ino(f->mount,&o),cookie=next;uint16_t reclen=size;
    p_copy(b,&ino,8);p_copy(b+8,&cookie,8);p_copy(b+16,&reclen,2);b[18]=(o.mode>>12)&15;p_copy(b+19,name,n+1);for(size_t k=20+n;k<size;k++)b[k]=0;
    used+=size;cursor=next;
   }
   r=RAW(PROXY_SC_lseek,fd,cursor,SEEK_SET,0,0,0);return r<0?r:(long)used;
  }
- case PROXY_SC_fstat:pack_metadata(f->mount,&f->object,(void *)(uintptr_t)a[1],0);return 0;
- case PROXY_SC_newfstatat:case PROXY_SC_statx:if(a[1]&&!*(char *)(uintptr_t)a[1]&&(a[nr==PROXY_SC_statx?2:3]&AT_EMPTY_PATH)){pack_metadata(f->mount,&f->object,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx);return 0;}break;
+ case PROXY_SC_fstat:pack_metadata(f->mount,&f->object,(void *)(uintptr_t)a[1],0,f->root_dev,f->root_ino,f->root_identity);return 0;
+ case PROXY_SC_newfstatat:case PROXY_SC_statx:if(a[1]&&!*(char *)(uintptr_t)a[1]&&(a[nr==PROXY_SC_statx?2:3]&AT_EMPTY_PATH)){pack_metadata(f->mount,&f->object,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx,f->root_dev,f->root_ino,f->root_identity);return 0;}break;
  case PROXY_SC_lseek:{int64_t off=a[1],base=0;if(a[2]==SEEK_CUR){r=RAW(PROXY_SC_lseek,fd,0,SEEK_CUR,0,0,0);if(r<0)return r;base=r-start;}else if(a[2]==SEEK_END)base=len;else if(a[2]!=SEEK_SET)return -EINVAL;if((off>0&&base>INT64_MAX-off)||(off<0&&base<INT64_MIN-off))return -EOVERFLOW;off+=base;if(off<0)return -EINVAL;if((uint64_t)off>INT64_MAX-start)return -EOVERFLOW;r=RAW(PROXY_SC_lseek,fd,start+off,SEEK_SET,0,0,0);return r<0?r:r-(int64_t)start;}
  case PROXY_SC_pread64:return pack_pread(fd,(void *)(uintptr_t)a[1],a[2],a[3]);
  case PROXY_SC_read:{if(dir)return -EISDIR;r=RAW(PROXY_SC_lseek,fd,0,SEEK_CUR,0,0,0);if(r<0)return r;uint64_t left=(uint64_t)r<start || (uint64_t)r-start>=len?0:len-((uint64_t)r-start);size_t n=a[2];if(n>left)n=left;return RAW(nr,fd,a[1],n,0,0,0);}
@@ -255,6 +260,6 @@ static void pack_state(struct state *s){
   tail=&m->next;
  }
  n=0;for(struct pack_fd *f=pack_fds;f;f=f->next)if(state_live(f->fd))n++;n=state_word(s,n);
- if(s->reading){for(uint64_t i=0;i<n&&!s->error;i++){struct pack_fd *f=vfs_alloc(sizeof(*f));if(!f){s->error=-ENOMEM;return;}*f=(struct pack_fd){0};f->fd=state_word(s,0);uint64_t id=state_word(s,0);struct pack_mount *m=pack_mounts;while(id&&m){m=m->next;id--;}char *path=NULL;state_string(s,&path);if(!m||!path||mtp_lookup(m->index,path,&f->object)||!state_live(f->fd)){s->error=-EINVAL;vfs_free(path);vfs_free(f);return;}vfs_free(path);f->mount=m;f->next=pack_fds;pack_fds=f;}}
- else for(struct pack_fd *f=pack_fds;f;f=f->next)if(state_live(f->fd)){state_word(s,f->fd);uint64_t id=0;for(struct pack_mount *m=pack_mounts;m&&m!=f->mount;m=m->next)id++;state_word(s,id);char *path=(char *)f->object.path;state_string(s,&path);}
+ if(s->reading){for(uint64_t i=0;i<n&&!s->error;i++){struct pack_fd *f=vfs_alloc(sizeof(*f));if(!f){s->error=-ENOMEM;return;}*f=(struct pack_fd){0};f->fd=state_word(s,0);uint64_t id=state_word(s,0);struct pack_mount *m=pack_mounts;while(id&&m){m=m->next;id--;}f->root_dev=state_word(s,0);f->root_ino=state_word(s,0);f->root_identity=(int)state_word(s,0);char *path=NULL;state_string(s,&path);if(!m||!path||mtp_lookup(m->index,path,&f->object)||!state_live(f->fd)){s->error=-EINVAL;vfs_free(path);vfs_free(f);return;}vfs_free(path);f->mount=m;f->next=pack_fds;pack_fds=f;}}
+ else for(struct pack_fd *f=pack_fds;f;f=f->next)if(state_live(f->fd)){state_word(s,f->fd);uint64_t id=0;for(struct pack_mount *m=pack_mounts;m&&m!=f->mount;m=m->next)id++;state_word(s,id);state_word(s,f->root_dev);state_word(s,f->root_ino);state_word(s,f->root_identity);char *path=(char *)f->object.path;state_string(s,&path);}
 }
