@@ -12,8 +12,8 @@ import java.util.List;
  * Shared construction of the v3-loader command for both an app launch
  * ({@link V3Launcher}) and a host Flatpak install ({@link InstallTransaction}).
  *
- * <p>The loader is the image or same-signer updated host's
- * {@code libmatonos-v3-loader.so}; PackageManager follows host updates. The
+ * <p>The loader is the active same-signer host's
+ * {@code libmatonos-v3-loader.so}; PackageManager resolves the installed host. The
  * resolver view and the {@link DnsForwarder} lifecycle are owned here so the
  * two callers cannot drift apart.
  */

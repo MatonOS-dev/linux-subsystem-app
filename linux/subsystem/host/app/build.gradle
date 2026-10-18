@@ -179,7 +179,11 @@ android {
     namespace 'org.matonos.linux'
     compileSdk 36
     defaultConfig {
-        applicationId 'org.matonos.linux'; minSdk 36; targetSdk 36; versionCode 1; versionName '1.0'
+        applicationId 'org.matonos.linux'; minSdk 36; targetSdk 36
+        def realVersionCode = project.findProperty('realVersionCode')?.toString()?.toInteger()
+        if (realVersionCode == null || realVersionCode <= 1)
+            throw new GradleException('Pass -PrealVersionCode with a value greater than bootstrap versionCode 1')
+        versionCode realVersionCode; versionName '1.0'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk { abiFilters 'x86_64' }
         externalNativeBuild { cmake { arguments '-DMATON_COMPOSITOR_ROOT=' + projectDir.absolutePath + '/../..', '-DMATON_AOSP_ROOT=' + aospRoot, '-DMATON_COMPOSITOR_BUILD=' + (System.getenv('MATON_COMPOSITOR_BUILD') ?: "$aospRoot/out/matonos/compositor"), '-DMATON_PIPEWIRE_BUILD=' + pipewireOutput } }
@@ -223,6 +227,7 @@ android {
     sourceSets {
         main {
             java.srcDirs += file('../../../stubgen/src')
+            java.srcDirs += file('../shared/src/main/java')
             def compositorJni = System.getenv('MATON_COMPOSITOR_JNI_LIBS')
             if (!compositorJni) throw new GradleException('MATON_COMPOSITOR_JNI_LIBS is not set (build through ./build.sh)')
             jniLibs.srcDirs += file(compositorJni)

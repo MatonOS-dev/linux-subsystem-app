@@ -38,6 +38,19 @@ is four (`MATON_BUILD_JOBS=1..4`). The result is
 16 KiB aligned and signed again after ZIP normalization. Updates retain the
 same signer. The script verifies the final signature and alignment.
 
+### Image bootstrap
+
+The image ships `MatonLinuxSubsystemBootstrap.apk` as the system
+`org.matonos.linux` package at versionCode 1. It declares the same shared
+library and package queries as the real host, and embeds the real same-signer
+APK as a stored asset. On first boot, or when the bootstrap becomes active
+again after uninstalling updates, its boot receiver (or launcher entry)
+installs that asset over itself through PackageInstaller. The real APK's
+versionCode comes from the repository commit count plus an offset and must
+remain greater than 1; subsequent updates use the normal F-Droid path.
+StubLoader resolves the installed host library from PackageManager, so
+generated stubs become usable after the bootstrap finishes.
+
 Flatpak's source/dependency lock is `linux/flatpak/build-support/sources.lock`:
 MatonOS-dev/flatpak branch `matonos/v26.10`, commit
 `4cce363ef3168baf10a4cd0a916694d3959f9558`. Its CLI/multicall recipe was

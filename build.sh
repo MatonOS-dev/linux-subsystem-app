@@ -59,7 +59,10 @@ fi
 grep -q $'flatpak\t4cce363ef3168baf10a4cd0a916694d3959f9558\t' "$CACHE_DIR/src/flatpak.pin" || { echo 'Flatpak cache does not match the v3.5 source pin' >&2; exit 2; }
 bash "$ROOT/tests/run.sh" "$OUTPUT/tests"
 GRADLE=${MATON_GRADLE_HOME:-$HOME/Documents/gradle-9.4.1}/bin/gradle
-"$GRADLE" -p "$ROOT/linux/subsystem/host" --no-daemon --project-cache-dir "$OUTPUT/gradle-cache" --max-workers "$MATON_BUILD_JOBS" :app:assembleRelease
+REAL_VERSION_CODE=$(( $(git -C "$ROOT" rev-list --count HEAD) + 2 ))
+[[ $REAL_VERSION_CODE -gt 1 ]] || { echo 'Real subsystem versionCode must be greater than bootstrap versionCode 1' >&2; exit 2; }
+"$GRADLE" -p "$ROOT/linux/subsystem/host" --no-daemon --project-cache-dir "$OUTPUT/gradle-cache" --max-workers "$MATON_BUILD_JOBS" \
+  -PrealVersionCode="$REAL_VERSION_CODE" :app:assembleRelease
 SDK_TOOLS=$ANDROID_HOME/build-tools/36.0.0
 python3 "$ROOT/tools/prepare-host-apk.py" "$OUTPUT/gradle/app/outputs/apk/release/app-release.apk" "$OUTPUT/stored.apk"
 "$SDK_TOOLS/zipalign" -P 16 -f 4 "$OUTPUT/stored.apk" "$OUTPUT/aligned.apk"
@@ -68,3 +71,13 @@ python3 "$ROOT/tools/prepare-host-apk.py" "$OUTPUT/gradle/app/outputs/apk/releas
 "$SDK_TOOLS/zipalign" -c -P 16 4 "$OUTPUT/MatonLinuxSubsystem.apk"
 python3 "$ROOT/tools/check-apk-needed.py" "$OUTPUT/MatonLinuxSubsystem.apk" "$MATON_NDK"
 echo "Signed APK: $OUTPUT/MatonLinuxSubsystem.apk"
+"$GRADLE" -p "$ROOT/linux/subsystem/host" --no-daemon --project-cache-dir "$OUTPUT/gradle-cache" --max-workers "$MATON_BUILD_JOBS" \
+  -PrealVersionCode="$REAL_VERSION_CODE" -PrealApk="$OUTPUT/MatonLinuxSubsystem.apk" :bootstrap:assembleRelease
+"$SDK_TOOLS/zipalign" -P 16 -f 4 \
+  "$OUTPUT/gradle/bootstrap/outputs/apk/release/bootstrap-release-unsigned.apk" "$OUTPUT/bootstrap-aligned.apk"
+"$SDK_TOOLS/apksigner" sign --ks "$MATON_SIGNING_STORE_FILE" --ks-key-alias "$MATON_SIGNING_KEY_ALIAS" \
+  --ks-pass "file:$MATON_SIGNING_PASSWORD_FILE" --out "$OUTPUT/MatonLinuxSubsystemBootstrap.apk" "$OUTPUT/bootstrap-aligned.apk"
+"$SDK_TOOLS/apksigner" verify --verbose --print-certs "$OUTPUT/MatonLinuxSubsystemBootstrap.apk"
+"$SDK_TOOLS/zipalign" -c -P 16 4 "$OUTPUT/MatonLinuxSubsystemBootstrap.apk"
+python3 "$ROOT/tests/check-bootstrap-apks.py" "$OUTPUT/MatonLinuxSubsystemBootstrap.apk" "$OUTPUT/MatonLinuxSubsystem.apk" "$SDK_TOOLS/aapt2"
+echo "Signed bootstrap APK: $OUTPUT/MatonLinuxSubsystemBootstrap.apk"
