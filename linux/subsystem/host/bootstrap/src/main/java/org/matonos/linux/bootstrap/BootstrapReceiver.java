@@ -19,22 +19,10 @@ public final class BootstrapReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
         if (!Intent.ACTION_BOOT_COMPLETED.equals(action) && !ACTION_BOOTSTRAP.equals(action)) return;
-        if (HOST_PACKAGE.equals(context.getPackageName()) && isInstalledUpdate(context)) {
-            Log.i(TAG, "Installed subsystem update is active; bootstrap is idle");
-            return;
-        }
+        // Only the bootstrap APK has this receiver: if it runs, the real host is not installed.
         final PendingResult pending = goAsync();
         Thread worker = new Thread(() -> install(context, pending), "MatonBootstrapInstall");
         worker.start();
-    }
-
-    private static boolean isInstalledUpdate(Context context) {
-        try {
-            return (context.getPackageManager().getPackageInfo(HOST_PACKAGE, 0).applicationInfo.flags
-                    & android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     private static void install(Context context, PendingResult pending) {
@@ -50,13 +38,15 @@ public final class BootstrapReceiver extends BroadcastReceiver {
             params.setAppPackageName(HOST_PACKAGE);
             params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
             sessionId = installer.createSession(params);
-            try (PackageInstaller.Session session = installer.openSession(sessionId);
-                 InputStream input = context.getAssets().open("MatonLinuxSubsystem.apk");
-                 OutputStream output = session.openWrite("base.apk", 0, -1)) {
-                byte[] buffer = new byte[64 * 1024];
-                int count;
-                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-                session.fsync(output);
+            try (PackageInstaller.Session session = installer.openSession(sessionId)) {
+                // The write stream must be closed before commit ("Files still open").
+                try (InputStream input = context.getAssets().open("MatonLinuxSubsystem.apk");
+                     OutputStream output = session.openWrite("base.apk", 0, -1)) {
+                    byte[] buffer = new byte[64 * 1024];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                    session.fsync(output);
+                }
                 Intent result = new Intent(context, BootstrapResultReceiver.class)
                         .setAction(BootstrapResultReceiver.ACTION_RESULT);
                 android.app.PendingIntent callback = android.app.PendingIntent.getBroadcast(context, 0, result,
