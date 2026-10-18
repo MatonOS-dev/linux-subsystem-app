@@ -203,6 +203,10 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     int packed=0;e=pack_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;pack_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p);if(e!=-ENOSYS)goto done;}
+    /* bwrap probes a bind destination with O_CREAT|O_EXCL before mounting
+     * over it. A packed mount target exists virtually even without a root
+     * record in its index; report that directory as already present. */
+    if(nr==PROXY_SC_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL) && pack_mount_root(p)){e=-EEXIST;goto done;}
     /* A packed tree's mount target is a virtual directory. bwrap may create
      * that target in its staging root before binding the packed tree over it;
      * the target itself must not be created in the read-only carrier path. */
@@ -217,7 +221,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         struct proxy_stat existing;
         if(!arch_stat_at(AT_FDCWD,p,&existing,AT_SYMLINK_NOFOLLOW)){e=-EEXIST;goto done;}
     }
-    if(writing){e=vfs_mount_readonly(pm);int create_pack_root=pack_mount_root(p)&&(nr==PROXY_SC_mkdirat||(nr==PROXY_SC_openat&&(a[2]&O_CREAT)));if(e && create_pack_root)e=0;if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
+    if(writing){e=vfs_mount_readonly(pm);if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
     /* bwrap reads the overflow IDs for its uid maps; Android's policy denies
      * apps the generic proc_sysctl file. Serve the kernel default (65534). */
