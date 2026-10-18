@@ -24,74 +24,122 @@ import java.util.regex.Pattern;
 /**
  * Generated stubs name this class as their {@code android:appComponentFactory}.
  *
- * <p>The stub reaches the host library through {@code <uses-library>}. This
- * factory replaces the platform loader
- * with one over the host APK PackageManager currently lists for the stub
- * ({@code sharedLibraryFiles}, which follows updates), parented to the boot
- * loader so no class resolves from the stale copy. Native libraries load from
- * the same APK. This class is loaded from the PackageManager-resolved host APK.
+ * <p>The stub reaches this class through {@code <uses-library>}, but the
+ * library path PackageManager records for the stub does not follow host
+ * updates (an update replacing an update keeps the old library entry). So the
+ * host is never taken from {@code sharedLibraryFiles}: the stub's class loader
+ * is a {@link HostClassLoader} that, on the first component class lookup, asks
+ * PackageManager for the current {@code org.matonos.linux} APK and delegates to
+ * a loader over it (natives from the same APK, parented to the boot loader).
+ * The plain Application exists and is attached by then; stubs declare none.
  *
- * <p>Trust: {@code sharedLibraryFiles} is populated by PackageManager from the
- * active package that provides the declared library. PackageManager enforces
- * the system package signing identity on updates.
+ * <p>Trust: only an installed update of the host package at its
+ * {@code /data/app} path is accepted; PackageManager enforces the system
+ * package's signing identity on updates. While only the bootstrap is active,
+ * stubs get small fallback components that ask the bootstrap to install.
  */
 public final class StubLoader extends AppComponentFactory {
     private static final String TAG = "MatonStubLoader";
+    private static final String HOST_PACKAGE = "org.matonos.linux";
     private static final Pattern HOST_UPDATE = Pattern.compile(
             "^/data/app/~~[^/]+/org\\.matonos\\.linux-[^/]+/base\\.apk$");
-    private boolean hostReady;
+    private static volatile Application application;
+    /** Static: LoadedApk creates this factory twice (before and after instantiateClassLoader). */
+    private static final HostClassLoader hostLoader = new HostClassLoader();
+
     @Override
     public ClassLoader instantiateClassLoader(ClassLoader cl, ApplicationInfo aInfo) {
-        String host = hostApk(aInfo);
-        if (host == null) {
-            Log.e(TAG, "No trusted installed host APK for " + aInfo.packageName);
-            hostReady = false;
-            return cl;
-        }
-        hostReady = true;
-        String natives = host + "!/lib/" + Build.SUPPORTED_ABIS[0];
-        return new PathClassLoader(host, natives, Object.class.getClassLoader());
+        return hostLoader;
     }
 
     @Override public Application instantiateApplication(ClassLoader cl, String className)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        return hostReady ? super.instantiateApplication(cl, className) : new Application();
+        Application app = new Application();
+        application = app;
+        return app;
     }
 
     @Override public Activity instantiateActivity(ClassLoader cl, String className, Intent intent)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        return hostReady ? super.instantiateActivity(cl, className, intent) : new HostPreparingActivity();
+        return hostLoader.ready() ? super.instantiateActivity(hostLoader, className, intent) : new HostPreparingActivity();
     }
 
     @Override public Service instantiateService(ClassLoader cl, String className, Intent intent)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        return hostReady ? super.instantiateService(cl, className, intent) : new InactiveService();
+        return hostLoader.ready() ? super.instantiateService(hostLoader, className, intent) : new InactiveService();
     }
 
     @Override public BroadcastReceiver instantiateReceiver(ClassLoader cl, String className, Intent intent)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        return hostReady ? super.instantiateReceiver(cl, className, intent) : new InactiveReceiver();
+        return hostLoader.ready() ? super.instantiateReceiver(hostLoader, className, intent) : new InactiveReceiver();
     }
 
     @Override public ContentProvider instantiateProvider(ClassLoader cl, String className)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        return hostReady ? super.instantiateProvider(cl, className) : new InactiveProvider();
+        return hostLoader.ready() ? super.instantiateProvider(hostLoader, className) : new InactiveProvider();
     }
 
-    private static String hostApk(ApplicationInfo aInfo) {
-        if (aInfo.sharedLibraryFiles == null) return null;
-        for (String path : aInfo.sharedLibraryFiles) {
-            String canonical;
-            try {
-                canonical = new File(path).getCanonicalPath();
-            } catch (IOException e) {
-                continue;
-            }
-            if (HOST_UPDATE.matcher(canonical).matches()) return canonical;
+    /** The installed host update's APK, or null while only the bootstrap is active. */
+    static String hostApk(Context context) {
+        try {
+            ApplicationInfo host = context.getPackageManager().getApplicationInfo(HOST_PACKAGE, 0);
+            if ((host.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0) return null;
+            String canonical = new File(host.sourceDir).getCanonicalPath();
+            return HOST_UPDATE.matcher(canonical).matches() ? canonical : null;
+        } catch (Exception e) {
+            Log.e(TAG, "Host lookup failed", e);
+            return null;
         }
-        return null;
     }
 
+    /** Resolves the host on first use; the stub process keeps that host until it exits. */
+    static final class HostClassLoader extends ClassLoader {
+        private PathClassLoader host;
+        private boolean resolved;
+
+        HostClassLoader() { super(Object.class.getClassLoader()); }
+
+        synchronized boolean ready() { return delegate() != null; }
+
+        private synchronized PathClassLoader delegate() {
+            if (resolved) return host;
+            Application app = application;
+            if (app == null) return null; // Before attach: retry on the next lookup.
+            resolved = true;
+            String apk = hostApk(app);
+            if (apk == null) {
+                Log.e(TAG, "No installed host for " + app.getPackageName());
+                return null;
+            }
+            host = new PathClassLoader(apk, apk + "!/lib/" + Build.SUPPORTED_ABIS[0],
+                    Object.class.getClassLoader());
+            return host;
+        }
+
+        @Override protected Class<?> findClass(String name) throws ClassNotFoundException {
+            PathClassLoader loader = delegate();
+            // Before the host is known (factory re-creation, fallback components) our own
+            // classes come from the image copy that loaded this class.
+            if (loader == null) return StubLoader.class.getClassLoader().loadClass(name);
+            return loader.loadClass(name);
+        }
+
+        @Override protected java.net.URL findResource(String name) {
+            PathClassLoader loader = delegate();
+            return loader == null ? null : loader.getResource(name);
+        }
+
+        @Override protected java.util.Enumeration<java.net.URL> findResources(String name)
+                throws IOException {
+            PathClassLoader loader = delegate();
+            return loader == null ? java.util.Collections.emptyEnumeration() : loader.getResources(name);
+        }
+
+        @Override protected String findLibrary(String libname) {
+            PathClassLoader loader = delegate();
+            return loader == null ? null : loader.findLibrary(libname);
+        }
+    }
 }
 
 /** Small fallback components used while the bootstrap APK replaces itself. */
