@@ -1,0 +1,26 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'org.matonos.linux.bootstrap'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'org.matonos.linux'
+        minSdk 36
+        targetSdk 36
+        versionCode 1
+        versionName '1.0-bootstrap'
+    }
+    androidResources { noCompress += ['apk'] }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/hostAsset').get().asFile
+    sourceSets.main.java.srcDir '../shared/src/main/java'
+    buildTypes { release { minifyEnabled false } }
+}
+
+def realApk = providers.gradleProperty('realApk')
+def stageHostApk = tasks.register('stageHostApk', Copy) {
+    if (!realApk.isPresent()) throw new GradleException('Pass -PrealApk=<signed MatonLinuxSubsystem.apk>')
+    from(realApk)
+    into layout.buildDirectory.dir('generated/hostAsset')
+    rename { 'MatonLinuxSubsystem.apk' }
+}
+tasks.named('preBuild').configure { dependsOn stageHostApk }

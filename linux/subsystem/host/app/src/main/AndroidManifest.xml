@@ -37,6 +37,9 @@
         <receiver android:name=".LinuxAppStoreService$BootReceiver" android:exported="true">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
         </receiver>
+        <!-- Same component name as the bootstrap so PackageInstaller can report
+             the result after the bootstrap APK has been replaced. -->
+        <receiver android:name=".bootstrap.BootstrapResultReceiver" android:exported="false" />
         <!-- Internal support UI; Linux apps have their own launcher entries. -->
         <activity android:name=".MainActivity" android:exported="false" />
     </application>
