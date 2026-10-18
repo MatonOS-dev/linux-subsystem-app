@@ -43,8 +43,9 @@ static uint64_t pack_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;
 static uint64_t pack_object_ino(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_ino:pack_ino(o);}
 static uint64_t pack_object_dev(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_dev:0;}
 static void pack_root_identity(const struct pack_mount *m,const mtp_object *o,const char *path,uint64_t *dev,uint64_t *ino,int *valid){
- *dev=pack_object_dev(m,o);*ino=pack_object_ino(m,o);*valid=m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/");
- if(*valid&&path){struct proxy_stat actual;if(!arch_stat_at(AT_FDCWD,path,&actual,0)&&S_ISDIR(actual.st_mode)){*dev=actual.st_dev;*ino=actual.st_ino;}}
+ int root=p_equal(o->kind,"dir")&&p_equal(o->path,"/");
+ *dev=pack_object_dev(m,o);*ino=pack_object_ino(m,o);*valid=root&&m->root_identity;
+ if(root&&path){struct proxy_stat actual;if(!arch_stat_at(AT_FDCWD,path,&actual,0)&&S_ISDIR(actual.st_mode)){*dev=actual.st_dev;*ino=actual.st_ino;*valid=1;}}
 }
 static void pack_metadata(const struct pack_mount *m,const mtp_object *o,void *wire,int extended,uint64_t root_dev,uint64_t root_ino,int root_identity){
  uint64_t size=p_equal(o->kind,"symlink")?p_len(o->target):o->length;

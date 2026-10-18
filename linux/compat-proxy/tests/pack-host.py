@@ -34,12 +34,12 @@ run('cc','-static','-O2','-Wall','-Wextra','-Werror','-include','sys/syscall.h',
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
-int main(int argc,char**argv){if(argc!=5)return 1;int source=atoi(argv[2]);uint64_t dev=strtoull(argv[3],0,10),ino=strtoull(argv[4],0,10);struct stat a;if(fstat(source,&a)||(uint64_t)a.st_dev!=dev||(uint64_t)a.st_ino!=ino)return 2;int dest=openat(AT_FDCWD,argv[1],O_PATH|O_DIRECTORY);if(dest<0)return 3;struct stat b,c;if(fstat(dest,&b)||stat(argv[1],&c))return 4;if(a.st_dev!=b.st_dev||a.st_ino!=b.st_ino||a.st_dev!=c.st_dev||a.st_ino!=c.st_ino)return 5;int d=open(argv[1],O_RDONLY|O_DIRECTORY);if(d<0)return 6;DIR*dp=fdopendir(d);if(!dp)return 7;struct dirent*e;int dot=0;while((e=readdir(dp)))if(!strcmp(e->d_name,".")){dot=(uint64_t)e->d_ino==(uint64_t)a.st_ino;break;}if(!dot)return 8;struct statx sx;if(statx(dest,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&sx)||sx.stx_ino!=(uint64_t)a.st_ino||sx.stx_dev_major!=major(a.st_dev)||sx.stx_dev_minor!=minor(a.st_dev))return 9;puts("packed root source-fd/dest-fd/path/getdents/statx identity PASS");return 0;}
+int main(int argc,char**argv){if(argc!=3)return 1;int source=open(argv[1],O_PATH|O_DIRECTORY);if(source<0)return 2;struct stat a;if(fstat(source,&a))return 3;if(mount(argv[1],argv[2],NULL,MS_BIND,NULL))return 4;int dest=openat(AT_FDCWD,argv[2],O_PATH|O_DIRECTORY);if(dest<0)return 5;struct stat b,c;if(fstat(dest,&b)||stat(argv[2],&c))return 6;if(a.st_dev!=b.st_dev||a.st_ino!=b.st_ino||a.st_dev!=c.st_dev||a.st_ino!=c.st_ino)return 7;int d=open(argv[2],O_RDONLY|O_DIRECTORY);if(d<0)return 8;DIR*dp=fdopendir(d);if(!dp)return 9;struct dirent*e;int dot=0;while((e=readdir(dp)))if(!strcmp(e->d_name,".")){dot=(uint64_t)e->d_ino==(uint64_t)a.st_ino;break;}if(!dot)return 10;struct statx sx;if(statx(dest,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&sx)||sx.stx_ino!=(uint64_t)a.st_ino||sx.stx_dev_major!=major(a.st_dev)||sx.stx_dev_minor!=minor(a.st_dev))return 11;puts("packed root bind source-fd/dest-fd/path/getdents/statx identity PASS");return 0;}
 ''')
 run('cc','-static','-O2','-Wall','-Wextra','-Werror',root/'root-identity.c','-o',src/'probe-root-identity')
 (root/'static.c').write_text('#include <stdio.h>\nint main(void){puts("static pack ELF PASS");return 0;}\n')
@@ -64,12 +64,7 @@ proxy=[base/'build/linux-layer-v3','--android-filter','--pack-mount','/packed',b
 def guest(*args):return output(*proxy,*args)
 for binary in ('static','dynamic','script','probe','probe-root-dir'):print(guest('/packed/'+binary).decode(),end='\n',flush=True)
 identity_source=root/'bind-source';identity_source.mkdir()
-identity_stat=identity_source.stat()
-identity_fd=os.open(identity_source,os.O_PATH|os.O_DIRECTORY)
-try:
- os.set_inheritable(identity_fd,True)
- print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount',identity_source,bundle/'objects.index',bundle,identity_source/'probe-root-identity',identity_source,str(identity_fd),str(identity_stat.st_dev),str(identity_stat.st_ino),pass_fds=(identity_fd,)).decode(),end='',flush=True)
-finally:os.close(identity_fd)
+print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'/usr/probe-root-identity',identity_source,'/usr').decode(),end='',flush=True)
 empty=root/'empty-runtime-files';empty.mkdir()
 print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'--map',empty,'/newroot','/usr/probe-root-dir','/newroot','usr','data').decode(),end='',flush=True)
 for name in ('data','large','link','nested/leaf'):
