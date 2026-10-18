@@ -142,6 +142,9 @@ const char *proxy_tmpdir="/tmp";
 /* --trace: log to the original diagnostic sink, independently of app stdio. */
 int proxy_trace;
 static void emit(const char *s) { RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p_len(s),0,0,0); }
+static void trace_word(const char *label,uint64_t value) {
+    emit(label); crash_hex(value); emit(" ");
+}
 void proxy_log(const char *kind,long nr,long result) {
     char line[128]; size_t n=0;
     const char *prefix="v3 trap "; while(*prefix) line[n++]=*prefix++;
@@ -551,6 +554,13 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     struct thread_state *thread=thread_state();
     if(info->si_code!=SYS_SECCOMP) {
+        if(proxy_trace) {
+            emit("v3 signal-delivery sig="); crash_hex(sig);
+            trace_word(" code=",info->si_code);
+            trace_word(" syscall=",(uint64_t)info->si_syscall);
+            trace_word(" call_addr=",(uintptr_t)info->si_call_addr);
+            trace_word(" pc=",ARCH_CONTEXT(uc,ARCH_PC)); emit("\n");
+        }
         /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
         dispatch_app(sig,info,opaque);(*arch_signal_mask(uc))&=~SIGSYS_BIT;
         RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
@@ -629,6 +639,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(nr==PROXY_SC_ioctl && proxy_trace)proxy_log("tty-ioctl",a[1],result);
         break;
     case PROXY_SC_prctl:
+        if(proxy_trace) {
+            emit("v3 prctl option="); crash_hex(a[0]);
+            trace_word(" arg2=",a[1]); trace_word(" arg3=",a[2]);
+            trace_word(" arg4=",a[3]); trace_word(" arg5=",a[4]);
+        }
         if(a[0]==PR_CAPBSET_DROP || a[0]==PR_CAP_AMBIENT || a[0]==PR_SET_KEEPCAPS) {result=0;break;}
         if(a[0]==PR_CAPBSET_READ){result=0;break;}
         if(a[0]==PR_SET_SYSCALL_USER_DISPATCH) {
@@ -652,6 +667,15 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
                 if(!result && dispatch_owner==tid) {dispatch_selector=NULL;dispatch_owner=0;}
             } else result=-EINVAL;
         } else result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
+        break;
+    case PROXY_SC_seccomp:
+        if(proxy_trace) {
+            emit("v3 seccomp op="); crash_hex(a[0]);
+            trace_word(" flags=",a[1]); trace_word(" args=",a[2]);
+        }
+        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
         break;
     case PROXY_SC_rt_sigaction:
         if(a[0]==SIGSYS) {
