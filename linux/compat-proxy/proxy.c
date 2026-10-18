@@ -25,6 +25,7 @@
 #include <linux/filter.h>
 #include <linux/audit.h>
 #include <linux/dma-buf.h>
+#include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/stat.h>
 #include <linux/limits.h>
@@ -621,6 +622,9 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
         if(nr==PROXY_SC_ioctl && termios2_call(a,&result)){if(proxy_trace)proxy_log("tty-ioctl",a[1],result);break;}
+        /* Reflink clone: Android app data (ext4/f2fs) has none, and app domains may not issue it,
+         * so each attempt is an AVC denial. Answer as a non-reflink filesystem would. */
+        if(nr==PROXY_SC_ioctl && ((unsigned long)a[1]==FICLONE || (unsigned long)a[1]==FICLONERANGE)){result=-EOPNOTSUPP;break;}
         if(app_allowed(nr))result=dns_call(nr,a);
         if(nr==PROXY_SC_ioctl && proxy_trace)proxy_log("tty-ioctl",a[1],result);
         break;
