@@ -42,6 +42,7 @@ long pack_path(long,proxy_arg_t *,const char *,int *);
 long pack_call(long,proxy_arg_t *,int *);
 char *pack_link(const char *,long *,int *);
 int pack_stat(const char *,struct proxy_stat *);
+int pack_mount_root(const char *);
 #endif
 
 long proxy_file_mmap(proxy_arg_t *);
