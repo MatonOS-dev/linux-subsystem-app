@@ -5,7 +5,7 @@ base=pathlib.Path(__file__).resolve().parents[1]; root=base/'build/pack-host'
 if root.exists():shutil.rmtree(root)
 root.mkdir();src=root/'src';src.mkdir();(src/'nested').mkdir();(src/'lib').mkdir()
 def run(*args,**kw):return subprocess.run(list(map(str,args)),check=True,**kw)
-def output(*args):return subprocess.check_output(list(map(str,args)))
+def output(*args,**kw):return subprocess.check_output(list(map(str,args)),**kw)
 run('cc','-m32','-nostdlib','-static','-no-pie',base/'tests/pack-peer.S','-o',src/'peer')
 (src/'lib/x86_64-linux-gnu/GL/default').mkdir(parents=True)
 (src/'lib/x86_64-linux-gnu/GL/default/extension-marker').write_text('GL extension directory entry\n')
@@ -29,6 +29,19 @@ run('cc','-static','-O2','-Wall','-Wextra','-Werror',base/'tests/pack-vfd.c','-o
 int main(int argc,char**argv){const char*parent_path=argc>1?argv[1]:"/";const char*name=argc>2?argv[2]:"packed";const char*entry=argc>3?argv[3]:"data";char pathbuf[128];snprintf(pathbuf,sizeof(pathbuf),"%s/%s",!strcmp(parent_path,"/")?"":parent_path,name);int parent=open(parent_path,O_PATH|O_DIRECTORY);if(parent<0)return 1;struct stat st;if(fstatat(parent,name,&st,AT_SYMLINK_NOFOLLOW)||!S_ISDIR(st.st_mode)||lstat(pathbuf,&st)||!S_ISDIR(st.st_mode))return 2;struct statx sx;if(syscall(SYS_statx,parent,name,AT_SYMLINK_NOFOLLOW,STATX_TYPE,&sx)||!(sx.stx_mode&S_IFDIR))return 3;int path=openat(parent,name,O_PATH|O_NOFOLLOW|O_DIRECTORY);if(path<0||fstat(path,&st)||!S_ISDIR(st.st_mode))return 4;close(path);int dir=openat(parent,name,O_RDONLY|O_DIRECTORY);if(dir<0)return 5;char buf[4096];int found=0;for(;;){int n=syscall(SYS_getdents64,dir,buf,sizeof(buf));if(n<0)return 6;if(!n)break;for(int p=0;p<n;){struct linux_dirent64{unsigned long long ino;long long off;unsigned short reclen;unsigned char type;char name[];}*e=(void*)(buf+p);if(!strcmp(e->name,entry))found=1;p+=e->reclen;}}if(!found)return 7;if(access(pathbuf,R_OK|X_OK))return 8;close(dir);close(parent);puts("packed root stat/lstat/statx/openat O_PATH/getdents/access PASS");return 0;}
 ''')
 run('cc','-static','-O2','-Wall','-Wextra','-Werror','-include','sys/syscall.h',root/'root-dir.c','-o',src/'probe-root-dir')
+(root/'root-identity.c').write_text(r'''#define _GNU_SOURCE
+#include <dirent.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
+int main(int argc,char**argv){if(argc!=3)return 1;int source=open(argv[1],O_PATH|O_DIRECTORY);if(source<0)return 2;struct stat a;if(fstat(source,&a))return 3;if(mount(argv[1],argv[2],NULL,MS_BIND,NULL))return 4;int dest=openat(AT_FDCWD,argv[2],O_PATH|O_DIRECTORY);if(dest<0)return 5;struct stat b,c;if(fstat(dest,&b)||stat(argv[2],&c))return 6;if(a.st_dev!=b.st_dev||a.st_ino!=b.st_ino||a.st_dev!=c.st_dev||a.st_ino!=c.st_ino)return 7;int d=open(argv[2],O_RDONLY|O_DIRECTORY);if(d<0)return 8;DIR*dp=fdopendir(d);if(!dp)return 9;struct dirent*e;int dot=0;while((e=readdir(dp)))if(!strcmp(e->d_name,".")){dot=(uint64_t)e->d_ino==(uint64_t)a.st_ino;break;}if(!dot)return 10;struct statx sx;if(statx(dest,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&sx)||sx.stx_ino!=(uint64_t)a.st_ino||sx.stx_dev_major!=major(a.st_dev)||sx.stx_dev_minor!=minor(a.st_dev))return 11;puts("packed root bind source-fd/dest-fd/path/getdents/statx identity PASS");return 0;}
+''')
+run('cc','-static','-O2','-Wall','-Wextra','-Werror',root/'root-identity.c','-o',src/'probe-root-identity')
 (root/'static.c').write_text('#include <stdio.h>\nint main(void){puts("static pack ELF PASS");return 0;}\n')
 run('cc','-static',root/'static.c','-o',src/'static')
 run('cc',base/'tests/loader-maps.c','-o',src/'maps')
@@ -50,6 +63,8 @@ for row in rows:
 proxy=[base/'build/linux-layer-v3','--android-filter','--pack-mount','/packed',bundle/'objects.index',bundle]
 def guest(*args):return output(*proxy,*args)
 for binary in ('static','dynamic','script','probe','probe-root-dir'):print(guest('/packed/'+binary).decode(),end='\n',flush=True)
+identity_source=root/'bind-source';identity_source.mkdir()
+print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'/usr/probe-root-identity',identity_source,'/usr').decode(),end='',flush=True)
 empty=root/'empty-runtime-files';empty.mkdir()
 print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'--map',empty,'/newroot','/usr/probe-root-dir','/newroot','usr','data').decode(),end='',flush=True)
 for name in ('data','large','link','nested/leaf'):
