@@ -81,6 +81,8 @@ final class V3Launcher {
         LoaderCommand.addResolvMaps(command, resolv);
         File vulkan = prepareVulkanBridge(context, launchWork);
         command.add("--map"); command.add(vulkan.getAbsolutePath()); command.add("/run/maton/vulkan");
+        File egl = prepareEglBridge(context, launchWork);
+        command.add("--map"); command.add(egl.getAbsolutePath()); command.add("/run/maton/egl");
         File x11 = new File(runtime.directory(), "x11");
         if (x11.isDirectory()) {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
@@ -102,6 +104,7 @@ final class V3Launcher {
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1",
                 "--env=VK_DRIVER_FILES=/run/maton/vulkan/maton_icd.json",
+                "--env=__EGL_VENDOR_LIBRARY_FILENAMES=/run/maton/egl/10_maton.json",
                 ref.substring(4));
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
@@ -117,6 +120,7 @@ final class V3Launcher {
         env.put("FLATPAK_SYSTEM_CACHE_DIR", cache.getAbsolutePath());
         env.put("XDG_CACHE_HOME", cache.getAbsolutePath());
         env.put("VK_DRIVER_FILES", "/run/maton/vulkan/maton_icd.json");
+        env.put("__EGL_VENDOR_LIBRARY_FILENAMES", "/run/maton/egl/10_maton.json");
         env.put("XDG_CONFIG_HOME", new File(home, ".config").getAbsolutePath());
         env.put("XDG_DATA_HOME", new File(home, ".local/share").getAbsolutePath());
         env.put("XDG_RUNTIME_DIR", runtime.directory().getAbsolutePath());
@@ -169,6 +173,20 @@ final class V3Launcher {
         Context host = context.createPackageContext("org.matonos.linux", 0);
         try (java.io.InputStream input = host.getAssets().open("vulkan/maton_icd.json")) {
             copyVulkanStream(input, new File(directory, "maton_icd.json"));
+        }
+        return directory;
+    }
+
+    private static File prepareEglBridge(Context context, File launchWork) throws Exception {
+        File directory = new File(launchWork, "egl");
+        if (!directory.isDirectory() && !directory.mkdirs())
+            throw new java.io.IOException("Cannot create EGL bridge directory");
+        File library = new File(LoaderCommand.nativeLibraryDir(context), "libEGL_maton.so");
+        if (!library.isFile()) throw new IllegalStateException("Update the Linux host: EGL forwarder is missing");
+        copyVulkanFile(library, new File(directory, library.getName()));
+        Context host = context.createPackageContext("org.matonos.linux", 0);
+        try (java.io.InputStream input = host.getAssets().open("egl/10_maton.json")) {
+            copyVulkanStream(input, new File(directory, "10_maton.json"));
         }
         return directory;
     }

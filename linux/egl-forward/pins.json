@@ -1,0 +1,17 @@
+{
+  "EGL-Registry": {
+    "commit": "db3425b8246136faccb5e2782b5694960bd6edf1",
+    "file": "api/egl.xml",
+    "sha256": "3327619123cdaa999400b41a7060180616df42571a0fdd11e9726e026f6d0fb8"
+  },
+  "OpenGL-Registry": {
+    "commit": "6af574a14089ccfee87efe230ebcdd8742859813",
+    "file": "xml/gl.xml",
+    "sha256": "b9ca2cfa5c676e901c20d34af3407f1687cde0f1336a5ff7a8974d04c7494ad3"
+  },
+  "libglvnd": {
+    "commit": "606f6627cf481ee6dcb32387edc010c502cdf38b",
+    "include/glvnd/libeglabi.h": "c87bd45f1b8d987535b8b56d2bc87d1089f25a00369b07b69246d9ed04b69b95",
+    "include/glvnd/GLdispatchABI.h": "35b3ad050dd226f6fb5439146b1e736c0f6e4aa21e468a33a7326a801e284b42"
+  }
+}
