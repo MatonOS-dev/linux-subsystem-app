@@ -28,6 +28,7 @@ int main(int argc, char **argv) {
     snprintf(value, sizeof(value), "%lx", (unsigned long)&bridge);
     setenv("MATON_GPU_BRIDGE", value, 1);
 #ifdef MATON_ADOPT
+    if (proxy_install(0)) return 7;
     if (adopt_install()) return 5;
 #else
     shadow_publish();
@@ -54,8 +55,8 @@ int main(int argc, char **argv) {
     Elf64_auxv_t *aux = (void *)(cursor + 1);
     for (; aux->a_type; aux++)
         if (aux->a_type == AT_HWCAP2) aux->a_un.a_val = getauxval(AT_HWCAP2);
-    /* Adoption uses per-thread user dispatch, which resets on exec. Other
-     * variants retain the original unfiltered loader/TLS experiment. */
+    /* Adoption routes managed operations through seccomp. Other variants
+     * retain the original unfiltered loader/TLS experiment. */
 #ifdef MATON_ADOPT
     adopt_launch(image.entry, image.stack);
 #else

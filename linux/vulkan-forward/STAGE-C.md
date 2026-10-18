@@ -25,7 +25,7 @@ callbacks or handles. Enumeration still intersects the actual driver's list.
 Instance ICD extensions remain empty. No surface/swapchain extension is exposed.
 
 100,000 TLS switch pairs on this run: **158.7 ns WRFSBASE**, **645.5 ns
-arch_prctl**, including adoption lookup/selector exchange, excluding Vulkan work.
+arch_prctl**, including adoption lookup, excluding Vulkan work.
 VM timings are noisy and are not an end-to-end performance claim.
 
 ## Pins and environment

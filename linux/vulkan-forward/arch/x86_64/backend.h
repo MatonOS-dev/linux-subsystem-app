@@ -7,7 +7,6 @@ struct adopt_thread {
     int tid; uintptr_t resident_fs, app_fs, resident_sp, child_tid;
     unsigned long robust; int ready; long regs[23]; unsigned long mask;
     _Alignas(64) unsigned char fp[16384]; uint64_t xfeatures;
-    unsigned char selector;
 };
 struct adopt_api { unsigned version; struct adopt_thread *(*current)(void);
                   struct adopt_thread *(*lookup)(uintptr_t fs); };
@@ -47,12 +46,12 @@ static inline void mv_tp_write(uintptr_t p,int fast) {
     if(fast) __asm__ volatile("wrfsbase %0"::"r"(p):"memory");
     else if(mv_sys(158,0x1002,p,0,0,0,0)) __builtin_trap();
 }
-struct mv_scope { uintptr_t previous; struct adopt_thread *thread; unsigned char selector; int fast; };
+struct mv_scope { uintptr_t previous; struct adopt_thread *thread; int fast; };
 static inline int switch_to_android(struct adopt_api *api,int fast,struct mv_scope *s) {
     if(!api) return 0;
     /* v2: O(1) syscall-free lookup keyed on the current FS base. FS is only
      * read with rdfsbase (`fast`); the arch_prctl read is itself a syscall and
-     * would trap here, because user dispatch is still filtering at this point.
+     * may be routed through seccomp while the application FS is installed.
      * A miss falls back to the tid scan so a provider that has not bound this
      * thread yet (or an FS base of 0 during startup) still works. */
     s->fast=fast;
@@ -67,20 +66,10 @@ static inline int switch_to_android(struct adopt_api *api,int fast,struct mv_sco
         if(!s->thread) return 0;
     } else return 0;
     if(!s->thread) return 0;
-    /* The user-dispatch selector is read only on this thread: by the kernel at
-     * syscall entry and by our SIGSYS handler. Program order suffices, so use
-     * plain stores with a compiler barrier, not a locked/fenced read-modify-
-     * write. See Documentation/admin-guide/syscall-user-dispatch.rst. */
-    s->selector=__atomic_load_n(&s->thread->selector,__ATOMIC_RELAXED);
-    __atomic_store_n(&s->thread->selector,0,__ATOMIC_RELAXED);
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
-    /* Only now may the slow backend read FS without trapping. */
     if(!have_previous) s->previous=mv_tp_read(fast);
     mv_tp_write(s->thread->resident_fs,fast); return 1;
 }
 static inline void switch_back(struct mv_scope *s) {
     mv_tp_write(s->previous,s->fast);
-    __atomic_store_n(&s->thread->selector,s->selector,__ATOMIC_RELAXED);
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
 }
 #endif

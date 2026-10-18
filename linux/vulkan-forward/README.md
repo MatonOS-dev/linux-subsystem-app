@@ -80,7 +80,7 @@ Read access to the process's maps is required; unavailable proc access fails
 closed. This discovery is process-local plumbing, not a security boundary.
 
 Only `arch/x86_64/backend.h` contains CPU instructions/syscall numbers. The
-backend saves/restores the adoption syscall-dispatch selector and FS pointer.
+backend switches only the FS pointer while resident Android Vulkan calls run.
 Compiler atomic builtins provide synchronization. Arm64/riscv64 backends are
 compile-only, fail-closed slots; the core, validators and generated thunks compile
 for both targets, but runtime TPIDR_EL0/tp switching/adoption is not implemented.
@@ -91,7 +91,7 @@ WRFSBASE (157.4 ns versus 664.5 ns arch_prctl). The guest's `/proc/self/auxv` ha
 AT_HWCAP2=2; the new probe also reads it correctly. No kernel/auxv permission fix
 was justified. The new ICD selects WRFSBASE from the launcher's kernel permission
 publication. Latest 100,000-pair measurement: **163.9 ns WRFSBASE**, **639.7 ns
-arch_prctl**, including adoption lookup/selector operations, excluding Vulkan.
+arch_prctl**, including adoption lookup, excluding Vulkan.
 
 ## Build and reproduce
 

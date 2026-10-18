@@ -110,7 +110,8 @@ app altstack changes. The proxy preserves changes to other signal-mask bits
 across sigreturn (required by bwrap's SIGCHLD signalfd monitor). Its private
 1 MiB altstack is retained; chained app SA_RESETHAND and actual
 SYS_USER_DISPATCH delivery are tested. App SA_ONSTACK semantics and multiple
-user-dispatch owners remain unsupported. Thread records/private stacks are
+application-requested user-dispatch is handled by the proxy; resident thread
+adoption itself does not enable syscall user dispatch. Thread records/private stacks are
 not reclaimed after thread exit.
 
 Remaining constraints: user pointers are not EFAULT-safe; mount/cache/cwd
