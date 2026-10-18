@@ -1,4 +1,4 @@
-/* Linux layer v3: resident x86_64 ELF loader. No libc calls after entry. */
+/* Linux layer v3: resident ELF loader. The proxy payload path is libc-free. */
 #include "proxy.h"
 #include "state.h"
 #include "vfs.h"
@@ -10,6 +10,17 @@
 #include <sys/prctl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#include "arch/x86_64/adopt.h"
+#include "../gpu-forward-spike/spike3/adopt.h"
+#include "../gpu-forward-spike/bootstrap.h"
+#include "../gpu-forward-spike/bridge.h"
+#endif
 
 #define PAGE 4096UL
 #define DOWN(x) ((x)&~(PAGE-1))
@@ -324,7 +335,14 @@ int main(int argc,char **argv,char **environ) {
     if(proxy_diagnostics_init())return 1;
     vfs_temp_gc();
     int android=0,i=resumed?4:1; long parent=0;
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    int gpu_bridge_enabled=0;
+#endif
     while(i<argc && argv[i][0]=='-') {
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+        if(p_equal(argv[i],"--gpu-bridge")) {gpu_bridge_enabled=1;i++;}
+        else
+#endif
         if(p_equal(argv[i],"--parent-pid") && i+1<argc) {
             const char *number=argv[i+1];
             if(!*number)return 2;
@@ -354,6 +372,29 @@ int main(int argc,char **argv,char **environ) {
     r=proxy_install(android);
     if(r) {proxy_log("filter-error",0,r);return 1;}
     proxy_host_snapshot(environ);
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    if(gpu_bridge_enabled) {
+        static struct gpu_bridge bridge;
+        bridge.version=1;
+        bridge.owner=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
+        if(RAW(PROXY_SC_arch_prctl,0x1003,&bridge.tls,0,0,0,0)) return 3;
+        bridge.open=dlopen;
+        bridge.symbol=dlsym;
+        char value[32];
+        snprintf(value,sizeof(value),"%lx",(unsigned long)&bridge);
+        if(adopt_install()) return 5;
+        struct maton_gpu_bootstrap *bootstrap=mmap(NULL,4096,PROT_READ|PROT_WRITE,
+                                      MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        if(bootstrap==MAP_FAILED) return 6;
+        bootstrap->magic=MATON_GPU_BOOTSTRAP_MAGIC;
+        snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",value);
+        snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%lx",(unsigned long)adopt_api_address());
+        snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",(unsigned long)(getauxval(AT_HWCAP2)&2));
+        if(prctl(PR_SET_VMA,PR_SET_VMA_ANON_NAME,bootstrap,4096,MATON_GPU_BOOTSTRAP_NAME) ||
+           mprotect(bootstrap,4096,PROT_READ)) return 6;
+        adopt_launch(image.entry,image.stack);
+    }
+#endif
     proxy_enter(image.entry,image.stack);
 }
 

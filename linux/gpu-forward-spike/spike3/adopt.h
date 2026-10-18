@@ -40,5 +40,6 @@ struct adopt_api {
 };
 int adopt_install(void);
 _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack);
+uintptr_t adopt_api_address(void);
 struct adopt_thread *adopt_current(void);
 #endif

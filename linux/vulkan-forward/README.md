@@ -161,17 +161,23 @@ verifies offscreen Zink using Mesa profiles and surfaceless EGL, and verifies
 libc independence with a dynamic musl loader; details are in STAGE-C.md. Desktop
 presentation still requires the later WSI/ANativeWindow/AHB work.
 
-Future packaging is documentation only: existing `gpu-forward-spike/flatpak/metadata.in`
-describes `org.freedesktop.Platform.GL.maton`. Install `lib/libmaton_vulkan.so`
-and `share/vulkan/icd.d/maton_icd.json` there, substituting `@GL_EXTENSION_DIR@`
-in the existing template. Expose it only through the adoption launcher for
-apps granted `--device=dri`/all; others retain Mesa software. No Java/subsystem
-or Flatpak permission integration is changed here.
+Production packaging is wired through the host APK build. `build.sh` builds the
+forwarder and packages `libmaton_vulkan.so` as an x86_64 native library plus
+`maton_icd.json` as an asset. On a stub launch, `V3Launcher` copies both into
+that launch's persistent work directory, maps it at `/run/maton/vulkan`, and
+passes `--gpu-bridge` to the Android-linked production loader. Flatpak receives
+`VK_DRIVER_FILES=/run/maton/vulkan/maton_icd.json`; setting this variable
+selects only MatonOS's ICD, so the app's own Mesa ICD manifests are disabled.
+The forwarder then calls the Android Vulkan loader and its selected device
+(lavapipe on the acceptance VM). Apps still receive the existing `--device=dri`
+grant. This path is offscreen only: desktop presentation remains the separate
+WSI stage.
 
-Still unverified: real GPU drivers, actual Flatpak SELinux/seccomp context,
-signal/reentrant calls during a switched-TLS call, extension execution beyond
-the exercised paths, allocation failure injection, and runtime architectures
-other than x86_64. No shared-tree or kernel changes are required.
+Still unverified: real GPU drivers, signal/reentrant calls during a
+switched-TLS call, extension execution beyond the exercised paths, allocation
+failure injection, and runtime architectures other than x86_64. The Flatpak
+acceptance check must use the actual stub launch path on a freshly booted image.
+No shared-tree or kernel changes are required.
 
 ## Wayland WSI prototype
 

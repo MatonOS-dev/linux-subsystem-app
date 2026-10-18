@@ -30,6 +30,13 @@ case $(realpath "$OUTPUT") in "$ROOT"|"$ROOT"/*) echo "Output must be outside th
 case $(realpath "$MATON_SIGNING_STORE_FILE") in "$ROOT"/*) echo 'Signing key must be outside this public repository' >&2; exit 2;; esac
 case $(realpath "$MATON_SIGNING_PASSWORD_FILE") in "$ROOT"/*) echo "Signing password must be outside this public repository" >&2; exit 2;; esac
 FLATPAK=$ROOT/linux/flatpak/build-support
+VULKAN_DEPS=${MATON_VULKAN_DEPS:-$OUTPUT/vulkan-forward}
+export MATON_VULKAN_OUT=${MATON_VULKAN_OUT:-$VULKAN_DEPS/forward}
+export MATON_VULKAN_HEADERS=${MATON_VULKAN_HEADERS:-$VULKAN_DEPS/src/Vulkan-Headers-1.4.341}
+export CMAKE=${CMAKE:-/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake}
+if [[ ! -s $MATON_VULKAN_HEADERS/registry/vk.xml ]]; then
+  bash "$ROOT/linux/vulkan-forward/build-tools.sh" "$VULKAN_DEPS"
+fi
 export CACHE_DIR=${MATON_FLATPAK_CACHE:-$OUTPUT/flatpak/cache}
 export BUILD_DIR=${MATON_FLATPAK_BUILD:-$OUTPUT/flatpak/build}
 export OUT_DIR=$OUTPUT/flatpak/out

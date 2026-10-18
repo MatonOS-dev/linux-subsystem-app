@@ -67,6 +67,7 @@ final class V3Launcher {
         LoaderCommand.writeResolv(resolv, dns);
         ArrayList<String> command = new ArrayList<>();
         command.add(loader.getAbsolutePath());
+        command.add("--gpu-bridge");
         // adb (root): touch <cache>/v3-trace to log every trapped call.
         if (new File(cache, "v3-trace").exists()) command.add("--trace");
         if (context.checkSelfPermission(android.Manifest.permission.INTERNET) ==
@@ -78,6 +79,8 @@ final class V3Launcher {
         command.add("--host-command");command.add(commandSocket.getAbsolutePath());
         command.add("--parent-pid"); command.add(Integer.toString(android.os.Process.myPid()));
         LoaderCommand.addResolvMaps(command, resolv);
+        File vulkan = prepareVulkanBridge(context, launchWork);
+        command.add("--map"); command.add(vulkan.getAbsolutePath()); command.add("/run/maton/vulkan");
         File x11 = new File(runtime.directory(), "x11");
         if (x11.isDirectory()) {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
@@ -98,6 +101,7 @@ final class V3Launcher {
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1",
+                "--env=VK_DRIVER_FILES=/run/maton/vulkan/maton_icd.json",
                 ref.substring(4));
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
@@ -112,6 +116,7 @@ final class V3Launcher {
         env.put("FLATPAK_DOWNLOAD_TMPDIR", cache.getAbsolutePath());
         env.put("FLATPAK_SYSTEM_CACHE_DIR", cache.getAbsolutePath());
         env.put("XDG_CACHE_HOME", cache.getAbsolutePath());
+        env.put("VK_DRIVER_FILES", "/run/maton/vulkan/maton_icd.json");
         env.put("XDG_CONFIG_HOME", new File(home, ".config").getAbsolutePath());
         env.put("XDG_DATA_HOME", new File(home, ".local/share").getAbsolutePath());
         env.put("XDG_RUNTIME_DIR", runtime.directory().getAbsolutePath());
@@ -152,6 +157,34 @@ final class V3Launcher {
             }
         }, "v3-exit").start();
         return getLaunchStatus();
+    }
+
+    private static File prepareVulkanBridge(Context context, File launchWork) throws Exception {
+        File directory = new File(launchWork, "vulkan");
+        if (!directory.isDirectory() && !directory.mkdirs())
+            throw new java.io.IOException("Cannot create Vulkan bridge directory");
+        File library = new File(LoaderCommand.nativeLibraryDir(context), "libmaton_vulkan.so");
+        if (!library.isFile()) throw new IllegalStateException("Update the Linux host: Vulkan forwarder is missing");
+        copyVulkanFile(library, new File(directory, library.getName()));
+        Context host = context.createPackageContext("org.matonos.linux", 0);
+        try (java.io.InputStream input = host.getAssets().open("vulkan/maton_icd.json")) {
+            copyVulkanStream(input, new File(directory, "maton_icd.json"));
+        }
+        return directory;
+    }
+
+    private static void copyVulkanFile(File source, File destination) throws Exception {
+        try (java.io.OutputStream output = new java.io.FileOutputStream(destination, false)) {
+            org.matonos.linuxhost.stubgen.PlaceholderFiles.copy(source, output);
+        }
+    }
+
+    private static void copyVulkanStream(java.io.InputStream input, File destination) throws Exception {
+        try (java.io.OutputStream output = new java.io.FileOutputStream(destination, false)) {
+            byte[] buffer = new byte[32768];
+            int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+        }
     }
 
     /** The Android process lives exactly as long as its Linux app: when the

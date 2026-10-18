@@ -22,7 +22,8 @@ for source in broker portals maton_broker_jni; do
 done
 STATIC_LIBS=("$GLIB_PREFIX/lib/libgio-2.0.a" \
   "$GLIB_PREFIX/lib/libgobject-2.0.a" "$GLIB_PREFIX/lib/libgmodule-2.0.a" \
-  "$GLIB_PREFIX/lib/libglib-2.0.a" "$PCRE_BUILD/libpcre2-8.a" \
+  "$GLIB_PREFIX/lib/libglib-2.0.a" "$GLIB_PREFIX/lib/libintl.a" \
+  "$PCRE_BUILD/libpcre2-8.a" \
   "$FFI_BUILD/libffi.a" -lz -ldl -lm)
 # Per-app bus: a JNI library loaded into the app's own process, not an executable.
 "$TOOLCHAIN/x86_64-linux-android35-clang" -shared -o "$OUT/libmatonos-dbus-broker.so" \

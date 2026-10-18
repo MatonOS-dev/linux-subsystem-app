@@ -41,7 +41,7 @@ public final class DeploymentRecordTest {
         if(!decoded.ref.equals(record.ref)||!Arrays.equals(record.deploy,decoded.deploy))throw new AssertionError();
         decoded.materialize(scratch.toFile(),"/app");
         Path version=scratch.resolve(record.ref).resolve(commit);
-        if(!Files.readSymbolicLink(version.resolve("files")).toString().equals("/app"))throw new AssertionError();
+        if(!Files.isDirectory(version.resolve("files"),LinkOption.NOFOLLOW_LINKS))throw new AssertionError("Deployment files must be a real directory");
         if(!Files.readSymbolicLink(version.getParent().resolve("active")).toString().equals(commit))throw new AssertionError();
         if(!Arrays.equals(Files.readAllBytes(version.resolve("metadata")),record.metadata))throw new AssertionError();
         rejects(()->DeploymentRecord.decode(Arrays.copyOf(bytes,bytes.length-1)));

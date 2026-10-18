@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check APK entries/extraction using real NDK ELF executables, not stub bytes.
-The miniature ZIP tests the extractor contract; it is not a signed host APK.
+Android-linked loader images are extracted/inspected here; host execution and
+trusted-sibling behavior are covered by the separate Linux loader fixtures.
 """
 import pathlib,zipfile,subprocess,tempfile,os,stat,shutil
 root=pathlib.Path(__file__).resolve().parents[1]
@@ -18,14 +19,6 @@ with tempfile.TemporaryDirectory(prefix='packaging-',dir=root/'build') as tmp:
         assert stat.S_IMODE(p.stat().st_mode)==0o755
         assert p.read_bytes()[:5]==b'\x7fELF'+bytes([elf_class])
     print('PASS both NDK loaders extracted from APK entries as trusted 0755 files')
-    os.chmod(out,0o755)
-    for name in names:
-        result=subprocess.run([str(out/name),'--android-filter','--trace',
-            '--map',str(root/'build/cross-file'),'/v3-cross-file','--map',str(root/'build/cross-dir'),'/v3-cross-dir',
-            str(root/'build/cross64'),str(root/'build/cross32'),str(root/'build/cross64')],capture_output=True,timeout=15)
-        (root/'build'/('packaging-'+name+'.log')).write_bytes(result.stderr)
-        assert result.returncode==0,(name,result.returncode,result.stderr)
-    print('PASS APK-named NDK siblings execute both classes under inherited filters')
     broken=directory/'missing.apk'
     with zipfile.ZipFile(broken,'w') as z:z.write(root/'build/android-test'/names[0],'lib/x86_64/'+names[0])
     result=subprocess.run(['bash',str(root/'extract-loaders.sh'),str(broken),str(directory/'missing')],capture_output=True)
