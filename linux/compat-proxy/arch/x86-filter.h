@@ -62,14 +62,19 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, unsigned
      * Linux payload is not a security boundary. Binder/ioctl was denied above.
      * Bionic is native x86_64; never grant its ranges to the i386 branch. */
     if(!peer) for(unsigned r=0;r<libc_count;r++) {
-        uint64_t lo=libc_ranges[r].begin, hi=libc_ranges[r].end;
-        if(lo>=hi || (lo>>32)!=((hi-1)>>32)) continue;
-        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,4,(uint32_t)(lo>>32));
-        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
-        ADD(BPF_JMP|BPF_JGE|BPF_K,0,2,(uint32_t)lo);
-        ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,(uint32_t)hi);
-        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        uint64_t lo=libc_ranges[r].begin, end=libc_ranges[r].end;
+        /* Each BPF check compares one high word: split at 4 GiB boundaries. */
+        for(uint64_t hi;lo<end;lo=hi) {
+            hi=((lo>>32)+1)<<32; if(!hi || hi>end) hi=end;
+            /* A piece ending on the boundary has no upper check in its low word. */
+            int capped=(uint32_t)hi!=0;
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,capped?4:3,(uint32_t)(lo>>32));
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+            ADD(BPF_JMP|BPF_JGE|BPF_K,0,capped?2:1,(uint32_t)lo);
+            if(capped) ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,(uint32_t)hi);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
     }
     /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
     uint64_t ip=peer?gateway+0x42:arch_gateway_pc(0);
