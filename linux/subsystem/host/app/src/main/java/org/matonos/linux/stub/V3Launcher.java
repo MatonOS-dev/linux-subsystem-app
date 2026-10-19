@@ -120,6 +120,8 @@ final class V3Launcher {
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
         if(matonGlEnabled)command.add("--env=FLATPAK_GL_DRIVERS=maton:default");
+        // adb (root): touch <cache>/v3-vkdebug to log Vulkan loader driver discovery.
+        if (new File(cache, "v3-vkdebug").exists()) command.add("--env=VK_LOADER_DEBUG=all");
         command.add(ref.substring(4));
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
