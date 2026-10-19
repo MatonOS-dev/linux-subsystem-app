@@ -21,7 +21,9 @@ final class SessionAudio implements AutoCloseable {
                 new File(directory, "pipewire-0.lock"), new File(pulse, "native")}) {
             if (socket.exists() && !socket.delete()) throw new IOException("Cannot remove stale audio socket");
         }
-        try (var input = context.getAssets().open("pipewire/maton.conf");
+        // Stubs run this too: the config ships in the subsystem APK, not the stub's.
+        try (var input = context.createPackageContext("org.matonos.linux", 0).getAssets()
+                        .open("pipewire/maton.conf");
                 var output = new FileOutputStream(new File(config, "maton.conf"))) {
             input.transferTo(output);
         }
