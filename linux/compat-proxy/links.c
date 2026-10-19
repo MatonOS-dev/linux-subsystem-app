@@ -32,13 +32,19 @@ static int parent(char *out,const char *path){size_t n=p_len(path);if(n>=PATH_MA
 static int private_dir(const char *p,dev_t dev){struct proxy_stat st;return !arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && S_ISDIR(st.st_mode) && st.st_dev==dev && st.st_uid==(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0) && (st.st_mode&0300)==0300 && !(st.st_mode&0022);}
 /* A marker is ordinary visible metadata, but only its owner may establish it
  * outside the payload. Never follow a symlink when recognizing a boundary. */
-static int marked(const char *dir){char name[PATH_MAX];struct proxy_stat st;return catpath(name,dir,".v3-store-root") && !arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_uid==(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0);}
+static int marked_device(const char *dir,uint64_t *device){
+ char name[PATH_MAX];if(!catpath(name,dir,".v3-store-root"))return 0;
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,name,O_PATH|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return 0;
+ struct proxy_stat st;long r=arch_stat_fd(fd,&st);RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ if(r || !S_ISREG(st.st_mode) || st.st_uid!=(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0))return 0;
+ if(device)*device=st.st_dev;
+ return 1;
+}
 int links_marker(const char *path){const char *name=path;for(const char *p=path;*p;p++)if(*p=='/')name=p+1;return p_equal(name,".v3-store-root");}
 static int tree(char *root,const char *path){
- struct proxy_stat st;char up[PATH_MAX];
- if(!parent(root,path) || arch_stat_at(AT_FDCWD,root,&st,0)<0)return 0;
+ char up[PATH_MAX];if(!parent(root,path))return 0;
  for(;;){
-  if(marked(root))return private_dir(root,st.st_dev);
+  uint64_t device;if(marked_device(root,&device))return private_dir(root,device);
   if(!parent(up,root) || p_equal(up,root))return 0;
   p_copy(root,up,p_len(up)+1);
  }
