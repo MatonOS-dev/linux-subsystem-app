@@ -235,7 +235,7 @@ page bytes, apply the branch patch and trampoline data, change the copy to RX,
 then replace the old page with `MAP_FIXED`. The file-backed page is never
 writable, so this does not request SELinux `execmod`; the new executable page
 has anonymous provenance. Preserve the original file bytes in the copy except
-for the chosen patch and island. Keep the original VMA start, end, and
+for the patched window. Keep the original VMA start, end, and
 protections so normal `munmap` and `dlclose` ranges still remove the mapping.
 
 There is an unavoidable `/proc/self/maps` difference: the replaced page is
@@ -391,7 +391,7 @@ Order: x86_64 (shipping), arm64, riscv64.
   verify their saved PCs are outside the page being replaced. Retry briefly;
   if any thread cannot park or its PC is in the page, skip the patch. Do not
   spin in an async signal handler while another thread holds proxy/VFS locks.
-  Publish the trampoline and island before making the replacement page
+  Publish the stub before making the replacement page
   visible; use release/acquire state and the kernel mapping/TLB synchronization
   from `mmap(MAP_FIXED)`.
 - **Signals and `sigreturn`:** a signal can arrive while a trampoline saves
