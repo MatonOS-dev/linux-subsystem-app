@@ -1342,3 +1342,22 @@ Device checks, also applicable to Ryzen/RX 6600, Surface Pro 3 and ProDesk:
    reaches Vulkan initialization. Record any later graphics error separately.
 4. Relaunch once more to exercise the generated-cache reuse path. Check for
    SELinux denials and retain the complete trace for failures.
+
+### Resident altstack replacement during VulkanInfo launch (2026-10-19)
+
+The enforcing v39 VM's initial Flatpak exec exited 139 before Vulkan loading.
+Stack-bound instrumentation showed SIGSYS running on a 32 KiB stack installed
+by resident libc, replacing the proxy/adoption stack. The fault's RSP was below
+that mapping. Increasing an arbitrary stack size would leave the replacement
+bug intact. The x86 dual-ABI filter now routes resident `sigaltstack` calls,
+including queries, through the existing virtual app-stack implementation;
+only the raw proxy gateways can modify the kernel stack. Ordinary resident
+signal actions remain native, with the existing SIGSYS-action guard.
+
+The signals regression requests an app altstack through resident libc, checks
+its virtual query result, and verifies that a SA_ONSTACK signal still executes
+outside that app mapping. The full compat-proxy suite passes. Rebuilt/signed
+APKs were installed with `adb install -r`, force-stopping the VulkanInfo stub
+after each install. The next launch preserved the adoption stack (0x10d30 bytes)
+and reached Vulkan device enumeration without the prior SIGSEGV. No SELinux,
+kernel, image or AOSP changes were made.

@@ -185,3 +185,37 @@ implementation status. `tests/run-wsi.sh OUT HEADERS` runs the internal host
 model and freestanding Wayland-symbol resolver checks. The prototype build does
 not expose WSI extensions or Vulkan surface/swapchain commands. Default
 offscreen behavior remains the stages A–C interface.
+
+## Production stub verification, 2026-10-19
+
+On enforcing v39 / adb 5556, with the linker-exempt proxy plus the resident
+altstack fix, the actual VulkanInfo stub reaches the freestanding forwarder.
+Diagnostics confirm bridge `dlopen("/system/lib64/libvulkan.so")` succeeds,
+resident `vkCreateInstance` returns VK_SUCCESS, and resident
+`vkEnumeratePhysicalDevices` returns VK_SUCCESS with count zero. VulkanInfo
+therefore exits 1 with ERROR_INITIALIZATION_FAILED; no device-listing success
+is claimed.
+
+The independent bionic `tests/native-loader-probe.c` reproduces exactly the
+same successful creation and zero-device enumeration without either the proxy
+or forwarder. Compile it using the NDK x86_64 API-36 compiler, pinned Vulkan
+headers, and `-ldl`, push the resulting test executable to `/data/local/tmp/`,
+and execute it directly through root adb. It does not change driver settings.
+The VM reports `ro.hardware.vulkan=virtio` and provides renderD128. The current
+blocker is the native VM Vulkan path, not forwarder enumeration. A coordinator
+must provide a VM/image with a native working Vulkan device (or decide on the
+appropriate software fallback); this task did not reboot or alter the image.
+Retest the native probe first, then force-stop and launch the existing stub
+with cache/v3-vkdebug enabled; verify deviceName/vendorID/deviceID/apiVersion in
+its MatonV3 output. Real hardware likewise needs a working native Vulkan HAL;
+this run establishes no real-hardware result.
+
+Validation: signed standalone build, full compat-proxy suite, packs suite and
+`MATON_AOSP_ROOT=/mnt/data/aosp tests/run.sh OUT` pass. The additional forwarder
+suite passes build/runtime/ABI/absent-bridge checks but its switch-bench test
+fails to compile because it still references the removed adopt_thread.selector
+field; that separate test mismatch is not changed here. The forwarder build
+retains three exported ICD symbols, no libc and no DT_NEEDED dependencies.
+Evidence is outside the repo in sigsys3-out/segv-evidence. No shared-tree or
+kernel changes are required by the proxy fix; VM driver configuration remains
+a coordinator decision.
