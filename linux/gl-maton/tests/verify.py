@@ -31,7 +31,7 @@ def payload(path):
     with zipfile.ZipFile(root / row["pack"]) as archive:
         return archive.read(row["checksum"]).decode()
 
-assert '"library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/libmaton_vulkan.so"' in payload(
+assert '"library_path": "libmaton_vulkan.so"' in payload(
     "/vulkan/icd.d/maton_icd.json")
 assert '"library_path": "libEGL_maton.so"' in payload("/glvnd/egl_vendor.d/10_maton.json")
 assert (root / "objects.ostree").read_bytes().startswith(b"MTPKOBJ1")

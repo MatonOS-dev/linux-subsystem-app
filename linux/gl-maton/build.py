@@ -25,7 +25,7 @@ def build(out, vulkan, egl, branch):
     shutil.copy2(egl, files / "lib/libEGL_maton.so")
     (files / "vulkan/icd.d/maton_icd.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
-        '    "library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/libmaton_vulkan.so",\n'
+        '    "library_path": "libmaton_vulkan.so",\n'
         '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
     (files / "glvnd/egl_vendor.d/10_maton.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
