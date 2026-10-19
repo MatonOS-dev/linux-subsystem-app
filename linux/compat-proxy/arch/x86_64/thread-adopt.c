@@ -284,7 +284,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     /* Only Linux process/thread ABI calls need adoption. Other trapped calls
      * belong to the compatibility proxy's seccomp handler. */
     if(n!=SYS_brk && n!=SYS_munmap && n!=SYS_rt_sigaction && n!=SYS_rt_sigprocmask &&
-       n!=SYS_clone && n!=SYS_clone3 &&
+       n!=SYS_clone && n!=SYS_clone3 && n!=SYS_vfork &&
        n!=SYS_set_robust_list && n!=SYS_get_robust_list && n!=SYS_rseq &&
        n!=SYS_set_tid_address && n!=SYS_exit && n!=SYS_exit_group && n!=SYS_arch_prctl) {
         if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO))
@@ -377,6 +377,10 @@ miss_record_logged:
         if(!(flags&CLONE_THREAD)) {
             if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
                 ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+                /* In-handler fork paths return through this signal frame.
+                 * Retry clones hand off to proxy_clone_entry and rebase in
+                 * assembly, with the encoded syscall number in RAX. */
+                if(g[REG_RAX]==0) adopt_fork_child();
                 return;
             }
             result=-ENOSYS;goto finish;
@@ -426,6 +430,13 @@ miss_record_logged:
                 }
             }
         }
+    } else if(n==SYS_vfork) {
+        if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+            ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+            if(g[REG_RAX]==0) adopt_fork_child();
+            return;
+        }
+        result=-ENOSYS;
     } else if(n==SYS_set_robust_list) {
         if((unsigned long)g[REG_RSI]!=sizeof(struct robust_list_head)) result=-EINVAL;
         else {self->robust=g[REG_RDI];result=0;}
