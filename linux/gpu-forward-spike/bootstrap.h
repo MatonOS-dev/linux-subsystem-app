@@ -7,5 +7,7 @@
 struct maton_gpu_bootstrap {
     uint64_t magic;
     char bridge[32], adopt[32], fast[32];
+    /* Linux payload headers; /proc/self/auxv still describes the resident. */
+    char phdr[32], phnum[32];
 };
 #endif

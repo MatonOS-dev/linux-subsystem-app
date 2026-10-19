@@ -445,6 +445,16 @@ int main(int argc,char **argv,char **environ) {
         snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",value);
         snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%lx",(unsigned long)adopt_api_address());
         snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",(unsigned long)(getauxval(AT_HWCAP2)&2));
+        uintptr_t *payload=(uintptr_t *)image.stack;
+        payload+=1+payload[0]+1; /* argc, argv, NULL */
+        while(*payload)payload++;
+        arch_elf_auxv *payload_aux=(void *)(payload+1);
+        for(;payload_aux->a_type;payload_aux++) {
+            if(payload_aux->a_type==AT_PHDR)
+                snprintf(bootstrap->phdr,sizeof(bootstrap->phdr),"%lx",(unsigned long)payload_aux->a_un.a_val);
+            if(payload_aux->a_type==AT_PHNUM)
+                snprintf(bootstrap->phnum,sizeof(bootstrap->phnum),"%lx",(unsigned long)payload_aux->a_un.a_val);
+        }
         if(prctl(PR_SET_VMA,PR_SET_VMA_ANON_NAME,bootstrap,4096,MATON_GPU_BOOTSTRAP_NAME) ||
            mprotect(bootstrap,4096,PROT_READ)) return 6;
         adopt_launch(image.entry,image.stack);

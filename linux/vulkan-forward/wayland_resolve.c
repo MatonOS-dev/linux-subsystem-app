@@ -112,14 +112,21 @@ static int wayland_name(const char *s) {
 }
 
 static void *from_link_map(const char *name) {
-    struct mv_aux aux; Elf64_Addr phdr=0; size_t phnum=0;
+    struct mv_aux aux;
+    Elf64_Addr phdr=mv_hex(mv_env("MATON_LINUX_PHDR"));
+    size_t phnum=mv_hex(mv_env("MATON_LINUX_PHNUM"));
+    /* Native host tests have no resident bootstrap. In production the kernel
+     * auxv belongs to bionic's loader, not the manually mapped Linux image. */
+    if (!phdr || !phnum) {
     long fd=mv_open("/proc/self/auxv"); if(fd<0)return 0;
     while(mv_read(fd,&aux,sizeof(aux))==(long)sizeof(aux)) {
         if(aux.type==AT_PHDR)phdr=aux.value;
         if(aux.type==AT_PHNUM)phnum=aux.value;
         if(aux.type==AT_NULL)break;
     }
-    mv_close(fd); if(!phdr || !phnum || phnum>4096)return 0;
+    mv_close(fd);
+    }
+    if(!phdr || !phnum || phnum>4096)return 0;
     Elf64_Phdr *p=(Elf64_Phdr *)phdr; Elf64_Dyn *dynamic=0;Elf64_Addr bias=0;
     for(size_t i=0;i<phnum;i++)if(p[i].p_type==PT_PHDR)bias=phdr-p[i].p_vaddr;
     for(size_t i=0;i<phnum;i++)if(p[i].p_type==PT_DYNAMIC)dynamic=(Elf64_Dyn *)(bias+p[i].p_vaddr);

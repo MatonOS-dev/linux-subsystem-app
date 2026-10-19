@@ -30,7 +30,9 @@ const char *mv_env(const char *key) {
             if(p && p->magic==MATON_GPU_BOOTSTRAP_MAGIC) {
                 result=!strcmp(key,"MATON_GPU_BRIDGE")?p->bridge:
                        !strcmp(key,"MATON_THREAD_ADOPT")?p->adopt:
-                       !strcmp(key,"MATON_FAST_TLS")?p->fast:0;
+                       !strcmp(key,"MATON_FAST_TLS")?p->fast:
+                       !strcmp(key,"MATON_LINUX_PHDR")?p->phdr:
+                       !strcmp(key,"MATON_LINUX_PHNUM")?p->phnum:0;
             }
             break;
         }
