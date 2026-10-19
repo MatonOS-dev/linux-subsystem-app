@@ -223,17 +223,13 @@ a coordinator decision.
 ### vkcube runtime status (2026-10-19)
 
 Wayland extension discovery and resident WSI dependencies are fixed; vkcube
-opens a black Wayland window on the Venus VM. Presentation remains blocked:
-the export allocation path fails, and the earlier client AHB allocation
-experiment aborted because the compat proxy filtered Binder ioctls. The proxy
-now routes Binder normally; its UID/SELinux boundary remains the security
-control. See [WSI.md](WSI.md) for current allocation and presentation evidence.
-
-After a Binder-free allocation design is agreed, build the signed standalone
-APK with at most four jobs, install with `adb install -r`, force-stop the
-existing VulkanInfo stub and run its `v3-command=vkcube` override. Check the
-installed subsystem version before every launch. Capture two screenshots
-several seconds apart, verify a visible cube and changed cube pixels, then
-check resize and close/reopen. Repeat on the Ryzen/RX 6600, Surface Pro 3
-and Haswell ProDesk; no real-hardware result is available. No shared device
-tree or kernel change is requested by the fixes retained here.
+opens a black Wayland window on the Venus VM. The compat proxy now routes
+Binder ioctls normally; stub UID/SELinux policy is the boundary. The resident
+AHB allocator succeeds, but the Venus Vulkan driver aborts inside
+`vkGetAndroidHardwareBufferPropertiesANDROID`, before swapchain image creation.
+The export allocation path also reports zero memory-type bits. This VM run did
+not allocate/import swapchain images or present frames. See [WSI.md](WSI.md)
+for instrumented logs and evidence. Further runtime progress needs a VM Vulkan
+driver that can query and import an Android-allocated AHB; compositor-push and
+per-window Surface approaches remain out of scope. No shared device-tree or
+kernel change is requested.

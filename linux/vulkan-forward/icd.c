@@ -49,6 +49,7 @@ static PFN_vkGetInstanceProcAddr mv_gipa;
 static void *(*mv_ahb_native_handle)(const struct AHardwareBuffer *);
 static void (*mv_ahb_describe)(const struct AHardwareBuffer *,void *);
 static void (*mv_ahb_release)(struct AHardwareBuffer *);
+static int (*mv_ahb_allocate)(const void *,struct AHardwareBuffer **);
 static int (*mv_ahb_send_socket)(const struct AHardwareBuffer *,int);
 static int mv_fast, mv_state;
 /* Raw diagnostics remain safe on either side of the TLS switch. */
@@ -101,6 +102,7 @@ static int mv_init(void) {
             mv_ahb_native_handle=(void *)mv_bridge->symbol(android,"AHardwareBuffer_getNativeHandle");
             mv_ahb_describe=(void *)mv_bridge->symbol(android,"AHardwareBuffer_describe");
             mv_ahb_release=(void *)mv_bridge->symbol(android,"AHardwareBuffer_release");
+            mv_ahb_allocate=(void *)mv_bridge->symbol(android,"AHardwareBuffer_allocate");
             mv_ahb_send_socket=(void *)mv_bridge->symbol(android,"AHardwareBuffer_sendHandleToUnixSocket");
         }
         switch_back(&s);

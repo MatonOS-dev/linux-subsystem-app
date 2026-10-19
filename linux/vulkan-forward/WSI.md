@@ -1,47 +1,38 @@
 # Vulkan Wayland WSI
 
-Status on `vkcube`, 2026-10-19: **blocked before presentation; no animated
-cube is claimed.** On the existing Venus VM (adb 127.0.0.1:5556), vkcube now
-discovers `VK_KHR_surface` / `VK_KHR_wayland_surface`, selects Wayland and the
-Virtio-GPU Venus RX 6600, creates its device and opens a black stub window.
-The retained export path fails swapchain memory selection/allocation with
-`VK_ERROR_OUT_OF_DEVICE_MEMORY` (the unbound image reports zero memory-type
-bits, so memory selection cannot proceed). A client-side `AHardwareBuffer_allocate`
-experiment followed by the existing optimal-image import helper instead
-reached Android's allocator, which aborted on a denied Binder ioctl:
+Status on `vkcube`, 2026-10-19: **blocked inside the VM Vulkan driver before
+swapchain image import; no animated cube is claimed.** The Binder guard is
+removed and the host regression exercises Binder ioctl pass-through from
+payload text and libc. Android `AHardwareBuffer_allocate` returns success in
+the resident path. The next call, `vkGetAndroidHardwareBufferPropertiesANDROID`,
+aborts the process (Loader exited 134) before returning. Adding GPU sampled
+usage to the AHB did not change the abort. The former Vulkan-export allocation
+path also fails with `VK_ERROR_OUT_OF_DEVICE_MEMORY` and zero memory-type bits.
 
-```
-Binder driver '/dev/binder' could not be opened. Error: 1 (Operation not permitted)
-Binder ioctl to obtain version failed. Terminating.
-Loader exited: 134
-```
-
-The compat proxy had been filtering Binder ioctls before even the
-resident/raw-IP exemption. That guard has now been removed: the proxy is an
-emulation layer, not a security layer, and the stub app's UID/SELinux domain
-is the boundary. Client-owned AHB allocation is being retried through the
-resident Android allocator and imported into Vulkan. Do not use
+The evidence points to a VM/driver incompatibility at AHB import, but does not
+identify why the driver aborts. Stop pending a decision or a VM whose Vulkan
+driver can query/import an Android-allocated AHB. Do not use
 compositor-allocated buffer push or direct per-window Surface designs
-(DEAD-ENDS.md). No compositor presentation, animation, resize or real-hardware
-success is claimed until runtime evidence confirms it.
+(DEAD-ENDS.md). No swapchain import, compositor presentation, animation,
+resize, or real-hardware success is claimed.
 
-Local evidence (outside the repository):
-`/home/hanro50/matonos/build/vkcube-binder-blocker.log`,
-`/home/hanro50/matonos/build/vkcube-final-runtime.log`,
-`/home/hanro50/matonos/build/vkcube-final-black-window.png` (black Wayland
-window). Final signed APK versionCode 488 was installed and checked; the stub
-was force-stopped after collecting evidence to stop its retry loop.
-The VM was not rebooted; its VulkanInfo stub was never uninstalled.
+Local runtime evidence (outside the repository):
+`/mnt/data/aosp/out/pc-logs/vkcube/client-ahb-instrumented-logcat-3.txt`
+shows the successful AHB allocator result and the last trace before the abort;
+`client-ahb-full-last.txt` contains the corresponding system log. The first
+attempt's screenshots are `client-ahb-1.png` and `client-ahb-2.png`; they show
+the black window and then the installer desktop, not an animated cube. Signed
+subsystem APK versionCode 496 was installed with `adb install -r`. The
+VulkanInfo stub was never uninstalled, the VM was not rebooted, and the stub
+was force-stopped after evidence collection.
 
-Verified host suites: compat-proxy (including Binder kernel pass-through and
-resident exec), packs, standalone subsystem tests (also run by every signed APK build),
-GL extension, Vulkan forwarding and WSI. The Vulkan suite's obsolete selector
-benchmark and launcher dlerror callback type were repaired; adoption round
-trips measured 25.3 / 25.4 / 29.5 ns for 1 thread / 64 live bindings / 64
-concurrent threads. WSI retains zero DT_NEEDED, three exports, no undefined
-symbols, and arm64/riscv64 cross-compilation. Signed full standalone APK and
-bootstrap builds passed with four build jobs. These host results do not prove
-runtime AHB allocation or presentation.
+Verified host suites: compat-proxy (including payload and resident Binder
+pass-through), packs, standalone subsystem tests, GL extension, Vulkan
+forwarding and WSI. Adoption round trips measured 25.3 / 25.4 / 29.5 ns for
+1 thread / 64 live bindings / 64 concurrent threads. WSI retains zero
+DT_NEEDED, three exports, no undefined symbols, and arm64/riscv64
+cross-compilation. Signed standalone APK and bootstrap builds passed with
+eight build jobs. Host results do not verify runtime AHB import or presentation.
 
 ## Production join-up
 
@@ -64,11 +55,13 @@ Wayland core interface objects through ELF dynamic tables without libc or
 does not consume app events. The production DSO retains zero `DT_NEEDED` and
 only the three loader exports.
 
-Each swapchain image is an Android Vulkan image created with
-`VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT`, a dedicated exportable
-`VK_ANDROID_external_memory_android_hardware_buffer` allocation, and the
-resident driver's linear modifier. `vkGetMemoryAndroidHardwareBufferANDROID`
-provides the AHB. When the compositor advertises the private
+Each swapchain image starts as a client-owned `AHardwareBuffer`, allocated by
+the resident `libandroid.so` allocator with GPU color, sampled-image and
+compositor usage. The ICD creates an optimal-tiled Vulkan image and imports the
+AHB through `vkGetAndroidHardwareBufferPropertiesANDROID` plus dedicated
+`VK_ANDROID_external_memory_android_hardware_buffer` memory. This is the
+current primary path, but the Venus VM aborts inside the properties query
+before image creation. When the compositor advertises the private
 `maton_ahb_buffer_v1` global, the ICD creates a fresh `AF_UNIX/SOCK_SEQPACKET`
 socketpair per image, calls stock `AHardwareBuffer_sendHandleToUnixSocket`
 through its Android TLS bridge on one endpoint, and sends the peer endpoint in
@@ -79,14 +72,14 @@ No native-handle fd number or minigbm dma-buf import is involved in this
 primary path. The compositor presents the received AHB directly to
 SurfaceFlinger; frames remain zero-copy.
 
-The standard fallback remains the verified
+If client-owned allocation cannot be used, the retained export fallback is
 `VK_ANDROID_external_memory_android_hardware_buffer` → native-handle plane
 fd → `zwp_linux_dmabuf_v1` path. It checks RGBA8 format, linear modifier, plane
 offset and row pitch against the AHB stride, then uses DRM fourcc
 `DRM_FORMAT_ABGR8888` (`0x34324241`), one plane and the measured stride/offset.
 `VK_EXT_external_memory_dma_buf` is not used. The native-handle fallback was
-probed on one VM llvmpipe configuration; runtime validation of the new AHB
-transport still requires the VM.
+probed on one VM llvmpipe configuration. Neither path has reached presentation
+on the current Venus VM.
 
 ## Fence flow and limits
 
