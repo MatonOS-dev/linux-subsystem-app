@@ -51,6 +51,17 @@ static void (*mv_ahb_describe)(const struct AHardwareBuffer *,void *);
 static void (*mv_ahb_release)(struct AHardwareBuffer *);
 static int (*mv_ahb_send_socket)(const struct AHardwareBuffer *,int);
 static int mv_fast, mv_state;
+/* Raw diagnostics remain safe on either side of the TLS switch. */
+static void mv_trace_result(const char *stage,long result,uint32_t count) {
+    size_t length=0;while(stage[length])length++;mv_write(stage,length);
+    char text[36];static const char hex[]="0123456789abcdef";
+    text[0]=' ';text[1]='0';text[2]='x';
+    for(unsigned j=0;j<16;j++)text[3+j]=hex[((uint64_t)result>>(60-4*j))&15];
+    text[19]=' ';text[20]='0';text[21]='x';
+    for(unsigned j=0;j<8;j++)text[22+j]=hex[(count>>(28-4*j))&15];
+    text[30]='\n';mv_write(text,31);
+}
+
 static int mv_enter(struct mv_scope *s) {
     if(switch_to_android(mv_adopt,mv_fast,s))return 1;
     mv_diagnostic();return 0;
@@ -82,6 +93,7 @@ static int mv_init(void) {
             if(e){size_t n=0;while(e[n] && n<384)n++;mv_write(e,n);}
             static const char nl[]="\n";mv_write(nl,1);
         }
+        mv_trace_result("maton-vulkan: bridge libvulkan",lib?0:-1,0);
         if(lib)mv_gipa=(PFN_vkGetInstanceProcAddr)mv_bridge->symbol(lib,"vkGetInstanceProcAddr");
         if(lib && !mv_gipa) {static const char m[]="maton-vulkan: vkGetInstanceProcAddr symbol missing\n";mv_write(m,sizeof(m)-1);}
         void *android=mv_bridge->open("/system/lib64/libandroid.so",2);
@@ -140,6 +152,7 @@ static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAll
     PFN_vkCreateInstance create=(PFN_vkCreateInstance)mv_gipa(0,"vkCreateInstance");
     VkInstance raw=0;
     VkResult result=create?create(&copy,0,&raw):VK_ERROR_INCOMPATIBLE_DRIVER;
+    mv_trace_result("maton-vulkan: resident create",result,0);
     if(result==VK_SUCCESS){
         i->base.android=(void *)raw;i->base.instance=i;
         i->destroy=(PFN_vkDestroyInstance)mv_gipa(raw,"vkDestroyInstance");
@@ -165,6 +178,7 @@ static VkResult mv_vkEnumeratePhysicalDevices(VkInstance instance,uint32_t *n,Vk
     struct mv_instance *i=(void *)instance;struct mv_scope s;
     if(!mv_enter(&s))return VK_ERROR_INITIALIZATION_FAILED;
     VkResult r=i->enumerate(i->base.android,n,devices);switch_back(&s);
+    mv_trace_result("maton-vulkan: resident enumerate",r,*n);
     if(devices && (r==VK_SUCCESS || r==VK_INCOMPLETE))for(uint32_t j=0;j<*n;j++) {
         devices[j]=mv_wrap(i,devices[j]);if(!devices[j])return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
