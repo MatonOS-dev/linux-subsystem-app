@@ -129,6 +129,9 @@ final class V3Launcher {
         Map<String, String> env = builder.environment();
         env.clear();
         env.put("FLATPAK_SYSTEM_DIR", new File(deployment,"system").getAbsolutePath());
+        // Flatpak reads this in the launcher process while selecting runtime
+        // extensions; the matching --env below exposes the choice to the app.
+        if(matonGlEnabled)env.put("FLATPAK_GL_DRIVERS","maton:default");
         env.put("MATON_FLATPAK_DNS", dns);
         String nativeDir = LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
         env.put("PATH", nativeDir + ":/system/bin");
