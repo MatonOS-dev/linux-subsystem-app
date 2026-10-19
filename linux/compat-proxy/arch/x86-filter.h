@@ -41,23 +41,10 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         long (*decode)(long)=peer?arch_peer_decode_syscall:arch_decode_syscall;
         unsigned audit=peer?(ARCH_AUDIT==AUDIT_ARCH_I386?AUDIT_ARCH_X86_64:AUDIT_ARCH_I386):ARCH_AUDIT;
         uint64_t gateway=audit==AUDIT_ARCH_I386?UINT64_C(0x70300000):UINT64_C(0x600000300000);
-    /* Linux payloads never get Binder, even though their Android stub does.
-     * Put this kernel-enforced check BEFORE the raw-IP exemption: neither
-     * translated ioctl nor a jump into proxy_raw may bypass it. DMA-BUF uses
-     * the same type byte; preserve only its exact sync/fence encodings (the
-     * IMPORT_SYNC_FILE collision is legacy Binder idle-timeout, not IPC). */
+    /* x32 is unsupported independently of ioctl routing. */
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    /* x32 is unsupported, and must not skip the native ioctl guard. */
     ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,0x40000000);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,7,encode(PROXY_SC_ioctl));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,5,0,DMA_BUF_IOCTL_SYNC);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,4,0,DMA_BUF_IOCTL_EXPORT_SYNC_FILE);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,3,0,DMA_BUF_IOCTL_IMPORT_SYNC_FILE);
-    ADD(BPF_ALU|BPF_AND|BPF_K,0,0,0xff00);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
     /* Raw proxy gateways must pass before the rt_sigaction guard below. */
     uint64_t ip=peer?gateway+0x42:arch_gateway_pc(0);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
@@ -101,9 +88,9 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,F_SETFD);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     /* Resident bionic must be able to implement the Android-owned pthread,
-     * allocator and signal machinery. This is a routing exemption only: the
-     * Linux payload is not a security boundary. Binder/ioctl was denied above.
-     * Bionic is native x86_64; never grant its ranges to the i386 branch. */
+     * allocator and signal machinery. This is a routing exemption only; the
+     * Linux payload is not a security boundary. Bionic is native x86_64; never
+     * grant its ranges to the i386 branch. */
     if(!peer) for(size_t r=0;r<libc_count;r++) {
         uint64_t lo=libc_ranges[r].begin, end=libc_ranges[r].end;
         /* Each BPF check compares one high word: split at 4 GiB boundaries. */

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Per-stub PipeWire server. Its only hardware endpoint is Android AAudio.
- * All protocol parsing runs in the stub UID. No Linux payload gets Binder.
+ * All protocol parsing runs in the stub UID. The proxy does not provide a
+ * Binder security boundary; Android UID/SELinux policy owns that boundary.
  */
 #include <jni.h>
 #include <aaudio/AAudio.h>

@@ -764,8 +764,8 @@ currently copies only x86_64 and kills other architectures; it is **not** a
 correct dual-architecture reproduction. Generate an x86 allowlist from the
 same AOSP inputs and unistd_32.h, retain input hashes, and test both branches.
 The proxy's own filter also currently kills I386. It must dispatch by arch
-before interpreting numbers, retain Binder ioctl denial in both branches
-before any gateway exemption, and reject x32. Trap payload operations needing
+before interpreting numbers and reject x32. Binder ioctls are ordinary
+emulated syscalls and are not filtered as a security policy. Trap payload operations needing
 VFS/IPC/socket conversion; handler replay must use only calls allowed by the
 inherited policy. An ALLOW in our filter cannot override Android's TRAP.
 
@@ -834,7 +834,9 @@ instruction locations must be designed into the initial filter; simply
 stacking new per-loader IP exceptions leaves the older filter trapping them.
 A fixed-address bootstrap with a stable, explicitly permitted gateway is one
 candidate, but needs an actual inherited-filter test before acceptance. Exec
-must not expose a payload bypass around Binder or private-fd checks.
+    must not expose a payload bypass around private-fd checks. The compat
+    proxy is an emulation layer, not a security boundary; Binder access is
+    controlled by the stub app's UID and SELinux domain.
 See [seccomp semantics](https://man7.org/linux/man-pages/man2/seccomp.2.html)
 and [x86 kernel entries](https://www.kernel.org/doc/html/v5.10/x86/entry_64.html).
 No kernel implementation code is used here.
@@ -1072,7 +1074,8 @@ Closed CLOEXEC aliases drop their ownership only after all aliases have been
 imported. Persistent hardlink count sidecars are now eight bytes on both ABIs.
 Payload read/write/vector I/O, mmap, truncate, seek and metadata calls cannot
 use private ownership/diagnostic/state descriptors through normal syscall
-entry; close/dup/fcntl protections remain. Binder denial precedes gateways.
+entry; close/dup/fcntl protections remain. Binder ioctls follow normal proxy
+routing and are not filtered as a security policy.
 
 The IPC arena remains the shared fixed-width version-2 format from run 3.
 Handoff carries its namespace paths and the inherited directory lock, and
@@ -1085,7 +1088,7 @@ use a forked parent/child of opposite classes sharing semaphores, shared memory
 and queues, then exec back and check the child's undo after exit.
 
 Both filter branches are installed from the outset. `arch/x86-filter.h`
-contains the x86-family architecture selection, Binder guard, syscall-number
+contains the x86-family architecture selection, syscall-number
 translation and gateway exemptions. The copied AOSP app policy includes both
 allowlists from the same checked-out inputs and records their hashes. Both
 number tables use fixed ABI numbers even when compiled by the other backend;

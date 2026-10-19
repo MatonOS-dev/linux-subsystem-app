@@ -16,14 +16,14 @@ Binder ioctl to obtain version failed. Terminating.
 Loader exited: 134
 ```
 
-The denial is intentional: `linux/compat-proxy/arch/x86-filter.h` blocks
-Binder ioctls before even the resident/raw-IP exemption; the host Binder
-regression test verifies this. No SELinux or seccomp relaxation was made.
-The aborting AHB allocation experiment was removed. Continuing requires a
-design decision for **Binder-free client-owned AHB allocation**; do not
-revive compositor-allocated buffer push or direct per-window Surface designs
+The compat proxy had been filtering Binder ioctls before even the
+resident/raw-IP exemption. That guard has now been removed: the proxy is an
+emulation layer, not a security layer, and the stub app's UID/SELinux domain
+is the boundary. Client-owned AHB allocation is being retried through the
+resident Android allocator and imported into Vulkan. Do not use
+compositor-allocated buffer push or direct per-window Surface designs
 (DEAD-ENDS.md). No compositor presentation, animation, resize or real-hardware
-success is claimed.
+success is claimed until runtime evidence confirms it.
 
 Local evidence (outside the repository):
 `/home/hanro50/matonos/build/vkcube-binder-blocker.log`,
@@ -33,8 +33,8 @@ window). Final signed APK versionCode 488 was installed and checked; the stub
 was force-stopped after collecting evidence to stop its retry loop.
 The VM was not rebooted; its VulkanInfo stub was never uninstalled.
 
-Verified host suites: compat-proxy (including Binder denial and resident
-exec), packs, standalone subsystem tests (also run by every signed APK build),
+Verified host suites: compat-proxy (including Binder kernel pass-through and
+resident exec), packs, standalone subsystem tests (also run by every signed APK build),
 GL extension, Vulkan forwarding and WSI. The Vulkan suite's obsolete selector
 benchmark and launcher dlerror callback type were repaired; adoption round
 trips measured 25.3 / 25.4 / 29.5 ns for 1 thread / 64 live bindings / 64

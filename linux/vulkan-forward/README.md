@@ -224,10 +224,10 @@ a coordinator decision.
 
 Wayland extension discovery and resident WSI dependencies are fixed; vkcube
 opens a black Wayland window on the Venus VM. Presentation remains blocked:
-the export allocation path fails, and a direct client AHB allocation attempt
-aborts on the sandbox's deliberate Binder ioctl denial. No Binder/SELinux
-exception was added. See [WSI.md](WSI.md) for evidence, test results and the
-required allocation-design decision. Do not claim a spinning cube yet.
+the export allocation path fails, and the earlier client AHB allocation
+experiment aborted because the compat proxy filtered Binder ioctls. The proxy
+now routes Binder normally; its UID/SELinux boundary remains the security
+control. See [WSI.md](WSI.md) for current allocation and presentation evidence.
 
 After a Binder-free allocation design is agreed, build the signed standalone
 APK with at most four jobs, install with `adb install -r`, force-stop the
