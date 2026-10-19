@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+OUT=${1:?output directory required}
+mkdir -p "$OUT"
+cc -shared -nostdlib -Wl,-soname,libmaton_vulkan.so -o "$OUT/libmaton_vulkan.so" -x c - <<'EOF'
+void maton_test_symbol(void) {}
+EOF
+cc -shared -nostdlib -Wl,-soname,libEGL_maton.so -o "$OUT/libEGL_maton.so" -x c - <<'EOF'
+void maton_test_symbol(void) {}
+EOF
+python3 "$ROOT/linux/gl-maton/build.py" "$OUT/extension" \
+  "$OUT/libmaton_vulkan.so" "$OUT/libEGL_maton.so" --branch 26.08
+python3 "$ROOT/linux/gl-maton/tests/verify.py" "$OUT/extension"
+echo 'PASS Maton Flatpak GL extension layout, metadata and OSTree pack'

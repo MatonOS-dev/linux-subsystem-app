@@ -18,4 +18,10 @@ public final class PackageMountsTest {
   try{PackageMounts.mountPoint(ref,"[ExtensionOf]\nref="+parent+"\n",Collections.singletonMap(parent,"[Extension org.freedesktop.Platform.Codec]\nversion=26.08\n"));fail();}catch(java.io.IOException expected){}
   try{PackageMounts.mountPoint(ref,"[ExtensionOf]\nref="+parent+"\n",Collections.singletonMap(parent,"[Extension org.freedesktop.Platform.Codec]\ndirectory=../../etc\n"));fail();}catch(java.io.IOException expected){}
  }
+ @Test public void acceptsOnlyRuntimeGlExtensionVersions() throws Exception {
+  String metadata="[Extension org.freedesktop.Platform.GL]\nversions = 26.08;26.08-extra;1.4\nversion = 1.4\n";
+  PackageMounts.requireGlExtensionVersion(metadata,"26.08");
+  try{PackageMounts.requireGlExtensionVersion(metadata,"25.08");fail();}catch(java.io.IOException expected){}
+  PackageMounts.requireGlExtensionVersion("[Extension org.freedesktop.Platform.GL]\nversion=1.4\n","1.4");
+ }
 }

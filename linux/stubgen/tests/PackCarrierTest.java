@@ -118,6 +118,13 @@ public final class PackCarrierTest {
   if(!PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"),"/usr").get(1).equals("/usr"))throw new AssertionError("custom runtime mount point");
   if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
   if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");
+  File extensionArchive=new File(dir,"host-extension.apk");
+  try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(extensionArchive))) {
+   z.putNextEntry(new ZipEntry("assets/gl-maton/objects.index"));z.write(Files.readAllBytes(index.toPath()));z.closeEntry();
+   z.putNextEntry(new ZipEntry("assets/gl-maton/"+row.pack));z.write(Files.readAllBytes(new File(dir,row.pack).toPath()));z.closeEntry();
+  }
+  List<String> extension=PackLaunch.argumentsFromArchive(extensionArchive,"assets/gl-maton",new File(dir,"extension-cache"),"/usr/lib/x86_64-linux-gnu/GL/maton");
+  if(!extension.get(1).equals("/usr/lib/x86_64-linux-gnu/GL/maton")||!Files.isRegularFile(Path.of(extension.get(3),row.pack)))throw new AssertionError("APK extension pack was not mounted");
   try {
    org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{"index_"+"b".repeat(64),"index_"+"c".repeat(64)},new String[]{base.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
    throw new AssertionError("Duplicate index accepted");

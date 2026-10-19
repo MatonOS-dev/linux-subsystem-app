@@ -61,23 +61,10 @@ No glibc or musl pbuffer readback pass is claimed.
 
 ## Host APK and VM status
 
-The host APK build now fetches/builds the vendor, packages
-`lib/x86_64/libEGL_maton.so` and `assets/egl/10_maton.json`, and validates that
-the manifest uses `/run/maton/egl/libEGL_maton.so`. On each stub launch,
-`V3Launcher` copies these files to the per-launch work directory, maps it at
-`/run/maton/egl`, and sets
-`__EGL_VENDOR_LIBRARY_FILENAMES=/run/maton/egl/10_maton.json` in both Flatpak's
-environment and the loader process environment.
-
-The signed APK built, passed 16 KiB alignment and native dependency closure
-checks (81 APK libraries), and installed as an update on the assigned fresh
-QEMU copy. The device extracted `libEGL_maton.so` into the updated host's
-`nativeLibraryDir`. The Flathub store opened and populated search results.
-Launching install for `app/io.github.arunsivaramanneo.GPUViewer/x86_64/stable`
-stopped before downloading: SELinux denied `{ create }` on the private DNS
-forwarder's `forwarder.udp` socket (`priv_app_36` creating a `privapp_data_file`
-`sock_file`, enforcing). This prevents preparing an installed app stub, so the
-VM did not exercise EGL, `eglinfo`, GLES rendering, or the pbuffer readback.
+The host APK packages EGL in the `org.freedesktop.Platform.GL.maton`
+extension. The relative glvnd manifest and `libEGL_maton.so` are mounted with
+the extension and selected by Flatpak's GL driver extension mechanism. See
+[`linux/gl-maton/README.md`](../gl-maton/README.md) for build and VM status.
 The socket policy is outside this EGL repository and needs resolution before
 the requested real stub-launch acceptance can run. Do not treat APK install as
 proof of EGL runtime behavior.

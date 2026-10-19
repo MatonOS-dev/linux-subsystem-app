@@ -60,8 +60,8 @@ final class V3Launcher {
             if (!directory.isDirectory() && !directory.mkdirs())
                 throw new java.io.IOException("Cannot create application directory " + directory);
         WorkDirs.sweep(WorkDirs.root(context));
-        File launchWork = WorkDirs.directory(context,"launch-maps");
-        WorkDirs.keep(launchWork); // Loader mappings live until process exit.
+        File launchWork = WorkDirs.directory(context,"launch-data");
+        WorkDirs.keep(launchWork); // Loader pack mappings live until process exit.
         File resolv = new File(launchWork, "v3-resolv.conf");
         String dns = LoaderCommand.resolverAddress();
         LoaderCommand.writeResolv(resolv, dns);
@@ -79,10 +79,6 @@ final class V3Launcher {
         command.add("--host-command");command.add(commandSocket.getAbsolutePath());
         command.add("--parent-pid"); command.add(Integer.toString(android.os.Process.myPid()));
         LoaderCommand.addResolvMaps(command, resolv);
-        File vulkan = prepareVulkanBridge(context, launchWork);
-        command.add("--map"); command.add(vulkan.getAbsolutePath()); command.add("/run/maton/vulkan");
-        File egl = prepareEglBridge(context, launchWork);
-        command.add("--map"); command.add(egl.getAbsolutePath()); command.add("/run/maton/egl");
         File x11 = new File(runtime.directory(), "x11");
         if (x11.isDirectory()) {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
@@ -91,6 +87,23 @@ final class V3Launcher {
             DependencyRepair repair=dependencyRepair;
             if(repair!=null)repair.repair(dependencyRef);else repairDependency(context,ref,dependencyRef);
         });
+        String runtimeMetadata=null;
+        for(DeclaredPackages.Entry entry:packages)
+            if(entry.record.ref.startsWith("runtime/org.freedesktop.Platform/x86_64/")) {
+                runtimeMetadata=new String(entry.record.metadata,StandardCharsets.UTF_8);break;
+            }
+        Context host=context.createPackageContext("org.matonos.linux",0);
+        String glBranch;
+        try(java.io.InputStream input=host.getAssets().open("gl-maton/branch.txt")) {
+            glBranch=new String(input.readAllBytes(),StandardCharsets.UTF_8).trim();
+        }
+        boolean matonGlEnabled=runtimeMetadata!=null;
+        if(matonGlEnabled) {
+            PackageMounts.requireGlExtensionVersion(runtimeMetadata,glBranch);
+            command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(
+                    new File(host.getApplicationInfo().sourceDir), "assets/gl-maton", launchWork,
+                    "/usr/lib/x86_64-linux-gnu/GL/maton"));
+        }
         command.addAll(DeclaredPackages.arguments(packages,launchWork,true));
         File deployment=PackageDeployment.prepare(context,ref);
         java.util.Collections.addAll(command,
@@ -105,10 +118,9 @@ final class V3Launcher {
                 "--env=NO_AT_BRIDGE=1",
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
-                "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1",
-                "--env=VK_DRIVER_FILES=/run/maton/vulkan/maton_icd.json",
-                "--env=__EGL_VENDOR_LIBRARY_FILENAMES=/run/maton/egl/10_maton.json",
-                ref.substring(4));
+                "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
+        if(matonGlEnabled)command.add("--env=FLATPAK_GL_DRIVERS=maton:default");
+        command.add(ref.substring(4));
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
         env.clear();
@@ -122,8 +134,6 @@ final class V3Launcher {
         env.put("FLATPAK_DOWNLOAD_TMPDIR", cache.getAbsolutePath());
         env.put("FLATPAK_SYSTEM_CACHE_DIR", cache.getAbsolutePath());
         env.put("XDG_CACHE_HOME", cache.getAbsolutePath());
-        env.put("VK_DRIVER_FILES", "/run/maton/vulkan/maton_icd.json");
-        env.put("__EGL_VENDOR_LIBRARY_FILENAMES", "/run/maton/egl/10_maton.json");
         env.put("XDG_CONFIG_HOME", new File(home, ".config").getAbsolutePath());
         env.put("XDG_DATA_HOME", new File(home, ".local/share").getAbsolutePath());
         env.put("XDG_RUNTIME_DIR", runtime.directory().getAbsolutePath());
@@ -164,48 +174,6 @@ final class V3Launcher {
             }
         }, "v3-exit").start();
         return getLaunchStatus();
-    }
-
-    private static File prepareVulkanBridge(Context context, File launchWork) throws Exception {
-        File directory = new File(launchWork, "vulkan");
-        if (!directory.isDirectory() && !directory.mkdirs())
-            throw new java.io.IOException("Cannot create Vulkan bridge directory");
-        File library = new File(LoaderCommand.nativeLibraryDir(context), "libmaton_vulkan.so");
-        if (!library.isFile()) throw new IllegalStateException("Update the Linux host: Vulkan forwarder is missing");
-        copyVulkanFile(library, new File(directory, library.getName()));
-        Context host = context.createPackageContext("org.matonos.linux", 0);
-        try (java.io.InputStream input = host.getAssets().open("vulkan/maton_icd.json")) {
-            copyVulkanStream(input, new File(directory, "maton_icd.json"));
-        }
-        return directory;
-    }
-
-    private static File prepareEglBridge(Context context, File launchWork) throws Exception {
-        File directory = new File(launchWork, "egl");
-        if (!directory.isDirectory() && !directory.mkdirs())
-            throw new java.io.IOException("Cannot create EGL bridge directory");
-        File library = new File(LoaderCommand.nativeLibraryDir(context), "libEGL_maton.so");
-        if (!library.isFile()) throw new IllegalStateException("Update the Linux host: EGL forwarder is missing");
-        copyVulkanFile(library, new File(directory, library.getName()));
-        Context host = context.createPackageContext("org.matonos.linux", 0);
-        try (java.io.InputStream input = host.getAssets().open("egl/10_maton.json")) {
-            copyVulkanStream(input, new File(directory, "10_maton.json"));
-        }
-        return directory;
-    }
-
-    private static void copyVulkanFile(File source, File destination) throws Exception {
-        try (java.io.OutputStream output = new java.io.FileOutputStream(destination, false)) {
-            org.matonos.linuxhost.stubgen.PlaceholderFiles.copy(source, output);
-        }
-    }
-
-    private static void copyVulkanStream(java.io.InputStream input, File destination) throws Exception {
-        try (java.io.OutputStream output = new java.io.FileOutputStream(destination, false)) {
-            byte[] buffer = new byte[32768];
-            int count;
-            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-        }
     }
 
     /** The Android process lives exactly as long as its Linux app: when the

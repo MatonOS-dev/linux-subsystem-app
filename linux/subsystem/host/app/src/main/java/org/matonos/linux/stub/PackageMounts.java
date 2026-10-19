@@ -27,6 +27,14 @@ public final class PackageMounts {
         if(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))throw new IOException("Invalid resolved runtime mount point");
         return new Entry(ref,DeployManifest.packageForPublic(ref),mountPoint);
     }
+    public static void requireGlExtensionVersion(String runtimeMetadata,String extensionBranch) throws IOException {
+        if(extensionBranch==null||!extensionBranch.matches("[A-Za-z0-9_.+-]+"))throw new IOException("Invalid Maton GL extension branch");
+        String versions=value(runtimeMetadata,"Extension org.freedesktop.Platform.GL","versions");
+        if(versions==null)versions=value(runtimeMetadata,"Extension org.freedesktop.Platform.GL","version");
+        if(versions==null)throw new IOException("Runtime has no org.freedesktop.Platform.GL extension point");
+        for(String version:versions.split(";"))if(extensionBranch.equals(version.trim()))return;
+        throw new IOException("Maton GL extension branch "+extensionBranch+" is not supported by the runtime GL extension point");
+    }
     public static String extensionParent(String metadata) throws IOException {
         String value=value(metadata,"ExtensionOf","ref");if(value==null)return null;
         if(!DeployManifest.validRef(value)||(!value.startsWith("runtime/")&&!value.startsWith("app/")))throw new IOException("Invalid Flatpak extension parent ref");return value;
@@ -51,7 +59,11 @@ public final class PackageMounts {
         String wanted="["+section+"]";boolean inside=false;String found=null;
         for(String line:text.split("\\r?\\n",-1)) {
             String trimmed=line.trim();if(trimmed.startsWith("[")){inside=trimmed.equals(wanted);continue;}
-            if(inside&&trimmed.startsWith(key+"=")){if(found!=null)throw new IOException("Duplicate Flatpak metadata key "+key);found=trimmed.substring(key.length()+1).trim();}
+            int equals=trimmed.indexOf('=');
+            if(inside&&equals>=0&&trimmed.substring(0,equals).trim().equals(key)){
+                if(found!=null)throw new IOException("Duplicate Flatpak metadata key "+key);
+                found=trimmed.substring(equals+1).trim();
+            }
         }
         return found;
     }

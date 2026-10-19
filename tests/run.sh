@@ -19,6 +19,7 @@ bash "$ROOT/linux/subsystem/host/test-portals.sh" "$OUT/portals"
 bash "$ROOT/linux/packs/tests/run.sh"
 python3 "$ROOT/linux/packs/tests/java-source.py"
 python3 "$ROOT/linux/packs/tests/java-writer.py"
+bash "$ROOT/linux/gl-maton/tests/run.sh" "$OUT/gl-maton"
 make -C "$ROOT/linux/dbus-broker" -j4 OUT="$OUT/bus" check-inhibit check-portal-wire check-policy-wildcard
 bash "$ROOT/tests/packagename/run.sh" "$OUT/packagename"
 mkdir -p "$OUT/install-handoff/classes"

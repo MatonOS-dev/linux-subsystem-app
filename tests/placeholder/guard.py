@@ -84,7 +84,7 @@ ALLOW = {
     ("DeploymentRecord.java", "zipfile"): (
         1, "reads the installed index_ split APK (app-owned), not staging"),
     ("PackLaunch.java", "zipfile"): (
-        2, "reads installed index_/extra_ split APKs (app-owned), not staging"),
+        3, "reads installed index_/extra_ splits and the signed subsystem GL pack archive (app-owned), not staging"),
     ("PackSeed.java", "randomaccessfile"): (
         1, "reads an installed pack_ split carrier (app-owned), not staging"),
     ("PackSessionPlan.java", "zipfile"): (

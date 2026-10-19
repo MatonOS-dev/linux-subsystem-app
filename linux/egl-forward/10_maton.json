@@ -1,6 +1,6 @@
 {
   "file_format_version": "1.0.0",
   "ICD": {
-    "library_path": "/run/maton/egl/libEGL_maton.so"
+    "library_path": "libEGL_maton.so"
   }
 }

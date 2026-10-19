@@ -161,13 +161,12 @@ verifies offscreen Zink using Mesa profiles and surfaceless EGL, and verifies
 libc independence with a dynamic musl loader; details are in STAGE-C.md. Desktop
 presentation still requires the later WSI/ANativeWindow/AHB work.
 
-Production packaging is wired through the host APK build. `build.sh` builds the
-forwarder and packages `libmaton_vulkan.so` as an x86_64 native library plus
-`maton_icd.json` as an asset. On a stub launch, `V3Launcher` copies both into
-that launch's persistent work directory, maps it at `/run/maton/vulkan`, and
-passes `--gpu-bridge` to the Android-linked production loader. Flatpak receives
-`VK_DRIVER_FILES=/run/maton/vulkan/maton_icd.json`; setting this variable
-selects only MatonOS's ICD, so the app's own Mesa ICD manifests are disabled.
+Production packaging is wired through the host APK build. `linux/gl-maton/`
+builds the forwarder into `org.freedesktop.Platform.GL.maton`, mounted at
+`/usr/lib/x86_64-linux-gnu/GL/maton`. The launcher selects it through
+`FLATPAK_GL_DRIVERS=maton:default` and passes `--gpu-bridge` to the
+Android-linked production loader. The ICD manifest follows the runtime's
+`lib/vulkan/icd.d/` extension layout.
 The forwarder then calls the Android Vulkan loader and its selected device
 (lavapipe on the acceptance VM). Apps still receive the existing `--device=dri`
 grant. This path is offscreen only: desktop presentation remains the separate
