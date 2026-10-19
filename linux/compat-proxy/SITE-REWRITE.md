@@ -365,22 +365,19 @@ The core (first-trap discovery, stub ABI record, emulation entry, trap
 fallback, SUD coexistence) is shared; each backend supplies site validation,
 encoding, register save/restore and cache synchronisation.
 
-| | Syscall insn | Patch | Reach | Concurrent patching |
-|---|---|---|---|---|
-| x86_64 | `syscall`, 2 B | 7-byte window: `mov $stub,%eax; jmp *%rax` or `jmp rel32` | stubs < 4 GiB / ±2 GiB | atomic write of the window while other threads are parked |
-| arm64 | `svc #0`, 4 B | `b stub`, one for one | ±128 MiB | architecturally permitted for `B`/`SVC`; `dc cvau`/`ic ivau`/`isb` |
-| riscv64 | `ecall`, 4 B | `jal x0,stub` one for one; `auipc+jalr` with a moved `li a7,nr` | ±1 MiB / ±2 GiB | 4-byte-aligned sites only; `membarrier(SYNC_CORE)` or `riscv_flush_icache` |
+- **arm64 (decided):** plain branch replacement only. `svc #0` (4 B) becomes
+  `b stub` (4 B, ±128 MiB) one for one; no instruction relocation, no other
+  encodings. The per-site stub saves state, emulates (`x8` = nr, `x0`–`x5`
+  args), returns in `x0`, then `b site+4`. No `bl` (it would clobber `x30`).
+  Concurrent modification of `SVC`→`B` is architecturally permitted; publish
+  with `dc cvau`/`ic ivau`/`isb`. BTI does not apply to direct branches. Sites
+  whose stub cannot be placed within ±128 MiB stay on the trap.
+- **riscv64 (decided):** no site rewriting for now; every syscall stays on
+  the SIGSYS trap path. (Reasons: `jal` reaches only ±1 MiB, longer reach
+  needs a scratch register, `ecall` may be only 2-byte aligned with the C
+  extension, and cross-hart icache sync needs an extra syscall.)
 
-- **arm64** is the easiest: per-site stub saves state, emulates (`x8` = nr,
-  `x0`–`x5` args), returns in `x0`, then `b site+4`. No `bl` (it would clobber
-  `x30`). BTI does not apply to direct branches.
-- **riscv64** is the hardest: `jal` reaches only ±1 MiB (tight in large
-  libraries); longer reach needs a scratch register, which is only safe for
-  known wrapper shapes because the kernel preserves all registers except `a0`
-  across `ecall`; with the C extension an `ecall` may be only 2-byte aligned
-  and cannot be replaced by one atomic store.
-
-Order: x86_64 (shipping), arm64, riscv64.
+Order: x86_64 (shipping), then arm64.
 
 ### Concurrency and process semantics
 
