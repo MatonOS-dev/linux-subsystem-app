@@ -190,7 +190,13 @@ The first item is now measured; remaining items are estimates.
    measured: trapped calls fell 98.7% on warm pull/deploy and 98.9% on launch;
    warm proxy pull/deploy fell from 26.94 s to 10.34 s and launch from 4.70 s
    to 1.20 s with counters off. Other `fcntl` commands remain trapped.
-2. **Syscall-site rewrite.** The measured residual handler cost is about
+2. **Per-trap allocation and probing.** Implemented (9246db2): a per-thread
+   trap arena replaces one `mmap`/`munmap` per allocation; EUID is cached.
+   Host launch `mmap`+`munmap` fell from 649,388 to 7,803; raw kernel calls per
+   trap are ~46 (launch) and ~31 (warm pull+deploy); warm pull+deploy through
+   the proxy 4.83 s (native 3.2 s). The remaining per-trap `openat`/`readlinkat`
+   probing is the next target.
+3. **Syscall-site rewrite.** The measured residual handler cost is about
    10.7 us/trap for the install profile and 5.9 us/trap for the VulkanInfo
    launch profile. Multiplying by call count gives 67.8 aggregate handler
    seconds for the install and 6.2 s for launch; concurrency and blocking
@@ -198,14 +204,14 @@ The first item is now measured; remaining items are estimates.
    roughly 2–6 s per warm install and 0.5–1.5 s per launch, to be verified by
    an A/B build. The serial bwrap fixture has a much larger per-trap cost but
    only 325 traps, so its direct ceiling is 27.6 ms.
-3. **Resolution cache and app-data fast path.** The measured resolver total
+4. **Resolution cache and app-data fast path.** The measured resolver total
    is 3.62 aggregate seconds for install and 0.40 s for launch; repeated
    metadata and path operations (`openat`, `statx`, `newfstatat`, `readlink`)
    dominate it. A cache hit for immutable mount-table translations and a
    safe direct path for verified app-data roots could save a fraction of this
    (estimate 0.5–1.5 aggregate seconds/install, 0.1–0.3 s/launch). Cache only
    translations; never cache existence or symlink contents.
-4. **Install-process filter without path traps.** Flatpak's install/deploy
+5. **Install-process filter without path traps.** Flatpak's install/deploy
    process uses many paths, so disabling all path traps is not safe with the
    current virtual mount semantics. A narrowly identified host-only install
    process could bypass translation only for paths proven outside virtual
@@ -245,37 +251,136 @@ drop that record when its address range is unmapped or replaced.
 
 ### x86_64 site encoding
 
-`syscall` is two bytes (`0f 05`), too short for a direct near jump. No fixed
-low-address trampoline is available. Use an opportunistic in-page island:
+`syscall` is two bytes (`0f 05`), too short for any direct jump. A fixed
+low-address trampoline (zpoline's `call *%rax`) is not available:
+`mmap_min_addr` forbids mapping page 0. The design therefore patches the
+instruction that loads the syscall number together with the `syscall`.
 
-1. Copy the complete page anonymously and RX-map it at its original address.
-2. Find at least 16 bytes of proven unreachable instruction padding within
-   signed-byte branch range of the site. The island starts with a short `jmp`
-   from the site (`eb rel8`) to an island stub. The stub uses an indirect RIP
-   relative jump through a per-site pointer to an out-of-line trampoline.
-3. Build the out-of-line trampoline in a separate anonymous RW allocation,
-   then switch it to RX. It saves the syscall number and ABI argument/result
-   registers required by the backend, calls the common emulation entry with
-   `(arch, site, syscall, args)`, restores the syscall-visible clobber rules,
-   and resumes at the instruction immediately after the original two-byte
-   site. It does not execute the original `syscall`.
-4. If the page has no provably unreachable nearby island space, if the branch
-   would cross an unmapped page, or if instruction decoding/relocation is
-   ambiguous, leave the site unchanged and use the SIGSYS handler every time.
+**Primary encoding: immediate number, adjacent load (7-byte window).**
 
-The relocatable trampoline uses a backend-owned ABI record and a dispatch
-table; core code contains no x86 instruction bytes or `#ifdef` branches. The
-x86_64 backend owns opcode verification, site calculation, branch/island
-encoding, register save/restore, and instruction-cache synchronization. The
-i386 backend implements the corresponding `syscall`, `sysenter`, and
-`int 0x80` sites it can safely decode, including its distinct register and
-return conventions. It may decline any site it cannot relocate. An arm64
-backend can later handle four-byte `svc #0` instructions with the same core
-record and dispatch entry.
+```
+before:  b8 nn nn nn nn   mov $nr, %eax      ; 5 bytes
+         0f 05            syscall            ; 2 bytes
+after:   b8 ss ss ss ss   mov $stub, %eax    ; 5 bytes
+         ff e0            jmp *%rax          ; 2 bytes
+```
 
-The trap filter remains installed. Sites never seen before, unsupported
-instructions, and any site that fails a safety check continue through the
-existing SIGSYS path.
+- The window is exactly the original two instructions; nothing else moves.
+- Clobbering `%rax` is free: the syscall overwrites it with the result anyway
+  and no code may rely on it across `syscall`.
+- `stub` is a per-site stub. It knows `nr` (it was the immediate), runs the
+  common emulation entry, writes the result to `%rax` and jumps to the
+  instruction after the window with a `jmp rel32` or an absolute jump.
+- `mov $imm32,%eax` zero-extends, so all stubs live below 4 GiB
+  (`MAP_32BIT` or a low hint; `mmap_min_addr` only excludes the first 32 KiB).
+  One global stub area serves every library, wherever it is mapped: no
+  per-library near allocation.
+- The indirect jump goes to a fixed target per site and predicts perfectly.
+  Stubs start with `endbr64` so the scheme stays valid if user-space IBT is
+  enabled later.
+- A `mov $nr,%rax` (`48 c7 c0 imm32`, 7 bytes) adjacent load gives a 9-byte
+  window; use the same stub with two trailing NOPs.
+
+**Secondary encoding: number in a register (`jmp rel32`).** When the number is
+not an immediate (`mov %rsi,%rax`, Go's stack load, musl's cancellation
+routine), overwriting `%rax` would lose it. Replace a relocatable preceding
+instruction plus `syscall` (at least 5 bytes) with `jmp rel32` to a per-site
+stub within ±2 GiB, pad with NOPs, run the moved instruction in the stub, and
+read the number from `%rax` at run time. Only relocatable instructions with no
+RIP-relative operand (or with a fixed-up displacement) qualify.
+
+**Branch rule.** No branch may target any byte inside the window except its
+first byte. A target equal to the window start is fine (retry loops jump back
+to the `mov`); a target on the `syscall` itself is not. Check direct branch
+targets in the containing function; indirect targets cannot be proven, so
+only patch recognised wrapper shapes (below) and keep the trap fallback.
+
+**Everything else stays on the trap:** `xor %eax,%eax; syscall` (4 bytes;
+glibc's `read` wrappers), non-adjacent number loads with intervening
+instructions, unknown shapes, page-straddling windows.
+
+#### Measured coverage (static, 2026-10-19)
+
+glibc from the Freedesktop 26.08 runtime (`libc.so.6`, 484 sites):
+
+| Shape before `syscall` | Sites | Share |
+|---|---:|---:|
+| `mov $nr,%eax` adjacent (primary) | 409 | 84.5% |
+| `mov $nr,%eax` earlier, non-adjacent | 63 | 13.0% |
+| `mov $nr,%rax` adjacent (9-byte window) | 1 | 0.2% |
+| `xor %eax,%eax` (`read`, nr 0) | 2 | 0.4% |
+| number from a register | 3 | 0.6% |
+| other | 6 | 1.2% |
+
+Of the 409 adjacent sites, 13 are direct branch targets — all at the `mov`
+(window start), none at the `syscall`. The hot wrappers from the trap profile
+are all adjacent-immediate: `openat` (4 sites), `newfstatat` (2), `statx`,
+`readlink`, `readlinkat`, `getdents64`, `lseek`, `fcntl`, most of `close`,
+`mmap`, `fstat`. Only `read` uses the `xor` shape.
+
+musl 1.2.x from Alpine 3.24 (`ld-musl-x86_64.so.1`, 508 sites):
+
+| Shape before `syscall` | Sites | Share |
+|---|---:|---:|
+| `mov $nr,%eax` adjacent | 290 | 57.1% |
+| `mov $nr,%eax` earlier, non-adjacent | 192 | 37.8% |
+| number from a register | 8 | 1.6% |
+| `mov $nr,%rax` adjacent | 1 | 0.2% |
+| other | 17 | 3.3% |
+
+musl's syscalls are inline asm with an `"a"(n)` operand, so the compiler
+schedules the load freely (hence the 38%). Its hot path is different, though:
+every cancellable call (`read`, `write`, `openat`, `close`, `poll`, locking
+`fcntl`, ...) goes through one routine, `__syscall_cp_asm`, with one call site:
+
+```
+__cp_begin:  mov (%rdi),%eax ; test %eax,%eax ; jne __cp_cancel
+             mov %rsi,%rax                 ; number from a register
+             ... argument shuffle ...
+             mov %r11,0x8(%rsp)            ; 5 bytes  -> relocated
+             syscall                       ; 2 bytes
+__cp_end:    ret
+```
+
+This site takes the secondary encoding (`jmp rel32` over
+`mov %r11,0x8(%rsp); syscall`). One patch covers most of musl's hot traffic.
+
+**musl cancellation rule.** musl's cancel handler acts on `pthread_cancel`
+during a blocking syscall only if the interrupted IP lies in
+`[__cp_begin, __cp_end)`. After patching, the blocking call runs from the
+stub, outside that range, so a cancel would only be noticed after the call
+returns. Before patching this site, the stub must preserve cancellation-point
+semantics (e.g. when a signal interrupts the stub's blocking raw syscall,
+rewrite the saved IP to the original `syscall` site so musl's handler sees it
+in range), proven by a test that cancels a thread blocked in `read` under
+musl. Until then this one site stays on the trap. The current SIGSYS path has
+the same property in principle and gets the same test.
+
+bionic's generated syscall stubs are adjacent `mov $nr,%eax; syscall` by
+construction (only relevant if bionic payload code is ever trapped).
+
+### Other architectures
+
+The core (first-trap discovery, stub ABI record, emulation entry, trap
+fallback, SUD coexistence) is shared; each backend supplies site validation,
+encoding, register save/restore and cache synchronisation.
+
+| | Syscall insn | Patch | Reach | Concurrent patching |
+|---|---|---|---|---|
+| x86_64 | `syscall`, 2 B | 7-byte window: `mov $stub,%eax; jmp *%rax` or `jmp rel32` | stubs < 4 GiB / ±2 GiB | atomic write of the window while other threads are parked |
+| arm64 | `svc #0`, 4 B | `b stub`, one for one | ±128 MiB | architecturally permitted for `B`/`SVC`; `dc cvau`/`ic ivau`/`isb` |
+| riscv64 | `ecall`, 4 B | `jal x0,stub` one for one; `auipc+jalr` with a moved `li a7,nr` | ±1 MiB / ±2 GiB | 4-byte-aligned sites only; `membarrier(SYNC_CORE)` or `riscv_flush_icache` |
+
+- **arm64** is the easiest: per-site stub saves state, emulates (`x8` = nr,
+  `x0`–`x5` args), returns in `x0`, then `b site+4`. No `bl` (it would clobber
+  `x30`). BTI does not apply to direct branches.
+- **riscv64** is the hardest: `jal` reaches only ±1 MiB (tight in large
+  libraries); longer reach needs a scratch register, which is only safe for
+  known wrapper shapes because the kernel preserves all registers except `a0`
+  across `ecall`; with the C extension an `ecall` may be only 2-byte aligned
+  and cannot be replaced by one atomic store.
+
+Order: x86_64 (shipping), arm64, riscv64.
 
 ### Concurrency and process semantics
 
@@ -328,8 +433,8 @@ existing SIGSYS path.
 ### Unpatchable cases and rollout
 
 Keep the signal fallback for shared writable/executable mappings, text pages
-whose file identity is required, sites on page boundaries, no safe island
-space, unknown prefix/decoder state, overlapping instruction streams, code
+whose file identity is required, windows straddling a page boundary, shapes
+other than the recognised wrappers, unknown prefix/decoder state, overlapping instruction streams, code
 that changes after discovery, unsupported syscall IDs, app-owned SUD/SIGSYS,
 unsafe thread states, vfork children, and restartable calls until restart
 semantics are validated. Start disabled by default behind an environment or
