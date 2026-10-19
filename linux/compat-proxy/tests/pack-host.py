@@ -77,6 +77,7 @@ bind_probe_src.write_text(r'''#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -86,6 +87,7 @@ int main(int argc,char **argv){
  if(source<0||fstat(source,&before))return 2;
  char proc[64];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",source);
  if(mount(proc,"/newroot/usr",NULL,MS_BIND,NULL)){perror("bind packed fd");return 3;}
+ if(mount(NULL,"/newroot/usr",NULL,MS_BIND|MS_REMOUNT|MS_RDONLY,NULL))return 11;
  int target=open("/newroot/usr",O_PATH|O_DIRECTORY);
  if(target<0||fstat(target,&after))return 4;
  if(before.st_dev!=after.st_dev||before.st_ino!=after.st_ino){fprintf(stderr,"packed fd bind changed inode\n");return 5;}
@@ -95,7 +97,10 @@ int main(int argc,char **argv){
   int next=openat(target,parents[i],O_PATH|O_DIRECTORY|O_NOFOLLOW);if(next<0)return 7;close(target);target=next;
  }
  int leaf=openat(target,"extension-marker",O_RDONLY);char text[64];
- if(leaf<0||read(leaf,text,sizeof(text))!=29)return 8;
+ const char expected[]="GL extension directory entry\n";
+ if(leaf<0||read(leaf,text,sizeof(text))!=(ssize_t)sizeof(expected)-1||memcmp(text,expected,sizeof(expected)-1))return 8;
+ if(mkdirat(target,"missing-parent",0755)!=-1||errno!=EROFS)return 9;
+ if(fstatat(target,"missing-parent",&after,AT_SYMLINK_NOFOLLOW)!=-1||errno!=ENOENT)return 10;
  close(leaf);close(target);close(source);
  puts("packed bind-fd inode and dirfd-relative existing parents PASS");return 0;
 }
@@ -125,6 +130,27 @@ if ldconfig and shutil.which('bwrap'):
  assert (cache/'cache').stat().st_size>0
  assert b'libfixture.so' in output(ldconfig,'-p','-C',cache/'cache')
  print('real packed ldconfig -X -C through bwrap runtime/cache bind-fd PASS',flush=True)
+ # Repeat with Flatpak's GL extension topology: tmpfs at GL, then a packed
+ # extension at GL/default, with its add-ld-path in the generated config.
+ ext_src=root/'ld-extension-src';(ext_src/'lib').mkdir(parents=True)
+ shutil.copy2(src/'lib/libfixture.so',ext_src/'lib/libfixture.so')
+ ext_repo=root/'ld-extension-repo';run('ostree','init','--repo='+str(ext_repo),'--mode=bare-user')
+ run('ostree','commit','--repo='+str(ext_repo),'-b','fixture','--tree=dir='+str(ext_src),'-m','ldconfig extension')
+ ext_rev=output('ostree','rev-parse','--repo='+str(ext_repo),'fixture').decode().strip();ext_bundle=root/'ld-extension-bundle'
+ run(sys.executable,base.parent/'packs/pack.py','pack','--repo',ext_repo,'--commit',ext_rev,'--out',ext_bundle)
+ ext_files=root/'ld-extension-deployment/files';ext_files.mkdir(parents=True)
+ gl='/usr/lib/x86_64-linux-gnu/GL';extension=gl+'/default'
+ config.write_text(extension+'/lib\n');(cache/'cache').unlink()
+ at=args.index(bwrap);args[at:at]=['--pack-mount',extension,ext_bundle/'objects.index',ext_bundle]
+ at=args.index('--symlink');args[at:at]=['--tmpfs',gl,'--ro-bind',ext_files,extension]
+ runtime_fd=os.open(files,os.O_RDONLY|os.O_DIRECTORY);cache_fd=os.open(cache,os.O_RDONLY|os.O_DIRECTORY)
+ args[args.index('--ro-bind-fd')+1]=str(runtime_fd);args[args.index('--bind-fd')+1]=str(cache_fd)
+ try:
+  with (root/'ldconfig-extension.stdout').open('wb') as out,(root/'ldconfig-extension.trace').open('wb') as err:
+   run(*args,pass_fds=[runtime_fd,cache_fd],stdout=out,stderr=err,timeout=30)
+ finally:os.close(runtime_fd);os.close(cache_fd)
+ assert (extension+'/lib/libfixture.so').encode() in output(ldconfig,'-p','-C',cache/'cache')
+ print('real packed ldconfig with GL tmpfs/extension/add-ld-path PASS',flush=True)
 else:print('SKIP packed ldconfig: static host ldconfig/bwrap unavailable',flush=True)
 for name in ('data','large','link','nested/leaf'):
  data=(src/name).read_bytes();assert guest('/bin/cat','/packed/'+name)==data

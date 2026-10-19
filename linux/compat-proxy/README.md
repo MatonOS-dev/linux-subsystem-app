@@ -1281,3 +1281,47 @@ The inherited app syscall policy remains authoritative: on this checkout
 but does not bypass that denial. Host filesystems/kernels without xattrat
 return ENOSYS. Validation is on the host under the copied app filter, not a
 fresh MatonOS VM deployment; rerun Flatpak installation on the rebuilt image.
+
+### Packed directory descriptors in bwrap (2026-10-19)
+
+A packed directory's real descriptor refers to an empty, unlinked carrier.
+Resolving `/proc/self/fd/N` through the kernel's readlink text therefore lost
+the indexed source when bwrap used that descriptor as a bind source. The host
+regression on the original code reports `packed fd bind changed inode`; the
+packaged bwrap reports `Race condition binding dirfd` before executing
+ldconfig. Proc magic links for tracked packed descriptors now follow their
+recorded VFS names, including the rebasing already performed by pivot_root.
+The normal pack lookup then supplies the source directory and its identity.
+
+Trace mode records each path call's syscall/dirfd, original path and resolved
+path before pack dispatch, alongside the existing bwrap argv/bundle, mount,
+exec and syscall-result diagnostics. Flatpak passes the cache subprocess's
+stdout/stderr through to the launcher.
+
+`tests/pack-host.py` checks source/destination inode equality, dirfd-relative
+lookups of existing GL parents, their EEXIST results, file contents, and EROFS
+plus ENOENT when trying to create a missing directory. When a static host
+ldconfig and bwrap are available, it executes the packed stock ldconfig with
+`-X -C`, using runtime/cache-directory fd binds, and reads the generated cache
+with host ldconfig. A second run adds the GL tmpfs, a separately packed
+extension bind and its library search path; the resulting cache must name
+that extension's actual library. Both real-ldconfig cases passed on this host.
+Run the full proxy suite in an external disposable copy next to `packs/` and
+`gpu-forward-spike/`; its build step produces fresh loaders before testing.
+
+The proxy, packs and top-level host suites pass. Device acceptance is pending
+the coordinator's VulkanInfo installation on VM 5556. The signed diagnostic
+and candidate APKs have been built. No kernel, policy or image changes are
+required.
+
+Device checks, also applicable to Ryzen/RX 6600, Surface Pro 3 and ProDesk:
+
+1. Install the signed subsystem update and an installed VulkanInfo stub with
+   its declared runtime and GL packages.
+2. Enable the stub's `cache/v3-trace` marker through root adb, force-stop that
+   exact stub package, and launch it again. Keep the VM's current /data.
+3. Collect `logcat -s MatonV3`. Verify the ldconfig bwrap mounts the runtime
+   and extension, executes ldconfig, and exits zero; verify VulkanInfo then
+   reaches Vulkan initialization. Record any later graphics error separately.
+4. Relaunch once more to exercise the generated-cache reuse path. Check for
+   SELinux denials and retain the complete trace for failures.
