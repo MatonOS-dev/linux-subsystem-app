@@ -98,14 +98,16 @@ final class V3Launcher {
             glBranch=new String(input.readAllBytes(),StandardCharsets.UTF_8).trim();
         }
         boolean matonGlEnabled=runtimeMetadata!=null;
+        File deployment=PackageDeployment.prepare(context,ref);
         if(matonGlEnabled) {
             PackageMounts.requireGlExtensionVersion(runtimeMetadata,glBranch);
+            File extensionFiles=PackageDeployment.prepareGlExtension(new File(deployment,"system"),
+                    new File(host.getApplicationInfo().sourceDir),glBranch);
             command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(
                     new File(host.getApplicationInfo().sourceDir), "assets/gl-maton", launchWork,
-                    "/usr/lib/x86_64-linux-gnu/GL/maton"));
+                    extensionFiles.getAbsolutePath()));
         }
         command.addAll(DeclaredPackages.arguments(packages,launchWork,true));
-        File deployment=PackageDeployment.prepare(context,ref);
         java.util.Collections.addAll(command,
                 LoaderCommand.tool(context, LoaderCommand.FLATPAK_CLI).getAbsolutePath(),
                 // The session bus is the stub's private broker, which enforces the app's

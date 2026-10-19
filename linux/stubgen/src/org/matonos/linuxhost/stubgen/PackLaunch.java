@@ -57,12 +57,12 @@ public final class PackLaunch {
         Map<String,String> carriers=new HashMap<>();
         try(ZipFile zip=new ZipFile(archive)) {
             ZipEntry entry=zip.getEntry(assetPrefix+"/objects.index");
-            if(entry==null||entry.getSize()>64*1024*1024)throw new IOException("Missing packaged extension index");
+            if(entry==null)throw new IOException("Missing packaged extension index");
             try(InputStream input=zip.getInputStream(entry)){index=input.readAllBytes();}
             Path directory=new File(cache,"extension-carriers").toPath();Files.createDirectories(directory);
             for(String pack:packs(index)) {
                 ZipEntry carrier=zip.getEntry(assetPrefix+"/"+pack);
-                if(carrier==null||carrier.getSize()>512L*1024*1024)throw new IOException("Missing packaged extension carrier");
+                if(carrier==null)throw new IOException("Missing packaged extension carrier");
                 Path destination=directory.resolve(pack).normalize();
                 if(!destination.getParent().equals(directory))throw new IOException("Invalid extension carrier name");
                 try(InputStream input=zip.getInputStream(carrier);OutputStream output=Files.newOutputStream(destination)) {

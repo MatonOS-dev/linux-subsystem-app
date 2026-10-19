@@ -32,6 +32,16 @@ through the existing loader pack interface at
 the old `/run/maton` maps are removed. The existing `--gpu-bridge` path is
 unchanged.
 
+At launch, the host creates the matching
+`runtime/org.freedesktop.Platform.GL.maton/x86_64/26.08/<commit>` deployment
+under Flatpak's temporary system installation, using the packaged ref,
+metadata, and OSTree commit object. It includes the normal `files/`,
+`metadata`, `deploy`, `.ref`, `active`, and `current` entries. The signed
+payload pack overlays that deployment's `files/` directory through the proxy;
+there is no separate `/usr/lib/.../GL/maton` outer-view mount. Flatpak can
+therefore discover the driver as an installed GL extension and generate its
+normal GL driver paths.
+
 The package is built from the same forwarder outputs as the subsystem APK,
 so subsystem APK updates replace its payload. It is not published to Flathub.
 To select a different runtime branch, set `MATON_GL_RUNTIME_BRANCH` during the
@@ -41,9 +51,11 @@ branch being declared by the runtime's GL extension point.
 ## Tests and device check
 
 `tests/run.sh` builds a test OSTree ref, verifies the ref branch, metadata,
-payload paths and pack contents. The top-level `tests/run.sh` runs this test
-alongside the pack and compatibility-proxy suites. `V3Launcher` checks the
-runtime's GL extension version list before adding the payload pack mount.
+payload paths and pack contents. The subsystem host test verifies the
+temporary installed-ref layout and commit object. The top-level
+`tests/run.sh` runs this test alongside the pack and compatibility-proxy
+suites. `V3Launcher` checks the runtime's GL extension version list before
+adding the payload pack mount.
 
 Assigned-VM acceptance procedure (ADB `127.0.0.1:5556`; do not reboot):
 
@@ -53,10 +65,3 @@ Assigned-VM acceptance procedure (ADB `127.0.0.1:5556`; do not reboot):
 4. Check `logcat -s MatonV3` for VulkanInfo discovering the Maton ICD and
    listing the forwarder device. Check that EGL's vendor list includes Maton.
    If Vulkan reaches the driver but fails later, record that next error.
-
-The signed subsystem APK installed and relaunched on VM 5556. The runtime
-metadata branch check passed, and MatonV3 logged the new GL/maton pack mount.
-VulkanInfo no longer reports the old `/run/maton/vulkan/maton_icd.json`
-lookup; its next error is `vkCreateInstance: Found no drivers!`. The forwarder
-device was therefore not listed. EGL vendor discovery was not independently
-verified because the assigned VulkanInfo app does not probe EGL.

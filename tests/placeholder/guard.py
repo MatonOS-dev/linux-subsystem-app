@@ -85,6 +85,8 @@ ALLOW = {
         1, "reads the installed index_ split APK (app-owned), not staging"),
     ("PackLaunch.java", "zipfile"): (
         3, "reads installed index_/extra_ splits and the signed subsystem GL pack archive (app-owned), not staging"),
+    ("PackageDeployment.java", "zipfile"): (
+        1, "reads ref metadata and the commit object from the signed subsystem GL extension archive, not staging"),
     ("PackSeed.java", "randomaccessfile"): (
         1, "reads an installed pack_ split carrier (app-owned), not staging"),
     ("PackSessionPlan.java", "zipfile"): (
