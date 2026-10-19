@@ -34,7 +34,8 @@ public final class PackageDeploymentTest {
                 new String(Files.readAllBytes(version.resolve("metadata")),StandardCharsets.UTF_8));
         assertTrue(Files.isRegularFile(version.resolve(".ref")));
         assertTrue(Files.isSymbolicLink(system.resolve(ref).resolve("active")));
-        assertTrue(Files.isSymbolicLink(system.resolve("runtime/org.freedesktop.Platform.GL.maton/x86_64/current")));
+        assertTrue(Files.isSymbolicLink(system.resolve("runtime/org.freedesktop.Platform.GL.maton/current")));
+        assertEquals(Path.of("x86_64",branch),Files.readSymbolicLink(system.resolve("runtime/org.freedesktop.Platform.GL.maton/current")));
         assertArrayEquals(commitObject,Files.readAllBytes(system.resolve("repo/objects").resolve(commit.substring(0,2)).resolve(commit.substring(2)+".commit")));
     }
     private static void put(ZipOutputStream zip,String name,String value)throws IOException {

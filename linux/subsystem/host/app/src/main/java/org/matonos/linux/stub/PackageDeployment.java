@@ -56,8 +56,8 @@ final class PackageDeployment {
         Files.write(version.resolve(".ref"),new byte[0]);
         Files.createDirectory(version.resolve("files"));
         link(branchRoot.resolve("active"),Path.of(identity[1]));
-        link(root.resolve("runtime/org.freedesktop.Platform.GL.maton/x86_64/current"),
-                Path.of(branch,"current"));
+        link(root.resolve("runtime/org.freedesktop.Platform.GL.maton/current"),
+                Path.of("x86_64",branch));
         Path repo=root.resolve("repo");Files.createDirectories(repo.resolve("objects"));
         Path object=repo.resolve("objects").resolve(identity[1].substring(0,2)).resolve(identity[1].substring(2)+".commit");
         Files.createDirectories(object.getParent());Files.write(object,commitObject);
