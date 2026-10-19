@@ -15,7 +15,17 @@ void *mv_alloc(size_t n) {
 }
 void mv_free(void *p) {if(p){union block *h=(union block *)p-1;mv_unmap(h,h->length);}}
 /* Named read-only launcher mapping: no libc data/code dependency. */
+static const struct maton_gpu_bootstrap *cached_bootstrap;
+static const char *bootstrap_field(const struct maton_gpu_bootstrap *p,const char *key) {
+    return !strcmp(key,"MATON_GPU_BRIDGE")?p->bridge:
+           !strcmp(key,"MATON_THREAD_ADOPT")?p->adopt:
+           !strcmp(key,"MATON_FAST_TLS")?p->fast:
+           !strcmp(key,"MATON_LINUX_PHDR")?p->phdr:
+           !strcmp(key,"MATON_LINUX_PHNUM")?p->phnum:0;
+}
 const char *mv_env(const char *key) {
+    const struct maton_gpu_bootstrap *cached=__atomic_load_n(&cached_bootstrap,__ATOMIC_ACQUIRE);
+    if(cached)return bootstrap_field(cached,key);
     long fd=mv_open("/proc/self/maps");if(fd<0)return 0;
     char line[4096];size_t n=0;const char *result=0;
     for(;;) {
@@ -28,11 +38,8 @@ const char *mv_env(const char *key) {
             size_t j=0;while(line[j] && line[j]!='-')j++;line[j]=0;
             const struct maton_gpu_bootstrap *p=(void *)mv_hex(line);
             if(p && p->magic==MATON_GPU_BOOTSTRAP_MAGIC) {
-                result=!strcmp(key,"MATON_GPU_BRIDGE")?p->bridge:
-                       !strcmp(key,"MATON_THREAD_ADOPT")?p->adopt:
-                       !strcmp(key,"MATON_FAST_TLS")?p->fast:
-                       !strcmp(key,"MATON_LINUX_PHDR")?p->phdr:
-                       !strcmp(key,"MATON_LINUX_PHNUM")?p->phnum:0;
+                __atomic_store_n(&cached_bootstrap,p,__ATOMIC_RELEASE);
+                result=bootstrap_field(p,key);
             }
             break;
         }
