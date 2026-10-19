@@ -20,6 +20,7 @@
 #include "../gpu-forward-spike/spike3/adopt.h"
 #include "../gpu-forward-spike/bootstrap.h"
 #include "../gpu-forward-spike/bridge.h"
+static struct maton_gpu_bootstrap *gpu_bootstrap;
 static const char *gpu_bridge_error(void) { return dlerror(); }
 #endif
 
@@ -359,7 +360,18 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     for(unsigned i=0;i<ec;i++) *v++=ev[i];
     *v++=0; p_copy(v,aux,sizeof(aux));
     vfs_free(av);vfs_free(ev);commit_elf(&main);commit_elf(&interp);
-    image->entry=entry;image->stack=sp;return 0;
+    image->entry=entry;image->stack=sp;
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    /* The resident survives exec. Publish this payload, rather than leaving
+     * GPU clients looking at the original bwrap/launcher link map. The private
+     * mapping is copy-on-write across fork, like the payload it describes. */
+    if(gpu_bootstrap) {
+        if(RAW(PROXY_SC_mprotect,gpu_bootstrap,PAGE,PROT_READ|PROT_WRITE,0,0,0))return -EACCES;
+        maton_gpu_payload(gpu_bootstrap,main.phdr,main.phnum);
+        if(RAW(PROXY_SC_mprotect,gpu_bootstrap,PAGE,PROT_READ,0,0,0))return -EACCES;
+    }
+#endif
+    return 0;
 failed:
     if(proxy_trace)proxy_log("exec-load-failed",r,0);
     if(main.size)RAW(PROXY_SC_munmap,main.area,main.size,0,0,0,0);
@@ -457,6 +469,7 @@ int main(int argc,char **argv,char **environ) {
         }
         if(prctl(PR_SET_VMA,PR_SET_VMA_ANON_NAME,bootstrap,4096,MATON_GPU_BOOTSTRAP_NAME) ||
            mprotect(bootstrap,4096,PROT_READ)) return 6;
+        gpu_bootstrap=bootstrap;
         adopt_launch(image.entry,image.stack);
     }
 #endif

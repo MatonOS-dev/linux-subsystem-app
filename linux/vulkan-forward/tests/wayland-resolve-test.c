@@ -39,6 +39,11 @@ int main(void) {
     assert(!prctl(PR_SET_VMA,PR_SET_VMA_ANON_NAME,bootstrap,4096,MATON_GPU_BOOTSTRAP_NAME));
     assert(!mprotect(bootstrap,4096,PROT_READ));
     assert(mv_wayland_symbol("wl_proxy_marshal_flags")==dlsym(handle,"wl_proxy_marshal_flags"));
+    /* Intercepted exec must replace the initial launcher's metadata. */
+    assert(!mprotect(bootstrap,4096,PROT_READ|PROT_WRITE));
+    maton_gpu_payload(bootstrap,(uintptr_t)headers,2);
+    assert(!mprotect(bootstrap,4096,PROT_READ));
+    assert(mv_wayland_symbol("wl_proxy_get_version")==dlsym(handle,"wl_proxy_get_version"));
     assert(!munmap(bootstrap,4096));
     dlclose(handle);
     puts("PASS Wayland resolver: loaded library symbols via ELF dynamic tables");
