@@ -1289,7 +1289,7 @@ Resolving `/proc/self/fd/N` through the kernel's readlink text therefore lost
 the indexed source when bwrap used that descriptor as a bind source. The host
 regression on the original code reports `packed fd bind changed inode`; the
 packaged bwrap reports `Race condition binding dirfd` before executing
-ldconfig. Proc magic links for tracked packed descriptors now follow their
+ldconfig. Proc magic links for tracked packed directory descriptors follow their
 recorded VFS names, including the rebasing already performed by pivot_root.
 The normal pack lookup then supplies the source directory and its identity.
 
@@ -1306,11 +1306,15 @@ ldconfig and bwrap are available, it executes the packed stock ldconfig with
 with host ldconfig. A second run adds the GL tmpfs, a separately packed
 extension bind and its library search path; the resulting cache must name
 that extension's actual library. Both real-ldconfig cases passed on this host.
+The packaged bionic bwrap also passed a host run with the fd-based `--args`
+bundle, runtime/cache fd binds, GL tmpfs and extension bind, and stock
+`ldconfig -X -C`; the generated cache contains the extension library path.
 Run the full proxy suite in an external disposable copy next to `packs/` and
 `gpu-forward-spike/`; its build step produces fresh loaders before testing.
 
 The proxy, packs and top-level host suites pass. Device acceptance is pending
-the coordinator's VulkanInfo installation on VM 5556. The signed diagnostic
+the coordinator's VulkanInfo installation on VM 5556 (still absent at 08:36
+local time). No candidate APK has been deployed to that VM. The signed diagnostic
 and candidate APKs have been built. No kernel, policy or image changes are
 required.
 
