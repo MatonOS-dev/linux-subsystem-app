@@ -4,6 +4,11 @@
 #include <ucontext.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <linux/seccomp.h>
+#ifndef SYS_SECCOMP
+#define SYS_SECCOMP 1
+#endif
+#include <fcntl.h>
 #include <linux/prctl.h>
 #include <errno.h>
 #include <stdio.h>
@@ -11,6 +16,7 @@
 #include <unistd.h>
 extern char __executable_start[],_etext[];
 static volatile sig_atomic_t dispatches,unexpected;
+static volatile sig_atomic_t unexpected_seccomp;
 static long local_raw(long n,long a,long b,long c,long d,long e) {
     register long r10 __asm__("r10")=d,r8 __asm__("r8")=e;
     long result;
@@ -19,6 +25,7 @@ static long local_raw(long n,long a,long b,long c,long d,long e) {
 }
 static void chained(int sig,siginfo_t *info,void *context) {
     (void)sig;
+    if(info->si_code==SYS_SECCOMP) {unexpected_seccomp++;return;}
     if(info->si_code!=2) {unexpected++;return;}
     dispatches++;
     local_raw(SYS_prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_OFF,0,0,0);
@@ -32,6 +39,11 @@ static void chained(int sig,siginfo_t *info,void *context) {
 int main(void) {
     struct sigaction act={0},old={0};act.sa_sigaction=chained;act.sa_flags=SA_SIGINFO|SA_RESETHAND|SA_ONSTACK;
     sigfillset(&act.sa_mask);CHECK(sigaction(SIGSYS,&act,NULL)==0);
+    /* libc is a resident IP exemption. Its SIGSYS registration must still go
+     * through the proxy so subsequent trapped path calls remain translated. */
+    long fd=local_raw(SYS_openat,AT_FDCWD,(long)"/etc/passwd",O_RDONLY,0,0);
+    CHECK(fd>=0);CHECK(!unexpected_seccomp);
+    CHECK(local_raw(SYS_close,fd,0,0,0,0)==0);CHECK(!unexpected_seccomp);
     sigset_t mask,got;sigfillset(&mask);
     CHECK(pthread_sigmask(SIG_SETMASK,&mask,NULL)==0);
     CHECK(pthread_sigmask(SIG_SETMASK,NULL,&got)==0);CHECK(!sigismember(&got,SIGSYS));CHECK(sigismember(&got,SIGCHLD));

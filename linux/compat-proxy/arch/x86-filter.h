@@ -5,7 +5,7 @@
  * the native table. JA (32-bit offset) avoids classic BPF's 8-bit branch limit. */
 static int arch_app_install(void) {
     struct sock_filter bpf[2048];unsigned n=0;
-#define ADD(code,jt,jf,k) do {bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
+#define ADD(code,jt,jf,k) do {if(n>=sizeof(bpf)/sizeof(bpf[0])) return -E2BIG; bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,AUDIT_ARCH_X86_64);
     unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
@@ -26,7 +26,9 @@ static int arch_app_install(void) {
     return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
 }
 static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t libc_count) {
-    struct sock_filter bpf[2048];unsigned n=0;
+    /* The kernel's per-filter instruction limit is 4096. Grow to that limit
+     * and fail cleanly if the process has more ranges than one filter can hold. */
+    struct sock_filter bpf[4096];unsigned n=0;
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT);
     unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
@@ -56,6 +58,24 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_ALU|BPF_AND|BPF_K,0,0,0xff00);
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
+    /* Raw proxy gateways must pass before the rt_sigaction guard below. */
+    uint64_t ip=peer?gateway+0x42:arch_gateway_pc(0);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ip=peer?gateway+0x102:arch_gateway_pc(1);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    /* Keep resident linker code from replacing the proxy's SIGSYS handler.
+     * Other signal actions are forwarded by the existing dispatcher. */
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,encode(PROXY_SC_rt_sigaction));
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     /* FD_CLOEXEC is kernel-owned state: let F_GETFD/F_SETFD reach Linux
      * directly so libc's million-descriptor spawn sweep does not trap.
      * Check the command's high word too; only the exact 32-bit commands
@@ -87,20 +107,6 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         }
     }
-    /* Only the raw syscall instruction is exempt. Kernel reports the IP after syscall. */
-    uint64_t ip=peer?gateway+0x42:arch_gateway_pc(0);
-    /* Symbol immediately after the syscall: no instruction-size assumptions. */
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    ip=peer?gateway+0x102:arch_gateway_pc(1);
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
     /* Forks must account for inherited temporary descriptors. Threads retry natively. */
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,encode(PROXY_SC_clone));
