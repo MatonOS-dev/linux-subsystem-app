@@ -50,16 +50,26 @@ void vfs_trap_begin(void *base,size_t size){
     if(!base || !size || size>UINTPTR_MAX-lo)return;
     hi=lo+size;
     struct trap_arena *a=arena_for_range(lo,hi);
-    if(!a){long p=RAW(PROXY_SC_mmap,0,sizeof(*a),PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)p>=(unsigned long)-4095)return;
+    if(!a){for(a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)if(!a->active&&!a->lo&&!a->hi)break;
+      if(!a){long p=RAW(PROXY_SC_mmap,0,sizeof(*a),PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)p>=(unsigned long)-4095)return;
         a=(void *)p;*a=(struct trap_arena){.lo=lo,.hi=hi};
         struct trap_arena *head;
         do{head=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a->next=head;}
         while(!__atomic_compare_exchange_n(&trap_arenas,&head,a,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
+      } else {a->lo=lo;a->hi=hi;}
     }
     if(!a->active){a->lo=lo;a->hi=hi;a->active=1;
         a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;
         for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
     }
+}
+void vfs_trap_thread_exit(void *base,size_t size){
+ uintptr_t lo=(uintptr_t)base,hi=lo+size;if(!base||!size||hi<lo)return;
+ struct trap_arena *a=arena_for_range(lo,hi);if(!a)return;
+ a->active=0;
+ struct arena_block *b=a->blocks;a->blocks=NULL;
+ while(b){struct arena_block *next=b->next;RAW(PROXY_SC_munmap,b,sizeof(*b)+b->size,0,0,0,0);b=next;}
+ a->lo=a->hi=0;
 }
 void vfs_trap_resume(void){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return;a->active=1;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;}
 void vfs_trap_end(void){
@@ -706,7 +716,7 @@ void vfs_state(struct state *s){
  stacked_oldroot=state_word(s,stacked_oldroot);hide_resolver=state_word(s,hide_resolver);
  for(unsigned i=0;i<2;i++)state_string(s,&gpu_poll_sources[i]);
  uint64_t count=0;for(struct mount *m=table;m;m=m->next)count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_count(s,count);if(s->error)return;
  struct mount **tail=&table;
  for(uint64_t i=0;i<count&&!s->error;i++){
   struct mount *m=s->reading?vfs_palloc(sizeof(*m)):*tail;
@@ -714,14 +724,14 @@ void vfs_state(struct state *s){
   state_string(s,&m->source);state_string(s,&m->target);m->flags=state_word(s,m->flags);m->pack_shadow=state_word(s,m->pack_shadow);tail=&m->next;
  }
  count=0;for(struct fd_name *d=fd_names;d;d=d->next)if(state_live(d->fd))count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_count(s,count);if(s->error)return;
  if(s->reading)for(uint64_t i=0;i<count&&!s->error;i++){
   struct fd_name *d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}
   d->fd=state_word(s,0);d->path=NULL;state_string(s,&d->path);d->next=fd_names;fd_names=d;
   if(!state_live(d->fd))s->error=-EBADF;
  }else for(struct fd_name *d=fd_names;d;d=d->next)if(state_live(d->fd)){state_word(s,d->fd);state_string(s,&d->path);}
  count=0;for(struct temp_lock *l=temp_locks;l;l=l->next)count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_count(s,count);if(s->error)return;
  if(s->reading)for(uint64_t i=0;i<count&&!s->error;i++){
   struct temp_lock *l=vfs_palloc(sizeof(*l));if(!l){s->error=-ENOMEM;return;}
   l->fd=state_word(s,0);l->next=temp_locks;temp_locks=l;if(!state_live(l->fd))s->error=-EBADF;

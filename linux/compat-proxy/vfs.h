@@ -7,6 +7,7 @@ void vfs_free(void *);
 void vfs_trap_begin(void *,size_t);
 void vfs_trap_resume(void);
 void vfs_trap_end(void);
+void vfs_trap_thread_exit(void *,size_t);
 void vfs_raw_count_summary(uint64_t *,uint64_t *);
 void vfs_raw_category_summary(uint64_t[6]);
 void vfs_raw_count_fork_child(void);

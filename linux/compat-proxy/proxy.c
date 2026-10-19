@@ -971,7 +971,7 @@ void proxy_state(struct state *s){
  state_bytes(s,&dns_endpoint,sizeof(dns_endpoint));state_bytes(s,dns_path,sizeof(dns_path));
  state_string(s,(char **)&host_command_socket);host_command_started=state_word(s,host_command_started);
  uint64_t count=0;for(struct dns_fd *d=dns_fds;d;d=d->next)if(state_live(d->fd))count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_count(s,count);if(s->error)return;
  if(!s->reading){
   for(struct dns_fd *d=dns_fds;d;d=d->next)if(state_live(d->fd)){
    int alias=-1;for(struct dns_fd *p=dns_fds;p!=d;p=p->next)if(p->socket==d->socket&&state_live(p->fd)){alias=p->fd;break;}
@@ -987,14 +987,14 @@ void proxy_state(struct state *s){
   *d=(struct dns_fd){fd,socket,dns_fds};dns_fds=d;
  }
  count=0;for(struct dns_watch *w=dns_watches;w;w=w->next)if(state_live(w->fd)&&state_live(w->epoll))count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_count(s,count);if(s->error)return;
  if(!s->reading){for(struct dns_watch *w=dns_watches;w;w=w->next)if(state_live(w->fd)&&state_live(w->epoll)){state_word(s,w->fd);state_word(s,w->epoll);state_word(s,w->event.events);state_word(s,w->event.data.u64);}}
  else for(uint64_t i=0;i<count&&!s->error;i++){
   struct dns_watch *w=vfs_palloc(sizeof(*w));if(!w){s->error=-ENOMEM;return;}
   w->fd=state_word(s,0);w->epoll=state_word(s,0);w->event.events=state_word(s,0);w->event.data.u64=state_word(s,0);w->next=dns_watches;dns_watches=w;
  }
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_count(s,count);if(s->error)return;
  if(!s->reading){for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))state_word(s,d->fd);}
  else for(uint64_t i=0;i<count&&!s->error;i++){struct sysctl_fd *d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->fd=state_word(s,0);d->next=sysctl_fds;sysctl_fds=d;}
 }

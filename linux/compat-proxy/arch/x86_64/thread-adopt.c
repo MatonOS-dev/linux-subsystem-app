@@ -9,6 +9,7 @@
 #include "../../../gpu-forward-spike/spike3/adopt.h"
 #include "adopt.h"
 #include "../../adopt-map.h"
+#include "../../vfs.h"
 #include <stddef.h>
 #include <pthread.h>
 #include <signal.h>
@@ -262,6 +263,7 @@ static void *start(void *arg) {
     backend_fs_write(t->app_fs);
     adopt_run(t);
     /* Exit gate restored our own stack and FS. Resident libc owns cleanup. */
+    vfs_trap_thread_exit(t->signal_stack,signal_stack_size);
     signal_stack_release(t);
     adopt_map_unbind(t->resident_fs,t);
     adopt_map_unbind(atomic_load(&t->app_fs),t);

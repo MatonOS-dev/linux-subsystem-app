@@ -8,6 +8,7 @@
 struct state { int fd,reading,error; uint64_t pos,size; const unsigned char *data; };
 void state_bytes(struct state *,void *,size_t);
 uint64_t state_word(struct state *,uint64_t);
+uint64_t state_count(struct state *,uint64_t);
 void state_string(struct state *,char **);
 int state_live(int);
 int state_private_fd(int);

@@ -126,7 +126,7 @@ long net_call(long nr,proxy_arg_t *a,int newnet,int *handled) {
 #include "state.h"
 void net_state(struct state *s){
  uint64_t count=0;for(struct descriptor *d=fds;d;d=d->next)if(state_live(d->fd))count++;
- count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
+ count=state_count(s,count);if(s->error)return;
  struct descriptor *d=fds;
  for(uint64_t i=0;i<count&&!s->error;i++){
   if(s->reading){d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->ep=vfs_palloc(sizeof(*d->ep));if(!d->ep){s->error=-ENOMEM;return;}d->ep->refs=1;d->ep->first=d->ep->last=NULL;d->next=fds;fds=d;}
@@ -142,7 +142,7 @@ void net_state(struct state *s){
   }
   d->ep->port=state_word(s,d->ep->port);d->ep->route=state_word(s,d->ep->route);
   uint64_t replies=0;for(struct reply *r=d->ep->first;r;r=r->next)replies++;
-  replies=state_word(s,replies);if(replies>65536){s->error=-E2BIG;return;}
+  replies=state_count(s,replies);if(s->error)return;
   struct reply **tail=&d->ep->first;
   for(uint64_t j=0;j<replies&&!s->error;j++){
    struct reply *r=s->reading?vfs_palloc(sizeof(*r)):*tail;if(!r){s->error=-ENOMEM;return;}

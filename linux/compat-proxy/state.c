@@ -9,23 +9,29 @@
 #include <sys/stat.h>
 #include <elf.h>
 #include <linux/memfd.h>
-#define LIMIT (64U<<20)
 int state_android;
 static int private_fd=-1;
 int state_private_fd(int fd){return private_fd>=0 && fd==private_fd;}
 int state_live(int fd){long f=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);return f>=0 && !(f&FD_CLOEXEC);}
 void state_bytes(struct state *s,void *p,size_t n){
  if(s->error)return;
- if(n>LIMIT || s->pos>LIMIT-n || (s->reading && s->pos+n>s->size)){s->error=-EINVAL;return;}
+ if(s->pos>UINT64_MAX-n || (s->reading && (s->pos>s->size || n>s->size-s->pos))){s->error=-EINVAL;return;}
  if(s->reading)p_copy(p,s->data+s->pos,n);
  else if(RAW(PROXY_SC_pwrite64,s->fd,p,n,s->pos,0,0)!=(long)n){s->error=-EIO;return;}
  s->pos+=n;
 }
 uint64_t state_word(struct state *s,uint64_t w){state_bytes(s,&w,8);return w;}
+uint64_t state_count(struct state *s,uint64_t count){
+ count=state_word(s,count);
+ if(!s->error && s->reading && count>(s->size-s->pos)/8)s->error=-EINVAL;
+ return count;
+}
 void state_string(struct state *s,char **p){
- uint64_t n=state_word(s,s->reading?0:*p?p_len(*p)+1:0);
+ size_t length=*p?p_len(*p):0;
+ if(!s->reading && *p && length==SIZE_MAX){s->error=-EOVERFLOW;return;}
+ uint64_t n=state_word(s,s->reading?0:*p?(uint64_t)length+1:0);
  if(s->error)return;
- if(n>65536){s->error=-E2BIG;return;}
+ if(s->reading && (s->pos>s->size || n>s->size-s->pos || n>SIZE_MAX)){s->error=-EINVAL;return;}
  if(s->reading){*p=NULL;if(n){*p=vfs_palloc(n);if(!*p){s->error=-ENOMEM;return;}}}
  if(n){state_bytes(s,*p,n);if(!s->error && ((*p)[n-1] || p_len(*p)!=n-1))s->error=-EINVAL;}
 }
@@ -42,7 +48,7 @@ int state_import(const char *number,const char *token){
  private_fd=fd;
  long seals=RAW(PROXY_SC_fcntl,fd,F_GET_SEALS,0,0,0,0);
  if(seals!=(F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE))return -EPERM;
- struct proxy_stat st;if(arch_stat_fd(fd,&st)||st.st_size<32||st.st_size>LIMIT)return -EINVAL;
+ struct proxy_stat st;if(arch_stat_fd(fd,&st)||st.st_size<32||(uint64_t)st.st_size>SIZE_MAX)return -EINVAL;
  long data=RAW(PROXY_SC_mmap,0,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);
  if((unsigned long)data>=(unsigned long)-4095)return data;
  struct state s={.fd=fd,.reading=1,.size=st.st_size,.data=(void *)data};
@@ -87,8 +93,9 @@ int state_exec(const char *path,char *const *args,char *const *env){
  transfer(&s);error=s.error;
  if(!error)error=RAW(PROXY_SC_fcntl,private_fd,F_ADD_SEALS,F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE,0,0,0);
  char num[24],key[24];decimal(num,private_fd);decimal(key,nonce);
- size_t count=0;while(args&&args[count]){if(count>65536){error=-E2BIG;break;}count++;}
- char **av=vfs_alloc((count+7)*sizeof(*av));if(!av)error=-ENOMEM;
+ size_t count=0;while(args&&args[count]){if(count==SIZE_MAX){error=-EOVERFLOW;break;}count++;}
+ if(count>SIZE_MAX/sizeof(char *)-7)error=-EOVERFLOW;
+ char **av=error?NULL:vfs_alloc((count+7)*sizeof(*av));if(!av&&!error)error=-ENOMEM;
  if(!error){av[0]=self;av[1]="--resident-state";av[2]=num;av[3]=key;av[4]=(char *)path;
  for(size_t i=0;i<count;i++)av[i+5]=args[i];
  av[count+5]=NULL;
