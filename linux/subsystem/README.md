@@ -98,46 +98,6 @@ one of two windows, minimize/restore and closing during Xwayland startup.
 On the Ryzen/RX6600 PC, Surface Pro 3 and ProDesk, repeat the same checks
 without changing game-specific settings or host device permissions.
 
-### Flatpak install staging lifetime
-
-Pack creation now commits the deployed `files/` tree as a private ref in that
-package's existing bare-user-only Flatpak repo. This avoids creating a second
-OSTree repo and duplicating the deployed tree. Once the package's signed pack
-artifacts have been written, the installer removes that package's download
-installation and any legacy `pack-repo` before starting PackageInstaller.
-Other packages retain independent repositories until their own artifacts are
-ready. Pull verification, package signatures and failure cleanup are unchanged.
-
-The host check committed a deployed tree with an executable, regular file and
-symlink into a bare-user-only repo, then passed `ostree fsck --all`; it did not
-change the repo mode. The subsystem APK build and the pack, compat-proxy and
-combined tests passed. On the headless VM, the pre-change VulkanInfo attempt
-committed the package. During the observed retry series, logcat reported a
-2,872,459,264-byte peak operation allocation after packing; the sampled stage
-tree reached 1,864,876 KiB and `MemAvailable` reached 3,854,632 KiB. The later
-VulkanInfo update with the new APK completed in about four seconds. Its
-allocated staging tree fell from 19,791,872 to 9,412,608 bytes after pack
-artifacts were written, and the post-update sampling interval had a minimum
-`MemAvailable` of 5,527,008 KiB. The VM already had VulkanInfo installed, so
-this update run is smaller than a fresh install and is not a like-for-like
-peak comparison. Its package remained installed; no reboot or uninstall was
-used. The baseline VulkanInfo process later exited after SELinux denied access
-to `/tests`; no `LOW_MEMORY` kill occurred during the observed successful
-baseline install.
-
-To measure on a fresh install or a real PC, run
-`org.matonos.testinstaller/org.matonos.linux.VulkanInfoInstallActivity` on a
-freshly booted test image, then sample
-`/data/user/0/org.matonos.linux/no_backup/work/flatpak-staging` with `du -sk`
-while recording `/proc/meminfo`'s `MemAvailable`. Keep the stub installed
-between runs; use an installed-package update for subsequent measurements.
-Check logcat for `Temporary operation allocated bytes after packs` and
-`Released Flatpak and pack repositories`, and confirm the stage is cleaned
-after success or failure. Repeat with a large runtime/app and a constrained
-RAM VM to compare like-for-like fresh installs. A full fresh-install
-before/after VM comparison remains open because this VM already contained the
-VulkanInfo stub.
-
 ### Vulkan WSI handshake diagnostics (round 19)
 
 `MatonWSI` is an opt-in, capped (512 messages per compositor lifetime)
@@ -168,3 +128,12 @@ idle suspend, enable MatonWSI, then launch a fresh Rio stub and collect
 MatonWSI/MatonCompositor/MatonWLR/MatonV3. Check configure acknowledgement
 and each handshake milestone; then check ETR, close/reopen and resizing.
 No shared files, kernel or policy changes are required.
+
+### Install staging peak
+
+After a package's pack splits are written, the store service deletes that
+package's downloaded Flatpak repo and its `pack-repo` before the
+PackageInstaller sessions start, so finished packages no longer hold staging
+space. `pack-repo` itself must stay a separate `bare-user` repo: committing the
+deployed tree into the `bare-user-only` download repo records executables as
+`0600` (seen on VulkanInfo's `bin/vulkaninfo`, exec failed with `EACCES`).
