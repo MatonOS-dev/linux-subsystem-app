@@ -68,6 +68,16 @@ def emit_group(path, items, prefix, library):
             # Do not let the Android driver invoke a Linux callback on bionic TLS.
             "glDebugMessageCallback",
         }
+        custom_window = name in {
+            "eglCreatePlatformWindowSurface", "eglCreateWindowSurface",
+            "eglDestroySurface", "eglSwapBuffers", "eglSwapInterval",
+            "eglQuerySurface", "eglSurfaceAttrib", "eglMakeCurrent",
+            "eglGetCurrentSurface",
+        }
+        if custom_window:
+            lines.append(f"static {ret} {internal}({proto});")
+            names.append(name)
+            continue
         if unsupported:
             lines += [f"static {ret} {internal}({proto}) {{"]
             lines += [f"    (void){p.findtext('name')};" for p in cmd.findall("param")]

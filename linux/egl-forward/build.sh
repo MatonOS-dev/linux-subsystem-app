@@ -17,8 +17,8 @@ cat > "$deps/include/GL/gl.h" <<'EOF'
 /* libglvnd's shared ABI header only consumes GLboolean from GL/gl.h here. */
 typedef unsigned char GLboolean;
 EOF
-flags=(-std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/x86_64" -I"$here")
-"$cc" --target=x86_64-linux-gnu "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/egl_vendor.c" -o "$out/libEGL_maton.so"
+flags=(-std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/x86_64" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client")
+"$cc" --target=x86_64-linux-gnu "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/../vulkan-forward/wayland_resolve.c" "$here/../wayland-client/wayland_client.c" "$here/egl_vendor.c" -o "$out/libEGL_maton.so"
 readelf=${READELF:-llvm-readelf-21}
 "$readelf" -d "$out/libEGL_maton.so" > "$out/dynamic.txt"
 if rg -q NEEDED "$out/dynamic.txt"; then echo 'unexpected DT_NEEDED' >&2; exit 1; fi
@@ -28,7 +28,9 @@ exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out
 for arch in aarch64 riscv64; do
   target="$arch-linux-gnu"
   "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -c "$here/runtime.c" -o "$out/runtime-$arch.o"
-  "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -c "$here/egl_vendor.c" -o "$out/vendor-$arch.o"
+  "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client" -c "$here/../wayland-client/wayland_client.c" -o "$out/wayland-$arch.o"
+  "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client" -c "$here/../vulkan-forward/wayland_resolve.c" -o "$out/resolver-$arch.o"
+  "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client" -c "$here/egl_vendor.c" -o "$out/vendor-$arch.o"
 done
 cp "$here/10_maton.json" "$out/10_maton.json"
 cat "$out/gen/coverage.txt"

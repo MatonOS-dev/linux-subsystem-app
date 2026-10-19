@@ -11,8 +11,19 @@ The JSON selects this vendor, and `eglGetPlatformDisplay` maps
 `EGL_PLATFORM_SURFACELESS_MESA` to Android's surfaceless platform where
 available, with a default-display fallback. The forwarder adds the MESA
 surfaceless token to Android's EGL extension list. Pbuffers and GLES calls
-are forwarded. EGL window/pixmap surfaces, client-buffer pbuffers, and EGL
-images fail closed because Linux native handles cannot cross into Android.
+are forwarded. Wayland window surfaces use the runtime's `wl_egl_window`
+object and `wl_surface`; no libwayland link is added. The adapter uses a
+resident Android pbuffer as the app's default framebuffer, then blits each
+completed frame into a client-allocated `AHardwareBuffer` exposed to GLES
+through an EGLImage. It sends that AHB to the compositor with
+`maton_ahb_buffer_v1`, exports an `EGL_ANDROID_native_fence_sync` fence, and
+presents through the shared `linux/wayland-client` module. That module also
+backs Vulkan WSI and owns the Wayland symbol resolver, private event queue,
+registry, frame callbacks, buffer releases, and sync-file requests. EGL reuses
+the AHB only after its Wayland release arrives. Resize replaces the pbuffer
+and AHB after the previous release; swap interval 0 skips frame-callback
+waits and interval 1 waits for frame pacing. Buffer age is always zero.
+Pixmap surfaces, client-buffer pbuffers, and EGL images remain unsupported.
 The GLES debug-message callback entry point is also a no-op: invoking a Linux
 callback from an Android driver thread would require a callback bridge outside
 this offscreen step.
@@ -65,9 +76,7 @@ The host APK packages EGL in the `org.freedesktop.Platform.GL.maton`
 extension. The relative glvnd manifest and `libEGL_maton.so` are mounted with
 the extension and selected by Flatpak's GL driver extension mechanism. See
 [`linux/gl-maton/README.md`](../gl-maton/README.md) for build and VM status.
-The socket policy is outside this EGL repository and needs resolution before
-the requested real stub-launch acceptance can run. Do not treat APK install as
-proof of EGL runtime behavior.
+Do not treat APK install as proof of EGL runtime behavior.
 
 ## Real-PC verification
 
@@ -80,13 +89,14 @@ proof of EGL runtime behavior.
    stub launch environment, and confirm the 64x64 pbuffer triangle's red
    center pixel with `glReadPixels`.
 4. On a machine without an Android desktop-GL API, confirm
-   `eglBindAPI(EGL_OPENGL_API)` fails cleanly. Wayland and X11 windows belong
-   to step 2; they are not step-1 success criteria.
+   `eglBindAPI(EGL_OPENGL_API)` fails cleanly.
 
-## Next step
+## Wayland window verification
 
-Step 2 can add Wayland surfaces using the existing Vulkan forwarding
-`wsi_wayland.c` and the agreed `maton_ahb_buffer_v1` path. It must preserve the
-Android TLS boundary and use AHB-backed EGLImages plus
-`EGL_ANDROID_native_fence_sync`; none of those handles or extensions are
-exposed here.
+**VM test pending** because the assigned VM is busy. Once free, launch the
+subsystem compositor and run runtime `es2gears` or `eglgears` through a
+Flatpak stub. Verify first presentation, resize, buffer release and reuse,
+swap interval 0 and 1, and surface destruction. If neither app is present,
+use a small EGL client that creates a `wl_egl_window`, draws a changing GLES
+triangle, and resizes the window. Collect logcat and compositor logs; host
+protocol tests do not establish runtime success.

@@ -10,21 +10,22 @@
 struct wl_proxy { const struct wl_interface *interface; uint32_t version; int dead; };
 struct wl_display { int unused; };
 struct wl_event_queue { int unused; };
-static struct wl_proxy registry_proxy,dmabuf_proxy,params_proxy,buffer_proxy,sync_manager_proxy,sync_surface_proxy,ahb_manager_proxy,surface_proxy;
+static struct wl_proxy registry_proxy,dmabuf_proxy,params_proxy,buffer_proxy,sync_manager_proxy,sync_surface_proxy,ahb_manager_proxy,surface_proxy,callback_proxy;
 static struct wl_display display;
 static struct wl_event_queue queue;
-static void (**registry_hooks)(void), (**buffer_hooks)(void);
-static void *registry_data,*buffer_data;
+static void (**registry_hooks)(void), (**buffer_hooks)(void), (**callback_hooks)(void);
+static void *registry_data,*buffer_data,*callback_data;
 static unsigned roundtrips,binds,param_creates,adds,immediates;
 static int ahb_transport_fd=-1;
 static const struct wl_interface exported_registry={"wl_registry",1,2,0,2,0};
 static const struct wl_interface exported_surface={"wl_surface",4,11,0,0,0};
+static const struct wl_interface exported_callback={"wl_callback",1,1,0,1,0};
 
 static struct wl_proxy *fake_marshal(struct wl_proxy *p,uint32_t opcode,
         const struct wl_interface *iface,uint32_t version,uint32_t flags,...) {
     va_list ap;va_start(ap,flags);
     if (opcode==0 && flags==1) {
-        assert(!iface && (p==&params_proxy || p==&buffer_proxy || p==&dmabuf_proxy || p==&sync_manager_proxy || p==&sync_surface_proxy || p==&ahb_manager_proxy));
+        assert(!iface && (p==&params_proxy || p==&buffer_proxy || p==&dmabuf_proxy || p==&sync_manager_proxy || p==&sync_surface_proxy || p==&ahb_manager_proxy || p==&callback_proxy));
         assert(!p->dead);p->dead=1;va_end(ap);return 0;
     }
     assert(!flags);
@@ -45,6 +46,7 @@ static struct wl_proxy *fake_marshal(struct wl_proxy *p,uint32_t opcode,
     if(p==&ahb_manager_proxy && opcode==1){void *id=va_arg(ap,void *);int fd=va_arg(ap,int);uint32_t w=va_arg(ap,uint32_t),h=va_arg(ap,uint32_t),format=va_arg(ap,uint32_t);assert(!id&&fd==ahb_transport_fd&&w==256&&h==256&&format==0x34324241u&&iface==&buffer_interface);char payload[8];assert(read(fd,payload,sizeof(payload))==(ssize_t)sizeof(payload)&&!memcmp(payload,"AHB-MOCK",8));buffer_proxy=(struct wl_proxy){iface,version,0};va_end(ap);return &buffer_proxy;}
     if(p==&sync_surface_proxy&&opcode==1){int fd=va_arg(ap,int);assert(fd==123&&!iface);va_end(ap);return 0;}
     if(p==&surface_proxy&&opcode==1){struct wl_proxy *buffer=va_arg(ap,struct wl_proxy *);int32_t x=va_arg(ap,int32_t),y=va_arg(ap,int32_t);assert(buffer==&buffer_proxy&&!x&&!y&&!iface);va_end(ap);return 0;}
+    if(p==&surface_proxy&&opcode==3){void *id=va_arg(ap,void *);assert(!id&&iface==&exported_callback&&version==1);callback_proxy=(struct wl_proxy){iface,version,0};va_end(ap);return &callback_proxy;}
     if(p==&surface_proxy&&opcode==9){int32_t x=va_arg(ap,int32_t),y=va_arg(ap,int32_t),w=va_arg(ap,int32_t),h=va_arg(ap,int32_t);assert(!x&&!y&&!w&&!h&&!iface);va_end(ap);return 0;}
     if(p==&surface_proxy&&opcode==6){assert(!iface);va_end(ap);return 0;}
     if (p==&dmabuf_proxy && opcode==1) {
@@ -68,6 +70,7 @@ static uint32_t fake_version(struct wl_proxy *p){return p->version;}
 static int fake_listener(struct wl_proxy *p,void (**hooks)(void),void *data){
     if(p==&registry_proxy){registry_hooks=hooks;registry_data=data;return 0;}
     if(p==&buffer_proxy){buffer_hooks=hooks;buffer_data=data;return 0;}
+    if(p==&callback_proxy){callback_hooks=hooks;callback_data=data;return 0;}
     return -1;
 }
 static void fake_destroy(struct wl_proxy *p){p->dead=1;}
@@ -80,7 +83,7 @@ static int fake_roundtrip(struct wl_display *d,struct wl_event_queue *q){
     ((void (*)(void *,struct wl_proxy *,uint32_t,const char *,uint32_t))registry_hooks[0])(registry_data,&registry_proxy,79,"maton_ahb_buffer_manager_v1",1);return 0;
 }
 static int fake_dispatch(struct wl_display *d,struct wl_event_queue *q){assert(d==&display && q==&queue);return 0;}
-static int fake_dispatch_one(struct wl_display *d,struct wl_event_queue *q){assert(d==&display && q==&queue);return 0;}
+static int fake_dispatch_one(struct wl_display *d,struct wl_event_queue *q){assert(d==&display && q==&queue);if(callback_hooks)((void (*)(void *,struct wl_proxy *,uint32_t))callback_hooks[0])(callback_data,&callback_proxy,1);return 0;}
 static struct wl_proxy *fake_wrapper(struct wl_proxy *p){return p;}
 static void fake_wrapper_destroy(struct wl_proxy *p){assert(p==&dmabuf_proxy || p==(struct wl_proxy *)&display);}
 static void fake_set_queue(struct wl_proxy *p,struct wl_event_queue *q){assert(p && q==&queue);}
@@ -102,6 +105,7 @@ void *mv_wayland_symbol(const char *n){
     if(!strcmp(n,"wl_display_flush"))return fake_flush;
     if(!strcmp(n,"wl_registry_interface"))return (void *)&exported_registry;
     if(!strcmp(n,"wl_surface_interface"))return (void *)&exported_surface;
+    if(!strcmp(n,"wl_callback_interface"))return (void *)&exported_callback;
     (void)fake_dummy;return 0;
 }
 void *mv_alloc(size_t n){return __builtin_malloc(n);}
@@ -115,6 +119,7 @@ int main(void){
     assert(b && !mv_wl_buffer_released(b));
     struct mv_wl_sync_surface *sync=mv_wl_sync_surface_create(d,(struct wl_surface *)&surface_proxy);assert(sync);
     assert(mv_wl_surface_present(sync,(struct wl_surface *)&surface_proxy,b,123)==0);
+    assert(mv_wl_sync_wait_frame(sync)==0);
     assert(roundtrips==1 && binds==1 && param_creates==1 && adds==1 && immediates==1);
     ((void (*)(void *,struct wl_proxy *))buffer_hooks[0])(buffer_data,&buffer_proxy);
     assert(mv_wl_buffer_released(b));mv_wl_buffer_clear_released(b);assert(!mv_wl_buffer_released(b));
