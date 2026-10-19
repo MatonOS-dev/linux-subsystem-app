@@ -70,10 +70,13 @@ static int mv_init(void) {
     if(!mv_bridge) {static const char m[]="maton-vulkan: bootstrap bridge pointer missing\n";mv_write(m,sizeof(m)-1);}
     if(!mv_adopt) {static const char m[]="maton-vulkan: bootstrap adoption pointer missing\n";mv_write(m,sizeof(m)-1);}
     if(mv_bridge && mv_bridge->version!=1) {static const char m[]="maton-vulkan: bootstrap bridge version invalid\n";mv_write(m,sizeof(m)-1);}
+    if(mv_adopt && mv_adopt->version!=2) {static const char m[]="maton-vulkan: adoption API version invalid\n";mv_write(m,sizeof(m)-1);}
     struct mv_scope s;
     if(mv_bridge && mv_bridge->version==1 && mv_enter(&s)) {
         void *lib=mv_bridge->open("/system/lib64/libvulkan.so",2);
+        if(!lib) {static const char m[]="maton-vulkan: bridge open libvulkan failed\n";mv_write(m,sizeof(m)-1);}
         if(lib)mv_gipa=(PFN_vkGetInstanceProcAddr)mv_bridge->symbol(lib,"vkGetInstanceProcAddr");
+        if(lib && !mv_gipa) {static const char m[]="maton-vulkan: vkGetInstanceProcAddr symbol missing\n";mv_write(m,sizeof(m)-1);}
         void *android=mv_bridge->open("/system/lib64/libandroid.so",2);
         if(android) {
             mv_ahb_native_handle=(void *)mv_bridge->symbol(android,"AHardwareBuffer_getNativeHandle");
@@ -82,7 +85,7 @@ static int mv_init(void) {
             mv_ahb_send_socket=(void *)mv_bridge->symbol(android,"AHardwareBuffer_sendHandleToUnixSocket");
         }
         switch_back(&s);
-    }
+    } else if(mv_bridge && mv_bridge->version==1) {static const char m[]="maton-vulkan: initial Android thread adoption failed\n";mv_write(m,sizeof(m)-1);}
     __atomic_store_n(&mv_state,mv_gipa?2:3,__ATOMIC_RELEASE);
     if(!mv_gipa)mv_diagnostic();
     return mv_gipa!=0;
