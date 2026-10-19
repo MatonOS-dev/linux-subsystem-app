@@ -45,7 +45,7 @@ static int mv_ready(void) {
     mv_adopt = (void *)mv_hex(mv_env("MATON_THREAD_ADOPT"));
     mv_fast = mv_hex(mv_env("MATON_FAST_TLS")) != 0;
     struct mv_scope scope;
-    if (mv_bridge && mv_bridge->version == 1 && mv_enter(&scope)) {
+    if (mv_bridge && mv_bridge->version == 2 && mv_enter(&scope)) {
         mv_egl_lib = mv_bridge->open("/system/lib64/libEGL.so", 2);
         mv_gles_lib = mv_bridge->open("/system/lib64/libGLESv2.so", 2);
         if (mv_egl_lib)

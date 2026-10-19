@@ -19,11 +19,12 @@ extern char **environ;
 int main(int argc, char **argv) {
     if (argc < 2) return 2;
     static struct gpu_bridge bridge;
-    bridge.version = 1;
+    bridge.version = 2;
     bridge.owner = syscall(SYS_gettid);
     if (syscall(SYS_arch_prctl, 0x1003, &bridge.tls)) return 3;
     bridge.open = dlopen;
     bridge.symbol = dlsym;
+    bridge.error = dlerror;
     char value[32];
     snprintf(value, sizeof(value), "%lx", (unsigned long)&bridge);
     setenv("MATON_GPU_BRIDGE", value, 1);

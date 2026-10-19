@@ -31,7 +31,8 @@ static void *lookup_symbol(void *handle, const char *name) { return dlsym(handle
 static struct adopt_thread *current_thread(void) { return &thread; }
 static void publish_bootstrap(void) {
     struct gpu_bridge *bridge = calloc(1, sizeof(*bridge));
-    bridge->version = 1;
+    bridge->version = 2;
+    bridge->error = NULL;
     bridge->open = open_vendor;
     bridge->symbol = lookup_symbol;
     adoption.version = 1;

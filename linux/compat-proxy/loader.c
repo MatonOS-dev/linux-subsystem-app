@@ -20,6 +20,7 @@
 #include "../gpu-forward-spike/spike3/adopt.h"
 #include "../gpu-forward-spike/bootstrap.h"
 #include "../gpu-forward-spike/bridge.h"
+static const char *gpu_bridge_error(void) { return dlerror(); }
 #endif
 
 #define PAGE 4096UL
@@ -428,11 +429,12 @@ int main(int argc,char **argv,char **environ) {
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
     if(gpu_bridge_enabled) {
         static struct gpu_bridge bridge;
-        bridge.version=1;
+        bridge.version=2;
         bridge.owner=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
         if(RAW(PROXY_SC_arch_prctl,0x1003,&bridge.tls,0,0,0,0)) return 3;
         bridge.open=dlopen;
         bridge.symbol=dlsym;
+        bridge.error=gpu_bridge_error;
         char value[32];
         snprintf(value,sizeof(value),"%lx",(unsigned long)&bridge);
         if(adopt_install()) return 5;
