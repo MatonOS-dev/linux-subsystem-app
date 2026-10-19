@@ -124,6 +124,15 @@ final class V3Launcher {
         if(matonGlEnabled)command.add("--env=FLATPAK_GL_DRIVERS=maton:default");
         // adb (root): touch <cache>/v3-vkdebug to log Vulkan loader driver discovery.
         if (new File(cache, "v3-vkdebug").exists()) command.add("--env=VK_LOADER_DEBUG=all");
+        // adb (root): write a command name to <cache>/v3-command to run it instead of
+        // the app's default (e.g. vkcube from the VulkanInfo app).
+        File override=new File(cache, "v3-command");
+        if (override.exists()) {
+            String name=new String(java.nio.file.Files.readAllBytes(override.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8).trim();
+            if (!name.matches("[A-Za-z0-9._+-]+")) throw new java.io.IOException("Invalid v3-command");
+            command.add("--command="+name);
+        }
         command.add(ref.substring(4));
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         Map<String, String> env = builder.environment();

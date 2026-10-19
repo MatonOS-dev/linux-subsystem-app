@@ -87,6 +87,8 @@ ALLOW = {
         3, "reads installed index_/extra_ splits and the signed subsystem GL pack archive (app-owned), not staging"),
     ("PackageDeployment.java", "zipfile"): (
         1, "reads ref metadata and the commit object from the signed subsystem GL extension archive, not staging"),
+    ("V3Launcher.java", "files-readAllBytes"): (
+        1, "reads the adb-written <cache>/v3-command debug file in the stub's own cache, not staging"),
     ("PackSeed.java", "randomaccessfile"): (
         1, "reads an installed pack_ split carrier (app-owned), not staging"),
     ("PackSessionPlan.java", "zipfile"): (
