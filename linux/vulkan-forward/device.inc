@@ -59,14 +59,22 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     VkDeviceCreateInfo copy=*info;
     const char **extension_names=0;
     if(swapchain_enabled) {
-        if(forwarded_extensions) {
-            extension_names=mv_alloc((size_t)forwarded_extensions*sizeof(*extension_names));
-            if(!extension_names){mv_dfree(d,d);return VK_ERROR_OUT_OF_HOST_MEMORY;}
-            uint32_t k=0;
-            for(uint32_t j=0;j<info->enabledExtensionCount;j++)
-                if(strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_EXTENSION_NAME))extension_names[k++]=info->ppEnabledExtensionNames[j];
-            copy.enabledExtensionCount=forwarded_extensions;copy.ppEnabledExtensionNames=extension_names;
-        } else { copy.enabledExtensionCount=0;copy.ppEnabledExtensionNames=0; }
+        static const char *const internal[]={
+            "VK_ANDROID_external_memory_android_hardware_buffer",
+            "VK_EXT_queue_family_foreign", "VK_EXT_image_drm_format_modifier",
+            "VK_KHR_image_format_list", "VK_KHR_external_semaphore_fd"
+        };
+        extension_names=mv_alloc((forwarded_extensions+5)*sizeof(*extension_names));
+        if(!extension_names){mv_dfree(d,d);return VK_ERROR_OUT_OF_HOST_MEMORY;}
+        uint32_t k=0;
+        for(uint32_t j=0;j<info->enabledExtensionCount;j++)
+            if(strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_EXTENSION_NAME))extension_names[k++]=info->ppEnabledExtensionNames[j];
+        for(uint32_t j=0;j<5;j++) {
+            uint32_t n=0;while(n<k && strcmp(extension_names[n],internal[j]))n++;
+            if(n==k)extension_names[k++]=internal[j];
+        }
+        copy.enabledExtensionCount=k;copy.ppEnabledExtensionNames=extension_names;
+        d->wsi_sync_fd_enabled=1;
     }
     VkBaseOutStructure *chain=0;
     VkResult cr=mv_chain_copy(info->pNext,&chain);
@@ -83,7 +91,9 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     for(uint32_t j=0;j<info->queueCreateInfoCount;j++)if(!mv_valid_VkDeviceQueueCreateInfo(&info->pQueueCreateInfos[j])){mv_chain_free(chain);mv_free(extension_names);mv_dfree(d,d);return VK_ERROR_FEATURE_NOT_PRESENT;}
     struct mv_scope s;if(!mv_enter(&s)){mv_chain_free(chain);mv_free(extension_names);mv_dfree(d,d);return VK_ERROR_INITIALIZATION_FAILED;}
     PFN_vkCreateDevice f=h->instance->create_device;
+    mv_trace_result("maton-vulkan: enter create device",0,0);
     VkDevice raw=0;VkResult r=f((VkPhysicalDevice)h->android,&copy,0,&raw);
+    mv_trace_result("maton-vulkan: leave create device",r,0);
     if(r==VK_SUCCESS){d->base.android=raw;d->gdpa=h->instance->gdpa;mv_load_device(d);}
     switch_back(&s);mv_chain_free(chain);mv_free(extension_names);
     if(r!=VK_SUCCESS){mv_dfree(d,d);return r;}

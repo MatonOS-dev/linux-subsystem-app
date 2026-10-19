@@ -147,6 +147,13 @@ static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAll
     /* No extension pNext data or Linux callback may reach bionic. */
     copy.pNext=0;
     copy.enabledExtensionCount=0;copy.ppEnabledExtensionNames=0;
+    /* WSI's private AHB/fence device extensions use the Vulkan 1.1 core
+     * dependencies even when the Linux application only requests 1.0. */
+    VkApplicationInfo resident_app=info->pApplicationInfo?*info->pApplicationInfo:
+        (VkApplicationInfo){.sType=VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    if(i->wsi_wayland_enabled && resident_app.apiVersion<VK_API_VERSION_1_1) {
+        resident_app.apiVersion=VK_API_VERSION_1_1;copy.pApplicationInfo=&resident_app;
+    }
     struct mv_scope s;
     if(!mv_enter(&s)){mv_delete(i,i);return VK_ERROR_INITIALIZATION_FAILED;}
     PFN_vkCreateInstance create=(PFN_vkCreateInstance)mv_gipa(0,"vkCreateInstance");
