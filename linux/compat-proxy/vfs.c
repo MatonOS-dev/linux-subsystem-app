@@ -135,7 +135,27 @@ char *vfs_reverse_pack(const char *path){
     char *p=vfs_reverse(path);if(!p || !oldroot_view || !prefix(p,oldroot_view))return p;
     const char *relative=p+p_len(oldroot_view);char *q=dupstr(*relative?relative:"/");vfs_free(p);return q;
 }
-static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}int handled=0;long pe=0;char *packed=pack_link(path,&pe,&handled);if(handled){vfs_free(s);*error=pe;return packed;}long r=RAW(PROXY_SC_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
+static char *readlink_dynamic(const char *path,long *error){
+    int handled=0;long pe=0;char *packed=pack_link(path,&pe,&handled);
+    if(handled){*error=pe;return packed;}
+    /* Pin the final component without following it. Path lookup needs search
+     * permission on ancestors; O_PATH does not request getattr on them.
+     * Empty-path readlink then distinguishes a symlink from an ordinary
+     * component without a pathname metadata probe. */
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_PATH|O_NOFOLLOW|O_CLOEXEC,0,0,0);
+    if(fd<0){*error=fd;return NULL;}
+    size_t n=256;
+    for(;;){
+        char *s=vfs_alloc(n+1);
+        if(!s){RAW(PROXY_SC_close,fd,0,0,0,0,0);*error=-ENOMEM;return NULL;}
+        long r=RAW(PROXY_SC_readlinkat,fd,"",s,n,0,0);
+        if(r<0){RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(s);*error=r;return NULL;}
+        if((size_t)r<n){RAW(PROXY_SC_close,fd,0,0,0,0,0);s[r]=0;return s;}
+        vfs_free(s);
+        if(n>SIZE_MAX/2-1){RAW(PROXY_SC_close,fd,0,0,0,0,0);*error=-EOVERFLOW;return NULL;}
+        n*=2;
+    }
+}
 static int proc_pack_fd(const char *path);
 struct fd_name {struct fd_name *next;int fd;char *path;};
 static struct fd_name *fd_names;
