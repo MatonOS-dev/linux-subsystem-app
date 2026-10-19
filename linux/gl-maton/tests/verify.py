@@ -18,11 +18,11 @@ paths = {row["path"]: row for row in rows}
 expected = {
     "/lib/libmaton_vulkan.so",
     "/lib/libEGL_maton.so",
-    "/lib/vulkan/icd.d/maton_icd.json",
-    "/share/glvnd/egl_vendor.d/10_maton.json",
+    "/vulkan/icd.d/maton_icd.json",
+    "/glvnd/egl_vendor.d/10_maton.json",
 }
 assert expected <= paths.keys(), paths.keys()
-assert "/share/vulkan/icd.d/maton_icd.json" not in paths
+assert "/lib/vulkan/icd.d/maton_icd.json" not in paths  # merge-dirs only sees the extension root
 pack_files = {path.name for path in root.glob("pack-*.zip")}
 assert {row["pack"] for row in rows if row["kind"] == "file"} == pack_files
 
@@ -32,6 +32,6 @@ def payload(path):
         return archive.read(row["checksum"]).decode()
 
 assert '"library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/libmaton_vulkan.so"' in payload(
-    "/lib/vulkan/icd.d/maton_icd.json")
-assert '"library_path": "libEGL_maton.so"' in payload("/share/glvnd/egl_vendor.d/10_maton.json")
+    "/vulkan/icd.d/maton_icd.json")
+assert '"library_path": "libEGL_maton.so"' in payload("/glvnd/egl_vendor.d/10_maton.json")
 assert (root / "objects.ostree").read_bytes().startswith(b"MTPKOBJ1")

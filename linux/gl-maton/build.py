@@ -19,15 +19,15 @@ def build(out, vulkan, egl, branch):
     out.mkdir(parents=True)
     files = out / "tree"
     (files / "lib").mkdir(parents=True)
-    (files / "share/glvnd/egl_vendor.d").mkdir(parents=True)
-    (files / "lib/vulkan/icd.d").mkdir(parents=True)
+    (files / "glvnd/egl_vendor.d").mkdir(parents=True)
+    (files / "vulkan/icd.d").mkdir(parents=True)
     shutil.copy2(vulkan, files / "lib/libmaton_vulkan.so")
     shutil.copy2(egl, files / "lib/libEGL_maton.so")
-    (files / "lib/vulkan/icd.d/maton_icd.json").write_text(
+    (files / "vulkan/icd.d/maton_icd.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/libmaton_vulkan.so",\n'
         '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
-    (files / "share/glvnd/egl_vendor.d/10_maton.json").write_text(
+    (files / "glvnd/egl_vendor.d/10_maton.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
 

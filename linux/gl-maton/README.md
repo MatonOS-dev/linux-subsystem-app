@@ -9,13 +9,15 @@ assigned runtime. Its runtime metadata advertises
 launch; a mismatch fails with a clear error rather than silently selecting an
 incompatible extension.
 
-The extension payload mirrors the deployed `GL.default` layout:
+The extension payload uses the runtime's GL `merge-dirs` layout (the
+Platform metadata lists `vulkan/icd.d;glvnd/egl_vendor.d;...` relative to the
+extension root; flatpak merges only those into `GL/vulkan/icd.d` etc.):
 
 ```text
 lib/libEGL_maton.so
 lib/libmaton_vulkan.so
-lib/vulkan/icd.d/maton_icd.json
-share/glvnd/egl_vendor.d/10_maton.json
+vulkan/icd.d/maton_icd.json
+glvnd/egl_vendor.d/10_maton.json
 ```
 
 The ICD paths resolve to the extension directory and its loader path. Both
