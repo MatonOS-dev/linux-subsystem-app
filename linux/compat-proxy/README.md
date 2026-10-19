@@ -1361,3 +1361,43 @@ APKs were installed with `adb install -r`, force-stopping the VulkanInfo stub
 after each install. The next launch preserved the adoption stack (0x10d30 bytes)
 and reached Vulkan device enumeration without the prior SIGSEGV. No SELinux,
 kernel, image or AOSP changes were made.
+
+## Venus extension merge-dir regression (2026-10-19)
+
+The actual VulkanInfo stub on adb 5556 failed before ldconfig: creating
+`GL/vulkan/icd.d/maton_icd.json` followed a packed `icd.d` symlink instead of
+using bwrap's new GL tmpfs. The pack ownership check compared staging names
+without normalizing `/newroot` and the detached oldroot view, and only
+recognized mounts strictly below an index root. The VM also mounts a GL
+index at exactly the path subsequently covered by tmpfs. Mounts now retain
+whether their backing filesystem shadows an index, including across binds,
+pivot aliases and private exec-state transfer (format 3). Canonical packed
+bind sources retain their index. No executable permission is fabricated.
+
+`tests/pack-host.py` now combines real OSTree indexes at `/usr`, GL and
+GL/default, a runtime/extension symlink at `vulkan/icd.d`, tmpfs over GL,
+and bwrap's merge-dir symlink creation followed by real ldconfig. The new
+fixture fails on the pre-path-walk revision `360ba14^` as well as original
+main; it passes with this fix. Thus the two recent path-walk commits are
+not established as the introducing change. The older nested-mount check
+from `ffbe609` did not cover staging or equal-root overmounts.
+
+The trace's `unhandled 442 184` means x86_64 `mount_setattr` (442), decoded
+as internal `PROXY_SC_mount_setattr` (184). Returning ENOSYS is intentional:
+pinned bubblewrap bind-mount.c:mount_setattr_setup falls back to remounts,
+and Flatpak's payload filter also returns ENOSYS for this syscall. It is
+not the merge-dir failure and needs no new emulation for this launch.
+
+Signed standalone builds, the full compat-proxy suite (including the extended
+host pack test and both exec-state backends), and device-tree preflight pass. VM trace
+`venus-out/evidence/launch4.log` confirms ldconfig finishes and bwrap reaches
+`execvp vulkaninfo`. That exec is refused: the installed app's signed
+`assets/matonos/objects.index` AND `original.index` describe all six payload
+files (including bin/vulkaninfo) as mode 0100600. This is the installed
+publication's metadata, not a SELinux exec denial. Both /app and the
+fallback /usr lookup select that non-executable object. The loader correctly
+returns EACCES. Do not work around this with an executable-bit override.
+Repair/reimport the publication and update its signed splits without
+uninstalling the stub; then force-stop and relaunch to continue GPU testing.
+No RX 6600 listing is claimed yet. No image, SELinux or kernel change was
+made. Keep VM 5556 running and keep the existing stub installed.

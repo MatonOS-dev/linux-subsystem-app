@@ -91,7 +91,7 @@ void vfs_temp_gc(void){
 }
 
 static char *dupstr(const char *s){size_t n=p_len(s);char *p=vfs_alloc(n+1);if(p)p_copy(p,s,n+1);return p;}
-struct mount {struct mount *next;char *source,*target;unsigned long flags;};
+struct mount {struct mount *next;char *source,*target;unsigned long flags;/* Own backing filesystem hides an index even at its root. */int pack_shadow;};
 static struct mount *table;
 static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
@@ -318,9 +318,25 @@ char *vfs_resolve(int fd,const char *path,int follow,long *error){return vfs_res
 int vfs_is_mount_source(const char *path){for(struct mount *m=table;m;m=m->next)if(p_equal(m->source,path))return 1;return 0;}
 /* A packed index describes immutable files. If a more-specific virtual mount
  * owns this path, let that mount's backing tree handle the lookup instead. */
-int vfs_has_nested_mount(const char *path,const char *ancestor){size_t n=p_len(ancestor);for(struct mount *m=table;m;m=m->next){const char *target=m->target;if(root&&prefix(target,root)){target+=p_len(root);if(!*target)target="/";}if(p_len(target)>n && prefix(target,ancestor) && prefix(path,target))return 1;}return 0;}
+int vfs_has_nested_mount(const char *path,const char *ancestor,int staging){
+    size_t n=p_len(ancestor);
+    for(struct mount *m=table;m;m=m->next){
+        const char *target=m->target;
+        if(root&&prefix(target,root)){target+=p_len(root);if(!*target)target="/";}
+        /* Match vfs_reverse_pack's detached-root view as well. */
+        if(oldroot_view && prefix(target,oldroot_view)){
+            target+=p_len(oldroot_view);if(!*target)target="/";
+        }
+        /* pack_virtual_path removes bwrap's staging /newroot prefix.
+         * Compare mount targets in that same view, or a packed runtime
+         * symlink can win over the tmpfs used for extension merge-dirs. */
+        if(staging && prefix(target,"/newroot")){target+=8;if(!*target)target="/";}
+        if((p_len(target)>n || (m->pack_shadow && p_len(target)==n)) && prefix(target,ancestor) && prefix(path,target))return 1;
+    }
+    return 0;
+}
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
-int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
+int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
     proxy_log("mount-owner",PROXY_SC_mount,0);
     RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
 const char *proxy_path(const char *path,char *buffer,size_t size){long e;char *p=vfs_resolve(AT_FDCWD,path,1,&e);if(!p)return NULL;size_t n=p_len(p);if(n>=size){vfs_free(p);return NULL;}p_copy(buffer,p,n+1);vfs_free(p);return buffer;}
@@ -383,9 +399,9 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     if(!e){
         struct mount *prior=table;char *virtual_source=(flags&MS_BIND)?global_target(source,&e):NULL;
         if(!e)e=proxy_mount(src,dest);
-        if(!e)table->flags=flags;
+        if(!e){table->flags=flags;struct proxy_stat st;table->pack_shadow=!(flags&MS_BIND) || pack_stat(src,&st)==-ENOSYS;}
         if(!e && virtual_source && (flags&MS_REC))for(struct mount *m=prior;m;m=m->next){if(prefix(m->target,virtual_source) && !p_equal(m->target,virtual_source)){
-            char *child=join(dest,m->target+p_len(virtual_source));if(!child){e=-ENOMEM;break;}e=proxy_mount(m->source,child);vfs_free(child);if(e)break;table->flags=m->flags;
+            char *child=join(dest,m->target+p_len(virtual_source));if(!child){e=-ENOMEM;break;}e=proxy_mount(m->source,child);vfs_free(child);if(e)break;table->flags=m->flags;table->pack_shadow=m->pack_shadow;
         }}
         vfs_free(virtual_source);
     }vfs_free(src);vfs_free(dest);return e;
@@ -405,7 +421,7 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
             if(root && prefix(relative,root))relative+=p_len(root);
             if(!*relative || p_equal(relative,"/"))continue;
             char *alias=join(dest,relative);if(!alias){e=-ENOMEM;break;}
-            e=proxy_mount(m->source,alias);vfs_free(alias);if(e)break;table->flags=m->flags;
+            e=proxy_mount(m->source,alias);vfs_free(alias);if(e)break;table->flags=m->flags;table->pack_shadow=m->pack_shadow;
         }
         char *next_cwd=NULL;
         if(!e && cwd){char *oldcwd=root?join(root,cwd):dupstr(cwd);if(!oldcwd)e=-ENOMEM;
@@ -621,7 +637,7 @@ void vfs_state(struct state *s){
  for(uint64_t i=0;i<count&&!s->error;i++){
   struct mount *m=s->reading?vfs_alloc(sizeof(*m)):*tail;
   if(!m){s->error=-ENOMEM;return;}if(s->reading){*tail=m;m->next=NULL;m->source=m->target=NULL;}
-  state_string(s,&m->source);state_string(s,&m->target);m->flags=state_word(s,m->flags);tail=&m->next;
+  state_string(s,&m->source);state_string(s,&m->target);m->flags=state_word(s,m->flags);m->pack_shadow=state_word(s,m->pack_shadow);tail=&m->next;
  }
  count=0;for(struct fd_name *d=fd_names;d;d=d->next)if(state_live(d->fd))count++;
  count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}

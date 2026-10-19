@@ -9,6 +9,8 @@ def output(*args,**kw):return subprocess.check_output(list(map(str,args)),**kw)
 run('cc','-m32','-nostdlib','-static','-no-pie',base/'tests/pack-peer.S','-o',src/'peer')
 (src/'lib/x86_64-linux-gnu/GL/default').mkdir(parents=True)
 (src/'lib/x86_64-linux-gnu/GL/default/extension-marker').write_text('GL extension directory entry\n')
+(src/'lib/x86_64-linux-gnu/GL/vulkan').mkdir()
+(src/'lib/x86_64-linux-gnu/GL/vulkan/icd.d').symlink_to('../lib/vulkan/icd.d')
 (src/'etc').mkdir();(src/'etc/e2scrub.conf').write_text('packed regular file bind identity\n')
 (src/'bin').mkdir()
 (root/'true.c').write_text('int main(void){return 0;}\n')
@@ -161,6 +163,7 @@ if ldconfig and shutil.which('bwrap'):
  # extension at GL/default, with its add-ld-path in the generated config.
  ext_src=root/'ld-extension-src';(ext_src/'lib').mkdir(parents=True)
  shutil.copy2(src/'lib/libfixture.so',ext_src/'lib/libfixture.so')
+ (ext_src/'vulkan').mkdir();(ext_src/'vulkan/icd.d').symlink_to('../lib/vulkan/icd.d')
  ext_repo=root/'ld-extension-repo';run('ostree','init','--repo='+str(ext_repo),'--mode=bare-user')
  run('ostree','commit','--repo='+str(ext_repo),'-b','fixture','--tree=dir='+str(ext_src),'-m','ldconfig extension')
  ext_rev=output('ostree','rev-parse','--repo='+str(ext_repo),'fixture').decode().strip();ext_bundle=root/'ld-extension-bundle'
@@ -168,8 +171,10 @@ if ldconfig and shutil.which('bwrap'):
  ext_files=root/'ld-extension-deployment/files';ext_files.mkdir(parents=True)
  gl='/usr/lib/x86_64-linux-gnu/GL';extension=gl+'/default'
  config.write_text(extension+'/lib\n');(cache/'cache').unlink()
- at=args.index(bwrap);args[at:at]=['--pack-mount',extension,ext_bundle/'objects.index',ext_bundle]
- at=args.index('--symlink');args[at:at]=['--tmpfs',gl,'--ro-bind',ext_files,extension]
+ at=args.index(bwrap);args[at:at]=['--pack-mount',gl,ext_bundle/'objects.index',ext_bundle,'--pack-mount',extension,ext_bundle/'objects.index',ext_bundle]
+ at=args.index('--symlink');args[at:at]=['--tmpfs',gl,'--ro-bind',ext_files,extension,
+ '--dir',gl+'/vulkan/icd.d',
+ '--symlink','../../default/vulkan/icd.d/fixture.json',gl+'/vulkan/icd.d/fixture.json']
  runtime_fd=os.open(files,os.O_RDONLY|os.O_DIRECTORY);cache_fd=os.open(cache,os.O_RDONLY|os.O_DIRECTORY)
  args[args.index('--ro-bind-fd')+1]=str(runtime_fd);args[args.index('--bind-fd')+1]=str(cache_fd)
  try:

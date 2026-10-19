@@ -9,7 +9,7 @@ char *vfs_resolve(int, const char *, int, long *);
 char *vfs_resolve_mount(int,const char *,int,long *,void **);
 long vfs_mount_readonly(void *);
 int vfs_is_mount_source(const char *);
-int vfs_has_nested_mount(const char *,const char *);
+int vfs_has_nested_mount(const char *,const char *,int);
 void vfs_fd_close(int);
 long vfs_fd_dup(int,int);
 char *vfs_fd_name(int);

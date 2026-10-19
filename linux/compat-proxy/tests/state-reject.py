@@ -8,7 +8,7 @@ for loader in ('linux-layer-v3','linux-layer-v3-i386'):
         if pid==0:
             fd=os.memfd_create('invalid-exec-state',os.MFD_ALLOW_SEALING)
             os.set_inheritable(fd,True)
-            data=struct.pack('<4Q',0x335854454e4f544d,2 if case=='version' else 1,
+            data=struct.pack('<4Q',0x335854454e4f544d,2 if case=='version' else 3,
                              os.getpid()+1 if case=='pid' else os.getpid(),19)
             os.write(fd,data[:20] if case=='truncated' else data)
             if case=='oversize':os.ftruncate(fd,(64<<20)+1)
