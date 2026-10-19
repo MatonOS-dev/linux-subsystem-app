@@ -28,15 +28,12 @@ public final class StagedPacks {
             }
         };
         OstreePacks original=OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source,objectXattrs);
-        // The committed tree is the deployment's files/ exactly as deployed,
-        // including the raw extra downloads apply_extra has not consumed (the
-        // installer defers those to the stub). A separate bare-user repo keeps
-        // that tree without the bare-user-only restrictions of the download repo.
-        File localRepo=new File(operation,"pack-repo");
-        OstreePacks.Command local=command(context,operation,localRepo,cancelled);
-        local.run("init","--mode=bare-user");
-        String commit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
-        OstreePacks fresh=OstreePacks.read(localRepo,commit,local,objectXattrs);
+        // Commit the deployed files/ tree, including raw extra downloads that
+        // apply_extra has not consumed, into this operation-private repo. The
+        // local-only ref avoids a second repo and a second copy of the tree;
+        // --canonical-permissions keeps bare-user-only object semantics intact.
+        String commit=OstreePacks.commitDeployed(new File(deployment,"files"),source);
+        OstreePacks fresh=OstreePacks.read(sourceRepo,commit,source,objectXattrs);
         List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> payloads=new ArrayList<>(fresh.entries);
         payloads.addAll(original.entries);
         output.mkdirs();

@@ -115,14 +115,18 @@ its expected argv[0]. Local commands need no DNS transport.
 After phase-C Flatpak completes (the installer no longer applies an app's
 extra-data; the raw, checksum-verified downloads stay in **extra/** and are
 applied by the app's stub), the store reads the real installation repo's app
-commit, then commits the deployment's **files/** root, including
-**extra/**, to a new local bare-user repo at
-`<subsystem-work>/flatpak-staging/<operation>/pack-repo`. This separate staging repository
-is intentional: the real download repo is bare-user-only; changing its mode
-would invalidate Flatpak's assumptions. The private ref is
-`matonos/private/deployed-files`, scoped by the operation directory, with no
-parent or remote. It never gets published or uploaded. The local commit is
-packed, so index paths are relative to /app (there is no /files prefix).
+commit, then commits the deployment's **files/** root, including **extra/**,
+back into that package's private bare-user-only download repo. This adds a
+local-only `matonos/private/deployed-files` ref with no parent or remote; the
+repo mode is unchanged and `--canonical-permissions` preserves the payload
+metadata used by the pack reader. The derived tree is read directly from that
+repo, avoiding a second staging repository and copy of the deployed files.
+The ref is scoped to the operation's private installation and is never
+published or uploaded. The local commit is packed, so index paths are relative
+to /app (there is no /files prefix). Once that package's signed pack artifacts
+are written, both its download installation repo and any legacy `pack-repo`
+are removed before PackageInstaller work; later package rows have independent
+repositories.
 Upstream app/runtime pins and the verification manifest keep their original
 signed identities. The private repo is removed by normal staging cleanup.
 
