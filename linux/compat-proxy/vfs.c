@@ -40,9 +40,12 @@ void proxy_raw_count_enable(void){proxy_raw_counter_enabled=1;}
 uint64_t proxy_raw_count_now(void){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);return a?a->raw_calls:0;}
 uint64_t proxy_raw_count_for(long nr){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return 0;switch(nr){case PROXY_SC_openat:return a->openat_calls;case PROXY_SC_readlinkat:return a->readlinkat_calls;case PROXY_SC_newfstatat:return a->newfstatat_calls;case PROXY_SC_geteuid:return a->geteuid_calls;case PROXY_SC_mmap:return a->mmap_calls;case PROXY_SC_munmap:return a->munmap_calls;default:return 0;}}
 #endif
+/* Trap-arena memory is only freed by the thread that allocated it, inside the
+ * same trap, so only the caller's own arena is searched: walking other threads'
+ * blocks would race with vfs_trap_thread_exit unmapping them. */
 static int arena_contains(uintptr_t p){
-    for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
-        for(struct arena_block *b=a->blocks;b;b=b->next){uintptr_t lo=(uintptr_t)(b+1);if(p>=lo && p<lo+b->size-sizeof(*b))return 1;}
+    uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return 0;
+    for(struct arena_block *b=a->blocks;b;b=b->next){uintptr_t lo=(uintptr_t)(b+1);if(p>=lo && p<lo+b->size-sizeof(*b))return 1;}
     return 0;
 }
 void vfs_trap_begin(void *base,size_t size){
