@@ -141,6 +141,21 @@ static struct thread_state *thread_state(void) {
 const char *proxy_tmpdir="/tmp";
 /* --trace: log to the original diagnostic sink, independently of app stdio. */
 int proxy_trace;
+static int proxy_count_fd=-1;
+static volatile uint64_t proxy_counts[PROXY_SC_count];
+static volatile uint64_t proxy_syscall_ns[PROXY_SC_count];
+static volatile uint64_t proxy_handler_ns,proxy_vfs_ns;
+uint64_t proxy_count_now(void){if(proxy_count_fd<0)return 0;struct {long sec,nsec;} ts={0};if(RAW(PROXY_SC_clock_gettime,1,&ts,0,0,0,0)<0)return 0;return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;}
+void proxy_count_init(const char *path){if(!path || !*path)return;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0);if(fd>=0)proxy_count_fd=(int)fd;}
+void proxy_count_resolution(uint64_t ns){__atomic_fetch_add(&proxy_vfs_ns,ns,__ATOMIC_RELAXED);}
+static void count_u64(char *b,size_t *n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[(*n)++]=d[--k];}
+void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*32+128];size_t n=0;
+    uint64_t handler=__atomic_exchange_n(&proxy_handler_ns,0,__ATOMIC_RELAXED);
+    uint64_t vfs=__atomic_exchange_n(&proxy_vfs_ns,0,__ATOMIC_RELAXED);
+    b[n++]='P';b[n++]='I';b[n++]='D';b[n++]='=';count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';b[n++]='H';b[n++]='=';count_u64(b,&n,handler);b[n++]=' ';b[n++]='V';b[n++]='=';count_u64(b,&n,vfs);b[n++]='\n';
+    for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';}}
+    RAW(PROXY_SC_write,proxy_count_fd,b,n,0,0,0);
+}
 static void emit(const char *s) { RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p_len(s),0,0,0); }
 static void trace_word(const char *label,uint64_t value) {
     emit(label); crash_hex(value); emit(" ");
@@ -551,6 +566,7 @@ static void unhandled_once(long id,long kernel_nr){
     proxy_log("unhandled",kernel_nr,id);
 }
 static void handler(int sig,siginfo_t *info,void *opaque) {
+    uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
     ucontext_t *uc=opaque;
     volatile unsigned char *selector=dispatch_selector;
     unsigned char saved=0;
@@ -587,6 +603,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_ARG4),ARCH_CONTEXT(uc,ARCH_ARG5)};
     struct arch_call call=arch_decode_call(info->si_syscall,a);
     nr=original=call.id;
+    long count_id=nr;
+    if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
     long result=-ENOSYS;
     if(call.error){result=call.error;goto finish;}
     /* signalfd readiness is evaluated against the thread's signal state.
@@ -632,8 +650,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
     case PROXY_SC_getdents64:result=links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);break;
     case PROXY_SC_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_payload_fd_stat((int)a[0],(void *)(uintptr_t)a[1]);break;
-    case PROXY_SC_exit:ipc_thread_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit:ipc_thread_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(PROXY_SC_close,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
@@ -776,6 +794,7 @@ clone_retry:
         const char *path=(const char *)(uintptr_t)a[nr==PROXY_SC_execve?0:1];
         if(nr==PROXY_SC_execveat && (a[0]!=AT_FDCWD || a[4])) {result=-ENOSYS;break;}
         if(!thread) {result=-ENOMEM;break;}
+        proxy_count_dump();
         if(proxy_trace){emit("v3 exec ");emit(path);emit("\n");}
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
@@ -825,6 +844,7 @@ finish:
     if(proxy_trace)proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
     else if(result==-ENOSYS)unhandled_once(original,info->si_syscall);
 clean_mask:
+    if(count_started){uint64_t ended=proxy_count_now();if(ended>=count_started){uint64_t elapsed=ended-count_started;__atomic_fetch_add(&proxy_handler_ns,elapsed,__ATOMIC_RELAXED);if(count_id>=0 && count_id<PROXY_SC_count)__atomic_fetch_add(&proxy_syscall_ns[count_id],elapsed,__ATOMIC_RELAXED);}}
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
     (*arch_signal_mask(uc))&=~SIGSYS_BIT;
     RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);

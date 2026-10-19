@@ -28,4 +28,8 @@ size_t p_len(const char *);
 void p_copy(void *, const void *, size_t);
 int p_equal(const char *,const char *);
 void proxy_log_bwrap_args(const char *,char *const *);
+void proxy_count_init(const char *);
+uint64_t proxy_count_now(void);
+void proxy_count_resolution(uint64_t);
+void proxy_count_dump(void);
 #endif

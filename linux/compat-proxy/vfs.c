@@ -204,7 +204,7 @@ if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
     char *s=readlink_dynamic(p,error);if(!s)return NULL;char *q=vfs_reverse(s);vfs_free(s);return q;
 }
-char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **identity){
+static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *error,void **identity){
     *error=0;if(!path){*error=-EFAULT;return NULL;}if(!*path){*error=-ENOENT;return NULL;}
     /* Polling roots are immutable generated directories. Re-check the current
      * mount source so an unmount/overmount cannot reuse a stale fast answer. */
@@ -272,6 +272,13 @@ restart:;
     }
     {char *global=root?join(root,out):dupstr(out);if(identity)*identity=global?lookup(global):NULL;char *host=global?physical(global):NULL;vfs_free(global);if(host && input[p_len(input)-1]=='/' && !p_equal(host,"/")){char *q=join(host,"/");vfs_free(host);host=q;}vfs_free(input);vfs_free(out);if(!host)*error=-ENOMEM;return host;}
 fail:vfs_free(input);vfs_free(out);return NULL;
+}
+char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **identity){
+    uint64_t started=proxy_count_now();
+    char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity);
+    uint64_t ended=proxy_count_now();
+    if(started && ended>=started)proxy_count_resolution(ended-started);
+    return answer;
 }
 char *vfs_resolve(int fd,const char *path,int follow,long *error){return vfs_resolve_mount(fd,path,follow,error,NULL);}
 /* A bind source that is a regular file stays referenced by its virtual mount
