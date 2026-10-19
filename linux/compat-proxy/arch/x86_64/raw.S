@@ -61,7 +61,8 @@ proxy_clone_after:
     /* Adoption's child-side maps point at vanished threads after a process
      * clone. Rebase them before returning to app code; standalone proxy builds
      * and tests use the weak no-op below. */
-    cmpq $0,0(%rbp)
+    /* Saved syscall result is at +72: +0 is the caller's saved RBP. */
+    cmpq $0,72(%rbp)
     jne 1f
     call adopt_fork_child
 1:
