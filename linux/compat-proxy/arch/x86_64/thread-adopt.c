@@ -53,6 +53,7 @@ static int force_clone;
 static size_t live(void);
 static size_t signal_stack_size;
 static long identity(uintptr_t *);
+static void fork_rebase(struct adopt_thread *);
 static size_t live(void);
 static pthread_mutex_t identity_mutex=PTHREAD_MUTEX_INITIALIZER;
 static struct adopt_api api={.version=2,.current=adopt_current,.lookup=adopt_map_lookup,
@@ -116,6 +117,33 @@ struct adopt_thread *adopt_current(void) {
                 adopt_map_bind(fs,&c->entries[i]);
                 return &c->entries[i];
             }
+    /* A proxy child can reach a fresh ELF's first constructor before its
+     * clone continuation is rebased. If it inherited exactly one live record,
+     * that record is unambiguously the calling thread; refresh its identity
+     * now and repair the FS map for the post-exec TLS base. */
+    struct adopt_thread *only=NULL;
+    for(struct thread_chunk *c=atomic_load_explicit(&chunks,memory_order_acquire);c;
+        c=atomic_load_explicit(&c->next,memory_order_acquire))
+        for(unsigned i=0;i<CHUNK_THREADS;i++) {
+            struct adopt_thread *candidate=&c->entries[i];
+            int candidate_tid=atomic_load_explicit(&candidate->tid,memory_order_acquire);
+            if(candidate_tid>0) {
+                if(only) return NULL;
+                only=candidate;
+            }
+        }
+    if(only) {
+        uintptr_t old_app_fs=atomic_load_explicit(&only->app_fs,memory_order_acquire);
+        backend_fs_write(only->resident_fs);
+        fork_rebase(only);
+        identity_mutex=(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+        adopt_map_unbind(old_app_fs,only);
+        atomic_store_explicit(&only->app_fs,fs,memory_order_release);
+        adopt_map_bind(fs,only);
+        backend_fs_write(fs);
+        proxy_log("adopt-recovered-fork-child",tid,(long)fs);
+        return only;
+    }
     return NULL;
 }
 static struct adopt_thread *reserve(void) {
