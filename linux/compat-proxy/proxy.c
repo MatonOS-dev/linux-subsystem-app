@@ -172,6 +172,7 @@ static long namespace_clone_parent;
 static unsigned long namespace_clone_flags;
 uintptr_t proxy_clone_resume;
 extern char proxy_clone_entry[],proxy_clone_after[];
+extern void adopt_fork_child(void);
 static unsigned userns_remaining=~0U;
 struct sysctl_fd {int fd;struct sysctl_fd *next;};
 static struct sysctl_fd *sysctl_fds;
@@ -744,7 +745,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result)ipc_fork();break;
+        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){adopt_fork_child();ipc_fork();}break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -758,7 +759,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
             dns_fork_result(result);ipc_fork_result(result);
 
-            if(!result){ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+            if(!result){adopt_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
