@@ -36,11 +36,11 @@ At launch, the host creates the matching
 `runtime/org.freedesktop.Platform.GL.maton/x86_64/26.08/<commit>` deployment
 under Flatpak's temporary system installation, using the packaged ref,
 metadata, and OSTree commit object. It includes the normal `files/`,
-`metadata`, `deploy`, `.ref`, `active`, and `current` entries. The signed
-payload pack overlays that deployment's `files/` directory through the proxy;
-there is no separate `/usr/lib/.../GL/maton` outer-view mount. Flatpak can
-therefore discover the driver as an installed GL extension and generate its
-normal GL driver paths.
+`metadata`, valid Flatpak deployment record, `.ref`, `active`, and `current`
+entries. The signed payload pack overlays that deployment's `files/` directory
+through the proxy; there is no separate `/usr/lib/.../GL/maton` outer-view
+mount. Flatpak can therefore discover the driver as an installed GL extension
+and generate its normal GL driver paths.
 
 The package is built from the same forwarder outputs as the subsystem APK,
 so subsystem APK updates replace its payload. It is not published to Flathub.

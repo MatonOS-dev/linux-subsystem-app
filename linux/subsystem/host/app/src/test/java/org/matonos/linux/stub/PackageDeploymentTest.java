@@ -22,6 +22,7 @@ public final class PackageDeploymentTest {
         try(ZipOutputStream zip=new ZipOutputStream(Files.newOutputStream(apk))) {
             put(zip,"assets/gl-maton/ref.txt",ref+"\n"+commit+"\n");
             put(zip,"assets/gl-maton/metadata","[Runtime]\nname=org.freedesktop.Platform.GL.maton\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/26.08\n");
+            zip.putNextEntry(new ZipEntry("assets/gl-maton/deploy"));zip.write(new byte[]{7,8,9});zip.closeEntry();
             zip.putNextEntry(new ZipEntry("assets/gl-maton/objects.ostree"));zip.write(objects.array());zip.closeEntry();
         }
         Path system=scratch.resolve("system");Files.createDirectories(system);
@@ -30,6 +31,7 @@ public final class PackageDeploymentTest {
         assertEquals(version.resolve("files").toFile(),files);
         assertTrue(Files.isDirectory(files.toPath()));
         assertTrue(Files.isRegularFile(version.resolve("metadata")));
+        assertArrayEquals(new byte[]{7,8,9},Files.readAllBytes(version.resolve("deploy")));
         assertEquals("[Runtime]\nname=org.freedesktop.Platform.GL.maton\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/26.08\n",
                 new String(Files.readAllBytes(version.resolve("metadata")),StandardCharsets.UTF_8));
         assertTrue(Files.isRegularFile(version.resolve(".ref")));

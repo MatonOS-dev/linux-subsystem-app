@@ -2,6 +2,8 @@
 import pathlib
 import sys
 import zipfile
+import gi
+from gi.repository import GLib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "packs"))
 import pack
@@ -13,6 +15,16 @@ assert "runtime=org.freedesktop.Platform/x86_64/26.08" in metadata
 assert "ref=runtime/org.freedesktop.Platform/x86_64/26.08" in metadata
 assert (root / "ref.txt").read_text().splitlines()[0] == \
        "runtime/org.freedesktop.Platform.GL.maton/x86_64/26.08"
+ref, commit = (root / "ref.txt").read_text().splitlines()
+deployment = GLib.Variant.new_from_bytes(
+    GLib.VariantType.new("(ssasta{sv})"),
+    GLib.Bytes.new((root / "deploy").read_bytes()), True)
+assert deployment.get_child_value(0).unpack() == "flathub"
+assert deployment.get_child_value(1).unpack() == commit
+deploy_metadata = deployment.get_child_value(4)
+assert deploy_metadata.lookup_value("deploy-version", None).unpack() == 4
+assert deploy_metadata.lookup_value("extension-of", None).unpack() == \
+       "runtime/org.freedesktop.Platform/x86_64/26.08"
 rows = pack.read_index(root / "objects.index")
 paths = {row["path"]: row for row in rows}
 expected = {

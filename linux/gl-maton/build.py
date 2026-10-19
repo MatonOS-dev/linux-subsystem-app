@@ -6,6 +6,9 @@ import shutil
 import subprocess
 import tempfile
 
+import gi
+from gi.repository import GLib
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
@@ -41,6 +44,18 @@ def build(out, vulkan, egl, branch):
         "--tree=dir=" + str(files), "--no-xattrs", "--owner-uid=0", "--owner-gid=0",
         "--canonical-permissions")
     commit = subprocess.check_output(["ostree", "rev-parse", "--repo", str(repo), ref], text=True).strip()
+    runtime_ref = f"runtime/org.freedesktop.Platform/x86_64/{branch}"
+    deploy_metadata = GLib.Variant.parse(
+        GLib.VariantType.new("a{sv}"),
+        "{'deploy-version': <int32 4>, 'timestamp': <uint64 0>, "
+        f"'runtime': <'org.freedesktop.Platform/x86_64/{branch}'>, "
+        f"'extension-of': <'{runtime_ref}'>}}",
+        None)
+    deploy = GLib.Variant.parse(
+        GLib.VariantType.new("(ssasta{sv})"),
+        f"('flathub', '{commit}', [], uint64 0, {deploy_metadata.print_(True)})",
+        None)
+    (out / "deploy").write_bytes(deploy.get_data_as_bytes().get_data())
     packs = out / "payload"
     subprocess.run(["python3", str(ROOT / "linux/packs/pack.py"), "pack", "--repo", str(repo),
                     "--commit", commit, "--out", str(packs)], check=True)

@@ -36,12 +36,14 @@ final class PackageDeployment {
     static File prepareGlExtension(File systemRoot,File archive,String branch) throws Exception {
         String ref="runtime/org.freedesktop.Platform.GL.maton/x86_64/"+branch;
         String[] identity;
-        byte[] metadata,commitObject;
+        byte[] metadata,deploy,commitObject;
         try(ZipFile zip=new ZipFile(archive)) {
             identity=asset(zip,"assets/gl-maton/ref.txt").trim().split("\\r?\\n");
             if(identity.length!=2||!identity[0].equals(ref)||!identity[1].matches("[0-9a-f]{64}"))
                 throw new IOException("Invalid bundled Maton GL extension ref");
             metadata=assetBytes(zip,"assets/gl-maton/metadata");
+            deploy=assetBytes(zip,"assets/gl-maton/deploy");
+            if(deploy.length==0)throw new IOException("Empty bundled Maton GL deployment record");
             commitObject=findCommitObject(assetBytes(zip,"assets/gl-maton/objects.ostree"),identity[1]);
         }
         // Flatpak discovers this ref through the same active-ref layout and
@@ -50,9 +52,7 @@ final class PackageDeployment {
         Path root=systemRoot.toPath(),branchRoot=root.resolve(ref),version=branchRoot.resolve(identity[1]);
         Files.createDirectories(version);
         Files.write(version.resolve("metadata"),metadata);
-        // Flatpak uses deploy as an a{sv} deployment record; the empty map is
-        // sufficient for this image-owned extension, which has no remote.
-        Files.write(version.resolve("deploy"),new byte[0]);
+        Files.write(version.resolve("deploy"),deploy);
         Files.write(version.resolve(".ref"),new byte[0]);
         Files.createDirectory(version.resolve("files"));
         link(branchRoot.resolve("active"),Path.of(identity[1]));
