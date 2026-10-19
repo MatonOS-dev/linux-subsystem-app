@@ -277,6 +277,9 @@ char *vfs_resolve(int fd,const char *path,int follow,long *error){return vfs_res
 /* A bind source that is a regular file stays referenced by its virtual mount
  * (Linux keeps the inode alive after bwrap unlinks its bind-data temp file). */
 int vfs_is_mount_source(const char *path){for(struct mount *m=table;m;m=m->next)if(p_equal(m->source,path))return 1;return 0;}
+/* A packed index describes immutable files. If a more-specific virtual mount
+ * owns this path, let that mount's backing tree handle the lookup instead. */
+int vfs_has_nested_mount(const char *path,const char *ancestor){size_t n=p_len(ancestor);for(struct mount *m=table;m;m=m->next){const char *target=m->target;if(root&&prefix(target,root)){target+=p_len(root);if(!*target)target="/";}if(p_len(target)>n && prefix(target,ancestor) && prefix(path,target))return 1;}return 0;}
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
 int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
     proxy_log("mount-owner",PROXY_SC_mount,0);

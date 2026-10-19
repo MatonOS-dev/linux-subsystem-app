@@ -13,6 +13,15 @@ run('cc','-m32','-nostdlib','-static','-no-pie',base/'tests/pack-peer.S','-o',sr
 (src/'bin').mkdir()
 (root/'true.c').write_text('int main(void){return 0;}\n')
 run('cc','-static','-O2','-Wall','-Wextra','-Werror',root/'true.c','-o',src/'bin/true')
+(root/'bind-entry-probe.c').write_text(r'''#define _GNU_SOURCE
+#include <dirent.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int main(void){DIR*d=opendir("/usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d");if(!d){perror("opendir bound parent");return 1;}int found=0,phantom=0;struct dirent*e;while((e=readdir(d))){if(!strcmp(e->d_name,"maton_icd.json")){if(e->d_type!=DT_REG){fprintf(stderr,"wrong d_type: %u\n",e->d_type);return 2;}found++;}if(!strcmp(e->d_name,"never-created"))phantom++;}closedir(d);if(found!=1){fprintf(stderr,"bound entry count: %d\n",found);return 3;}if(phantom)return 6;int fd=open("/usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d/maton_icd.json",O_RDONLY);if(fd<0)return 4;char b[64]={0};ssize_t n=read(fd,b,sizeof(b)-1);close(fd);if(n<0||strcmp(b,"newly bound Vulkan ICD entry\n"))return 5;puts("bwrap packed-parent bind entry readdir/d_type/open PASS");return 0;}
+''')
+run('cc','-static','-O2','-Wall','-Wextra','-Werror',root/'bind-entry-probe.c','-o',src/'bin/probe-new-bind')
 (root/'file-bind-launcher.c').write_text(r'''#define _GNU_SOURCE
 #include <fcntl.h>
 #include <stdio.h>
@@ -169,6 +178,29 @@ if ldconfig and shutil.which('bwrap'):
  finally:os.close(runtime_fd);os.close(cache_fd)
  assert (extension+'/lib/libfixture.so').encode() in output(ldconfig,'-p','-C',cache/'cache')
  print('real packed ldconfig with GL tmpfs/extension/add-ld-path PASS',flush=True)
+ # A file bind below a directory absent from the packed runtime must be
+ # visible through readdir on that newly-created parent, and then openable.
+ (root/'bind-entry').write_text('newly bound Vulkan ICD entry\n')
+ (root/'bind-entry-launcher.c').write_text(r'''#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc,char **argv){if(argc!=3)return 1;int usr=open("/usr",O_PATH|O_DIRECTORY);int entry=open(argv[2],O_PATH);if(usr<0||entry<0)return 2;char u[24],f[24];snprintf(u,sizeof(u),"%d",usr);snprintf(f,sizeof(f),"%d",entry);char *args[]={argv[1],"--ro-bind-fd",u,"/usr","--ro-bind-fd",f,"/usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d/maton_icd.json","--proc","/proc","--dev","/dev","/usr/bin/probe-new-bind",NULL};execv(argv[1],args);return 3;}
+''')
+ run('cc','-static','-O2','-Wall','-Wextra','-Werror',root/'bind-entry-launcher.c','-o',root/'bind-entry-launcher')
+ bind_fd=os.open(root/'bind-entry',os.O_PATH)
+ runtime_fd=os.open(files,os.O_RDONLY|os.O_DIRECTORY)
+ args=[base/'build/linux-layer-v3','--android-filter','--trace',
+       '--map',os.path.realpath('/lib'),'/lib','--map',os.path.realpath('/lib64'),'/lib64',
+       '--pack-mount','/usr',bundle/'objects.index',bundle,bwrap,
+       '--ro-bind-fd',str(runtime_fd),'/usr',
+       '--tmpfs','/usr/lib/x86_64-linux-gnu/GL',
+       '--ro-bind-fd',str(bind_fd),'/usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d/maton_icd.json',
+       '--proc','/proc','--dev','/dev','/usr/bin/probe-new-bind']
+ try:
+  output(*args,pass_fds=[runtime_fd,bind_fd],timeout=30)
+ finally:os.close(runtime_fd);os.close(bind_fd)
+ print('packed parent bwrap --ro-bind-fd new-directory regression PASS',flush=True)
 else:print('SKIP packed ldconfig: static host ldconfig/bwrap unavailable',flush=True)
 for name in ('data','large','link','nested/leaf'):
  data=(src/name).read_bytes();assert guest('/bin/cat','/packed/'+name)==data
