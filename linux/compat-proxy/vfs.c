@@ -136,6 +136,7 @@ char *vfs_reverse_pack(const char *path){
     const char *relative=p+p_len(oldroot_view);char *q=dupstr(*relative?relative:"/");vfs_free(p);return q;
 }
 static char *readlink_dynamic(const char *path,long *error){size_t n=256;for(;;){char *s=vfs_alloc(n+1);if(!s){*error=-ENOMEM;return NULL;}int handled=0;long pe=0;char *packed=pack_link(path,&pe,&handled);if(handled){vfs_free(s);*error=pe;return packed;}long r=RAW(PROXY_SC_readlinkat,AT_FDCWD,path,s,n,0,0);if(r<0){vfs_free(s);*error=r;return NULL;}if((size_t)r<n){s[r]=0;return s;}vfs_free(s);if(n>SIZE_MAX/2-1){*error=-EOVERFLOW;return NULL;}n*=2;}}
+static int proc_pack_fd(const char *path);
 struct fd_name {struct fd_name *next;int fd;char *path;};
 static struct fd_name *fd_names;
 /* Only protect the fd-name bookkeeping, never a payload syscall (flock may
@@ -240,6 +241,19 @@ restart:;
          * pathname root. They are not ordinary payload absolute symlinks. */
         if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
             int magic=0;for(size_t j=0;host[j];j++)if(host[j]=='/' && host[j+1]=='f' && host[j+2]=='d' && host[j+3]=='/')magic=1;
+            int packed_fd=magic?proc_pack_fd(out):-1;
+            if(packed_fd>=0 && pack_tracked(packed_fd)){
+                /* A packed directory's kernel fd names the empty, unlinked
+                 * carrier, not the indexed directory. Follow its recorded
+                 * VFS name (rebased by pivot_root) so bind-fd and lookups
+                 * below the magic link retain the actual source tree. */
+                char *name=vfs_fd_name(packed_fd);
+                if(name){char *replacement=join(name,input+i);vfs_free(name);vfs_free(target);vfs_free(host);
+                    if(!replacement){*error=-ENOMEM;goto fail;}
+                    if(++links>40){vfs_free(replacement);*error=-ELOOP;goto fail;}
+                    vfs_free(input);vfs_free(out);input=replacement;goto restart;
+                }
+            }
             if(magic && !input[i] && follow==VFS_FOLLOW_LINK_SOURCE){
                 /* Keep the proc magic link itself. readlink text for O_TMPFILE
                  * is a nonexistent "#inode (deleted)" name, not the inode. */

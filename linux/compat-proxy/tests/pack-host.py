@@ -49,6 +49,11 @@ run('cc',base/'tests/loader-maps.c','-o',src/'maps')
 (root/'dynamic.c').write_text('#include <stdio.h>\nextern int pack_answer(void);int main(void){if(pack_answer()!=42)return 1;puts("dynamic pack ELF + .so mmap PASS");return 0;}\n')
 run('cc','-shared','-fPIC',root/'lib.c','-o',src/'lib/libfixture.so')
 run('cc',root/'dynamic.c','-L'+str(src/'lib'),'-lfixture','-Wl,-rpath,/packed/lib','-o',src/'dynamic')
+ldconfig=next((p for p in (pathlib.Path('/sbin/ldconfig.real'),pathlib.Path('/sbin/ldconfig'))
+               if p.exists() and p.read_bytes()[:4]==b'\x7fELF'
+               and b'INTERP' not in output('readelf','-l',p)),None)
+if ldconfig:
+ (src/'bin').mkdir();shutil.copy2(ldconfig,src/'bin/ldconfig')
 (src/'script').write_text('#!/bin/sh\nprintf "script from pack PASS\\n"\ncat /packed/data\n');(src/'script').chmod(0o755)
 (src/'data').write_bytes(b'0123456789abcdef');(src/'large').write_bytes(bytes(range(256))*8193);(src/'nested/leaf').write_text('nested content\n');(src/'link').symlink_to('nested/leaf')
 repo=root/'repo';run('ostree','init','--repo='+str(repo),'--mode=bare-user');run('ostree','commit','--repo='+str(repo),'-b','fixture','--tree=dir='+str(src),'-m','pack host')
@@ -67,6 +72,60 @@ identity_source=root/'bind-source';identity_source.mkdir()
 print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'/usr/probe-root-identity',identity_source,'/usr').decode(),end='',flush=True)
 empty=root/'empty-runtime-files';empty.mkdir()
 print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'--map',empty,'/newroot','/usr/probe-root-dir','/newroot','usr','data').decode(),end='',flush=True)
+bind_probe_src=root/'packed-bind-fd.c'
+bind_probe_src.write_text(r'''#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(int argc,char **argv){
+ if(argc!=2)return 1;
+ int source=open(argv[1],O_RDONLY|O_DIRECTORY);struct stat before,after;
+ if(source<0||fstat(source,&before))return 2;
+ char proc[64];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",source);
+ if(mount(proc,"/newroot/usr",NULL,MS_BIND,NULL)){perror("bind packed fd");return 3;}
+ int target=open("/newroot/usr",O_PATH|O_DIRECTORY);
+ if(target<0||fstat(target,&after))return 4;
+ if(before.st_dev!=after.st_dev||before.st_ino!=after.st_ino){fprintf(stderr,"packed fd bind changed inode\n");return 5;}
+ const char *parents[]={"lib","x86_64-linux-gnu","GL","default"};
+ for(unsigned i=0;i<sizeof(parents)/sizeof(parents[0]);i++){
+  if(mkdirat(target,parents[i],0755)!=-1||errno!=EEXIST){perror("mkdir existing packed parent");return 6;}
+  int next=openat(target,parents[i],O_PATH|O_DIRECTORY|O_NOFOLLOW);if(next<0)return 7;close(target);target=next;
+ }
+ int leaf=openat(target,"extension-marker",O_RDONLY);char text[64];
+ if(leaf<0||read(leaf,text,sizeof(text))!=29)return 8;
+ close(leaf);close(target);close(source);
+ puts("packed bind-fd inode and dirfd-relative existing parents PASS");return 0;
+}
+''')
+bind_probe=root/'packed-bind-fd';run('cc','-static','-O2','-Wall','-Wextra','-Werror',bind_probe_src,'-o',bind_probe)
+files=root/'deployment/files';files.mkdir(parents=True)
+print(output(base/'build/linux-layer-v3','--android-filter','--pack-mount','/usr',bundle/'objects.index',bundle,'--map',empty,'/newroot',bind_probe,files).decode(),end='',flush=True)
+if ldconfig and shutil.which('bwrap'):
+ # Flatpak's cache subprocess binds the runtime from an fd, then executes
+ # the runtime's real ldconfig. Keep the host bwrap's interpreter/libraries
+ # reachable before its pivot; the final root contains only the packed /usr.
+ bwrap=root/'bwrap';shutil.copy2(shutil.which('bwrap'),bwrap)
+ cache=root/'ld-so-cache';cache.mkdir()
+ config=root/'ld.so.conf';config.write_text('/usr/lib\n')
+ runtime_fd=os.open(files,os.O_RDONLY|os.O_DIRECTORY);cache_fd=os.open(cache,os.O_RDONLY|os.O_DIRECTORY)
+ args=[base/'build/linux-layer-v3','--android-filter','--trace',
+       '--map',os.path.realpath('/lib'),'/lib','--map',os.path.realpath('/lib64'),'/lib64',
+       '--pack-mount','/usr',bundle/'objects.index',bundle,bwrap,
+       '--ro-bind-fd',str(runtime_fd),'/usr','--symlink','usr/lib','/lib',
+       '--bind-fd',str(cache_fd),'/run/ld-so-cache-dir',
+       '--ro-bind',config,'/etc/ld.so.conf','--proc','/proc','--dev','/dev',
+       '/usr/bin/ldconfig','-X','-C','/run/ld-so-cache-dir/cache']
+ try:
+  with (root/'ldconfig.stdout').open('wb') as out,(root/'ldconfig.trace').open('wb') as err:
+   run(*args,pass_fds=[runtime_fd,cache_fd],stdout=out,stderr=err,timeout=30)
+ finally:os.close(runtime_fd);os.close(cache_fd)
+ assert (cache/'cache').stat().st_size>0
+ assert b'libfixture.so' in output(ldconfig,'-p','-C',cache/'cache')
+ print('real packed ldconfig -X -C through bwrap runtime/cache bind-fd PASS',flush=True)
+else:print('SKIP packed ldconfig: static host ldconfig/bwrap unavailable',flush=True)
 for name in ('data','large','link','nested/leaf'):
  data=(src/name).read_bytes();assert guest('/bin/cat','/packed/'+name)==data
  digest=guest('/usr/bin/sha256sum','/packed/'+name).decode().split()[0];assert digest==hashlib.sha256(data).hexdigest()
