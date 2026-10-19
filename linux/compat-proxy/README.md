@@ -76,6 +76,19 @@ stack grows for larger argv/env; PT_INTERP follows Linux's 4096-byte pathname
 limit and script parsing uses Linux's 256-byte header size. Thread records
 are dynamic; the previous 128-slot cap is gone.
 
+The proxy's per-ABI seccomp filters pass only exact `fcntl(F_GETFD)` and
+`fcntl(F_SETFD)` commands directly to the kernel. Their state is kernel-owned,
+and this avoids trapping libc's close-on-exec scan of every descriptor up to
+`RLIMIT_NOFILE`; duplication, status flags, locks and all other `fcntl`
+commands still update proxy state in the trap handler. Resident exec reads
+the kernel flag when it closes tracked payload descriptors. It preserves
+proxy-private descriptors across resident exec even if payload code sets
+`FD_CLOEXEC` on them; `F_GETFD` may therefore expose a private descriptor's
+real kernel flag, while the proxy continues to reject payload I/O and explicit
+close on that descriptor. For mixed-ABI kernel handoff, the sealed state fd is
+made inheritable immediately before `execveat(AT_EMPTY_PATH)` and its prior
+flag is restored if exec fails.
+
 Bionic ELF uses the resident loader too: `/system/bin/linker64` is mapped as
 PT_INTERP, with PHDR/PHNUM/ENTRY/BASE/RANDOM/SECURE/PAGESZ/EXECFN plus inherited
 HWCAP/HWCAP2/SYSINFO_EHDR auxv. In-process exec resets FS TLS before entering

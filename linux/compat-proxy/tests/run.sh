@@ -16,6 +16,11 @@ for test in signals threads spawn binder; do
     timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/$test" >"build/$test.out" 2>"build/$test.log"
     cat "build/$test.out"
 done
+cc -no-pie -O2 -Wall -Wextra -Werror tests/fcntl-native.c -o build/fcntl-native
+timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/fcntl-native" >build/fcntl-native.out 2>build/fcntl-native.log
+cat build/fcntl-native.out
+grep -q 'v3 trap ours-exec' build/fcntl-native.log
+printf 'PASS proxy-private diagnostic fd remains usable after resident exec\n'
 timeout 15 build/linux-layer-v3 --android-filter /bin/bash -c 'ls /; cat /etc/os-release' >build/stage1-host.out 2>build/stage1-host.log
 cc -no-pie -O2 -Wall -Wextra -Werror tests/mounts.c -o build/mounts
 mkdir -p build/fixture-dir

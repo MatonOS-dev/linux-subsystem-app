@@ -47,11 +47,13 @@
 #ifdef HOST_COMMAND_TEST
 static int hc_test_fd=-1;
 #endif
+static int proxy_count_fd=-1;
 static int private_close_fd(int fd){
 #ifdef HOST_COMMAND_TEST
     if(fd==hc_test_fd)return 1;
 #endif
-    return vfs_private_fd(fd);
+    /* --count spans resident execs even if payloads set CLOEXEC on it. */
+    return fd==proxy_count_fd || vfs_private_fd(fd);
 }
 static struct kernel_action chained;
 int proxy_diagnostics_init(void) {
@@ -141,7 +143,6 @@ static struct thread_state *thread_state(void) {
 const char *proxy_tmpdir="/tmp";
 /* --trace: log to the original diagnostic sink, independently of app stdio. */
 int proxy_trace;
-static int proxy_count_fd=-1;
 static volatile uint64_t proxy_counts[PROXY_SC_count];
 static volatile uint64_t proxy_syscall_ns[PROXY_SC_count];
 static volatile uint64_t proxy_handler_ns,proxy_vfs_ns;
@@ -550,7 +551,9 @@ static void exec_close_fds(void){
     char *buf=vfs_alloc(8192);if(!buf){RAW(PROXY_SC_close,fd,0,0,0,0,0);return;}
     for(;;){long n=RAW(PROXY_SC_getdents64,fd,buf,8192,0,0,0);if(n<=0)break;
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
-            if(valid && v!=fd){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(PROXY_SC_close,v,0,0,0,0,0);dns_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
+            /* Proxy-private descriptors back resident state and diagnostics;
+             * payload F_SETFD is native now, but must not tear these down. */
+            if(valid && v!=fd && !private_close_fd((int)v)){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(PROXY_SC_close,v,0,0,0,0,0);dns_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
         }
     }
     vfs_free(buf);RAW(PROXY_SC_close,fd,0,0,0,0,0);

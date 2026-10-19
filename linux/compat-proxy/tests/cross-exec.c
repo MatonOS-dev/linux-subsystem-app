@@ -56,7 +56,11 @@ int main(int argc,char **argv,char **env){
  char text[32]={0};CHECK(read(fd,text,5)==5&&!memcmp(text,"cross",5));CHECK(lseek(alias,0,SEEK_CUR)==5);CHECK(lseek(fd,0,SEEK_SET)==0);
  /* The diagnostic sink is duplicated at or above 256. Payload probes and
   * close cannot steal it; the second exec must still emit its trace. */
- CHECK(fcntl(256,F_GETFD)==-1&&errno==EBADF);CHECK(close(256)==0);
+ int private_flags=fcntl(256,F_GETFD);
+ /* Native F_GETFD may expose the private descriptor's kernel state. */
+ CHECK(private_flags>=0 || errno==EBADF);
+ if(private_flags>=0)CHECK(!fcntl(256,F_SETFD,FD_CLOEXEC));
+ CHECK(close(256)==0);
  CHECK(read(256,text,1)==-1&&errno==EBADF);
  struct stat st;CHECK(!syscall(sizeof(long)==4?195:4,"/v3-cross-file",&st)&&st.st_size==6);
  int *memory=shmat_(shm);CHECK(memory!=(void *)-1);

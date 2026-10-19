@@ -13,17 +13,21 @@ used a temporary `XDG_DATA_HOME`. Pull and deploy are Flatpak's separate
 `--no-deploy` and `--no-pull` operations. Native cold pull transferred the
 runtime and app into a 663 MiB OSTree repo; the proxy comparison used warm
 objects in that same repo, avoiding a second 663 MiB network transfer.
+Launch measurements ran headless with `DISPLAY` unset.
 
-| Operation | Native wall | Proxy wall, counters off | Proxy wall, counters on |
-|---|---:|---:|---:|
-| Cold pull (`--no-deploy`) | 12.09 s | not run cold | not run cold |
-| Warm pull/reinstall (`--no-deploy`) | 1.31 s | 14.57 s | 16.91 s |
-| Warm deploy/reinstall (`--no-pull`) | 0.85 s | 12.37 s | 15.48 s |
-| Warm pull + deploy | 2.16 s | 26.94 s | 32.39 s |
+| Operation | Native before | Proxy before, counters off/on | Native after | Proxy after, counters off/on |
+|---|---:|---:|---:|---:|
+| Cold pull (`--no-deploy`) | 12.09 s | not run cold | not rerun cold | not run cold |
+| Warm pull/reinstall (`--no-deploy`) | 1.31 s | 14.57 / 16.91 s | 2.30 s | 8.53 / 8.03 s |
+| Warm deploy/reinstall (`--no-pull`) | 0.85 s | 12.37 / 15.48 s | 0.92 s | 1.81 / 1.75 s |
+| Warm pull + deploy | 2.16 s | 26.94 / 32.39 s | 3.22 s | 10.34 / 9.78 s |
 
-The comparable warm-cache proxy operation took 12.5x the native time with
-counters off. Counting adds 5.45 s (20%) across the two proxy phases; use the
-counters for attribution, not as the wall-time result. Native cold pull plus
+The proxy warm pull-plus-deploy wall time fell 61.6% with counters off. The
+before-change counter run had 6,330,940 traps (6,292,634 `fcntl`) and 71.39 s
+of aggregate handler time; after the filter change it had 81,531 traps and
+14.03 s of handler time. Counter-on and counter-off wall timings varied by
+about half a second in both directions at this workload size. Native timing
+varied from 2.16 to 3.22 s between measurement sessions. Native cold pull plus
 deploy was 13.51 s. A cold proxy network pull was deliberately not repeated.
 The full MatonOS installer path could not run on this host: its Android-side
 PackageInstaller/bridge transaction is absent. The host measurement covers
@@ -36,10 +40,11 @@ production app's APK/carrier packaging time.
 
 ### Trapped-call profile
 
-Counts below combine the warm proxy pull and deploy with `--count`. They are
-the top 20 by trap count and by cumulative handler time. Time is cumulative
-across processes and threads; calls can overlap. `read` time includes time
-blocked in the kernel, so these are handler elapsed times, not CPU samples.
+The first two tables are the before-change top-20 profiles for the warm proxy
+pull and deploy with `--count`. Time is cumulative across processes and
+threads; calls can overlap. `read` time includes time blocked in the kernel,
+so these are handler elapsed times, not CPU samples. The after-change profile
+had zero trapped `fcntl` calls; the safe commands bypass the proxy filter.
 
 | Syscall | Count | Handler time (s) |
 |---|---:|---:|
@@ -87,7 +92,7 @@ blocked in the kernel, so these are handler elapsed times, not CPU samples.
 | symlink | 8 | 0.005 |
 | unlink | 8 | 0.005 |
 
-There were 6,330,940 trapped calls. Summed handler elapsed time was 71.39 s,
+There were 6,330,940 trapped calls before the change. Summed handler elapsed time was 71.39 s,
 including 3.62 s in VFS resolution. That is 11.27 us of handler elapsed time
 per trap, with 0.57 us/trap in VFS resolution and 10.70 us/trap in the rest of
 the handler. The aggregate handler time is 220% of the 32.39 s counted wall
@@ -95,14 +100,19 @@ time because multiple threads/processes were in handlers at once; this is
 thread-time, not a wall-time fraction. Much of the high `read` time is blocking
 I/O, which site rewriting cannot remove.
 
-For launch, native `flatpak run --command=vulkaninfo` took 0.33 s and proxy
-launch took 4.70 s with counters off (5.66 s on). VulkanInfo then exited with
-`ERROR_INCOMPATIBLE_DRIVER`: the host has no Vulkan driver. This is a real
-Flatpak launch measurement, but not a successful Vulkan workload. The counter
-run saw 1,054,631 traps: 1,048,676 `fcntl`, 514 `read`, 614 `openat`, 430
-`statx`, and 179 `newfstatat`. Handler elapsed time was 6.66 s, of which 0.40 s
-was VFS resolution. The 118% aggregate handler/wall ratio again reflects
-concurrency and is not a serial fraction.
+For launch, native `flatpak run --command=vulkaninfo` took 0.33 s before and
+after. Proxy launch fell from 4.70 s off / 5.66 s on to 1.20 s off / 1.24 s
+on. VulkanInfo exited with `ERROR_INCOMPATIBLE_DRIVER`: the host has no Vulkan
+driver. Before the change, launch saw 1,054,631 traps, including 1,048,676
+`fcntl`; afterward it saw 12,018 traps and no trapped `fcntl`. After-change
+handler elapsed time was 2.074 s, of which 0.128 s was VFS resolution. As
+before, aggregate handler/wall ratios can exceed 100% because threads run
+concurrently; they are not serial time fractions.
+
+| Workload | Traps before | Traps after | `fcntl` before/after | Proxy wall before/after (off) |
+|---|---:|---:|---:|---:|
+| Warm pull + deploy | 6,330,940 | 81,531 | 6,292,634 / 0 | 26.94 / 10.34 s |
+| VulkanInfo launch | 1,054,631 | 12,018 | 1,048,676 / 0 | 4.70 / 1.20 s |
 
 The smaller proxy bwrap fixture (`bwrap --ro-bind / / --tmpfs /tmp --proc
 /proc --dev /dev /bin/true`) completed in 0.04 s with 325 trapped calls,
@@ -114,16 +124,12 @@ high-volume descriptor and blocking-read traffic.
 
 ### Improvement estimates, ranked
 
-These are estimates from the above profiles, not measured speedups.
+The first item is now measured; remaining items are estimates.
 
-1. **Allow safe fd-only calls through the filter.** `fcntl` is 99.4% of
-   install traps by count and costs 8.0 aggregate handler seconds; at launch
-   it is about 99.4% of traps. First split `fcntl` by command and exempt only
-   operations that do not update proxy fd/alias state. Exempting a safe hot
-   subset could remove millions of traps; a 25–75% reduction in total trapped
-   calls is plausible, but requires command-argument counts before selecting
-   the safe subset. Direct `read`/`lseek`/`fstat` exemptions need the same
-   descriptor-ownership audit.
+1. **Allow `F_GETFD` and `F_SETFD` through the filter.** Implemented and
+   measured: trapped calls fell 98.7% on warm pull/deploy and 98.9% on launch;
+   warm proxy pull/deploy fell from 26.94 s to 10.34 s and launch from 4.70 s
+   to 1.20 s with counters off. Other `fcntl` commands remain trapped.
 2. **Syscall-site rewrite.** The measured residual handler cost is about
    10.7 us/trap for the install profile and 5.9 us/trap for the VulkanInfo
    launch profile. Multiplying by call count gives 67.8 aggregate handler

@@ -57,6 +57,18 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, unsigned
     ADD(BPF_ALU|BPF_AND|BPF_K,0,0,0xff00);
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0x6200);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ERRNO|EPERM);
+    /* FD_CLOEXEC is kernel-owned state: let F_GETFD/F_SETFD reach Linux
+     * directly so libc's million-descriptor spawn sweep does not trap.
+     * Check the command's high word too; only the exact 32-bit commands
+     * are exempt. Every other fcntl operation still updates proxy state. */
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,6,encode(PROXY_SC_fcntl));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1])+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,4,0);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,F_GETFD);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,F_SETFD);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     /* Resident bionic must be able to implement the Android-owned pthread,
      * allocator and signal machinery. This is a routing exemption only: the
      * Linux payload is not a security boundary. Binder/ioctl was denied above.

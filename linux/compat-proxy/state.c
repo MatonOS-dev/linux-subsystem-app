@@ -92,6 +92,14 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(!error){av[0]=self;av[1]="--resident-state";av[2]=num;av[3]=key;av[4]=(char *)path;
  for(size_t i=0;i<count;i++)av[i+5]=args[i];
  av[count+5]=NULL;
- error=RAW(PROXY_SC_execveat,fd,"",av,env,0x1000,0);}
+ /* Payload F_SETFD is native now. This sealed handoff FD must cross the
+  * kernel exec so the new resident can import it, regardless of that flag. */
+ long handoff_flags=RAW(PROXY_SC_fcntl,private_fd,F_GETFD,0,0,0,0);
+ if(handoff_flags<0)error=handoff_flags;
+ else if((handoff_flags&FD_CLOEXEC) && RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags&~FD_CLOEXEC,0,0,0)<0)error=-EIO;
+ else {error=RAW(PROXY_SC_execveat,fd,"",av,env,0x1000,0);
+  /* A failed exec leaves the caller alive; restore its private descriptor's
+   * original kernel flag along with the rest of its state. */
+  if(error<0 && (handoff_flags&FD_CLOEXEC))RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags,0,0,0);}}
  vfs_free(av);RAW(PROXY_SC_close,private_fd,0,0,0,0,0);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
 }
