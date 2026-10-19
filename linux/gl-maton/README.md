@@ -67,3 +67,18 @@ Assigned-VM acceptance procedure (ADB `127.0.0.1:5556`; do not reboot):
 4. Check `logcat -s MatonV3` for VulkanInfo discovering the Maton ICD and
    listing the forwarder device. Check that EGL's vendor list includes Maton.
    If Vulkan reaches the driver but fails later, record that next error.
+
+VM result (v39, 2026-10-19): Flatpak's bwrap trace mounts the deployed ref at
+`/usr/lib/x86_64-linux-gnu/GL/maton`, and its generated
+`runtime-002-org.freedesktop.Platform.GL.maton.conf` is present. The Vulkan
+loader reports:
+
+```text
+Found ICD manifest file /usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d/maton_icd.json, version 1.0.0
+Searching for ICD drivers named libmaton_vulkan.so
+loader_scanned_icd_add: Could not get 'vkCreateInstance' via 'vk_icdGetInstanceProcAddr' for ICD libmaton_vulkan.so
+```
+
+`vulkaninfo` then exits with `vkCreateInstance failed with
+ERROR_INCOMPATIBLE_DRIVER`. This confirms extension discovery and library
+loading; forwarder initialization is the next separate issue.
