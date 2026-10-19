@@ -8,6 +8,9 @@
 #include "net.h"
 #include "links.h"
 #include "sysvipc.h"
+#define RESIDENT_ALLOC vfs_alloc
+#define RESIDENT_FREE vfs_free
+#include "resident-ranges.h"
 #include <sys/time.h>
 #include <sys/inotify.h>
 #include <sys/socket.h>
@@ -72,7 +75,7 @@ static void crash_hex(uint64_t value) {
     RAW(PROXY_SC_write,proxy_diagnostic_fd,out,sizeof(out),0,0,0);
 }
 static void crash_text(const char *s){RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p_len(s),0,0,0);}
-static uintptr_t maps_hex(const char **p){uintptr_t v=0;for(;;){unsigned c=(unsigned char)**p,d;if(c>='0'&&c<='9')d=c-'0';else if(c>='a'&&c<='f')d=c-'a'+10;else break;v=(v<<4)|d;(*p)++;}return v;}
+static uintptr_t maps_hex(const char **p){return resident_maps_hex(p);}
 struct image_map {uintptr_t lo,hi,offset;char *path;struct image_map *next;};
 static struct image_map *image_maps;
 void proxy_image_map(uintptr_t lo,uintptr_t hi,uintptr_t offset,const char *path){
@@ -869,42 +872,36 @@ clean_mask:
 /* Resident entry deliberately shares syscall translation, not installation.
  * Its caller owns thread routing and must intercept process-global operations. */
 #include ARCH_FILTER_HEADER
-static struct arch_ip_range resident_libc_ip[16];
-static unsigned resident_libc_ip_count;
-static int has_libc_path(const char *p) {
-    for(;*p;p++) if(p[0]=='l'&&p[1]=='i'&&p[2]=='b'&&p[3]=='c'&&p[4]=='.'&&p[5]=='s'&&p[6]=='o') return 1;
-    return 0;
-}
-static struct arch_ip_range *resident_libc_ranges(unsigned *count) {
-    static char maps[65536];
-    resident_libc_ip_count=0;
+static struct arch_ip_range *resident_bionic_ranges(size_t *count, int *error) {
+    *count=0; *error=0;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
-    if(fd<0) { *count=0; return resident_libc_ip; }
-    long used=0;
-    while(used<(long)sizeof(maps)-1) {
-        long n=RAW(PROXY_SC_read,fd,maps+used,sizeof(maps)-1-(size_t)used,0,0,0);
-        if(n<=0) break;
-        used+=n;
+    if(fd<0) { *error=(int)fd; return NULL; }
+    size_t capacity=4096, used=0, range_capacity=0;
+    char *maps=RESIDENT_ALLOC(capacity+1);
+    struct arch_ip_range *ranges=NULL;
+    if(!maps) { RAW(PROXY_SC_close,fd,0,0,0,0,0); *error=-ENOMEM; return NULL; }
+    for(;;) {
+        if(used==capacity) {
+            if(capacity>(SIZE_MAX-1)/2) { *error=-EOVERFLOW; break; }
+            size_t next=capacity*2;
+            char *grown=RESIDENT_ALLOC(next+1);
+            if(!grown) { *error=-ENOMEM; break; }
+            p_copy(grown,maps,used);
+            RESIDENT_FREE(maps);
+            maps=grown; capacity=next;
+        }
+        long n=RAW(PROXY_SC_read,fd,maps+used,capacity-used,0,0,0);
+        if(n==0) break;
+        if(n<0) { *error=(int)n; break; }
+        used+=(size_t)n;
     }
     RAW(PROXY_SC_close,fd,0,0,0,0,0);
+    if(*error) { RESIDENT_FREE(maps); RESIDENT_FREE(ranges); return NULL; }
     maps[used]=0;
-    for(char *line=maps;*line;) {
-        char *end=line;while(*end&&*end!='\n')end++;
-        char saved=*end;*end=0;
-        const char *p=line;
-        uintptr_t lo=maps_hex(&p),hi=0;
-        if(*p=='-') {p++;hi=maps_hex(&p);}
-        while(*p==' ')p++;
-        int executable=p[0]=='r'&&p[1]=='-'&&p[2]=='x';
-        while(*p&&*p!=' ')p++;
-        while(*p==' ')p++;
-        if(lo<hi&&executable&&has_libc_path(p)&&resident_libc_ip_count<16)
-            resident_libc_ip[resident_libc_ip_count++]=(struct arch_ip_range){lo,hi};
-        *end=saved;
-        line=saved?end+1:end;
-    }
-    *count=resident_libc_ip_count;
-    return resident_libc_ip;
+    *error=resident_ranges_parse(maps,count,&ranges,&range_capacity);
+    if(*error) { *count=0; RESIDENT_FREE(maps); RESIDENT_FREE(ranges); return NULL; }
+    RESIDENT_FREE(maps);
+    return ranges;
 }
 int proxy_install(int android) {
     ipc_init(); /* IPC failure must never prevent payload startup. */
@@ -916,13 +913,19 @@ int proxy_install(int android) {
     proxy_sigmask_t mask=SIGSYS_BIT;r=RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);if(r) return (int)r;
     r=RAW(PROXY_SC_prctl,PR_SET_NO_NEW_PRIVS,1,0,0,0,0);if(r) return (int)r;
     if(android) {emit("v3 installing android filter\n");r=arch_app_install();if(r) return (int)r;emit("v3 android filter installed\n");}
-    unsigned libc_count=0;
-    struct arch_ip_range *libc=resident_libc_ranges(&libc_count);
+    size_t libc_count=0; int range_error=0;
+    struct arch_ip_range *libc=resident_bionic_ranges(&libc_count,&range_error);
+    if(range_error) return range_error;
     if(proxy_trace) {
-        proxy_log("resident-libc-ranges",libc_count,libc_count?(long)libc[0].begin:0);
-        for(unsigned i=0;i<libc_count;i++) proxy_log("resident-libc-range",(long)libc[i].begin,(long)libc[i].end);
+        proxy_log("resident-bionic-ranges",(long)libc_count,libc_count?(long)libc[0].begin:0);
+        for(size_t i=0;i<libc_count;i++) {
+            proxy_log("resident-bionic-range",(long)libc[i].begin,(long)libc[i].end);
+            if(libc[i].linker) proxy_log("resident-linker-range",(long)libc[i].begin,(long)libc[i].end);
+        }
     }
-    return arch_filter_install(libc,libc_count);
+    int result=arch_filter_install(libc,libc_count);
+    RESIDENT_FREE(libc);
+    return result;
 }
 
 

@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 ./build.sh
 cc -O2 -Wall -Wextra -Werror tests/arch-map.c -o build/arch-map
 build/arch-map
+cc -O2 -Wall -Wextra -Werror tests/resident-ranges.c -o build/resident-ranges
+build/resident-ranges
 if [[ ${1:-} == --i386-p2 ]]; then
     bash tests/i386-p1.sh
     exec bash tests/i386-dynamic.sh
