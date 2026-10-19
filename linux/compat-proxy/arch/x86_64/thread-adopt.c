@@ -209,6 +209,8 @@ void adopt_fork_child(void) {
     }
     backend_fs_write(self->resident_fs);
     fork_rebase(self);
+    proxy_log("adopt-fork-child",atomic_load_explicit(&self->tid,memory_order_acquire),
+              (long)atomic_load_explicit(&self->app_fs,memory_order_acquire));
     /* Raw proxy clones bypass libc's pthread_atfork handlers. Discard a mutex
      * possibly owned by a vanished thread before identity() can use it. */
     identity_mutex=(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
@@ -299,6 +301,18 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
         long tid=R(gettid,0,0,0,0,0,0);
         proxy_log("adopt-miss-tid",tid,(long)fs);
         proxy_log("adopt-miss-map",(long)adopt_map_lookup(fs),(long)live());
+        for(struct thread_chunk *c=atomic_load_explicit(&chunks,memory_order_acquire);c;
+            c=atomic_load_explicit(&c->next,memory_order_acquire))
+            for(unsigned i=0;i<CHUNK_THREADS;i++) {
+                struct adopt_thread *candidate=&c->entries[i];
+                int candidate_tid=atomic_load_explicit(&candidate->tid,memory_order_acquire);
+                if(candidate_tid) {
+                    proxy_log("adopt-miss-record",candidate_tid,
+                              (long)atomic_load_explicit(&candidate->app_fs,memory_order_acquire));
+                    goto miss_record_logged;
+                }
+            }
+miss_record_logged:
         if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
             ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
             return;
