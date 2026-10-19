@@ -9,6 +9,17 @@ def output(*args,**kw):return subprocess.check_output(list(map(str,args)),**kw)
 run('cc','-m32','-nostdlib','-static','-no-pie',base/'tests/pack-peer.S','-o',src/'peer')
 (src/'lib/x86_64-linux-gnu/GL/default').mkdir(parents=True)
 (src/'lib/x86_64-linux-gnu/GL/default/extension-marker').write_text('GL extension directory entry\n')
+(src/'etc').mkdir();(src/'etc/e2scrub.conf').write_text('packed regular file bind identity\n')
+(src/'bin').mkdir()
+(root/'true.c').write_text('int main(void){return 0;}\n')
+run('cc','-static','-O2','-Wall','-Wextra','-Werror',root/'true.c','-o',src/'bin/true')
+(root/'file-bind-launcher.c').write_text(r'''#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc,char **argv){if(argc!=2)return 1;int usr=open("/usr",O_PATH|O_DIRECTORY);int file=open("/usr/etc/e2scrub.conf",O_PATH);if(usr<0||file<0)return 2;char u[24],f[24];snprintf(u,sizeof(u),"%d",usr);snprintf(f,sizeof(f),"%d",file);char *args[]={argv[1],"--ro-bind","/","/","--ro-bind-fd",u,"/usr","--ro-bind-fd",f,"/usr/etc/e2scrub.conf","--proc","/proc","--dev","/dev","/usr/bin/true",NULL};execv(argv[1],args);return 3;}
+''')
+run('cc','-static','-O2','-Wall','-Wextra','-Werror',root/'file-bind-launcher.c','-o',root/'file-bind-launcher')
 (root/'dir-mount.c').write_text(r'''#define _GNU_SOURCE
 #include <dirent.h>
 #include <fcntl.h>
@@ -53,7 +64,7 @@ ldconfig=next((p for p in (pathlib.Path('/sbin/ldconfig.real'),pathlib.Path('/sb
                if p.exists() and p.read_bytes()[:4]==b'\x7fELF'
                and b'INTERP' not in output('readelf','-l',p)),None)
 if ldconfig:
- (src/'bin').mkdir();shutil.copy2(ldconfig,src/'bin/ldconfig')
+ (src/'bin').mkdir(exist_ok=True);shutil.copy2(ldconfig,src/'bin/ldconfig')
 (src/'script').write_text('#!/bin/sh\nprintf "script from pack PASS\\n"\ncat /packed/data\n');(src/'script').chmod(0o755)
 (src/'data').write_bytes(b'0123456789abcdef');(src/'large').write_bytes(bytes(range(256))*8193);(src/'nested/leaf').write_text('nested content\n');(src/'link').symlink_to('nested/leaf')
 repo=root/'repo';run('ostree','init','--repo='+str(repo),'--mode=bare-user');run('ostree','commit','--repo='+str(repo),'-b','fixture','--tree=dir='+str(src),'-m','pack host')
@@ -113,6 +124,13 @@ if ldconfig and shutil.which('bwrap'):
  # the runtime's real ldconfig. Keep the host bwrap's interpreter/libraries
  # reachable before its pivot; the final root contains only the packed /usr.
  bwrap=root/'bwrap';shutil.copy2(shutil.which('bwrap'),bwrap)
+ # Flatpak's runtime /etc bind uses an O_PATH fd for each entry. Reproduce
+ # bwrap's bind-fd path and its post-mount st_dev/st_ino equality check.
+ print(output(base/'build/linux-layer-v3','--android-filter',
+              '--map',os.path.realpath('/lib'),'/lib','--map',os.path.realpath('/lib64'),'/lib64',
+              '--pack-mount','/usr',bundle/'objects.index',bundle,
+              root/'file-bind-launcher',bwrap).decode(),end='',flush=True)
+ print('packed regular-file --ro-bind-fd through bwrap PASS',flush=True)
  cache=root/'ld-so-cache';cache.mkdir()
  config=root/'ld.so.conf';config.write_text('/usr/lib\n')
  runtime_fd=os.open(files,os.O_RDONLY|os.O_DIRECTORY);cache_fd=os.open(cache,os.O_RDONLY|os.O_DIRECTORY)

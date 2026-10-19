@@ -242,11 +242,11 @@ restart:;
         if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
             int magic=0;for(size_t j=0;host[j];j++)if(host[j]=='/' && host[j+1]=='f' && host[j+2]=='d' && host[j+3]=='/')magic=1;
             int packed_fd=magic?proc_pack_fd(out):-1;
-            if(packed_fd>=0 && pack_is_directory(packed_fd)==1){
-                /* A packed directory's kernel fd names the empty, unlinked
-                 * carrier, not the indexed directory. Follow its recorded
-                 * VFS name (rebased by pivot_root) so bind-fd and lookups
-                 * below the magic link retain the actual source tree. */
+            if(packed_fd>=0 && pack_tracked(packed_fd)){
+                /* Packed fds point at harmless kernel carriers (the empty
+                 * directory for O_PATH opens, or the archive for files),
+                 * not at the indexed object. Follow the recorded VFS name
+                 * so bind-fd resolves to the source object, including files. */
                 char *name=vfs_fd_name(packed_fd);
                 if(name){char *replacement=join(name,input+i);vfs_free(name);vfs_free(target);vfs_free(host);
                     if(!replacement){*error=-ENOMEM;goto fail;}
