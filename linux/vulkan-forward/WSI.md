@@ -5,7 +5,8 @@ cube is claimed.** On the existing Venus VM (adb 127.0.0.1:5556), vkcube now
 discovers `VK_KHR_surface` / `VK_KHR_wayland_surface`, selects Wayland and the
 Virtio-GPU Venus RX 6600, creates its device and opens a black stub window.
 The retained export path fails swapchain memory selection/allocation with
-`VK_ERROR_OUT_OF_DEVICE_MEMORY`. A client-side `AHardwareBuffer_allocate`
+`VK_ERROR_OUT_OF_DEVICE_MEMORY` (the unbound image reports zero memory-type
+bits, so memory selection cannot proceed). A client-side `AHardwareBuffer_allocate`
 experiment followed by the existing optimal-image import helper instead
 reached Android's allocator, which aborted on a denied Binder ioctl:
 
@@ -26,7 +27,10 @@ success is claimed.
 
 Local evidence (outside the repository):
 `/home/hanro50/matonos/build/vkcube-binder-blocker.log`,
-`/home/hanro50/matonos/build/vkcube-progress2.png` (black Wayland window).
+`/home/hanro50/matonos/build/vkcube-final-runtime.log`,
+`/home/hanro50/matonos/build/vkcube-final-black-window.png` (black Wayland
+window). Final signed APK versionCode 488 was installed and checked; the stub
+was force-stopped after collecting evidence to stop its retry loop.
 The VM was not rebooted; its VulkanInfo stub was never uninstalled.
 
 Verified host suites: compat-proxy (including Binder denial and resident
