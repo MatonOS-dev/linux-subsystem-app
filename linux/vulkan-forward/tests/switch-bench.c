@@ -20,7 +20,6 @@
 #define WORKERS 64
 #endif
 #define RUNS 5
-enum { ALLOW = 0 };
 static volatile uintptr_t sink_u;
 static volatile unsigned char sink_b;
 static double now(void) {struct timespec t;assert(!clock_gettime(CLOCK_MONOTONIC,&t));return t.tv_sec+t.tv_nsec/1e9;}
@@ -51,19 +50,6 @@ static double run_lookup(void *arg) {
     struct {struct adopt_api *api;uintptr_t fs;} *c=arg;struct adopt_thread *t=0;double s=now();
     for(unsigned long i=0;i<ITERATIONS;i++) t=c->api->lookup(c->fs);
     sink_b=(unsigned char)(t!=0);return (now()-s)*1e9/ITERATIONS;
-}
-static double run_selector(void *arg) {
-    struct adopt_thread *t=arg;double s=now();unsigned char saved=__atomic_load_n(&t->selector,__ATOMIC_RELAXED);
-    for(unsigned long i=0;i<ITERATIONS;i++) {
-        /* Program-order store with a compiler barrier, exactly as the call
-         * path uses it (no lock, no CPU fence). */
-        __atomic_store_n(&t->selector,ALLOW,__ATOMIC_RELAXED);
-        __atomic_signal_fence(__ATOMIC_SEQ_CST);
-        sink_b=__atomic_load_n(&t->selector,__ATOMIC_RELAXED);
-        __atomic_store_n(&t->selector,saved,__ATOMIC_RELAXED);
-        __atomic_signal_fence(__ATOMIC_SEQ_CST);
-    }
-    return (now()-s)*1e9/ITERATIONS;
 }
 static double run_fs_writes(void *arg) {
     uintptr_t *pair=arg;double s=now();
@@ -105,7 +91,6 @@ int main(void) {
         printf("lookup: %.1f\n",median_of(run_lookup,&lookup));
     struct adopt_thread *self=api->current();
     assert(self);
-    printf("selector: %.1f\n",median_of(run_selector,self));
     if(fast) {uintptr_t writes[2]={fs,self->resident_fs};printf("fs_writes (2x wrfsbase): %.1f\n",median_of(run_fs_writes,writes));}
     struct {struct adopt_api *api;int fast;} call={api,fast};
     double one=median_of(run_total,&call);
