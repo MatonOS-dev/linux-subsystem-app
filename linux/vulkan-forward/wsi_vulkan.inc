@@ -40,6 +40,7 @@ static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D exte
         .sharingMode=VK_SHARING_MODE_EXCLUSIVE,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
     struct mv_scope scope;if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
     VkResult r=c->create_image(c->device->base.android,&ci,0,image);
+    if(r)mv_trace_result("maton-vulkan: WSI image create failed",r,0);
     VkMemoryRequirements req={0};if(!r)c->get_requirements(c->device->base.android,*image,&req);
     VkMemoryDedicatedAllocateInfo dedicated={.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,.image=*image};
     VkExportMemoryAllocateInfo exported={.sType=VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,.pNext=&dedicated,
@@ -48,10 +49,12 @@ static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D exte
     VkMemoryAllocateInfo ai={.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,.pNext=&exported,
         .allocationSize=req.size,.memoryTypeIndex=type};
     if(!r)r=c->allocate_memory(c->device->base.android,&ai,0,memory);
+    if(r)mv_trace_result("maton-vulkan: WSI memory selection/allocation failed",r,req.memoryTypeBits);
     if(!r)r=c->bind_image(c->device->base.android,*image,*memory,0);
     if(!r) {
         VkMemoryGetAndroidHardwareBufferInfoANDROID gi={.sType=VK_STRUCTURE_TYPE_MEMORY_GET_ANDROID_HARDWARE_BUFFER_INFO_ANDROID,.memory=*memory};
         r=c->get_ahb(c->device->base.android,&gi,ahb);
+        if(r)mv_trace_result("maton-vulkan: WSI AHB export failed",r,0);
     }
     switch_back(&scope);
     if(r) {
@@ -160,6 +163,7 @@ static struct mv_wayland_surface *mv_wsi_surface(VkInstance instance,VkSurfaceKH
 
 static VkResult mv_vkCreateWaylandSurfaceKHR(VkInstance instance,const VkWaylandSurfaceCreateInfoKHR *info,
         const VkAllocationCallbacks *allocator,VkSurfaceKHR *out) {
+    mv_trace_result("maton-vulkan: enter create Wayland surface",0,0);
     *out=VK_NULL_HANDLE;
     if (!instance || !info || info->sType!=VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR ||
         info->pNext || info->flags || !info->display || !info->surface ||
@@ -269,7 +273,7 @@ static void mv_wsi_collect_releases(struct mv_wsi_swapchain *chain) {
         (void)mv_wsi_release(chain,chain->images[j].token,chain->images[j].serial);
     }
 }
-static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR *info,
+static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoKHR *info,
         const VkAllocationCallbacks *allocator,VkSwapchainKHR *out) {
     if(!out)return VK_ERROR_INITIALIZATION_FAILED;*out=VK_NULL_HANDLE;
     struct mv_device *d=(void *)device;
@@ -309,6 +313,12 @@ static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateI
     struct mv_wsi_swapchain *chain=0;VkResult r=mv_wsi_create(&surface->state,info,&ops,&chain);
     if(r){surface->state.extent=previous_extent;surface->state.generation=previous_generation;mv_free(c);return r;}
     *out=(VkSwapchainKHR)(uintptr_t)chain;return VK_SUCCESS;
+}
+static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR *info,
+        const VkAllocationCallbacks *allocator,VkSwapchainKHR *out) {
+    VkResult r=mv_create_swapchain(device,info,allocator,out);
+    mv_trace_result("maton-vulkan: create swapchain",r,info?info->minImageCount:0);
+    return r;
 }
 static void mv_vkDestroySwapchainKHR(VkDevice device,VkSwapchainKHR swapchain,const VkAllocationCallbacks *allocator) {
     (void)allocator;struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return;

@@ -219,3 +219,21 @@ retains three exported ICD symbols, no libc and no DT_NEEDED dependencies.
 Evidence is outside the repo in sigsys3-out/segv-evidence. No shared-tree or
 kernel changes are required by the proxy fix; VM driver configuration remains
 a coordinator decision.
+
+### vkcube runtime status (2026-10-19)
+
+Wayland extension discovery and resident WSI dependencies are fixed; vkcube
+opens a black Wayland window on the Venus VM. Presentation remains blocked:
+the export allocation path fails, and a direct client AHB allocation attempt
+aborts on the sandbox's deliberate Binder ioctl denial. No Binder/SELinux
+exception was added. See [WSI.md](WSI.md) for evidence, test results and the
+required allocation-design decision. Do not claim a spinning cube yet.
+
+After a Binder-free allocation design is agreed, build the signed standalone
+APK with at most four jobs, install with `adb install -r`, force-stop the
+existing VulkanInfo stub and run its `v3-command=vkcube` override. Check the
+installed subsystem version before every launch. Capture two screenshots
+several seconds apart, verify a visible cube and changed cube pixels, then
+check resize and close/reopen. Repeat on the Ryzen/RX 6600, Surface Pro 3
+and Haswell ProDesk; no real-hardware result is available. No shared device
+tree or kernel change is requested by the fixes retained here.

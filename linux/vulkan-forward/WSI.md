@@ -1,19 +1,43 @@
 # Vulkan Wayland WSI
 
-Status on `vk-wayland-wsi`: production WSI is now compiled into the ICD. The
-ICD resolves the app's already-loaded `libwayland-client.so.0` from its ELF
-link map, exposes Wayland surface queries, allocates swapchain images through
-the resident Android Vulkan driver, exports their dma-bufs, creates
-`maton_ahb_buffer_v1` buffers on a private event queue (with
-`zwp_linux_dmabuf_v1` as a standard-client and compositor fallback), and submits
-presentations with an explicit `sync_file` acquire fence. The compositor
-passes that fd to `ASurfaceTransaction_setBuffer`; its existing SurfaceFlinger
-release-fence tracking delays ordinary `wl_buffer.release` until reuse is
-safe. Steps 1–5 have host tests and the native compositor compiles. **No VM
-runtime result is available:** at the time of this run, `adb devices -l` had
-no device at `localhost:5556`, and `VM-FREE` was absent. APK installation,
-`vkcube`, resize, screenshot, Zink, and frame-time measurements remain
-unverified.
+Status on `vkcube`, 2026-10-19: **blocked before presentation; no animated
+cube is claimed.** On the existing Venus VM (adb 127.0.0.1:5556), vkcube now
+discovers `VK_KHR_surface` / `VK_KHR_wayland_surface`, selects Wayland and the
+Virtio-GPU Venus RX 6600, creates its device and opens a black stub window.
+The retained export path fails swapchain memory selection/allocation with
+`VK_ERROR_OUT_OF_DEVICE_MEMORY`. A client-side `AHardwareBuffer_allocate`
+experiment followed by the existing optimal-image import helper instead
+reached Android's allocator, which aborted on a denied Binder ioctl:
+
+```
+Binder driver '/dev/binder' could not be opened. Error: 1 (Operation not permitted)
+Binder ioctl to obtain version failed. Terminating.
+Loader exited: 134
+```
+
+The denial is intentional: `linux/compat-proxy/arch/x86-filter.h` blocks
+Binder ioctls before even the resident/raw-IP exemption; the host Binder
+regression test verifies this. No SELinux or seccomp relaxation was made.
+The aborting AHB allocation experiment was removed. Continuing requires a
+design decision for **Binder-free client-owned AHB allocation**; do not
+revive compositor-allocated buffer push or direct per-window Surface designs
+(DEAD-ENDS.md). No compositor presentation, animation, resize or real-hardware
+success is claimed.
+
+Local evidence (outside the repository):
+`/home/hanro50/matonos/build/vkcube-binder-blocker.log`,
+`/home/hanro50/matonos/build/vkcube-progress2.png` (black Wayland window).
+The VM was not rebooted; its VulkanInfo stub was never uninstalled.
+
+Verified host suites: compat-proxy (including Binder denial and resident
+exec), packs, standalone subsystem tests (also run by every signed APK build),
+GL extension, Vulkan forwarding and WSI. The Vulkan suite's obsolete selector
+benchmark and launcher dlerror callback type were repaired; adoption round
+trips measured 25.3 / 25.4 / 29.5 ns for 1 thread / 64 live bindings / 64
+concurrent threads. WSI retains zero DT_NEEDED, three exports, no undefined
+symbols, and arm64/riscv64 cross-compilation. Signed full standalone APK and
+bootstrap builds passed with four build jobs. These host results do not prove
+runtime AHB allocation or presentation.
 
 ## Production join-up
 
@@ -86,8 +110,10 @@ propagation through the compositor and app has not been verified in a VM.
 
 The explicit-sync protocol is a minimal private sync-file path. Driver support
 for exporting the semaphore fd has not been verified on the unavailable VM;
-the ICD requires the app to enable `VK_KHR_external_semaphore_fd` and fails
-presentation if the resident driver lacks the required functions. No
+the ICD enables its private AHB, DRM-modifier and semaphore-fd dependencies
+on the resident device when swapchain support is requested, deduplicating
+application requests. Its resident instance uses at least Vulkan 1.1 for
+those dependencies. Presentation fails if the driver lacks required functions. No
 `linux-drm-syncobj-v1` path is implemented. The compositor creates the sync
 global optionally; failure to create it does not block compositor startup,
 and WSI surface creation fails if it is absent.
