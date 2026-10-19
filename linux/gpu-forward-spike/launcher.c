@@ -16,6 +16,7 @@
 #include "spike2/provider.h"
 #include "../compat-proxy/proxy.h"
 extern char **environ;
+static const char *bridge_error(void) {return dlerror();}
 int main(int argc, char **argv) {
     if (argc < 2) return 2;
     static struct gpu_bridge bridge;
@@ -24,7 +25,7 @@ int main(int argc, char **argv) {
     if (syscall(SYS_arch_prctl, 0x1003, &bridge.tls)) return 3;
     bridge.open = dlopen;
     bridge.symbol = dlsym;
-    bridge.error = dlerror;
+    bridge.error = bridge_error;
     char value[32];
     snprintf(value, sizeof(value), "%lx", (unsigned long)&bridge);
     setenv("MATON_GPU_BRIDGE", value, 1);
