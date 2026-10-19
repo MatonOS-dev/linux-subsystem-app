@@ -2,7 +2,14 @@
 #define VFS_H
 #include "proxy.h"
 void *vfs_alloc(size_t);
+void *vfs_palloc(size_t);
 void vfs_free(void *);
+void vfs_trap_begin(void *,size_t);
+void vfs_trap_resume(void);
+void vfs_trap_end(void);
+void vfs_raw_count_summary(uint64_t *,uint64_t *);
+void vfs_raw_category_summary(uint64_t[6]);
+void vfs_raw_count_fork_child(void);
 char *vfs_resolve(int, const char *, int, long *);
 /* Follow symlinks, but retain a final proc fd magic link for linkat. */
 #define VFS_FOLLOW_LINK_SOURCE 2

@@ -26,7 +26,7 @@ void state_string(struct state *s,char **p){
  uint64_t n=state_word(s,s->reading?0:*p?p_len(*p)+1:0);
  if(s->error)return;
  if(n>65536){s->error=-E2BIG;return;}
- if(s->reading){*p=NULL;if(n){*p=vfs_alloc(n);if(!*p){s->error=-ENOMEM;return;}}}
+ if(s->reading){*p=NULL;if(n){*p=vfs_palloc(n);if(!*p){s->error=-ENOMEM;return;}}}
  if(n){state_bytes(s,*p,n);if(!s->error && ((*p)[n-1] || p_len(*p)!=n-1))s->error=-EINVAL;}
 }
 static void transfer(struct state *s){

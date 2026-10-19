@@ -6,6 +6,8 @@ aosp_root=${MATON_AOSP_ROOT:-/mnt/data/aosp}
 output=${MATON_V3_ANDROID_OUT:-$aosp_root/out/matonos/compat-proxy}
 ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/android-ndk-r30}}
 compiler=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android36-clang
+counter_flags=()
+if [[ ${PROXY_RAW_COUNTER:-0} == 1 ]]; then counter_flags=(-DPROXY_RAW_COUNTER); fi
 mkdir -p "$output"
 chmod 0755 "$output"
 # Generated policy and all compiler outputs remain in the external build root.
@@ -17,7 +19,7 @@ mkdir -p "$output/freestanding/gpu-forward-spike/spike3"
 cp "$source_dir/../gpu-forward-spike/"{bootstrap.h,bridge.h} "$output/freestanding/gpu-forward-spike/"
 cp "$source_dir/../gpu-forward-spike/spike3/adopt.h" "$output/freestanding/gpu-forward-spike/spike3/"
 python3 "$build_source/gen-policy.py"
-"$compiler" -DMATON_GPU_BRIDGE -fPIE -pie -mcmodel=large -Wl,--image-base=0x600000000000 -Wl,-z,now -Wl,--section-start=.proxy_gateway=0x600000300000 \
+"$compiler" "${counter_flags[@]}" -DMATON_GPU_BRIDGE -fPIE -pie -mcmodel=large -Wl,--image-base=0x600000000000 -Wl,-z,now -Wl,--section-start=.proxy_gateway=0x600000300000 \
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
   "$build_source"/adopt-map.c "$build_source"/arch/x86_64/thread-adopt.c \

@@ -15,6 +15,66 @@ runtime and app into a 663 MiB OSTree repo; the proxy comparison used warm
 objects in that same repo, avoiding a second 663 MiB network transfer.
 Launch measurements ran headless with `DISPLAY` unset.
 
+### Per-trap allocation follow-up (2026-10-19)
+
+The SIGSYS handler now uses a growable per-thread arena carved from its
+alternate signal stack. `vfs_alloc()` bump-allocates zero-filled temporary
+objects from that arena and reuses its blocks at handler exit; it maps another
+block only when needed. The allocator does not call libc or take locks. Objects
+that outlive a trap use `vfs_palloc()` explicitly, including mount/fd state,
+pack indexes, DNS socket tracking and other linked records. This separation
+was necessary for forked and duplicated DNS sockets: keeping those records in
+the trap arena made them disappear when the handler returned.
+
+The syscall counter is enabled only with `PROXY_RAW_COUNTER=1 ./build.sh` in
+proxy builds used for host profiling; normal host, i386 and Android builds
+omit it, so the hot path has no counter call or branch.
+The `--count` format records RAW calls per completed trap and is reset in fork
+children so parent history is not intentionally re-added. EUID reads for the
+link-store ownership checks are cached atomically; marker, path existence and
+symlink contents are still checked on each operation. Mount translation walks
+the current mount table directly (mounts are added and removed during bwrap
+setup), and pack indexes are already in-memory lookups; neither operation
+issues a kernel metadata probe by itself.
+
+For a same-host before/after comparison, I built `origin/main` and this branch
+and traced the same warm, headless VulkanInfo Flatpak launch with
+`strace -c -f`. These counts include the whole process tree and are syscall
+entries observed by strace, not proxy-only counts:
+
+| Kernel syscall | Before allocator | After allocator |
+|---|---:|---:|
+| `mmap` | 325,722 | 4,972 |
+| `munmap` | 323,666 | 2,831 |
+| `openat` | 413,426 | 413,175 |
+| `readlinkat` | 44,035 | 44,006 |
+| `newfstatat` | 5,987 | 5,984 |
+| `geteuid` | 24 | 24 |
+| All syscalls | 2,331,738 | 1,731,364 |
+
+The allocator removed 641,585 observed `mmap`/`munmap` calls in this launch;
+the total observed syscall count fell 25.8%. Warm launch wall time was 1.71 s
+with counters off and 1.76 s with counters on. Strace itself took 55.2 s before
+and 27.2 s after, so traced duration is not a wall-time comparison. The
+`--count` file may contain repeated cumulative summaries when several threads
+in one PID exit. For process-tree totals, take the final `RAW` and `RAWCAT`
+record per PID, then sum unique PIDs. In the paired traced run this gave
+13,814 trapped calls and 635,208 RAW calls (45.98/trap). The RAW syscall
+categories were `openat` 411,048, `readlinkat` 43,954, `newfstatat` 4,705,
+`geteuid` 4, `mmap` 3,655 and `munmap` 2,390. Strace saw 413,136, 44,001,
+5,983, 24, 4,969 and 2,833 respectively across the full process tree; the
+small differences are calls outside counted proxy handler frames. This is a
+validated host after-rate. The coordinator's earlier VM install-loader
+baseline was 2.53 million calls / 6,451 traps = 392.2 calls/trap; that is a
+different workload, so the rates are not a direct A/B comparison. The paired
+host strace totals above are the allocator before/after comparison.
+
+The same isolated installation's combined warm pull-plus-deploy took 2.23 s
+native, 4.83 s through the proxy with counters off and 4.91 s with counters on.
+The counted proxy run reported 60,277 trapped calls and 1,856,714 RAW calls
+(30.80/trap), taking the final cumulative summary per PID as above. The
+counters added 0.08 s (1.7%) to this operation.
+
 | Operation | Native before | Proxy before, counters off/on | Native after | Proxy after, counters off/on |
 |---|---:|---:|---:|---:|
 | Cold pull (`--no-deploy`) | 12.09 s | not run cold | not rerun cold | not run cold |

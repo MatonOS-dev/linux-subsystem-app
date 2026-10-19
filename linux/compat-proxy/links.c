@@ -29,14 +29,24 @@ static int component(const char *p){
 int links_hidden(const char *p){return component(p);}
 static int catpath(char *out,const char *a,const char *b){size_t n=p_len(a),m=p_len(b);if(n+m+2>PATH_MAX)return 0;p_copy(out,a,n);out[n++]='/';p_copy(out+n,b,m+1);return 1;}
 static int parent(char *out,const char *path){size_t n=p_len(path);if(n>=PATH_MAX)return 0;p_copy(out,path,n+1);while(n>1 && out[n-1]!='/')n--;if(n>1)n--;out[n]=0;return 1;}
-static int private_dir(const char *p,dev_t dev){struct proxy_stat st;return !arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && S_ISDIR(st.st_mode) && st.st_dev==dev && st.st_uid==(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0) && (st.st_mode&0300)==0300 && !(st.st_mode&0022);}
+/* The process credentials do not change in this compatibility layer. Cache
+ * the kernel euid; marker ownership and filesystem state are still checked
+ * on every path operation. */
+static volatile uid_t cached_euid;
+static volatile int cached_euid_valid;
+static uid_t links_euid(void){
+ if(__atomic_load_n(&cached_euid_valid,__ATOMIC_ACQUIRE))return __atomic_load_n(&cached_euid,__ATOMIC_RELAXED);
+ uid_t value=(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0);
+ __atomic_store_n(&cached_euid,value,__ATOMIC_RELAXED);__atomic_store_n(&cached_euid_valid,1,__ATOMIC_RELEASE);return value;
+}
+static int private_dir(const char *p,dev_t dev){struct proxy_stat st;return !arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && S_ISDIR(st.st_mode) && st.st_dev==dev && st.st_uid==links_euid() && (st.st_mode&0300)==0300 && !(st.st_mode&0022);}
 /* A marker is ordinary visible metadata, but only its owner may establish it
  * outside the payload. Never follow a symlink when recognizing a boundary. */
 static int marked_device(const char *dir,uint64_t *device){
  char name[PATH_MAX];if(!catpath(name,dir,".v3-store-root"))return 0;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,name,O_PATH|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return 0;
  struct proxy_stat st;long r=arch_stat_fd(fd,&st);RAW(PROXY_SC_close,fd,0,0,0,0,0);
- if(r || !S_ISREG(st.st_mode) || st.st_uid!=(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0))return 0;
+ if(r || !S_ISREG(st.st_mode) || st.st_uid!=links_euid())return 0;
  if(device)*device=st.st_dev;
  return 1;
 }
@@ -65,7 +75,7 @@ int links_target(const char *name,char *out){
  for(unsigned i=2;i<34;i++)if(!((id[i]>='0' && id[i]<='9') || (id[i]>='a' && id[i]<='f')))return 0;
  return catpath(out,store,id) && !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);
 }
-static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0) || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
+static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=links_euid() || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
 static void unlock(long fd){RAW(PROXY_SC_flock,fd,LOCK_UN,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
 static long count_names(const char *dir,const char *object,dev_t dev,uint64_t *count){
 #ifdef COMPAT_LINKS_TEST
@@ -196,7 +206,7 @@ static long recover(const char *root,const char *store){
  if(!changed)return 0;
  struct proxy_stat identity;long identity_result=arch_stat_at(AT_FDCWD,store,&identity,AT_SYMLINK_NOFOLLOW);if(identity_result)return identity_result;
  for(struct recount_record *p=__atomic_load_n(&recounted,__ATOMIC_ACQUIRE);p;p=p->next)if(p->dev==identity.st_dev && p->ino==identity.st_ino)return -EIO;
- struct recount_record *record=vfs_alloc(sizeof(*record));if(!record)return -ENOMEM;
+ struct recount_record *record=vfs_palloc(sizeof(*record));if(!record)return -ENOMEM;
  record->dev=identity.st_dev;record->ino=identity.st_ino;
  do{record->next=__atomic_load_n(&recounted,__ATOMIC_ACQUIRE);}while(!__atomic_compare_exchange_n(&recounted,&record->next,record,0,__ATOMIC_RELEASE,__ATOMIC_ACQUIRE));
  struct proxy_stat st;long r=arch_stat_at(AT_FDCWD,root,&st,0);if(r)return r;
@@ -226,7 +236,7 @@ static long store_link(const char *source,const char *target){
  r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(S_ISLNK(src.st_mode)){r=-EPERM;goto end;}
  struct proxy_stat exists;if(!arch_stat_at(AT_FDCWD,target,&exists,AT_SYMLINK_NOFOLLOW)){r=-EEXIST;goto end;}
  if(!links_target(source,object)){
-  r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(!S_ISREG(src.st_mode) || src.st_uid!=(uid_t)RAW(PROXY_SC_geteuid,0,0,0,0,0,0)){r=-EPERM;goto end;}
+  r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(!S_ISREG(src.st_mode) || src.st_uid!=links_euid()){r=-EPERM;goto end;}
   char id[35]="i-";unsigned char nonce[16];long random=RAW(PROXY_SC_getrandom,nonce,sizeof(nonce),0,0,0,0);if(random!=sizeof(nonce)){r=random<0?random:-EIO;goto end;}const char hex[]="0123456789abcdef";for(size_t k=0;k<sizeof(nonce);k++){id[2+2*k]=hex[nonce[k]>>4];id[3+2*k]=hex[nonce[k]&15];}id[34]=0;if(!catpath(object,store,id)){r=-ENAMETOOLONG;goto end;}
   char journal[PATH_MAX];if(!catpath(journal,store,"conversion")){r=-ENAMETOOLONG;goto end;}char data[PATH_MAX*2];size_t sn=p_len(source)+1,on=p_len(object)+1;p_copy(data,source,sn);p_copy(data+sn,object,on);r=journal_write(store,"conversion",data,sn+on);if(r)goto end;
   r=RAW(PROXY_SC_renameat2,AT_FDCWD,source,AT_FDCWD,object,RENAME_NOREPLACE,0);if(r)goto end;

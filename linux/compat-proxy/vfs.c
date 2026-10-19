@@ -15,14 +15,86 @@
 #include <signal.h>
 #include <sys/stat.h>
 struct allocation {size_t size;};
-void *vfs_alloc(size_t n) {
+struct arena_block {struct arena_block *next;size_t size,used;};
+struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;struct arena_block *blocks;};
+static struct trap_arena *trap_arenas;
+volatile int proxy_raw_counter_enabled;
+static struct trap_arena *arena_for_stack(uintptr_t sp){
+    for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
+        if(a->active && sp>=a->lo && sp<a->hi)return a;
+    return NULL;
+}
+static struct trap_arena *arena_for_range(uintptr_t lo,uintptr_t hi){
+    for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
+        if(a->lo==lo && a->hi==hi)return a;
+    return NULL;
+}
+static struct trap_arena *arena_for_address(uintptr_t sp){
+    for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
+        if(sp>=a->lo && sp<a->hi)return a;
+    return NULL;
+}
+#ifdef PROXY_RAW_COUNTER
+void proxy_raw_count_one(long nr){if(!proxy_raw_counter_enabled)return;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return;a->raw_calls++;switch(nr){case PROXY_SC_openat:a->openat_calls++;break;case PROXY_SC_readlinkat:a->readlinkat_calls++;break;case PROXY_SC_newfstatat:a->newfstatat_calls++;break;case PROXY_SC_geteuid:a->geteuid_calls++;break;case PROXY_SC_mmap:a->mmap_calls++;break;case PROXY_SC_munmap:a->munmap_calls++;break;}}
+void proxy_raw_count_enable(void){proxy_raw_counter_enabled=1;}
+uint64_t proxy_raw_count_now(void){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);return a?a->raw_calls:0;}
+uint64_t proxy_raw_count_for(long nr){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return 0;switch(nr){case PROXY_SC_openat:return a->openat_calls;case PROXY_SC_readlinkat:return a->readlinkat_calls;case PROXY_SC_newfstatat:return a->newfstatat_calls;case PROXY_SC_geteuid:return a->geteuid_calls;case PROXY_SC_mmap:return a->mmap_calls;case PROXY_SC_munmap:return a->munmap_calls;default:return 0;}}
+#endif
+static int arena_contains(uintptr_t p){
+    for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
+        for(struct arena_block *b=a->blocks;b;b=b->next){uintptr_t lo=(uintptr_t)(b+1);if(p>=lo && p<lo+b->size-sizeof(*b))return 1;}
+    return 0;
+}
+void vfs_trap_begin(void *base,size_t size){
+    uintptr_t lo=(uintptr_t)base,hi;
+    if(!base || !size || size>UINTPTR_MAX-lo)return;
+    hi=lo+size;
+    struct trap_arena *a=arena_for_range(lo,hi);
+    if(!a){long p=RAW(PROXY_SC_mmap,0,sizeof(*a),PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)p>=(unsigned long)-4095)return;
+        a=(void *)p;*a=(struct trap_arena){.lo=lo,.hi=hi};
+        struct trap_arena *head;
+        do{head=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a->next=head;}
+        while(!__atomic_compare_exchange_n(&trap_arenas,&head,a,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
+    }
+    if(!a->active){a->lo=lo;a->hi=hi;a->active=1;
+        a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;
+        for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
+    }
+}
+void vfs_trap_resume(void){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return;a->active=1;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;}
+void vfs_trap_end(void){
+    uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return;
+    a->trap_count++;a->raw_sum+=a->raw_calls;a->openat_sum+=a->openat_calls;a->readlinkat_sum+=a->readlinkat_calls;a->newfstatat_sum+=a->newfstatat_calls;a->geteuid_sum+=a->geteuid_calls;a->mmap_sum+=a->mmap_calls;a->munmap_sum+=a->munmap_calls;
+    for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
+    a->active=0;
+}
+void vfs_raw_count_summary(uint64_t *traps,uint64_t *calls){uint64_t t=0,c=0;for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){t+=a->trap_count;c+=a->raw_sum;}if(traps)*traps=t;if(calls)*calls=c;}
+void vfs_raw_category_summary(uint64_t out[6]){uint64_t v[6]={0};for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){v[0]+=a->openat_sum;v[1]+=a->readlinkat_sum;v[2]+=a->newfstatat_sum;v[3]+=a->geteuid_sum;v[4]+=a->mmap_sum;v[5]+=a->munmap_sum;}for(unsigned i=0;i<6;i++)out[i]=v[i];}
+void vfs_raw_count_fork_child(void){for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;}}
+void *vfs_palloc(size_t n) {
     if(n>SIZE_MAX-sizeof(struct allocation)-4095) return NULL;
     size_t bytes=(n+sizeof(struct allocation)+4095)&~(size_t)4095;
     long p=RAW(PROXY_SC_mmap,0,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if((unsigned long)p>=(unsigned long)-4095) return NULL;
     struct allocation *a=(void *)p;a->size=bytes;return a+1;
 }
-void vfs_free(void *p) {if(p){struct allocation *a=(struct allocation *)p-1;RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
+void *vfs_alloc(size_t n){
+    uintptr_t sp=(uintptr_t)&sp;struct trap_arena *arena=arena_for_stack(sp);if(!arena)return vfs_palloc(n);
+    if(n>SIZE_MAX-sizeof(struct allocation)-15)return NULL;
+    size_t need=(n+sizeof(struct allocation)+15)&~(size_t)15;
+    struct arena_block *b=arena->blocks;
+    while(b && b->size-b->used<need)b=b->next;
+    if(!b){size_t bytes=65536;if(need>bytes)bytes=(need+4095)&~(size_t)4095;if(bytes>SIZE_MAX-sizeof(*b))return NULL;
+        long p=RAW(PROXY_SC_mmap,0,bytes+sizeof(*b),PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)p>=(unsigned long)-4095)return NULL;
+        b=(void *)p;b->next=arena->blocks;b->size=bytes;b->used=0;arena->blocks=b;
+    }
+    struct allocation *a=(void *)((char *)(b+1)+b->used);a->size=need;b->used+=need;
+    /* mmap-backed vfs_alloc historically returned zero-filled storage. Keep
+     * that contract for structures which rely on implicit null fields. */
+    unsigned char *out=(unsigned char *)(a+1);for(size_t i=0;i<n;i++)out[i]=0;
+    return out;
+}
+void vfs_free(void *p) {if(p){if(arena_contains((uintptr_t)p))return;struct allocation *a=(struct allocation *)p-1;RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
 static char *join(const char *a,const char *b) {
     size_t x=p_len(a),y=p_len(b);if(x>SIZE_MAX-y-2) return NULL;
     char *s=vfs_alloc(x+y+2);if(!s)return NULL;
@@ -40,7 +112,7 @@ int vfs_private_fd(int fd){if(pack_private(fd)||state_private_fd(fd))return 1;if
 static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(PROXY_SC_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
     int fd=(int)RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
-    struct temp_lock *l=vfs_alloc(sizeof(*l));if(!l){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
+    struct temp_lock *l=vfs_palloc(sizeof(*l));if(!l){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
     long e=RAW(PROXY_SC_flock,fd,LOCK_EX|LOCK_NB,0,0,0,0);
     if(e){vfs_free(l);RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)e;}
     /* Distinguish new locked directories from legacy PID-only directories. */
@@ -91,6 +163,7 @@ void vfs_temp_gc(void){
 }
 
 static char *dupstr(const char *s){size_t n=p_len(s);char *p=vfs_alloc(n+1);if(p)p_copy(p,s,n+1);return p;}
+static char *pdupstr(const char *s){size_t n=p_len(s);char *p=vfs_palloc(n+1);if(p)p_copy(p,s,n+1);return p;}
 struct mount {struct mount *next;char *source,*target;unsigned long flags;/* Own backing filesystem hides an index even at its root. */int pack_shadow;};
 static struct mount *table;
 static char *gpu_poll_sources[2];
@@ -105,7 +178,7 @@ void vfs_network_payload(int isolated){
     if(info && !arch_stat_at(AT_FDCWD,info,&st,0))hide_resolver=1;
     vfs_free(info);
 }
-void vfs_executable(const char *path){vfs_free(executable);executable=dupstr(path);}
+void vfs_executable(const char *path){vfs_free(executable);executable=pdupstr(path);}
 char *vfs_exe(void){return executable?dupstr(executable):NULL;}
 /* Worker SIGSYS handlers resolve paths concurrently. A shared cache cannot
  * free/replace keys while another thread reads them, or publish a key before
@@ -336,7 +409,7 @@ int vfs_has_nested_mount(const char *path,const char *ancestor,int staging){
     return 0;
 }
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
-int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_alloc(sizeof(*m));if(!m)return -ENOMEM;m->source=dupstr(source);m->target=dupstr(target);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
+int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_palloc(sizeof(*m));if(!m)return -ENOMEM;m->source=vfs_palloc(p_len(source)+1);m->target=vfs_palloc(p_len(target)+1);if(m->source)p_copy(m->source,source,p_len(source)+1);if(m->target)p_copy(m->target,target,p_len(target)+1);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
     proxy_log("mount-owner",PROXY_SC_mount,0);
     RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
 const char *proxy_path(const char *path,char *buffer,size_t size){long e;char *p=vfs_resolve(AT_FDCWD,path,1,&e);if(!p)return NULL;size_t n=p_len(p);if(n>=size){vfs_free(p);return NULL;}p_copy(buffer,p,n+1);vfs_free(p);return buffer;}
@@ -359,10 +432,10 @@ void vfs_fd_record(int fd,int dirfd,const char *path){
         global=relative?global_target(relative,&e):NULL;vfs_free(relative);
     }
     if(!global)return;
-    char *logical=global;
+    char *logical=pdupstr(global);vfs_free(global);if(!logical)return;
     proxy_sigmask_t mask=fd_names_lock();
     struct fd_name *p=fd_names;while(p && p->fd!=fd)p=p->next;
-    if(!p){p=vfs_alloc(sizeof(*p));if(!p){fd_names_unlock(mask);vfs_free(logical);return;}p->fd=fd;p->path=NULL;p->next=fd_names;fd_names=p;}
+    if(!p){p=vfs_palloc(sizeof(*p));if(!p){fd_names_unlock(mask);vfs_free(logical);return;}p->fd=fd;p->path=NULL;p->next=fd_names;fd_names=p;}
     vfs_free(p->path);p->path=logical;fd_names_unlock(mask);
 }
 char *vfs_temp_create(long *error){
@@ -407,7 +480,7 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     }vfs_free(src);vfs_free(dest);return e;
 }
 long vfs_unmount(const char *target){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;char *oldroot_global=oldroot_view?(root?join(root,oldroot_view):dupstr(oldroot_view)):NULL;if(oldroot_global && p_equal(dest,oldroot_global)){vfs_free(oldroot_view);oldroot_view=NULL;}vfs_free(oldroot_global);struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
-long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(PROXY_SC_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;}
+long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(PROXY_SC_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(PROXY_SC_close,fd,0,0,0,0,0);char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;}
 long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
     stacked_oldroot=p_equal(target,old);
     if(!p_equal(target,old)){char *oldhost=physical(root?root:"/");char *dest=global_target(old,&e);
@@ -433,12 +506,13 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
             const char *relative=f->path;
             if(root && prefix(relative,root)){relative+=p_len(root);if(!*relative)relative="/";}
             char *rebased=join(dest,relative);if(!rebased){e=-ENOMEM;break;}
-            vfs_free(f->path);f->path=rebased;
+            char *saved=pdupstr(rebased);vfs_free(rebased);if(!saved){e=-ENOMEM;break;}vfs_free(f->path);f->path=saved;
         }fd_names_unlock(mask);}
-        char *next_oldroot=NULL;if(!e && prefix(dest,next)){const char *relative=dest+p_len(next);next_oldroot=dupstr(*relative?relative:"/");if(!next_oldroot)e=-ENOMEM;}
-        vfs_free(dest);vfs_free(oldhost);if(e){vfs_free(next_cwd);vfs_free(next_oldroot);vfs_free(next);return e;}
-        vfs_free(root);root=next;vfs_free(oldroot_view);oldroot_view=next_oldroot;if(next_cwd){vfs_free(cwd);cwd=next_cwd;}return 0;}
-    vfs_free(root);root=next;vfs_free(cwd);cwd=NULL;return 0;
+        char *next_oldroot=NULL;if(!e && prefix(dest,next)){const char *relative=dest+p_len(next);next_oldroot=pdupstr(*relative?relative:"/");if(!next_oldroot)e=-ENOMEM;}
+        char *saved_next=!e?pdupstr(next):NULL;char *saved_cwd=next_cwd?pdupstr(next_cwd):NULL;
+        vfs_free(dest);vfs_free(oldhost);if(e || !saved_next || (next_cwd&&!saved_cwd)){vfs_free(next_cwd);vfs_free(next_oldroot);vfs_free(saved_next);vfs_free(saved_cwd);vfs_free(next);return e?e:-ENOMEM;}
+        vfs_free(next_cwd);vfs_free(next);vfs_free(root);root=saved_next;vfs_free(oldroot_view);oldroot_view=next_oldroot;if(saved_cwd){vfs_free(cwd);cwd=saved_cwd;}return 0;}
+    char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;
 }
 static int proc_pack_fd(const char *path){if(!self_proc(path))return -1;for(size_t i=0;path[i];i++)if(path[i]=='/'&&path[i+1]=='f'&&path[i+2]=='d'&&path[i+3]=='/'){const char *p=path+i+4;if(!*p)return -1;unsigned fd=0;for(;*p;p++){if(*p<'0'||*p>'9'||fd>(2147483647U-(unsigned)(*p-'0'))/10)return -1;fd=fd*10+(unsigned)(*p-'0');}return (int)fd;}return -1;}
 long vfs_proc_open(const char *path,int flags){int source=proc_pack_fd(path);if(source>=0&&pack_tracked(source)){char *name=vfs_fd_name(source);if(name){long fd=pack_open(name,flags);if(fd!=-ENOSYS){if(fd>=0)vfs_fd_record((int)fd,AT_FDCWD,name);vfs_free(name);return fd;}vfs_free(name);}}size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
@@ -463,7 +537,7 @@ long vfs_chdir(int fd,const char *path){long e=0;void *identity=NULL;char *host;
     else e=path?RAW(PROXY_SC_chdir,host,0,0,0,0,0):RAW(PROXY_SC_fchdir,fd,0,0,0,0,0);
     if(!e){struct mount *m=identity;char *logical=!path?vfs_fd_name(fd):NULL;if(!logical)logical=m?join(m->target,host+(p_len(m->source)==1?0:p_len(m->source))):vfs_reverse(host);
         if(logical && m && root && prefix(logical,root)){char *q=dupstr(logical+p_len(root));vfs_free(logical);logical=q;if(logical && !*logical){vfs_free(logical);logical=dupstr("/");}}
-        if(!logical)e=-ENOMEM;else {vfs_free(cwd);cwd=logical;}}
+        if(!logical)e=-ENOMEM;else {char *saved=pdupstr(logical);vfs_free(logical);if(!saved)e=-ENOMEM;else {vfs_free(cwd);cwd=saved;}}}
     vfs_free(host);return e;
 }
 char *vfs_getcwd(long *error){return basepath(AT_FDCWD,error);}
@@ -615,7 +689,7 @@ void vfs_gpu_init(void){
         for(unsigned i=0;i<4;i++){
             char *src=join(base,trees[i]),*dst=join("/sys",trees[i]);
             e=src&&dst?vfs_mount(src,dst,NULL,MS_BIND|MS_RDONLY):-ENOMEM;
-            if(!e && i>=2){vfs_free(gpu_poll_sources[i-2]);gpu_poll_sources[i-2]=dupstr(src);}
+            if(!e && i>=2){vfs_free(gpu_poll_sources[i-2]);gpu_poll_sources[i-2]=pdupstr(src);}
             vfs_free(src);vfs_free(dst);if(e)break;
         }
         if(e){while(table!=prior){struct mount *old=table;table=old->next;vfs_free(old->source);vfs_free(old->target);vfs_free(old);}for(unsigned i=0;i<2;i++){vfs_free(gpu_poll_sources[i]);gpu_poll_sources[i]=NULL;}}
@@ -635,21 +709,21 @@ void vfs_state(struct state *s){
  count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
  struct mount **tail=&table;
  for(uint64_t i=0;i<count&&!s->error;i++){
-  struct mount *m=s->reading?vfs_alloc(sizeof(*m)):*tail;
+  struct mount *m=s->reading?vfs_palloc(sizeof(*m)):*tail;
   if(!m){s->error=-ENOMEM;return;}if(s->reading){*tail=m;m->next=NULL;m->source=m->target=NULL;}
   state_string(s,&m->source);state_string(s,&m->target);m->flags=state_word(s,m->flags);m->pack_shadow=state_word(s,m->pack_shadow);tail=&m->next;
  }
  count=0;for(struct fd_name *d=fd_names;d;d=d->next)if(state_live(d->fd))count++;
  count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
  if(s->reading)for(uint64_t i=0;i<count&&!s->error;i++){
-  struct fd_name *d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}
+  struct fd_name *d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}
   d->fd=state_word(s,0);d->path=NULL;state_string(s,&d->path);d->next=fd_names;fd_names=d;
   if(!state_live(d->fd))s->error=-EBADF;
  }else for(struct fd_name *d=fd_names;d;d=d->next)if(state_live(d->fd)){state_word(s,d->fd);state_string(s,&d->path);}
  count=0;for(struct temp_lock *l=temp_locks;l;l=l->next)count++;
  count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
  if(s->reading)for(uint64_t i=0;i<count&&!s->error;i++){
-  struct temp_lock *l=vfs_alloc(sizeof(*l));if(!l){s->error=-ENOMEM;return;}
+  struct temp_lock *l=vfs_palloc(sizeof(*l));if(!l){s->error=-ENOMEM;return;}
   l->fd=state_word(s,0);l->next=temp_locks;temp_locks=l;if(!state_live(l->fd))s->error=-EBADF;
  }else for(struct temp_lock *l=temp_locks;l;l=l->next)state_word(s,l->fd);
 }

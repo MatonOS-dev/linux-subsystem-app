@@ -63,7 +63,7 @@ long proxy_file_mmap(proxy_arg_t *a) {
         struct copy_log *l=logs;
         while(l && (l->dev!=st.st_dev || l->ino!=st.st_ino || l->slice!=slice))l=l->next;
         if(!l){
-            l=vfs_alloc(sizeof(*l));
+            l=vfs_palloc(sizeof(*l));
             if(l){*l=(struct copy_log){logs,st.st_dev,st.st_ino,slice};logs=l;}
             proxy_log("exec-mmap-copy",a[4],0);
         }

@@ -31,7 +31,7 @@ void net_close(int fd) {
 void net_dup(int from,int to) {
     if(from==to)return;
     struct endpoint *e=lookup(from);net_close(to);if(!e)return;
-    struct descriptor *d=vfs_alloc(sizeof(*d));if(!d)return;
+    struct descriptor *d=vfs_palloc(sizeof(*d));if(!d)return;
     *d=(struct descriptor){to,e,fds};fds=d;e->refs++;
 }
 static long address(void *out, unsigned *len, unsigned port) {
@@ -70,7 +70,7 @@ static long send_request(int fd,struct endpoint *e,void *buf,size_t len,void *ad
         if(h->nlmsg_len<sizeof(*h) || h->nlmsg_len>len-off)return -EINVAL;
         size_t n=NLMSG_ALIGN((size_t)h->nlmsg_len);off+=n>len-off?h->nlmsg_len:n;
     }
-    for(off=0;off<len;){struct nlmsghdr *h=(void *)((char *)buf+off);struct reply *r=vfs_alloc(sizeof(*r));if(!r)return -ENOMEM;
+    for(off=0;off<len;){struct nlmsghdr *h=(void *)((char *)buf+off);struct reply *r=vfs_palloc(sizeof(*r));if(!r)return -ENOMEM;
         int error=request_error(h);*r=(struct reply){.header={.nlmsg_len=NLMSG_LENGTH(sizeof(struct nlmsgerr)),.nlmsg_type=NLMSG_ERROR,.nlmsg_flags=NLM_F_CAPPED,.nlmsg_seq=h->nlmsg_seq,.nlmsg_pid=e->port},.error={.error=error,.msg=*h}};
         if(e->last)e->last->next=r;else e->first=r;e->last=r;
         uint64_t one=1;long written=RAW(PROXY_SC_write,fd,&one,sizeof(one),0,0,0);if(written<0)return written;
@@ -91,7 +91,7 @@ long net_call(long nr,proxy_arg_t *a,int newnet,int *handled) {
     *handled=0;
     if(nr==PROXY_SC_socket && newnet && ((a[0]==AF_NETLINK && a[2]==NETLINK_ROUTE) || (a[0]==AF_INET && (a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))==SOCK_DGRAM && !a[2]))){
         *handled=1;if((a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))!=SOCK_RAW && (a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))!=SOCK_DGRAM)return -EPROTOTYPE;
-        struct endpoint *e=vfs_alloc(sizeof(*e));struct descriptor *d=vfs_alloc(sizeof(*d));if(!e || !d){vfs_free(e);vfs_free(d);return -ENOMEM;}
+        struct endpoint *e=vfs_palloc(sizeof(*e));struct descriptor *d=vfs_palloc(sizeof(*d));if(!e || !d){vfs_free(e);vfs_free(d);return -ENOMEM;}
         long fd=RAW(PROXY_SC_eventfd2,0,EFD_SEMAPHORE|EFD_NONBLOCK|((a[1]&SOCK_CLOEXEC)?EFD_CLOEXEC:0),0,0,0,0);
         if(fd<0){vfs_free(e);vfs_free(d);return fd;}
         *e=(struct endpoint){.refs=1,.route=a[0]==AF_NETLINK,.port=(unsigned)RAW(PROXY_SC_getpid,0,0,0,0,0,0)};*d=(struct descriptor){(int)fd,e,fds};fds=d;return fd;
@@ -129,7 +129,7 @@ void net_state(struct state *s){
  count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
  struct descriptor *d=fds;
  for(uint64_t i=0;i<count&&!s->error;i++){
-  if(s->reading){d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->ep=vfs_alloc(sizeof(*d->ep));if(!d->ep){s->error=-ENOMEM;return;}d->ep->refs=1;d->ep->first=d->ep->last=NULL;d->next=fds;fds=d;}
+  if(s->reading){d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->ep=vfs_palloc(sizeof(*d->ep));if(!d->ep){s->error=-ENOMEM;return;}d->ep->refs=1;d->ep->first=d->ep->last=NULL;d->next=fds;fds=d;}
   else while(d&&!state_live(d->fd))d=d->next;
   d->fd=state_word(s,d->fd);
   int alias=-1;
@@ -145,7 +145,7 @@ void net_state(struct state *s){
   replies=state_word(s,replies);if(replies>65536){s->error=-E2BIG;return;}
   struct reply **tail=&d->ep->first;
   for(uint64_t j=0;j<replies&&!s->error;j++){
-   struct reply *r=s->reading?vfs_alloc(sizeof(*r)):*tail;if(!r){s->error=-ENOMEM;return;}
+   struct reply *r=s->reading?vfs_palloc(sizeof(*r)):*tail;if(!r){s->error=-ENOMEM;return;}
    if(s->reading){r->next=NULL;*tail=r;d->ep->last=r;}
    state_bytes(s,&r->header,sizeof(r->header));state_bytes(s,&r->error,sizeof(r->error));tail=&r->next;
   }

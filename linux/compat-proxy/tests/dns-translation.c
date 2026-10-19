@@ -7,6 +7,7 @@
 #include "../proxy.c"
 int proxy_diagnostic_fd=2;
 void *vfs_alloc(size_t n){return malloc(n);}
+void *vfs_palloc(size_t n){return malloc(n);}
 void vfs_free(void *p){free(p);}
 void p_copy(void *out,const void *in,size_t n){memcpy(out,in,n);}
 size_t p_len(const char *s){return strlen(s);}

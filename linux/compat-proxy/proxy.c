@@ -79,8 +79,8 @@ static uintptr_t maps_hex(const char **p){return resident_maps_hex(p);}
 struct image_map {uintptr_t lo,hi,offset;char *path;struct image_map *next;};
 static struct image_map *image_maps;
 void proxy_image_map(uintptr_t lo,uintptr_t hi,uintptr_t offset,const char *path){
-    struct image_map *m=vfs_alloc(sizeof(*m));if(!m)return;
-    m->path=vfs_alloc(p_len(path)+1);if(!m->path){vfs_free(m);return;}
+    struct image_map *m=vfs_palloc(sizeof(*m));if(!m)return;
+    m->path=vfs_palloc(p_len(path)+1);if(!m->path){vfs_free(m);return;}
     p_copy(m->path,path,p_len(path)+1);m->lo=lo;m->hi=hi;m->offset=offset;
     m->next=image_maps;image_maps=m;
 }
@@ -124,20 +124,24 @@ static void exec_signals(void) {
 /* Spike supports a single user-dispatch owner; configuration is per-thread. */
 static volatile unsigned char *dispatch_selector;
 static long dispatch_owner;
-struct thread_state { long tid; stack_t app_stack; };
+struct thread_state { long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size; };
 struct thread_node {struct thread_state state;struct thread_node *next;};
 static struct thread_node *threads;
 static struct thread_state *thread_state(void) {
     long tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
     for(struct thread_node *p=threads;p;p=p->next) if(p->state.tid==tid)return &p->state;
-    struct thread_node *p=vfs_alloc(sizeof(*p));if(!p)return NULL;
+    struct thread_node *p=vfs_palloc(sizeof(*p));if(!p)return NULL;
     p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
     stack_t current;
-    if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0) && !(current.ss_flags&SS_ONSTACK)) {
+    if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0)) {
+        p->state.signal_stack=current.ss_sp;p->state.signal_stack_size=current.ss_size;
+    }
+    if(!(current.ss_flags&SS_ONSTACK)) {
         long area=RAW(PROXY_SC_mmap,0,1<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
         if((unsigned long)area>=(unsigned long)-4095){vfs_free(p);return NULL;}
         stack_t own={.ss_sp=(void *)area,.ss_size=1<<20};
         if(RAW(PROXY_SC_sigaltstack,&own,0,0,0,0,0)){RAW(PROXY_SC_munmap,area,1<<20,0,0,0,0);vfs_free(p);return NULL;}
+        p->state.signal_stack=(void *)area;p->state.signal_stack_size=1<<20;
     }
     do {p->next=__atomic_load_n(&threads,__ATOMIC_ACQUIRE);}
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
@@ -150,13 +154,18 @@ static volatile uint64_t proxy_counts[PROXY_SC_count];
 static volatile uint64_t proxy_syscall_ns[PROXY_SC_count];
 static volatile uint64_t proxy_handler_ns,proxy_vfs_ns;
 uint64_t proxy_count_now(void){if(proxy_count_fd<0)return 0;struct {long sec,nsec;} ts={0};if(RAW(PROXY_SC_clock_gettime,1,&ts,0,0,0,0)<0)return 0;return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;}
-void proxy_count_init(const char *path){if(!path || !*path)return;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0);if(fd>=0)proxy_count_fd=(int)fd;}
+void proxy_count_init(const char *path){if(!path || !*path)return;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0);if(fd>=0){proxy_count_fd=(int)fd;proxy_raw_count_enable();}}
 void proxy_count_resolution(uint64_t ns){__atomic_fetch_add(&proxy_vfs_ns,ns,__ATOMIC_RELAXED);}
 static void count_u64(char *b,size_t *n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[(*n)++]=d[--k];}
 void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*32+128];size_t n=0;
     uint64_t handler=__atomic_exchange_n(&proxy_handler_ns,0,__ATOMIC_RELAXED);
     uint64_t vfs=__atomic_exchange_n(&proxy_vfs_ns,0,__ATOMIC_RELAXED);
     b[n++]='P';b[n++]='I';b[n++]='D';b[n++]='=';count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';b[n++]='H';b[n++]='=';count_u64(b,&n,handler);b[n++]=' ';b[n++]='V';b[n++]='=';count_u64(b,&n,vfs);b[n++]='\n';
+    uint64_t raw_traps=0,raw_calls=0;vfs_raw_count_summary(&raw_traps,&raw_calls);
+    b[n++]='R';b[n++]='A';b[n++]='W';b[n++]=' ';count_u64(b,&n,raw_traps);b[n++]=' ';count_u64(b,&n,raw_calls);b[n++]=' ';count_u64(b,&n,raw_traps?raw_calls/raw_traps:0);b[n++]='\n';
+    uint64_t raw_categories[6];vfs_raw_category_summary(raw_categories);
+    b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='C';b[n++]='A';b[n++]='T';
+    for(unsigned i=0;i<6;i++){b[n++]=' ';count_u64(b,&n,raw_categories[i]);}b[n++]='\n';
     for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';}}
     RAW(PROXY_SC_write,proxy_count_fd,b,n,0,0,0);
 }
@@ -196,8 +205,8 @@ struct sysctl_fd {int fd;struct sysctl_fd *next;};
 static struct sysctl_fd *sysctl_fds;
 static int sysctl_tracked(int fd){for(struct sysctl_fd *p=sysctl_fds;p;p=p->next)if(p->fd==fd)return 1;return 0;}
 static void sysctl_close(int fd){struct sysctl_fd **p=&sysctl_fds;while(*p){struct sysctl_fd *d=*p;if(d->fd==fd){*p=d->next;vfs_free(d);return;}p=&d->next;}}
-static void sysctl_dup(int from,int to){if(from==to)return;int tracked=sysctl_tracked(from);sysctl_close(to);if(tracked){struct sysctl_fd *p=vfs_alloc(sizeof(*p));if(p){*p=(struct sysctl_fd){to,sysctl_fds};sysctl_fds=p;}}}
-static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-userns-limit",cloexec?1:0,0,0,0,0);if(fd<0)return fd;struct sysctl_fd *p=vfs_alloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*p=(struct sysctl_fd){(int)fd,sysctl_fds};sysctl_fds=p;return fd;}
+static void sysctl_dup(int from,int to){if(from==to)return;int tracked=sysctl_tracked(from);sysctl_close(to);if(tracked){struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(p){*p=(struct sysctl_fd){to,sysctl_fds};sysctl_fds=p;}}}
+static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-userns-limit",cloexec?1:0,0,0,0,0);if(fd<0)return fd;struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*p=(struct sysctl_fd){(int)fd,sysctl_fds};sysctl_fds=p;return fd;}
 static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)return -EINVAL;unsigned limit=0;size_t k=0;for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10)return -ERANGE;limit=limit*10+digit;}if(!k || (k<len && !(k+1==len && buf[k]=='\n')))return -EINVAL;long r=RAW(PROXY_SC_write,fd,buf,len,0,0,0);if(r>=0)userns_remaining=limit;return r;}
 
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
@@ -581,13 +590,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
      * new namespace flags; the parent's monitor keeps the original namespace. */
     if(namespace_clone_parent){
         if(RAW(PROXY_SC_getpid,0,0,0,0,0,0)!=namespace_clone_parent){
+            vfs_raw_count_fork_child();
             ipc_fork();
             namespaces|=namespace_clone_flags;
             if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;
         }
         namespace_clone_parent=0;namespace_clone_flags=0;
     }
-    struct thread_state *thread=thread_state();
+    struct thread_state *thread=NULL;
     if(proxy_trace) {
         stack_t ss={0};RAW(PROXY_SC_sigaltstack,0,&ss,0,0,0,0);
         emit("v3 handler-stack ");trace_word("local=",(uintptr_t)&ss);
@@ -610,6 +620,10 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(selector && dispatch_selector==selector) *selector=saved;
         return;
     }
+    vfs_trap_resume();
+    thread=thread_state();
+    if(thread)vfs_trap_begin(thread->signal_stack,thread->signal_stack_size);
+    uint64_t raw_calls_at_entry=proxy_raw_count_now();
     long nr,original;
     proxy_arg_t a[6]={ARCH_CONTEXT(uc,ARCH_ARG0),ARCH_CONTEXT(uc,ARCH_ARG1),
         ARCH_CONTEXT(uc,ARCH_ARG2),ARCH_CONTEXT(uc,ARCH_ARG3),
@@ -775,7 +789,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result)ipc_fork();break;
+        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){vfs_raw_count_fork_child();ipc_fork();}break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -789,7 +803,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
             dns_fork_result(result);ipc_fork_result(result);
 
-            if(!result){ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+            if(!result){vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
@@ -869,10 +883,22 @@ finish:
     }
     else if(result==-ENOSYS)unhandled_once(original,info->si_syscall);
 clean_mask:
+    if(proxy_trace){
+        uint64_t raw_calls=proxy_raw_count_now()-raw_calls_at_entry;
+        emit("v3 raw-calls syscall=");crash_hex((uint64_t)info->si_syscall);
+        emit(" count=");crash_hex(raw_calls);
+        emit(" openat=");crash_hex(proxy_raw_count_for(PROXY_SC_openat));
+        emit(" readlinkat=");crash_hex(proxy_raw_count_for(PROXY_SC_readlinkat));
+        emit(" newfstatat=");crash_hex(proxy_raw_count_for(PROXY_SC_newfstatat));
+        emit(" geteuid=");crash_hex(proxy_raw_count_for(PROXY_SC_geteuid));
+        emit(" mmap=");crash_hex(proxy_raw_count_for(PROXY_SC_mmap));
+        emit(" munmap=");crash_hex(proxy_raw_count_for(PROXY_SC_munmap));emit("\n");
+    }
     if(count_started){uint64_t ended=proxy_count_now();if(ended>=count_started){uint64_t elapsed=ended-count_started;__atomic_fetch_add(&proxy_handler_ns,elapsed,__ATOMIC_RELAXED);if(count_id>=0 && count_id<PROXY_SC_count)__atomic_fetch_add(&proxy_syscall_ns[count_id],elapsed,__ATOMIC_RELAXED);}}
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
     (*arch_signal_mask(uc))&=~SIGSYS_BIT;
     RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
+    vfs_trap_end();
     arch_signal_stack_ready(uc);
     if(selector && dispatch_selector==selector) *selector=saved;
 }
@@ -955,7 +981,7 @@ void proxy_state(struct state *s){
  }else for(uint64_t i=0;i<count&&!s->error;i++){
   int fd=state_word(s,0),alias=state_word(s,0);
   if(alias>=0){dns_dup(alias,fd);if(!dns_lookup(fd))s->error=-EINVAL;continue;}
-  struct dns_fd *d=vfs_alloc(sizeof(*d));struct dns_socket *socket=vfs_alloc(sizeof(*socket));
+  struct dns_fd *d=vfs_palloc(sizeof(*d));struct dns_socket *socket=vfs_palloc(sizeof(*socket));
   if(!d||!socket){s->error=-ENOMEM;return;}
   socket->refs=1;socket->type=state_word(s,0);socket->active=state_word(s,0);socket->connected=state_word(s,0);state_bytes(s,&socket->local,sizeof(socket->local));
   *d=(struct dns_fd){fd,socket,dns_fds};dns_fds=d;
@@ -964,11 +990,11 @@ void proxy_state(struct state *s){
  count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
  if(!s->reading){for(struct dns_watch *w=dns_watches;w;w=w->next)if(state_live(w->fd)&&state_live(w->epoll)){state_word(s,w->fd);state_word(s,w->epoll);state_word(s,w->event.events);state_word(s,w->event.data.u64);}}
  else for(uint64_t i=0;i<count&&!s->error;i++){
-  struct dns_watch *w=vfs_alloc(sizeof(*w));if(!w){s->error=-ENOMEM;return;}
+  struct dns_watch *w=vfs_palloc(sizeof(*w));if(!w){s->error=-ENOMEM;return;}
   w->fd=state_word(s,0);w->epoll=state_word(s,0);w->event.events=state_word(s,0);w->event.data.u64=state_word(s,0);w->next=dns_watches;dns_watches=w;
  }
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;
  count=state_word(s,count);if(count>65536){s->error=-E2BIG;return;}
  if(!s->reading){for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))state_word(s,d->fd);}
- else for(uint64_t i=0;i<count&&!s->error;i++){struct sysctl_fd *d=vfs_alloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->fd=state_word(s,0);d->next=sysctl_fds;sysctl_fds=d;}
+ else for(uint64_t i=0;i<count&&!s->error;i++){struct sysctl_fd *d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->fd=state_word(s,0);d->next=sysctl_fds;sysctl_fds=d;}
 }

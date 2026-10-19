@@ -1089,7 +1089,7 @@ static long dispatch(struct ctx *c, long nr, proxy_arg_t *a, off *wr) {
     p->count++;
     p->atime = now(CLOCK_REALTIME) / 1000000000L;
     p->lpid = q->pid;
-    struct local_attach *la = vfs_alloc(sizeof(*la));
+    struct local_attach *la = vfs_palloc(sizeof(*la));
     if (!la) {
       q->type = 0;
       p->count--;

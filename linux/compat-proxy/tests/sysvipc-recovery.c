@@ -12,6 +12,7 @@
 #include "../sysvipc.c"
 const char *proxy_tmpdir;
 void *vfs_alloc(size_t n){return calloc(1,n);}
+void *vfs_palloc(size_t n){return calloc(1,n);}
 void vfs_free(void *p){free(p);}
 char *vfs_temp_create(long *e){*e=0;return strdup(proxy_tmpdir);}
 size_t p_len(const char *p){return strlen(p);}

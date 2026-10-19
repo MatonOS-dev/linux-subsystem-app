@@ -6,7 +6,20 @@
 long proxy_raw(long, long, long, long, long, long, long);
 void proxy_restore(void);
 _Noreturn void proxy_enter(uintptr_t, uintptr_t);
+#ifdef PROXY_RAW_COUNTER
+void proxy_raw_count_one(long);
+uint64_t proxy_raw_count_now(void);
+uint64_t proxy_raw_count_for(long);
+extern volatile int proxy_raw_counter_enabled;
+void proxy_raw_count_enable(void);
+#define RAW(n,a,b,c,d,e,f) (proxy_raw_count_one((long)(n)), arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f)))
+#else
+static inline void proxy_raw_count_one(long nr) { (void)nr; }
+static inline uint64_t proxy_raw_count_now(void) { return 0; }
+static inline uint64_t proxy_raw_count_for(long nr) { (void)nr;return 0; }
+static inline void proxy_raw_count_enable(void) {}
 #define RAW(n,a,b,c,d,e,f) arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f))
+#endif
 #include "arch/stat.h"
 #include "arch/statx.h"
 #include "arch/socket.h"

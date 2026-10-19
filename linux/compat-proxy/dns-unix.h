@@ -47,7 +47,7 @@ static void dns_close(int fd){proxy_sigmask_t mask=dns_lock();dns_forget(fd);dns
 static void dns_dup(int from,int to){
     if(from==to)return;
     proxy_sigmask_t mask=dns_lock();struct dns_socket *s=dns_lookup(from);dns_forget(to);
-    if(s){struct dns_fd *d=vfs_alloc(sizeof(*d));if(d){*d=(struct dns_fd){to,s,dns_fds};s->refs++;dns_fds=d;}}
+    if(s){struct dns_fd *d=vfs_palloc(sizeof(*d));if(d){*d=(struct dns_fd){to,s,dns_fds};s->refs++;dns_fds=d;}}
     dns_unlock(mask);
 }
 static void dns_network_payload(void){
@@ -153,7 +153,7 @@ static long dns_call(long nr,proxy_arg_t a[6]){
     if(nr==PROXY_SC_socket){
         long r=RAW(nr,a[0],a[1],a[2],0,0,0);
         if(r>=0 && dns_path[0] && a[0]==AF_INET){
-            struct dns_socket *s=vfs_alloc(sizeof(*s));struct dns_fd *d=vfs_alloc(sizeof(*d));
+            struct dns_socket *s=vfs_palloc(sizeof(*s));struct dns_fd *d=vfs_palloc(sizeof(*d));
             if(!s || !d){vfs_free(s);vfs_free(d);RAW(PROXY_SC_close,r,0,0,0,0,0);return -ENOMEM;}
             *s=(struct dns_socket){.refs=1,.type=(int)a[1]&~(SOCK_NONBLOCK|SOCK_CLOEXEC)};
             proxy_sigmask_t mask=dns_lock();dns_forget((int)r);*d=(struct dns_fd){(int)r,s,dns_fds};dns_fds=d;dns_unlock(mask);
@@ -163,7 +163,7 @@ static long dns_call(long nr,proxy_arg_t a[6]){
     if(nr==PROXY_SC_epoll_ctl){
         struct dns_watch **p=&dns_watches;while(*p && ((*p)->epoll!=a[0] || (*p)->fd!=a[2]))p=&(*p)->next;
         struct dns_watch *new=NULL;
-        if(nr==PROXY_SC_epoll_ctl && a[1]==EPOLL_CTL_ADD && dns_lookup((int)a[2])){new=vfs_alloc(sizeof(*new));if(!new){dns_unlock(mask);return -ENOMEM;}}
+        if(nr==PROXY_SC_epoll_ctl && a[1]==EPOLL_CTL_ADD && dns_lookup((int)a[2])){new=vfs_palloc(sizeof(*new));if(!new){dns_unlock(mask);return -ENOMEM;}}
         long r=RAW(nr,a[0],a[1],a[2],a[3],0,0);
         if(!r){if(a[1]==EPOLL_CTL_DEL && *p){struct dns_watch *old=*p;*p=old->next;vfs_free(old);}else if(a[1]==EPOLL_CTL_MOD && *p)p_copy(&(*p)->event,(void *)(uintptr_t)a[3],sizeof(struct epoll_event));else if(new){*new=(struct dns_watch){.epoll=(int)a[0],.fd=(int)a[2],.next=dns_watches};p_copy(&new->event,(void *)(uintptr_t)a[3],sizeof(new->event));dns_watches=new;new=NULL;}}
         vfs_free(new);dns_unlock(mask);return r;
