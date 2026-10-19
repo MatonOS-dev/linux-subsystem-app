@@ -135,3 +135,45 @@ hardware and unsupported/no-DRM fallbacks.
 XCB/Xlib WSI and Zink GLX are outside this Wayland task. An XID cannot be
 treated as a `wl_surface`; Xwayland DRI3/Present needs a separate validated
 dma-buf and release-lifetime path.
+
+## Native Android Venus AHB probe (2026-10-19)
+
+Added `tests/ahb-native-probe.c` and built it directly with NDK
+30.0.16248370's x86_64 API 36 clang. The probe dlopens
+`/system/lib64/libvulkan.so`, creates a Vulkan 1.1 instance and graphics device
+on `Virtio-GPU Venus (AMD Radeon RX 6600 (RADV NAVI23))`, enables
+`VK_ANDROID_external_memory_android_hardware_buffer` and its advertised
+external-memory dependencies, allocates 500x500 RGBA8 AHardwareBuffers, queries
+AHB and RGBA8 format properties, and attempts a dedicated AHB import into a
+VkImage. Select `AHB_USAGE_INDEX=0..2` to run one usage in a separate process:
+0 = color output + sampled + composer overlay, 1 = color output + sampled,
+2 = color output only.
+
+All three `AHardwareBuffer_allocate` calls succeeded. The driver advertises the
+AHB and dependency extensions; RGBA8 reports `linear=0x1dd83`,
+`optimal=0x1dd83`. The first `vkGetAndroidHardwareBufferPropertiesANDROID`
+call aborts for every tested usage, before returning properties; therefore image
+creation/import is not reached. The native driver reproduces the vkcube failure.
+The crash is SIGABRT in `/vendor/lib64/hw/vulkan.virtio.so`, with frames
+`0x8ba7f, 0xd99f6, 0x9aca7, 0x9ae37, 0x11c1a8` (plus libc `abort+189`). The
+plain tombstone contains no `Abort message` field/string, so there is no exact
+abort text to report. Captured tombstones are `/data/tombstones/tombstone_07`
+and `_08` on the VM (2026-10-19 17:02); crash log was retrieved with
+`adb logcat -b crash -d`.
+
+VM gralloc is `gralloc.minigbm_gbm_mesa.so` (`minigbm_gbm_mesa`); mapper is
+`mapper.minigbm.so`, stable `mapper@5.0/minigbm`; allocator is
+`android.hardware.graphics.allocator.IAllocator/default` AIDL version 3.
+The Vulkan driver advertises Android AHB support but cannot complete the AHB
+properties query here, so its Android AHB path is not usable on this VM. This
+probe stops at the reproduced driver abort; no workaround or fix was attempted.
+
+The native call sequence matches the forwarder's failing sequence: create the
+Android Vulkan instance/device, allocate through `AHardwareBuffer_allocate`,
+then call `vkGetAndroidHardwareBufferPropertiesANDROID` with
+`VkAndroidHardwareBufferFormatPropertiesANDROID` chained for format details.
+The forwarder invokes the same Android entry point after switching to Android
+TLS and obtains it through its resident dispatch tables; this probe uses the
+native process's direct device dispatch. No Vulkan result is returned by either
+path. The forwarder has additional WSI allocation/image setup around this
+sequence, but the failure occurs before those later calls can matter.
