@@ -126,14 +126,8 @@ static const char *const mv_wsi_instance_names[] = {
     VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
 };
 
-static int mv_wsi_wayland_available(void) {
-    return mv_wayland_symbol("wl_proxy_marshal_flags") &&
-        mv_wayland_symbol("wl_proxy_get_version") &&
-        mv_wayland_symbol("wl_registry_interface");
-}
-
 static int mv_wsi_instance_extension(const char *name) {
-    if (!name || !mv_wsi_wayland_available()) return 0;
+    if (!name) return 0;
     for (size_t i=0;i<sizeof(mv_wsi_instance_names)/sizeof(*mv_wsi_instance_names);i++)
         if (!strcmp(name,mv_wsi_instance_names[i])) return 1;
     return 0;
@@ -141,9 +135,9 @@ static int mv_wsi_instance_extension(const char *name) {
 
 static VkResult mv_wsi_instance_extensions(uint32_t *count,VkExtensionProperties *out) {
     if (!count) return VK_ERROR_INITIALIZATION_FAILED;
-    int available=mv_wsi_wayland_available();
-    mv_trace_result("maton-vulkan: Wayland instance extensions",available,out?*count:0);
-    if (!available) { *count=0; return VK_SUCCESS; }
+    /* Apps may dlopen Wayland only after Vulkan extension discovery. These
+     * extensions are implemented by this ICD; resolve client symbols when a
+     * surface is created, once the app has loaded its Wayland library. */
     uint32_t capacity=out?*count:0;
     uint32_t written=sizeof(mv_wsi_instance_names)/sizeof(*mv_wsi_instance_names);
     if (out) {

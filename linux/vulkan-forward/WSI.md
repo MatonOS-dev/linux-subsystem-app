@@ -20,7 +20,9 @@ unverified.
 `build.sh` always compiles `wsi.c`, `wsi_wayland.c`, the ELF resolver, and
 `wsi_vulkan.inc`; there is no prototype build switch or production stub.
 Instance enumeration advertises `VK_KHR_surface` and
-`VK_KHR_wayland_surface` only if the required Wayland-client symbols resolve.
+`VK_KHR_wayland_surface` before the client loads Wayland. Client symbols are
+resolved at surface creation, allowing applications that dlopen Wayland after
+Vulkan extension discovery.
 Surface creation checks for the compositor's linux-dmabuf global. Device
 enumeration advertises `VK_KHR_swapchain` only when the app enabled the
 Wayland surface extension. Swapchain commands are intercepted by the ICD's
