@@ -67,6 +67,9 @@ static int mv_init(void) {
     mv_bridge=(void *)mv_hex(mv_env("MATON_GPU_BRIDGE"));
     mv_adopt=(void *)mv_hex(mv_env("MATON_THREAD_ADOPT"));
     mv_fast=mv_hex(mv_env("MATON_FAST_TLS"))!=0;
+    if(!mv_bridge) {static const char m[]="maton-vulkan: bootstrap bridge pointer missing\n";mv_write(m,sizeof(m)-1);}
+    if(!mv_adopt) {static const char m[]="maton-vulkan: bootstrap adoption pointer missing\n";mv_write(m,sizeof(m)-1);}
+    if(mv_bridge && mv_bridge->version!=1) {static const char m[]="maton-vulkan: bootstrap bridge version invalid\n";mv_write(m,sizeof(m)-1);}
     struct mv_scope s;
     if(mv_bridge && mv_bridge->version==1 && mv_enter(&s)) {
         void *lib=mv_bridge->open("/system/lib64/libvulkan.so",2);

@@ -59,11 +59,21 @@ static inline int switch_to_android(struct adopt_api *api,int fast,struct mv_sco
     if(api->version==2 && api->lookup && fast) {
         uintptr_t fs=mv_tp_read(1);
         s->thread=api->lookup(fs);
-        if(!s->thread) s->thread=api->current();
+        if(!s->thread) {
+            s->thread=api->current();
+            if(!s->thread) {
+                static const char message[]="maton-vulkan: adoption lookup and current missed\n";
+                mv_write(message,sizeof(message)-1);
+            }
+        }
         s->previous=fs; have_previous=1;
     } else if((api->version==1 || api->version==2) && api->current) {
         s->thread=api->current();
-        if(!s->thread) return 0;
+        if(!s->thread) {
+            static const char message[]="maton-vulkan: adoption current missed\n";
+            mv_write(message,sizeof(message)-1);
+            return 0;
+        }
     } else return 0;
     if(!s->thread) return 0;
     if(!have_previous) s->previous=mv_tp_read(fast);
