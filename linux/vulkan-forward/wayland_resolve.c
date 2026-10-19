@@ -174,5 +174,12 @@ static void *from_maps(const char *name) {
 void *mv_wayland_symbol(const char *name) {
     if(!name || !*name)return 0;
     void *symbol=from_link_map(name);
-    return symbol?symbol:from_maps(name);
+    if (!symbol) symbol=from_maps(name);
+    if (!symbol) {
+        static const char prefix[]="maton-vulkan: unresolved Wayland symbol ";
+        mv_write(prefix,sizeof(prefix)-1);
+        size_t length=0;while(name[length])length++;
+        mv_write(name,length);mv_write("\n",1);
+    }
+    return symbol;
 }

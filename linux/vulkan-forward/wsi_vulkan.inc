@@ -141,7 +141,9 @@ static int mv_wsi_instance_extension(const char *name) {
 
 static VkResult mv_wsi_instance_extensions(uint32_t *count,VkExtensionProperties *out) {
     if (!count) return VK_ERROR_INITIALIZATION_FAILED;
-    if (!mv_wsi_wayland_available()) { *count=0; return VK_SUCCESS; }
+    int available=mv_wsi_wayland_available();
+    mv_trace_result("maton-vulkan: Wayland instance extensions",available,out?*count:0);
+    if (!available) { *count=0; return VK_SUCCESS; }
     uint32_t capacity=out?*count:0;
     uint32_t written=sizeof(mv_wsi_instance_names)/sizeof(*mv_wsi_instance_names);
     if (out) {
