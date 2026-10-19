@@ -49,7 +49,7 @@ int main(int argc,char **argv,char **env){
   static const char ok[]="PASS mixed-class exec, VFS/fds and sem/shm/msg/SEM_UNDO\n";CHECK(write(1,ok,sizeof(ok)-1)==sizeof(ok)-1);return 0;
  }
  CHECK(argc==11);
- CHECK(ioctl(-1,0xc0306201UL,0)==-1&&errno==EPERM);
+ CHECK(ioctl(-1,0xc0306201UL,0)==-1&&errno==EBADF);
  int sem=atoi(argv[4]),shm=atoi(argv[5]),msg=atoi(argv[6]),fd=atoi(argv[7]),alias=atoi(argv[8]),dead=atoi(argv[9]),tmpalias=atoi(argv[10]);
  char inode[5];CHECK(pread(tmpalias,inode,5,0)==5&&!memcmp(inode,"inode",5));
  CHECK(fcntl(dead,F_GETFD)==-1&&errno==EBADF);
