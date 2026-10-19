@@ -236,7 +236,19 @@ restart:;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);
-        if(!target && input[i]=='/'){struct proxy_stat st;long status=pack_stat(host,&st);if(status==-ENOSYS)status=arch_stat_at(AT_FDCWD,host,&st,0);if(status<0){vfs_free(host);*error=status;goto fail;}if(!S_ISDIR(st.st_mode)){vfs_free(host);*error=-ENOTDIR;goto fail;}}
+        if(!target && input[i]=='/'){
+            struct proxy_stat st;long status=pack_stat(host,&st);
+            if(status==-ENOSYS){
+                /* Path lookup needs search permission on ancestors, not
+                 * getattr. An O_PATH|O_DIRECTORY open has the kernel's
+                 * path-walk permissions and also rejects non-directory
+                 * components without requesting directory metadata. */
+                long dir=RAW(PROXY_SC_openat,AT_FDCWD,host,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);
+                if(dir<0)status=dir;
+                else {RAW(PROXY_SC_close,dir,0,0,0,0,0);status=0;}
+            }else if(status>=0 && !S_ISDIR(st.st_mode))status=-ENOTDIR;
+            if(status<0){vfs_free(host);*error=status;goto fail;}
+        }
         /* proc fd magic links point to backing objects, outside a pivoted
          * pathname root. They are not ordinary payload absolute symlinks. */
         if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
