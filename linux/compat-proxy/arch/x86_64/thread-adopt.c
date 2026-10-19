@@ -185,9 +185,28 @@ static void fork_rebase(struct adopt_thread *self) {
  * the freestanding proxy links a weak no-op when adoption is absent. */
 __attribute__((target("general-regs-only")))
 void adopt_fork_child(void) {
-    struct adopt_thread *self=adopt_current();
-    if(!self) __builtin_trap();
     uintptr_t app_fs=backend_fs_read();
+    /* After a process clone, the kernel has changed gettid() but the copied
+     * registry still contains the parent's TID. The child inherits the
+     * calling thread's FS base, so use that stable identity to find its
+     * copied record before fork_rebase() publishes the child's new TID. */
+    struct adopt_thread *self=adopt_map_lookup(app_fs);
+    if(!self) {
+        for(struct thread_chunk *c=atomic_load_explicit(&chunks,memory_order_acquire);c && !self;
+            c=atomic_load_explicit(&c->next,memory_order_acquire))
+            for(unsigned i=0;i<CHUNK_THREADS;i++) {
+                struct adopt_thread *candidate=&c->entries[i];
+                if(atomic_load_explicit(&candidate->tid,memory_order_acquire)>0 &&
+                   atomic_load_explicit(&candidate->app_fs,memory_order_acquire)==app_fs) {
+                    self=candidate;
+                    break;
+                }
+            }
+    }
+    if(!self) {
+        proxy_log("adopt-fork-miss",R(gettid,0,0,0,0,0,0),(long)app_fs);
+        __builtin_trap();
+    }
     backend_fs_write(self->resident_fs);
     fork_rebase(self);
     /* Raw proxy clones bypass libc's pthread_atfork handlers. Discard a mutex
