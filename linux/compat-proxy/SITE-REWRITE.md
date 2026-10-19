@@ -361,9 +361,14 @@ construction (only relevant if bionic payload code is ever trapped).
 
 ### Other architectures
 
-The core (first-trap discovery, stub ABI record, emulation entry, trap
-fallback, SUD coexistence) is shared; each backend supplies site validation,
-encoding, register save/restore and cache synchronisation.
+One mechanism on every architecture: the core (first-trap discovery, stub
+record, emulation entry, thread parking, signal/restart handling, SUD
+coexistence, trap fallback) is shared; a backend only answers "is this a
+patchable site", "write the jump", "save/restore registers" and "flush the
+icache". x86_64 writes a 7-byte window (`mov $stub,%eax; jmp *%rax`); arm64
+writes one `b stub`. (`adrp x16,stub; br x16` was considered for arm64 to mirror
+x86_64, but it needs a two-instruction window, page-aligned stubs or a third
+`add`, an `x16` liveness check and non-atomic patching; `b` avoids all of that.)
 
 - **arm64 (decided):** plain branch replacement only. `svc #0` (4 B) becomes
   `b stub` (4 B, ±128 MiB) one for one; no instruction relocation, no other
