@@ -588,6 +588,13 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         namespace_clone_parent=0;namespace_clone_flags=0;
     }
     struct thread_state *thread=thread_state();
+    if(proxy_trace) {
+        stack_t ss={0};RAW(PROXY_SC_sigaltstack,0,&ss,0,0,0,0);
+        emit("v3 handler-stack ");trace_word("local=",(uintptr_t)&ss);
+        trace_word("interrupted=",ARCH_CONTEXT(uc,ARCH_STACK));
+        trace_word("base=",(uintptr_t)ss.ss_sp);trace_word("size=",ss.ss_size);
+        trace_word("flags=",ss.ss_flags);emit("\n");
+    }
     if(info->si_code!=SYS_SECCOMP) {
         if(proxy_trace) {
             emit("v3 signal-delivery sig="); crash_hex(sig);
