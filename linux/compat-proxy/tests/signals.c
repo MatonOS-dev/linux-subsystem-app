@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <signal.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <ucontext.h>
 #include <sys/mman.h>
@@ -15,6 +16,8 @@
 #include <string.h>
 #include <unistd.h>
 extern char __executable_start[],_etext[];
+static volatile uintptr_t signal_local;
+static void stack_probe(int sig) {(void)sig;volatile char local;signal_local=(uintptr_t)&local;}
 static volatile sig_atomic_t dispatches,unexpected;
 static volatile sig_atomic_t unexpected_seccomp;
 static long local_raw(long n,long a,long b,long c,long d,long e) {
@@ -52,6 +55,15 @@ int main(void) {
     errno=0;CHECK(syscall(SYS_getpgrp)==getpgid(0));
     void *alt=mmap(NULL,65536,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);CHECK(alt!=MAP_FAILED);
     stack_t ss={.ss_sp=alt,.ss_size=65536};CHECK(sigaltstack(&ss,NULL)==0);
+    stack_t queried;CHECK(sigaltstack(NULL,&queried)==0);
+    CHECK(queried.ss_sp==alt && queried.ss_size==65536);
+    struct sigaction probe={.sa_handler=stack_probe,.sa_flags=SA_ONSTACK};
+    sigset_t one;sigemptyset(&one);sigaddset(&one,SIGUSR1);
+    CHECK(sigprocmask(SIG_UNBLOCK,&one,NULL)==0);
+    CHECK(sigaction(SIGUSR1,&probe,NULL)==0);CHECK(raise(SIGUSR1)==0);
+    /* App stack requests must never replace the kernel's private proxy stack,
+     * even when issued by an otherwise exempt resident libc. */
+    CHECK(signal_local && (signal_local<(uintptr_t)alt || signal_local>=(uintptr_t)alt+65536));
     ss.ss_flags=SS_DISABLE;CHECK(sigaltstack(&ss,NULL)==0);CHECK(munmap(alt,65536)==0);
     errno=0;CHECK(syscall(SYS_getpgrp)==getpgid(0));
     /* Actual SYS_USER_DISPATCH from an executable syscall stub outside the allow interval. */
