@@ -70,7 +70,9 @@ static int mv_init(void) {
     if(!mv_bridge) {static const char m[]="maton-vulkan: bootstrap bridge pointer missing\n";mv_write(m,sizeof(m)-1);}
     if(!mv_adopt) {static const char m[]="maton-vulkan: bootstrap adoption pointer missing\n";mv_write(m,sizeof(m)-1);}
     if(mv_bridge && mv_bridge->version!=1) {static const char m[]="maton-vulkan: bootstrap bridge version invalid\n";mv_write(m,sizeof(m)-1);}
+#if defined(__x86_64__)
     if(mv_adopt && mv_adopt->version!=2) {static const char m[]="maton-vulkan: adoption API version invalid\n";mv_write(m,sizeof(m)-1);}
+#endif
     struct mv_scope s;
     if(mv_bridge && mv_bridge->version==1 && mv_enter(&s)) {
         void *lib=mv_bridge->open("/system/lib64/libvulkan.so",2);
