@@ -844,7 +844,19 @@ clone_retry:
     }
 finish:
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
-    if(proxy_trace)proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
+    if(proxy_trace){
+        proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
+        /* Path translation may perform its own metadata probes. Keep the
+         * triggering userspace syscall site in the trace so SELinux reports
+         * can be tied back to the caller's executable mapping. */
+        if(nr==PROXY_SC_open || nr==PROXY_SC_openat || nr==PROXY_SC_openat2 ||
+           nr==PROXY_SC_stat || nr==PROXY_SC_lstat || nr==PROXY_SC_newfstatat ||
+           nr==PROXY_SC_statx || nr==PROXY_SC_access || nr==PROXY_SC_faccessat ||
+           nr==PROXY_SC_faccessat2 || nr==PROXY_SC_readlink || nr==PROXY_SC_readlinkat){
+            emit("v3 path-call syscall=");crash_hex((uint64_t)original);
+            emit(" ip=");crash_hex((uintptr_t)info->si_call_addr);emit("\n");
+        }
+    }
     else if(result==-ENOSYS)unhandled_once(original,info->si_syscall);
 clean_mask:
     if(count_started){uint64_t ended=proxy_count_now();if(ended>=count_started){uint64_t elapsed=ended-count_started;__atomic_fetch_add(&proxy_handler_ns,elapsed,__ATOMIC_RELAXED);if(count_id>=0 && count_id<PROXY_SC_count)__atomic_fetch_add(&proxy_syscall_ns[count_id],elapsed,__ATOMIC_RELAXED);}}
