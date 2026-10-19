@@ -72,9 +72,15 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     /* Keep resident linker code from replacing the proxy's SIGSYS handler.
-     * Other signal actions are forwarded by the existing dispatcher. */
+     * Let ordinary signal actions and read-only queries stay native. */
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,encode(PROXY_SC_rt_sigaction));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,7,encode(PROXY_SC_rt_sigaction));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,SIGSYS);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,2,0);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1])+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,0);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     /* FD_CLOEXEC is kernel-owned state: let F_GETFD/F_SETFD reach Linux
      * directly so libc's million-descriptor spawn sweep does not trap.
