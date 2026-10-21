@@ -10,6 +10,7 @@ mkdir -p "$TEST_OUT/classes"
 openssl req -x509 -newkey rsa:2048 -keyout "$TEST_OUT/key.pem" -out "$TEST_OUT/cert.pem" -nodes -subj /CN=DisposableImageTest -days 1 >"$TEST_OUT/keygen.log" 2>&1
 openssl pkcs8 -topk8 -nocrypt -in "$TEST_OUT/key.pem" -outform DER -out "$TEST_OUT/key.der"
 trap 'rm -f "$TEST_OUT/key.pem" "$TEST_OUT/key.der"' EXIT
+bash "$STUB_DIR/tests/build-loader-dex.sh" "$ANDROID_JAR" "${MATON_D8:-$(dirname "$AAPT2")/d8}" "$TEST_OUT/classes"
 javac -cp "$ANDROID_JAR:$STUB_DIR/prebuilt/apksig.jar" -d "$TEST_OUT/classes" "$STUB_DIR"/src/org/matonos/linuxhost/stubgen/*.java "$STUB_DIR"/tests/*.java
 java -Xmx256m -cp "$TEST_OUT/classes" DependencyPlanTest
 java -Xmx256m -cp "$TEST_OUT/classes" PackageGraphTest

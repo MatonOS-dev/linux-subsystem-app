@@ -24,14 +24,14 @@ import java.util.regex.Pattern;
 /**
  * Generated stubs name this class as their {@code android:appComponentFactory}.
  *
- * <p>The stub reaches this class through {@code <uses-library>}, but the
- * library path PackageManager records for the stub does not follow host
- * updates (an update replacing an update keeps the old library entry). So the
- * host is never taken from {@code sharedLibraryFiles}: the stub's class loader
- * is a {@link HostClassLoader} that, on the first component class lookup, asks
- * PackageManager for the current {@code org.matonos.linux} APK and delegates to
- * a loader over it (natives from the same APK, parented to the boot loader).
- * The plain Application exists and is attached by then; stubs declare none.
+ * <p>This class is the generated stub's own dex (StubGenerator embeds it);
+ * stubs declare no {@code <uses-library>}, because the library path
+ * PackageManager records for a stub does not follow host updates. The stub's
+ * class loader is a {@link HostClassLoader} that, on the first component class
+ * lookup, asks PackageManager for the current {@code org.matonos.linux} APK and
+ * delegates to a loader over it (natives from the same APK, parented to the
+ * boot loader). The plain Application exists and is attached by then; stubs
+ * declare none.
  *
  * <p>Trust: only an installed update of the host package at its
  * {@code /data/app} path is accepted; PackageManager enforces the system
@@ -119,7 +119,7 @@ public final class StubLoader extends AppComponentFactory {
         @Override protected Class<?> findClass(String name) throws ClassNotFoundException {
             PathClassLoader loader = delegate();
             // Before the host is known (factory re-creation, fallback components) our own
-            // classes come from the image copy that loaded this class.
+            // classes come from the stub dex that loaded this class.
             if (loader == null) return StubLoader.class.getClassLoader().loadClass(name);
             return loader.loadClass(name);
         }

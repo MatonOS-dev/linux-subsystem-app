@@ -93,6 +93,19 @@ def packageGlMaton = tasks.register('packageGlMaton', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn packageGlMaton }
 
+// Generated stubs carry this dex as their only code (StubGenerator embeds it).
+def stubLoaderResources = new File(layout.buildDirectory.get().asFile, 'generated/stub-loader')
+def buildStubLoader = tasks.register('buildStubLoader', Exec) {
+    inputs.files fileTree('../shared/src/main/java'), file('../../../stubgen/tests/build-loader-dex.sh')
+    outputs.dir stubLoaderResources
+    doFirst { delete stubLoaderResources; stubLoaderResources.mkdirs() }
+    commandLine 'bash', file('../../../stubgen/tests/build-loader-dex.sh').absolutePath,
+            System.getenv('MATON_ANDROID_JAR') ?: '',
+            new File(new File(System.getenv('MATON_AAPT2') ?: 'aapt2').parentFile, 'd8').absolutePath,
+            stubLoaderResources.absolutePath
+}
+tasks.named('preBuild').configure { dependsOn buildStubLoader }
+
 def v3Root = file('../../../compat-proxy')
 def v3Output = System.getenv('MATON_V3_ANDROID_OUT') ?: "$aospRoot/out/matonos/compat-proxy"
 def v3Jni = new File(layout.buildDirectory.get().asFile, 'generated/v3Jni')
@@ -226,6 +239,7 @@ android {
             assets.srcDir pipewireAssets
             assets.srcDir flatpakAssets
             assets.srcDir glMatonAssets
+            resources.srcDir stubLoaderResources
         }
     }
 }

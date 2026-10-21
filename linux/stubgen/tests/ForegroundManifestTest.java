@@ -35,7 +35,7 @@ public final class ForegroundManifestTest {
         // marker and extractNativeLibs are gone with it.
         if(!xml.contains("appComponentFactory(0x0101057a)=\"org.matonos.linux.stub.StubLoader\""))throw new AssertionError("Missing host StubLoader factory\n"+xml);
         if(xml.contains("extractNativeLibs"))throw new AssertionError("extractNativeLibs must not be set\n"+xml);
-        if(!xml.contains("org.matonos.linuxhost"))throw new AssertionError("Missing host uses-library\n"+xml);
+        if(xml.contains("uses-library"))throw new AssertionError("Stubs must not declare a host uses-library\n"+xml);
         if (xml.contains("org.matonos.systembridge"))
             throw new AssertionError("Generated stubs no longer query the system bridge\n"+xml);
         if (xml.contains("org.matonos.permission.SYSTEM_BRIDGE"))

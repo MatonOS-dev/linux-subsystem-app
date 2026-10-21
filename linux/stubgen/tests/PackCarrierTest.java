@@ -26,7 +26,7 @@ public final class PackCarrierTest {
   try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(runtimeManifest))){z.putNextEntry(new ZipEntry("AndroidManifest.xml"));z.write((byte[])encode.invoke(encoder));z.closeEntry();}
   Process rmanifest=new ProcessBuilder(args[1],"dump","xmltree",runtimeManifest.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String rxml=new String(rmanifest.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-  if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||!rxml.contains("org.matonos.linux.stub.ExtraService")||!rxml.contains("org.matonos.linuxhost.EXTRA_MOUNT")||!rxml.contains("org.matonos.linuxhost.FLATPAK_REF")||!rxml.contains("org.matonos.linuxhost.PACKS")||!rxml.contains("org.matonos.linuxhost"))throw new AssertionError("Runtime manifest must be activity-free, carry its ref, pack metadata and the extra service; and declare the host uses-library\n"+rxml);
+  if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||!rxml.contains("org.matonos.linux.stub.ExtraService")||!rxml.contains("org.matonos.linuxhost.EXTRA_MOUNT")||!rxml.contains("org.matonos.linuxhost.FLATPAK_REF")||!rxml.contains("org.matonos.linuxhost.PACKS")||rxml.contains("uses-library"))throw new AssertionError("Runtime manifest must be activity-free, carry its ref, pack metadata and the extra service, and declare no uses-library\n"+rxml);
   Field revision=manifest.getDeclaredField("revisionCode");revision.setAccessible(true);revision.setInt(encoder,42);
   Method lm=manifest.getDeclaredMethod("launcherManifest",String.class,String.class,List.class,int.class);lm.setAccessible(true);
   String launcherSplit="launcher_"+"d".repeat(64);

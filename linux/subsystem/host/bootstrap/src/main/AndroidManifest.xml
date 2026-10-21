@@ -16,7 +16,6 @@
         </intent>
     </queries>
     <application android:label="Linux Subsystem" android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        <library android:name="org.matonos.linuxhost" />
         <activity android:name=".BootstrapActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

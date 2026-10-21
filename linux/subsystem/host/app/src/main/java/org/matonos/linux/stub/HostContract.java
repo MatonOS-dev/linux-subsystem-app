@@ -1,8 +1,7 @@
 package org.matonos.linux.stub;
 
-/** Stable constants shared by generated Flatpak stubs and the host library. */
+/** Stable constants shared by generated Flatpak stubs and the host. */
 public final class HostContract {
-    public static final String LIBRARY_NAME = "org.matonos.linuxhost";
     public static final int INTERFACE_VERSION = 3;
     public static final String META_FLATPAK_REF = "org.matonos.linuxhost.FLATPAK_REF";
     public static final String META_MIN_INTERFACE = "org.matonos.linuxhost.MIN_INTERFACE_VERSION";

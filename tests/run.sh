@@ -31,6 +31,7 @@ javac -cp "$ANDROID_JAR:$JSON_JAR:$ROOT/linux/stubgen/prebuilt/apksig.jar" -d "$
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployManifest.java" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/InstallHandoff.java" \
   "$ROOT/tests/install-handoff/InstallHandoffTest.java"
+bash "$ROOT/linux/stubgen/tests/build-loader-dex.sh" "$ANDROID_JAR" "${MATON_D8:-$(dirname "$AAPT2")/d8}" "$OUT/install-handoff/classes"
 java -cp "$OUT/install-handoff/classes:$JSON_JAR:$ANDROID_JAR:$ROOT/linux/stubgen/prebuilt/apksig.jar" \
   org.matonos.linuxhost.stubgen.InstallHandoffTest "$OUT/install-handoff"
 "$AAPT2" dump badging "$OUT/install-handoff/handoff.apk" | grep -F "package: name='flatpak.app.org_example_Editor.x86_64.stable.x" >/dev/null

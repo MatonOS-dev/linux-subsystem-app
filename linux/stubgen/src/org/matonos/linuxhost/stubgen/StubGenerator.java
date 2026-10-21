@@ -42,7 +42,6 @@ public final class StubGenerator {
     // Flatpak extra data in a per-package service, and carries the result in a
     // self-contained extra split mounted over the package's extra directory.
     public static final int STUB_VERSION_CODE = 20;
-    public static final String HOST_LIBRARY = "org.matonos.linuxhost";
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
     /** Per-package service that applies this package's Flatpak extra data. */
@@ -198,7 +197,7 @@ public final class StubGenerator {
         try {
             if(launchable)writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages);
             else try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
-                put(zip,"AndroidManifest.xml",manifest.encode());put(zip,"classes.dex",emptyDex());
+                put(zip,"AndroidManifest.xml",manifest.encode());put(zip,"classes.dex",loaderDex());
             }
             sign(unsigned,output);return output;
         } finally {unsigned.delete();}
@@ -600,7 +599,7 @@ public final class StubGenerator {
             put(zip, "AndroidManifest.xml", manifest);
             // Supply a real drawable resource so Android launchers can resolve the app icon.
             put(zip, "resources.arsc", iconResourceTable(pkg));
-            put(zip, "classes.dex", emptyDex());
+            put(zip, "classes.dex", loaderDex());
             put(zip, "res/drawable/foreground.png", icon);
             put(zip, "res/drawable/icon.xml", new BinaryManifest("", "", "", "flathub", Collections.emptyList()).adaptiveIcon());
         }
@@ -656,23 +655,16 @@ public final class StubGenerator {
         ByteArrayOutputStream out = new ByteArrayOutputStream(); encoder.writeStringPool(out); return out.toByteArray();
     }
 
-    private static byte[] emptyDex() {
-        // Minimal DEX header plus the required map list (header_item, map_list).
-        byte[] dex = new byte[140];
-        byte[] magic = "dex\n035\0".getBytes(StandardCharsets.US_ASCII);
-        System.arraycopy(magic, 0, dex, 0, magic.length);
-        putInt(dex, 32, dex.length); putInt(dex, 36, 112); putInt(dex, 40, 0x12345678);
-        putInt(dex, 52, 112); putInt(dex, 104, 28); putInt(dex, 108, 112);
-        putInt(dex, 112, 2); // map_list.size
-        put16(dex, 116, 0x0000); put32(dex, 120, 1); put32(dex, 124, 0);
-        put16(dex, 128, 0x1000); put32(dex, 132, 1); put32(dex, 136, 112);
-        try {
-            byte[] sha1 = java.security.MessageDigest.getInstance("SHA-1").digest(Arrays.copyOfRange(dex, 32, dex.length));
-            System.arraycopy(sha1, 0, dex, 12, sha1.length);
-            java.util.zip.Adler32 adler = new java.util.zip.Adler32();
-            adler.update(dex, 12, dex.length - 12); putInt(dex, 8, (int) adler.getValue());
-        } catch (Exception impossible) { throw new AssertionError(impossible); }
-        return dex;
+    /**
+     * The stub's own code: StubLoader, which finds the installed subsystem APK
+     * through PackageManager on every launch. Stubs declare no uses-library,
+     * so no library path is recorded for them that a host update could stale.
+     */
+    private static byte[] loaderDex() throws IOException {
+        try (java.io.InputStream in = StubGenerator.class.getResourceAsStream("stub-loader.dex")) {
+            if (in == null) throw new IOException("Missing bundled stub-loader.dex");
+            return in.readAllBytes();
+        }
     }
 
     private static void putInt(byte[] out, int offset, int value) {
@@ -791,7 +783,7 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "uses-library", "required", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", HOST_LIBRARY, REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, EXTRA_SERVICE, EXTRA_MOUNT_META, APP_MOUNT, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, EXTRA_SERVICE, EXTRA_MOUNT_META, APP_MOUNT, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             // Pre-intern commit info values if present
             if (commitInfo != null) {
@@ -826,7 +818,6 @@ public final class StubGenerator {
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
             if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
             if(noActivities){
-                startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
                 start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
                 startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
                 startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", packs)));
@@ -835,7 +826,6 @@ public final class StubGenerator {
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
                 end("application");end("manifest");namespace(false);return finish();
             }
-            startEnd("uses-library", attrs(a("name", HOST_LIBRARY), ab("required", true)));
             startEnd("provider", attrs(a("name", "org.matonos.linux.PortalFiles"),
                     a("authorities", pkg + ".portal.files"), ab("exported", false), ab("grantUriPermissions", true)));
             start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", true), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));

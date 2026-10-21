@@ -25,7 +25,6 @@
         android:multiArch="true" android:extractNativeLibs="true" android:allowClearUserData="false">
         <provider android:name=".PortalFiles" android:authorities="org.matonos.linux.portal.files"
             android:exported="false" android:grantUriPermissions="true" />
-        <library android:name="org.matonos.linuxhost" />
         <activity android:name=".WindowActivity" android:exported="false" android:resizeableActivity="true"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
         <activity android:name=".ConfirmInstallActivity" android:exported="false" />
