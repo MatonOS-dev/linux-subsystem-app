@@ -40,10 +40,9 @@ static inline int resident_bionic_path(const char *path) {
     return resident_libc_path(path) || resident_linker_path(path);
 }
 
-/* Android-side HALs and graphics dispatch libraries execute inside the stub
- * process too. Their syscalls must retain Android's native semantics while
- * an adopted thread temporarily uses bionic TLS. The Linux payload remains
- * outside these mapped system/vendor/APEX library paths. */
+/* Android-side system libraries execute inside the stub process too. Their
+ * syscalls retain native Android semantics; Linux payloads stay outside these
+ * mapped system/vendor/APEX paths. */
 static inline int resident_android_library_path(const char *path) {
     static const char *const prefixes[]={
         "/system/lib/", "/system/lib64/",

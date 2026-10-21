@@ -108,7 +108,7 @@ spike limitation. Initial host fixtures use `--root` to supply Android's
 filesystem; `--map SOURCE TARGET` overlays Android paths on the real host root
 for the glibc bwrap payload tests.
 
-`tests/bionic-host.sh` copies the staged Android runtime and subsystem APK tool
+`tests/musl-host.sh` copies the staged static musl subsystem tools
 inputs into build/
 and verifies bwrap 0.13.0 and Flatpak 1.19.2 versions under --android-filter,
 then runs staged bwrap with the two host glibc payloads. Set COMPAT_PRODUCT_OUT
@@ -144,11 +144,11 @@ Coordinator VM runner: `tests/vm-stage.sh` pushes only to
 ANDROID_SERIAL and COMPAT_RUNTIME_ROOT; the root should expose /data,
 /proc and /dev. Optional COMPAT_BWRAP must name an existing **glibc** bwrap.
 Set COMPAT_STAGE2=1 and COMPAT_RUNTIME_UID to the installed
-org.matonos.linuxruntimes UID to run Stage 2 as root: the bionic Flatpak CLI
+org.matonos.linuxruntimes UID to run Stage 2 as root: the static musl Flatpak CLI
 uses user-0 app UID 10115's DE install and the runtime app's DE install,
 linuxd's global CLI HOME/XDG directories, and CE home for the bwrap shim.
 TMPDIR/download tmp are deliberately confined to the test staging directory.
-The bionic CLI gets no --root. stdout, pid-tagged trap/mount logs and status
+The static musl CLI gets no --root. stdout, pid-tagged trap/mount logs and status
 are pulled even when Flatpak fails. This executes existing deployments; it
 does not represent production launch identity/portal integration.
 It requires no Soong/Gradle/image build and performs no VM reboot or policy
@@ -171,11 +171,11 @@ allowing bwrap's --disable-userns setup/check without changing the host's
 user.max_user_namespaces. This implements that setup sequence, not general
 Linux user-namespace accounting or a security boundary.
 
-`tests/bionic-host.sh` now also runs `tests/flatpak-bwrap-host.py`. Its
+`tests/musl-host.sh` now also runs `tests/flatpak-bwrap-host.py`. Its
 Flatpak 1.19-shaped fd bundles use --ro-bind-fd for /usr and /app,
 --ro-bind-data for generated config, --bind-fd for the cache, user/PID/IPC/net
 namespace setup, --disable-userns, proc/dev mounts, usr links and sysfs binds.
-Sealed --args data drives the staged bionic shim and bwrap. The ldconfig -X
+Sealed --args data drives the staged static musl Flatpak multicall and bwrap. The ldconfig -X
 -C phase must produce a cache. The bash phase verifies --file plus
 --ro-bind-data /.flatpak-info, --info-fd, --json-status-fd setup/exit events,
 --block-fd release and --sync-fd EOF. Both phases install the nondevel,
@@ -207,7 +207,7 @@ all VM deployments, metadata, extensions or permissions. Instance files,
 locks, status/lifetime fds and actual seccomp installation are exercised by
 the offline payload phase. No storage layout is hard-coded into the proxy.
 
-Round-6 offline app-launch replay (after `tests/bionic-host.sh` prepares the
+Round-6 offline app-launch replay (after `tests/musl-host.sh` prepares the
 Android linker/APEX fixture):
 
 ```sh
@@ -238,7 +238,7 @@ python3 tests/lifetime.py /mnt/data/aosp/out/matonos/compat-proxy/libmatonos-v3-
 ```
 
 See ../subsystem/V3-LAUNCH.md for the production spec, paths, retirement and
-remaining image checks. The bionic host fixture stages tools at the subsystem
+remaining image checks. The musl host fixture stages tools at the subsystem
 APK native-library path used in production.
 
 Round 26 DNS: `--dns-forwarder 127.x.y.z:53 --dns-socket /private/runtime/dns/forwarder`
@@ -1322,7 +1322,7 @@ ldconfig and bwrap are available, it executes the packed stock ldconfig with
 with host ldconfig. A second run adds the GL tmpfs, a separately packed
 extension bind and its library search path; the resulting cache must name
 that extension's actual library. Both real-ldconfig cases passed on this host.
-The packaged bionic bwrap also passed a host run with the fd-based `--args`
+The packaged static musl bwrap also passed a host run with the fd-based `--args`
 bundle, runtime/cache fd binds, GL tmpfs and extension bind, and stock
 `ldconfig -X -C`; the generated cache contains the extension library path.
 Run the full proxy suite in an external disposable copy next to `packs/` and

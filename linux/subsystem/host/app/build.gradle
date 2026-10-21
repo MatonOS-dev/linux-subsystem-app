@@ -35,10 +35,10 @@ def planOutput = System.getenv('MATON_FLATPAK_PLAN_OUT') ?: "$aospRoot/out/maton
 def planJni = new File(layout.buildDirectory.get().asFile, 'generated/planJni')
 def buildFlatpakPlan = tasks.register('buildFlatpakPlan', Exec) {
     outputs.upToDateWhen { false }
-    inputs.files fileTree(planRoot)
+    inputs.files fileTree(planRoot), file('../../../../tools/build-flatpak-plan-musl.sh')
     outputs.file new File(planOutput, 'libmatonos-flatpak-plan.so')
     environment 'MATON_AOSP_ROOT', aospRoot
-    commandLine 'python3', new File(planRoot, 'build.py').absolutePath, planOutput
+    commandLine 'bash', file('../../../../tools/build-flatpak-plan-musl.sh').absolutePath
 }
 def packageFlatpakPlan = tasks.register('packageFlatpakPlan', Copy) {
     dependsOn buildFlatpakPlan

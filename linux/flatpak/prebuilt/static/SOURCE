@@ -1,6 +1,6 @@
-flatpak-bionic source manifest
+flatpak-musl source manifest
 # name|kind|location|revision-or-version|sha256
-# Flatpak is MatonOS-dev/flatpak branch matonos/v26.10 at the pinned commit below.
+# Static-musl Flatpak inputs; Flatpak is MatonOS-dev/flatpak branch matonos/v26.10.
 glib|git|https://github.com/GNOME/glib.git|6f873bc0e6265995cebd797b969dcd5f548f91f6|-
 glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08f2dcb400|-
 ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-
@@ -9,7 +9,6 @@ ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462e
 flatpak|git|https://github.com/MatonOS-dev/flatpak|4cce363ef3168baf10a4cd0a916694d3959f9558|-
 flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
 variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
-bionic-fill|git|https://github.com/MatonOS-dev/bionic-fill.git|a8b3eef4b3f74e27eb0b16a339a106660938af03|-
 DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
 zstd|tar|https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz|1.5.7|eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 libxml2|tar|https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.2.tar.xz|2.15.2|c8b9bc81f8b590c33af8cc6c336dbff2f53409973588a351c95f1c621b13d09d
@@ -28,9 +27,14 @@ pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pc
 e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
 gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
 
-cb14fef2ba523aae19817e88e93b9bc323066677d0a1eb578405e9141f96e3fb  matonos-flatpak
+toolchain: Alpine 3.24.2; x86_64-alpine-linux-musl-gcc (Alpine 15.2.0) 15.2.0; musl 1.2.6-r2
 
-static musl bubblewrap helper
-# bubblewrap 0.13.0 from the pinned tar entry above; static PIE built with musl 1.2.6-r2.
-# Build recipe SHA-256: f0ff8274ce5c1f7c326b82531d94854e65985033ba2376e8754f184ee83e81b8
-c377c15b6ba90df136082e2786ea1f22751a590ceaa0584eb6070f484bb0ace0  x86_64/matonos-app-bwrap
+
+static musl APK helper artifacts
+7a5a1b57851c79a79b426ca494d8443ee78716fde58b633b068cf8f50f9b99c0  matonos-flatpak
+be389e69d4d11f3394ba54a3fb723958f0ca2ea3d58427ebfb4fef138668d532  matonos-app-flatpak
+c377c15b6ba90df136082e2786ea1f22751a590ceaa0584eb6070f484bb0ace0  matonos-app-bwrap
+2c4b6d26f5731bdfe2fe4bb7444cf60618255a2489d428382d95b10a32a60cd3  matonos-app-tool
+
+static musl plan helper artifact
+3a4df924ce5425496e86b42808fb481bfffafd6a6677534fa17209804840cdbe  libmatonos-flatpak-plan.so

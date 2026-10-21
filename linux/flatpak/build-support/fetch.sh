@@ -35,7 +35,7 @@ done < "$HERE/sources.lock"
 
 # Expand the pinned repositories into a source tree. Submodules used by the
 # spike are explicit lock entries and checked out at their recorded commits.
-for name in glib ostree flatpak bionic-fill DullPGP; do
+for name in glib ostree flatpak DullPGP; do
   dest=$CACHE/src/$name
   rm -rf "$dest"
   mkdir -p "$dest"
@@ -64,7 +64,6 @@ while IFS='|' read -r name kind location revision digest; do
   dpkg-deb -x "$archive" "$dest"
 done < "$HERE/sources.lock"
 cp "$HERE/gpgme.m4" "$CACHE/src/DullPGP/gpgme.m4"
-cp "$CACHE/src/bionic-fill/bionic-fill.h" "$CACHE/src/bionic-fill.h"
 mkdir -p "$CACHE/src/meson"
 tar -xf "$CACHE/tar/meson-1.12.1.tar.gz" -C "$CACHE/src/meson" --strip-components=1
 printf 'Fetched and verified locked sources into %s\n' "$CACHE/src"

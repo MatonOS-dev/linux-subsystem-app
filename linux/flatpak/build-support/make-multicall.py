@@ -20,7 +20,7 @@ def run(args, cwd=None, capture=False):
 cmds = run(["ninja", "-C", flatpak, "-t", "commands", "app/flatpak"], capture=True)
 link = shlex.split(cmds.strip().splitlines()[-1])
 # Retain the full Flatpak link and its static dependency set; its dependency graph
-# already includes libostree, GLib, curl, archive, TLS and libc++.
+# already includes libostree, GLib, curl, archive, TLS and libstdc++.
 args = []
 i = 1
 while i < len(link):

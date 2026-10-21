@@ -11,13 +11,14 @@ set -Eeuo pipefail
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 DEVICE_DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
+ARCH=${ARCH:-x86_64}
 
-NDK=${ANDROID_NDK:-$HOME/Documents/android-ndk-r30}
-API=36
-ARCH=x86_64
-CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$ARCH-linux-android$API-clang
-[[ -x $CC ]] || die "NDK r30/API $API missing at $NDK"
-CFLAGS=(-Os -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections)
+MUSL_SCRATCH=${MUSL_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+GPGME_LITE_SRC=${GPGME_LITE_SRC:-$MUSL_SCRATCH/flatpak-musl/cache/src/DullPGP}
+ALPINE_ENTER=$DEVICE_DIR/linux/flatpak/build-support/alpine-enter.sh
+[[ -x $MUSL_SCRATCH/rootfs/x86_64/bin/sh ]] || die "offline Alpine 3.24.2 root missing at $MUSL_SCRATCH"
+CFLAGS='-Os -Wall -Wextra -Werror -ffunction-sections -fdata-sections -static-pie -static'
+MUSL_CC_ID=$(SCRATCH="$MUSL_SCRATCH" GPGME_LITE_SRC="$GPGME_LITE_SRC" "$ALPINE_ENTER" gcc --version | sed -n '1p')
 
 SRC=$DEVICE_DIR/linux/flatpak
 STAGE=$SRC/prebuilt/static/$ARCH
@@ -37,10 +38,8 @@ fingerprint() {
   local src
   src=$(source_file "$1")
   {
-    "$CC" --version | head -1
-    printf '%s\n' "${CFLAGS[@]}"
-    "$CC" -MM -MT x "$src" | tr -d '\\\n' | tr ' ' '\n' | sed '/^x:$/d;/^$/d' | sort -u |
-      while read -r f; do sha256sum "$f" | awk '{print $1}'; done
+    printf '%s\n' "$MUSL_CC_ID" "$CFLAGS"
+    sha256sum "$src" | awk '{print $1}'
   } | sha256sum | awk '{print $1}'
 }
 
@@ -57,7 +56,13 @@ for name in $(printf '%s\n' "${!HELPERS[@]}" | sort); do
     continue
   fi
   info "Flatpak helper $name (sources changed)"
-  "$CC" "${CFLAGS[@]}" "$(source_file "$name")" -o "$tmp/$name"
+  helper_work=$MUSL_SCRATCH/flatpak-helper-build
+  mkdir -p "$helper_work"
+  install -m644 "$(source_file "$name")" "$helper_work/$name.c"
+  SCRATCH="$MUSL_SCRATCH" GPGME_LITE_SRC="$GPGME_LITE_SRC" "$ALPINE_ENTER" sh -c \
+    "gcc $CFLAGS /scratch/flatpak-helper-build/$name.c -o /scratch/flatpak-helper-build/$name"
+  if readelf -l "$helper_work/$name" | grep -q 'INTERP'; then die "$name unexpectedly has PT_INTERP"; fi
+  install -m755 "$helper_work/$name" "$tmp/$name"
   for out in ${HELPERS[$name]}; do install -m755 "$tmp/$name" "$STAGE/$out"; done
   { grep -v "  $name\$" "$STAMPS" || true; echo "$fp  $name"; } | sort -k2 > "$tmp/stamps"
   cp "$tmp/stamps" "$STAMPS"

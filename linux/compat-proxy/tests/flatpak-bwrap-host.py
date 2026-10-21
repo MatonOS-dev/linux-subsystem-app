@@ -6,10 +6,10 @@ phase uses the host runtime; the payload phase adds lifecycle/status/filter fds.
 import ctypes, errno, fcntl, json, os, pathlib, re, shlex, subprocess, time
 base = pathlib.Path(__file__).resolve().parents[1]
 build = base / 'build'
-root = build / 'bionic-host-root'
+root = build / 'musl-host-root'
 fixture = build / 'flatpak-bwrap'
 fixture.mkdir(exist_ok=True)
-proxy = [str(build/'linux-layer-v3'), '--android-filter', '--map', str(root/'system'), '/system', '--map', str(root/'apex'), '/apex', '--map', str(root/'system_ext'), '/system_ext']
+proxy = [str(build/'linux-layer-v3'), '--android-filter', '--map', str(root/'system_ext'), '/system_ext']
 runtime = pathlib.Path(os.environ.get('COMPAT_HOST_RUNTIME', '/usr'))
 bwrap = '/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/bwrap'
 # The VM log exposes the outer command, but not the contents of --args.
@@ -137,7 +137,7 @@ def phase(name, payload=False):
     argv=proxy+[bwrap,'--args',bundle]+command
     (fixture/(name+'.argv.json')).write_text(json.dumps({'expanded_bwrap': [bwrap]+args+command,'exec':argv},indent=2)+'\n')
     try:
-        with open(build/('bionic-flatpak-'+name+'.out'),'wb') as out,open(build/('bionic-flatpak-'+name+'.log'),'wb') as log:
+        with open(build/('musl-flatpak-'+name+'.out'),'wb') as out,open(build/('musl-flatpak-'+name+'.log'),'wb') as log:
             proc=subprocess.Popen(argv, pass_fds=opened, stdout=out, stderr=log,env={'PATH':'/usr/bin:/bin','TMPDIR':str(fixture)})
             try:
                 if payload:
@@ -156,9 +156,9 @@ def phase(name, payload=False):
                 result=proc.wait(timeout=40)
             finally:
                 if proc.poll() is None:proc.kill();proc.wait()
-        bundle_log=(build/('bionic-flatpak-'+name+'.log')).read_text()
+        bundle_log=(build/('musl-flatpak-'+name+'.log')).read_text()
         assert 'v3 bwrap bundle begin\n' in bundle_log and 'v3 bwrap bundle end\n' in bundle_log
-        if result: raise RuntimeError(f'{name}: exit {result}; see bionic-flatpak-{name}.log')
+        if result: raise RuntimeError(f'{name}: exit {result}; see musl-flatpak-{name}.log')
         for flag,fd in checks.items():
             os.lseek(fd,0,0);content=os.read(fd,65536).decode()
             if flag=='--info-fd': assert 'child-pid' in json.loads(content),content
@@ -169,9 +169,9 @@ def phase(name, payload=False):
         if payload:
             os.close(sync_write);opened.remove(sync_write)
             assert os.read(sync_read,1)==b'', 'bwrap monitor retained sync fd'
-            assert b'filter-ok' in (build/('bionic-flatpak-'+name+'.out')).read_bytes()
+            assert b'filter-ok' in (build/('musl-flatpak-'+name+'.out')).read_bytes()
         else: assert (fixture/'cache'/pathlib.Path(command[3]).name).stat().st_size>0
-        print('PASS bionic Flatpak-shaped '+name)
+        print('PASS static musl Flatpak-shaped '+name)
     finally:
         if payload and block_write>=0:os.close(block_write)
         for fd in opened:os.close(fd)

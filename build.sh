@@ -37,17 +37,21 @@ export CMAKE=${CMAKE:-/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake}
 if [[ ! -s $MATON_VULKAN_HEADERS/registry/vk.xml ]]; then
   bash "$ROOT/linux/vulkan-forward/build-tools.sh" "$VULKAN_DEPS"
 fi
-export CACHE_DIR=${MATON_FLATPAK_CACHE:-$OUTPUT/flatpak/cache}
-export BUILD_DIR=${MATON_FLATPAK_BUILD:-$OUTPUT/flatpak/build}
-export OUT_DIR=$OUTPUT/flatpak/out
-export MATON_FLATPAK_PLAN_BUILD=$BUILD_DIR/flatpak
-export MATON_FLATPAK_PREFIX=$BUILD_DIR/prefix
+export MUSL_SCRATCH=${MATON_MUSL_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+export CACHE_DIR=${MATON_FLATPAK_CACHE:-$MUSL_SCRATCH/flatpak-musl/cache}
+export BUILD_DIR=${MATON_FLATPAK_BUILD:-$MUSL_SCRATCH/flatpak-musl/build}
+export OUT_DIR=${MATON_FLATPAK_OUT:-$MUSL_SCRATCH/flatpak-musl/out}
+# Used by the separately Android-linked session broker build.
 export MATON_FLATPAK_NDK=$OUTPUT/flatpak
+export MATON_FLATPAK_PLAN_BUILD=${MATON_FLATPAK_PLAN_BUILD:-$BUILD_DIR/flatpak}
+# The Android-linked session broker still links the existing NDK dependency
+# prefix; only Linux-side Flatpak executables use the musl prefix above.
+export MATON_FLATPAK_PREFIX=$OUTPUT/flatpak/build/prefix
 export MATON_FLATPAK_PLAN_OUT=$OUTPUT/plan
 export MATON_DBUS_ANDROID_OUT=$OUTPUT/broker
 if [[ ${1:-} == --build-dependencies ]]; then
   JOBS=$MATON_BUILD_JOBS sh "$FLATPAK/fetch.sh"
-  JOBS=$MATON_BUILD_JOBS sh "$FLATPAK/build.sh"
+  JOBS=$MATON_BUILD_JOBS bash "$FLATPAK/build-musl.sh"
   install -m755 "$OUT_DIR/matonos-flatpak" "$ROOT/linux/flatpak/prebuilt/static/x86_64/matonos-flatpak"
   cp "$OUT_DIR/SOURCE" "$ROOT/linux/flatpak/prebuilt/static/SOURCE"
   python3 "$ROOT/tools/fetch-compositor.py"

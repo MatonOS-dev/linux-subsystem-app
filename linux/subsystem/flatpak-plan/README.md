@@ -1,5 +1,11 @@
 # Flatpak package planning adapter (v3.5)
 
+`libmatonos-flatpak-plan.so` is executed by `InstallTransaction` through the
+same compat proxy as the Flatpak CLI. Build it as a static musl executable with
+`tools/build-flatpak-plan-musl.sh`; that wrapper runs the existing public-API
+adapter build against the musl Flatpak tree inside the offline Alpine root.
+Android-side code consumes its length-prefixed stdout protocol.
+
 `inspect.c` uses only Flatpak's public `<flatpak.h>` API. It fetches remote
 metadata and refs through `FlatpakInstallation`, and asks
 `flatpak_installation_list_remote_related_refs_sync` for extensions. The

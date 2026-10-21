@@ -23,4 +23,7 @@ link = [arg for arg in command('common/test-libflatpak') if not arg.endswith('.o
 link[link.index('-o') + 1] = str(out / 'libmatonos-flatpak-plan.so')
 link.insert(1, str(out / 'inspect.o'))
 subprocess.check_call(link, cwd=build)
-subprocess.check_call([str(pathlib.Path(link[0]).parent / 'llvm-strip'), '--strip-all', str(out / 'libmatonos-flatpak-plan.so')])
+subprocess.check_call([os.environ.get('STRIP', 'strip'), '--strip-all', str(out / 'libmatonos-flatpak-plan.so')])
+headers = subprocess.check_output(['readelf', '-l', str(out / 'libmatonos-flatpak-plan.so')], text=True)
+if 'INTERP' in headers:
+    sys.exit('Flatpak plan helper unexpectedly has PT_INTERP')
