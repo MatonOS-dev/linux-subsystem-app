@@ -93,14 +93,14 @@ final class V3Launcher {
                 runtimeMetadata=new String(entry.record.metadata,StandardCharsets.UTF_8);break;
             }
         Context host=context.createPackageContext("org.matonos.linux",0);
-        String glBranch;
-        try(java.io.InputStream input=host.getAssets().open("gl-maton/branch.txt")) {
-            glBranch=new String(input.readAllBytes(),StandardCharsets.UTF_8).trim();
-        }
         boolean matonGlEnabled=runtimeMetadata!=null;
         File deployment=PackageDeployment.prepare(context,ref);
         if(matonGlEnabled) {
-            PackageMounts.requireGlExtensionVersion(runtimeMetadata,glBranch);
+            String runtimeRef=null;
+            for(DeclaredPackages.Entry entry:packages)
+                if(entry.record.ref.startsWith("runtime/org.freedesktop.Platform/x86_64/")) {runtimeRef=entry.record.ref;break;}
+            String runtimeBranch=runtimeRef==null?"":runtimeRef.substring(runtimeRef.lastIndexOf('/')+1);
+            String glBranch=PackageMounts.glExtensionBranch(runtimeMetadata,runtimeBranch);
             File extensionFiles=PackageDeployment.prepareGlExtension(new File(deployment,"system"),
                     new File(host.getApplicationInfo().sourceDir),glBranch);
             command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(

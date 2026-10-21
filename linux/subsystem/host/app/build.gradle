@@ -83,7 +83,8 @@ def buildGlMaton = tasks.register('buildGlMaton', Exec) {
     commandLine 'python3', file('../../../gl-maton/build.py').absolutePath,
             glMatonOutput.absolutePath, new File(vulkanOutput, 'libmaton_vulkan.so').absolutePath,
             new File(eglOutput, 'libEGL_maton.so').absolutePath,
-            '--branch', System.getenv('MATON_GL_RUNTIME_BRANCH') ?: '26.08'
+            // Template branch only: the stub rewrites metadata/deploy for each app's runtime.
+            '--branch', '26.08'
 }
 def packageGlMaton = tasks.register('packageGlMaton', Copy) {
     dependsOn buildGlMaton

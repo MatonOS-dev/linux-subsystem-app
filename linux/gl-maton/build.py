@@ -42,7 +42,7 @@ def build(out, vulkan, egl, branch):
     ref = f"runtime/org.freedesktop.Platform.GL.maton/x86_64/{branch}"
     run("ostree", "commit", "--repo", str(repo), "--branch", ref,
         "--tree=dir=" + str(files), "--no-xattrs", "--owner-uid=0", "--owner-gid=0",
-        "--canonical-permissions")
+        "--canonical-permissions", "--no-bindings")
     commit = subprocess.check_output(["ostree", "rev-parse", "--repo", str(repo), ref], text=True).strip()
     runtime_ref = f"runtime/org.freedesktop.Platform/x86_64/{branch}"
     deploy_metadata = GLib.Variant.parse(
@@ -60,7 +60,6 @@ def build(out, vulkan, egl, branch):
     subprocess.run(["python3", str(ROOT / "linux/packs/pack.py"), "pack", "--repo", str(repo),
                     "--commit", commit, "--out", str(packs)], check=True)
     (out / "ref.txt").write_text(ref + "\n" + commit + "\n", encoding="utf-8")
-    (out / "branch.txt").write_text(branch + "\n", encoding="utf-8")
     shutil.copy2(packs / "objects.index", out / "objects.index")
     shutil.copy2(packs / "objects.ostree", out / "objects.ostree")
     for packed in packs.glob("pack-*.zip"):

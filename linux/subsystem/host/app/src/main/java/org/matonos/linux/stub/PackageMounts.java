@@ -27,13 +27,23 @@ public final class PackageMounts {
         if(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))throw new IOException("Invalid resolved runtime mount point");
         return new Entry(ref,DeployManifest.packageForPublic(ref),mountPoint);
     }
-    public static void requireGlExtensionVersion(String runtimeMetadata,String extensionBranch) throws IOException {
-        if(extensionBranch==null||!extensionBranch.matches("[A-Za-z0-9_.+-]+"))throw new IOException("Invalid Maton GL extension branch");
+    /** Select the runtime's branch when supported, otherwise its first GL extension version. */
+    public static String glExtensionBranch(String runtimeMetadata,String runtimeBranch) throws IOException {
+        if(runtimeMetadata==null)throw new IOException("Runtime has no org.freedesktop.Platform.GL extension point");
+        if(runtimeBranch==null||!runtimeBranch.matches("[A-Za-z0-9_.+-]+"))throw new IOException("Invalid Maton GL extension branch");
         String versions=value(runtimeMetadata,"Extension org.freedesktop.Platform.GL","versions");
         if(versions==null)versions=value(runtimeMetadata,"Extension org.freedesktop.Platform.GL","version");
         if(versions==null)throw new IOException("Runtime has no org.freedesktop.Platform.GL extension point");
-        for(String version:versions.split(";"))if(extensionBranch.equals(version.trim()))return;
-        throw new IOException("Maton GL extension branch "+extensionBranch+" is not supported by the runtime GL extension point");
+        String first=null;
+        for(String version:versions.split(";")) {
+            String candidate=version.trim();
+            if(candidate.isEmpty())continue;
+            if(!candidate.matches("[A-Za-z0-9_.+-]+"))throw new IOException("Invalid runtime GL extension version");
+            if(first==null)first=candidate;
+            if(runtimeBranch.equals(candidate))return candidate;
+        }
+        if(first==null)throw new IOException("Runtime GL extension point has no versions");
+        return first;
     }
     public static String extensionParent(String metadata) throws IOException {
         String value=value(metadata,"ExtensionOf","ref");if(value==null)return null;
