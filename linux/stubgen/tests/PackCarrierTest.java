@@ -114,6 +114,12 @@ public final class PackCarrierTest {
   String ix=new String(ip.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(ip.waitFor()!=0 || !ix.contains("split=\""+indexName+"\"") || !ix.contains("revisionCode(0x010104d5)=43"))throw new AssertionError(ix);
   List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
+  File deploymentFiles=new File(dir,"app/org.example.App/x86_64/stable/commit/files").getAbsoluteFile();
+  List<String> backing=PackLaunch.backingArguments("/app",deploymentFiles);
+  if(!backing.equals(Arrays.asList("--pack-backing","/app",deploymentFiles.toString())))throw new AssertionError(backing);
+  if(!PackLaunch.backingArguments(deploymentFiles.toString(),deploymentFiles).get(2).equals(deploymentFiles.toString()))throw new AssertionError("Identity backing");
+  try {PackLaunch.backingArguments("/app",new File("relative/files"));throw new AssertionError("Relative backing accepted");}
+  catch(IOException expected){}
   if(command.size()!=4||!command.get(0).equals("--pack-mount")||!command.get(1).equals("/app"))throw new AssertionError(command);
   if(!PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"),"/usr").get(1).equals("/usr"))throw new AssertionError("custom runtime mount point");
   if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");

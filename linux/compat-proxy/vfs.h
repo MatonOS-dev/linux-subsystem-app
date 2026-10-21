@@ -41,6 +41,7 @@ int vfs_private_fd(int);
 void vfs_gpu_init(void);
 void vfs_network_payload(int);
 long vfs_gpu_publish(const char *,const char *,const char *,const char *,const char *,unsigned,const char *,unsigned);
+long pack_backing(const char *,const char *);
 long pack_mount(const char *,const char *,const char *);
 long pack_open(const char *,int);
 long pack_pread(int,void *,size_t,int64_t);

@@ -1404,3 +1404,10 @@ Repair/reimport the publication and update its signed splits without
 uninstalling the stub; then force-stop and relaunch to continue GPU testing.
 No RX 6600 listing is claimed yet. No image, SELinux or kernel change was
 made. Keep VM 5556 running and keep the existing stub installed.
+
+`--pack-backing TARGET DIRECTORY`, placed after the corresponding `--pack-mount`,
+records that pack's deployment `files` directory explicitly. The launcher supplies
+this for app, runtime and extension deployments before Flatpak starts. Lookups
+through a deployment path use only its associated pack; bind/pivot aliases and
+unrelated extension indexes do not determine ownership. Both names must be absolute;
+the backing is normalized lexically. Identity mounts pass their target as backing.

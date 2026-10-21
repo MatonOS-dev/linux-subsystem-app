@@ -69,6 +69,16 @@ static void pack_metadata(const struct pack_mount *m,const mtp_object *o,void *w
 }
 int pack_stat(const char *path,struct proxy_stat *st){struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;mtp_object o;int r=pack_object(m,path,&o);if(!r){uint64_t dev,ino;int valid;pack_root_identity(m,&o,path,&dev,&ino,&valid);*st=(struct proxy_stat){.st_mode=o.mode,.st_uid=o.uid,.st_size=o.length,.st_dev=valid?dev:pack_object_dev(m,&o),.st_ino=valid?ino:pack_object_ino(m,&o),.st_nlink=1};}return r;}
 char *pack_link(const char *path,long *error,int *handled){struct pack_mount *m=pack_lookup(path);*handled=m!=NULL;if(!m)return NULL;mtp_object o;*error=pack_object(m,path,&o);if(*error)return NULL;if(!p_equal(o.kind,"symlink")){*error=-EINVAL;return NULL;}return dupstr(o.target);}
+/* Trusted launcher association, independent of virtual bind/pivot aliases. */
+long pack_backing(const char *target,const char *directory){
+ if(!target||target[0]!='/'||!directory||directory[0]!='/')return -EINVAL;
+ long e=0;char *name=global_target(target,&e);if(!name)return e;
+ struct pack_mount *m=pack_mounts;while(m&&!p_equal(m->target,name))m=m->next;
+ vfs_free(name);if(!m)return -ENOENT;
+ char *normalized=global_target(directory,&e);if(!normalized)return e;
+ char *saved=pack_pdup(normalized);vfs_free(normalized);if(!saved)return -ENOMEM;
+ vfs_free(m->backing);m->backing=saved;return 0;
+}
 long pack_mount(const char *target,const char *index,const char *directory){
  if(!target||target[0]!='/')return -EINVAL;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,index,O_RDONLY|O_CLOEXEC,0,0,0);if(fd<0)return fd;

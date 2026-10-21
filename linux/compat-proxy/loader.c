@@ -425,6 +425,7 @@ int main(int argc,char **argv,char **environ) {
         else if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}
         else if(p_equal(argv[i],"--count") && i+1<argc) {proxy_count_init(argv[i+1]);i+=2;}
+        else if(p_equal(argv[i],"--pack-backing") && i+2<argc) {if(pack_backing(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--pack-mount") && i+3<argc) {if(pack_mount(argv[i+1],argv[i+2],argv[i+3]))return 2;i+=4;}
         else if(p_equal(argv[i],"--map") && i+2<argc) {if(proxy_mount(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--root") && i+1<argc) {if(vfs_bootstrap_root(argv[i+1])) return 2;i+=2;}

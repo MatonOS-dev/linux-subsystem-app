@@ -106,8 +106,10 @@ final class V3Launcher {
             command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(
                     new File(host.getApplicationInfo().sourceDir), "assets/gl-maton", launchWork,
                     extensionFiles.getAbsolutePath()));
+            command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(
+                    extensionFiles.getAbsolutePath(),extensionFiles));
         }
-        command.addAll(DeclaredPackages.arguments(packages,launchWork,true));
+        command.addAll(DeclaredPackages.arguments(packages,launchWork,true,deployment));
         java.util.Collections.addAll(command,
                 LoaderCommand.tool(context, LoaderCommand.FLATPAK_CLI).getAbsolutePath(),
                 // The session bus is the stub's private broker, which enforces the app's

@@ -10,6 +10,13 @@ import java.util.zip.*;
 
 /** Resolves only PackageManager-supplied carriers; no caller-supplied payload paths. */
 public final class PackLaunch {
+    /** Associate a virtual pack with its disposable Flatpak deployment files directory.
+     * The loader consumes this immediately after the corresponding pack mount. */
+    public static List<String> backingArguments(String mountPoint,File files) throws IOException {
+        if(mountPoint==null||!mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*")
+                ||files==null||!files.isAbsolute())throw new IOException("Invalid pack backing");
+        return Arrays.asList("--pack-backing",mountPoint,files.toPath().normalize().toString());
+    }
     public static List<String> arguments(File base, String[] names, String[] paths, File cache) throws Exception {
         return arguments(base,names,paths,cache,"/app");
     }
