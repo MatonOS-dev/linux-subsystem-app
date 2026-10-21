@@ -233,6 +233,8 @@ for name in ('usr','bin','lib','lib64','etc','sbin','proc','dev'):(scaffold/name
 assert b'static pack ELF PASS' in output(base/'build/linux-layer-v3','--android-filter','--root',scaffold,'--pack-mount','/packed',bundle/'objects.index',bundle,'/packed/static')
 print('pack mount overlays an existing --root scaffold PASS',flush=True)
 other=root/'other-src';(other/'share').mkdir(parents=True);(other/'share'/'unrelated').write_text('another /usr pack\n')
+(other/'lib').mkdir();(other/'lib/libfixture.so').write_text('extension library marker\n')
+shutil.copy2(src/'bin/true',other/'static')
 other_repo=root/'other-repo';run('ostree','init','--repo='+str(other_repo),'--mode=bare-user');run('ostree','commit','--repo='+str(other_repo),'-b','fixture','--tree=dir='+str(other),'-m','other /usr pack')
 other_rev=output('ostree','rev-parse','--repo='+str(other_repo),'fixture').decode().strip();other_bundle=root/'other-bundle'
 run(sys.executable,base.parent/'packs/pack.py','pack','--repo',other_repo,'--commit',other_rev,'--out',other_bundle)
@@ -305,4 +307,16 @@ int main(int argc,char **argv){if(argc!=3)return 2;char app[4096],usr[4096],old[
   result=output(*exec_proxy,harness,pivot_root,target).decode()
   assert result=='exec-packed PT_INTERP PASS\n',(target,result)
  print('PASS packed O_PATH directory/symlink chase and readlinkat(fd, "") plus ELF/shebang after emulated bind/pivot; PT_INTERP loaded from /usr pack',flush=True)
+# Deployment aliases must retain pack identity even with a longer identity mount.
+# Both indexes contain lib/, making the old suffix-only fallback choose extension.
+alias_app=root/'alias-app/files';alias_app.mkdir(parents=True)
+alias_ext=root/'system/runtime/extension/x86_64/25.08/long-commit/files';alias_ext.mkdir(parents=True)
+alias_proxy=[base/'build/linux-layer-v3','--android-filter',
+ '--map',alias_app,'/app','--pack-mount','/app',bundle/'objects.index',bundle,
+ '--pack-mount',alias_ext,other_bundle/'objects.index',other_bundle]
+listing=output(*alias_proxy,'/bin/ls',alias_app/'lib').decode()
+assert 'x86_64-linux-gnu' in listing,listing
+assert output(*alias_proxy,'/bin/cat',alias_app/'lib/libfixture.so')==(src/'lib/libfixture.so').read_bytes()
+assert output(*alias_proxy,alias_app/'static')==b'static pack ELF PASS\n'
+print('deployment alias readdir/open/exec with extension identity mount PASS',flush=True)
 print('ALL pack host checks PASS',flush=True)

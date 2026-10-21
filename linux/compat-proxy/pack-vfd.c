@@ -21,7 +21,7 @@ static const char *pack_files_suffix(const char *path){for(size_t i=0;path[i];i+
 #undef strchr
 typedef uint64_t pack_lock_word __attribute__((aligned(8)));
 struct pack_file {struct pack_file *next;char *name;int fd;};
-struct pack_mount {struct pack_mount *next;int io_fd;pack_lock_word *io_owner;char *target;mtp_index *index;void *blob;size_t size;struct pack_file *files;int directory;uint64_t root_dev,root_ino;int root_identity;};
+struct pack_mount {struct pack_mount *next;int io_fd;pack_lock_word *io_owner;char *target;char *backing;mtp_index *index;void *blob;size_t size;struct pack_file *files;int directory;uint64_t root_dev,root_ino;int root_identity;};
 struct pack_fd {struct pack_fd *next;int fd;struct pack_mount *mount;mtp_object object;uint64_t root_dev,root_ino;int root_identity;};
 static struct pack_mount *pack_mounts;
 static struct pack_fd *pack_fds;
@@ -43,8 +43,16 @@ int pack_mount_root(const char *path){char *virtual=pack_virtual_path(path,NULL)
 /* A canonical /usr/... source retained by a packed bind is still indexed,
  * even when its reverse name is a more-specific staging mount. Physical
  * tmpfs sources have no such canonical packed name and must shadow it. */
-static struct pack_mount *pack_lookup(const char *path){int staging=0;char *virtual=pack_virtual_path(path,&staging);if(!virtual)return NULL;const char *suffix=pack_files_suffix(path);struct pack_mount *best=NULL,*fallback=NULL;size_t best_length=0,fallback_length=0;int mount_root=0;for(struct pack_mount *m=pack_mounts;m;m=m->next){size_t length=p_len(m->target);char *mapped=NULL;const char *candidate=virtual;if(!prefix(virtual,m->target)){if(!suffix)continue;mapped=join(m->target,*suffix?suffix:"/");if(!mapped)continue;candidate=mapped;}if(!prefix(candidate,m->target)){vfs_free(mapped);continue;}if(!fallback||length>fallback_length){fallback=m;fallback_length=length;mount_root=p_equal(candidate,m->target);}if(best&&length<best_length){vfs_free(mapped);continue;}const char *key=candidate+length;mtp_object object;if(mtp_lookup(m->index,*key?key:"/",&object)){vfs_free(mapped);continue;}if(!best||length>best_length){best=m;best_length=length;}vfs_free(mapped);}if(best&&!prefix(path,best->target)&&vfs_has_nested_mount(virtual,best->target,staging))best=NULL;if(!best&&fallback&&!vfs_has_nested_mount(virtual,fallback->target,staging)&&!staging&&!mount_root)best=fallback;vfs_free(virtual);return best;}
-static int pack_object(struct pack_mount *m,const char *path,mtp_object *o){char *virtual=pack_virtual_path(path,NULL);if(!virtual)return -ENOMEM;if(!prefix(virtual,m->target)){const char *suffix=pack_files_suffix(path);if(!suffix){vfs_free(virtual);return -ENOENT;}char *mapped=join(m->target,*suffix?suffix:"/");vfs_free(virtual);virtual=mapped;if(!virtual)return -ENOMEM;}const char *key=virtual+p_len(m->target);int r=mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;vfs_free(virtual);return r;}
+/* A deployment suffix belongs only to the pack backing that files/ root.
+ * Index contents and virtual target length cannot identify a deployment. */
+static const char *pack_backing_suffix(const struct pack_mount *m,const char *path){
+ const char *suffix=pack_files_suffix(path);
+ if(!suffix||!m->backing)return NULL;
+ size_t length=(size_t)(suffix-path);if(length&&path[length-1]=='/')length--;
+ return p_len(m->backing)==length&&!pack_cmp(path,m->backing,length)?suffix:NULL;
+}
+static struct pack_mount *pack_lookup(const char *path){int staging=0;char *virtual=pack_virtual_path(path,&staging);if(!virtual)return NULL;struct pack_mount *best=NULL,*fallback=NULL;size_t best_length=0,fallback_length=0;int mount_root=0;for(struct pack_mount *m=pack_mounts;m;m=m->next){size_t length=p_len(m->target);char *mapped=NULL;const char *candidate=virtual;if(!prefix(virtual,m->target)){const char *suffix=pack_backing_suffix(m,path);if(!suffix)continue;mapped=join(m->target,*suffix?suffix:"/");if(!mapped)continue;candidate=mapped;}if(!prefix(candidate,m->target)){vfs_free(mapped);continue;}if(!fallback||length>fallback_length){fallback=m;fallback_length=length;mount_root=p_equal(candidate,m->target);}if(best&&length<best_length){vfs_free(mapped);continue;}const char *key=candidate+length;mtp_object object;if(mtp_lookup(m->index,*key?key:"/",&object)){vfs_free(mapped);continue;}if(!best||length>best_length){best=m;best_length=length;}vfs_free(mapped);}if(best&&!prefix(path,best->target)&&vfs_has_nested_mount(virtual,best->target,staging))best=NULL;if(!best&&fallback&&!vfs_has_nested_mount(virtual,fallback->target,staging)&&!staging&&!mount_root)best=fallback;vfs_free(virtual);return best;}
+static int pack_object(struct pack_mount *m,const char *path,mtp_object *o){char *virtual=pack_virtual_path(path,NULL);if(!virtual)return -ENOMEM;if(!prefix(virtual,m->target)){const char *suffix=pack_backing_suffix(m,path);if(!suffix){vfs_free(virtual);return -ENOENT;}char *mapped=join(m->target,*suffix?suffix:"/");vfs_free(virtual);virtual=mapped;if(!virtual)return -ENOMEM;}const char *key=virtual+p_len(m->target);int r=mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;vfs_free(virtual);return r;}
 static uint64_t pack_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;for(const char *p=o->checksum;*p;p++)v=(v^(unsigned char)*p)*1099511628211ULL;return v;}
 static uint64_t pack_object_ino(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_ino:pack_ino(o);}
 static uint64_t pack_object_dev(const struct pack_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_dev:0;}
@@ -94,12 +102,13 @@ long pack_mount(const char *target,const char *index,const char *directory){
   /* The indexed root overlays the real files/ directory. Keep its kernel
    * identity so a directory fd passed to bwrap --bind-fd matches the path
    * after the emulated bind, just as it does for a real mount. */
-  char *backing=physical(m->target);struct proxy_stat root_stat;
+  char *backing=physical(m->target);m->backing=backing?pack_pdup(backing):NULL;if(!m->backing)e=-ENOMEM;struct proxy_stat root_stat;
   if(backing&&!arch_stat_at(AT_FDCWD,backing,&root_stat,0)&&S_ISDIR(root_stat.st_mode)){m->root_dev=root_stat.st_dev;m->root_ino=root_stat.st_ino;m->root_identity=1;}
   vfs_free(backing);
-  e=proxy_mount(m->target,m->target);if(!e)table->flags=MS_RDONLY;
+  if(!e)e=proxy_mount(m->target,m->target);
+  if(!e)table->flags=MS_RDONLY;
  }
- if(e){if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);while(m->files){struct pack_file *p=m->files;m->files=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p->name);vfs_free(p);}if(m->directory>=0)RAW(PROXY_SC_close,m->directory,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m);return e;}
+ if(e){if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);while(m->files){struct pack_file *p=m->files;m->files=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p->name);vfs_free(p);}if(m->directory>=0)RAW(PROXY_SC_close,m->directory,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m->backing);vfs_free(m);return e;}
  m->next=pack_mounts;pack_mounts=m;return 0;
 }
 void pack_close(int fd){struct pack_fd **p=&pack_fds;while(*p&&(*p)->fd!=fd)p=&(*p)->next;if(*p){struct pack_fd *old=*p;*p=old->next;vfs_free(old);}}
@@ -258,7 +267,7 @@ static void pack_state(struct state *s){
  for(uint64_t i=0;i<n&&!s->error;i++){
   struct pack_mount *m=s->reading?vfs_palloc(sizeof(*m)):*tail;
   if(!m){s->error=-ENOMEM;return;}if(s->reading){*m=(struct pack_mount){0};*tail=m;}
-  state_string(s,&m->target);m->size=state_word(s,m->size);
+  state_string(s,&m->target);state_string(s,&m->backing);m->size=state_word(s,m->size);
   if(s->reading){if(m->size>s->size-s->pos){s->error=-EINVAL;return;}m->blob=vfs_palloc(m->size);if(!m->blob){s->error=-ENOMEM;return;}}
   state_bytes(s,m->blob,m->size);
   if(s->reading&&mtp_index_open_buffer(m->blob,m->size,&m->index,pack_alloc,pack_free,NULL)){s->error=-EINVAL;return;}
