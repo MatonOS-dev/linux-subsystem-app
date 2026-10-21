@@ -27,6 +27,7 @@ struct image { uintptr_t entry, stack; };
 void proxy_image_map(uintptr_t,uintptr_t,uintptr_t,const char *);
 int proxy_load(const char *, char *const *, char *const *, struct image *);
 int proxy_install(int);
+int proxy_resident_fds_snapshot(int after);
 int proxy_host_command(const char *);
 void proxy_host_snapshot(char *const *);
 extern int proxy_diagnostic_fd;

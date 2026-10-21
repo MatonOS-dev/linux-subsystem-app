@@ -87,6 +87,17 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,F_GETFD);
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,F_SETFD);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    if(resident_fds_enabled) {
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+        for(long id=0;id<PROXY_SC_count;id++)if(resident_fd_call(id) && id!=PROXY_SC_fcntl) {
+            long native_nr=encode(id);if(native_nr<0)continue;
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,native_nr);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+        }
+        /* Exact F_GETFD/F_SETFD already passed above. */
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,encode(PROXY_SC_fcntl));
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    }
     /* Resident bionic must be able to implement the Android-owned pthread,
      * allocator and signal machinery. This is a routing exemption only; the
      * Linux payload is not a security boundary. Bionic is native x86_64; never

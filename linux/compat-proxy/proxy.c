@@ -51,12 +51,13 @@
 static int hc_test_fd=-1;
 #endif
 static int proxy_count_fd=-1;
+#include "resident-fds.h"
 static int private_close_fd(int fd){
 #ifdef HOST_COMMAND_TEST
     if(fd==hc_test_fd)return 1;
 #endif
     /* --count spans resident execs even if payloads set CLOEXEC on it. */
-    return fd==proxy_count_fd || vfs_private_fd(fd);
+    return fd==proxy_count_fd || vfs_private_fd(fd) || resident_fd_owned(fd);
 }
 static struct kernel_action chained;
 int proxy_diagnostics_init(void) {
@@ -701,7 +702,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         trace_word(" a4=",a[4]);trace_word(" a5=",a[5]);emit("\n");
     }
     if(syscall_mapping) {
-        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        result=resident_fd_native(nr,a);
         if(proxy_trace && (nr==PROXY_SC_mmap || nr==PROXY_SC_ioctl)) {
             emit("v3 graphics-result nr=");crash_hex((uint64_t)nr);
             trace_word(" result=",result);emit("\n");
@@ -758,7 +759,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(PROXY_SC_close,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
     case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
-        if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&vfs_private_fd((int)a[1]))){result=-EBADF;break;}
+        if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&private_close_fd((int)a[1]))){result=-EBADF;break;}
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
         break;

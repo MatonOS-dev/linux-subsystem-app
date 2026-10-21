@@ -1411,3 +1411,26 @@ this for app, runtime and extension deployments before Flatpak starts. Lookups
 through a deployment path use only its associated pack; bind/pivot aliases and
 unrelated extension indexes do not determine ownership. Both names must be absolute;
 the backing is normalized lexically. Identity mounts pass their target as backing.
+
+### Resident graphics descriptors
+
+Android EGL warmup opens driver descriptors before the Linux payload runs.
+Those libraries and their cached fd numbers survive emulated exec, so Linux
+close sweeps must preserve the descriptors as well. The loader snapshots the
+fd set immediately before and after EGL initialization; only the newly opened
+fds become resident-owned. Existing launch/control fds retain Linux semantics.
+Native descriptor creation, duplication, SCM_RIGHTS reception and closure update
+the ownership table. Descriptor lifetime syscalls are trapped even in the
+resident BPF ranges; native mmap/ioctl and pthread/allocator operations keep
+their existing routing. Linux close/close_range/exec sweeps skip resident-owned
+fds, and dup2/dup3 cannot replace one. Native close releases ownership before
+its number can be reused. This is runtime lifetime management, not confinement.
+
+`tests/resident-fds.sh` exercises native open/dup/close/reuse and Linux
+close, dup2, both forms of close_range, and CLOEXEC across an emulated exec.
+VM verification (2026-10-21, Mesa 26.2.3 virgl): `tests/offscreen` in the
+Extreme Tux Racer stub prints `center=255,0,0,255`, PASS, loader exit 0.
+Before the fix, Mesa's cached render fd 72 had been closed and reused for a
+proxy temp directory; `DRM_IOCTL_VIRTGPU_RESOURCE_CREATE` returned -1, producing
+texture GL_OUT_OF_MEMORY and a pbuffer with no color read buffer. Android
+malloc and page-size probes were healthy; no TLS executor change was needed.

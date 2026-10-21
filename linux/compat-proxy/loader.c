@@ -456,6 +456,7 @@ int main(int argc,char **argv,char **environ) {
      * must keep those driver's Android syscalls native too. */
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
     if(gpu_bridge_enabled) {
+        if(proxy_resident_fds_snapshot(0)) return 7;
         EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
         EGLint major=0,minor=0,count=0;
         if(display!=EGL_NO_DISPLAY && eglInitialize(display,&major,&minor) &&
@@ -484,6 +485,7 @@ int main(int argc,char **argv,char **environ) {
                 if(surface!=EGL_NO_SURFACE) eglDestroySurface(display,surface);
             }
         }
+        if(proxy_resident_fds_snapshot(1)) return 7;
     }
 #endif
     r=proxy_install(android);
