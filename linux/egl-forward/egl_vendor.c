@@ -11,6 +11,7 @@
 #define EXPORT __attribute__((visibility("default")))
 #define MV_EGL 1
 #define MV_GLES 2
+#define MV_DESKTOP 3
 #ifndef EGL_PLATFORM_WAYLAND_KHR
 #define EGL_PLATFORM_WAYLAND_KHR 0x31D8
 #endif
@@ -38,7 +39,12 @@
 static struct adopt_api *mv_adopt;
 static struct gpu_bridge *mv_bridge;
 static void *mv_egl_lib, *mv_gles_lib;
+static void *mv_desktop_egl_lib, *mv_vndksupport_lib, *mv_libc;
 static __eglMustCastToProperFunctionPointerType (*mv_android_egl_get_proc)(const char *);
+static __eglMustCastToProperFunctionPointerType (*mv_desktop_egl_get_proc)(const char *);
+static int (*mv_property_get)(const char *, char *);
+static void *(*mv_load_sphal)(const char *, int);
+static int mv_desktop_state;
 static int mv_fast, mv_state;
 static void *mv_lookup_proc(const char *name);
 static int mv_has_token(const char *list, const char *token);
@@ -82,6 +88,8 @@ static int mv_ready(void) {
 
 /* Called only after switching into resident bionic TLS. */
 static void *mv_resolve(const char *name, int which) {
+    if (which == MV_DESKTOP)
+        return mv_desktop_egl_get_proc ? (void *)mv_desktop_egl_get_proc(name) : 0;
     void *lib = which == MV_EGL ? mv_egl_lib : mv_gles_lib;
     void *p = mv_bridge->symbol(lib, name);
     if (!p && mv_android_egl_get_proc)
@@ -91,6 +99,56 @@ static void *mv_resolve(const char *name, int which) {
 
 #include "egl_thunks.inc"
 #include "gles_thunks.inc"
+#include "desktop_thunks.inc"
+
+/* Resolve the already resident vendor EGL through libvndksupport so bionic
+ * returns the sphal namespace instance instead of loading a second driver. */
+static int mv_desktop_driver_init(void) {
+    if (mv_desktop_egl_get_proc) return 1;
+    if (!mv_vndksupport_lib) mv_vndksupport_lib = mv_bridge->open("/system/lib64/libvndksupport.so", 2);
+    if (!mv_libc) mv_libc = mv_bridge->open("/system/lib64/libc.so", 2);
+    if (!mv_load_sphal && mv_vndksupport_lib)
+        mv_load_sphal = (void *(*)(const char *, int))mv_bridge->symbol(mv_vndksupport_lib, "android_load_sphal_library");
+    if (!mv_property_get && mv_libc)
+        mv_property_get = (int (*)(const char *, char *))mv_bridge->symbol(mv_libc, "__system_property_get");
+    if (!mv_load_sphal || !mv_property_get) return 0;
+    char hardware[96] = {0};
+    if (mv_property_get("ro.hardware.egl", hardware) <= 0 || !hardware[0]) return 0;
+    char library[128] = "libEGL_";
+    size_t i = 0;
+    while (hardware[i] && i < sizeof(library) - 13) { library[7 + i] = hardware[i]; ++i; }
+    if (hardware[i]) return 0;
+    const char suffix[] = ".so";
+    for (size_t j = 0; j < sizeof(suffix); ++j) library[7 + i + j] = suffix[j];
+    mv_desktop_egl_lib = mv_load_sphal(library, 2 | 0);
+    if (!mv_desktop_egl_lib) return 0;
+    mv_desktop_egl_get_proc = (__eglMustCastToProperFunctionPointerType (*)(const char *))
+        mv_bridge->symbol(mv_desktop_egl_lib, "eglGetProcAddress");
+    return mv_desktop_egl_get_proc != 0;
+}
+
+/* Called on Android TLS. Probe the resident EGL implementation and restore
+ * its per-thread API binding before returning to Linux TLS. */
+static int mv_desktop_api_supported(void) {
+    int state = __atomic_load_n(&mv_desktop_state, __ATOMIC_ACQUIRE);
+    if (state) return state == 1;
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&mv_desktop_state, &expected, 3, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        while ((state = __atomic_load_n(&mv_desktop_state, __ATOMIC_ACQUIRE)) == 3) {}
+        return state == 1;
+    }
+    int supported = mv_desktop_driver_init();
+    typedef EGLenum (*query_api_fn)(void);
+    typedef EGLBoolean (*bind_api_fn)(EGLenum);
+    query_api_fn query = (query_api_fn)mv_resolve("eglQueryAPI", MV_EGL);
+    bind_api_fn bind = (bind_api_fn)mv_resolve("eglBindAPI", MV_EGL);
+    EGLenum previous = query ? query() : EGL_OPENGL_ES_API;
+    EGLBoolean bound = query && bind && bind(EGL_OPENGL_API);
+    if (!bound) supported = 0;
+    if (bound && !bind(previous)) supported = 0;
+    __atomic_store_n(&mv_desktop_state, supported ? 1 : 2, __ATOMIC_RELEASE);
+    return supported;
+}
 
 /* libwayland-egl's public wl_egl_window ABI. The object itself is created and
  * resized by the runtime's libwayland-egl; this adapter only reads its stable
@@ -359,6 +417,12 @@ static EGLBoolean mv_append_token(char *dst, const char *src, const char *token)
 static const char *mv_eglQueryString(EGLDisplay dpy, EGLint name) {
     struct mv_scope scope;
     if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); return 0; }
+    if (name == EGL_CLIENT_APIS) {
+        static char client_apis[] = "OpenGL_ES OpenGL";
+        int desktop = mv_desktop_api_supported();
+        switch_back(&scope);
+        return desktop ? client_apis : "OpenGL_ES";
+    }
     typedef const char *(*fn_t)(EGLDisplay, EGLint);
     fn_t fn = (fn_t)mv_resolve("eglQueryString", MV_EGL);
     const char *result = fn ? fn(dpy, name) : 0;
@@ -394,7 +458,13 @@ static EGLBoolean mv_vendor_supports_api(EGLenum api) {
     const char *apis = mv_eglQueryString(EGL_NO_DISPLAY, EGL_CLIENT_APIS);
     if (!apis) return EGL_FALSE;
     if (api == EGL_OPENGL_ES_API) return mv_has_token(apis, "OpenGL_ES") ? EGL_TRUE : EGL_FALSE;
-    if (api == EGL_OPENGL_API) return mv_has_token(apis, "OpenGL") ? EGL_TRUE : EGL_FALSE;
+    if (api == EGL_OPENGL_API) {
+        struct mv_scope scope;
+        if (!mv_ready() || !mv_enter(&scope)) return EGL_FALSE;
+        int supported = mv_desktop_api_supported();
+        switch_back(&scope);
+        return supported ? EGL_TRUE : EGL_FALSE;
+    }
     return EGL_FALSE;
 }
 static const char *mv_vendor_string(int name) {

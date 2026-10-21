@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate typed EGL 1.5 and GLES 2.0–3.2 TLS-switching thunks."""
+"""Generate typed EGL, GLES, and desktop GL TLS-switching thunks."""
 import hashlib
 import json
 import pathlib
@@ -17,7 +17,7 @@ for path, key in ((egl_xml, "EGL-Registry"), (gl_xml, "OpenGL-Registry")):
 def decl(node):
     return "".join(node.itertext()).strip()
 
-def commands(path, api, max_version):
+def commands(path, api, max_version, profile=None):
     root = ET.parse(path).getroot()
     byname = {}
     for c in root.findall("./commands/command"):
@@ -35,6 +35,8 @@ def commands(path, api, max_version):
             for req in feature.findall("require"):
                 if req.get("api") and api not in req.get("api").split(","):
                     continue
+                if profile and req.get("profile") not in (None, profile):
+                    continue
                 selected.update(x.get("name") for x in req.findall("command"))
     aliases = {}
     for c in root.findall("./commands/command"):
@@ -50,6 +52,9 @@ def commands(path, api, max_version):
 
 egl = [(n, c) for n, c in commands(egl_xml, "egl", (1, 5)) if n not in ("eglQueryString", "eglGetProcAddress")]
 gles = commands(gl_xml, "gles2", (3, 2))
+desktop = commands(gl_xml, "gl", (4, 6), profile="compatibility")
+gles_set = {name for name, _ in gles}
+desktop = [(name, cmd) for name, cmd in desktop if name not in gles_set]
 
 def emit_group(path, items, prefix, library):
     lines = ["/* Generated from the pinned Khronos API registries. */"]
@@ -103,14 +108,16 @@ def emit_group(path, items, prefix, library):
 
 eglnames = emit_group(outdir / "egl_thunks.inc", egl, "mv_", "MV_EGL")
 glesnames = emit_group(outdir / "gles_thunks.inc", gles, "mv_", "MV_GLES")
+desktopnames = emit_group(outdir / "desktop_thunks.inc", desktop, "mv_desktop_", "MV_DESKTOP")
 (outdir / "proc_lookup.inc").write_text(
     "/* Registry generated proc-address map. */\n" +
     "static void *mv_lookup_proc(const char *name) {\n" +
     "    if (!name) return 0;\n" +
     "    if (0) return 0;\n" +
     "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_{n};\n' for n in eglnames + ["eglQueryString", "eglGetProcAddress"] + glesnames) +
+    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{n};\n' for n, _ in desktop) +
     "    return 0;\n}\n")
 (outdir / "coverage.txt").write_text(
-    f"{len(eglnames)} EGL 1.5 commands; {len(glesnames)} GLES 2.0–3.2 commands\n" +
+    f"{len(eglnames)} EGL 1.5 commands; {len(glesnames)} GLES 2.0–3.2 commands; {len(desktopnames)} desktop GL 1.0–4.6 compatibility commands\n" +
     "EGL: " + ", ".join(eglnames) + "\nGLES: " + ", ".join(glesnames) + "\n")
 print(f"generated {len(eglnames)} EGL and {len(glesnames)} GLES thunks")

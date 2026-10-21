@@ -27,9 +27,20 @@ Pixmap surfaces, client-buffer pbuffers, and EGL images remain unsupported.
 The GLES debug-message callback entry point is also a no-op: invoking a Linux
 callback from an Android driver thread would require a callback bridge outside
 this offscreen step.
-Desktop OpenGL is accepted only when Android reports it in
-`EGL_CLIENT_APIS`; otherwise `eglBindAPI(EGL_OPENGL_API)` fails through stock
-EGL. There is no Zink fallback in this step.
+Desktop OpenGL support is probed against the resident EGL implementation with
+`eglQueryAPI` / `eglBindAPI`, then the previous thread API binding is restored.
+The probe also requires access to that same vendor EGL instance through
+`android_load_sphal_library("libEGL_<ro.hardware.egl>.so", ...)` and its own
+`eglGetProcAddress`; no second driver copy is loaded. The vendor client API
+string includes `OpenGL` only after this probe succeeds. When the hardware EGL
+library or desktop API is absent, desktop support is rejected cleanly while
+the GLES path remains available.
+
+The pinned Khronos `gl.xml` generates TLS-switching thunks for desktop GL 1.0
+through 4.6 compatibility profile. GL commands already present in the GLES
+registry keep their existing GLES thunks; desktop-only commands resolve from
+the vendor EGL driver's `eglGetProcAddress`, never AOSP's limited GLES proc
+table. There is no Zink fallback in this step.
 
 Each registry-generated EGL/GLES thunk caches the Android entry point, enters
 resident TLS, makes one typed call, and restores Linux TLS. Unknown
@@ -55,7 +66,14 @@ CC=clang-21 bash linux/egl-forward/tests/run-host.sh \
 
 The build checks zero `DT_NEEDED`, a single dynamic export (`__egl_Main`), and
 compile-only arm64/riscv64 backends. `run-host.sh` checks the GLVND handshake,
-builds the offscreen triangle program, and measures the shared TLS switch pair.
+builds the offscreen and desktop triangle programs, and measures the shared
+TLS switch pair. The desktop harness is built as `desktop-glibc` and, when
+`MUSL_CC` or `musl-gcc` is available, `desktop-musl`. It dynamically loads
+`libEGL.so.1` so both libc variants can use the same adopted Android EGL
+bridge. `desktop.c` exercises a compatibility-profile pbuffer with
+`glBegin` / `glEnd` and checks the red center pixel; invoke it with
+`--expect-unsupported` on a vendor without desktop GL to verify clean
+`eglBindAPI(EGL_OPENGL_API)` rejection.
 The offscreen program needs to run inside the adopted Android EGL bridge; host
 Mesa's GLVND vendor ABI is not the Android library interface and is not a
 substitute runtime.
@@ -85,11 +103,12 @@ Do not treat APK install as proof of EGL runtime behavior.
 2. Install a Flathub app that provides `eglinfo`, launch it from its generated
    stub, and run `eglinfo -p surfaceless`. Confirm the vendor and GLES renderer
    match the resident EGL/GPU. Record the full app ref and output.
-3. Build `tests/offscreen.c` for glibc and musl, run both through the same
-   stub launch environment, and confirm the 64x64 pbuffer triangle's red
-   center pixel with `glReadPixels`.
-4. On a machine without an Android desktop-GL API, confirm
-   `eglBindAPI(EGL_OPENGL_API)` fails cleanly.
+3. Run `tests/desktop.c` built for glibc and musl through the same stub launch
+   environment. Confirm the 64x64 compatibility-profile pbuffer triangle's
+   red center pixel with `glReadPixels`.
+4. On a machine without a desktop-GL API, run either desktop harness with
+   `--expect-unsupported` and confirm `eglBindAPI(EGL_OPENGL_API)` fails
+   cleanly. GLES support should remain unchanged.
 
 ## Wayland window verification
 

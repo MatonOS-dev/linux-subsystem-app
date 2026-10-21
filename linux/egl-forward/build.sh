@@ -16,6 +16,7 @@ mkdir -p "$deps/include/GL"
 cat > "$deps/include/GL/gl.h" <<'EOF'
 /* libglvnd's shared ABI header only consumes GLboolean from GL/gl.h here. */
 typedef unsigned char GLboolean;
+typedef double GLdouble;
 EOF
 flags=(-std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/x86_64" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client")
 "$cc" --target=x86_64-linux-gnu "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/../vulkan-forward/wayland_resolve.c" "$here/../wayland-client/wayland_client.c" "$here/egl_vendor.c" -o "$out/libEGL_maton.so"
