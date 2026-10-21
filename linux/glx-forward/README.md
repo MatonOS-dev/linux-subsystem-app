@@ -37,16 +37,30 @@ the APK's GL extension packaging test also checks both GLX library names and
 that the GLX JSON manifest is absent (GLX selection is through GLVND's
 `__GLX_VENDOR_LIBRARY_NAME`).
 
-VM status (2026-10-21): a kernel stack captured during the original hang
-showed the GLX test blocked in `__futex_wait` during `glXMakeCurrent`. Switching
-to the private direct EGL table removed that hang. In the current VM the test
-reports GLX 1.4, creates and binds an EGL context, draws a pure red triangle
-into the pbuffer (`glReadPixels` center BGRA `0,0,255,255`, GL error 0), and
-returns from `glXSwapBuffers`. The XGetImage result is not red and the visible
-X11 window remains black. Extreme Tux Racer exits with loader status 159; the
-captured screen remains black. No frame time was measured. This is not yet a
-working GLX presentation path. The next debugging step is to trace the XImage
-contents and Xwayland presentation, then rerun both VM checks.
+VM status (2026-10-21, third investigation): context creation, binding and
+pbuffer drawing pass (`GL 4.6 Compatibility Profile Mesa 26.2.3`, center
+BGRA `0,0,255,255`, GL error 0). Swap readback and `glXWaitGL` now resolve
+Maton's TLS-aware GL thunks explicitly rather than relying on front-end GL
+symbol interposition. The host swap fixture checks thunk use, channel masks,
+row orientation and upload.
+
+Presentation is still **not accepted**: the triangle's XGetImage center was
+`0x77b01a`, not red. A separate Xlib-only probe also fails: XFillRectangle
+read back `0x40a3ac`, and XPutImage read back zero after allowing the window to
+settle. An earlier XPutImage readback returned red once; it is not reliable.
+The launcher screenshot, without a Linux window in the foreground, was also
+black/corrupt. Thus this VM has a presentation/readback problem beyond GLX;
+changing the shim's byte packing cannot by itself fix this baseline. Further
+work needs to isolate native Xwayland/glamor, compositor and the VM graphics
+stack before selecting a workaround. No software-renderer fallback was added.
+
+Extreme Tux Racer no longer exits 159: strace located the fatal call in a new
+resident pthread's `sigaltstack` (x86_64 syscall 131), while SIGSYS was blocked.
+The proxy's early unconditional stack trap preceded its bionic exemption.
+Resident bionic stack setup now follows that exemption; Linux payload stack
+calls remain virtual. The game stayed alive for more than a minute with five
+threads, but its screenshot is corrupt, so working rendering and a meaningful
+frame time are not claimed. No existing stub was uninstalled or VM restarted.
 
 ## Real-PC checks
 
@@ -59,5 +73,7 @@ contents and Xwayland presentation, then rerun both VM checks.
 4. Capture the game window while it is rendering and check for stable frames;
    repeat after resizing the window.
 
-The current QEMU run passes context creation, binding, and pbuffer drawing,
-but fails steps 3 and 4. Do not treat the shim as complete until both pass.
+The current QEMU run passes context creation, binding, pbuffer drawing and
+game startup, but fails steps 3 and 4. First check plain Xlib drawing/readback
+and the launcher screenshot as baselines. Do not treat the shim as complete
+until presentation passes.

@@ -133,8 +133,15 @@ static void glXSwapBuffers(Display*d,GLXDrawable w){
         x->width=a.width;x->height=a.height;
     }
     size_t z=(size_t)a.width*a.height*4;char*p=malloc(z);if(!p)return;
-    glFinish();glPixelStorei(GL_PACK_ALIGNMENT,1);
-    glReadPixels(0,0,a.width,a.height,BGRA,GL_UNSIGNED_BYTE,p);
+    /* GLVND has no current EGL dispatch here: GLX owns the dispatch slot.
+     * Use the same TLS-aware Maton thunks supplied to client GL calls. */
+    void (*finish)(void)=(void (*)(void))eglGetProcAddress("glFinish");
+    void (*pack)(GLenum,GLint)=(void (*)(GLenum,GLint))eglGetProcAddress("glPixelStorei");
+    void (*read_pixels)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*)=
+        (void (*)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*))eglGetProcAddress("glReadPixels");
+    if(!finish||!pack||!read_pixels){free(p);return;}
+    finish();pack(GL_PACK_ALIGNMENT,1);
+    read_pixels(0,0,a.width,a.height,BGRA,GL_UNSIGNED_BYTE,p);
     XImage*i=XCreateImage(d,a.visual,a.depth,2,0,0,a.width,a.height,32,0);
     if(i){
         i->data=calloc((size_t)i->bytes_per_line,(size_t)i->height);
@@ -160,7 +167,7 @@ static void glXSwapBuffers(Display*d,GLXDrawable w){
 }
 static void glXDestroyContext(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx*)c;if(!x||x->magic!=0x4d415443)return;if(current==(GLXContext)x){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);current=0;}if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);eglDestroyContext(edpy,x->egl);struct ctx**p=&contexts;while(*p&&*p!=x)p=&(*p)->next;if(*p)*p=x->next;x->magic=0;free(x);}
 static Bool glXIsDirect(Display*d,GLXContext c){(void)d;return c!=0;}
-static void glXWaitGL(void){glFinish();} static void glXWaitX(void){}
+static void glXWaitGL(void){if(current){void (*finish)(void)=(void (*)(void))eglGetProcAddress("glFinish");if(finish)finish();}} static void glXWaitX(void){}
 static void glXQueryDrawable(Display*d,GLXDrawable w,int a,unsigned int*v){(void)d;(void)w;(void)a;if(v)*v=0;}
 static void glXSwapIntervalEXT(Display*d,GLXDrawable w,int i){(void)d;(void)w;(void)i;} static int glXSwapIntervalMESA(unsigned int i){(void)i;return 0;} static int glXGetSwapIntervalMESA(void){return 1;} static int glXSwapIntervalSGI(int i){return i>0?0:1;}
 static __GLXextFuncPtr glXGetProcAddressARB(const GLubyte*n){return (__GLXextFuncPtr)getproc(n);} static __GLXextFuncPtr glXGetProcAddress(const GLubyte*n){return glXGetProcAddressARB(n);}

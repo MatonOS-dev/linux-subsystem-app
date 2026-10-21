@@ -11,3 +11,6 @@ cc=${CC:-cc}
   -I"$ROOT/glx-forward/deps/include" "$ROOT/glx-forward/tests/abi.c" \
   -o "$OUT/abi-test" -ldl
 "$OUT/abi-test" "$OUT/libGLX_maton-host.so"
+"$cc" -std=c11 -O2 -I"$ROOT/glx-forward/include" \
+  "$ROOT/glx-forward/tests/swap.c" -o "$OUT/swap-test" -lGLESv2 -lX11 -ldl
+"$OUT/swap-test"
