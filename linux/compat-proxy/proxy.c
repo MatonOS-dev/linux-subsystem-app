@@ -601,12 +601,15 @@ static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end)
             if(*p=='-'){p++;hi=resident_maps_hex(&p);}
             if(pc<lo||pc>=hi)continue;
             while(*p==' ')p++;
-            for(unsigned field=0;field<3&&*p;field++){
+            /* p begins at the permissions column, followed by offset, device,
+             * and inode before the path in /proc/self/maps. */
+            for(unsigned field=0;field<4&&*p;field++){
                 while(*p&&*p!=' ')p++;
                 while(*p==' ')p++;
             }
             *begin=lo;*end=hi;
-            found=resident_android_library_path(p)?1:2;
+            if(!resident_android_library_path(p)) found=2;
+            else found=resident_libc_path(p)?3:1;
             goto done;
         }
     }
@@ -614,11 +617,11 @@ done:
     RAW(PROXY_SC_close,fd,0,0,0,0,0);
     return found;
 }
-static int android_library_callsite(uintptr_t pc) {
+static int android_library_mapping_state(uintptr_t pc) {
     for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
         struct android_pc_cache_entry *entry=&android_pc_cache[i];
         int state=__atomic_load_n(&entry->state,__ATOMIC_ACQUIRE);
-        if(state>0&&pc>=entry->begin&&pc<entry->end)return state==1;
+        if(state>0&&pc>=entry->begin&&pc<entry->end)return state;
     }
     uintptr_t begin=0,end=0;
     int state=android_library_mapping(pc,&begin,&end);
@@ -633,7 +636,13 @@ static int android_library_callsite(uintptr_t pc) {
             break;
         }
     }
-    return state==1;
+    return state;
+}
+static int android_library_callsite(uintptr_t pc) {
+    return android_library_mapping_state(pc)==1;
+}
+static int android_libc_wrapper_callsite(uintptr_t pc) {
+    return android_library_mapping_state(pc)==3;
 }
 static void handler(int sig,siginfo_t *info,void *opaque) {
     uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
@@ -689,8 +698,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
     long result=-ENOSYS;
     if(call.error){result=call.error;goto finish;}
-    if(android_library_callsite((uintptr_t)info->si_call_addr)) {
-        result=RAW(info->si_syscall,a[0],a[1],a[2],a[3],a[4],a[5]);
+    uintptr_t syscall_pc=(uintptr_t)info->si_call_addr;
+    uintptr_t stack_pc=*(uintptr_t *)(uintptr_t)ARCH_CONTEXT(uc,ARCH_STACK);
+    if(android_library_callsite(syscall_pc) ||
+       (android_libc_wrapper_callsite(syscall_pc) && android_library_callsite(stack_pc))) {
+        /* RAW takes the proxy's architecture-independent syscall ID and
+         * encodes it for the kernel. info->si_syscall is already the kernel
+         * number, so feeding it back through RAW selects the wrong syscall. */
+        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
         goto clean_mask;
     }
