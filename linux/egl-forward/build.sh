@@ -25,7 +25,7 @@ readelf=${READELF:-llvm-readelf-21}
 if rg -q NEEDED "$out/dynamic.txt"; then echo 'unexpected DT_NEEDED' >&2; exit 1; fi
 "$readelf" --dyn-syms "$out/libEGL_maton.so" > "$out/symbols.txt"
 exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/symbols.txt" | sort -u)
-[[ "$exports" == __egl_Main ]] || { echo "unexpected exports: $exports" >&2; exit 1; }
+[[ "$exports" == $'__egl_Main\nmaton_egl_direct_v1' ]] || { echo "unexpected exports: $exports" >&2; exit 1; }
 for arch in aarch64 riscv64; do
   target="$arch-linux-gnu"
   "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -c "$here/runtime.c" -o "$out/runtime-$arch.o"
@@ -35,4 +35,4 @@ for arch in aarch64 riscv64; do
 done
 cp "$here/10_maton.json" "$out/10_maton.json"
 cat "$out/gen/coverage.txt"
-echo 'PASS: freestanding; no DT_NEEDED; one export; arm64/riscv64 stub compile'
+echo 'PASS: freestanding; no DT_NEEDED; GLVND entry and private direct table exported; arm64/riscv64 stub compile'

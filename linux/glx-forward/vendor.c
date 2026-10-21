@@ -1,6 +1,7 @@
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <glvnd/libglxabi.h>
+#include "maton_egl_direct.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,8 +43,9 @@ extern Visual *XDefaultVisual(Display*,int);
 extern int XGetWindowAttributes(Display*,unsigned long,XWindowAttributes*),XFlush(Display*),XPutImage(Display*,unsigned long,void*,XImage*,int,int,int,int,unsigned int,unsigned int),XDestroyImage(XImage*),XFreeGC(Display*,void*);
 extern void *XCreateGC(Display*,unsigned long,unsigned long,void*);
 extern XImage *XCreateImage(Display*,Visual*,unsigned int,int,int,char*,unsigned int,unsigned int,int,int);
+extern int XPutPixel(XImage*,int,int,unsigned long);
 static EGLDisplay edpy=EGL_NO_DISPLAY; static EGLConfig ecfg; static GLXContext current; static Display *current_display;
-static void *egl_lib;
+static void *egl_lib; static const struct maton_egl_direct_v1 *egl_direct;
 #define EGL_FN(name) static __typeof__(&name) p_##name
 EGL_FN(eglGetPlatformDisplay); EGL_FN(eglGetDisplay); EGL_FN(eglInitialize);
 EGL_FN(eglBindAPI); EGL_FN(eglChooseConfig); EGL_FN(eglCreateContext);
@@ -69,15 +71,19 @@ static void egl_diag(const char*s){size_t n=0;while(s[n])n++;(void)write(2,s,n);
 static int init_egl(void){
     if(edpy!=EGL_NO_DISPLAY)return ecfg!=0;
     if(!egl_lib){
-        egl_lib=dlopen("libEGL.so.1",RTLD_NOW|RTLD_LOCAL);
-        if(!egl_lib)egl_lib=dlopen("libEGL.so",RTLD_NOW|RTLD_LOCAL);
-        if(!egl_lib){egl_diag("maton GLX: cannot load libEGL.so.1\n");return 0;}
-#define LOAD_EGL(name) p_##name=(__typeof__(p_##name))dlsym(egl_lib,#name); if(!p_##name){egl_diag("maton GLX: missing EGL entrypoint\n");return 0;}
-        LOAD_EGL(eglGetPlatformDisplay);LOAD_EGL(eglGetDisplay);LOAD_EGL(eglInitialize);
-        LOAD_EGL(eglBindAPI);LOAD_EGL(eglChooseConfig);LOAD_EGL(eglCreateContext);
-        LOAD_EGL(eglCreatePbufferSurface);LOAD_EGL(eglMakeCurrent);LOAD_EGL(eglDestroySurface);
-        LOAD_EGL(eglDestroyContext);LOAD_EGL(eglGetProcAddress);
-#undef LOAD_EGL
+        egl_lib=dlopen("libEGL_maton.so",RTLD_NOW|RTLD_LOCAL);
+        if(!egl_lib)egl_lib=dlopen("libEGL_maton.so.0",RTLD_NOW|RTLD_LOCAL);
+        if(!egl_lib){egl_diag("maton GLX: cannot load direct Maton EGL vendor\n");return 0;}
+        maton_egl_direct_v1_fn get_direct=(maton_egl_direct_v1_fn)dlsym(egl_lib,"maton_egl_direct_v1");
+        if(!get_direct||(egl_direct=get_direct())==0||egl_direct->version!=1){egl_diag("maton GLX: direct Maton EGL ABI unavailable\n");return 0;}
+#define LOAD_DIRECT(name,field) p_##name=(__typeof__(p_##name))egl_direct->field
+        LOAD_DIRECT(eglGetPlatformDisplay,get_platform_display);LOAD_DIRECT(eglGetDisplay,get_display);
+        LOAD_DIRECT(eglInitialize,initialize);LOAD_DIRECT(eglBindAPI,bind_api);
+        LOAD_DIRECT(eglChooseConfig,choose_config);LOAD_DIRECT(eglCreateContext,create_context);
+        LOAD_DIRECT(eglCreatePbufferSurface,create_pbuffer_surface);LOAD_DIRECT(eglMakeCurrent,make_current);
+        LOAD_DIRECT(eglDestroySurface,destroy_surface);LOAD_DIRECT(eglDestroyContext,destroy_context);
+        LOAD_DIRECT(eglGetProcAddress,get_proc_address);
+#undef LOAD_DIRECT
     }
     edpy=eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,EGL_DEFAULT_DISPLAY,0);
     if(edpy==EGL_NO_DISPLAY||!eglInitialize(edpy,0,0)){
@@ -114,7 +120,44 @@ static GLXContext glXGetCurrentContext(void){return (GLXContext)current;}
 static Display *glXGetCurrentDisplay(void){return current_display;}
 static GLXDrawable glXGetCurrentDrawable(void){return current?((struct ctx*)current)->drawable:0;}
 static GLXDrawable glXGetCurrentReadDrawable(void){return glXGetCurrentDrawable();}
-static void glXSwapBuffers(Display*d,GLXDrawable w){if(!d||!w||!current)return;struct ctx*x=(struct ctx*)current;XWindowAttributes a;if(!XGetWindowAttributes(d,w,&a)||!a.width||!a.height)return;if(x->width!=(int)a.width||x->height!=(int)a.height){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroySurface(edpy,x->surface);EGLint q[]={EGL_WIDTH,(EGLint)a.width,EGL_HEIGHT,(EGLint)a.height,EGL_NONE};x->surface=eglCreatePbufferSurface(edpy,ecfg,q);if(x->surface==EGL_NO_SURFACE||!eglMakeCurrent(edpy,x->surface,x->surface,x->egl))return;x->width=a.width;x->height=a.height;}size_t z=(size_t)a.width*a.height*4;char*p=malloc(z);if(!p)return;glFinish();glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(0,0,a.width,a.height,BGRA,GL_UNSIGNED_BYTE,p);XImage*i=XCreateImage(d,a.visual,a.depth,2,0,p,a.width,a.height,32,0);if(i){for(unsigned y=0;y<a.height/2;y++){char*t=p+(size_t)y*a.width*4,*b=p+(size_t)(a.height-1-y)*a.width*4;for(unsigned k=0;k<a.width*4;k++){char q=t[k];t[k]=b[k];b[k]=q;}}void*g=XCreateGC(d,w,0,0);if(g){XPutImage(d,w,g,i,0,0,0,0,a.width,a.height);XFreeGC(d,g);}XDestroyImage(i);}else free(p);XFlush(d);}
+static void glXSwapBuffers(Display*d,GLXDrawable w){
+    if(!d||!w||!current)return;
+    struct ctx*x=(struct ctx*)current;XWindowAttributes a;
+    if(!XGetWindowAttributes(d,w,&a)||!a.width||!a.height)return;
+    if(x->width!=(int)a.width||x->height!=(int)a.height){
+        eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
+        eglDestroySurface(edpy,x->surface);
+        EGLint q[]={EGL_WIDTH,(EGLint)a.width,EGL_HEIGHT,(EGLint)a.height,EGL_NONE};
+        x->surface=eglCreatePbufferSurface(edpy,ecfg,q);
+        if(x->surface==EGL_NO_SURFACE||!eglMakeCurrent(edpy,x->surface,x->surface,x->egl))return;
+        x->width=a.width;x->height=a.height;
+    }
+    size_t z=(size_t)a.width*a.height*4;char*p=malloc(z);if(!p)return;
+    glFinish();glPixelStorei(GL_PACK_ALIGNMENT,1);
+    glReadPixels(0,0,a.width,a.height,BGRA,GL_UNSIGNED_BYTE,p);
+    XImage*i=XCreateImage(d,a.visual,a.depth,2,0,0,a.width,a.height,32,0);
+    if(i){
+        i->data=calloc((size_t)i->bytes_per_line,(size_t)i->height);
+        if(!i->data){XDestroyImage(i);free(p);return;}
+        unsigned long rm=a.visual->red_mask,gm=a.visual->green_mask,bm=a.visual->blue_mask;
+        unsigned rs=0,gs=0,bs=0;while(rs<sizeof(unsigned long)*8&&!(rm&(1ul<<rs)))rs++;
+        while(gs<sizeof(unsigned long)*8&&!(gm&(1ul<<gs)))gs++;
+        while(bs<sizeof(unsigned long)*8&&!(bm&(1ul<<bs)))bs++;
+        unsigned long rmax=rm>>rs,gmax=gm>>gs,bmax=bm>>bs;
+        for(unsigned y=0;y<a.height;y++)for(unsigned x=0;x<a.width;x++){
+            size_t k=((size_t)(a.height-1-y)*a.width+x)*4;
+            unsigned long r=((unsigned long)(unsigned char)p[k+2]*rmax+127)/255;
+            unsigned long g=((unsigned long)(unsigned char)p[k+1]*gmax+127)/255;
+            unsigned long b=((unsigned long)(unsigned char)p[k]*bmax+127)/255;
+            XPutPixel(i,(int)x,(int)y,((r<<rs)&rm)|((g<<gs)&gm)|((b<<bs)&bm));
+        }
+        free(p);
+        void*g=XCreateGC(d,w,0,0);
+        if(g){XPutImage(d,w,g,i,0,0,0,0,a.width,a.height);XFreeGC(d,g);}
+        XDestroyImage(i);
+    }else free(p);
+    XFlush(d);
+}
 static void glXDestroyContext(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx*)c;if(!x||x->magic!=0x4d415443)return;if(current==(GLXContext)x){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);current=0;}if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);eglDestroyContext(edpy,x->egl);struct ctx**p=&contexts;while(*p&&*p!=x)p=&(*p)->next;if(*p)*p=x->next;x->magic=0;free(x);}
 static Bool glXIsDirect(Display*d,GLXContext c){(void)d;return c!=0;}
 static void glXWaitGL(void){glFinish();} static void glXWaitX(void){}

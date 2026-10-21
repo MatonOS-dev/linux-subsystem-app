@@ -7,6 +7,7 @@
 #include "../gpu-forward-spike/bridge.h"
 #include "../wayland-client/wayland_client.h"
 #include "../vulkan-forward/wayland_resolve.h"
+#include "../glx-forward/include/maton_egl_direct.h"
 
 #define EXPORT __attribute__((visibility("default")))
 #define MV_EGL 1
@@ -450,6 +451,41 @@ static __eglMustCastToProperFunctionPointerType mv_eglGetProcAddress(const char 
     return (__eglMustCastToProperFunctionPointerType)mv_lookup_proc(name);
 }
 #include "proc_lookup.inc"
+static void *mv_direct_get_proc(const char *name) { return (void *)mv_eglGetProcAddress(name); }
+static EGLBoolean mv_direct_bind_api(EGLenum api) {
+    if (api == EGL_OPENGL_API) {
+        struct mv_scope scope;
+        if (!mv_ready() || !mv_enter(&scope)) return EGL_FALSE;
+        int supported = mv_desktop_api_supported();
+        switch_back(&scope);
+        if (!supported) return EGL_FALSE;
+    }
+    return mv_eglBindAPI(api);
+}
+
+/*
+ * GLX enters through libGLdispatch, which owns its make-current transition.
+ * Its vendor must bypass libEGL's GLVND front end to avoid a nested dispatch
+ * make-current. This private table shares the Maton EGL vendor's TLS-aware
+ * wrappers with libGLX_maton.
+ */
+EXPORT const struct maton_egl_direct_v1 *maton_egl_direct_v1(void) {
+    static const struct maton_egl_direct_v1 api = {
+        .version = 1,
+        .get_platform_display = mv_eglGetPlatformDisplay,
+        .get_display = mv_eglGetDisplay,
+        .initialize = mv_eglInitialize,
+        .bind_api = mv_direct_bind_api,
+        .choose_config = mv_eglChooseConfig,
+        .create_context = mv_eglCreateContext,
+        .create_pbuffer_surface = mv_eglCreatePbufferSurface,
+        .make_current = mv_eglMakeCurrent,
+        .destroy_surface = mv_eglDestroySurface,
+        .destroy_context = mv_eglDestroyContext,
+        .get_proc_address = mv_direct_get_proc,
+    };
+    return &api;
+}
 
 static EGLDisplay mv_vendor_get_platform_display(EGLenum platform, void *native, const EGLAttrib *attrs) {
     if (platform == EGL_PLATFORM_WAYLAND_KHR || platform == EGL_PLATFORM_WAYLAND_EXT) {
