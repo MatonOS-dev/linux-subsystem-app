@@ -58,12 +58,6 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    /* Resident libc constructors also install an altstack. Keep the kernel's
-     * proxy stack; expose the application's requested stack through the same
-     * virtual sigaltstack path as payload calls, including queries. */
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,encode(PROXY_SC_sigaltstack));
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     /* Keep resident linker code from replacing the proxy's SIGSYS handler.
      * Let ordinary signal actions and read-only queries stay native. */
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
@@ -98,6 +92,10 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,encode(PROXY_SC_fcntl));
         ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     }
+    /* Bionic pthread startup installs its altstack while SIGSYS is blocked.
+     * Its sigaltstack must pass through the resident ranges below, or the
+     * synchronous trap kills the new thread before adoption can run. Payload
+     * sigaltstack still traps through ours() after the resident exemption. */
     /* Resident bionic must be able to implement the Android-owned pthread,
      * allocator and signal machinery. This is a routing exemption only; the
      * Linux payload is not a security boundary. Bionic is native x86_64; never

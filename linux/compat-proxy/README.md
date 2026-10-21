@@ -1434,3 +1434,14 @@ Before the fix, Mesa's cached render fd 72 had been closed and reused for a
 proxy temp directory; `DRM_IOCTL_VIRTGPU_RESOURCE_CREATE` returned -1, producing
 texture GL_OUT_OF_MEMORY and a pbuffer with no color read buffer. Android
 malloc and page-size probes were healthy; no TLS executor change was needed.
+
+### Resident pthread alternate-stack startup (2026-10-21)
+
+The x86 filter lets resident bionic `sigaltstack` calls use the existing
+resident-libc exemption. Bionic installs a new pthread's alternate signal
+stack before unblocking signals; trapping there kills the thread with SIGSYS
+before its adopted start routine can run. Linux payload `sigaltstack` calls
+still reach the proxy's virtual stack implementation. `tests/resident-altstack.c`
+installs the actual BPF and verifies a resident call succeeds with SIGSYS
+blocked, while an otherwise identical payload call still traps. This fixes
+Extreme Tux Racer's startup exit 159; it does not repair Xwayland presentation.
