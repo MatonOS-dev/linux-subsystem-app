@@ -11,6 +11,9 @@
 #define RESIDENT_ALLOC vfs_alloc
 #define RESIDENT_FREE vfs_free
 #include "resident-ranges.h"
+#if defined(__x86_64__)
+extern int adopt_resident_tls_active(void) __attribute__((weak));
+#endif
 #include <sys/time.h>
 #include <sys/inotify.h>
 #include <sys/socket.h>
@@ -608,8 +611,9 @@ static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end)
                 while(*p==' ')p++;
             }
             *begin=lo;*end=hi;
-            if(!resident_android_library_path(p)) found=2;
-            else found=resident_libc_path(p)?3:1;
+            if(!resident_android_library_path(p)) found=0;
+            else if(resident_libc_path(p)) found=3;
+            else found=resident_android_graphics_path(p)?1:2;
             goto done;
         }
     }
@@ -638,11 +642,12 @@ static int android_library_mapping_state(uintptr_t pc) {
     }
     return state;
 }
-static int android_library_callsite(uintptr_t pc) {
-    return android_library_mapping_state(pc)==1;
-}
-static int android_libc_wrapper_callsite(uintptr_t pc) {
-    return android_library_mapping_state(pc)==3;
+static int android_tls_adoption_state(void) {
+#if defined(__x86_64__)
+    return adopt_resident_tls_active && adopt_resident_tls_active();
+#else
+    return 0;
+#endif
 }
 static void handler(int sig,siginfo_t *info,void *opaque) {
     uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
@@ -700,12 +705,37 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(call.error){result=call.error;goto finish;}
     uintptr_t syscall_pc=(uintptr_t)info->si_call_addr;
     uintptr_t stack_pc=*(uintptr_t *)(uintptr_t)ARCH_CONTEXT(uc,ARCH_STACK);
-    if(android_library_callsite(syscall_pc) ||
-       (android_libc_wrapper_callsite(syscall_pc) && android_library_callsite(stack_pc))) {
+    int adoption_state=android_tls_adoption_state();
+    int syscall_mapping=android_library_mapping_state(syscall_pc);
+    int caller_mapping=android_library_mapping_state(stack_pc);
+    /* Bionic wrappers can add their own frame, so [rsp] is not a reliable
+     * caller. Calls directly in mapped Android system/vendor/APEX code retain
+     * native semantics while resident TLS is active. Calls whose syscall PC
+     * is in bionic libc need a narrower list: otherwise unrelated libc work
+     * during a graphics call (or Flatpak setup) bypasses the proxy too. */
+    int mapped_graphics_syscall = (syscall_mapping==2 || syscall_mapping==3) &&
+        (nr==PROXY_SC_mmap || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap ||
+         nr==PROXY_SC_ioctl);
+    int android_native_site=syscall_mapping==1 || mapped_graphics_syscall;
+    if(proxy_trace && (nr==PROXY_SC_mmap || nr==PROXY_SC_ioctl) &&
+       (adoption_state || syscall_mapping || caller_mapping)) {
+        emit("v3 graphics-route nr=");crash_hex((uint64_t)nr);
+        trace_word(" tls=",adoption_state);
+        trace_word(" site=",syscall_mapping);trace_word(" caller=",caller_mapping);
+        trace_word(" pc=",syscall_pc);trace_word(" caller_pc=",stack_pc);
+        trace_word(" a0=",a[0]);trace_word(" a1=",a[1]);
+        trace_word(" a2=",a[2]);trace_word(" a3=",a[3]);
+        trace_word(" a4=",a[4]);trace_word(" a5=",a[5]);emit("\n");
+    }
+    if(adoption_state==1 && android_native_site) {
         /* RAW takes the proxy's architecture-independent syscall ID and
          * encodes it for the kernel. info->si_syscall is already the kernel
          * number, so feeding it back through RAW selects the wrong syscall. */
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(proxy_trace && (nr==PROXY_SC_mmap || nr==PROXY_SC_ioctl)) {
+            emit("v3 graphics-result nr=");crash_hex((uint64_t)nr);
+            trace_word(" result=",result);emit("\n");
+        }
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
         goto clean_mask;
     }

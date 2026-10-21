@@ -29,3 +29,8 @@ e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/li
 gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
 
 cb14fef2ba523aae19817e88e93b9bc323066677d0a1eb578405e9141f96e3fb  matonos-flatpak
+
+static musl bubblewrap helper
+# bubblewrap 0.13.0 from the pinned tar entry above; static PIE built with musl 1.2.6-r2.
+# Build recipe SHA-256: f0ff8274ce5c1f7c326b82531d94854e65985033ba2376e8754f184ee83e81b8
+c377c15b6ba90df136082e2786ea1f22751a590ceaa0584eb6070f484bb0ace0  x86_64/matonos-app-bwrap

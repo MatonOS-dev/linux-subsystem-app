@@ -147,6 +147,18 @@ struct adopt_thread *adopt_current(void) {
     }
     return NULL;
 }
+/* The syscall proxy permits Android graphics/HAL passthrough only while this
+ * Linux thread is actually executing with its resident Android TLS. */
+int adopt_resident_tls_active(void) {
+    uintptr_t fs=backend_fs_read();
+    /* This query runs in the syscall signal handler. A miss must not enter
+     * adopt_current's fork-child recovery path or mutate the thread registry. */
+    struct adopt_thread *thread=adopt_map_lookup(fs);
+    if (!thread) return 0;
+    if (thread->resident_fs==fs) return 1;
+    if (atomic_load_explicit(&thread->app_fs,memory_order_acquire)==fs) return 2;
+    return 3;
+}
 static struct adopt_thread *reserve(void) {
     _Atomic(struct thread_chunk *) *link=&chunks;
     for(;;) {

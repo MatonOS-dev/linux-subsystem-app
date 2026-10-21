@@ -58,6 +58,34 @@ static inline int resident_android_library_path(const char *path) {
     return 0;
 }
 
+/* Only Android graphics driver and HAL mappings need native syscall
+ * semantics while a Linux thread temporarily borrows bionic TLS. */
+static inline int resident_android_graphics_path(const char *path) {
+    static const char *const prefixes[]={
+        "/vendor/lib/hw/", "/vendor/lib64/hw/",
+        "/vendor/lib/egl/", "/vendor/lib64/egl/",
+        "/system/lib/hw/", "/system/lib64/hw/",
+        "/system/lib/egl/", "/system/lib64/egl/"
+    };
+    for (size_t i=0;i<sizeof(prefixes)/sizeof(prefixes[0]);i++) {
+        const char *a=path,*b=prefixes[i];
+        while (*b&&*a==*b) { a++;b++; }
+        if (!*b) return 1;
+    }
+    static const char *const names[]={
+        "libEGL", "libGLES", "libvulkan", "libgralloc", "libminigbm",
+        "libgallium", "libdrm", "libgbm", "vulkan.", "egl_", "gralloc."
+    };
+    const char *base=path;
+    for (const char *p=path;*p;p++) if (*p=='/') base=p+1;
+    for (size_t i=0;i<sizeof(names)/sizeof(names[0]);i++) {
+        const char *a=base,*b=names[i];
+        while (*a&&*a==*b) { a++;b++; }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
 static inline int resident_range_append(struct arch_ip_range **ranges,
                                         size_t *count, size_t *capacity,
                                         uintptr_t begin, uintptr_t end,

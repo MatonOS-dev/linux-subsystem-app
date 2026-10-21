@@ -25,7 +25,7 @@ STAMPS=$STAGE/HELPERS.sha256
 
 # source -> installed names (one binary may be installed under several).
 declare -A HELPERS=(
-  [matonos-app-tool]="matonos-app-flatpak matonos-app-bwrap"
+  [matonos-app-tool]="matonos-app-flatpak"
 )
 
 source_file() {
