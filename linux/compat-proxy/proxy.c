@@ -531,7 +531,7 @@ static int ours(long n) {
     case PROXY_SC_prctl:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
-    case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_newfstatat:
+    case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_newfstatat:
     case PROXY_SC_inotify_add_watch:case PROXY_SC_getxattrat:case PROXY_SC_listxattrat:case PROXY_SC_setxattrat:case PROXY_SC_removexattrat:case PROXY_SC_name_to_handle_at:case PROXY_SC_statx:case PROXY_SC_access:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:case PROXY_SC_readlink:case PROXY_SC_readlinkat:
     case PROXY_SC_fchdir:case PROXY_SC_chdir:case PROXY_SC_getcwd:case PROXY_SC_mkdir:case PROXY_SC_mkdirat:case PROXY_SC_unlink:case PROXY_SC_unlinkat:
     case PROXY_SC_rename:case PROXY_SC_renameat:case PROXY_SC_renameat2:case PROXY_SC_link:case PROXY_SC_linkat:
@@ -852,6 +852,9 @@ clone_retry:
     case PROXY_SC_mkdir:case PROXY_SC_unlink:case PROXY_SC_chmod:case PROXY_SC_chown:case PROXY_SC_lchown:case PROXY_SC_statfs:
         result=path_call(nr,a,0,-1);break;
     case PROXY_SC_openat2:result=-ENOSYS;break; /* bwrap uses its checked openat fallback. */
+    /* Raw open_tree would resolve the untranslated path. ENOSYS makes libglnx
+     * chase (Flatpak) fall back to openat, which is translated. */
+    case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:result=-ENOSYS;break;
     /* futimens(fd): a NULL path names the fd itself; there is no path to map. */
     case PROXY_SC_utimensat:if(!a[1]){result=app_allowed(nr)?RAW(PROXY_SC_utimensat,a[0],0,a[2],a[3],0,0):-ENOSYS;break;}result=path_call(nr,a,1,-1);break;
     case PROXY_SC_inotify_add_watch:case PROXY_SC_getxattrat:case PROXY_SC_listxattrat:case PROXY_SC_setxattrat:case PROXY_SC_removexattrat:case PROXY_SC_name_to_handle_at:case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:
