@@ -1292,7 +1292,7 @@ bool maton_core_start(const char* socket_name,const char* runtime_dir){
   strcpy(server.socket_name,socket_name);
   if(mkdir(runtime_dir,0700)&&errno!=EEXIST)goto fail;
   if(chmod(runtime_dir,0700))goto fail;
-  server.runtime_dir_fd=maton_socket_dir_open(runtime_dir);
+  server.runtime_dir_fd=maton_socket_dir_open_inherited(runtime_dir);
   if(server.runtime_dir_fd<0)goto fail;
   if(maton_socket_dir_path(server.runtime_dir,sizeof(server.runtime_dir),server.runtime_dir_fd)<0||setenv("XDG_RUNTIME_DIR",server.runtime_dir,1))goto fail;
   char path[640];snprintf(path,sizeof(path),"%s/%s",runtime_dir,socket_name);unlink(path);

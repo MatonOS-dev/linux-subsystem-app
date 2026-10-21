@@ -250,7 +250,7 @@ JNIEXPORT jboolean JNICALL Java_org_matonos_linux_runtime_NativeAudio_nativeStar
     char *slash = strrchr(libraries,'/');
     if (!slash) goto done;
     *slash = 0; // Also works for APK!/lib/x86_64 paths (page-aligned JNI entries).
-    runtime_dir_fd = maton_socket_dir_open(run);
+    runtime_dir_fd = maton_socket_dir_open_inherited(run);
     if (runtime_dir_fd < 0) goto done;
     char short_runtime[64];
     if (maton_socket_dir_path(short_runtime, sizeof(short_runtime), runtime_dir_fd) < 0) goto done;

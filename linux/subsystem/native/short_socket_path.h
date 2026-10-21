@@ -14,6 +14,12 @@ static inline int maton_socket_dir_open(const char *directory) {
   return open(directory, O_PATH | O_DIRECTORY | O_CLOEXEC);
 }
 
+/* For a path exported in the environment (XDG_RUNTIME_DIR): exec'd children
+ * such as Xwayland resolve /proc/self/fd/N themselves, so N must survive exec. */
+static inline int maton_socket_dir_open_inherited(const char *directory) {
+  return open(directory, O_PATH | O_DIRECTORY);
+}
+
 static inline int maton_socket_dir_path(char *out, size_t capacity, int dirfd) {
   int n = snprintf(out, capacity, "/proc/self/fd/%d", dirfd);
   return n > 0 && (size_t)n < capacity ? n : -1;
