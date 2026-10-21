@@ -30,6 +30,7 @@ paths = {row["path"]: row for row in rows}
 expected = {
     "/lib/libmaton_vulkan.so",
     "/lib/libEGL_maton.so",
+    "/lib/libGLX_maton.so.0",
     "/vulkan/icd.d/maton_icd.json",
     "/glvnd/egl_vendor.d/10_maton.json",
 }

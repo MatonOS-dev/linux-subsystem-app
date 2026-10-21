@@ -1,0 +1,7 @@
+{
+  "libglvnd": {
+    "commit": "606f6627cf481ee6dcb32387edc010c502cdf38b",
+    "include/glvnd/libglxabi.h": "13945c394404ea83d7459548f6e0f4412bb22e988ddc3fa43441d5b3f76586a6",
+    "include/glvnd/GLdispatchABI.h": "35b3ad050dd226f6fb5439146b1e736c0f6e4aa21e468a33a7326a801e284b42"
+  }
+}

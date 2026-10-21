@@ -9,7 +9,12 @@ EOF
 cc -shared -nostdlib -Wl,-soname,libEGL_maton.so -o "$OUT/libEGL_maton.so" -x c - <<'EOF'
 void maton_test_symbol(void) {}
 EOF
+cc -shared -nostdlib -Wl,-soname,libGLX_maton.so.0 -o "$OUT/libGLX_maton.so.0" -x c - <<'EOF'
+void maton_test_symbol(void) {}
+EOF
+rm -f "$OUT/libGLX_maton.so"
+cp "$OUT/libGLX_maton.so.0" "$OUT/libGLX_maton.so"
 python3 "$ROOT/linux/gl-maton/build.py" "$OUT/extension" \
-  "$OUT/libmaton_vulkan.so" "$OUT/libEGL_maton.so" --branch 26.08
+  "$OUT/libmaton_vulkan.so" "$OUT/libEGL_maton.so" --glx "$OUT/libGLX_maton.so.0" --branch 26.08
 python3 "$ROOT/linux/gl-maton/tests/verify.py" "$OUT/extension"
 echo 'PASS Maton Flatpak GL extension layout, metadata and OSTree pack'

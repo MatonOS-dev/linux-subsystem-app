@@ -123,7 +123,7 @@ final class V3Launcher {
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
-        if(matonGlEnabled)command.add("--env=FLATPAK_GL_DRIVERS=maton:default");
+        if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton:default");command.add("--env=__GLX_VENDOR_LIBRARY_NAME=maton");}
         // adb (root): touch <cache>/v3-vkdebug to log Vulkan loader driver discovery.
         if (new File(cache, "v3-vkdebug").exists()) command.add("--env=VK_LOADER_DEBUG=all");
         // adb (root): write a command name or absolute sandbox path to <cache>/v3-command
@@ -142,7 +142,7 @@ final class V3Launcher {
         env.put("FLATPAK_SYSTEM_DIR", new File(deployment,"system").getAbsolutePath());
         // Flatpak reads this in the launcher process while selecting runtime
         // extensions; the matching --env below exposes the choice to the app.
-        if(matonGlEnabled)env.put("FLATPAK_GL_DRIVERS","maton:default");
+        if(matonGlEnabled){env.put("FLATPAK_GL_DRIVERS","maton:default");env.put("__GLX_VENDOR_LIBRARY_NAME","maton");}
         env.put("MATON_FLATPAK_DNS", dns);
         String nativeDir = LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
         env.put("PATH", nativeDir + ":/system/bin");

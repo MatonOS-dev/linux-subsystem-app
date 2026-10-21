@@ -16,7 +16,7 @@ def run(*args):
     subprocess.run(args, check=True, stdout=subprocess.PIPE, text=True)
 
 
-def build(out, vulkan, egl, branch):
+def build(out, vulkan, egl, glx, branch):
     out = pathlib.Path(out).resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
@@ -26,6 +26,8 @@ def build(out, vulkan, egl, branch):
     (files / "vulkan/icd.d").mkdir(parents=True)
     shutil.copy2(vulkan, files / "lib/libmaton_vulkan.so")
     shutil.copy2(egl, files / "lib/libEGL_maton.so")
+    shutil.copy2(glx, files / "lib/libGLX_maton.so.0")
+    (files / "lib/libGLX_maton.so").write_bytes((files / "lib/libGLX_maton.so.0").read_bytes())
     (files / "vulkan/icd.d/maton_icd.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libmaton_vulkan.so",\n'
@@ -71,8 +73,9 @@ if __name__ == "__main__":
     parser.add_argument("out")
     parser.add_argument("vulkan")
     parser.add_argument("egl")
+    parser.add_argument("--glx", required=True, help="built libGLX_maton.so")
     parser.add_argument("--branch", default="26.08")
     args = parser.parse_args()
     if not args.branch or "/" in args.branch:
         parser.error("invalid runtime extension branch")
-    build(args.out, args.vulkan, args.egl, args.branch)
+    build(args.out, args.vulkan, args.egl, args.glx, args.branch)

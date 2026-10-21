@@ -72,17 +72,32 @@ def buildEglForward = tasks.register('buildEglForward', Exec) {
             System.getenv('MATON_EGL_CC') ?: 'clang-21',
             System.getenv('MATON_EGL_READELF') ?: 'llvm-readelf-21', eglOutput, eglNdk
 }
+def glxRoot = file('../../../glx-forward')
+def glxOutput = System.getenv('MATON_GLX_OUT') ?: "$aospRoot/out/matonos/glx-forward"
+def glxDeps = new File(glxOutput, 'deps')
+def buildGlxForward = tasks.register('buildGlxForward', Exec) {
+    inputs.files fileTree(glxRoot)
+    outputs.files new File(glxOutput, 'libGLX_maton.so.0'), new File(glxOutput, 'libGLX_maton.so')
+    outputs.upToDateWhen { false }
+    environment 'CC', System.getenv('MATON_GLX_CC') ?: 'clang-21'
+    environment 'READELF', System.getenv('MATON_GLX_READELF') ?: 'llvm-readelf-21'
+    commandLine 'bash', '-c', 'set -euo pipefail; bash "$1/fetch-tools.sh" "$2"; CC="$3" READELF="$4" bash "$1/build.sh" "$5" "$2" "$6"',
+            'glx-forward-build', glxRoot.absolutePath, glxDeps.absolutePath,
+            System.getenv('MATON_GLX_CC') ?: 'clang-21',
+            System.getenv('MATON_GLX_READELF') ?: 'llvm-readelf-21', glxOutput, eglNdk
+}
 def glMatonOutput = new File(layout.buildDirectory.get().asFile, 'generated/gl-maton')
 def glMatonAssets = new File(layout.buildDirectory.get().asFile, 'generated/gl-maton-assets')
 def buildGlMaton = tasks.register('buildGlMaton', Exec) {
-    dependsOn buildVulkanForward, buildEglForward
+    dependsOn buildVulkanForward, buildEglForward, buildGlxForward
     inputs.files fileTree('../../../gl-maton'), fileTree('../../../vulkan-forward') { exclude 'build/**' },
-            fileTree('../../../egl-forward')
+            fileTree('../../../egl-forward'), fileTree('../../../glx-forward')
     outputs.dir glMatonOutput
     outputs.upToDateWhen { false }
     commandLine 'python3', file('../../../gl-maton/build.py').absolutePath,
             glMatonOutput.absolutePath, new File(vulkanOutput, 'libmaton_vulkan.so').absolutePath,
             new File(eglOutput, 'libEGL_maton.so').absolutePath,
+            '--glx', new File(glxOutput, 'libGLX_maton.so.0').absolutePath,
             // Template branch only: the stub rewrites metadata/deploy for each app's runtime.
             '--branch', '26.08'
 }

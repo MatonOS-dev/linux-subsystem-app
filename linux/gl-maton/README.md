@@ -9,12 +9,18 @@ assigned runtime. Its runtime metadata advertises
 launch; a mismatch fails with a clear error rather than silently selecting an
 incompatible extension.
 
-The extension payload uses the runtime's GL `merge-dirs` layout (the
+GLVND loads `libGLX_maton.so.0` by the `__GLX_VENDOR_LIBRARY_NAME=maton`
+selection when the Maton GL extension is enabled. It renders through the EGL
+forwarder into a pbuffer and copies frames to the X window with XPutImage. The
+extension payload uses the runtime's GL `merge-dirs` layout (the
 Platform metadata lists `vulkan/icd.d;glvnd/egl_vendor.d;...` relative to the
 extension root; flatpak merges only those into `GL/vulkan/icd.d` etc.):
 
 ```text
 lib/libEGL_maton.so
+lib/libGLX_maton.so.0
+# libGLX_maton.so is a regular duplicate for OSTree compatibility
+lib/libGLX_maton.so
 lib/libmaton_vulkan.so
 vulkan/icd.d/maton_icd.json
 glvnd/egl_vendor.d/10_maton.json
