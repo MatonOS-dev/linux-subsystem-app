@@ -581,6 +581,60 @@ static void unhandled_once(long id,long kernel_nr){
         if(__atomic_fetch_or(&seen[id/64],bit,__ATOMIC_RELAXED)&bit)return;}
     proxy_log("unhandled",kernel_nr,id);
 }
+/* Android loads parts of the vendor graphics stack lazily, after the initial
+ * syscall filter snapshot. Classify its future syscalls from live maps so the
+ * host driver keeps native Android syscall semantics as well. */
+struct android_pc_cache_entry {uintptr_t begin,end;int state;};
+static struct android_pc_cache_entry android_pc_cache[256];
+static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end) {
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd<0)return 0;
+    char input[4096],line[4096];size_t used=0;int found=0;
+    for(;;){
+        long n=RAW(PROXY_SC_read,fd,input,sizeof(input),0,0,0);
+        if(n<=0)break;
+        for(long i=0;i<n;i++){
+            char c=input[i];
+            if(c!='\n'){if(used+1<sizeof(line))line[used++]=c;continue;}
+            line[used]=0;used=0;
+            const char *p=line;uintptr_t lo=resident_maps_hex(&p),hi=0;
+            if(*p=='-'){p++;hi=resident_maps_hex(&p);}
+            if(pc<lo||pc>=hi)continue;
+            while(*p==' ')p++;
+            for(unsigned field=0;field<3&&*p;field++){
+                while(*p&&*p!=' ')p++;
+                while(*p==' ')p++;
+            }
+            *begin=lo;*end=hi;
+            found=resident_android_library_path(p)?1:2;
+            goto done;
+        }
+    }
+done:
+    RAW(PROXY_SC_close,fd,0,0,0,0,0);
+    return found;
+}
+static int android_library_callsite(uintptr_t pc) {
+    for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
+        struct android_pc_cache_entry *entry=&android_pc_cache[i];
+        int state=__atomic_load_n(&entry->state,__ATOMIC_ACQUIRE);
+        if(state>0&&pc>=entry->begin&&pc<entry->end)return state==1;
+    }
+    uintptr_t begin=0,end=0;
+    int state=android_library_mapping(pc,&begin,&end);
+    if(!state)return 0;
+    for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
+        int expected=0;
+        if(__atomic_compare_exchange_n(&android_pc_cache[i].state,&expected,-1,0,
+                __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) {
+            android_pc_cache[i].begin=begin;
+            android_pc_cache[i].end=end;
+            __atomic_store_n(&android_pc_cache[i].state,state,__ATOMIC_RELEASE);
+            break;
+        }
+    }
+    return state==1;
+}
 static void handler(int sig,siginfo_t *info,void *opaque) {
     uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
     ucontext_t *uc=opaque;
@@ -635,6 +689,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
     long result=-ENOSYS;
     if(call.error){result=call.error;goto finish;}
+    if(android_library_callsite((uintptr_t)info->si_call_addr)) {
+        result=RAW(info->si_syscall,a[0],a[1],a[2],a[3],a[4],a[5]);
+        ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
+        goto clean_mask;
+    }
     /* signalfd readiness is evaluated against the thread's signal state.
      * Infinite poll must wait outside the SIGSYS frame, with the application's
      * mask restored, rather than nesting the wait in a signal handler. */

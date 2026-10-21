@@ -23,7 +23,7 @@ python3 "$build_source/gen-policy.py"
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
   "$build_source"/adopt-map.c "$build_source"/arch/x86_64/thread-adopt.c \
-  "$build_source"/arch/x86_64/{raw.S,adopt.S} -pthread -ldl \
+  "$build_source"/arch/x86_64/{raw.S,adopt.S} -pthread -ldl -lEGL -lGLESv2 \
   -o "$output/libmatonos-v3-loader.so"
 
 bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"

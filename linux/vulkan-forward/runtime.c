@@ -21,7 +21,9 @@ static const char *bootstrap_field(const struct maton_gpu_bootstrap *p,const cha
            !strcmp(key,"MATON_THREAD_ADOPT")?p->adopt:
            !strcmp(key,"MATON_FAST_TLS")?p->fast:
            !strcmp(key,"MATON_LINUX_PHDR")?p->phdr:
-           !strcmp(key,"MATON_LINUX_PHNUM")?p->phnum:0;
+           !strcmp(key,"MATON_LINUX_PHNUM")?p->phnum:
+           !strcmp(key,"MATON_GPU_EGL")?p->egl:
+           !strcmp(key,"MATON_GPU_GLES")?p->gles:0;
 }
 const char *mv_env(const char *key) {
     const struct maton_gpu_bootstrap *cached=__atomic_load_n(&cached_bootstrap,__ATOMIC_ACQUIRE);
@@ -32,7 +34,7 @@ const char *mv_env(const char *key) {
         char c;if(mv_read(fd,&c,1)!=1)break;
         if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
         line[n]=0;
-        const char *tag="[anon:maton-gpu-bootstrap]";int found=0;
+        const char *tag="[anon:maton-gpu-bootstrap-v2]";int found=0;
         for(size_t j=0;j<n;j++){size_t k=0;while(tag[k] && j+k<n && line[j+k]==tag[k])k++;if(!tag[k]){found=1;break;}}
         if(found){
             size_t j=0;while(line[j] && line[j]!='-')j++;line[j]=0;

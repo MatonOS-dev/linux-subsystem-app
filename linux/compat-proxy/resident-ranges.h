@@ -40,6 +40,24 @@ static inline int resident_bionic_path(const char *path) {
     return resident_libc_path(path) || resident_linker_path(path);
 }
 
+/* Android-side HALs and graphics dispatch libraries execute inside the stub
+ * process too. Their syscalls must retain Android's native semantics while
+ * an adopted thread temporarily uses bionic TLS. The Linux payload remains
+ * outside these mapped system/vendor/APEX library paths. */
+static inline int resident_android_library_path(const char *path) {
+    static const char *const prefixes[]={
+        "/system/lib/", "/system/lib64/",
+        "/vendor/lib/", "/vendor/lib64/",
+        "/apex/"
+    };
+    for (size_t i=0;i<sizeof(prefixes)/sizeof(prefixes[0]);i++) {
+        const char *a=path,*b=prefixes[i];
+        while (*b&&*a==*b) { a++;b++; }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
 static inline int resident_range_append(struct arch_ip_range **ranges,
                                         size_t *count, size_t *capacity,
                                         uintptr_t begin, uintptr_t end,
@@ -93,7 +111,7 @@ static inline int resident_ranges_parse(char *maps, size_t *count,
             while (*p==' ') p++;
         }
         int linker=resident_linker_path(p);
-        if (lo<hi&&executable&&resident_bionic_path(p) &&
+        if (lo<hi&&executable&&(resident_bionic_path(p)||resident_android_library_path(p)) &&
             resident_range_append(ranges,count,capacity,lo,hi,(unsigned)linker)) {
             *end=saved;
             return -ENOMEM;

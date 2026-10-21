@@ -49,16 +49,19 @@ static int mv_fast, mv_state;
 static void *mv_lookup_proc(const char *name);
 static int mv_has_token(const char *list, const char *token);
 
-static void mv_egl_diagnostic(void) {
-    static const char message[] = "matonos-egl: bridge or thread adoption unavailable\n";
-    mv_write(message, sizeof(message) - 1);
+static void mv_egl_diagnostic(const char *message, size_t length) {
+    mv_write(message, length);
 }
 static int mv_enter(struct mv_scope *scope) {
     if (switch_to_android(mv_adopt, mv_fast, scope)) return 1;
-    mv_egl_diagnostic();
+    static const char message[] = "matonos-egl: thread adoption failed\n";
+    mv_egl_diagnostic(message, sizeof(message) - 1);
     return 0;
 }
-static void mv_fail(void) { mv_egl_diagnostic(); }
+static void mv_fail(void) {
+    static const char message[] = "matonos-egl: EGL forwarding failed\n";
+    mv_egl_diagnostic(message, sizeof(message) - 1);
+}
 
 static int mv_ready(void) {
     int state = __atomic_load_n(&mv_state, __ATOMIC_ACQUIRE);
@@ -72,17 +75,24 @@ static int mv_ready(void) {
     mv_bridge = (void *)mv_hex(mv_env("MATON_GPU_BRIDGE"));
     mv_adopt = (void *)mv_hex(mv_env("MATON_THREAD_ADOPT"));
     mv_fast = mv_hex(mv_env("MATON_FAST_TLS")) != 0;
+    if (!mv_bridge || !mv_adopt) {
+        static const char message[] = "matonos-egl: GPU bootstrap bridge or adoption API missing\n";
+        mv_egl_diagnostic(message, sizeof(message) - 1);
+    }
     struct mv_scope scope;
     if (mv_bridge && mv_bridge->version == 2 && mv_enter(&scope)) {
-        mv_egl_lib = mv_bridge->open("/system/lib64/libEGL.so", 2);
-        mv_gles_lib = mv_bridge->open("/system/lib64/libGLESv2.so", 2);
+        mv_egl_lib = (void *)mv_hex(mv_env("MATON_GPU_EGL"));
+        mv_gles_lib = (void *)mv_hex(mv_env("MATON_GPU_GLES"));
         if (mv_egl_lib)
             mv_android_egl_get_proc = (void *)mv_bridge->symbol(mv_egl_lib, "eglGetProcAddress");
         switch_back(&scope);
     }
-    int ok = mv_egl_lib && mv_gles_lib && mv_android_egl_get_proc;
+    int ok = mv_android_egl_get_proc != 0;
     __atomic_store_n(&mv_state, ok ? 2 : 3, __ATOMIC_RELEASE);
-    if (!ok) mv_egl_diagnostic();
+    if (!ok) {
+        static const char message[] = "matonos-egl: resident EGL/GLES libraries unavailable\n";
+        mv_egl_diagnostic(message, sizeof(message) - 1);
+    }
     return ok;
 }
 
@@ -91,7 +101,7 @@ static void *mv_resolve(const char *name, int which) {
     if (which == MV_DESKTOP)
         return mv_desktop_egl_get_proc ? (void *)mv_desktop_egl_get_proc(name) : 0;
     void *lib = which == MV_EGL ? mv_egl_lib : mv_gles_lib;
-    void *p = mv_bridge->symbol(lib, name);
+    void *p = lib ? mv_bridge->symbol(lib, name) : 0;
     if (!p && mv_android_egl_get_proc)
         p = (void *)mv_android_egl_get_proc(name);
     return p;

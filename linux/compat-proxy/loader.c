@@ -20,6 +20,8 @@
 #include "../gpu-forward-spike/spike3/adopt.h"
 #include "../gpu-forward-spike/bootstrap.h"
 #include "../gpu-forward-spike/bridge.h"
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
 static struct maton_gpu_bootstrap *gpu_bootstrap;
 static const char *gpu_bridge_error(void) { return dlerror(); }
 #endif
@@ -402,6 +404,7 @@ int main(int argc,char **argv,char **environ) {
     int android=0,i=resumed?4:1; long parent=0;
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
     int gpu_bridge_enabled=0;
+    static void *gpu_egl, *gpu_gles;
 #endif
     while(i<argc && argv[i][0]=='-') {
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
@@ -436,18 +439,60 @@ int main(int argc,char **argv,char **environ) {
     vfs_gpu_init();
     struct image image; int r=proxy_load(argv[i],argv+i+(resumed?1:0),environ,&image);
     if(r) {proxy_log("load-error",0,r);return 1;}
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    static struct gpu_bridge bridge;
+    if(gpu_bridge_enabled) {
+        bridge.version=2;
+        bridge.open=dlopen;
+        bridge.symbol=dlsym;
+        bridge.error=gpu_bridge_error;
+        gpu_egl=dlopen(NULL,RTLD_NOW|RTLD_LOCAL);
+        gpu_gles=gpu_egl;
+    }
+#endif
+    /* Load Android's EGL vendor implementation before the proxy snapshots
+     * native-library syscall ranges. EGL dispatch loads the hardware driver
+     * lazily on first initialization; calls from the adopted Linux thread
+     * must keep those driver's Android syscalls native too. */
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    if(gpu_bridge_enabled) {
+        EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        EGLint major=0,minor=0,count=0;
+        if(display!=EGL_NO_DISPLAY && eglInitialize(display,&major,&minor) &&
+           eglBindAPI(EGL_OPENGL_ES_API)) {
+            const EGLint attrs[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,
+                EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,EGL_NONE};
+            EGLConfig config=0;
+            if(eglChooseConfig(display,attrs,&config,1,&count)&&count) {
+                const EGLint pbuffer_attrs[]={EGL_WIDTH,1,EGL_HEIGHT,1,EGL_NONE};
+                const EGLint context_attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+                EGLSurface surface=eglCreatePbufferSurface(display,config,pbuffer_attrs);
+                EGLContext context=eglCreateContext(display,config,EGL_NO_CONTEXT,context_attrs);
+                if(surface!=EGL_NO_SURFACE && context!=EGL_NO_CONTEXT &&
+                   eglMakeCurrent(display,surface,surface,context)) {
+                    GLuint shader=glCreateShader(GL_VERTEX_SHADER);
+                    const GLchar *source="attribute vec4 p; void main(){gl_Position=p;}";
+                    if(shader) { glShaderSource(shader,1,&source,NULL); glCompileShader(shader); glDeleteShader(shader); }
+                    GLubyte pixel[4]={0};
+                    glClearColor(1.0f,0.0f,0.0f,1.0f);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    glFinish();
+                    glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+                    eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
+                }
+                if(context!=EGL_NO_CONTEXT) eglDestroyContext(display,context);
+                if(surface!=EGL_NO_SURFACE) eglDestroySurface(display,surface);
+            }
+        }
+    }
+#endif
     r=proxy_install(android);
     if(r) {proxy_log("filter-error",0,r);return 1;}
     proxy_host_snapshot(environ);
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
     if(gpu_bridge_enabled) {
-        static struct gpu_bridge bridge;
-        bridge.version=2;
         bridge.owner=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
         if(RAW(PROXY_SC_arch_prctl,0x1003,&bridge.tls,0,0,0,0)) return 3;
-        bridge.open=dlopen;
-        bridge.symbol=dlsym;
-        bridge.error=gpu_bridge_error;
         char value[32];
         snprintf(value,sizeof(value),"%lx",(unsigned long)&bridge);
         if(adopt_install()) return 5;
@@ -458,6 +503,8 @@ int main(int argc,char **argv,char **environ) {
         snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",value);
         snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%lx",(unsigned long)adopt_api_address());
         snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",(unsigned long)(getauxval(AT_HWCAP2)&2));
+        snprintf(bootstrap->egl,sizeof(bootstrap->egl),"%lx",(unsigned long)gpu_egl);
+        snprintf(bootstrap->gles,sizeof(bootstrap->gles),"%lx",(unsigned long)gpu_gles);
         uintptr_t *payload=(uintptr_t *)image.stack;
         payload+=1+payload[0]+1; /* argc, argv, NULL */
         while(*payload)payload++;
