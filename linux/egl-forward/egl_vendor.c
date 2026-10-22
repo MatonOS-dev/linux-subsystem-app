@@ -185,12 +185,11 @@ struct mv_egl_surface {
     void *image;
     EGLint width, height;
     GLuint texture, framebuffer;
-    int submitted;
+    int submitted, swap_interval;
     struct mv_egl_surface *next;
 };
 struct mv_ahb_desc { uint32_t width,height,layers,format; uint64_t usage; uint32_t stride,rfu0; uint64_t rfu1; };
 static struct mv_egl_surface *mv_surfaces;
-static EGLint mv_swap_interval=1;
 static void *mv_android_lib;
 static void *mv_android_symbol(const char *name) {
     if (!mv_android_lib) mv_android_lib = mv_bridge->open("/system/lib64/libandroid.so", 2);
@@ -201,6 +200,11 @@ static struct mv_egl_surface *mv_surface_find(EGLSurface handle) {
     return 0;
 }
 static void *mv_egl_ext(const char *name) { return (void *)mv_android_egl_get_proc(name); }
+static void *mv_current_gl_resolve(const char *name) {
+    typedef EGLenum (*query_fn)(void);
+    query_fn query=(query_fn)mv_resolve("eglQueryAPI",MV_EGL);
+    return mv_resolve(name,query && query()==EGL_OPENGL_API?MV_DESKTOP:MV_GLES);
+}
 
 static EGLSurface mv_eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config,
         void *native_window, const EGLAttrib *attrs) {
@@ -210,7 +214,7 @@ static EGLSurface mv_eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig co
     if (w->version != 3 || !w->surface || w->width<1 || w->height<1) return EGL_NO_SURFACE;
     struct mv_egl_surface *s=mv_alloc(sizeof(*s));
     if (!s) return EGL_NO_SURFACE;
-    memset(s,0,sizeof(*s)); s->display=dpy; s->config=config; s->window=w; s->width=w->width; s->height=w->height;
+    memset(s,0,sizeof(*s)); s->display=dpy; s->config=config; s->window=w; s->width=w->width; s->height=w->height; s->swap_interval=1;
     struct mv_scope scope;
     if (!mv_enter(&scope)) { mv_free(s); return EGL_NO_SURFACE; }
     typedef EGLSurface (*pbuf_fn)(EGLDisplay,EGLConfig,const EGLint *);
@@ -328,7 +332,7 @@ static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
     if((s->width!=s->window->width||s->height!=s->window->height)&&!mv_surface_resize(s))return EGL_FALSE;
     if (s->submitted) {
         while (!mv_wl_buffer_released(s->buffer)) if (mv_wl_dmabuf_dispatch_one(s->wayland)<0) return EGL_FALSE;
-        if (mv_swap_interval>0 && mv_wl_sync_wait_frame(s->sync)<0) return EGL_FALSE;
+        if (s->swap_interval>0 && mv_wl_sync_wait_frame(s->sync)<0) return EGL_FALSE;
         mv_wl_buffer_clear_released(s->buffer);
     }
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
@@ -336,15 +340,15 @@ static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
     EGLBoolean ok=swap?swap(dpy,s->pbuffer):EGL_FALSE;
     typedef void (*bind_fn)(GLenum,GLuint); typedef void (*gen_fn)(GLsizei,GLuint *); typedef void (*image_target_fn)(GLenum,void *);
     typedef void (*get_fn)(GLenum,GLint *); typedef void (*blit_fn)(GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLint,GLbitfield,GLenum);
-    bind_fn bind=(bind_fn)mv_resolve("glBindFramebuffer",MV_GLES); gen_fn gen=(gen_fn)mv_resolve("glGenTextures",MV_GLES);
-    image_target_fn target=(image_target_fn)mv_egl_ext("glEGLImageTargetTexture2DOES"); get_fn get=(get_fn)mv_resolve("glGetIntegerv",MV_GLES);
-    blit_fn blit=(blit_fn)mv_resolve("glBlitFramebuffer",MV_GLES);
-    typedef void (*genfb_fn)(GLsizei,GLuint *); genfb_fn genfb=(genfb_fn)mv_resolve("glGenFramebuffers",MV_GLES);
-    typedef void (*bindtex_fn)(GLenum,GLuint); bindtex_fn bindtex=(bindtex_fn)mv_resolve("glBindTexture",MV_GLES);
-    typedef void (*attach_fn)(GLenum,GLenum,GLenum,GLuint,GLint); attach_fn attach=(attach_fn)mv_resolve("glFramebufferTexture2D",MV_GLES);
-    typedef GLenum (*check_fn)(GLenum); check_fn check=(check_fn)mv_resolve("glCheckFramebufferStatus",MV_GLES);
+    bind_fn bind=(bind_fn)mv_current_gl_resolve("glBindFramebuffer"); gen_fn gen=(gen_fn)mv_current_gl_resolve("glGenTextures");
+    image_target_fn target=(image_target_fn)mv_egl_ext("glEGLImageTargetTexture2DOES"); get_fn get=(get_fn)mv_current_gl_resolve("glGetIntegerv");
+    blit_fn blit=(blit_fn)mv_current_gl_resolve("glBlitFramebuffer");
+    typedef void (*genfb_fn)(GLsizei,GLuint *); genfb_fn genfb=(genfb_fn)mv_current_gl_resolve("glGenFramebuffers");
+    typedef void (*bindtex_fn)(GLenum,GLuint); bindtex_fn bindtex=(bindtex_fn)mv_current_gl_resolve("glBindTexture");
+    typedef void (*attach_fn)(GLenum,GLenum,GLenum,GLuint,GLint); attach_fn attach=(attach_fn)mv_current_gl_resolve("glFramebufferTexture2D");
+    typedef GLenum (*check_fn)(GLenum); check_fn check=(check_fn)mv_current_gl_resolve("glCheckFramebufferStatus");
     if(ok && gen && target && get && bindtex) {
-        if(!s->texture){gen(1,&s->texture);bindtex(0x0DE1,s->texture);target(0x0DE1,s->image);if(genfb)genfb(1,&s->framebuffer);}
+        if(!s->texture){GLint oldtex=0;get(0x8069,&oldtex);gen(1,&s->texture);bindtex(0x0DE1,s->texture);target(0x0DE1,s->image);if(genfb)genfb(1,&s->framebuffer);bindtex(0x0DE1,(GLuint)oldtex);}
         if(blit&&bind&&genfb&&attach&&check&&s->framebuffer) {
             GLint oldr=0,oldd=0;get(GL_READ_FRAMEBUFFER_BINDING,&oldr);get(GL_DRAW_FRAMEBUFFER_BINDING,&oldd);
             bind(GL_DRAW_FRAMEBUFFER,s->framebuffer);attach(GL_DRAW_FRAMEBUFFER,0x8CE0,0x0DE1,s->texture,0);
@@ -353,8 +357,8 @@ static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
             bind(GL_READ_FRAMEBUFFER,(GLuint)oldr);bind(GL_DRAW_FRAMEBUFFER,(GLuint)oldd);
         } else {
             typedef void (*copy_fn)(GLenum,GLint,GLint,GLint,GLint,GLint,GLsizei,GLsizei);
-            copy_fn copy=(copy_fn)mv_resolve("glCopyTexSubImage2D",MV_GLES);
-            typedef void (*bindfb_fn)(GLenum,GLuint); bindfb_fn bindfb=(bindfb_fn)mv_resolve("glBindFramebuffer",MV_GLES);
+            copy_fn copy=(copy_fn)mv_current_gl_resolve("glCopyTexSubImage2D");
+            typedef void (*bindfb_fn)(GLenum,GLuint); bindfb_fn bindfb=(bindfb_fn)mv_current_gl_resolve("glBindFramebuffer");
             GLint oldfb=0,oldtex=0;get(0x8CA6,&oldfb);get(0x8069,&oldtex);
             if(copy&&bindfb){bindfb(0x8D40,0);bindtex(0x0DE1,s->texture);copy(0x0DE1,0,0,0,0,0,s->width,s->height);bindtex(0x0DE1,(GLuint)oldtex);bindfb(0x8D40,(GLuint)oldfb);}
             else ok=EGL_FALSE;
@@ -366,13 +370,17 @@ static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
     create_sync_fn create_sync=(create_sync_fn)mv_egl_ext("eglCreateSyncKHR");
     dup_fence_fn dup_fence=(dup_fence_fn)mv_egl_ext("eglDupNativeFenceFDANDROID");
     destroy_sync_fn destroy_sync=(destroy_sync_fn)mv_egl_ext("eglDestroySyncKHR");
-    typedef void (*flush_gl_fn)(void); flush_gl_fn flush_gl=(flush_gl_fn)mv_resolve("glFlush",MV_GLES);
+    typedef void (*flush_gl_fn)(void); flush_gl_fn flush_gl=(flush_gl_fn)mv_current_gl_resolve("glFlush");
     int fence=-1;
     if(ok && create_sync && dup_fence && destroy_sync && flush_gl) {
         EGLint sync_attrs[]={0x3145,-1,EGL_NONE};
-        flush_gl(); void *sync=create_sync(dpy,0x3144,sync_attrs); if(sync){fence=dup_fence(dpy,sync);destroy_sync(dpy,sync);}
-        if(fence<0)ok=EGL_FALSE;
-    } else ok=EGL_FALSE;
+        flush_gl(); void *sync=create_sync(dpy,0x3144,sync_attrs);
+        if(sync){fence=dup_fence(dpy,sync);destroy_sync(dpy,sync);if(fence<0)fence=-1;}
+    }
+    if(ok && fence<0) {
+        typedef void (*finish_fn)(void);finish_fn finish=(finish_fn)mv_current_gl_resolve("glFinish");
+        if(finish)finish();else ok=EGL_FALSE;
+    }
     switch_back(&scope);
     if (ok && mv_wl_surface_present(s->sync,s->window->surface,s->buffer,fence)==0) s->submitted=1;
     else ok=EGL_FALSE;
@@ -381,7 +389,10 @@ static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
 }
 static EGLBoolean mv_eglSwapInterval(EGLDisplay dpy,EGLint interval) {
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
-    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLint); fn_t fn=(fn_t)mv_resolve("eglSwapInterval",MV_EGL); EGLBoolean r=fn?fn(dpy,interval):EGL_FALSE; switch_back(&scope); if(r)mv_swap_interval=interval; return r;
+    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLint); fn_t fn=(fn_t)mv_resolve("eglSwapInterval",MV_EGL); EGLBoolean r=fn?fn(dpy,interval):EGL_FALSE;
+    typedef EGLSurface (*get_surface_fn)(EGLint); get_surface_fn get_surface=(get_surface_fn)mv_resolve("eglGetCurrentSurface",MV_EGL);
+    EGLSurface current=get_surface?get_surface(EGL_DRAW):EGL_NO_SURFACE;switch_back(&scope);
+    if(r)for(struct mv_egl_surface *s=mv_surfaces;s;s=s->next)if(s->pbuffer==current){s->swap_interval=interval;break;}return r;
 }
 static EGLBoolean mv_eglQuerySurface(EGLDisplay dpy,EGLSurface handle,EGLint attr,EGLint *value) {
     struct mv_egl_surface *s=mv_surface_find(handle); if(s && value && (attr==EGL_WIDTH||attr==EGL_HEIGHT)){*value=attr==EGL_WIDTH?s->width:s->height;return EGL_TRUE;}
