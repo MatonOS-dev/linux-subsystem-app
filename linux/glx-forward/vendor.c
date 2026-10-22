@@ -68,6 +68,12 @@ struct ctx { int magic,width,height; EGLContext egl; EGLSurface surface; GLXDraw
 static struct ctx *contexts; static const char exts[]="GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control GLX_EXT_visual_info";
 extern long write(int,const void*,unsigned long);
 static void egl_diag(const char*s){size_t n=0;while(s[n])n++;(void)write(2,s,n);}
+static void reset_egl_probe(void){
+    egl_lib=0;egl_direct=0;
+    p_eglGetPlatformDisplay=0;p_eglGetDisplay=0;p_eglInitialize=0;p_eglBindAPI=0;
+    p_eglChooseConfig=0;p_eglCreateContext=0;p_eglCreatePbufferSurface=0;
+    p_eglMakeCurrent=0;p_eglDestroySurface=0;p_eglDestroyContext=0;p_eglGetProcAddress=0;
+}
 static int init_egl(void){
     if(edpy!=EGL_NO_DISPLAY)return ecfg!=0;
     if(!egl_lib){
@@ -75,7 +81,7 @@ static int init_egl(void){
         if(!egl_lib)egl_lib=dlopen("libEGL_maton.so.0",RTLD_NOW|RTLD_LOCAL);
         if(!egl_lib){egl_diag("maton GLX: cannot load direct Maton EGL vendor\n");return 0;}
         maton_egl_direct_v1_fn get_direct=(maton_egl_direct_v1_fn)dlsym(egl_lib,"maton_egl_direct_v1");
-        if(!get_direct||(egl_direct=get_direct())==0||egl_direct->version!=1){egl_diag("maton GLX: direct Maton EGL ABI unavailable\n");return 0;}
+        if(!get_direct||(egl_direct=get_direct())==0||egl_direct->version!=1){egl_diag("maton GLX: direct Maton EGL ABI unavailable\n");reset_egl_probe();return 0;}
 #define LOAD_DIRECT(name,field) p_##name=(__typeof__(p_##name))egl_direct->field
         LOAD_DIRECT(eglGetPlatformDisplay,get_platform_display);LOAD_DIRECT(eglGetDisplay,get_display);
         LOAD_DIRECT(eglInitialize,initialize);LOAD_DIRECT(eglBindAPI,bind_api);
