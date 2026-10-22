@@ -75,6 +75,8 @@ def canonical(name):
     return name
 
 proc_names = {name: name for name in exposed}
+# libglvnd requires these hand-written EGL vendor entry points.
+proc_names.update({"eglQueryString": "eglQueryString", "eglGetProcAddress": "eglGetProcAddress"})
 for name in aliases:
     target = canonical(name)
     if target in exposed:
@@ -139,7 +141,7 @@ desktopnames = emit_group(outdir / "desktop_thunks.inc", desktop, "mv_desktop_",
     "    if (!name) return 0;\n" +
     "    if (0) return 0;\n" +
     "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_{target};\n'
-            for n, target in sorted(proc_names.items()) if target in {x for x, _ in egl + gles}) +
+            for n, target in sorted(proc_names.items()) if target in {x for x, _ in egl + gles} or n in ("eglQueryString", "eglGetProcAddress")) +
     "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
             for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop}) +
     "    return 0;\n}\n")
