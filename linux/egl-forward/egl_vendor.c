@@ -328,7 +328,10 @@ static EGLSurface mv_eglGetCurrentSurface(EGLint which) {
     return current;
 }
 static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
-    struct mv_egl_surface *s=mv_surface_find(handle); if(!s)return EGL_FALSE;
+    struct mv_egl_surface *s=mv_surface_find(handle);
+    if(!s){struct mv_scope scope;if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
+        typedef EGLBoolean (*swap_fn)(EGLDisplay,EGLSurface);swap_fn swap=(swap_fn)mv_resolve("eglSwapBuffers",MV_EGL);
+        EGLBoolean result=swap?swap(dpy,handle):EGL_FALSE;switch_back(&scope);return result;}
     if((s->width!=s->window->width||s->height!=s->window->height)&&!mv_surface_resize(s))return EGL_FALSE;
     if (s->submitted) {
         while (!mv_wl_buffer_released(s->buffer)) if (mv_wl_dmabuf_dispatch_one(s->wayland)<0) return EGL_FALSE;
