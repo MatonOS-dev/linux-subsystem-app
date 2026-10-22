@@ -208,8 +208,7 @@ static void *mv_current_gl_resolve(const char *name) {
 
 static EGLSurface mv_eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config,
         void *native_window, const EGLAttrib *attrs) {
-    (void)attrs;
-    if (!native_window || !mv_ready()) return EGL_NO_SURFACE;
+    if ((attrs && attrs[0]!=EGL_NONE) || !native_window || !mv_ready()) return EGL_NO_SURFACE;
     struct wl_egl_window_abi *w=native_window;
     if (w->version != 3 || !w->surface || w->width<1 || w->height<1) return EGL_NO_SURFACE;
     struct mv_egl_surface *s=mv_alloc(sizeof(*s));
@@ -270,7 +269,8 @@ fail:
 }
 static EGLSurface mv_eglCreateWindowSurface(EGLDisplay dpy,EGLConfig config,
         EGLNativeWindowType window,const EGLint *attrs) {
-    (void)attrs; return mv_eglCreatePlatformWindowSurface(dpy,config,(void *)window,0);
+    if(attrs && attrs[0]!=EGL_NONE)return EGL_NO_SURFACE;
+    return mv_eglCreatePlatformWindowSurface(dpy,config,(void *)window,0);
 }
 static int mv_surface_resize(struct mv_egl_surface *s) {
     if(!s||!s->window||(s->width==s->window->width&&s->height==s->window->height))return 1;
@@ -402,7 +402,7 @@ static EGLBoolean mv_eglQuerySurface(EGLDisplay dpy,EGLSurface handle,EGLint att
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE; typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint *); fn_t fn=(fn_t)mv_resolve("eglQuerySurface",MV_EGL); EGLBoolean r=fn?fn(dpy,handle,attr,value):EGL_FALSE; switch_back(&scope); return r;
 }
 static EGLBoolean mv_eglSurfaceAttrib(EGLDisplay dpy,EGLSurface handle,EGLint attr,EGLint value) {
-    struct mv_egl_surface *s=mv_surface_find(handle); if(s){(void)dpy;(void)attr;(void)value;return EGL_TRUE;}
+    struct mv_egl_surface *s=mv_surface_find(handle); if(s){(void)dpy;(void)attr;(void)value;return EGL_FALSE;}
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE; typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint); fn_t fn=(fn_t)mv_resolve("eglSurfaceAttrib",MV_EGL); EGLBoolean r=fn?fn(dpy,handle,attr,value):EGL_FALSE; switch_back(&scope); return r;
 }
 
