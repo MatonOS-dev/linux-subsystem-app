@@ -161,14 +161,16 @@ static int mv_desktop_api_supported(void) {
     return supported;
 }
 
-/* libwayland-egl's public wl_egl_window ABI. The object itself is created and
- * resized by the runtime's libwayland-egl; this adapter only reads its stable
- * surface and extent fields. */
+/* The staged libwayland-egl is pinned to Wayland 1.24.0. Its backend ABI
+ * version 3 places surface after the driver callbacks; check the version before
+ * reading this private field layout. */
 struct wl_egl_window_abi {
+    intptr_t version;
+    int width, height, dx, dy, attached_width, attached_height;
+    void *driver_private;
+    void (*resize_callback)(struct wl_egl_window_abi *, void *);
+    void (*destroy_window_callback)(void *);
     struct wl_surface *surface;
-    int width, height, dx, dy, attached_width, attached_height, busy;
-    void (*resize_callback)(void *, struct wl_egl_window_abi *, int, int);
-    void *private;
 };
 struct mv_egl_surface {
     EGLDisplay display;
@@ -204,7 +206,7 @@ static EGLSurface mv_eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig co
     (void)attrs;
     if (!native_window || !mv_ready()) return EGL_NO_SURFACE;
     struct wl_egl_window_abi *w=native_window;
-    if (!w->surface || w->width<1 || w->height<1) return EGL_NO_SURFACE;
+    if (w->version != 3 || !w->surface || w->width<1 || w->height<1) return EGL_NO_SURFACE;
     struct mv_egl_surface *s=mv_alloc(sizeof(*s));
     if (!s) return EGL_NO_SURFACE;
     memset(s,0,sizeof(*s)); s->display=dpy; s->config=config; s->window=w; s->width=w->width; s->height=w->height;
