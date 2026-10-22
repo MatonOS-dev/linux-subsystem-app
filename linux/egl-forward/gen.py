@@ -118,7 +118,7 @@ def emit_group(path, items, prefix, library):
         lines.append(f"static uintptr_t mv_cache_{name};")
         # Function pointer declarators in Khronos parameters are uncommon but
         # retain the registry declaration as the call prototype when present.
-        lines += [f"static {ret} {internal}({proto}) {{",
+        lines += [f"static __attribute__((unused)) {ret} {internal}({proto}) {{",
                   "    struct mv_scope scope;",
                   "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
                   f'    typedef {ret} (*fn_t)({proto});',
