@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #define EXPORT __attribute__((visibility("default")))
 #define BGRA 0x80E1
 #define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
@@ -44,7 +45,7 @@ extern int XGetWindowAttributes(Display*,unsigned long,XWindowAttributes*),XFlus
 extern void *XCreateGC(Display*,unsigned long,unsigned long,void*);
 extern XImage *XCreateImage(Display*,Visual*,unsigned int,int,int,char*,unsigned int,unsigned int,int,int);
 extern int XPutPixel(XImage*,int,int,unsigned long);
-static EGLDisplay edpy=EGL_NO_DISPLAY; static EGLConfig ecfg; static GLXContext current; static Display *current_display;
+static EGLDisplay edpy=EGL_NO_DISPLAY; static EGLConfig ecfg; static __thread GLXContext current; static __thread Display *current_display;
 static void *egl_lib; static const struct maton_egl_direct_v1 *egl_direct;
 #define EGL_FN(name) static __typeof__(&name) p_##name
 EGL_FN(eglGetPlatformDisplay); EGL_FN(eglGetDisplay); EGL_FN(eglInitialize);
@@ -65,7 +66,7 @@ EGL_FN(eglDestroyContext); EGL_FN(eglGetProcAddress);
 #define eglGetProcAddress p_eglGetProcAddress
 struct fb { int magic; }; static struct fb fb={0x4d41544f};
 struct ctx { int magic,width,height; EGLContext egl; EGLSurface surface; GLXDrawable drawable; struct ctx *next; };
-static struct ctx *contexts; static const char exts[]="GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control GLX_EXT_visual_info";
+static struct ctx *contexts; static pthread_mutex_t contexts_lock=PTHREAD_MUTEX_INITIALIZER; static const char exts[]="GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control GLX_EXT_visual_info";
 extern long write(int,const void*,unsigned long);
 static void egl_diag(const char*s){size_t n=0;while(s[n])n++;(void)write(2,s,n);}
 static void reset_egl_probe(void){
@@ -116,7 +117,7 @@ static int glXGetFBConfigAttrib(Display*d,GLXFBConfig c,int a,int*v){return cfga
 static XVisualInfo *glXGetVisualFromFBConfig(Display*d,GLXFBConfig c){if(!d||c!=(GLXFBConfig)&fb)return 0;int s=XDefaultScreen(d);Visual*v=XDefaultVisual(d,s);if(!v)return 0;XVisualInfo*x=calloc(1,sizeof(*x));if(!x)return 0;x->visual=v;x->visualid=v->visualid;x->screen=s;x->depth=XDefaultDepth(d,s);x->c_class=v->c_class;x->red_mask=v->red_mask;x->green_mask=v->green_mask;x->blue_mask=v->blue_mask;x->colormap_size=v->map_entries;x->bits_per_rgb=v->bits_per_rgb;return x;}
 static XVisualInfo *glXChooseVisual(Display*d,int s,int*a){(void)a;return supported(d,s)?glXGetVisualFromFBConfig(d,(GLXFBConfig)&fb):0;}
 static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:*out=24;break;case GLX_STENCIL_SIZE:*out=8;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
-static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){(void)share;(void)direct;(void)a;if(c!=(GLXFBConfig)&fb||!supported(d,XDefaultScreen(d)))return 0;struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->surface=EGL_NO_SURFACE;x->egl=eglCreateContext(edpy,ecfg,EGL_NO_CONTEXT,0);if(x->egl==EGL_NO_CONTEXT){free(x);return 0;}x->next=contexts;contexts=x;return (GLXContext)x;}
+static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){(void)share;(void)direct;(void)a;if(c!=(GLXFBConfig)&fb||!supported(d,XDefaultScreen(d)))return 0;struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->surface=EGL_NO_SURFACE;x->egl=eglCreateContext(edpy,ecfg,EGL_NO_CONTEXT,0);if(x->egl==EGL_NO_CONTEXT){free(x);return 0;}pthread_mutex_lock(&contexts_lock);x->next=contexts;contexts=x;pthread_mutex_unlock(&contexts_lock);return (GLXContext)x;}
 static GLXContext glXCreateNewContext(Display*d,GLXFBConfig c,int r,GLXContext s,Bool direct){(void)r;return create_context(d,c,s,direct,0);}
 static GLXContext glXCreateContext(Display*d,XVisualInfo*v,GLXContext s,Bool direct){(void)v;return create_context(d,(GLXFBConfig)&fb,s,direct,0);}
 static GLXContext glXCreateContextAttribsARB(Display*d,GLXFBConfig c,GLXContext s,Bool direct,const int*a){return create_context(d,c,s,direct,a);}
@@ -171,7 +172,7 @@ static void glXSwapBuffers(Display*d,GLXDrawable w){
     }else free(p);
     XFlush(d);
 }
-static void glXDestroyContext(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx*)c;if(!x||x->magic!=0x4d415443)return;if(current==(GLXContext)x){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);current=0;}if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);eglDestroyContext(edpy,x->egl);struct ctx**p=&contexts;while(*p&&*p!=x)p=&(*p)->next;if(*p)*p=x->next;x->magic=0;free(x);}
+static void glXDestroyContext(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx*)c;if(!x||x->magic!=0x4d415443)return;if(current==(GLXContext)x){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);current=0;}if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);eglDestroyContext(edpy,x->egl);pthread_mutex_lock(&contexts_lock);struct ctx**p=&contexts;while(*p&&*p!=x)p=&(*p)->next;if(*p)*p=x->next;x->magic=0;pthread_mutex_unlock(&contexts_lock);free(x);}
 static Bool glXIsDirect(Display*d,GLXContext c){(void)d;return c!=0;}
 static void glXWaitGL(void){if(current){void (*finish)(void)=(void (*)(void))eglGetProcAddress("glFinish");if(finish)finish();}} static void glXWaitX(void){}
 static void glXQueryDrawable(Display*d,GLXDrawable w,int a,unsigned int*v){(void)d;(void)w;(void)a;if(v)*v=0;}
