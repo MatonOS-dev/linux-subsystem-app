@@ -89,7 +89,7 @@ static int mv_ready(void) {
         switch_back(&scope);
     }
     int ok = mv_android_egl_get_proc != 0;
-    __atomic_store_n(&mv_state, ok ? 2 : 3, __ATOMIC_RELEASE);
+    __atomic_store_n(&mv_state, ok ? 2 : 0, __ATOMIC_RELEASE);
     if (!ok) {
         static const char message[] = "matonos-egl: resident EGL/GLES libraries unavailable\n";
         mv_egl_diagnostic(message, sizeof(message) - 1);

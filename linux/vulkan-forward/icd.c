@@ -107,7 +107,7 @@ static int mv_init(void) {
         }
         switch_back(&s);
     } else if(mv_bridge && mv_bridge->version==2) {static const char m[]="maton-vulkan: initial Android thread adoption failed\n";mv_write(m,sizeof(m)-1);}
-    __atomic_store_n(&mv_state,mv_gipa?2:3,__ATOMIC_RELEASE);
+    __atomic_store_n(&mv_state,mv_gipa?2:0,__ATOMIC_RELEASE);
     if(!mv_gipa)mv_diagnostic();
     return mv_gipa!=0;
 }
@@ -255,8 +255,8 @@ static PFN_vkVoidFunction mv_lookup(const char *name) {
     return 0;
 }
 static PFN_vkVoidFunction mv_vkGetInstanceProcAddr(VkInstance instance,const char *name) {
-    if(!mv_init())return 0;
     PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
+    if(!mv_init())return !strcmp(name,"vkCreateInstance")?local:0;
     if(mv_wsi_lookup(name))return local;
     struct mv_scope s;if(!mv_enter(&s))return 0;
     PFN_vkVoidFunction remote=mv_gipa(instance?((struct mv_instance *)instance)->base.android:0,name);
