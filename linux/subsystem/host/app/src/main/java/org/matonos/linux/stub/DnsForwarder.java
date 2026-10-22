@@ -26,6 +26,7 @@ final class DnsForwarder {
     private static int uid;
     private static android.net.LocalServerSocket udpServer, tcpServer;
     private static android.net.LocalSocket udpSocket, tcpSocket;
+    private static volatile long generation;
     private static final java.util.concurrent.ExecutorService workers =
             new java.util.concurrent.ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, TimeUnit.SECONDS,
                     new java.util.concurrent.SynchronousQueue<>(), runnable -> {
@@ -72,7 +73,8 @@ final class DnsForwarder {
             udpServer = new android.net.LocalServerSocket(udp);
             tcpServer = new android.net.LocalServerSocket(tcp);
             socketPath = path;
-            Thread worker = new Thread(DnsForwarder::serve, "maton-dns-forwarder");
+            final long instance = ++generation;
+            Thread worker = new Thread(() -> serve(instance), "maton-dns-forwarder");
             worker.setDaemon(true); worker.start();
         } catch (Exception error) {
             Log.e(TAG, "Cannot bind the DNS forwarder", error);
@@ -97,6 +99,7 @@ final class DnsForwarder {
      *  per-client channels. A later {@link #acquire} binds a fresh forwarder,
      *  so a host install never reuses another operation's deleted directory. */
     static synchronized void release() {
+        ++generation;
         if (udpServer != null) { try { udpServer.close(); } catch (Exception ignored) { } udpServer = null; }
         if (tcpServer != null) { try { tcpServer.close(); } catch (Exception ignored) { } tcpServer = null; }
         closeQuietly(udpSocket); closeQuietly(tcpSocket);
@@ -113,12 +116,14 @@ final class DnsForwarder {
                 10 + ((uid >>> 16) & 0x3f), (uid >>> 8) & 0xff, uid & 0xff);
     }
 
-    private static void serve() {
+    private static void serve(long instance) {
         StructPollfd[] fds = { pollfd(udp), pollfd(tcp) };
-        for (;;) {
+        while (instance == generation) {
             try {
                 fds[0].revents = fds[1].revents = 0;
+                if (instance != generation) return;
                 if (Os.poll(fds, -1) <= 0) continue;
+                if (instance != generation) return;
                 if (udpServer != null && (fds[0].revents & OsConstants.POLLIN) != 0) accept(udpServer, false);
                 if (tcpServer != null && (fds[1].revents & OsConstants.POLLIN) != 0) accept(tcpServer, true);
             } catch (ErrnoException error) {
