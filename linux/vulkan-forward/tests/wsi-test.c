@@ -134,6 +134,6 @@ int main(void) {
     fail_bind=1;assert(mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory)==VK_ERROR_DEVICE_LOST);assert(!image && !memory);
     assert(image_creates==2 && memory_allocs==2 && image_destroys==2 && memory_frees==2);
     struct message stop={.op=3};assert(send(endpoint,&stop,sizeof(stop),0)==sizeof(stop));close(endpoint);int result;assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
-    assert(exports==9 && buffers==8 && buffer_attempts==9);
+    assert(exports==11 && buffers==10 && buffer_attempts==11);
     puts("PASS WSI: AHB export metadata, dmabuf wl_buffer lifecycle, surface queries, enumeration, import rollback, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
 }
