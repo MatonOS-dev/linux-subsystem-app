@@ -125,6 +125,9 @@ int main(void) {
     ci.oldSwapchain=(VkSwapchainKHR)(uintptr_t)old_chain;mv_wsi_surface_resize(&s,(VkExtent2D){1024,768});ci.imageExtent=(VkExtent2D){1024,768};
     assert(!mv_wsi_create(&s,&ci,&ops,&new_chain));assert(mv_wsi_acquire(old_chain,&a)==VK_ERROR_OUT_OF_DATE_KHR);
     assert(!mv_wsi_acquire(new_chain,&a));mv_wsi_cancel_acquire(new_chain,a);assert(!mv_wsi_destroy(old_chain));assert(!mv_wsi_destroy(new_chain));
+    struct mv_wsi_swapchain *pending=0;ci.oldSwapchain=VK_NULL_HANDLE;assert(!mv_wsi_create(&s,&ci,&ops,&pending));
+    assert(!mv_wsi_acquire(pending,&a)&&!mv_wsi_present(pending,a,123));int old_destroys=destroys;
+    assert(mv_wsi_destroy(pending)==VK_NOT_READY);mv_wsi_discard(pending);assert(destroys==old_destroys+2);
     struct mv_wsi_driver d={.properties=properties,.create=create_image,.allocate=allocate_memory,.bind=bind_memory,.destroy=destroy_image,.free=free_memory};
     last_ahb=(void *)(uintptr_t)123;VkImage image;VkDeviceMemory memory;
     assert(!mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory));destroy_image(0,image,0);free_memory(0,memory,0);

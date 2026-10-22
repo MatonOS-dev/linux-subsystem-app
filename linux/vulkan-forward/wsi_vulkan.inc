@@ -333,7 +333,8 @@ static void mv_vkDestroySwapchainKHR(VkDevice device,VkSwapchainKHR swapchain,co
         for(uint32_t j=0;j<c->count;j++)pending|=c->images[j].state==2;
         if(!pending||mv_wl_dmabuf_dispatch_one(live->surface->dmabuf)<0)break;
     }
-    if(mv_wsi_destroy(c)==VK_SUCCESS)mv_free(live);
+    if(mv_wsi_destroy(c)==VK_NOT_READY)mv_wsi_discard(c);
+    mv_free(live);
 }
 static VkResult mv_vkGetSwapchainImagesKHR(VkDevice device,VkSwapchainKHR swapchain,uint32_t *count,VkImage *images) {
     struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return VK_ERROR_OUT_OF_DATE_KHR;

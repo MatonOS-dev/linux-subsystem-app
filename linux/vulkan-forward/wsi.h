@@ -42,8 +42,10 @@ VkResult mv_wsi_acquire(struct mv_wsi_swapchain *,uint32_t *);
 void mv_wsi_cancel_acquire(struct mv_wsi_swapchain *,uint32_t);
 VkResult mv_wsi_present(struct mv_wsi_swapchain *,uint32_t,int);
 VkResult mv_wsi_release(struct mv_wsi_swapchain *,uint64_t,uint64_t);
-/* Nonblocking prototype teardown refuses in-flight buffers; D2 needs retirement. */
+/* Normal teardown refuses in-flight buffers. The live Vulkan handle destructor
+ * uses discard only after Wayland dispatch has failed and the handle is gone. */
 VkResult mv_wsi_destroy(struct mv_wsi_swapchain *);
+void mv_wsi_discard(struct mv_wsi_swapchain *);
 /* Runs entirely on resident TLS with raw device/function pointers. */
 struct mv_wsi_driver { VkDevice device;
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID properties;
