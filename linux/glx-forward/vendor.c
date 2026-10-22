@@ -66,7 +66,7 @@ EGL_FN(eglDestroyContext); EGL_FN(eglGetProcAddress);
 #define eglGetProcAddress p_eglGetProcAddress
 struct fb { int magic; }; static struct fb fb={0x4d41544f};
 struct ctx { int magic,width,height; EGLContext egl; EGLSurface surface; GLXDrawable drawable; struct ctx *next; };
-static struct ctx *contexts; static pthread_mutex_t contexts_lock=PTHREAD_MUTEX_INITIALIZER; static const char exts[]="GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control GLX_EXT_visual_info";
+static struct ctx *contexts; static pthread_mutex_t contexts_lock=PTHREAD_MUTEX_INITIALIZER; static const char exts[]="GLX_EXT_visual_info";
 extern long write(int,const void*,unsigned long);
 static void egl_diag(const char*s){size_t n=0;while(s[n])n++;(void)write(2,s,n);}
 static void reset_egl_probe(void){
@@ -105,9 +105,9 @@ static Bool supported(Display*d,int s){return d&&s>=0&&s<XScreenCount(d)&&init_e
 static void *dispatch(const GLubyte*n);
 static int init_egl(void);
 static void *getproc(const GLubyte*n){if(!n)return 0;void*p=dispatch(n);if(p)return p;if(!init_egl())return 0;return (void*)eglGetProcAddress((const char*)n);}
-static int cfgattr(Display*d,GLXFBConfig c,int a,int*v){(void)d;if(c!=(GLXFBConfig)&fb||!v)return 1;switch(a){case GLX_FBCONFIG_ID:*v=1;break;case GLX_VISUAL_ID:*v=0;break;case GLX_X_RENDERABLE:*v=1;break;case GLX_DRAWABLE_TYPE:*v=GLX_WINDOW_BIT|GLX_PBUFFER_BIT;break;case GLX_RENDER_TYPE:*v=GLX_RGBA_BIT;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*v=8;break;case GLX_DEPTH_SIZE:*v=24;break;case GLX_STENCIL_SIZE:*v=8;break;case GLX_DOUBLEBUFFER:*v=1;break;default:*v=0;}return 0;}
-static Bool glXQueryExtension(Display*d,int*e,int*v){if(e)*e=0;if(v)*v=0;return d!=0;}
-static Bool glXQueryVersion(Display*d,int*a,int*b){if(!d)return 0;if(a)*a=1;if(b)*b=4;return 1;}
+static int cfgattr(Display*d,GLXFBConfig c,int a,int*v){(void)d;if(c!=(GLXFBConfig)&fb||!v)return 1;switch(a){case GLX_FBCONFIG_ID:*v=1;break;case GLX_VISUAL_ID:*v=0;break;case GLX_X_RENDERABLE:*v=1;break;case GLX_DRAWABLE_TYPE:*v=GLX_WINDOW_BIT;break;case GLX_RENDER_TYPE:*v=GLX_RGBA_BIT;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*v=8;break;case GLX_DEPTH_SIZE:case GLX_STENCIL_SIZE:*v=0;break;case GLX_DOUBLEBUFFER:*v=1;break;default:*v=0;}return 0;}
+static Bool glXQueryExtension(Display*d,int*e,int*v){if(e)*e=0;if(v)*v=0;return d&&init_egl();}
+static Bool glXQueryVersion(Display*d,int*a,int*b){if(!d||!init_egl())return 0;if(a)*a=1;if(b)*b=2;return 1;}
 static const char *glXGetClientString(Display*d,int n){(void)d;return n==GLX_VENDOR?"MatonOS":n==GLX_VERSION?"1.4":exts;}
 static const char *glXQueryServerString(Display*d,int s,int n){return supported(d,s)?glXGetClientString(d,n):0;}
 static const char *glXQueryExtensionsString(Display*d,int s){return supported(d,s)?exts:0;}
@@ -116,7 +116,7 @@ static GLXFBConfig *glXGetFBConfigs(Display*d,int s,int*n){return glXChooseFBCon
 static int glXGetFBConfigAttrib(Display*d,GLXFBConfig c,int a,int*v){return cfgattr(d,c,a,v);}
 static XVisualInfo *glXGetVisualFromFBConfig(Display*d,GLXFBConfig c){if(!d||c!=(GLXFBConfig)&fb)return 0;int s=XDefaultScreen(d);Visual*v=XDefaultVisual(d,s);if(!v)return 0;XVisualInfo*x=calloc(1,sizeof(*x));if(!x)return 0;x->visual=v;x->visualid=v->visualid;x->screen=s;x->depth=XDefaultDepth(d,s);x->c_class=v->c_class;x->red_mask=v->red_mask;x->green_mask=v->green_mask;x->blue_mask=v->blue_mask;x->colormap_size=v->map_entries;x->bits_per_rgb=v->bits_per_rgb;return x;}
 static XVisualInfo *glXChooseVisual(Display*d,int s,int*a){(void)a;return supported(d,s)?glXGetVisualFromFBConfig(d,(GLXFBConfig)&fb):0;}
-static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:*out=24;break;case GLX_STENCIL_SIZE:*out=8;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
+static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:case GLX_STENCIL_SIZE:*out=0;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
 static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){(void)share;(void)direct;(void)a;if(c!=(GLXFBConfig)&fb||!supported(d,XDefaultScreen(d)))return 0;struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->surface=EGL_NO_SURFACE;x->egl=eglCreateContext(edpy,ecfg,EGL_NO_CONTEXT,0);if(x->egl==EGL_NO_CONTEXT){free(x);return 0;}pthread_mutex_lock(&contexts_lock);x->next=contexts;contexts=x;pthread_mutex_unlock(&contexts_lock);return (GLXContext)x;}
 static GLXContext glXCreateNewContext(Display*d,GLXFBConfig c,int r,GLXContext s,Bool direct){(void)r;return create_context(d,c,s,direct,0);}
 static GLXContext glXCreateContext(Display*d,XVisualInfo*v,GLXContext s,Bool direct){(void)v;return create_context(d,(GLXFBConfig)&fb,s,direct,0);}
