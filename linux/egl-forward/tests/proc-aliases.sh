@@ -11,19 +11,20 @@ desktop_text = pathlib.Path(sys.argv[1]).with_name("desktop_proc_lookup.inc").re
 expected = {
     "eglQueryString": "mv_eglQueryString",
     "eglGetProcAddress": "mv_eglGetProcAddress",
-    "glBlendFuncSeparate": "mv_glBlendFuncSeparate",
-    "glBlendFuncSeparateEXT": "mv_glBlendFuncSeparate",
-    "glBlendEquation": "mv_glBlendEquation",
-    "glBlendEquationEXT": "mv_glBlendEquation",
-    "glBlendEquationSeparate": "mv_glBlendEquationSeparate",
-    "glBlendEquationSeparateEXT": "mv_glBlendEquationSeparate",
+    "glBlendFuncSeparate": "mv_shared_glBlendFuncSeparate",
+    "glBlendFuncSeparateEXT": "mv_shared_glBlendFuncSeparate",
+    "glBlendEquation": "mv_shared_glBlendEquation",
+    "glBlendEquationEXT": "mv_shared_glBlendEquation",
+    "glBlendEquationSeparate": "mv_shared_glBlendEquationSeparate",
+    "glBlendEquationSeparateEXT": "mv_shared_glBlendEquationSeparate",
 }
 for name, thunk in expected.items():
     line = f'else if (!strcmp(name, "{name}")) return (void *){thunk};'
     if line not in text:
         raise SystemExit(f"FAIL: {name} does not map to {thunk}")
     if name.startswith("gl"):
-        desktop_line = f'else if (!strcmp(name, "{name}")) return (void *)mv_desktop_{thunk.removeprefix("mv_")};'
+        desktop_target = {"glBlendFuncSeparateEXT":"glBlendFuncSeparate", "glBlendEquationEXT":"glBlendEquation", "glBlendEquationSeparateEXT":"glBlendEquationSeparate"}.get(name, name)
+        desktop_line = f'else if (!strcmp(name, "{name}")) return (void *)mv_desktop_{desktop_target};'
         if desktop_line not in desktop_text:
             raise SystemExit(f"FAIL: desktop GLX lookup {name} does not map to its desktop thunk")
 print("PASS: GL proc aliases map to canonical TLS switching thunks")

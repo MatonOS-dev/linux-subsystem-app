@@ -135,15 +135,42 @@ def emit_group(path, items, prefix, library):
 eglnames = emit_group(outdir / "egl_thunks.inc", egl, "mv_", "MV_EGL")
 glesnames = emit_group(outdir / "gles_thunks.inc", gles, "mv_", "MV_GLES")
 desktopnames = emit_group(outdir / "desktop_thunks.inc", desktop, "mv_desktop_", "MV_DESKTOP")
+# GL names present in both APIs need a per-thread API selector. A fixed GLES- or
+# desktop-first lookup breaks whichever API is not chosen first.
+gles_by_name = dict(gles)
+desktop_by_name = dict(desktop)
+shared = sorted(set(gles_by_name) & set(desktop_by_name))
+shared_lines = ["/* Generated per-thread GL API selector thunks. */"]
+for name in shared:
+    cmd = gles_by_name[name]
+    ret = decl(cmd.find("proto")); ret = ret[:ret.rfind(name)].strip()
+    params = [decl(p) for p in cmd.findall("param")]
+    args = ", ".join(p.findtext("name") for p in cmd.findall("param"))
+    proto = ", ".join(params) if params else "void"
+    shared_lines += [f"static {ret} mv_shared_{name}({proto}) {{",
+        "    struct mv_scope scope;",
+        "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+        "    typedef EGLenum (*query_fn)(void);",
+        '    query_fn query = (query_fn)mv_resolve("eglQueryAPI", MV_EGL);',
+        "    int which = query && query() == EGL_OPENGL_API ? MV_DESKTOP : MV_GLES;",
+        f"    typedef {ret} (*fn_t)({proto});",
+        f'    fn_t fn = (fn_t)mv_resolve("{name}", which);',
+        "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+        *([f"    {ret} result = fn({args});"] if ret != "void" else [f"    fn({args});"]),
+        "    switch_back(&scope);",
+        "    " + ("return;" if ret == "void" else "return result;"), "}"]
+pathlib.Path(outdir / "shared_thunks.inc").write_text("\n".join(shared_lines) + "\n")
 (outdir / "proc_lookup.inc").write_text(
     "/* Registry generated proc-address map. */\n" +
     "static void *mv_lookup_proc(const char *name) {\n" +
     "    if (!name) return 0;\n" +
     "    if (0) return 0;\n" +
+    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_shared_{target};\n'
+            for n, target in sorted(proc_names.items()) if target in shared) +
     "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_{target};\n'
-            for n, target in sorted(proc_names.items()) if target in {x for x, _ in egl + gles} or n in ("eglQueryString", "eglGetProcAddress")) +
+            for n, target in sorted(proc_names.items()) if (target in {x for x, _ in egl + gles} and target not in shared) or n in ("eglQueryString", "eglGetProcAddress")) +
     "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
-            for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop}) +
+            for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop} and target not in shared) +
     "    return 0;\n}\n")
 (outdir / "desktop_proc_lookup.inc").write_text(
     "/* Desktop GL proc-address map used by the GLX vendor. */\n" +

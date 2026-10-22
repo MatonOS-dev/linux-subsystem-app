@@ -111,6 +111,7 @@ static void *mv_resolve(const char *name, int which) {
 #include "egl_thunks.inc"
 #include "gles_thunks.inc"
 #include "desktop_thunks.inc"
+#include "shared_thunks.inc"
 
 /* Resolve the already resident vendor EGL through libvndksupport so bionic
  * returns the sphal namespace instance instead of loading a second driver. */
