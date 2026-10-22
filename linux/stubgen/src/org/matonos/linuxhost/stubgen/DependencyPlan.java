@@ -63,7 +63,7 @@ public final class DependencyPlan {
             origin=recorded.remote;
             info=backend.recordedInfo(recorded);
         } else {
-            origin=root?requested:(repair?backend.recordedOrigin(ref):null);
+            origin=root?requested:(repair?(requested!=null?requested:backend.recordedOrigin(ref)):null);
             if(origin!=null) {
                 info=backend.inspect(ref,origin);
                 if(info==null)throw new IOException("Recorded origin no longer provides "+ref);
@@ -78,7 +78,7 @@ public final class DependencyPlan {
         Node node=new Node(ref,origin,info,!root&&installed!=null);nodes.put(ref,node);
         if(recorded!=null) {
             for(DeploymentRecord.Dependency dependency:recorded.dependencies){
-                node.dependencies.add(dependency.ref);visit(dependency.ref,null,false,true);
+                node.dependencies.add(dependency.ref);visit(dependency.ref,dependency.remote,false,true);
             }
             if(info.runtime!=null&&!info.runtime.isEmpty()) {
                 String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;

@@ -49,6 +49,13 @@ public final class PackageMounts {
         String value=value(metadata,"ExtensionOf","ref");if(value==null)return null;
         if(!DeployManifest.validRef(value)||(!value.startsWith("runtime/")&&!value.startsWith("app/")))throw new IOException("Invalid Flatpak extension parent ref");return value;
     }
+    /** Metadata for extensions may belong to an already-installed parent omitted from the plan. */
+    static java.util.Map<String,String> metadataWithInstalled(java.util.Map<String,String> planned,
+            java.util.Map<String,String> installed) {
+        java.util.Map<String,String> result=new java.util.HashMap<>(planned);
+        for(java.util.Map.Entry<String,String> entry:installed.entrySet())result.putIfAbsent(entry.getKey(),entry.getValue());
+        return result;
+    }
     public static String mountPoint(String ref,String metadata,java.util.Map<String,String> parentMetadata) throws IOException {
         String parent=extensionParent(metadata);if(parent==null){if(ref.startsWith("runtime/"))return "/usr";throw new IOException("Application deployment is not a Flatpak extension: "+ref);}
         String parentText=parentMetadata.get(parent);if(parentText==null)throw new IOException("Extension parent deployment is missing: "+parent);

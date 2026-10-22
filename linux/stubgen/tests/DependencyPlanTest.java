@@ -43,8 +43,17 @@ public final class DependencyPlanTest {
         repair.installed.put(APP,record(APP,FIRST,new DeploymentRecord.Dependency(RUNTIME,OTHER,"/usr")));
         repair.recorded.put(RUNTIME,OTHER);repair.add(RUNTIME,OTHER,info(""));
         plan=repair.plan(true);
-        check(!node(plan,APP).reused&&node(plan,RUNTIME).origin.equals(OTHER));
+        check(!node(plan,APP).reused&&!node(plan,RUNTIME).reused&&node(plan,RUNTIME).origin.equals(OTHER));
         check(repair.queries.equals(List.of(RUNTIME+"@"+OTHER))&&repair.choices.isEmpty());
+
+        Fake removedRuntime=new Fake().add(RUNTIME,OTHER,info(""));
+        removedRuntime.installed.put(APP,record(APP,FIRST,new DeploymentRecord.Dependency(RUNTIME,OTHER,"/usr")));
+        // The parent's signed record is the durable origin source even when the
+        // runtime stub itself has been uninstalled and no installed record can
+        // report its origin.
+        plan=removedRuntime.plan(true);
+        check(!node(plan,RUNTIME).reused&&node(plan,RUNTIME).origin.equals(OTHER));
+        check(removedRuntime.queries.equals(List.of(RUNTIME+"@"+OTHER)));
 
         Fake nested=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable"));
         nested.installed.put(RUNTIME,record(RUNTIME,OTHER,new DeploymentRecord.Dependency(GL,"flathub","/usr/lib/GL")));

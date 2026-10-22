@@ -13,6 +13,18 @@ public final class PackageMountsTest {
   String app="app/org.example.Editor/x86_64/stable",appExtension="app/org.example.Editor.Plugin/x86_64/stable";
   assertEquals("/app/lib/editor/extensions",PackageMounts.mountPoint(appExtension,"[ExtensionOf]\nref="+app+"\n",Collections.singletonMap(app,"[Extension org.example.Editor.Plugin]\ndirectory=lib/editor/extensions\n")));
  }
+ @Test public void extensionParentMayBePlannedInstalledOrMissing() throws Exception {
+  String parent="runtime/org.freedesktop.Platform/x86_64/26.08";
+  String extension="runtime/org.freedesktop.Platform.Locale/x86_64/26.08";
+  String extensionMetadata="[ExtensionOf]\nref="+parent+"\n";
+  String parentMetadata="[Extension org.freedesktop.Platform.Locale]\ndirectory=share/runtime/locale\n";
+  assertEquals("/usr/share/runtime/locale",PackageMounts.mountPoint(extension,extensionMetadata,
+    Collections.singletonMap(parent,parentMetadata)));
+  assertEquals("/usr/share/runtime/locale",PackageMounts.mountPoint(extension,extensionMetadata,
+    PackageMounts.metadataWithInstalled(Collections.emptyMap(),Collections.singletonMap(parent,parentMetadata))));
+  try{PackageMounts.mountPoint(extension,extensionMetadata,Collections.emptyMap());fail("missing parent must fail clearly");}
+  catch(java.io.IOException expected){assertTrue(expected.getMessage().contains(parent));}
+ }
  @Test public void rejectsMissingAndEscapingDirectory() throws Exception {
   String ref="runtime/org.freedesktop.Platform.Codec/x86_64/26.08",parent="runtime/org.freedesktop.Platform/x86_64/26.08";
   try{PackageMounts.mountPoint(ref,"[ExtensionOf]\nref="+parent+"\n",Collections.singletonMap(parent,"[Extension org.freedesktop.Platform.Codec]\nversion=26.08\n"));fail();}catch(java.io.IOException expected){}

@@ -132,6 +132,10 @@ public final class InstallTransaction {
             java.util.List<org.matonos.linuxhost.stubgen.DependencyPlan.Node> plan=planner.build(appRef,remote,new File(operation,"repair").exists());
             java.util.Map<String,String> metadata=new java.util.HashMap<>();
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)metadata.put(node.ref,new String(node.info.metadata,StandardCharsets.UTF_8));
+            java.util.Map<String,String> installedMetadata=new java.util.HashMap<>();
+            for(org.matonos.linuxhost.stubgen.DeploymentRecord record:installed.records.values())
+                installedMetadata.put(record.ref,new String(record.metadata,StandardCharsets.UTF_8));
+            metadata=PackageMounts.metadataWithInstalled(metadata,installedMetadata);
             java.util.Map<String,String> mounts=new java.util.HashMap<>();
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan) {
                 String mount;
