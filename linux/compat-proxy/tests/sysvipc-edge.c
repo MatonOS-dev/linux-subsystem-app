@@ -35,7 +35,7 @@ int main(void){
     CHECK(!semctl(id,0,SETVAL,(union semun){.val=1}));CHECK(semctl(id,0,GETVAL)==1);
     CHECK(!semctl(id,0,IPC_RMID));ERROR(semctl(id,0,GETVAL),EINVAL);
     int q=msgget(IPC_PRIVATE,0600);CHECK(q>=0);struct {long type;char text[8];} msg={1,"edge"};
-    CHECK(!msgsnd(q,&msg,5,0));ERROR(msgrcv(q,(void *)1,8,0,0),EFAULT);ERROR(msgrcv(q,&msg,8,0,IPC_NOWAIT),ENOMSG);
+    CHECK(!msgsnd(q,&msg,5,0));ERROR(msgrcv(q,(void *)1,8,0,0),EFAULT);CHECK(msgrcv(q,&msg,8,0,IPC_NOWAIT)==5);CHECK(msg.type==1&&!memcmp(msg.text,"edge",5));ERROR(msgrcv(q,&msg,8,0,IPC_NOWAIT),ENOMSG);
     int pipefd[2];CHECK(!pipe(pipefd));p=fork();CHECK(p>=0);
     if(!p){close(pipefd[0]);CHECK(write(pipefd[1],"x",1)==1);ERROR(msgrcv(q,&msg,8,0,0),EIDRM);_exit(0);}
     close(pipefd[1]);char c;CHECK(read(pipefd[0],&c,1)==1);close(pipefd[0]);
