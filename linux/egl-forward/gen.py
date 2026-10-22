@@ -106,11 +106,11 @@ def emit_group(path, items, prefix, library):
             "eglGetCurrentSurface",
         }
         if custom_window:
-            lines.append(f"static {ret} {internal}({proto});")
+            lines.append(f"static __attribute__((unused)) {ret} {internal}({proto});")
             names.append(name)
             continue
         if unsupported:
-            lines += [f"static {ret} {internal}({proto}) {{"]
+            lines += [f"static __attribute__((unused)) {ret} {internal}({proto}) {{"]
             lines += [f"    (void){p.findtext('name')};" for p in cmd.findall("param")]
             lines += ["    return (" + ret + ")0;", "}"]
             names.append(name)
