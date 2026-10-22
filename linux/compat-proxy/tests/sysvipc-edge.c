@@ -11,6 +11,7 @@
 #include <sys/shm.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 union semun { int val; struct semid_ds *buf; unsigned short *array; struct seminfo *__buf; };
