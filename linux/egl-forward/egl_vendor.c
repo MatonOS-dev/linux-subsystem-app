@@ -451,7 +451,11 @@ static __eglMustCastToProperFunctionPointerType mv_eglGetProcAddress(const char 
     return (__eglMustCastToProperFunctionPointerType)mv_lookup_proc(name);
 }
 #include "proc_lookup.inc"
-static void *mv_direct_get_proc(const char *name) { return (void *)mv_eglGetProcAddress(name); }
+#include "desktop_proc_lookup.inc"
+static void *mv_direct_get_proc(const char *name) {
+    void *proc = mv_lookup_desktop_proc(name);
+    return proc ? proc : (void *)mv_eglGetProcAddress(name);
+}
 static EGLBoolean mv_direct_bind_api(EGLenum api) {
     if (api == EGL_OPENGL_API) {
         struct mv_scope scope;

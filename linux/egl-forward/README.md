@@ -37,9 +37,11 @@ library or desktop API is absent, desktop support is rejected cleanly while
 the GLES path remains available.
 
 The pinned Khronos `gl.xml` generates TLS-switching thunks for desktop GL 1.0
-through 4.6 compatibility profile. GL commands already present in the GLES
-registry keep their existing GLES thunks; desktop-only commands resolve from
-the vendor EGL driver's `eglGetProcAddress`, never AOSP's limited GLES proc
+through 4.6 compatibility profile. EGL proc lookup routes GLES commands
+through GLES thunks. The GLX direct table uses desktop thunks for the whole
+desktop compatibility API, including names shared with GLES, so GLX calls
+resolve against the desktop EGL driver's dispatch table. Desktop-only
+commands also resolve from that driver, never AOSP's limited GLES proc
 table. There is no Zink fallback in this step.
 
 Each registry-generated EGL/GLES thunk caches the Android entry point, enters

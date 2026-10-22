@@ -40,8 +40,10 @@ def commands(path, api, max_version, profile=None):
                 selected.update(x.get("name") for x in req.findall("command"))
     aliases = {}
     for c in root.findall("./commands/command"):
-        if c.get("alias") and c.get("name") in selected:
-            aliases[c.get("name")] = c.get("alias")
+        name = c.get("name") or c.findtext("./proto/name")
+        alias = c.get("alias") or (c.find("alias").get("name") if c.find("alias") is not None else None)
+        if alias and name in selected:
+            aliases[name] = alias
     # Promoted aliases can be listed in a feature while their canonical command
     # is listed only in an extension. The alias declaration gives its target.
     for name in list(selected):
@@ -53,8 +55,30 @@ def commands(path, api, max_version, profile=None):
 egl = [(n, c) for n, c in commands(egl_xml, "egl", (1, 5)) if n not in ("eglQueryString", "eglGetProcAddress")]
 gles = commands(gl_xml, "gles2", (3, 2))
 desktop = commands(gl_xml, "gl", (4, 6), profile="compatibility")
-gles_set = {name for name, _ in gles}
-desktop = [(name, cmd) for name, cmd in desktop if name not in gles_set]
+exposed = {name for name, _ in egl + gles + desktop}
+# glXGetProcAddress accepts extension spellings as well as promoted core
+# names.  The registry's alias declarations describe these as the same ABI;
+# return the canonical TLS switching thunk so aliases cannot fall through to
+# GLVND's uninitialised generic dispatch slot.
+aliases = {}
+for command in ET.parse(gl_xml).getroot().findall("./commands/command"):
+    name = command.get("name") or command.findtext("./proto/name")
+    alias = command.get("alias") or (command.find("alias").get("name") if command.find("alias") is not None else None)
+    if alias and name:
+        aliases[name] = alias
+
+def canonical(name):
+    seen = set()
+    while name in aliases and name not in seen:
+        seen.add(name)
+        name = aliases[name]
+    return name
+
+proc_names = {name: name for name in exposed}
+for name in aliases:
+    target = canonical(name)
+    if target in exposed:
+        proc_names[name] = target
 
 def emit_group(path, items, prefix, library):
     lines = ["/* Generated from the pinned Khronos API registries. */"]
@@ -114,8 +138,18 @@ desktopnames = emit_group(outdir / "desktop_thunks.inc", desktop, "mv_desktop_",
     "static void *mv_lookup_proc(const char *name) {\n" +
     "    if (!name) return 0;\n" +
     "    if (0) return 0;\n" +
-    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_{n};\n' for n in eglnames + ["eglQueryString", "eglGetProcAddress"] + glesnames) +
-    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{n};\n' for n, _ in desktop) +
+    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_{target};\n'
+            for n, target in sorted(proc_names.items()) if target in {x for x, _ in egl + gles}) +
+    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
+            for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop}) +
+    "    return 0;\n}\n")
+(outdir / "desktop_proc_lookup.inc").write_text(
+    "/* Desktop GL proc-address map used by the GLX vendor. */\n" +
+    "static void *mv_lookup_desktop_proc(const char *name) {\n" +
+    "    if (!name) return 0;\n" +
+    "    if (0) return 0;\n" +
+    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
+            for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop}) +
     "    return 0;\n}\n")
 (outdir / "coverage.txt").write_text(
     f"{len(eglnames)} EGL 1.5 commands; {len(glesnames)} GLES 2.0–3.2 commands; {len(desktopnames)} desktop GL 1.0–4.6 compatibility commands\n" +
