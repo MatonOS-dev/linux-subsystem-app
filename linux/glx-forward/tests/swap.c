@@ -15,7 +15,11 @@ static Visual visual={.red_mask=0xff0000,.green_mask=0xff00,.blue_mask=0xff};
 static unsigned long pixels[4];
 static int finished,packed,uploaded,flushed;
 static void finish(void){finished++;}
-static void pack(GLenum a,GLint b){assert(a==GL_PACK_ALIGNMENT&&b==1);packed++;}
+static void pack(GLenum a,GLint b){assert(a==GL_PACK_ALIGNMENT);if(b==1)packed++;}
+static void get(GLenum a,GLint*v){*v=a==GL_PACK_ALIGNMENT?4:a==GL_READ_BUFFER?GL_BACK:0;}
+static void bind_framebuffer(GLenum a,GLuint b){(void)a;(void)b;}
+static void bind_buffer(GLenum a,GLuint b){(void)a;(void)b;}
+static void read_buffer(GLenum a){(void)a;}
 static void read_pixels(GLint x,GLint y,GLsizei w,GLsizei h,GLenum f,GLenum t,void*p){
     assert(finished&&packed&&x==0&&y==0&&w==2&&h==2&&f==BGRA&&t==GL_UNSIGNED_BYTE);
     const unsigned char data[]={0,0,255,255,0,255,0,255,255,0,0,255,255,255,255,255};
@@ -25,6 +29,10 @@ static __eglMustCastToProperFunctionPointerType proc(const char*n){
     if(!strcmp(n,"glFinish"))return (__eglMustCastToProperFunctionPointerType)finish;
     if(!strcmp(n,"glPixelStorei"))return (__eglMustCastToProperFunctionPointerType)pack;
     if(!strcmp(n,"glReadPixels"))return (__eglMustCastToProperFunctionPointerType)read_pixels;
+    if(!strcmp(n,"glGetIntegerv"))return (__eglMustCastToProperFunctionPointerType)get;
+    if(!strcmp(n,"glBindFramebuffer"))return (__eglMustCastToProperFunctionPointerType)bind_framebuffer;
+    if(!strcmp(n,"glBindBuffer"))return (__eglMustCastToProperFunctionPointerType)bind_buffer;
+    if(!strcmp(n,"glReadBuffer"))return (__eglMustCastToProperFunctionPointerType)read_buffer;
     return 0;
 }
 int fake_attributes(Display*d,unsigned long w,XWindowAttributes*a){(void)d;(void)w;memset(a,0,sizeof(*a));a->width=a->height=2;a->depth=24;a->visual=&visual;return 1;}
