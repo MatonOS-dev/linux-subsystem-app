@@ -1198,6 +1198,8 @@ static long dispatch(struct ctx *c, long nr, proxy_arg_t *a, off *wr) {
     r = (int)copy((void *)(uintptr_t)a[1], &wire_type, sizeof(wire_type));
     if (!r)
       r = (int)copy((char *)(uintptr_t)a[1] + sizeof(long), q + 1, n);
+    if (r)
+      return r;
     *chosen = q->next;
     q->next = shared->free_messages;
     shared->free_messages = selected;
@@ -1206,7 +1208,7 @@ static long dispatch(struct ctx *c, long nr, proxy_arg_t *a, off *wr) {
     p->dtime = now(CLOCK_REALTIME) / 1000000000L;
     p->lpid = (int)R(getpid, 0, 0, 0, 0, 0, 0);
     wake();
-    return r ? r : (long)n;
+    return (long)n;
   }
   return -ENOSYS;
 }
