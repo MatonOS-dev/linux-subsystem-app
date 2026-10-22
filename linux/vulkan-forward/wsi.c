@@ -104,7 +104,9 @@ VkResult mv_wsi_release(struct mv_wsi_swapchain *c,uint64_t token,uint64_t seria
     return VK_ERROR_INITIALIZATION_FAILED;
 }
 VkResult mv_wsi_destroy(struct mv_wsi_swapchain *c) {
-    for(uint32_t i=0;i<c->count;i++)if(c->images[i].state==2)return VK_NOT_READY;
+    /* DestroySwapchainKHR invalidates the application's handle. A compositor
+     * release may never arrive (for example after the surface is stopped), so
+     * destruction must reclaim the chain and its image references regardless. */
     cleanup(c);return VK_SUCCESS;
 }
 VkResult mv_wsi_import_ahb(struct mv_wsi_driver *d,struct AHardwareBuffer *ahb,VkExtent2D e,VkFormat format,VkImage *image,VkDeviceMemory *memory) {
