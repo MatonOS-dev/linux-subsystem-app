@@ -29,6 +29,11 @@
 #define GLX_DEPTH_SIZE 12
 #define GLX_STENCIL_SIZE 13
 #define GLX_BUFFER_SIZE 2
+#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
+#define GL_PIXEL_PACK_BUFFER_BINDING 0x88ED
+#define GL_READ_BUFFER 0x0C02
+#define GL_BACK 0x0405
+#define GL_PIXEL_PACK_BUFFER 0x88EB
 #define GLX_LEVEL 3
 #define GLX_VENDOR 1
 #define GLX_VERSION 2
@@ -144,11 +149,21 @@ static void glXSwapBuffers(Display*d,GLXDrawable w){
      * Use the same TLS-aware Maton thunks supplied to client GL calls. */
     void (*finish)(void)=(void (*)(void))eglGetProcAddress("glFinish");
     void (*pack)(GLenum,GLint)=(void (*)(GLenum,GLint))eglGetProcAddress("glPixelStorei");
+    void (*get)(GLenum,GLint*)=(void (*)(GLenum,GLint*))eglGetProcAddress("glGetIntegerv");
+    void (*bind_framebuffer)(GLenum,GLuint)=(void (*)(GLenum,GLuint))eglGetProcAddress("glBindFramebuffer");
+    void (*bind_buffer)(GLenum,GLuint)=(void (*)(GLenum,GLuint))eglGetProcAddress("glBindBuffer");
+    void (*read_buffer)(GLenum)=(void (*)(GLenum))eglGetProcAddress("glReadBuffer");
     void (*read_pixels)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*)=
         (void (*)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*))eglGetProcAddress("glReadPixels");
-    if(!finish||!pack||!read_pixels){free(p);return;}
-    finish();pack(GL_PACK_ALIGNMENT,1);
+    if(!finish||!pack||!get||!bind_framebuffer||!bind_buffer||!read_buffer||!read_pixels){free(p);return;}
+    GLint old_read=0,old_pack_buffer=0,old_alignment=4,old_buffer=GL_BACK;
+    finish();get(GL_READ_FRAMEBUFFER_BINDING,&old_read);get(GL_PIXEL_PACK_BUFFER_BINDING,&old_pack_buffer);
+    get(GL_PACK_ALIGNMENT,&old_alignment);get(GL_READ_BUFFER,&old_buffer);
+    bind_framebuffer(GL_READ_FRAMEBUFFER,0);bind_buffer(GL_PIXEL_PACK_BUFFER,0);
+    read_buffer(GL_BACK);pack(GL_PACK_ALIGNMENT,1);
     read_pixels(0,0,a.width,a.height,BGRA,GL_UNSIGNED_BYTE,p);
+    pack(GL_PACK_ALIGNMENT,old_alignment);read_buffer((GLenum)old_buffer);
+    bind_buffer(GL_PIXEL_PACK_BUFFER,(GLuint)old_pack_buffer);bind_framebuffer(GL_READ_FRAMEBUFFER,(GLuint)old_read);
     XImage*i=XCreateImage(d,a.visual,a.depth,2,0,0,a.width,a.height,32,0);
     if(i){
         i->data=calloc((size_t)i->bytes_per_line,(size_t)i->height);
