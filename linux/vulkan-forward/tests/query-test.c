@@ -24,7 +24,12 @@ int main(int argc,char **argv) {
     PFN_vkGetInstanceProcAddr gipa=(void *)dlsym(lib,"vk_icdGetInstanceProcAddr");assert(negotiate && gipa);
     uint32_t version=7;assert(negotiate(&version)==VK_SUCCESS && version==5);
     PFN_vkCreateInstance create=(void *)gipa(0,"vkCreateInstance");
-    if(!getenv("MATON_GPU_BRIDGE") || absent_adoption){assert(!create);puts("PASS: absent bridge/adoption fails closed");return 0;}
+    if(!getenv("MATON_GPU_BRIDGE") || absent_adoption){
+        assert(create);VkApplicationInfo app={.sType=VK_STRUCTURE_TYPE_APPLICATION_INFO};
+        VkInstanceCreateInfo info={.sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,.pApplicationInfo=&app};VkInstance instance=0;
+        assert(create(&info,0,&instance)==VK_ERROR_INCOMPATIBLE_DRIVER && !instance);
+        puts("PASS: absent bridge/adoption returns a loader-visible ICD entry and fails create cleanly");return 0;
+    }
     assert(create);
     PFN_vkEnumerateInstanceVersion getversion=(void *)gipa(0,"vkEnumerateInstanceVersion");
     assert(getversion && getversion(&version)==VK_SUCCESS);printf("Android instance API %u.%u.%u\n",VK_VERSION_MAJOR(version),VK_VERSION_MINOR(version),VK_VERSION_PATCH(version));
