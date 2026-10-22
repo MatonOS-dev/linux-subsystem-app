@@ -11,6 +11,7 @@ struct maton_egl_direct_v1 {
     EGLDisplay (*get_display)(EGLNativeDisplayType);
     EGLBoolean (*initialize)(EGLDisplay, EGLint *, EGLint *);
     EGLBoolean (*bind_api)(EGLenum);
+    EGLenum (*query_api)(void);
     EGLBoolean (*choose_config)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *);
     EGLContext (*create_context)(EGLDisplay, EGLConfig, EGLContext, const EGLint *);
     EGLSurface (*create_pbuffer_surface)(EGLDisplay, EGLConfig, const EGLint *);

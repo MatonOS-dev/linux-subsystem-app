@@ -497,6 +497,7 @@ EXPORT const struct maton_egl_direct_v1 *maton_egl_direct_v1(void) {
         .get_display = mv_eglGetDisplay,
         .initialize = mv_eglInitialize,
         .bind_api = mv_direct_bind_api,
+        .query_api = mv_eglQueryAPI,
         .choose_config = mv_eglChooseConfig,
         .create_context = mv_eglCreateContext,
         .create_pbuffer_surface = mv_eglCreatePbufferSurface,

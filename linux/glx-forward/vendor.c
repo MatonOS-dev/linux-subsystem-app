@@ -50,7 +50,7 @@ extern int XGetWindowAttributes(Display*,unsigned long,XWindowAttributes*),XFlus
 extern void *XCreateGC(Display*,unsigned long,unsigned long,void*);
 extern XImage *XCreateImage(Display*,Visual*,unsigned int,int,int,char*,unsigned int,unsigned int,int,int);
 extern int XPutPixel(XImage*,int,int,unsigned long);
-static EGLDisplay edpy=EGL_NO_DISPLAY; static EGLConfig ecfg; static __thread GLXContext current; static __thread Display *current_display;
+static EGLenum (*p_eglQueryAPI)(void); static EGLDisplay edpy=EGL_NO_DISPLAY; static EGLConfig ecfg; static __thread GLXContext current; static __thread Display *current_display;
 static void *egl_lib; static const struct maton_egl_direct_v1 *egl_direct;
 #define EGL_FN(name) static __typeof__(&name) p_##name
 EGL_FN(eglGetPlatformDisplay); EGL_FN(eglGetDisplay); EGL_FN(eglInitialize);
@@ -62,6 +62,7 @@ EGL_FN(eglDestroyContext); EGL_FN(eglGetProcAddress);
 #define eglGetDisplay p_eglGetDisplay
 #define eglInitialize p_eglInitialize
 #define eglBindAPI p_eglBindAPI
+#define eglQueryAPI p_eglQueryAPI
 #define eglChooseConfig p_eglChooseConfig
 #define eglCreateContext p_eglCreateContext
 #define eglCreatePbufferSurface p_eglCreatePbufferSurface
@@ -90,7 +91,7 @@ static int init_egl(void){
         if(!get_direct||(egl_direct=get_direct())==0||egl_direct->version!=1){egl_diag("maton GLX: direct Maton EGL ABI unavailable\n");reset_egl_probe();return 0;}
 #define LOAD_DIRECT(name,field) p_##name=(__typeof__(p_##name))egl_direct->field
         LOAD_DIRECT(eglGetPlatformDisplay,get_platform_display);LOAD_DIRECT(eglGetDisplay,get_display);
-        LOAD_DIRECT(eglInitialize,initialize);LOAD_DIRECT(eglBindAPI,bind_api);
+        LOAD_DIRECT(eglInitialize,initialize);LOAD_DIRECT(eglBindAPI,bind_api);p_eglQueryAPI=egl_direct->query_api;
         LOAD_DIRECT(eglChooseConfig,choose_config);LOAD_DIRECT(eglCreateContext,create_context);
         LOAD_DIRECT(eglCreatePbufferSurface,create_pbuffer_surface);LOAD_DIRECT(eglMakeCurrent,make_current);
         LOAD_DIRECT(eglDestroySurface,destroy_surface);LOAD_DIRECT(eglDestroyContext,destroy_context);
@@ -102,9 +103,10 @@ static int init_egl(void){
         edpy=eglGetDisplay(EGL_DEFAULT_DISPLAY);
         if(edpy==EGL_NO_DISPLAY||!eglInitialize(edpy,0,0)){egl_diag("maton GLX: eglInitialize failed\n");return 0;}
     }
+    EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;
     if(!eglBindAPI(EGL_OPENGL_API)){egl_diag("maton GLX: eglBindAPI desktop GL failed\n");return 0;}
     EGLint a[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE};
-    EGLint n=0;if(!eglChooseConfig(edpy,a,&ecfg,1,&n)||!n){egl_diag("maton GLX: no EGL desktop pbuffer config\n");return 0;}return 1;
+    EGLint n=0;int chosen=eglChooseConfig(edpy,a,&ecfg,1,&n)&&n;eglBindAPI(previous_api);if(!chosen){egl_diag("maton GLX: no EGL desktop pbuffer config\n");return 0;}return 1;
 }
 static Bool supported(Display*d,int s){return d&&s>=0&&s<XScreenCount(d)&&init_egl();}
 static void *dispatch(const GLubyte*n);
@@ -122,11 +124,11 @@ static int glXGetFBConfigAttrib(Display*d,GLXFBConfig c,int a,int*v){return cfga
 static XVisualInfo *glXGetVisualFromFBConfig(Display*d,GLXFBConfig c){if(!d||c!=(GLXFBConfig)&fb)return 0;int s=XDefaultScreen(d);Visual*v=XDefaultVisual(d,s);if(!v)return 0;XVisualInfo*x=calloc(1,sizeof(*x));if(!x)return 0;x->visual=v;x->visualid=v->visualid;x->screen=s;x->depth=XDefaultDepth(d,s);x->c_class=v->c_class;x->red_mask=v->red_mask;x->green_mask=v->green_mask;x->blue_mask=v->blue_mask;x->colormap_size=v->map_entries;x->bits_per_rgb=v->bits_per_rgb;return x;}
 static XVisualInfo *glXChooseVisual(Display*d,int s,int*a){(void)a;return supported(d,s)?glXGetVisualFromFBConfig(d,(GLXFBConfig)&fb):0;}
 static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:case GLX_STENCIL_SIZE:*out=0;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
-static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){if(c!=(GLXFBConfig)&fb||!direct||(a&&a[0]!=0)||!supported(d,XDefaultScreen(d)))return 0;EGLContext share_egl=EGL_NO_CONTEXT;if(share){struct ctx *parent=(struct ctx *)share;if(parent->magic!=0x4d415443)return 0;share_egl=parent->egl;}struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->direct=direct;x->surface=EGL_NO_SURFACE;x->egl=eglCreateContext(edpy,ecfg,share_egl,0);if(x->egl==EGL_NO_CONTEXT){free(x);return 0;}pthread_mutex_lock(&contexts_lock);x->next=contexts;contexts=x;pthread_mutex_unlock(&contexts_lock);return (GLXContext)x;}
+static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){if(c!=(GLXFBConfig)&fb||!direct||(a&&a[0]!=0)||!supported(d,XDefaultScreen(d)))return 0;EGLContext share_egl=EGL_NO_CONTEXT;if(share){struct ctx *parent=(struct ctx *)share;if(parent->magic!=0x4d415443)return 0;share_egl=parent->egl;}struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->direct=direct;x->surface=EGL_NO_SURFACE;EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;if(!eglBindAPI(EGL_OPENGL_API)){free(x);return 0;}x->egl=eglCreateContext(edpy,ecfg,share_egl,0);eglBindAPI(previous_api);if(x->egl==EGL_NO_CONTEXT){free(x);return 0;}pthread_mutex_lock(&contexts_lock);x->next=contexts;contexts=x;pthread_mutex_unlock(&contexts_lock);return (GLXContext)x;}
 static GLXContext glXCreateNewContext(Display*d,GLXFBConfig c,int r,GLXContext s,Bool direct){(void)r;return create_context(d,c,s,direct,0);}
 static GLXContext glXCreateContext(Display*d,XVisualInfo*v,GLXContext s,Bool direct){(void)v;return create_context(d,(GLXFBConfig)&fb,s,direct,0);}
 static GLXContext glXCreateContextAttribsARB(Display*d,GLXFBConfig c,GLXContext s,Bool direct,const int*a){return create_context(d,c,s,direct,a);}
-static Bool glXMakeContextCurrent(Display*d,GLXDrawable draw,GLXDrawable read,GLXContext c){if(!d)return 0;if(read!=draw)return 0;if(!c){if(!eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT))return 0;current=0;current_display=0;return 1;}struct ctx*x=(struct ctx*)c;XWindowAttributes w;if(!draw||!XGetWindowAttributes(d,draw,&w)||!w.width||!w.height)return 0;if(current==(GLXContext)x&&x->surface!=EGL_NO_SURFACE&&x->drawable==draw&&x->width==(int)w.width&&x->height==(int)w.height)return eglMakeCurrent(edpy,x->surface,x->surface,x->egl);EGLint a[]={EGL_WIDTH,(EGLint)w.width,EGL_HEIGHT,(EGLint)w.height,EGL_NONE};EGLSurface replacement=eglCreatePbufferSurface(edpy,ecfg,a);if(replacement==EGL_NO_SURFACE){egl_diag("maton GLX: pbuffer creation failed\n");return 0;}if(!eglMakeCurrent(edpy,replacement,replacement,x->egl)){eglDestroySurface(edpy,replacement);egl_diag("maton GLX: eglMakeCurrent failed\n");return 0;}EGLSurface previous=x->surface;x->surface=replacement;x->width=w.width;x->height=w.height;current=(GLXContext)x;current_display=d;x->drawable=draw;if(previous!=EGL_NO_SURFACE)eglDestroySurface(edpy,previous);return 1;}
+static Bool glXMakeContextCurrent(Display*d,GLXDrawable draw,GLXDrawable read,GLXContext c){if(!d)return 0;if(read!=draw)return 0;if(!c){if(!eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT))return 0;current=0;current_display=0;return 1;}struct ctx*x=(struct ctx*)c;XWindowAttributes w;if(!draw||!XGetWindowAttributes(d,draw,&w)||!w.width||!w.height)return 0;EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;if(!eglBindAPI(EGL_OPENGL_API))return 0;if(current==(GLXContext)x&&x->surface!=EGL_NO_SURFACE&&x->drawable==draw&&x->width==(int)w.width&&x->height==(int)w.height){Bool same=eglMakeCurrent(edpy,x->surface,x->surface,x->egl);eglBindAPI(previous_api);return same;}EGLint a[]={EGL_WIDTH,(EGLint)w.width,EGL_HEIGHT,(EGLint)w.height,EGL_NONE};EGLSurface replacement=eglCreatePbufferSurface(edpy,ecfg,a);if(replacement==EGL_NO_SURFACE){egl_diag("maton GLX: pbuffer creation failed\n");return 0;}if(!eglMakeCurrent(edpy,replacement,replacement,x->egl)){eglDestroySurface(edpy,replacement);eglBindAPI(previous_api);egl_diag("maton GLX: eglMakeCurrent failed\n");return 0;}eglBindAPI(previous_api);EGLSurface previous=x->surface;x->surface=replacement;x->width=w.width;x->height=w.height;current=(GLXContext)x;current_display=d;x->drawable=draw;if(previous!=EGL_NO_SURFACE)eglDestroySurface(edpy,previous);return 1;}
 static Bool glXMakeCurrent(Display*d,GLXDrawable w,GLXContext c){return glXMakeContextCurrent(d,w,w,c);}
 static GLXContext glXGetCurrentContext(void){return (GLXContext)current;}
 static Display *glXGetCurrentDisplay(void){return current_display;}
