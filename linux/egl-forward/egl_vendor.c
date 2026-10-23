@@ -9,6 +9,12 @@
 #include "../vulkan-forward/wayland_resolve.h"
 #include "../glx-forward/include/maton_egl_direct.h"
 
+#if defined(__i386__)
+#define MV_ANDROID_LIBDIR "/system/lib/"
+#else
+#define MV_ANDROID_LIBDIR "/system/lib64/"
+#endif
+
 #define EXPORT __attribute__((visibility("default")))
 #define MV_EGL 1
 #define MV_GLES 2
@@ -117,8 +123,8 @@ static void *mv_resolve(const char *name, int which) {
  * returns the sphal namespace instance instead of loading a second driver. */
 static int mv_desktop_driver_init(void) {
     if (mv_desktop_egl_get_proc) return 1;
-    if (!mv_vndksupport_lib) mv_vndksupport_lib = mv_bridge->open("/system/lib64/libvndksupport.so", 2);
-    if (!mv_libc) mv_libc = mv_bridge->open("/system/lib64/libc.so", 2);
+    if (!mv_vndksupport_lib) mv_vndksupport_lib = mv_bridge->open(MV_ANDROID_LIBDIR "libvndksupport.so", 2);
+    if (!mv_libc) mv_libc = mv_bridge->open(MV_ANDROID_LIBDIR "libc.so", 2);
     if (!mv_load_sphal && mv_vndksupport_lib)
         mv_load_sphal = (void *(*)(const char *, int))mv_bridge->symbol(mv_vndksupport_lib, "android_load_sphal_library");
     if (!mv_property_get && mv_libc)
@@ -201,7 +207,7 @@ static void mv_surface_lock_acquire(void) {
 static void mv_surface_lock_release(void) { __atomic_clear(&mv_surface_lock, __ATOMIC_RELEASE); }
 static void *mv_android_lib;
 static void *mv_android_symbol(const char *name) {
-    if (!mv_android_lib) mv_android_lib = mv_bridge->open("/system/lib64/libandroid.so", 2);
+    if (!mv_android_lib) mv_android_lib = mv_bridge->open(MV_ANDROID_LIBDIR "libandroid.so", 2);
     return mv_android_lib ? mv_bridge->symbol(mv_android_lib, name) : 0;
 }
 static struct mv_egl_surface *mv_surface_find(EGLSurface handle) {
@@ -513,7 +519,7 @@ static char mv_extension_cache_path[512];
 static size_t mv_extension_len(const char *s){size_t n=0;while(s[n])n++;return n;}
 static void mv_extension_paths(char *key,size_t cap) {
     if(!mv_property_get){
-        if(!mv_libc)mv_libc=mv_bridge->open("/system/lib64/libc.so",2);
+        if(!mv_libc)mv_libc=mv_bridge->open(MV_ANDROID_LIBDIR "libc.so",2);
         if(mv_libc)mv_property_get=(int(*)(const char*,char*))mv_bridge->symbol(mv_libc,"__system_property_get");
     }
     const char *props[]={"ro.build.fingerprint","vendor.maton.graphics.backend","vendor.maton.graphics.renderer","vendor.maton.graphics.egl","vendor.maton.graphics.gles","vendor.maton.graphics.vulkan"};

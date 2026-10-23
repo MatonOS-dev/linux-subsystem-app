@@ -24,9 +24,17 @@ lib/libGLX_maton.so
 lib/libmaton_vulkan.so
 vulkan/icd.d/maton_icd.json
 glvnd/egl_vendor.d/10_maton.json
+lib/i386-linux-gnu/libEGL_maton.so
+lib/i386-linux-gnu/libGLX_maton.so.0
+# regular duplicate for GLVND basename lookup
+lib/i386-linux-gnu/libGLX_maton.so
+lib/libmaton_vulkan_i386.so
+vulkan/icd.d/maton_icd_i386.json
+glvnd/egl_vendor.d/10_maton_i386.json
 ```
 
-The ICD paths resolve to the extension directory and its loader path. Both
+The i386 EGL manifest selects the i386 DSO in the runtime's multiarch
+directory, which avoids replacing the x86_64 vendor names. Both architectures'
 forwarders remain freestanding and have no `DT_NEEDED` entries. Build task
 `buildGlMaton` commits the extension files to a local OSTree repo, then uses
 the existing `linux/packs/pack.py` format. `packageGlMaton` places the ref
@@ -64,6 +72,23 @@ temporary installed-ref layout and commit object. The top-level
 `tests/run.sh` runs this test alongside the pack and compatibility-proxy
 suites. `V3Launcher` checks the runtime's GL extension version list before
 adding the payload pack mount.
+
+Host acceptance checks ELF32 class, the expected EGL/GLX exports, absence of
+`DT_NEEDED`, EGL proc aliases, and the packaged i386 vendor manifest and
+multiarch paths. The full APK build's ISA audit must retain the i386 `corei7`
+baseline.
+
+### i386 Platform compatibility-extension test
+
+On a fresh image with the i386 Platform compatibility extension available,
+install the signed subsystem APK, then launch 32-bit `eglinfo`, `glxinfo`, and
+`vkcube` from generated Flatpak stubs. Confirm each executable is ELF32 and
+uses the i386 GL paths under `/usr/lib/i386-linux-gnu/GL`; `eglinfo` should
+list Maton and the resident GLES renderer, `glxinfo` should report GLX 1.4 and
+create a context, and `vkcube` should enumerate the i386 Vulkan ICD and create
+its rendering surface. Capture `logcat -s MatonV3` and each command's output.
+If the runtime's i386 compatibility extension does not include Vulkan, record
+that environment limitation and still run the EGL and GLX checks.
 
 Assigned-VM acceptance procedure (ADB `127.0.0.1:5556`; do not reboot):
 

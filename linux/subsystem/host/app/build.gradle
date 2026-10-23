@@ -64,7 +64,7 @@ def eglDeps = new File(eglOutput, 'deps')
 def eglNdk = System.getenv('MATON_NDK') ?: "${System.getProperty('user.home')}/Android/Sdk/ndk/30.0.16248370"
 def buildEglForward = tasks.register('buildEglForward', Exec) {
     inputs.files fileTree(eglRoot)
-    outputs.files new File(eglOutput, 'libEGL_maton.so'), new File(eglOutput, '10_maton.json')
+    outputs.files new File(eglOutput, 'libEGL_maton.so'), new File(eglOutput, 'i386/libEGL_maton.so'), new File(eglOutput, '10_maton.json'), new File(eglOutput, 'i386/10_maton_i386.json')
     outputs.upToDateWhen { false }
     environment 'CC', System.getenv('MATON_EGL_CC') ?: 'clang-21'
     environment 'READELF', System.getenv('MATON_EGL_READELF') ?: 'llvm-readelf-21'
@@ -78,7 +78,7 @@ def glxOutput = System.getenv('MATON_GLX_OUT') ?: "$aospRoot/out/matonos/glx-for
 def glxDeps = new File(glxOutput, 'deps')
 def buildGlxForward = tasks.register('buildGlxForward', Exec) {
     inputs.files fileTree(glxRoot)
-    outputs.files new File(glxOutput, 'libGLX_maton.so.0'), new File(glxOutput, 'libGLX_maton.so')
+    outputs.files new File(glxOutput, 'libGLX_maton.so.0'), new File(glxOutput, 'libGLX_maton.so'), new File(glxOutput, 'i386/libGLX_maton.so.0')
     outputs.upToDateWhen { false }
     environment 'CC', System.getenv('MATON_GLX_CC') ?: 'clang-21'
     environment 'READELF', System.getenv('MATON_GLX_READELF') ?: 'llvm-readelf-21'
@@ -99,6 +99,8 @@ def buildGlMaton = tasks.register('buildGlMaton', Exec) {
             glMatonOutput.absolutePath, new File(vulkanOutput, 'libmaton_vulkan.so').absolutePath,
             new File(eglOutput, 'libEGL_maton.so').absolutePath,
             '--vulkan-i386', new File(vulkanOutput, 'i386/libmaton_vulkan.so').absolutePath,
+            '--egl-i386', new File(eglOutput, 'i386/libEGL_maton.so').absolutePath,
+            '--glx-i386', new File(glxOutput, 'i386/libGLX_maton.so.0').absolutePath,
             '--glx', new File(glxOutput, 'libGLX_maton.so.0').absolutePath,
             // Template branch only: the stub rewrites metadata/deploy for each app's runtime.
             '--branch', '26.08'

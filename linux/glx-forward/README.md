@@ -4,6 +4,8 @@
 `__GLX_VENDOR_LIBRARY_NAME=maton`. The launcher sets that variable only when
 Maton's GL extension is enabled. GLVND resolves the name to `libGLX_maton.so.0` from the extension library path;
 GLX does not use the EGL ICD JSON manifest.
+It is built for both x86_64 and ELF32 `corei7`; the i386 vendor loads the
+matching i386 EGL forwarder and uses the same versioned direct-table ABI.
 
 The vendor implements the libglvnd GLX ABI pinned in `pins.json`. It obtains a
 private, versioned entry table from `libEGL_maton.so`; it must bypass GLVND's
@@ -27,8 +29,8 @@ CC=clang-21 READELF=llvm-readelf-21 bash linux/glx-forward/build.sh \
   /absolute/out/glx-forward /absolute/out/glx-forward/deps /path/to/android-ndk-r30
 ```
 
-The build checks the freestanding DSO has no `DT_NEEDED` entries and exports
-only `__glx_Main`. Xlib symbols are resolved from the runtime process. EGL
+The build checks both freestanding DSOs have no `DT_NEEDED` entries, verifies
+ELF32 for i386, and exports only `__glx_Main`. Xlib symbols are resolved from the runtime process. EGL
 entry points are loaded from the Maton GL extension's `libEGL_maton.so` at
 runtime; the versioned direct table avoids re-entering libGLdispatch.
 

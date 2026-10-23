@@ -5,6 +5,10 @@ This directory implements a freestanding x86_64 libglvnd EGL vendor named
 Android EGL/GLES libraries while switching to their bionic TLS, then restores
 the Linux thread's TLS. The TLS backend and raw-syscall allocator are included
 from `linux/vulkan-forward`; this directory does not fork that runtime.
+The same forwarder also builds as ELF32 with `-march=corei7`; its i386 backend
+uses `int 0x80`, Android's `/system/lib` paths, and the adopted v2
+`switch_in`/`switch_out` hooks. The generator stays architecture-neutral, so
+its registry output and proc lookup map are shared by both builds.
 
 The vendor accepts the GLVND ABI 0.2 handshake and exports only `__egl_Main`.
 The JSON selects this vendor, and `eglGetPlatformDisplay` maps
@@ -77,8 +81,11 @@ CC=clang-21 bash linux/egl-forward/tests/run-host.sh \
 bash linux/egl-forward/tests/egl-extensions.sh "$DEPS" "$OUT/extension-tests"
 ```
 
-The build checks zero `DT_NEEDED`, a single dynamic export (`__egl_Main`), and
-compile-only arm64/riscv64 backends. `run-host.sh` checks the GLVND handshake,
+The build checks zero `DT_NEEDED`, the expected EGL exports, ELF class for each
+x86 build, and compile-only arm64/riscv64 backends. Run
+`tests/proc-aliases.sh "$DEPS" "$OUT/i386-proc"` to exercise proc lookup map
+generation for i386; the checked-in generator emits the same API table for
+both ELF classes. `run-host.sh` checks the GLVND handshake,
 builds the offscreen and desktop triangle programs, and measures the shared
 TLS switch pair. The desktop harness is built as `desktop-glibc` and, when
 `MUSL_CC` or `musl-gcc` is available, `desktop-musl`. It dynamically loads
@@ -103,6 +110,10 @@ that do not select this EGL vendor pay 0 ns. The host triangle execution did
 not pass: this harness's fake bridge opens the host GLVND EGL DSO, which does
 not provide the resident Android EGL entry points expected by the forwarder.
 No glibc or musl pbuffer readback pass is claimed.
+
+The i386 build additionally passes the ELF32/exports/no-dependency checks with
+the shared proc-alias test. Runtime execution remains part of the 32-bit
+Platform compatibility-extension test plan in `linux/gl-maton/README.md`.
 
 ## Host APK and VM status
 

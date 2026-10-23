@@ -30,6 +30,9 @@ paths = {row["path"]: row for row in rows}
 expected = {
     "/lib/libmaton_vulkan.so",
     "/lib/libmaton_vulkan_i386.so",
+    "/lib/i386-linux-gnu/libEGL_maton.so",
+    "/lib/i386-linux-gnu/libGLX_maton.so.0",
+    "/glvnd/egl_vendor.d/10_maton_i386.json",
     "/lib/libEGL_maton.so",
     "/lib/libGLX_maton.so.0",
     "/vulkan/icd.d/maton_icd.json",
@@ -51,4 +54,6 @@ assert '"library_path": "libmaton_vulkan.so"' in payload(
 assert '"library_path": "libmaton_vulkan_i386.so"' in payload(
     "/vulkan/icd.d/maton_icd_i386.json")
 assert '"library_path": "libEGL_maton.so"' in payload("/glvnd/egl_vendor.d/10_maton.json")
+assert '"library_path": "i386-linux-gnu/libEGL_maton.so"' in payload(
+    "/glvnd/egl_vendor.d/10_maton_i386.json")
 assert (root / "objects.ostree").read_bytes().startswith(b"MTPKOBJ1")

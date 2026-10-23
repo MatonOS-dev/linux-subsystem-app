@@ -19,4 +19,16 @@ if rg -q NEEDED "$out/dynamic.txt"; then echo 'unexpected DT_NEEDED' >&2; exit 1
 exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/symbols.txt" | sed 's/@.*//' | sort -u)
 [[ "$exports" == __glx_Main ]] || { echo "unexpected exports: $exports" >&2; exit 1; }
 ln -sf libGLX_maton.so.0 "$out/libGLX_maton.so"
-echo 'PASS: GLX vendor DSO; no DT_NEEDED; only __glx_Main exported'
+mkdir -p "$out/i386"
+"$cc" --target=i686-linux-android35 -march=corei7 -std=c11 -O2 -g -ffreestanding -nostdlib \
+  -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror \
+  -I"$here/include" -I"$deps/include" -I"$headers/i686-linux-android" -I"$headers" \
+  -shared -Wl,-Bsymbolic,-z,now,-z,noexecstack "$here/vendor.c" -o "$out/i386/libGLX_maton.so.0"
+"$readelf" -d "$out/i386/libGLX_maton.so.0" > "$out/i386/dynamic.txt"
+if rg -q NEEDED "$out/i386/dynamic.txt"; then echo 'i386 unexpected DT_NEEDED' >&2; exit 1; fi
+"$readelf" --dyn-syms "$out/i386/libGLX_maton.so.0" > "$out/i386/symbols.txt"
+i386_exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/i386/symbols.txt" | sed 's/@.*//' | sort -u)
+[[ "$i386_exports" == __glx_Main ]] || { echo "unexpected i386 exports: $i386_exports" >&2; exit 1; }
+"$readelf" -h "$out/i386/libGLX_maton.so.0" | rg -q 'Class:.*ELF32'
+ln -sf libGLX_maton.so.0 "$out/i386/libGLX_maton.so"
+echo 'PASS: x86_64 and i386 GLX vendor DSOs; no DT_NEEDED; only __glx_Main exported'

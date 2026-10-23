@@ -16,7 +16,7 @@ def run(*args):
     subprocess.run(args, check=True, stdout=subprocess.PIPE, text=True)
 
 
-def build(out, vulkan, egl, glx, branch, vulkan_i386):
+def build(out, vulkan, egl, glx, branch, vulkan_i386, egl_i386, glx_i386):
     out = pathlib.Path(out).resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
@@ -30,6 +30,14 @@ def build(out, vulkan, egl, glx, branch, vulkan_i386):
     shutil.copy2(egl, files / "lib/libEGL_maton.so")
     shutil.copy2(glx, files / "lib/libGLX_maton.so.0")
     (files / "lib/libGLX_maton.so").write_bytes((files / "lib/libGLX_maton.so.0").read_bytes())
+    if egl_i386 or glx_i386:
+        i386_lib = files / "lib/i386-linux-gnu"
+        i386_lib.mkdir(parents=True)
+        if egl_i386:
+            shutil.copy2(egl_i386, i386_lib / "libEGL_maton.so")
+        if glx_i386:
+            shutil.copy2(glx_i386, i386_lib / "libGLX_maton.so.0")
+            (i386_lib / "libGLX_maton.so").write_bytes((i386_lib / "libGLX_maton.so.0").read_bytes())
     (files / "vulkan/icd.d/maton_icd.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libmaton_vulkan.so",\n'
@@ -42,6 +50,10 @@ def build(out, vulkan, egl, glx, branch, vulkan_i386):
     (files / "glvnd/egl_vendor.d/10_maton.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
+    if egl_i386:
+        (files / "glvnd/egl_vendor.d/10_maton_i386.json").write_text(
+            '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
+            '    "library_path": "i386-linux-gnu/libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
 
     metadata = (ROOT / "linux/gpu-forward-spike/flatpak/metadata.in").read_text()
     metadata = metadata.replace("@RUNTIME_BRANCH@", branch)
@@ -82,8 +94,11 @@ if __name__ == "__main__":
     parser.add_argument("egl")
     parser.add_argument("--glx", required=True, help="built libGLX_maton.so")
     parser.add_argument("--vulkan-i386", help="freestanding ELF32 Vulkan forwarder")
+    parser.add_argument("--egl-i386", help="freestanding ELF32 EGL forwarder")
+    parser.add_argument("--glx-i386", help="freestanding ELF32 GLX vendor")
     parser.add_argument("--branch", default="26.08")
     args = parser.parse_args()
     if not args.branch or "/" in args.branch:
         parser.error("invalid runtime extension branch")
-    build(args.out, args.vulkan, args.egl, args.glx, args.branch, args.vulkan_i386)
+    build(args.out, args.vulkan, args.egl, args.glx, args.branch,
+          args.vulkan_i386, args.egl_i386, args.glx_i386)
