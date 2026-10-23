@@ -441,6 +441,10 @@ static void track_release(struct wlr_buffer* buffer,int fd) {
 }
 static void on_commit(struct wl_listener* l,void* data) {
   struct Window* w=window_from_listener(l,offsetof(struct Window,commit));
+  /* A stopped Android window is no longer latched by SurfaceFlinger. Do not
+   * hand it new buffers; the client commit listener still completes its
+   * frame callbacks so eglSwapBuffers can return and release its wl_buffer. */
+  if(w->stopped)return;
   struct wlr_output_event_commit* event=data;
   struct wlr_buffer* b=event->state->buffer;
   if(!b)return;
@@ -522,6 +526,10 @@ static struct wlr_surface* window_root_surface(struct Window* w) {
 static void on_surface_commit(struct wl_listener* l,void* data) {
   (void)data;
   struct Window* w=window_from_listener(l,offsetof(struct Window,surface_commit));
+  if(w->stopped&&w->scene_output){
+    struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);
+    wlr_scene_output_send_frame_done(w->scene_output,&now);
+  }
   if(w->toplevel){
     struct wlr_xdg_toplevel_state* t=&w->toplevel->current;
     struct MatonSizeHints h={t->min_width,t->min_height,t->max_width,t->max_height};
