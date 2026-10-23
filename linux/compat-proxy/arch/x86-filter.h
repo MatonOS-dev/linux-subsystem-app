@@ -174,7 +174,9 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    for(long nr=0;nr<512;nr++) if((ours(decode(nr)) || (audit==AUDIT_ARCH_I386 && (nr==102 || nr==117))) && nr!=encode(PROXY_SC_clone) && nr!=encode(PROXY_SC_sendto)) {
+    for(long nr=0;nr<512;nr++) if((ours(decode(nr)) ||
+        (audit==AUDIT_ARCH_I386 && (nr==102 || nr==117 || nr==243 || nr==244))) &&
+        nr!=encode(PROXY_SC_clone) && nr!=encode(PROXY_SC_sendto)) {
         ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     }
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);

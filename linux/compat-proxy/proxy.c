@@ -32,6 +32,9 @@
 #include <linux/sched.h>
 #include <linux/stat.h>
 #include <linux/limits.h>
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+#include <asm/ldt.h>
+#endif
 #include <linux/prctl.h>
 #include <stddef.h>
 #include <fcntl.h>
@@ -60,6 +63,9 @@ static int private_close_fd(int fd){
     return fd==proxy_count_fd || vfs_private_fd(fd) || resident_fd_owned(fd);
 }
 static struct kernel_action chained;
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+static struct kernel_action chained_segv;
+#endif
 int proxy_diagnostics_init(void) {
     if(proxy_diagnostic_fd!=2)return 0;
     /* F_DUPFD keeps the original sink through resident exec, without CLOEXEC.
@@ -79,6 +85,9 @@ static void crash_text(const char *s){RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p
 static uintptr_t maps_hex(const char **p){return resident_maps_hex(p);}
 struct image_map {uintptr_t lo,hi,offset;char *path;struct image_map *next;};
 static struct image_map *image_maps;
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+static void ldt_segv_handler(int,siginfo_t *,void *);
+#endif
 void proxy_image_map(uintptr_t lo,uintptr_t hi,uintptr_t offset,const char *path){
     struct image_map *m=vfs_palloc(sizeof(*m));if(!m)return;
     m->path=vfs_palloc(p_len(path)+1);if(!m->path){vfs_free(m);return;}
@@ -116,16 +125,35 @@ static void exec_signals(void) {
         if(sig==SIGKILL || sig==SIGSTOP || sig==SIGSYS)continue;
         struct kernel_action old={0},next={0};
         if(RAW(PROXY_SC_rt_sigaction,sig,0,&old,8,0,0)<0)continue;
-        if(old.handler==1)continue; /* SIG_IGN survives exec. */
+        if(old.handler==1 && sig!=SIGSEGV)continue; /* synchronous SIGSEGV still needs proxy handling */
         if(sig==SIGSEGV || sig==SIGBUS || sig==SIGILL || sig==SIGFPE || sig==SIGABRT)
             next=(struct kernel_action){(uintptr_t)crash_report,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+        if(sig==SIGSEGV)next=(struct kernel_action){(uintptr_t)ldt_segv_handler,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+#endif
         RAW(PROXY_SC_rt_sigaction,sig,&next,0,8,0,0);
     }
 }
 /* Spike supports a single user-dispatch owner; configuration is per-thread. */
 static volatile unsigned char *dispatch_selector;
 static long dispatch_owner;
-struct thread_state { long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size; };
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+struct tls_entry { struct user_desc desc; int real_entry; int valid; };
+#define PROXY_TLS_ENTRIES 3
+static int proxy_i386_tls_reservation_enabled;
+struct ldt_entry { struct user_desc desc; unsigned char valid; };
+static struct ldt_entry *ldt_entries;
+static size_t ldt_capacity;
+#endif
+struct thread_state {
+    long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+    struct tls_entry tls[PROXY_TLS_ENTRIES];
+    unsigned reserved;
+    unsigned reserved_claimed;
+    int reserved_real;
+#endif
+};
 struct thread_node {struct thread_state state;struct thread_node *next;};
 static struct thread_node *threads;
 static struct thread_state *thread_state(void) {
@@ -148,6 +176,248 @@ static struct thread_state *thread_state(void) {
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
     return &p->state;
 }
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+static int tls_slot_for_real(struct thread_state *thread, int real_entry) {
+    for (int i=0;i<PROXY_TLS_ENTRIES;i++)
+        if(thread->tls[i].valid && thread->tls[i].real_entry==real_entry)return i;
+    if(thread->reserved && thread->reserved_real==real_entry)return PROXY_TLS_ENTRIES-1;
+    return -1;
+}
+static int tls_reserve(struct thread_state *thread) {
+    if(thread->reserved)return 0;
+    struct user_desc d={.entry_number=(unsigned)-1,.seg_32bit=1,
+        .contents=0,.read_exec_only=1,.seg_not_present=0,.useable=1};
+    long r=RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0);
+    if(r<0)return (int)r;
+    thread->reserved_real=(int)d.entry_number;thread->reserved=1;return 0;
+}
+void proxy_i386_tls_reservation(int enabled) {
+    proxy_i386_tls_reservation_enabled=enabled!=0;
+}
+int proxy_i386_tls_prepare_payload(void) {
+    if(!proxy_i386_tls_reservation_enabled)return 0;
+    struct thread_state *thread=thread_state();
+    return thread?tls_reserve(thread):-ENOMEM;
+}
+static int tls_install_reserved(struct thread_state *thread,const struct user_desc *desc) {
+    struct user_desc install=*desc;
+    install.entry_number=thread->reserved_real;
+    long r=RAW(PROXY_SC_set_thread_area,(long)&install,0,0,0,0,0);
+    return r<0?(int)r:0;
+}
+static int tls_restore_reserved(struct thread_state *thread) {
+    if(thread->tls[PROXY_TLS_ENTRIES-1].valid)
+        return tls_install_reserved(thread,&thread->tls[PROXY_TLS_ENTRIES-1].desc);
+    const struct user_desc placeholder={.entry_number=0,.seg_32bit=1,
+        .contents=0,.read_exec_only=1,.seg_not_present=0,.useable=1};
+    return tls_install_reserved(thread,&placeholder);
+}
+static long tls_set(struct thread_state *thread, uintptr_t user) {
+    struct user_desc desc;
+    if(!user || proxy_copy(&desc,(const void *)user,sizeof(desc)))return -EFAULT;
+    int slot=-1;
+    if(desc.entry_number==UINT32_MAX) {
+        for(int i=0;i<PROXY_TLS_ENTRIES;i++)
+            if(!thread->tls[i].valid){slot=i;break;}
+        if(slot<0)return -ESRCH;
+    } else if(desc.entry_number>=PROXY_TLS_ENTRIES) {
+        /* Applications use the real index returned by an earlier allocation. */
+        if(desc.entry_number>INT32_MAX)return -EINVAL;
+        slot=tls_slot_for_real(thread,(int)desc.entry_number);
+        if(slot<0)return -ESRCH;
+    } else slot=(int)desc.entry_number;
+    /* Reservation is eager, before payload code runs, when enabled. */
+    if(slot==PROXY_TLS_ENTRIES-1){int r=tls_reserve(thread);if(r)return r;}
+    struct user_desc kernel_desc=desc;
+    kernel_desc.entry_number=slot==PROXY_TLS_ENTRIES-1 && thread->reserved
+        ? thread->reserved_real : (thread->tls[slot].valid?thread->tls[slot].real_entry:-1);
+    long result=0;
+    if(slot==PROXY_TLS_ENTRIES-1 && thread->reserved_claimed) {
+        /* Keep the payload's descriptor current while bionic owns the real slot. */
+        desc.entry_number=thread->reserved_real;
+    } else {
+        result=RAW(PROXY_SC_set_thread_area,(long)&kernel_desc,0,0,0,0,0);
+        if(result<0)return result;
+        desc.entry_number=kernel_desc.entry_number;
+    }
+    if(proxy_copy((void *)user,&desc,sizeof(desc)))return -EFAULT;
+    thread->tls[slot].desc=desc;
+    thread->tls[slot].real_entry=kernel_desc.entry_number;
+    thread->tls[slot].valid=1;
+    return 0;
+}
+/* Bionic adoption temporarily owns the reserved entry. Release restores the
+ * payload's third virtual slot, or the inert placeholder if it is unused. */
+int proxy_tls_claim_reserved(const struct user_desc *owner,unsigned *selector) {
+    struct thread_state *thread=thread_state();
+    if(!thread || !selector || !owner || thread->reserved_claimed)return -1;
+    int r=tls_reserve(thread);if(r)return r;
+    r=tls_install_reserved(thread,owner);if(r)return r;
+    thread->reserved_claimed=1;
+    *selector=((unsigned)thread->reserved_real<<3)|3u;
+    return 0;
+}
+int proxy_tls_release_reserved(void) {
+    struct thread_state *thread=thread_state();
+    if(!thread || !thread->reserved || !thread->reserved_claimed)return -1;
+    int r=tls_restore_reserved(thread);if(r)return r;
+    thread->reserved_claimed=0;
+    return 0;
+}
+static long tls_get(struct thread_state *thread, uintptr_t user) {
+    struct user_desc desc;
+    if(!user || proxy_copy(&desc,(const void *)user,sizeof(desc)))return -EFAULT;
+    int slot=desc.entry_number<PROXY_TLS_ENTRIES?desc.entry_number:
+             tls_slot_for_real(thread,desc.entry_number);
+    if(slot<0 || slot>=PROXY_TLS_ENTRIES || !thread->tls[slot].valid)return -ESRCH;
+    desc=thread->tls[slot].desc;
+    desc.entry_number=thread->tls[slot].real_entry;
+    return proxy_copy((void *)user,&desc,sizeof(desc))?-EFAULT:0;
+}
+static int ldt_grow(size_t need) {
+    if(need>8192)return -EINVAL;
+    if(need<=ldt_capacity)return 0;
+    size_t cap=ldt_capacity?ldt_capacity:16;
+    while(cap<need){if(cap>4096){cap=8192;break;}cap*=2;}
+    if(cap>SIZE_MAX/sizeof(*ldt_entries))return -ENOMEM;
+    struct ldt_entry *next=vfs_alloc(cap*sizeof(*next));if(!next)return -ENOMEM;
+    for(size_t i=0;i<cap;i++)next[i]=(struct ldt_entry){0};
+    for(size_t i=0;i<ldt_capacity;i++)next[i]=ldt_entries[i];
+    if(ldt_entries)vfs_free(ldt_entries);
+    ldt_entries=next;ldt_capacity=cap;return 0;
+}
+static long ldt_call(unsigned func, uintptr_t ptr, size_t bytes) {
+    if(func==2)return 0; /* read_default: no default LDT entries */
+    if(func==1 || func==0x11) {
+        struct user_desc d;
+        if(!ptr || proxy_copy(&d,(void *)ptr,sizeof(d)))return -EFAULT;
+        if(!d.seg_32bit || d.contents!=0)return -EINVAL;
+        if(d.entry_number>=8192)return -EINVAL;
+        int r=ldt_grow((size_t)d.entry_number+1);if(r)return r;
+        ldt_entries[d.entry_number].desc=d;
+        ldt_entries[d.entry_number].valid=!(d.seg_not_present ||
+            (d.base_addr==0 && d.limit==0 && d.read_exec_only));
+        return 0;
+    }
+    if(func==0) {
+        if(!ptr && bytes)return -EFAULT;
+        size_t copied=0;
+        for(size_t i=0;i<ldt_capacity && copied+8<=bytes;i++) {
+            uint64_t raw=0;
+            if(ldt_entries[i].valid) {
+                struct user_desc d=ldt_entries[i].desc;
+                raw|=(uint64_t)(d.limit&0xffffu);
+                raw|=(uint64_t)(d.base_addr&0xffffu)<<16;
+                raw|=(uint64_t)((d.base_addr>>16)&0xffu)<<32;
+                raw|=(uint64_t)(d.seg_32bit&1u)<<54;
+                raw|=(uint64_t)(d.contents&3u)<<52;
+                raw|=(uint64_t)(d.read_exec_only?0:1)<<41;
+                raw|=(uint64_t)(d.limit&0xf0000u)<<32;
+                raw|=(uint64_t)((d.base_addr>>24)&0xffu)<<56;
+                raw|=(uint64_t)(d.useable&1u)<<53;
+                raw|=(uint64_t)(d.limit_in_pages?1u:0u)<<55;
+                raw|=UINT64_C(1)<<47; /* present */
+                raw|=UINT64_C(1)<<44; /* code/data */
+                raw|=UINT64_C(3)<<45; /* user privilege */
+                raw|=UINT64_C(1)<<40; /* accessed, writable data */
+            }
+            if(proxy_copy((void *)(ptr+copied),&raw,8))return copied?(long)copied:-EFAULT;
+            copied+=8;
+        }
+        return (long)copied;
+    }
+    return -EINVAL;
+}
+static uint32_t *i386_reg(ucontext_t *uc,unsigned r) {
+    static const int indices[8]={REG_EAX,REG_ECX,REG_EDX,REG_EBX,REG_ESP,REG_EBP,REG_ESI,REG_EDI};
+    return (uint32_t *)&uc->uc_mcontext.gregs[indices[r&7]];
+}
+static int i386_ea(ucontext_t *uc,const unsigned char *insn,size_t *len,
+                   unsigned modrm,uint32_t *address) {
+    unsigned mod=modrm>>6,rm=modrm&7;uint32_t base=0,index=0;int have_base=1;
+    if(mod==3)return -1;
+    if(rm==4) {
+        unsigned char sib=insn[(*len)++];unsigned scale=sib>>6,ir=(sib>>3)&7,br=sib&7;
+        if(ir!=4)index=*i386_reg(uc,ir)<<scale;
+        if(mod==0 && br==5)have_base=0;else base=*i386_reg(uc,br);
+    } else if(mod==0 && rm==5)have_base=0;
+    else base=*i386_reg(uc,rm);
+    if(mod==1){base+=(int8_t)insn[(*len)++];}
+    else if(mod==2 || (mod==0&&!have_base)){
+        uint32_t disp; p_copy(&disp,insn+*len,4);*len+=4;base+=disp;
+    }
+    *address=base+index;return 0;
+}
+static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
+    struct kernel_action action=chained_segv;
+    if(action.handler==1 && info->si_code<=0)return;
+    if(action.handler<=1)RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);
+    if(action.flags&SA_RESETHAND)chained_segv.handler=0;
+    proxy_sigmask_t old=0,mask=action.mask&~SIGSYS_BIT;
+    RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
+    if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
+    else ((void (*)(int))action.handler)(sig);
+    old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
+}
+static void ldt_segv_handler(int sig,siginfo_t *info,void *opaque) {
+    ucontext_t *uc=opaque;unsigned char op[16];size_t n=0,ilen=0;uint32_t selector=0,address=0;
+    uintptr_t pc=(uintptr_t)uc->uc_mcontext.gregs[REG_EIP];
+    if(info->si_code==SI_KERNEL && pc && !proxy_copy(op,(void *)pc,sizeof(op))) {
+        /* Segment-load instructions have no address/operand-size prefixes in
+         * the common compat ABI sequences; reject prefixed forms safely. */
+        if(op[0]==0x8e) {
+            unsigned m=op[1],seg=(m>>3)&7;ilen=2;n=2;
+            if(seg==0 || seg==3 || seg==4 || seg==5) {
+                if((m>>6)==3)selector=*i386_reg(uc,m&7)&0xffff;
+                else if(!i386_ea(uc,op,&n,m,&address) && !proxy_copy(&selector,(void *)(uintptr_t)address,2))ilen=n;
+                else ilen=0;
+                if(ilen){int gi=seg==0?REG_ES:seg==3?REG_DS:seg==4?REG_FS:REG_GS;uc->uc_mcontext.gregs[gi]=selector;}
+            } else ilen=0;
+        } else if(op[0]==0x0f && (op[1]==0xa1 || op[1]==0xa9)) {
+            uint32_t sp=(uint32_t)uc->uc_mcontext.gregs[REG_ESP];
+            if(!proxy_copy(&selector,(void *)(uintptr_t)sp,2)){
+                uc->uc_mcontext.gregs[op[1]==0xa1?REG_FS:REG_GS]=selector;
+                uc->uc_mcontext.gregs[REG_ESP]=sp+4;ilen=2;
+            }
+        } else if(op[0]==0x0f && (op[1]==0xb4 || op[1]==0xb5)) {
+            unsigned m=op[2],dest=(m>>3)&7;size_t elen=3;uint32_t off;
+            if(!i386_ea(uc,op,&elen,m,&address) && !proxy_copy(&off,(void *)(uintptr_t)address,4) &&
+               !proxy_copy(&selector,(void *)(uintptr_t)(address+4),2)) {
+                *i386_reg(uc,dest)=off;uc->uc_mcontext.gregs[op[1]==0xb4?REG_FS:REG_GS]=selector;ilen=elen;
+            }
+        }
+    }
+    if(ilen && (selector&4) && (selector>>3)<ldt_capacity && ldt_entries[selector>>3].valid) {
+        struct thread_state *thread=thread_state();
+        if(thread && !thread->reserved)tls_reserve(thread);
+        if(thread && thread->reserved) {
+            struct user_desc d=ldt_entries[selector>>3].desc;d.entry_number=thread->reserved_real;
+            if(!RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0)) {
+                unsigned real=((unsigned)thread->reserved_real<<3)|3u;
+                int gi=-1;
+                /* The target register was selected above; replace its saved selector. */
+                if(op[0]==0x8e){unsigned seg=(op[1]>>3)&7;gi=seg==0?REG_ES:seg==3?REG_DS:seg==4?REG_FS:REG_GS;}
+                else if(op[0]==0x0f)gi=op[1]==0xa1||op[1]==0xb4?REG_FS:REG_GS;
+                if(gi>=0){uc->uc_mcontext.gregs[gi]=real;uc->uc_mcontext.gregs[REG_EIP]+=ilen;return;}
+            }
+        }
+    }
+    dispatch_segv_app(sig,info,opaque);
+}
+/* Called in the child clone continuation before payload code runs. The kernel
+ * installed glibc's CLONE_SETTLS descriptor; reserve the virtual third slot
+ * independently before returning to payload code. */
+void proxy_clone_tls_child(unsigned flags, const struct user_desc *user_desc) {
+    if(!(flags&CLONE_SETTLS) || !user_desc)return;
+    struct thread_state *thread=thread_state();
+    if(!thread)return;
+    if(proxy_i386_tls_reservation_enabled)tls_reserve(thread);
+}
+#endif
+#if ARCH_AUDIT != AUDIT_ARCH_I386
+void proxy_i386_tls_reservation(int enabled) {(void)enabled;}
+int proxy_i386_tls_prepare_payload(void) {return 0;}
+#endif
 const char *proxy_tmpdir="/tmp";
 /* --trace: log to the original diagnostic sink, independently of app stdio. */
 int proxy_trace;
@@ -520,6 +790,9 @@ static int ours(long n) {
     case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
     case PROXY_SC_close_range:case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_close:case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
     case PROXY_SC_capget:case PROXY_SC_capset:case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+    case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:case PROXY_SC_modify_ldt:
+#endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
     case PROXY_SC_prctl:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
@@ -662,8 +935,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             trace_word(" call_addr=",(uintptr_t)info->si_call_addr);
             trace_word(" pc=",ARCH_CONTEXT(uc,ARCH_PC)); emit("\n");
         }
-        /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
-        dispatch_app(sig,info,opaque);(*arch_signal_mask(uc))&=~SIGSYS_BIT;
+        dispatch_app(sig,info,opaque);
+        (*arch_signal_mask(uc))&=~SIGSYS_BIT;
         RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
         arch_signal_stack_ready(uc);
         if(selector && dispatch_selector==selector) *selector=saved;
@@ -810,7 +1083,19 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             if(a[1]) p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
             if(a[2]) p_copy((void *)(uintptr_t)a[2],&chained,sizeof(chained));
             if(a[1]) {next.mask&=~SIGSYS_BIT;chained=next;}result=0;
-        } else {
+        }
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+        else if(a[0]==SIGSEGV) {
+            if(a[3]!=8){result=-EINVAL;break;}
+            struct kernel_action next=chained_segv;
+            if(a[1])p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
+            if(a[2])p_copy((void *)(uintptr_t)a[2],&chained_segv,sizeof(chained_segv));
+            if(a[1]){next.mask&=~SIGSYS_BIT;chained_segv=next;}
+            struct kernel_action proxy={(uintptr_t)ldt_segv_handler,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+            result=RAW(nr,SIGSEGV,&proxy,0,8,0,0);
+        }
+#endif
+        else {
             struct kernel_action action;
             if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));action.mask&=~SIGSYS_BIT;a[1]=(long)&action;}
             result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
@@ -823,6 +1108,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(!result && a[1])RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&(*arch_signal_mask(uc)),8,0,0);
         break;
     }
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+    case PROXY_SC_set_thread_area:
+        result=thread?tls_set(thread,(uintptr_t)a[0]):-ENOMEM;break;
+    case PROXY_SC_get_thread_area:
+        result=thread?tls_get(thread,(uintptr_t)a[0]):-ENOMEM;break;
+    case PROXY_SC_modify_ldt:
+        result=ldt_call((unsigned)a[0],(uintptr_t)a[1],(size_t)a[2]);break;
+#endif
     case PROXY_SC_sigaltstack: {
         /* App altstack changes are virtual: the kernel retains our private stack.
          * The chained app handler's SA_ONSTACK is currently unsupported. */
@@ -894,6 +1187,9 @@ clone_retry:
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+            if(ldt_entries){vfs_free(ldt_entries);ldt_entries=NULL;ldt_capacity=0;}
+#endif
             vfs_network_payload((namespaces&CLONE_NEWNET)!=0);
             proxy_host_snapshot((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3]);
             ipc_exec();
@@ -904,6 +1200,9 @@ clone_retry:
             proxy_log("ours-exec",nr,0);
             /* A real exec resets caught signal actions. Our resident action stays. */
             if(chained.handler!=1) chained.handler=0;
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+            if(chained_segv.handler!=1)chained_segv.handler=0;
+#endif
             if(dispatch_selector) {
                 RAW(PROXY_SC_prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_OFF,0,0,0,0);
                 dispatch_selector=NULL;dispatch_owner=0;
