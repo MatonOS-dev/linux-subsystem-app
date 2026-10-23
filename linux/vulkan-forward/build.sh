@@ -14,7 +14,7 @@ readelf=${READELF:-llvm-readelf-21}
 check_icd() {
   local lib=$1 label=$2
   "$readelf" -d "$lib" > "$out/dynamic-$label.txt"
-  if rg -q NEEDED "$out/dynamic-$label.txt"; then echo "$label unexpected DT_NEEDED" >&2;exit 1;fi
+  if grep -E -q NEEDED "$out/dynamic-$label.txt"; then echo "$label unexpected DT_NEEDED" >&2;exit 1;fi
   "$readelf" --dyn-syms "$lib" > "$out/symbols-$label.txt"
   python3 - "$out/symbols-$label.txt" <<'PY'
 import pathlib,sys
@@ -36,7 +36,7 @@ for arch in aarch64 riscv64; do
     "$cc" --target="$arch-linux-gnu" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/$arch" -c "$here/$unit.c" -o "$out/$unit-$arch.o"
   done
 done
-"$readelf" -h "$out/i386/libmaton_vulkan.so" | rg -q 'Class:.*ELF32'
+"$readelf" -h "$out/i386/libmaton_vulkan.so" | grep -E -q 'Class:.*ELF32'
 sed "s|@GL_EXTENSION_DIR@|$out|;s|/lib/libmaton|/libmaton|" "$here/../gpu-forward-spike/flatpak/maton_icd.json.in" > "$out/maton_icd.json"
 cat "$out/coverage.txt"
 echo 'PASS: x86_64 and i386 ICDs have three exports, no undefined symbols or DT_NEEDED; aarch64/riscv64 core compiled (stub backends)'

@@ -22,7 +22,7 @@ flags=(-std=c11 -O2 -march=x86-64-v2 -g -ffreestanding -nostdlib -fno-stack-prot
 "$cc" --target=x86_64-linux-gnu "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/../vulkan-forward/wayland_resolve.c" "$here/../wayland-client/wayland_client.c" "$here/egl_vendor.c" -o "$out/libEGL_maton.so"
 readelf=${READELF:-llvm-readelf-21}
 "$readelf" -d "$out/libEGL_maton.so" > "$out/dynamic.txt"
-if rg -q NEEDED "$out/dynamic.txt"; then echo 'unexpected DT_NEEDED' >&2; exit 1; fi
+if grep -E -q NEEDED "$out/dynamic.txt"; then echo 'unexpected DT_NEEDED' >&2; exit 1; fi
 "$readelf" --dyn-syms "$out/libEGL_maton.so" > "$out/symbols.txt"
 exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/symbols.txt" | sort -u)
 [[ "$exports" == $'__egl_Main\nmaton_egl_direct_v1' ]] || { echo "unexpected exports: $exports" >&2; exit 1; }
@@ -30,11 +30,11 @@ mkdir -p "$out/i386"
 i386_flags=(-m32 -march=corei7 -std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/i386" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client")
 "$cc" "${i386_flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/../vulkan-forward/wayland_resolve.c" "$here/../wayland-client/wayland_client.c" "$here/egl_vendor.c" -o "$out/i386/libEGL_maton.so"
 "$readelf" -d "$out/i386/libEGL_maton.so" > "$out/i386/dynamic.txt"
-if rg -q NEEDED "$out/i386/dynamic.txt"; then echo 'i386 unexpected DT_NEEDED' >&2; exit 1; fi
+if grep -E -q NEEDED "$out/i386/dynamic.txt"; then echo 'i386 unexpected DT_NEEDED' >&2; exit 1; fi
 "$readelf" --dyn-syms "$out/i386/libEGL_maton.so" > "$out/i386/symbols.txt"
 i386_exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/i386/symbols.txt" | sort -u)
 [[ "$i386_exports" == $'__egl_Main\nmaton_egl_direct_v1' ]] || { echo "unexpected i386 exports: $i386_exports" >&2; exit 1; }
-"$readelf" -h "$out/i386/libEGL_maton.so" | rg -q 'Class:.*ELF32'
+"$readelf" -h "$out/i386/libEGL_maton.so" | grep -E -q 'Class:.*ELF32'
 for arch in aarch64 riscv64; do
   target="$arch-linux-gnu"
   "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -c "$here/runtime.c" -o "$out/runtime-$arch.o"
