@@ -25,6 +25,10 @@ typedef struct wl_proxy *(*wrapper_fn)(struct wl_proxy *);
 typedef void (*wrapper_destroy_fn)(struct wl_proxy *);
 typedef void (*set_queue_fn)(struct wl_proxy *, struct wl_event_queue *);
 typedef int (*flush_fn)(struct wl_display *);
+typedef int (*display_int_fn)(struct wl_display *);
+typedef int (*prepare_read_queue_fn)(struct wl_display *, struct wl_event_queue *);
+typedef int (*read_events_fn)(struct wl_display *);
+typedef void (*cancel_read_fn)(struct wl_display *);
 
 struct mv_wl_dmabuf {
     struct wl_display *display;
@@ -50,6 +54,10 @@ static wrapper_fn create_wrapper;
 static wrapper_destroy_fn destroy_wrapper;
 static set_queue_fn set_queue;
 static flush_fn display_flush;
+static display_int_fn display_get_fd;
+static prepare_read_queue_fn display_prepare_read;
+static read_events_fn display_read_events;
+static cancel_read_fn display_cancel_read;
 static const struct wl_interface *registry_interface;
 static const struct wl_interface *surface_interface;
 static const struct wl_interface *callback_interface;
@@ -76,6 +84,10 @@ static int resolve(void) {
     destroy_wrapper=(wrapper_destroy_fn)sym("wl_proxy_wrapper_destroy");
     set_queue=(set_queue_fn)sym("wl_proxy_set_queue");
     display_flush=(flush_fn)sym("wl_display_flush");
+    display_get_fd=(display_int_fn)sym("wl_display_get_fd");
+    display_prepare_read=(prepare_read_queue_fn)sym("wl_display_prepare_read_queue");
+    display_read_events=(read_events_fn)sym("wl_display_read_events");
+    display_cancel_read=(cancel_read_fn)sym("wl_display_cancel_read");
     registry_interface=(const struct wl_interface *)sym("wl_registry_interface");
     surface_interface=(const struct wl_interface *)sym("wl_surface_interface");
     callback_interface=(const struct wl_interface *)sym("wl_callback_interface");
@@ -218,6 +230,30 @@ int mv_wl_dmabuf_dispatch(struct mv_wl_dmabuf *d) {
 int mv_wl_dmabuf_dispatch_one(struct mv_wl_dmabuf *d) {
     if(!d||!d->display||!d->queue||!dispatch_queue)return -1;
     return dispatch_queue(d->display,d->queue);
+}
+int mv_wl_dmabuf_dispatch_timeout(struct mv_wl_dmabuf *d, int timeout_ms) {
+    if (!d || !d->display || !d->queue || !display_get_fd ||
+        !display_prepare_read || !display_read_events || !display_cancel_read) return -1;
+    while (dispatch_pending(d->display,d->queue) > 0) {}
+    while (display_prepare_read(d->display,d->queue) != 0) {
+        if (dispatch_pending(d->display,d->queue) < 0) return -1;
+    }
+    if (display_flush(d->display) < 0) { display_cancel_read(d->display); return -1; }
+#if defined(__x86_64__)
+    struct { int fd; short events, revents; } fd = { .fd=display_get_fd(d->display), .events=1 };
+    long r;
+    register long nr __asm__("rax")=7;
+    register long a __asm__("rdi")=(long)&fd;
+    register long b __asm__("rsi")=1;
+    register long c __asm__("rdx")=timeout_ms;
+    __asm__ volatile("syscall":"=a"(r):"a"(nr),"D"(a),"S"(b),"d"(c):"rcx","r11","memory");
+#else
+    (void)timeout_ms;
+    long r=-1;
+#endif
+    if (r<=0) { display_cancel_read(d->display); return r; }
+    if (display_read_events(d->display)<0) return -1;
+    return dispatch_pending(d->display,d->queue)<0 ? -1 : 1;
 }
 
 struct mv_wl_buffer *mv_wl_dmabuf_create_buffer(struct mv_wl_dmabuf *d,
