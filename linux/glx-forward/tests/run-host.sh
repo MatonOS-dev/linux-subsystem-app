@@ -14,3 +14,8 @@ cc=${CC:-cc}
 "$cc" -std=c11 -O2 -I"$ROOT/glx-forward/include" \
   "$ROOT/glx-forward/tests/swap.c" -o "$OUT/swap-test" -lGLESv2 -lX11 -ldl
 "$OUT/swap-test"
+# Keep the on-device depth/stencil regression probe buildable on developer hosts.
+"$cc" -std=c11 -O2 "$ROOT/glx-forward/tests/depth-stencil.c" \
+  -o "$OUT/depth-stencil-test" -lGL -lX11
+"$cc" -std=c11 -O2 "$ROOT/glx-forward/tests/atlas2.c" \
+  -o "$OUT/atlas2-test" -lGL -lX11
