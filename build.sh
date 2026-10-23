@@ -44,6 +44,7 @@ export OUT_DIR=${MATON_FLATPAK_OUT:-$MUSL_SCRATCH/flatpak-musl/out}
 # Used by the separately Android-linked session broker build.
 export MATON_FLATPAK_NDK=$OUTPUT/flatpak
 export MATON_FLATPAK_PLAN_BUILD=${MATON_FLATPAK_PLAN_BUILD:-$BUILD_DIR/flatpak}
+export MATON_FLATPAK_PLAN_OUT=${MATON_FLATPAK_PLAN_OUT:-$BUILD_DIR/plan}
 # The Android-linked session broker still links the existing NDK dependency
 # prefix; only Linux-side Flatpak executables use the musl prefix above.
 export MATON_FLATPAK_PREFIX=$OUTPUT/flatpak/build/prefix
@@ -85,3 +86,11 @@ echo "Signed APK: $OUTPUT/MatonLinuxSubsystem.apk"
 "$SDK_TOOLS/zipalign" -c -P 16 4 "$OUTPUT/MatonLinuxSubsystemBootstrap.apk"
 python3 "$ROOT/tests/check-bootstrap-apks.py" "$OUTPUT/MatonLinuxSubsystemBootstrap.apk" "$OUTPUT/MatonLinuxSubsystem.apk" "$SDK_TOOLS/aapt2"
 echo "Signed bootstrap APK: $OUTPUT/MatonLinuxSubsystemBootstrap.apk"
+ISA_CHECKER=${MATON_ISA_CHECKER:-/mnt/data/aosp/device/maton/pc_x86_64/tools/check-isa.sh}
+"$ISA_CHECKER" \
+  --symbols-dir "$OUT_DIR" \
+  --symbols-dir "$MATON_FLATPAK_PLAN_OUT" \
+  --symbols-dir "$MATON_PIPEWIRE_BUILD/jniLibs/x86_64" \
+  --symbols-dir "$MATON_COMPOSITOR_JNI_LIBS/x86_64" \
+  --symbols-dir "$MATON_VULKAN_OUT" \
+  "$OUTPUT/MatonLinuxSubsystem.apk" "$OUT_DIR/matonos-flatpak"

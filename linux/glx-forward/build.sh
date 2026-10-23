@@ -9,7 +9,7 @@ case "$out/" in "$here/"*|"$(git -C "$here" rev-parse --show-toplevel)/"*) echo 
 mkdir -p "$out"
 cc=${CC:-clang-21}; readelf=${READELF:-llvm-readelf-21}
 headers="$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
-"$cc" --target=x86_64-linux-android35 -std=c11 -O2 -g -ffreestanding -nostdlib \
+"$cc" --target=x86_64-linux-android35 -march=x86-64-v2 -std=c11 -O2 -g -ffreestanding -nostdlib \
   -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror \
   -I"$here/include" -I"$deps/include" -I"$headers/x86_64-linux-android" -I"$headers" \
   -shared -Wl,-Bsymbolic,-z,now,-z,noexecstack "$here/vendor.c" -o "$out/libGLX_maton.so.0"

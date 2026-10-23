@@ -59,6 +59,6 @@ with tempfile.TemporaryDirectory(prefix="matonos-multicall-") as td:
     group_end = next((i for i, x in enumerate(args) if x == "-Wl,--end-group"), len(args))
     args.insert(group_end, os.path.join(build, "prefix/lib/libcap.a"))
     dispatcher = os.path.join(td, "multicall.o")
-    run([cc, "-O2", "-fPIC", "-c", source, "-o", dispatcher])
+    run([cc, "-O2", "-march=x86-64-v2", "-fPIC", "-c", source, "-o", dispatcher])
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
     run([link[0], *args, dispatcher, "-o", output], cwd=flatpak)

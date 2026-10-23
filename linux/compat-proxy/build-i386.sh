@@ -11,7 +11,7 @@ mkdir -p "$(dirname "$output")"
 chmod 0755 "$(dirname "$output")"
 python3 "$source_dir/gen-policy.py"
 builtins=$("$compiler" --print-libgcc-file-name)
-"$compiler" -m32 "${counter_flags[@]}" -DPROXY_ARCH_BACKEND='"i386/backend.h"' \
+"$compiler" -m32 -march=i686 -msse2 "${counter_flags[@]}" -DPROXY_ARCH_BACKEND='"i386/backend.h"' \
   -nostdlib -static -Wl,-no-pie -Wl,--image-base=0x70000000 -Wl,--section-start=.proxy_gateway=0x70300000 \
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$source_dir"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \

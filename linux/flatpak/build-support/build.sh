@@ -46,7 +46,7 @@ export CC CXX AR RANLIB STRIP
 # Map each independently located input, including generated/copied sources.
 MESON_SRC=$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$SRC" "$BUILD/component")
 REPRO_FLAGS="-ffile-prefix-map=$MESON_SRC=./src -fdebug-prefix-map=$MESON_SRC=./src -ffile-prefix-map=$SRC=./src -fdebug-prefix-map=$SRC=./src -ffile-prefix-map=$BUILD=./build -fdebug-prefix-map=$BUILD=./build -ffile-prefix-map=$HERE=./build-support -fdebug-prefix-map=$HERE=./build-support -ffile-prefix-map=$MUSL_PREFIX=./musl -fdebug-prefix-map=$MUSL_PREFIX=./musl -ffile-prefix-map=/home/buildozer=./alpine-build -fdebug-prefix-map=/home/buildozer=./alpine-build"
-export CFLAGS="-O2 -fPIC $REPRO_FLAGS"
+export CFLAGS="-O2 -march=x86-64-v2 -fPIC $REPRO_FLAGS"
 export CXXFLAGS="$CFLAGS"
 COMPAT_CFLAGS="$CFLAGS"
 COMPAT_CXXFLAGS="$CXXFLAGS"
@@ -210,6 +210,7 @@ FLATPAK_CXXFLAGS="$COMPAT_CXXFLAGS"
 meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dgtkdoc=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-app-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="-static-pie -static" -Dcpp_link_args="-static-pie -static"
 "$NINJA" -C "$BUILD/flatpak" -j "$JOBS"
 python3 "$HERE/make-multicall.py" "$BUILD" "$OUT/matonos-flatpak.unstripped" "$OBJCOPY" "$CC"
+install -m755 "$OUT/matonos-flatpak.unstripped" "$OUT/matonos-flatpak.symbols"
 "$STRIP" --strip-all "$OUT/matonos-flatpak.unstripped" -o "$OUT/matonos-flatpak"
 rm -f "$OUT/matonos-flatpak.unstripped"
 if "$READELF" -l "$OUT/matonos-flatpak" | grep -q 'INTERP'; then

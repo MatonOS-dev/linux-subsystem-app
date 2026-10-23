@@ -17,7 +17,7 @@ MUSL_SCRATCH=${MUSL_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
 GPGME_LITE_SRC=${GPGME_LITE_SRC:-$MUSL_SCRATCH/flatpak-musl/cache/src/DullPGP}
 ALPINE_ENTER=$DEVICE_DIR/linux/flatpak/build-support/alpine-enter.sh
 [[ -x $MUSL_SCRATCH/rootfs/x86_64/bin/sh ]] || die "offline Alpine 3.24.2 root missing at $MUSL_SCRATCH"
-CFLAGS='-Os -Wall -Wextra -Werror -ffunction-sections -fdata-sections -static-pie -static'
+CFLAGS='-Os -march=x86-64-v2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -static-pie -static'
 MUSL_CC_ID=$(SCRATCH="$MUSL_SCRATCH" GPGME_LITE_SRC="$GPGME_LITE_SRC" "$ALPINE_ENTER" gcc --version | sed -n '1p')
 
 SRC=$DEVICE_DIR/linux/flatpak

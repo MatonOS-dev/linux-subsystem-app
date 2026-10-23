@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build the public-API Flatpak inspection adapter against the pinned build."""
-import os, pathlib, shlex, subprocess, sys
+import os, pathlib, shlex, subprocess, sys, shutil
 
 source = pathlib.Path(__file__).resolve().parent
 out = pathlib.Path(sys.argv[1])
@@ -14,6 +14,10 @@ def command(target):
 # Reuse the pinned dependency link set but compile this source with public
 # headers and no upstream private object or private header dependency.
 compile = command('common/libflatpak-common.a.p/flatpak-installation.c.o')
+# The inherited Flatpak command is generated from the static build graph and
+# may not carry an ISA flag. Clamp this standalone APK helper explicitly.
+compile = [arg for arg in compile if not arg.startswith(('-march=', '-mtune='))]
+compile.insert(1, '-march=x86-64-v2')
 for flag in ('-o', '-MF', '-MQ'):
     if flag in compile:
         compile[compile.index(flag) + 1] = str(out / ('inspect.o.d' if flag == '-MF' else 'inspect.o'))
@@ -23,6 +27,7 @@ link = [arg for arg in command('common/test-libflatpak') if not arg.endswith('.o
 link[link.index('-o') + 1] = str(out / 'libmatonos-flatpak-plan.so')
 link.insert(1, str(out / 'inspect.o'))
 subprocess.check_call(link, cwd=build)
+shutil.copy2(out / 'libmatonos-flatpak-plan.so', out / 'libmatonos-flatpak-plan.so.symbols')
 subprocess.check_call([os.environ.get('STRIP', 'strip'), '--strip-all', str(out / 'libmatonos-flatpak-plan.so')])
 headers = subprocess.check_output(['readelf', '-l', str(out / 'libmatonos-flatpak-plan.so')], text=True)
 if 'INTERP' in headers:

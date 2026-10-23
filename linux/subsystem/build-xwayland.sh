@@ -149,6 +149,8 @@ endian = 'little'
 
 [properties]
 needs_exe_wrapper = true
+c_args = ['-march=x86-64-v2']
+cpp_args = ['-march=x86-64-v2']
 c_link_args = ['-L$PREFIX/lib']
 EOF
 

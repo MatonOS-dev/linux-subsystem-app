@@ -21,6 +21,7 @@ SCRATCH="$SCRATCH" GPGME_LITE_SRC="$GPGME_LITE_SRC" \
   "$ROOT/linux/flatpak/build-support/alpine-enter.sh" \
   python3 /scratch/flatpak-musl/plan-source/build.py /scratch/flatpak-musl/plan-out
 install -m755 "$WORK/plan-out/libmatonos-flatpak-plan.so" "$PLAN_OUT/libmatonos-flatpak-plan.so"
+install -m755 "$WORK/plan-out/libmatonos-flatpak-plan.so.symbols" "$PLAN_OUT/libmatonos-flatpak-plan.so.symbols"
 source_file=$ROOT/linux/flatpak/prebuilt/static/SOURCE
 {
   awk '/^static musl plan helper artifact$/{exit} { line[NR]=$0 } END { while(NR>0 && line[NR]=="") NR--; for(i=1;i<=NR;i++) print line[i] }' "$source_file"

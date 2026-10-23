@@ -59,6 +59,7 @@ add_library(maton_compositor SHARED
   "${GENERATED}/wayland-protocols/xdg-shell-enum.h"
   "${GENERATED}/maton-ahb-buffer-v1-protocol.c" "${GENERATED}/maton-ahb-buffer-v1-server-protocol.h")
 target_compile_features(maton_compositor PRIVATE c_std_11 cxx_std_17)
+target_compile_options(maton_compositor PRIVATE -march=x86-64-v2)
 target_compile_definitions(maton_compositor PRIVATE WLR_USE_UNSTABLE)
 target_include_directories(maton_compositor PRIVATE
   "${GENERATED}"
@@ -76,6 +77,7 @@ target_link_libraries(maton_compositor PRIVATE
 
 add_library(maton_dns_forwarder SHARED dns_forwarder_core.c dns_forwarder_android.c)
 target_compile_features(maton_dns_forwarder PRIVATE c_std_11)
+target_compile_options(maton_dns_forwarder PRIVATE -march=x86-64-v2)
 target_include_directories(maton_dns_forwarder PRIVATE "${MATON_COMPOSITOR_ROOT}/native")
 target_link_libraries(maton_dns_forwarder PRIVATE android log)
 
@@ -84,6 +86,7 @@ if(NOT MATON_PIPEWIRE_BUILD)
 endif()
 add_library(maton_pipewire SHARED pipewire_android.c)
 target_compile_features(maton_pipewire PRIVATE c_std_11)
+target_compile_options(maton_pipewire PRIVATE -march=x86-64-v2)
 target_compile_definitions(maton_pipewire PRIVATE _GNU_SOURCE)
 target_include_directories(maton_pipewire PRIVATE
   "${MATON_PIPEWIRE_BUILD}/install/pipewire/include/pipewire-0.3"

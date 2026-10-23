@@ -15,7 +15,7 @@ mkdir -p "$OUT"
 INCLUDES=(-I"$GLIB_PREFIX/include/glib-2.0" \
   -I"$GLIB_PREFIX/lib/glib-2.0/include" -I"$GLIB_PREFIX/include" \
   -I"$GLIB_PREFIX/include/gio-unix-2.0")
-CFLAGS=(-O2 -g -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror)
+CFLAGS=(-O2 -march=x86-64-v2 -g -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror)
 for source in broker portals maton_broker_jni; do
   "$TOOLCHAIN/x86_64-linux-android35-clang" "${CFLAGS[@]}" "${INCLUDES[@]}" \
     -c "$DEVICE_DIR/linux/dbus-broker/$source.c" -o "$OUT/$source.o"

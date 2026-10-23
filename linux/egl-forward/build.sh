@@ -18,7 +18,7 @@ cat > "$deps/include/GL/gl.h" <<'EOF'
 typedef unsigned char GLboolean;
 typedef double GLdouble;
 EOF
-flags=(-std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/x86_64" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client")
+flags=(-std=c11 -O2 -march=x86-64-v2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/x86_64" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client")
 "$cc" --target=x86_64-linux-gnu "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/../vulkan-forward/wayland_resolve.c" "$here/../wayland-client/wayland_client.c" "$here/egl_vendor.c" -o "$out/libEGL_maton.so"
 readelf=${READELF:-llvm-readelf-21}
 "$readelf" -d "$out/libEGL_maton.so" > "$out/dynamic.txt"

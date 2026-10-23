@@ -62,7 +62,7 @@ FFI_BUILD=$BUILD/libffi
 if [[ ! -f $FFI_BUILD/Makefile ]]; then
   mkdir -p "$FFI_BUILD"
   (cd "$FFI_BUILD" && \
-    CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" CFLAGS='-O2 -fPIC' \
+    CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" CFLAGS='-O2 -march=x86-64-v2 -fPIC' \
     "$FFI_SRC/configure" --host=x86_64-linux-android --prefix="$PREFIX" \
       --enable-static --disable-shared --with-pic --disable-docs)
 fi
@@ -85,7 +85,8 @@ endian = 'little'
 
 [properties]
 needs_exe_wrapper = true
-c_args = ['-I$BUILD/generated', '-I$HOST/include', '-Dshm_open=maton_shm_open', '-Dshm_unlink=maton_shm_unlink', '-include', '$ROOT/native/compat_shm.h']
+c_args = ['-march=x86-64-v2', '-I$BUILD/generated', '-I$HOST/include', '-Dshm_open=maton_shm_open', '-Dshm_unlink=maton_shm_unlink', '-include', '$ROOT/native/compat_shm.h']
+cpp_args = ['-march=x86-64-v2', '-I$BUILD/generated', '-I$HOST/include', '-Dshm_open=maton_shm_open', '-Dshm_unlink=maton_shm_unlink', '-include', '$ROOT/native/compat_shm.h']
 c_link_args = ['-L$PREFIX/lib', '-lmaton-shm']
 EOF
 
