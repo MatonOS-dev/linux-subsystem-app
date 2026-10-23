@@ -1449,3 +1449,20 @@ still reach the proxy's virtual stack implementation. `tests/resident-altstack.c
 installs the actual BPF and verifies a resident call succeeds with SIGSYS
 blocked, while an otherwise identical payload call still traps. This fixes
 Extreme Tux Racer's startup exit 159; it does not repair Xwayland presentation.
+
+### Virtual NEWNET interface ioctls (2026-10-23)
+
+Within virtual NEWNET, loopback interface requests are answered from the
+virtual interface table regardless of the descriptor's socket family. This
+covers `SIOCGIFINDEX`, `SIOCGIFNAME`, `SIOCGIFFLAGS`, `SIOCSIFFLAGS`, and
+`SIOCGIFCONF`; the virtual loopback is interface 1 and starts up. The x86
+payload filters match the interface ioctl request values for both x86_64 and
+i386, then let the inherited proxy filter trap and dispatch ioctl. Avoiding a
+second `SECCOMP_RET_TRAP` is required because stacked traps recursively enter
+proxy signal handling. Other ioctl requests and behavior outside virtual
+NEWNET remain unchanged.
+
+`tests/net.c` covers AF_INET and AF_UNIX datagram control sockets, loopback
+index/name/flags/configuration, and the host ioctl path outside virtual
+NEWNET. The separate `TIOCGWINSZ` denial on a pipe is expected: Linux returns
+`ENOTTY`, so it needs no virtual handling. No VM test was run.

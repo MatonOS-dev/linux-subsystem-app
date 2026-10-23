@@ -10,6 +10,7 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
+#include <netinet/in.h>
 #include <errno.h>
 #include <limits.h>
 #include <linux/sockios.h>
@@ -17,6 +18,7 @@ struct reply { struct reply *next; struct nlmsghdr header; struct nlmsgerr error
 struct endpoint { unsigned refs; unsigned port; int route; struct reply *first, *last; };
 struct descriptor { int fd; struct endpoint *ep; struct descriptor *next; };
 static struct descriptor *fds;
+static short virtual_lo_flags=IFF_LOOPBACK|IFF_UP|IFF_RUNNING;
 static struct endpoint *lookup(int fd) {
     for(struct descriptor *p=fds;p;p=p->next)if(p->fd==fd)return p->ep;
     return NULL;
@@ -87,8 +89,48 @@ static long receive(int fd,struct endpoint *e,const void *iov,size_t count,int f
     if(!(flags&MSG_PEEK)){uint64_t one;long n=RAW(PROXY_SC_read,fd,&one,sizeof(one),0,0,0);if(n<0)return n;e->first=r->next;if(!e->first)e->last=NULL;vfs_free(r);}
     return flags&MSG_TRUNC?(long)len:(long)used;
 }
+static int interface_ioctl(unsigned request) {
+    switch(request){
+    case SIOCGIFNAME:case SIOCGIFCONF:case SIOCGIFFLAGS:case SIOCSIFFLAGS:
+    case SIOCGIFADDR:case SIOCSIFADDR:case SIOCGIFDSTADDR:case SIOCSIFDSTADDR:
+    case SIOCGIFBRDADDR:case SIOCSIFBRDADDR:case SIOCGIFNETMASK:case SIOCSIFNETMASK:
+    case SIOCGIFMETRIC:case SIOCSIFMETRIC:case SIOCGIFMEM:case SIOCSIFMEM:
+    case SIOCGIFMTU:case SIOCSIFMTU:case SIOCGIFHWADDR:case SIOCSIFHWADDR:
+    case SIOCGIFINDEX:case SIOCSIFPFLAGS:case SIOCGIFPFLAGS:case SIOCGIFTXQLEN:case SIOCSIFTXQLEN:
+        return 1;
+    default:return 0;
+    }
+}
 long net_call(long nr,proxy_arg_t *a,int newnet,int *handled) {
     *handled=0;
+    if(nr==PROXY_SC_ioctl && newnet && interface_ioctl((unsigned)a[1])){
+        unsigned request=(unsigned)a[1];
+        *handled=1;
+        if(request!=SIOCGIFINDEX && request!=SIOCGIFFLAGS && request!=SIOCSIFFLAGS &&
+           request!=SIOCGIFNAME && request!=SIOCGIFCONF)return -EOPNOTSUPP;
+        if(!a[2])return -EFAULT;
+        if(request==SIOCGIFCONF){
+                uintptr_t cp=(uintptr_t)a[2], buffer=0;int length=0;
+                p_copy(&length,(void *)cp,sizeof(length));
+                if(length<0)return -EINVAL;
+                if(cp<=UINT32_MAX){uint32_t ptr=0;p_copy(&ptr,(void *)(cp+4),sizeof(ptr));buffer=ptr;}
+                else p_copy(&buffer,(void *)(cp+8),sizeof(buffer));
+                unsigned row_size=cp<=UINT32_MAX?32u:40u;
+                if(length<(int)row_size){p_copy((void *)cp,&(int){0},sizeof(int));return 0;}
+                if(!buffer)return -EFAULT;
+                unsigned char row[40]={0};p_copy(row,"lo",3);
+                unsigned short family=AF_INET;p_copy(row+16,&family,sizeof(family));
+                uint32_t loopback=htonl(INADDR_LOOPBACK);p_copy(row+20,&loopback,sizeof(loopback));
+                p_copy((void *)buffer,row,row_size);p_copy((void *)cp,&row_size,sizeof(int));return 0;
+        }
+        struct ifreq *r=(void *)(uintptr_t)a[2];
+        if(request==SIOCGIFNAME){if(r->ifr_ifindex!=1)return -ENODEV;p_copy(r->ifr_name,"lo",3);return 0;}
+        if(r->ifr_name[0]!='l' || r->ifr_name[1]!='o' || r->ifr_name[2])return -ENODEV;
+        if(request==SIOCGIFINDEX){r->ifr_ifindex=1;return 0;}
+        if(request==SIOCGIFFLAGS){r->ifr_flags=virtual_lo_flags;return 0;}
+        if((r->ifr_flags&~(IFF_LOOPBACK|IFF_UP|IFF_RUNNING)) || !(r->ifr_flags&IFF_LOOPBACK))return -EINVAL;
+        virtual_lo_flags=(short)(IFF_LOOPBACK|(r->ifr_flags&IFF_UP)|(r->ifr_flags&IFF_UP?IFF_RUNNING:0));return 0;
+    }
     if(nr==PROXY_SC_socket && newnet && ((a[0]==AF_NETLINK && a[2]==NETLINK_ROUTE) || (a[0]==AF_INET && (a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))==SOCK_DGRAM && !a[2]))){
         *handled=1;if((a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))!=SOCK_RAW && (a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK))!=SOCK_DGRAM)return -EPROTOTYPE;
         struct endpoint *e=vfs_palloc(sizeof(*e));struct descriptor *d=vfs_palloc(sizeof(*d));if(!e || !d){vfs_free(e);vfs_free(d);return -ENOMEM;}

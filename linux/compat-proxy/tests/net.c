@@ -19,7 +19,17 @@
 struct request {struct nlmsghdr header;struct ifinfomsg link;};
 static void test(void){
     int sock=socket(AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0);CHECK(sock>=0);
-    struct ifreq lo={.ifr_name="lo"};CHECK(!ioctl(sock,SIOCGIFINDEX,&lo));CHECK(lo.ifr_ifindex==1);close(sock);
+    struct ifreq lo={.ifr_name="lo"};CHECK(!ioctl(sock,SIOCGIFINDEX,&lo));CHECK(lo.ifr_ifindex==1);
+    CHECK(!ioctl(sock,SIOCGIFFLAGS,&lo));CHECK((lo.ifr_flags&(IFF_LOOPBACK|IFF_UP))==(IFF_LOOPBACK|IFF_UP));
+    short flags=lo.ifr_flags;lo.ifr_flags=(short)(flags&~IFF_UP);CHECK(!ioctl(sock,SIOCSIFFLAGS,&lo));
+    CHECK(!ioctl(sock,SIOCGIFFLAGS,&lo));CHECK(!(lo.ifr_flags&IFF_UP));lo.ifr_flags=flags;CHECK(!ioctl(sock,SIOCSIFFLAGS,&lo));close(sock);
+    sock=socket(AF_INET,SOCK_DGRAM,0);CHECK(sock>=0);
+    lo=(struct ifreq){.ifr_ifindex=1};CHECK(!ioctl(sock,SIOCGIFNAME,&lo));CHECK(!strcmp(lo.ifr_name,"lo"));
+    struct ifreq rows[2];struct ifconf conf={.ifc_len=sizeof(rows),.ifc_req=rows};
+    CHECK(!ioctl(sock,SIOCGIFCONF,&conf));CHECK(conf.ifc_len==(int)sizeof(struct ifreq));
+    CHECK(!strcmp(rows[0].ifr_name,"lo") && rows[0].ifr_addr.sa_family==AF_INET);close(sock);
+    sock=socket(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0);CHECK(sock>=0);
+    lo=(struct ifreq){.ifr_name="lo"};CHECK(!ioctl(sock,SIOCGIFINDEX,&lo));CHECK(lo.ifr_ifindex==1);close(sock);
     int fd=socket(AF_NETLINK,SOCK_RAW|SOCK_CLOEXEC,NETLINK_ROUTE);CHECK(fd>=0);
     struct sockaddr_nl local={.nl_family=AF_NETLINK,.nl_pid=(unsigned)getpid()},kernel={.nl_family=AF_NETLINK};
     CHECK(!bind(fd,(void *)&local,sizeof(local)));
@@ -43,6 +53,8 @@ static void test(void){
     close(fd);
 }
 int main(void){
+    int outside=socket(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0);CHECK(outside>=0);
+    struct ifreq hostlo={.ifr_name="lo"};CHECK(!ioctl(outside,SIOCGIFINDEX,&hostlo));CHECK(hostlo.ifr_ifindex>0);close(outside);
     /* Namespace flags on clone belong only to the child, never its monitor. */
     long child=syscall(SYS_clone,CLONE_NEWNET|SIGCHLD,0,0,0,0);CHECK(child>=0);
     if(!child){test();_exit(0);}int status;CHECK(waitpid(child,&status,0)==child && status==0);
@@ -53,6 +65,6 @@ int main(void){
     CHECK(!unshare(CLONE_NEWUSER));int fd=open("/proc/sys/user/max_user_namespaces",O_WRONLY|O_CLOEXEC);CHECK(fd>=0);
     int alias=dup(fd);CHECK(alias>=0);close(fd);CHECK(write(alias,"1",1)==1);close(alias);
     CHECK(!unshare(CLONE_NEWUSER));errno=0;CHECK(unshare(CLONE_NEWUSER)==-1 && errno==EPERM);
-    puts("PASS virtual lo ACKs, message iov/peek/truncation, fd aliases, clone scope and userns limit");
+    puts("PASS virtual lo ioctl/socket types, route ACKs, message iov/peek/truncation, fd aliases, clone scope and userns limit");
     return 0;
 }

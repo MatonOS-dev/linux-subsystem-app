@@ -3,6 +3,7 @@
  * trap predicate; this backend alone chooses audit IDs, numbers and gateways. */
 /* Both branches survive kernel exec. Never interpret a compat number using
  * the native table. JA (32-bit offset) avoids classic BPF's 8-bit branch limit. */
+#include <linux/sockios.h>
 static int arch_app_install(void) {
     struct sock_filter bpf[2048];unsigned n=0;
 #define ADD(code,jt,jf,k) do {if(n>=sizeof(bpf)/sizeof(bpf[0])) return -E2BIG; bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
@@ -16,6 +17,26 @@ static int arch_app_install(void) {
         unsigned jump=branch?compat_jump:native_jump;bpf[jump].k=n-jump-1;
         const int *allowed=branch?android_i386_allowed:android_x86_64_allowed;
         unsigned count=branch?sizeof(android_i386_allowed)/sizeof(int):sizeof(android_x86_64_allowed)/sizeof(int);
+        long (*encode_ioctl)(long)=branch?arch_peer_encode_syscall:arch_encode_syscall;
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+        /* Route interface ioctls through the proxy even when the Android
+         * syscall allowlist would otherwise let ioctl reach the kernel. */
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,encode_ioctl(PROXY_SC_ioctl));
+        ADD(BPF_JMP|BPF_JA,0,0,0);unsigned ioctl_jump=n-1;
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+        const unsigned ifreqs[]={SIOCGIFNAME,SIOCGIFCONF,SIOCGIFFLAGS,SIOCSIFFLAGS,
+            SIOCGIFADDR,SIOCSIFADDR,SIOCGIFDSTADDR,SIOCSIFDSTADDR,
+            SIOCGIFBRDADDR,SIOCSIFBRDADDR,SIOCGIFNETMASK,SIOCSIFNETMASK,
+            SIOCGIFMETRIC,SIOCSIFMETRIC,SIOCGIFMEM,SIOCSIFMEM,
+            SIOCGIFMTU,SIOCSIFMTU,SIOCGIFHWADDR,SIOCSIFHWADDR,
+            SIOCGIFINDEX,SIOCSIFPFLAGS,SIOCGIFPFLAGS,SIOCGIFTXQLEN,SIOCSIFTXQLEN};
+        for(unsigned i=0;i<sizeof(ifreqs)/sizeof(ifreqs[0]);i++) {
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ifreqs[i]);
+            /* The lower proxy filter traps ioctl and performs emulation.
+             * This payload allowlist must not generate a second SIGSYS. */
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
+        bpf[ioctl_jump].k=n-ioctl_jump-1;
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
         for(unsigned i=0;i<count;i++) {
             ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,allowed[i]);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
