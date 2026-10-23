@@ -1,36 +1,40 @@
 /* Per-process DNS proxy. Applications retain ordinary AF_INET UDP sockets;
  * only the configured loopback resolver endpoint is redirected to a local
- * UDP helper. The helper asks Android netd asynchronously through libandroid. */
+ * UDP helper. The helper speaks netd's dnsproxyd wire protocol directly. */
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/un.h>
+#include <sys/mman.h>
 #include <errno.h>
-static int dns_fast_tls;
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-#include "../gpu-forward-spike/spike3/adopt.h"
-static void *(*dns_android_open)(const char *,int);
-static void *(*dns_android_symbol)(void *,const char *);
-static struct adopt_api *dns_adopt_api;
-static int (*dns_pthread_create)(unsigned long *,const void *,void *(*)(void *),void *);
-static int (*dns_res_nsend)(uint64_t, const uint8_t *, size_t, uint32_t);
-static int (*dns_res_nresult)(int, int *, void *, size_t);
-static void *dns_android_lib,*dns_bionic_lib;
-void proxy_dns_bridge_configure(void *(*open)(const char *,int),void *(*symbol)(void *,const char *),uintptr_t adopt,int fast){
-    dns_android_open=open;dns_android_symbol=symbol;dns_adopt_api=(struct adopt_api *)adopt;dns_fast_tls=fast;
-}
-static int dns_resolver_symbols(void){
-    if(!dns_android_open||!dns_android_symbol)return 0;
-    if(!dns_android_lib)dns_android_lib=dns_android_open("/system/lib64/libandroid.so",2);
-    if(!dns_bionic_lib)dns_bionic_lib=dns_android_open("/system/lib64/libc.so",2);
-    if(!dns_android_lib||!dns_bionic_lib)return 0;
-    if(!dns_res_nsend)dns_res_nsend=(int (*)(uint64_t,const uint8_t *,size_t,uint32_t))dns_android_symbol(dns_android_lib,"android_res_nsend");
-    if(!dns_res_nresult)dns_res_nresult=(int (*)(int,int *,void *,size_t))dns_android_symbol(dns_android_lib,"android_res_nresult");
-    if(!dns_pthread_create)dns_pthread_create=(int (*)(unsigned long *,const void *,void *(*)(void *),void *))dns_android_symbol(dns_bionic_lib,"pthread_create");
-    return dns_res_nsend&&dns_res_nresult&&dns_pthread_create;
-}
-#else
-static int dns_resolver_symbols(void){return 0;}
+extern long proxy_raw_clone_thread(unsigned long,void *,void (*)(void *),void *);
+#ifndef DNS_PROXY_PATH
+#define DNS_PROXY_PATH "/dev/socket/dnsproxyd"
 #endif
+static const char dns_netd_path[]=DNS_PROXY_PATH;
+static const char dns_b64[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+#define DNS_MAX_CMD_SIZE 4096
+static int dns_netd_send(const unsigned char *query,size_t size){
+    char cmd[DNS_MAX_CMD_SIZE];static const char prefix[]="resnsend 0 0 ";size_t p=sizeof(prefix)-1;
+    if(size>(DNS_MAX_CMD_SIZE-p-2)/4*3)return -EMSGSIZE;
+    p_copy(cmd,prefix,p);
+    for(size_t i=0;i<size;i+=3){unsigned a=query[i],b=i+1<size?query[i+1]:0,c=i+2<size?query[i+2]:0;cmd[p++]=dns_b64[a>>2];cmd[p++]=dns_b64[((a&3)<<4)|(b>>4)];cmd[p++]=i+1<size?dns_b64[((b&15)<<2)|(c>>6)]:'=';cmd[p++]=i+2<size?dns_b64[c&63]:'=';}
+    cmd[p++]=0;if(p>DNS_MAX_CMD_SIZE)return -EMSGSIZE;
+    int fd=(int)RAW(PROXY_SC_socket,AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,0,0,0);if(fd<0)return (int)fd;
+    struct sockaddr_un addr={.sun_family=AF_UNIX};p_copy(addr.sun_path,dns_netd_path,sizeof(dns_netd_path));
+    long r=RAW(PROXY_SC_connect,fd,&addr,sizeof(addr),0,0,0);if(r<0){RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)r;}
+    size_t off=0;while(off<p){r=RAW(PROXY_SC_write,fd,cmd+off,p-off,0,0,0);if(r<=0){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r<0?(int)r:-EIO;}off+=(size_t)r;}
+    RAW(PROXY_SC_shutdown,fd,SHUT_WR,0,0,0,0);return fd;
+}
+static int dns_read_exact(int fd,void *buf,size_t size){size_t off=0;while(off<size){long n=RAW(PROXY_SC_read,fd,(char *)buf+off,size-off,0,0,0);if(n<=0)return n<0?(int)n:-EIO;off+=(size_t)n;}return 0;}
+static int dns_netd_result(int fd,int *rcode,void *answer,size_t capacity){
+    unsigned char h[8];int r=dns_read_exact(fd,h,8);if(r<0)return r;
+    uint32_t status=((uint32_t)h[0]<<24)|((uint32_t)h[1]<<16)|((uint32_t)h[2]<<8)|h[3];
+    uint32_t len=((uint32_t)h[4]<<24)|((uint32_t)h[5]<<16)|((uint32_t)h[6]<<8)|h[7];
+    if(status&0x80000000u)return -(int)(~status+1u);
+    if(len>capacity)return -EMSGSIZE;
+    r=dns_read_exact(fd,answer,len);if(r<0)return r;*rcode=(int)status;return (int)len;
+}
 /* Default Android private resolver; --dns-forwarder can select a test or
  * alternate loopback address, but state no longer depends on exec snapshots. */
 static struct sockaddr_in dns_endpoint={.sin_family=AF_INET,.sin_port=0x3500,.sin_addr={.s_addr=0x3500007f}};
@@ -85,50 +89,26 @@ static unsigned dns_ports[DNS_PORTS];
 static int dns_port_owned(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++)if(__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE)==port)return 1;return 0;}
 static void dns_track_port(unsigned short port){if(!port||dns_port_owned(port))return;for(unsigned i=0;i<DNS_PORTS;i++){unsigned empty=0;if(__atomic_compare_exchange_n(&dns_ports[i],&empty,port,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED))return;}}
 static void dns_untrack_port(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++){unsigned value=__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE);if(value==port)__atomic_compare_exchange_n(&dns_ports[i],&value,0,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED);}}
-static __attribute__((unused)) void *dns_worker(void *unused){(void)unused;
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-    int server=(int)RAW(PROXY_SC_socket,AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0,0,0,0);if(server<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}
+static void dns_worker(void *unused){(void)unused;
+    int server=(int)RAW(PROXY_SC_socket,AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0,0,0,0);if(server<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
     struct sockaddr_in bindaddr={.sin_family=AF_INET,.sin_addr={.s_addr=0x0100007f}};
-    if(RAW(PROXY_SC_bind,server,&bindaddr,sizeof(bindaddr),0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}
-    unsigned len=sizeof(dns_helper_addr);if(RAW(PROXY_SC_getsockname,server,&dns_helper_addr,&len,0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}
-    int ep=(int)RAW(PROXY_SC_epoll_create1,EPOLL_CLOEXEC,0,0,0,0,0);if(ep<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}dns_server_fd=server;dns_epoll_fd=ep;dns_helper_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+    if(RAW(PROXY_SC_bind,server,&bindaddr,sizeof(bindaddr),0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
+    unsigned len=sizeof(dns_helper_addr);if(RAW(PROXY_SC_getsockname,server,&dns_helper_addr,&len,0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
+    int ep=(int)RAW(PROXY_SC_epoll_create1,EPOLL_CLOEXEC,0,0,0,0,0);if(ep<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}dns_server_fd=server;dns_epoll_fd=ep;dns_helper_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     struct epoll_event ev={.events=EPOLLIN,.data.fd=server};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,server,&ev,0,0);
     dns_helper_ready=1;__atomic_store_n(&dns_helper_state,1,__ATOMIC_RELEASE);
     for(;;){struct epoll_event events[32];long n=RAW(PROXY_SC_epoll_pwait,ep,events,32,-1,0,8);if(n<0)continue;
         for(long i=0;i<n;i++){
             int fd=events[i].data.fd;
             if(fd==server){unsigned char query[65536];struct sockaddr_in peer;unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,sizeof(query),0,&peer,&plen);if(q<=0||!dns_port_owned(peer.sin_port))continue;
-                int r=dns_res_nsend(0,query,(size_t)q,0);if(r<0)continue;struct dns_pending *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,r,0,0,0,0,0);continue;}*p=(struct dns_pending){.fd=r,.peer=peer,.next=dns_pending};dns_pending=p;struct epoll_event re={.events=EPOLLIN,.data.fd=r};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,r,&re,0,0);
-            }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;unsigned char answer[65536];int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_res_nresult(fd,&rcode,answer,sizeof(answer));if(sz>0)RAW(PROXY_SC_sendto,server,answer,sz,0,&p->peer,sizeof(p->peer));*pp=p->next;vfs_free(p);}
+                int r=dns_netd_send(query,(size_t)q);if(r<0)continue;struct dns_pending *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,r,0,0,0,0,0);continue;}*p=(struct dns_pending){.fd=r,.peer=peer,.next=dns_pending};dns_pending=p;struct epoll_event re={.events=EPOLLIN,.data.fd=r};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,r,&re,0,0);
+            }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;unsigned char answer[65536];int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_netd_result(fd,&rcode,answer,sizeof(answer));RAW(PROXY_SC_close,fd,0,0,0,0,0);if(sz>0)RAW(PROXY_SC_sendto,server,answer,sz,0,&p->peer,sizeof(p->peer));*pp=p->next;vfs_free(p);}
         }
     }
-#else
-    return NULL;
-#endif
 }
-static __attribute__((unused)) uintptr_t dns_fs_read(void){uintptr_t fs=0;if(dns_fast_tls)__asm__ volatile("rdfsbase %0":"=r"(fs)::"memory");else RAW(PROXY_SC_arch_prctl,0x1003,&fs,0,0,0,0);return fs;}
-static __attribute__((unused)) void dns_fs_write(uintptr_t fs){if(dns_fast_tls)__asm__ volatile("wrfsbase %0"::"r"(fs):"memory");else RAW(PROXY_SC_arch_prctl,0x1002,fs,0,0,0,0);}
-static __attribute__((unused)) int dns_pthread_create_android(unsigned long *thread,void *(*start)(void *),void *arg){
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-    if(!dns_adopt_api||!dns_adopt_api->current)return -1;
-    struct adopt_thread *t=dns_adopt_api->current();
-    if(!t)return -1;
-    uintptr_t prior=dns_fs_read();
-    dns_fs_write(t->resident_fs);
-    int result=dns_pthread_create(thread,NULL,start,arg);
-    dns_fs_write(prior);
-    return result;
-#else
-    (void)thread;(void)start;(void)arg;return -1;
-#endif
-}
-static int dns_start(void){long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);if(dns_helper_pid&&dns_helper_pid!=pid){if(dns_server_fd>=0)RAW(PROXY_SC_close,dns_server_fd,0,0,0,0,0);if(dns_epoll_fd>=0)RAW(PROXY_SC_close,dns_epoll_fd,0,0,0,0,0);while(dns_pending){struct dns_pending *p=dns_pending;dns_pending=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p);}dns_server_fd=dns_epoll_fd=-1;dns_helper_pid=0;dns_helper_ready=0;dns_helper_addr=(struct sockaddr_in){0};__atomic_store_n(&dns_helper_state,0,__ATOMIC_RELEASE);}if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)==1)return 0;if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)<0)return -EIO;if(!dns_resolver_symbols())return -ENOSYS;
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-    int expected=0;if(__atomic_compare_exchange_n(&dns_helper_state,&expected,2,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){unsigned long thread=0;int r=dns_pthread_create_android(&thread,dns_worker,NULL);if(r){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return -r;}}
+static int dns_start(void){long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);if(dns_helper_pid&&dns_helper_pid!=pid){if(dns_server_fd>=0)RAW(PROXY_SC_close,dns_server_fd,0,0,0,0,0);if(dns_epoll_fd>=0)RAW(PROXY_SC_close,dns_epoll_fd,0,0,0,0,0);while(dns_pending){struct dns_pending *p=dns_pending;dns_pending=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p);}dns_server_fd=dns_epoll_fd=-1;dns_helper_pid=0;dns_helper_ready=0;dns_helper_addr=(struct sockaddr_in){0};__atomic_store_n(&dns_helper_state,0,__ATOMIC_RELEASE);}if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)==1)return 0;if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)<0)return -EIO;
+    int expected=0;if(__atomic_compare_exchange_n(&dns_helper_state,&expected,2,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){size_t stack_size=1024*1024;void *stack=(void *)(uintptr_t)RAW(PROXY_SC_mmap,0,stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((long)stack<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return -ENOMEM;}proxy_sigmask_t all=~UINT64_C(0),old=0;RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&all,&old,8,0,0);unsigned long flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM;long r=proxy_raw_clone_thread(flags,(char *)stack+stack_size,dns_worker,NULL);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);if(r<0){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return (int)r;}}
     for(unsigned i=0;i<10000000;i++){int s=__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE);if(s==1)return 0;if(s<0)return -EIO;__asm__ volatile("pause");}return -ETIMEDOUT;
-#else
-    return -ENOSYS;
-#endif
 }
 static long dns_poll(void *ptr,unsigned long count,struct timespec *timeout,const void *sigmask,unsigned long sigsize){return RAW(PROXY_SC_ppoll,ptr,count,timeout,sigmask,sigsize,0);}
 static long dns_name(void *out,unsigned *len,const struct sockaddr_in *name){if(!out||!len)return -EFAULT;unsigned n=*len;if(n>sizeof(*name))n=sizeof(*name);p_copy(out,name,n);*len=sizeof(*name);return 0;}

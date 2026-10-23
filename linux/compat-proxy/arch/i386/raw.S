@@ -22,6 +22,36 @@ proxy_raw_after:
  pop %edi
  pop %ebp
  ret
+.global proxy_raw_clone_thread
+.type proxy_raw_clone_thread,@function
+proxy_raw_clone_thread:
+ /* (flags, stack_top, entry, arg) */
+ push %ebp
+ push %edi
+ push %esi
+ push %ebx
+ mov 20(%esp),%ebx
+ mov 24(%esp),%ecx
+ mov 28(%esp),%ebp
+ mov 32(%esp),%edi
+ mov $120,%eax
+ xor %edx,%edx
+ xor %esi,%esi
+ int $0x80
+ test %eax,%eax
+ jnz 1f
+ mov %ecx,%esp
+ push %edi
+ call *%ebp
+ mov %eax,%ebx
+ mov $1,%eax
+ int $0x80
+ ud2
+1: pop %ebx
+ pop %esi
+ pop %edi
+ pop %ebp
+ ret
 .global proxy_restore
 .type proxy_restore,@function
 proxy_restore:

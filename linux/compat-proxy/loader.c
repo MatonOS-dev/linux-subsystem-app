@@ -403,7 +403,7 @@ int main(int argc,char **argv,char **environ) {
     vfs_temp_gc();
     int android=0,i=resumed?4:1; long parent=0;
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-    int gpu_bridge_enabled=0,dns_bridge_enabled=0;
+    int gpu_bridge_enabled=0;
     static void *gpu_egl, *gpu_gles;
 #endif
     while(i<argc && argv[i][0]=='-') {
@@ -424,9 +424,6 @@ int main(int argc,char **argv,char **environ) {
 #endif
         else if(p_equal(argv[i],"--host-command") && i+1<argc) {if(proxy_host_command(argv[i+1]))return 2;i+=2;}
         else if(p_equal(argv[i],"--dns-forwarder") && i+1<argc) {if(proxy_dns_forwarder(argv[i+1]))return 2;
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-            dns_bridge_enabled=1;
-#endif
             i+=2;}
         else if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}
@@ -444,7 +441,7 @@ int main(int argc,char **argv,char **environ) {
     if(r) {proxy_log("load-error",0,r);return 1;}
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
     static struct gpu_bridge bridge;
-    if(gpu_bridge_enabled || dns_bridge_enabled) {
+    if(gpu_bridge_enabled) {
         bridge.version=2;
         bridge.open=dlopen;
         bridge.symbol=dlsym;
@@ -496,11 +493,10 @@ int main(int argc,char **argv,char **environ) {
     r=proxy_install(android);
     if(r) {proxy_log("filter-error",0,r);return 1;}
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-    if(gpu_bridge_enabled || dns_bridge_enabled) {
+    if(gpu_bridge_enabled) {
         bridge.owner=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
         if(RAW(PROXY_SC_arch_prctl,0x1003,&bridge.tls,0,0,0,0)) return 3;
         if(adopt_install()) return 5;
-        if(dns_bridge_enabled)proxy_dns_bridge_configure(bridge.open,bridge.symbol,adopt_api_address(),(int)(getauxval(AT_HWCAP2)&2));
     }
 #endif
     proxy_host_snapshot(environ);

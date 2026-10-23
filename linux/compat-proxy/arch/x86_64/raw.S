@@ -14,6 +14,33 @@ proxy_raw:
 .global proxy_raw_after
 proxy_raw_after:
     ret
+.global proxy_raw_clone_thread
+.type proxy_raw_clone_thread,@function
+proxy_raw_clone_thread:
+    /* (flags, stack_top, entry, arg); child starts on the supplied stack. */
+    mov %rdx,%r12
+    mov %rcx,%r13
+    mov %rdi,%rax
+    mov %rsi,%rdi
+    mov %rsi,%rsi
+    mov %rsi,%rsi
+    /* clone(flags, child_stack, parent_tid, child_tid, tls) */
+    mov %rax,%rdi
+    mov %rsi,%rsi
+    xor %edx,%edx
+    xor %r10d,%r10d
+    xor %r8d,%r8d
+    mov $56,%eax
+    syscall
+    test %rax,%rax
+    jnz 1f
+    mov %r13,%rdi
+    call *%r12
+    mov %eax,%edi
+    mov $60,%eax
+    syscall
+    ud2
+1:  ret
 .global proxy_restore
 .type proxy_restore,@function
 proxy_restore:

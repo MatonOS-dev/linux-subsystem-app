@@ -242,23 +242,26 @@ remaining image checks. The musl host fixture stages tools at the subsystem
 APK native-library path used in production.
 
 DNS uses a per-process helper thread and a UDP socket bound to 127.0.0.1 on an
-ephemeral port. On first DNS use, the proxy creates that thread with bionic's
-`pthread_create` while temporarily switching to the adopted Android TLS. The
-thread calls `android_res_nsend` with raw query packets and polls each netd
-resolver fd alongside its UDP socket; responses are returned to the original
-client address. The proxy records source ports of its own DNS sockets and the
-helper drops datagrams from every unrecognized port. UDP connect/sendto/
+ephemeral port. On first DNS use, the proxy creates that thread with a raw
+`clone` syscall on its own mmap'd stack; all signals are blocked in the new
+thread, which uses no libc or TLS. For each query it opens
+`/dev/socket/dnsproxyd`, sends netd's NUL-terminated `resnsend 0 0 <base64>`
+command, then polls that fd alongside its UDP socket. Replies use netd's
+big-endian status and length header followed by the DNS packet. Responses are
+returned to the original client address. The proxy records source ports of its
+own DNS sockets and the helper drops datagrams from every unrecognized port. UDP connect/sendto/
 sendmsg/sendmmsg keep the app's original socket and rewrite only the configured
 loopback endpoint; peer and receive source addresses are reported as the
 configured endpoint. DNS TCP connect returns `ECONNREFUSED`. Ordinary Internet
 sockets retain normal readiness and address behavior. Each fork child starts
 its own helper lazily. `tests/dns-translation.c` covers endpoint parsing,
 TCP refusal, ordinary socket names, and endpoint matching with mocked syscalls.
-`tests/dns-helper.c` exercises the asynchronous loop with mocked Android
-resolver calls and real host UDP/epoll/pthreads: connected UDP, sendto/sendmsg/
+`tests/dns-helper.c` exercises the asynchronous loop against a mock AF_UNIX
+dnsproxyd and real host UDP/epoll/pthreads. It checks the command bytes against
+a fixed libnetd_client vector, error and truncated replies, connected UDP, sendto/sendmsg/
 sendmmsg, parallel queries, poll/epoll, blocking reads, `MSG_PEEK`, foreign
 source rejection, fork restart, and no wakeups on an ordinary socket. Device
-testing against libandroid/netd is still required.
+testing against netd is still required.
 
 O_TMPFILE deliberately returns EOPNOTSUPP after normal virtual mount policy
 checks. Callers use named temporary files and rename; no anonymous-inode
