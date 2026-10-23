@@ -124,14 +124,16 @@ static int init_egl(void){
     }
     EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;
     if(!eglBindAPI(EGL_OPENGL_API)){egl_diag("maton GLX: eglBindAPI desktop GL failed\n");return 0;}
-    EGLint a[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE};
+    /* GLX windows are rendered into this pbuffer. Keep the advertised GLX
+     * depth/stencil sizes in sync with the actual default framebuffer. */
+    EGLint a[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_DEPTH_SIZE,24,EGL_STENCIL_SIZE,8,EGL_NONE};
     EGLint n=0;int chosen=eglChooseConfig(edpy,a,&ecfg,1,&n)&&n;eglBindAPI(previous_api);if(!chosen){egl_diag("maton GLX: no EGL desktop pbuffer config\n");return 0;}return 1;
 }
 static Bool supported(Display*d,int s){return d&&s>=0&&s<XScreenCount(d)&&init_egl();}
 static void *dispatch(const GLubyte*n);
 static int init_egl(void);
 static void *getproc(const GLubyte*n){if(!n)return 0;void*p=dispatch(n);if(p)return p;if(!init_egl())return 0;return (void*)eglGetProcAddress((const char*)n);}
-static int cfgattr(Display*d,GLXFBConfig c,int a,int*v){(void)d;if(c!=(GLXFBConfig)&fb||!v)return 1;switch(a){case GLX_FBCONFIG_ID:*v=1;break;case GLX_VISUAL_ID:*v=0;break;case GLX_X_RENDERABLE:*v=1;break;case GLX_DRAWABLE_TYPE:*v=GLX_WINDOW_BIT;break;case GLX_RENDER_TYPE:*v=GLX_RGBA_BIT;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*v=8;break;case GLX_DEPTH_SIZE:case GLX_STENCIL_SIZE:*v=0;break;case GLX_DOUBLEBUFFER:*v=1;break;default:*v=0;}return 0;}
+static int cfgattr(Display*d,GLXFBConfig c,int a,int*v){(void)d;if(c!=(GLXFBConfig)&fb||!v)return 1;switch(a){case GLX_FBCONFIG_ID:*v=1;break;case GLX_VISUAL_ID:*v=0;break;case GLX_X_RENDERABLE:*v=1;break;case GLX_DRAWABLE_TYPE:*v=GLX_WINDOW_BIT;break;case GLX_RENDER_TYPE:*v=GLX_RGBA_BIT;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*v=8;break;case GLX_DEPTH_SIZE:*v=24;break;case GLX_STENCIL_SIZE:*v=8;break;case GLX_DOUBLEBUFFER:*v=1;break;default:*v=0;}return 0;}
 static Bool glXQueryExtension(Display*d,int*e,int*v){if(e)*e=0;if(v)*v=0;return d&&init_egl();}
 static Bool glXQueryVersion(Display*d,int*a,int*b){if(!d||!init_egl())return 0;if(a)*a=1;if(b)*b=4;return 1;}
 static const char *glXGetClientString(Display*d,int n){(void)d;return n==GLX_VENDOR?"MatonOS":n==GLX_VERSION?"1.4":exts;}
@@ -142,7 +144,7 @@ static GLXFBConfig *glXGetFBConfigs(Display*d,int s,int*n){return glXChooseFBCon
 static int glXGetFBConfigAttrib(Display*d,GLXFBConfig c,int a,int*v){return cfgattr(d,c,a,v);}
 static XVisualInfo *glXGetVisualFromFBConfig(Display*d,GLXFBConfig c){if(!d||c!=(GLXFBConfig)&fb)return 0;int s=XDefaultScreen(d);Visual*v=XDefaultVisual(d,s);if(!v)return 0;XVisualInfo*x=calloc(1,sizeof(*x));if(!x)return 0;x->visual=v;x->visualid=v->visualid;x->screen=s;x->depth=XDefaultDepth(d,s);x->c_class=v->c_class;x->red_mask=v->red_mask;x->green_mask=v->green_mask;x->blue_mask=v->blue_mask;x->colormap_size=v->map_entries;x->bits_per_rgb=v->bits_per_rgb;return x;}
 static XVisualInfo *glXChooseVisual(Display*d,int s,int*a){(void)a;return supported(d,s)?glXGetVisualFromFBConfig(d,(GLXFBConfig)&fb):0;}
-static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:case GLX_STENCIL_SIZE:*out=0;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
+static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:*out=24;break;case GLX_STENCIL_SIZE:*out=8;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
 static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){if(c!=(GLXFBConfig)&fb||!direct||!supported(d,XDefaultScreen(d)))return 0;EGLContext share_egl=EGL_NO_CONTEXT;if(share){struct ctx *parent=(struct ctx *)share;if(parent->magic!=0x4d415443)return 0;share_egl=parent->egl;}struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->direct=direct;x->surface=EGL_NO_SURFACE;EGLint ea[16],n=0,major=0,minor=0,profile=0,flags=0;int seen_major=0,seen_minor=0,seen_profile=0,seen_flags=0;
     if(a)for(const int*p=a;*p!=0;p+=2){int v=p[1];switch(p[0]){case GLX_CONTEXT_MAJOR_VERSION_ARB:if(seen_major++||v<1)goto bad_attr;major=v;break;case GLX_CONTEXT_MINOR_VERSION_ARB:if(seen_minor++||v<0)goto bad_attr;minor=v;break;case GLX_CONTEXT_PROFILE_MASK_ARB:if(seen_profile++||(v!=GLX_CONTEXT_CORE_PROFILE_BIT_ARB&&v!=GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB))goto bad_attr;profile=v;break;case GLX_CONTEXT_FLAGS_ARB:if(seen_flags++||(v&~(GLX_CONTEXT_DEBUG_BIT_ARB|GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)))goto bad_attr;flags=v;break;default:goto bad_attr;}}
     if((major<3&&profile)||(major==3&&minor<2&&profile)||(major==3&&minor<2&&(flags&GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)))goto bad_attr;
