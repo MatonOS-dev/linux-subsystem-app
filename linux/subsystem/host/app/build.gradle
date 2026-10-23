@@ -107,7 +107,8 @@ def buildGlMaton = tasks.register('buildGlMaton', Exec) {
 }
 def packageGlMaton = tasks.register('packageGlMaton', Copy) {
     dependsOn buildGlMaton
-    from(glMatonOutput) { into 'gl-maton' }
+    from(glMatonOutput) { exclude 'gl32/**'; into 'gl-maton' }
+    from(new File(glMatonOutput, 'gl32')) { into 'gl-maton-i386' }
     into glMatonAssets
 }
 tasks.named('preBuild').configure { dependsOn packageGlMaton }

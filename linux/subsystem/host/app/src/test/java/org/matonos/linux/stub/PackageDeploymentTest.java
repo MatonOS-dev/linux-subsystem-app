@@ -15,6 +15,41 @@ public final class PackageDeploymentTest {
     @Test public void materializesBundledGlExtensionForOtherRuntimeBranch() throws Exception {
         materialize("25.08");
     }
+    @Test public void materializesBundledGl32Extension() throws Exception {
+        Path scratch=Files.createTempDirectory("maton-gl32-extension");
+        byte[] commitObject={9,8,7,6};
+        String commit=hex(java.security.MessageDigest.getInstance("SHA-256").digest(commitObject));
+        ByteBuffer objects=ByteBuffer.allocate(8+4+32+8+commitObject.length).order(ByteOrder.LITTLE_ENDIAN);
+        objects.put("MTPKOBJ1".getBytes(StandardCharsets.US_ASCII)).putInt(1);
+        objects.put(java.security.MessageDigest.getInstance("SHA-256").digest(commitObject));
+        objects.putLong(commitObject.length).put(commitObject);
+        Path apk=scratch.resolve("host.apk");
+        try(ZipOutputStream zip=new ZipOutputStream(Files.newOutputStream(apk))) {
+            put(zip,"assets/gl-maton-i386/ref.txt","runtime/org.freedesktop.Platform.GL32.maton/x86_64/26.08\n"+commit+"\n");
+            zip.putNextEntry(new ZipEntry("assets/gl-maton-i386/objects.ostree"));zip.write(objects.array());zip.closeEntry();
+        }
+        Path system=scratch.resolve("system");Files.createDirectories(system);
+        File files=PackageDeployment.prepareGl32Extension(system.toFile(),apk.toFile(),"25.08");
+        Path version=system.resolve("runtime/org.freedesktop.Platform.GL32.maton/x86_64/25.08").resolve(commit);
+        assertEquals(version.resolve("files").toFile(),files);
+        assertEquals(PackageDeployment.gl32Metadata("25.08"),Files.readString(version.resolve("metadata")));
+        assertArrayEquals(DeployRecord.extension("flathub",commit,"25.08"),Files.readAllBytes(version.resolve("deploy")));
+        assertArrayEquals(commitObject,Files.readAllBytes(system.resolve("repo/objects").resolve(commit.substring(0,2)).resolve(commit.substring(2)+".commit")));
+    }
+    @Test public void i386ExtensionPointsAreAddedOnceAndLinkTheInterpreter() throws Exception {
+        String original="[Runtime]\nname=org.freedesktop.Platform\n";
+        String updated=PackageDeployment.withI386ExtensionPoints(original,"25.08");
+        assertEquals(updated,PackageDeployment.withI386ExtensionPoints(updated,"25.08"));
+        assertTrue(updated.contains("[Extension org.freedesktop.Platform.Compat.i386]"));
+        assertTrue(updated.contains("directory=lib/i386-linux-gnu/GL"));
+        Path root=Files.createTempDirectory("maton-i386-runtime");
+        Path branch=root.resolve("runtime/org.freedesktop.Platform/x86_64/25.08");
+        Path version=branch.resolve("a".repeat(64));Files.createDirectories(version.resolve("files"));
+        Files.writeString(version.resolve("metadata"),original);Files.createSymbolicLink(branch.resolve("active"),Path.of("a".repeat(64)));
+        PackageDeployment.enableI386Runtime(root.toFile(),"25.08");
+        assertEquals(updated,Files.readString(version.resolve("metadata")));
+        assertEquals(Path.of("/usr/lib/i386-linux-gnu/ld-linux.so.2"),Files.readSymbolicLink(version.resolve("files/lib/ld-linux.so.2")));
+    }
     /** Packaged gl-maton/build.py record for commit 6fbb4ff1… on branch 26.08. */
     @Test public void deployRecordMatchesBuildPy() {
         String golden="666c61746875620036666262346666313537656337323864613563373037346662373735316163306463326338646465346235386339383532613833306637356230653737323139000000000000000000000000000000006465706c6f792d76657273696f6e00000400000000690f0074696d657374616d7000000000000000000000000000000000740a000000000072756e74696d65006f72672e667265656465736b746f702e506c6174666f726d2f7838365f36342f32362e30380000730800000000000000657874656e73696f6e2d6f660000000072756e74696d652f6f72672e667265656465736b746f702e506c6174666f726d2f7838365f36342f32362e30380000730d173369b1490049000800";

@@ -1,6 +1,8 @@
 package org.matonos.linux.stub;
 
 import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import org.matonos.linux.WorkDirs;
 import android.content.ComponentName;
 import android.content.pm.*;
@@ -16,6 +18,10 @@ import org.matonos.linuxhost.stubgen.StubGenerator;
 
 /** Rebuild Flatpak's disposable lookup metadata from PM's installed index APKs. */
 final class PackageDeployment {
+    static final class CompatI386 {
+        final File files;final java.util.List<String> arguments;
+        CompatI386(File files,java.util.List<String> arguments){this.files=files;this.arguments=arguments;}
+    }
     static File prepare(Context context,String appRef) throws Exception {
         File root=new File(WorkDirs.root(context),"flatpak-launch");
         WorkDirs.keep(root); // Held until this one-launch process exits.
@@ -34,36 +40,103 @@ final class PackageDeployment {
     }
     /** Add the subsystem's bundled GL driver as a normal Flatpak runtime extension deployment. */
     static File prepareGlExtension(File systemRoot,File archive,String branch) throws Exception {
-        String ref="runtime/org.freedesktop.Platform.GL.maton/x86_64/"+branch;
-        String[] identity;
-        byte[] commitObject;
+        return prepareBundledExtension(systemRoot,archive,branch,"assets/gl-maton",
+                "runtime/org.freedesktop.Platform.GL.maton/x86_64/",
+                "org.freedesktop.Platform.GL.maton",metadata(branch));
+    }
+    /** Add the i386 GL payload as a separate Flatpak GL32 extension deployment. */
+    static File prepareGl32Extension(File systemRoot,File archive,String branch) throws Exception {
+        return prepareBundledExtension(systemRoot,archive,branch,"assets/gl-maton-i386",
+                "runtime/org.freedesktop.Platform.GL32.maton/x86_64/",
+                "org.freedesktop.Platform.GL32.maton",gl32Metadata(branch));
+    }
+    private static File prepareBundledExtension(File systemRoot,File archive,String branch,
+            String assetPrefix,String refPrefix,String extensionName,String extensionMetadata) throws Exception {
+        String[] identity;byte[] commitObject;
         try(ZipFile zip=new ZipFile(archive)) {
-            identity=asset(zip,"assets/gl-maton/ref.txt").trim().split("\\r?\\n");
-            // The bundled commit has no ref binding, so it serves every runtime branch.
-            if(identity.length!=2||!identity[0].startsWith("runtime/org.freedesktop.Platform.GL.maton/x86_64/")
+            identity=asset(zip,assetPrefix+"/ref.txt").trim().split("\\r?\\n");
+            if(identity.length!=2||!identity[0].startsWith(refPrefix)
                     ||!identity[1].matches("[0-9a-f]{64}"))
-                throw new IOException("Invalid bundled Maton GL extension ref");
-            commitObject=findCommitObject(assetBytes(zip,"assets/gl-maton/objects.ostree"),identity[1]);
+                throw new IOException("Invalid bundled Flatpak extension ref");
+            commitObject=findCommitObject(assetBytes(zip,assetPrefix+"/objects.ostree"),identity[1]);
         }
-        // Flatpak discovers this ref through the same active-ref layout and
-        // metadata path as other installed runtime extensions. The pack index
-        // is mounted onto this deployment's files directory below.
-        Path root=systemRoot.toPath(),branchRoot=root.resolve(ref),version=branchRoot.resolve(identity[1]);
-        Files.createDirectories(version);
-        Files.write(version.resolve("metadata"),metadata(branch).getBytes(StandardCharsets.UTF_8));
+        String ref=refPrefix+branch;
+        Path root=systemRoot.toPath(),branchRoot=root.resolve(ref);
+        Path version=branchRoot.resolve(identity[1]);Files.createDirectories(version);
+        Files.write(version.resolve("metadata"),extensionMetadata.getBytes(StandardCharsets.UTF_8));
         Files.write(version.resolve("deploy"),DeployRecord.extension("flathub",identity[1],branch));
-        Files.write(version.resolve(".ref"),new byte[0]);
-        Files.createDirectory(version.resolve("files"));
+        Files.write(version.resolve(".ref"),new byte[0]);Files.createDirectory(version.resolve("files"));
         link(branchRoot.resolve("active"),Path.of(identity[1]));
-        link(root.resolve("runtime/org.freedesktop.Platform.GL.maton/current"),
-                Path.of("x86_64",branch));
-        Path repo=root.resolve("repo");Files.createDirectories(repo.resolve("objects"));
-        Path object=repo.resolve("objects").resolve(identity[1].substring(0,2)).resolve(identity[1].substring(2)+".commit");
-        Files.createDirectories(object.getParent());Files.write(object,commitObject);
-        Files.createDirectories(repo.resolve("refs/heads"));Files.createDirectories(repo.resolve("refs/remotes"));
-        Files.createDirectories(repo.resolve("tmp"));
-        Files.write(repo.resolve("config"),"[core]\nrepo_version=1\nmode=bare-user-only\n".getBytes(StandardCharsets.UTF_8));
+        link(root.resolve("runtime/"+extensionName+"/current"),Path.of("x86_64",branch));
+        writeCommitObject(root,identity[1],commitObject);
         return version.resolve("files").toFile();
+    }
+    static CompatI386 prepareCompatI386(Context context,File systemRoot,File cache,String branch) throws Exception {
+        String ref="runtime/org.freedesktop.Platform.Compat.i386/x86_64/"+branch;
+        PackageManager pm=context.getPackageManager();PackageInfo pkg;
+        try{pkg=pm.getPackageInfo(DeployManifest.packageForPublic(ref),PackageManager.GET_SIGNING_CERTIFICATES);}
+        catch(PackageManager.NameNotFoundException absent){return null;}
+        // Flathub's runtime extension APKs retain their repository signing key;
+        // unlike generated app stubs, they are not re-signed with the host key.
+        // PackageManager's initiating-package field is set by the installer
+        // session and identifies the subsystem app that performed the verified
+        // Flatpak install.
+        android.content.pm.InstallSourceInfo source=pm.getInstallSourceInfo(pkg.packageName);
+        if(source==null||!"org.matonos.linux".equals(source.getInitiatingPackageName()))
+            throw new SecurityException("i386 compatibility extension was not installed by the subsystem");
+        org.matonos.linuxhost.stubgen.DeploymentRecord record=
+                org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
+        if(!record.ref.equals(ref)||!new String(record.metadata,StandardCharsets.UTF_8).contains("name = org.freedesktop.Platform.Compat.i386"))
+            throw new IOException("Installed i386 compatibility extension ref mismatch");
+        String mount="/usr/lib/i386-linux-gnu";
+        record.materialize(systemRoot,mount);
+        Path branchRoot=systemRoot.toPath().resolve(ref),version=branchRoot.resolve(record.commit);
+        Files.write(version.resolve("metadata"),compatMetadata(branch).getBytes(StandardCharsets.UTF_8));
+        Files.write(version.resolve("deploy"),DeployRecord.extension(record.remote,record.commit,branch));
+        File apk=new File(pkg.applicationInfo.sourceDir);
+        java.util.List<String> args=new java.util.ArrayList<>(org.matonos.linuxhost.stubgen.PackLaunch.arguments(
+                apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount));
+        File files=version.resolve("files").toFile();
+        args.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(mount,files));
+        return new CompatI386(files,args);
+    }
+    static String withI386ExtensionPoints(String metadata,String branch) {
+        StringBuilder result=new StringBuilder(metadata);
+        if(!metadata.contains("[Extension org.freedesktop.Platform.Compat.i386]"))
+            result.append("\n[Extension org.freedesktop.Platform.Compat.i386]\ndirectory=lib/i386-linux-gnu\nversion=")
+                    .append(branch).append("\nadd-ld-path=.\nno-autodownload=true\n");
+        if(!metadata.contains("[Extension org.freedesktop.Platform.GL32]"))
+            result.append("\n[Extension org.freedesktop.Platform.GL32]\nversions=").append(branch)
+                    .append(";1.4\nversion=").append(branch)
+                    .append("\ndirectory=lib/i386-linux-gnu/GL\nsubdirectories=true\nadd-ld-path=lib\n")
+                    .append("merge-dirs=vulkan/icd.d;glvnd/egl_vendor.d\nno-autodownload=true\n")
+                    .append("enable-if=active-gl-driver\ndownload-if=active-gl-driver\n");
+        return result.toString();
+    }
+    static void enableI386Runtime(File systemRoot,String branch) throws IOException {
+        Path runtime=systemRoot.toPath().resolve("runtime/org.freedesktop.Platform/x86_64/"+branch);
+        Path active=runtime.resolve("active"),metadata=active.resolve("metadata");
+        if(!Files.isRegularFile(metadata))throw new IOException("Missing x86_64 Platform metadata for i386 extensions");
+        String original=new String(org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(metadata.toFile()),StandardCharsets.UTF_8);
+        Files.write(metadata,withI386ExtensionPoints(original,branch).getBytes(StandardCharsets.UTF_8));
+        Path loaderLink=active.resolve("files/lib/ld-linux.so.2");
+        Files.createDirectories(loaderLink.getParent());
+        if(!Files.exists(loaderLink,LinkOption.NOFOLLOW_LINKS))
+            Files.createSymbolicLink(loaderLink,Path.of("/usr/lib/i386-linux-gnu/ld-linux.so.2"));
+    }
+    static String compatMetadata(String branch) {
+        return "[Runtime]\nname=org.freedesktop.Platform.Compat.i386\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/"+branch+"\n";
+    }
+    static String gl32Metadata(String branch) {
+        return "[Runtime]\nname=org.freedesktop.Platform.GL32.maton\nruntime=org.freedesktop.Platform/x86_64/"+branch
+                +"\nsdk=org.freedesktop.Sdk/x86_64/"+branch+"\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/"+branch+"\n";
+    }
+    private static void writeCommitObject(Path root,String commit,byte[] bytes) throws IOException {
+        Path object=root.resolve("repo/objects").resolve(commit.substring(0,2)).resolve(commit.substring(2)+".commit");
+        Files.createDirectories(object.getParent());Files.write(object,bytes);
+        Files.createDirectories(root.resolve("repo/refs/heads"));Files.createDirectories(root.resolve("repo/refs/remotes"));
+        Files.createDirectories(root.resolve("repo/tmp"));
+        Files.write(root.resolve("repo/config"),"[core]\nrepo_version=1\nmode=bare-user-only\n".getBytes(StandardCharsets.UTF_8));
     }
     /** Same text as gpu-forward-spike/flatpak/metadata.in for the given runtime branch. */
     static String metadata(String branch) {
