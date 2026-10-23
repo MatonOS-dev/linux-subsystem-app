@@ -41,6 +41,27 @@ struct dns_fd {int fd;struct dns_socket *socket;struct dns_fd *next;};
 static struct dns_fd *dns_fds;
 static unsigned dns_mutex;
 static volatile long dns_owner_pid;
+static proxy_sigmask_t dns_lock(void);
+static void dns_unlock(proxy_sigmask_t old);
+/* Keep process forks outside DNS metadata critical sections. The lock is
+ * process-private, so both parent and child release their inherited copy. */
+static proxy_sigmask_t dns_fork_mask;
+static long dns_fork_pid,dns_fork_tid;
+static void dns_fork_prepare(void){
+    proxy_sigmask_t mask=dns_lock();
+    dns_fork_mask=mask;
+    dns_fork_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+    dns_fork_tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
+}
+void dns_fork_result(long result){
+    (void)result;
+    if(dns_fork_pid && (RAW(PROXY_SC_getpid,0,0,0,0,0,0)!=dns_fork_pid ||
+       RAW(PROXY_SC_gettid,0,0,0,0,0,0)==dns_fork_tid)){
+        proxy_sigmask_t mask=dns_fork_mask;
+        dns_fork_pid=dns_fork_tid=0;
+        dns_unlock(mask);
+    }
+}
 static void dns_after_fork(void){long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);long owner=__atomic_load_n(&dns_owner_pid,__ATOMIC_ACQUIRE);if(owner==pid)return;if(__atomic_compare_exchange_n(&dns_owner_pid,&owner,pid,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)&&owner)__atomic_store_n(&dns_mutex,0,__ATOMIC_RELEASE);}
 static proxy_sigmask_t dns_lock(void){dns_after_fork();proxy_sigmask_t all=~UINT64_C(0),old=0;RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&all,&old,8,0,0);while(__atomic_exchange_n(&dns_mutex,1,__ATOMIC_ACQUIRE))__asm__ volatile("pause");return old;}
 static void dns_unlock(proxy_sigmask_t old){__atomic_store_n(&dns_mutex,0,__ATOMIC_RELEASE);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);}

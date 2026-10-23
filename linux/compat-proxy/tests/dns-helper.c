@@ -101,6 +101,11 @@ static void receive_dns_blocking(int fd,const unsigned char *query,size_t size){
     unsigned char answer[512];struct sockaddr_in from={0};unsigned len=sizeof(from);proxy_arg_t a[6]={fd,(uintptr_t)answer,sizeof(answer),0,(uintptr_t)&from,(uintptr_t)&len};
     assert(dns_call(PROXY_SC_recvfrom,a)==(long)size&&answer[2]==(unsigned char)(query[2]|0x80));
 }
+static void *metadata_churn(void *unused){
+    (void)unused;
+    for(int i=0;i<1000;i++){int fd=make_udp();assert(fd>=0);dns_close(fd);}
+    return NULL;
+}
 int main(void){
     assert(!proxy_dns_forwarder("127.0.0.53:53"));
     uintptr_t fs=0;assert(syscall(SYS_arch_prctl,0x1003,&fs)==0);adopted.resident_fs=fs;
@@ -132,7 +137,11 @@ int main(void){
     send_dns(to,0,query,sizeof(query));receive_dns(to,query,sizeof(query));
     usleep(50000);pthread_mutex_lock(&resolver_lock);assert(resolver_calls==8);pthread_mutex_unlock(&resolver_lock);
     struct pollfd p={.fd=ordinary,.events=POLLIN};assert(poll(&p,1,50)==0);
-    pid_t child=fork();assert(child>=0);if(!child){int child_fd=make_udp();if(child_fd<0)_exit(10);send_dns(child_fd,0,query,sizeof(query));receive_dns(child_fd,query,sizeof(query));_exit(0);}int status=0;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    pthread_t churn[4];for(unsigned i=0;i<4;i++)assert(!pthread_create(&churn[i],NULL,metadata_churn,NULL));
+    dns_fork_prepare();pid_t child=fork();assert(child>=0);
+    if(!child){dns_fork_result(0);int child_fd=make_udp();if(child_fd<0)_exit(10);send_dns(child_fd,0,query,sizeof(query));receive_dns(child_fd,query,sizeof(query));_exit(0);}
+    dns_fork_result(child);int status=0;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    for(unsigned i=0;i<4;i++)assert(!pthread_join(churn[i],NULL));
     close(foreign);dns_close(connected);dns_close(to);dns_close(ordinary);dns_close(a_fd);dns_close(aaaa_fd);dns_close(msg_fd);dns_close(mmsg_fd);
-    puts("PASS async helper: connected UDP, sendto/sendmsg/sendmmsg, parallel queries, poll/epoll, MSG_PEEK, foreign-source drop, fork restart, ordinary socket stays quiet");return 0;
+    puts("PASS async helper: connected UDP, sendto/sendmsg/sendmmsg, parallel queries, poll/epoll, MSG_PEEK, foreign-source drop, concurrent metadata fork/restart, ordinary socket stays quiet");return 0;
 }

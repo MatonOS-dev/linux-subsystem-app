@@ -55,6 +55,8 @@ proxy_clone_after:
     sub $512,%rsp
     fxsave64 (%rsp)
     mov 72(%rbp),%rdi
+    call dns_fork_result
+    mov 72(%rbp),%rdi
     call ipc_fork_result
     /* Adoption's child-side maps point at vanished threads after a process
      * clone. Rebase them before returning to app code; standalone proxy builds
@@ -81,5 +83,9 @@ proxy_clone_after:
 .weak adopt_fork_child
 .type adopt_fork_child,@function
 adopt_fork_child:
+    ret
+.weak dns_fork_result
+.type dns_fork_result,@function
+dns_fork_result:
     ret
 .section .note.GNU-stack,"",@progbits
