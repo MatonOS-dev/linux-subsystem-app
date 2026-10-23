@@ -435,13 +435,6 @@ static int unix_call(long nr,proxy_arg_t a[6],long *result) {
     p_copy(given,in->sun_path,n);given[n]=0;
     long e=0;char *real=vfs_resolve(AT_FDCWD,given,nr==PROXY_SC_connect,&e);
     if(!real){*result=e;return 1;}
-    if(nr==PROXY_SC_connect && (namespaces&CLONE_NEWNET) && dns_path[0]) {
-        size_t base=p_len(dns_path);
-        if(p_len(real)==base+4) {
-            int same=1;for(size_t i=0;i<base;i++)if(real[i]!=dns_path[i]){same=0;break;}
-            if(same && (p_equal(real+base,".udp") || p_equal(real+base,".tcp"))){vfs_free(real);*result=-EACCES;return 1;}
-        }
-    }
     if(p_equal(real,given)){vfs_free(real);return 0;}
     struct sockaddr_un out;p_copy(&out,in,offsetof(struct sockaddr_un,sun_path));out.sun_family=AF_UNIX;
     size_t k=p_len(real);long dir=-1;
@@ -519,7 +512,6 @@ done:
 }
 static int ours(long n) {
     if(ipc_ours(n))return 1;
-    if(n==PROXY_SC_ppoll)return dns_path[0]!=0;
     switch(n) {
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
     case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
@@ -769,7 +761,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Reflink clone: Android app data (ext4/f2fs) has none, and app domains may not issue it,
          * so each attempt is an AVC denial. Answer as a non-reflink filesystem would. */
         if(nr==PROXY_SC_ioctl && ((unsigned long)a[1]==FICLONE || (unsigned long)a[1]==FICLONERANGE)){result=-EOPNOTSUPP;break;}
-        if(app_allowed(nr))result=dns_call(nr,a);
+        if(app_allowed(nr)) { if(!unix_call(nr,a,&result))result=dns_call(nr,a); }
         if(nr==PROXY_SC_ioctl && proxy_trace)proxy_log("tty-ioctl",a[1],result);
         break;
     case PROXY_SC_prctl:
@@ -865,7 +857,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){vfs_raw_count_fork_child();ipc_fork();}break;
+        result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);ipc_fork_result(result);if(!result){vfs_raw_count_fork_child();ipc_fork();}break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -875,15 +867,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             if(a[0]&CLONE_FILES){result=-ENOTSUP;break;}
             if(a[1])goto clone_retry;
             unsigned long ns=a[0]&NS_FLAGS;result=ipc_fork_prepare();if(result)break;
-            dns_fork_prepare();
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
-            dns_fork_result(result);ipc_fork_result(result);
+            ipc_fork_result(result);
 
             if(!result){vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
-        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;dns_fork_prepare();(*arch_signal_mask(uc))=~SIGSYS_BIT;}
+        if(!(a[0]&CLONE_VM) || (a[0]&CLONE_VFORK)){result=ipc_fork_prepare();if(result)break;(*arch_signal_mask(uc))=~SIGSYS_BIT;}
         namespace_clone_parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0);namespace_clone_flags=a[0]&NS_FLAGS;
         ARCH_CONTEXT(uc,ARCH_ARG1)=a[1];ARCH_CONTEXT(uc,ARCH_ARG2)=a[2];
         ARCH_CONTEXT(uc,ARCH_ARG3)=a[3];ARCH_CONTEXT(uc,ARCH_ARG4)=a[4];
@@ -903,7 +894,6 @@ clone_retry:
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {
             vfs_network_payload((namespaces&CLONE_NEWNET)!=0);
-            if(namespaces&CLONE_NEWNET)dns_network_payload();
             proxy_host_snapshot((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3]);
             ipc_exec();
             exec_close_fds();
@@ -1047,35 +1037,12 @@ int proxy_install(int android) {
 
 void proxy_state(struct state *s){
  extern const char *proxy_tmpdir;
+ uint64_t count;
  chained.handler=state_word(s,chained.handler==1?1:0);
  proxy_trace=state_word(s,proxy_trace);proxy_diagnostic_fd=state_word(s,proxy_diagnostic_fd);
  namespaces=state_word(s,namespaces);userns_remaining=state_word(s,userns_remaining);
  state_string(s,(char **)&proxy_tmpdir);
- state_bytes(s,&dns_endpoint,sizeof(dns_endpoint));state_bytes(s,dns_path,sizeof(dns_path));
  state_string(s,(char **)&host_command_socket);host_command_started=state_word(s,host_command_started);
- uint64_t count=0;for(struct dns_fd *d=dns_fds;d;d=d->next)if(state_live(d->fd))count++;
- count=state_count(s,count);if(s->error)return;
- if(!s->reading){
-  for(struct dns_fd *d=dns_fds;d;d=d->next)if(state_live(d->fd)){
-   int alias=-1;for(struct dns_fd *p=dns_fds;p!=d;p=p->next)if(p->socket==d->socket&&state_live(p->fd)){alias=p->fd;break;}
-   state_word(s,d->fd);state_word(s,(int64_t)alias);
-   if(alias<0){state_word(s,d->socket->type);state_word(s,d->socket->active);state_word(s,d->socket->connected);state_bytes(s,&d->socket->local,sizeof(d->socket->local));}
-  }
- }else for(uint64_t i=0;i<count&&!s->error;i++){
-  int fd=state_word(s,0),alias=state_word(s,0);
-  if(alias>=0){dns_dup(alias,fd);if(!dns_lookup(fd))s->error=-EINVAL;continue;}
-  struct dns_fd *d=vfs_palloc(sizeof(*d));struct dns_socket *socket=vfs_palloc(sizeof(*socket));
-  if(!d||!socket){s->error=-ENOMEM;return;}
-  socket->refs=1;socket->type=state_word(s,0);socket->active=state_word(s,0);socket->connected=state_word(s,0);state_bytes(s,&socket->local,sizeof(socket->local));
-  *d=(struct dns_fd){fd,socket,dns_fds};dns_fds=d;
- }
- count=0;for(struct dns_watch *w=dns_watches;w;w=w->next)if(state_live(w->fd)&&state_live(w->epoll))count++;
- count=state_count(s,count);if(s->error)return;
- if(!s->reading){for(struct dns_watch *w=dns_watches;w;w=w->next)if(state_live(w->fd)&&state_live(w->epoll)){state_word(s,w->fd);state_word(s,w->epoll);state_word(s,w->event.events);state_word(s,w->event.data.u64);}}
- else for(uint64_t i=0;i<count&&!s->error;i++){
-  struct dns_watch *w=vfs_palloc(sizeof(*w));if(!w){s->error=-ENOMEM;return;}
-  w->fd=state_word(s,0);w->epoll=state_word(s,0);w->event.events=state_word(s,0);w->event.data.u64=state_word(s,0);w->next=dns_watches;dns_watches=w;
- }
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;
  count=state_count(s,count);if(s->error)return;
  if(!s->reading){for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))state_word(s,d->fd);}

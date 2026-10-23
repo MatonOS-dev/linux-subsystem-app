@@ -50,15 +50,9 @@ proxy_clone_after:
  fxsave 16(%esp)
  mov 28(%ebp),%eax
  mov %eax,(%esp)
- call dns_fork_result
- mov 28(%ebp),%eax
- mov %eax,(%esp)
  call ipc_fork_result
  fxrstor 16(%esp)
  mov %ebp,%esp
  popal
  jmp *proxy_clone_resume
-.weak dns_fork_result
-dns_fork_result:
- ret
 .section .note.GNU-stack,"",@progbits

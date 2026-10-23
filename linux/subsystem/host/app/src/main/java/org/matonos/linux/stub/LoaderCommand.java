@@ -14,8 +14,7 @@ import java.util.List;
  *
  * <p>The loader is the active same-signer host's
  * {@code libmatonos-v3-loader.so}; PackageManager resolves the installed host. The
- * resolver view and the {@link DnsForwarder} lifecycle are owned here so the
- * two callers cannot drift apart.
+ * resolver view is shared so app launches and installs cannot drift apart.
  */
 final class LoaderCommand {
     static final String FLATPAK_TOOL = "libmatonos-flatpak.so";
@@ -43,12 +42,9 @@ final class LoaderCommand {
         return new File(host.nativeLibraryDir);
     }
 
-    /** The logical resolver address this UID's forwarder answers on. */
+    /** Resolver address intercepted by the compat proxy for this process. */
     static String resolverAddress() {
-        String dns = DnsForwarder.endpoint().replaceFirst(":53$", "");
-        if (!dns.matches("127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}"))
-            throw new IllegalArgumentException("Invalid per-app DNS endpoint");
-        return dns;
+        return "127.0.0.53";
     }
 
     /** The resolv.conf a loader tree maps over /etc/resolv.conf. */
@@ -57,13 +53,9 @@ final class LoaderCommand {
         return resolv;
     }
 
-    /** Binds this UID's forwarder in {@code runtime} and adds its arguments. */
-    static void addDns(List<String> command, String dns, File runtime) throws Exception {
-        String socket = DnsForwarder.acquire(runtime);
-        if (socket == null || !DnsForwarder.endpoint().equals(dns + ":53"))
-            throw new IllegalStateException("Per-app DNS forwarder is unavailable");
+    /** Enables per-process DNS interception for the configured resolver. */
+    static void addDns(List<String> command, String dns) {
         command.add("--dns-forwarder"); command.add(dns + ":53");
-        command.add("--dns-socket"); command.add(socket);
     }
 
     /** Maps the resolver view over both host locations of /etc/resolv.conf. */

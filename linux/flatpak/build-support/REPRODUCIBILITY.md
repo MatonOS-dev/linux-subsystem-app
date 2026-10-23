@@ -31,8 +31,8 @@ linked into the Linux tools.
 
 ## Runtime paths
 
-* `LoaderCommand` starts the static musl CLI without `--root`, binds the app
-  UID's DNS forwarder and maps the generated resolver file over
+* `LoaderCommand` starts the static musl CLI without `--root`, enables
+  per-process DNS interception and maps the generated resolver file over
   `/etc/resolv.conf` and `/system/etc/resolv.conf`. The loader's VFS and mount
   table are inherited through fork/exec; bubblewrap later supplies the Linux
   root.

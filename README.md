@@ -165,8 +165,8 @@ Socket site audit:
 
 | Site | Handling |
 | --- | --- |
-| Stub DNS listener (`DnsForwarder`) | Java opens the private DNS directory with `O_PATH`; both listeners bind via its short path. The original path is passed to the Linux payload. |
-| DNS payload connect (`compat-proxy/dns-unix.h`) | The proxy opens the resolved host parent directory and connects through its own short `/proc/self/fd` path. The fd remains open through connect. |
+| DNS helper | The compat proxy lazily starts a per-process UDP helper and queries Android through `android_res_nsend`; there is no host-app listener. |
+| DNS payload | The compat proxy rewrites configured UDP DNS requests to the per-process helper's loopback port and resolves them through Android's resolver API. |
 | Wayland compositor socket (`compositor_core.c`) | The compositor holds the runtime directory fd and sets `XDG_RUNTIME_DIR` to its short proc-fd path before wlroots binds. |
 | Per-session compositor socket (`nativeAddSession`) | The compositor opens and retains the parent directory fd, then binds through the short path. |
 | Xwayland socket directory/client | The compositor uses a held directory fd for its Xwayland connection; the child inherits the directory fd while using the same short directory path. Linux payload clients still name the real private runtime path and the compat proxy resolves it on its own side. |

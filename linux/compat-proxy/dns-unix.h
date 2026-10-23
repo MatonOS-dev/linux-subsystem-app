@@ -1,199 +1,132 @@
-/* Per-app DNS: replace only sockets addressed to the configured loopback :53.
- * The replacement is a real Unix socket, so kernel queues implement readiness,
- * datagrams, MSG_PEEK, timeouts, and concurrent outstanding query IDs. */
+/* Per-process DNS proxy. Applications retain ordinary AF_INET UDP sockets;
+ * only the configured loopback resolver endpoint is redirected to a local
+ * UDP helper. The helper asks Android netd asynchronously through libandroid. */
 #include <sys/epoll.h>
-#include <poll.h>
-#include <time.h>
-static int unix_call(long,proxy_arg_t [6],long *);
-static struct sockaddr_in dns_endpoint;
-static char dns_path[4096];
-struct dns_socket {unsigned refs;int type,active,connected;struct sockaddr_in local;};
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <errno.h>
+static int dns_fast_tls;
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#include "../gpu-forward-spike/spike3/adopt.h"
+static void *(*dns_android_open)(const char *,int);
+static void *(*dns_android_symbol)(void *,const char *);
+static struct adopt_api *dns_adopt_api;
+static int (*dns_pthread_create)(unsigned long *,const void *,void *(*)(void *),void *);
+static int (*dns_res_nsend)(uint64_t, const uint8_t *, size_t, uint32_t);
+static int (*dns_res_nresult)(int, int *, void *, size_t);
+static void *dns_android_lib,*dns_bionic_lib;
+void proxy_dns_bridge_configure(void *(*open)(const char *,int),void *(*symbol)(void *,const char *),uintptr_t adopt,int fast){
+    dns_android_open=open;dns_android_symbol=symbol;dns_adopt_api=(struct adopt_api *)adopt;dns_fast_tls=fast;
+}
+static int dns_resolver_symbols(void){
+    if(!dns_android_open||!dns_android_symbol)return 0;
+    if(!dns_android_lib)dns_android_lib=dns_android_open("/system/lib64/libandroid.so",2);
+    if(!dns_bionic_lib)dns_bionic_lib=dns_android_open("/system/lib64/libc.so",2);
+    if(!dns_android_lib||!dns_bionic_lib)return 0;
+    if(!dns_res_nsend)dns_res_nsend=(int (*)(uint64_t,const uint8_t *,size_t,uint32_t))dns_android_symbol(dns_android_lib,"android_res_nsend");
+    if(!dns_res_nresult)dns_res_nresult=(int (*)(int,int *,void *,size_t))dns_android_symbol(dns_android_lib,"android_res_nresult");
+    if(!dns_pthread_create)dns_pthread_create=(int (*)(unsigned long *,const void *,void *(*)(void *),void *))dns_android_symbol(dns_bionic_lib,"pthread_create");
+    return dns_res_nsend&&dns_res_nresult&&dns_pthread_create;
+}
+#else
+static int dns_resolver_symbols(void){return 0;}
+#endif
+/* Default Android private resolver; --dns-forwarder can select a test or
+ * alternate loopback address, but state no longer depends on exec snapshots. */
+static struct sockaddr_in dns_endpoint={.sin_family=AF_INET,.sin_port=0x3500,.sin_addr={.s_addr=0x3500007f}};
+/* Legacy launch argument retained temporarily for callers; no filesystem
+ * transport is used by this implementation. */
+struct dns_socket {unsigned refs;int type,active,connected;struct sockaddr_in local;unsigned short local_port;};
 struct dns_fd {int fd;struct dns_socket *socket;struct dns_fd *next;};
-struct dns_watch {int epoll,fd;struct epoll_event event;struct dns_watch *next;};
 static struct dns_fd *dns_fds;
-static struct dns_watch *dns_watches;
 static unsigned dns_mutex;
-static proxy_sigmask_t dns_lock(void){
-    /* An app signal handler may itself use DNS. Mask signals during the short
-     * metadata critical section to prevent reentering our own spin lock. */
-    proxy_sigmask_t all=~UINT64_C(0),old=0;RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&all,&old,8,0,0);
-    while(__atomic_exchange_n(&dns_mutex,1,__ATOMIC_ACQUIRE))__asm__ volatile("pause");
-    return old;
-}
+static volatile long dns_owner_pid;
+static void dns_after_fork(void){long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);long owner=__atomic_load_n(&dns_owner_pid,__ATOMIC_ACQUIRE);if(owner==pid)return;if(__atomic_compare_exchange_n(&dns_owner_pid,&owner,pid,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)&&owner)__atomic_store_n(&dns_mutex,0,__ATOMIC_RELEASE);}
+static proxy_sigmask_t dns_lock(void){dns_after_fork();proxy_sigmask_t all=~UINT64_C(0),old=0;RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&all,&old,8,0,0);while(__atomic_exchange_n(&dns_mutex,1,__ATOMIC_ACQUIRE))__asm__ volatile("pause");return old;}
 static void dns_unlock(proxy_sigmask_t old){__atomic_store_n(&dns_mutex,0,__ATOMIC_RELEASE);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);}
-/* Fork must snapshot complete descriptor metadata, never a half-converted
- * alias list or a spin lock held by a vanished thread. Stack-supplied clone
- * completes through the raw assembly gateway before returning to app code. */
-static proxy_sigmask_t dns_fork_mask;
-static long dns_fork_pid,dns_fork_tid;
-static void dns_fork_prepare(void){
-    proxy_sigmask_t mask=dns_lock();
-    dns_fork_mask=mask;dns_fork_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);dns_fork_tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
-}
-void dns_fork_result(long result){
-    (void)result;
-    if(dns_fork_pid && (RAW(PROXY_SC_getpid,0,0,0,0,0,0)!=dns_fork_pid || RAW(PROXY_SC_gettid,0,0,0,0,0,0)==dns_fork_tid)){
-        proxy_sigmask_t mask=dns_fork_mask;dns_fork_pid=dns_fork_tid=0;dns_unlock(mask);
-    }
-}
 static struct dns_socket *dns_lookup(int fd){for(struct dns_fd *p=dns_fds;p;p=p->next)if(p->fd==fd)return p->socket;return NULL;}
-static void dns_forget(int fd){
-    struct dns_fd **p=&dns_fds;
-    while(*p){struct dns_fd *d=*p;if(d->fd!=fd){p=&d->next;continue;}*p=d->next;if(!--d->socket->refs)vfs_free(d->socket);vfs_free(d);break;}
-    struct dns_watch **w=&dns_watches;
-    while(*w){struct dns_watch *d=*w;if(d->fd!=fd && d->epoll!=fd){w=&d->next;continue;}*w=d->next;vfs_free(d);}
-}
-static void dns_close(int fd){proxy_sigmask_t mask=dns_lock();dns_forget(fd);dns_unlock(mask);}
-static void dns_dup(int from,int to){
-    if(from==to)return;
-    proxy_sigmask_t mask=dns_lock();struct dns_socket *s=dns_lookup(from);dns_forget(to);
-    if(s){struct dns_fd *d=vfs_palloc(sizeof(*d));if(d){*d=(struct dns_fd){to,s,dns_fds};s->refs++;dns_fds=d;}}
-    dns_unlock(mask);
-}
-static void dns_network_payload(void){
-    proxy_sigmask_t mask=dns_lock();
-    struct dns_fd *d=dns_fds;
-    while(d){struct dns_fd *next=d->next;if(d->socket->active){RAW(PROXY_SC_close,d->fd,0,0,0,0,0);dns_forget(d->fd);}d=next;}
-    dns_unlock(mask);
-}
-/* poll may already be waiting when another thread first identifies a socket
- * as DNS. Native poll pins the old open file description across dup3. Recheck
- * unconverted Internet sockets in short slices so such a waiter follows the
- * application's fd after conversion. Active DNS fds use ordinary kernel poll. */
-static long dns_poll(void *ptr,unsigned long count,struct timespec *timeout,const void *sigmask,unsigned long sigsize){
-    struct pollfd *fds=ptr;int pending=0;
-    if(dns_path[0] && ptr){proxy_sigmask_t mask=dns_lock();for(unsigned long i=0;i<count;i++){struct dns_socket *s=dns_lookup(fds[i].fd);if(s && !s->active){pending=1;break;}}dns_unlock(mask);}
-    if(!pending || (timeout && (timeout->tv_sec<0 || timeout->tv_nsec<0 || timeout->tv_nsec>=1000000000)))return RAW(PROXY_SC_ppoll,ptr,count,timeout,sigmask,sigsize,0);
-    struct timespec start,now;long r=RAW(PROXY_SC_clock_gettime,CLOCK_MONOTONIC,&start,0,0,0,0);if(r<0)return r;
-    for(;;){
-        struct timespec slice={.tv_nsec=10000000};
-        if(timeout){
-            RAW(PROXY_SC_clock_gettime,CLOCK_MONOTONIC,&now,0,0,0,0);
-            long sec=timeout->tv_sec-(now.tv_sec-start.tv_sec),nano=timeout->tv_nsec-(now.tv_nsec-start.tv_nsec);
-            if(nano<0){sec--;nano+=1000000000;}
-            if(sec<0){slice.tv_nsec=0;}else if(!sec && nano<slice.tv_nsec)slice.tv_nsec=nano;
-        }
-        r=RAW(PROXY_SC_ppoll,ptr,count,&slice,sigmask,sigsize,0);
-        if(r)return r;
-        if(timeout){RAW(PROXY_SC_clock_gettime,CLOCK_MONOTONIC,&now,0,0,0,0);long sec=now.tv_sec-start.tv_sec,nano=now.tv_nsec-start.tv_nsec;if(nano<0){sec--;nano+=1000000000;}if(sec>timeout->tv_sec || (sec==timeout->tv_sec && nano>=timeout->tv_nsec))return 0;}
-    }
-}
+static void dns_untrack_port(unsigned short port);
+static void dns_forget(int fd){struct dns_fd **p=&dns_fds;while(*p){struct dns_fd *d=*p;if(d->fd!=fd){p=&d->next;continue;}*p=d->next;if(!--d->socket->refs){if(d->socket->active)dns_untrack_port(d->socket->local_port);vfs_free(d->socket);}vfs_free(d);return;}}
+static void dns_close(int fd){proxy_sigmask_t m=dns_lock();dns_forget(fd);dns_unlock(m);}
+static void dns_dup(int from,int to){if(from==to)return;proxy_sigmask_t m=dns_lock();struct dns_socket *s=dns_lookup(from);dns_forget(to);if(s){struct dns_fd *d=vfs_palloc(sizeof(*d));if(d){*d=(struct dns_fd){to,s,dns_fds};s->refs++;dns_fds=d;}}dns_unlock(m);}
 static unsigned short dns_swap(unsigned short n){return (unsigned short)((n<<8)|(n>>8));}
-int proxy_dns_forwarder(const char *text){
-    unsigned char bytes[4];
-    for(unsigned i=0;i<4;i++){
-        unsigned n=0,digits=0;
-        while(*text>='0' && *text<='9'){n=n*10+*text++-'0';if(n>255)return -EINVAL;digits++;}
-        if(!digits || *text++!=(i==3?':':'.'))return -EINVAL;
-        bytes[i]=(unsigned char)n;
+int proxy_dns_forwarder(const char *text){unsigned char b[4];for(unsigned i=0;i<4;i++){unsigned n=0,d=0;while(*text>='0'&&*text<='9'){n=n*10+*text++-'0';if(n>255)return -EINVAL;d++;}if(!d||*text++!=(i==3?':':'.'))return -EINVAL;b[i]=n;}if(!p_equal(text,"53")||b[0]!=127)return -EINVAL;dns_endpoint=(struct sockaddr_in){.sin_family=AF_INET,.sin_port=dns_swap(53)};p_copy(&dns_endpoint.sin_addr,b,4);return 0;}
+static int dns_address(const void *addr,unsigned long len){if(!dns_endpoint.sin_port||!addr||len<sizeof(struct sockaddr_in))return 0;const struct sockaddr_in *a=addr;return a->sin_family==AF_INET&&a->sin_port==dns_endpoint.sin_port&&a->sin_addr.s_addr==dns_endpoint.sin_addr.s_addr;}
+static struct sockaddr_in dns_helper_addr;
+static int dns_helper_ready;
+static volatile int dns_helper_state;
+struct dns_pending {int fd;struct sockaddr_in peer;struct dns_pending *next;};
+static struct dns_pending *dns_pending;
+static int dns_server_fd=-1,dns_epoll_fd=-1;
+static long dns_helper_pid;
+#define DNS_PORTS 256
+static unsigned dns_ports[DNS_PORTS];
+static int dns_port_owned(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++)if(__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE)==port)return 1;return 0;}
+static void dns_track_port(unsigned short port){if(!port||dns_port_owned(port))return;for(unsigned i=0;i<DNS_PORTS;i++){unsigned empty=0;if(__atomic_compare_exchange_n(&dns_ports[i],&empty,port,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED))return;}}
+static void dns_untrack_port(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++){unsigned value=__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE);if(value==port)__atomic_compare_exchange_n(&dns_ports[i],&value,0,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED);}}
+static __attribute__((unused)) void *dns_worker(void *unused){(void)unused;
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    int server=(int)RAW(PROXY_SC_socket,AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0,0,0,0);if(server<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}
+    struct sockaddr_in bindaddr={.sin_family=AF_INET,.sin_addr={.s_addr=0x0100007f}};
+    if(RAW(PROXY_SC_bind,server,&bindaddr,sizeof(bindaddr),0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}
+    unsigned len=sizeof(dns_helper_addr);if(RAW(PROXY_SC_getsockname,server,&dns_helper_addr,&len,0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}
+    int ep=(int)RAW(PROXY_SC_epoll_create1,EPOLL_CLOEXEC,0,0,0,0,0);if(ep<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return NULL;}dns_server_fd=server;dns_epoll_fd=ep;dns_helper_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+    struct epoll_event ev={.events=EPOLLIN,.data.fd=server};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,server,&ev,0,0);
+    dns_helper_ready=1;__atomic_store_n(&dns_helper_state,1,__ATOMIC_RELEASE);
+    for(;;){struct epoll_event events[32];long n=RAW(PROXY_SC_epoll_pwait,ep,events,32,-1,0,8);if(n<0)continue;
+        for(long i=0;i<n;i++){
+            int fd=events[i].data.fd;
+            if(fd==server){unsigned char query[65536];struct sockaddr_in peer;unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,sizeof(query),0,&peer,&plen);if(q<=0||!dns_port_owned(peer.sin_port))continue;
+                int r=dns_res_nsend(0,query,(size_t)q,0);if(r<0)continue;struct dns_pending *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,r,0,0,0,0,0);continue;}*p=(struct dns_pending){.fd=r,.peer=peer,.next=dns_pending};dns_pending=p;struct epoll_event re={.events=EPOLLIN,.data.fd=r};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,r,&re,0,0);
+            }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;unsigned char answer[65536];int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_res_nresult(fd,&rcode,answer,sizeof(answer));if(sz>0)RAW(PROXY_SC_sendto,server,answer,sz,0,&p->peer,sizeof(p->peer));*pp=p->next;vfs_free(p);}
+        }
     }
-    /* The Internet listener has been retired. This is the app-visible address. */
-    if(!p_equal(text,"53") || bytes[0]!=127)return -EINVAL;
-    dns_endpoint.sin_family=AF_INET;dns_endpoint.sin_port=dns_swap(53);p_copy(&dns_endpoint.sin_addr,bytes,4);return 0;
+#else
+    return NULL;
+#endif
 }
-int proxy_dns_socket(const char *path){
-    size_t n=p_len(path);if(path[0]!='/' || n>=sizeof(dns_path))return -EINVAL;
-    p_copy(dns_path,path,n+1);return 0;
+static __attribute__((unused)) uintptr_t dns_fs_read(void){uintptr_t fs=0;if(dns_fast_tls)__asm__ volatile("rdfsbase %0":"=r"(fs)::"memory");else RAW(PROXY_SC_arch_prctl,0x1003,&fs,0,0,0,0);return fs;}
+static __attribute__((unused)) void dns_fs_write(uintptr_t fs){if(dns_fast_tls)__asm__ volatile("wrfsbase %0"::"r"(fs):"memory");else RAW(PROXY_SC_arch_prctl,0x1002,fs,0,0,0,0);}
+static __attribute__((unused)) int dns_pthread_create_android(unsigned long *thread,void *(*start)(void *),void *arg){
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    if(!dns_adopt_api||!dns_adopt_api->current)return -1;
+    struct adopt_thread *t=dns_adopt_api->current();
+    if(!t)return -1;
+    uintptr_t prior=dns_fs_read();
+    dns_fs_write(t->resident_fs);
+    int result=dns_pthread_create(thread,NULL,start,arg);
+    dns_fs_write(prior);
+    return result;
+#else
+    (void)thread;(void)start;(void)arg;return -1;
+#endif
 }
-static int dns_address(const void *addr,unsigned long len){
-    if(!dns_endpoint.sin_port || !dns_path[0] || !addr || len<sizeof(struct sockaddr_in))return 0;
-    const struct sockaddr_in *in=addr;
-    return in->sin_family==AF_INET && in->sin_port==dns_endpoint.sin_port && in->sin_addr.s_addr==dns_endpoint.sin_addr.s_addr;
+static int dns_start(void){long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);if(dns_helper_pid&&dns_helper_pid!=pid){if(dns_server_fd>=0)RAW(PROXY_SC_close,dns_server_fd,0,0,0,0,0);if(dns_epoll_fd>=0)RAW(PROXY_SC_close,dns_epoll_fd,0,0,0,0,0);while(dns_pending){struct dns_pending *p=dns_pending;dns_pending=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p);}dns_server_fd=dns_epoll_fd=-1;dns_helper_pid=0;dns_helper_ready=0;dns_helper_addr=(struct sockaddr_in){0};__atomic_store_n(&dns_helper_state,0,__ATOMIC_RELEASE);}if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)==1)return 0;if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)<0)return -EIO;if(!dns_resolver_symbols())return -ENOSYS;
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    int expected=0;if(__atomic_compare_exchange_n(&dns_helper_state,&expected,2,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){unsigned long thread=0;int r=dns_pthread_create_android(&thread,dns_worker,NULL);if(r){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return -r;}}
+    for(unsigned i=0;i<10000000;i++){int s=__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE);if(s==1)return 0;if(s<0)return -EIO;__asm__ volatile("pause");}return -ETIMEDOUT;
+#else
+    return -ENOSYS;
+#endif
 }
-static long dns_name(void *out,unsigned *len,const struct sockaddr_in *name){
-    if(!len || !out)return -EFAULT;
-    unsigned n=*len;if(n>sizeof(*name))n=sizeof(*name);p_copy(out,name,n);*len=sizeof(*name);return 0;
-}
-/* Caller holds metadata lock. Do not hold it across a DNS receive. */
-static long dns_convert(int fd,struct dns_socket *s){
-    if(namespaces&CLONE_NEWNET)return -EACCES;
-    if(s && s->active)return 0;
-    if(!s || (s->type!=SOCK_DGRAM && s->type!=SOCK_STREAM))return -EPROTOTYPE;
-    long flags=RAW(PROXY_SC_fcntl,fd,F_GETFL,0,0,0,0);if(flags<0)return flags;
-    /* Connect locally in nonblocking mode, then restore the application flags.
-     * A full listener backlog fails promptly rather than hanging a syscall. */
-    long sock=RAW(PROXY_SC_socket,AF_UNIX,(s->type==SOCK_DGRAM?SOCK_SEQPACKET:SOCK_STREAM)|SOCK_CLOEXEC|SOCK_NONBLOCK,0,0,0,0);
-    if(sock<0)return sock;
-    size_t n=p_len(dns_path);char *slash=dns_path+n;while(slash>dns_path&&*slash!='/')slash--;
-    if(slash==dns_path){RAW(PROXY_SC_close,sock,0,0,0,0,0);return -EINVAL;}
-    *slash=0;long dir=RAW(PROXY_SC_openat,AT_FDCWD,dns_path,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);*slash='/';
-    if(dir<0){RAW(PROXY_SC_close,sock,0,0,0,0,0);return dir;}
-    struct sockaddr_un address={.sun_family=AF_UNIX};char path[sizeof(address.sun_path)];
-    size_t at=0;const char *prefix="/proc/self/fd/";while(*prefix)path[at++]=*prefix++;
-    char digits[24];int nd=0;unsigned long value=(unsigned long)dir;
-    do{digits[nd++]=(char)('0'+value%10);value/=10;}while(value);
-    while(nd)path[at++]=digits[--nd];
-    size_t tail=p_len(slash);if(at+tail+5>sizeof(path)){RAW(PROXY_SC_close,dir,0,0,0,0,0);RAW(PROXY_SC_close,sock,0,0,0,0,0);return -ENAMETOOLONG;}
-    p_copy(path+at,slash,tail);at+=tail;p_copy(path+at,s->type==SOCK_DGRAM?".udp":".tcp",5);
-    p_copy(address.sun_path,path,at+5);
-    long result=RAW(PROXY_SC_connect,sock,&address,offsetof(struct sockaddr_un,sun_path)+at+5,0,0,0);
-    RAW(PROXY_SC_close,dir,0,0,0,0,0);
-    if(result<0){RAW(PROXY_SC_close,sock,0,0,0,0,0);return result;}
-    /* Authenticate both directions; a stale/replaced socket cannot grant a
-     * different UID access to queries. Android's UID owns the path. */
-    struct ucred cred;unsigned size=sizeof(cred);
-    result=RAW(PROXY_SC_getsockopt,sock,SOL_SOCKET,SO_PEERCRED,&cred,&size,0);
-    if(result<0 || cred.uid!=(unsigned)RAW(PROXY_SC_getuid,0,0,0,0,0,0)){RAW(PROXY_SC_close,sock,0,0,0,0,0);return result<0?result:-EACCES;}
-    unsigned local_size=sizeof(s->local);RAW(PROXY_SC_getsockname,fd,&s->local,&local_size,0,0,0);
-    /* Preserve options which matter to resolvers (including existing timeout). */
-    int options[]={SO_RCVTIMEO,SO_SNDTIMEO,SO_RCVBUF,SO_SNDBUF,SO_KEEPALIVE};
-    for(unsigned i=0;i<sizeof(options)/sizeof(*options);i++){unsigned char value[32];unsigned len=sizeof(value);if(!RAW(PROXY_SC_getsockopt,fd,SOL_SOCKET,options[i],value,&len,0))RAW(PROXY_SC_setsockopt,sock,SOL_SOCKET,options[i],value,len,0);}
-    RAW(PROXY_SC_fcntl,sock,F_SETFL,flags,0,0,0);
-    /* All aliases share the new open file description. Keep each FD_CLOEXEC. */
-    for(struct dns_fd *d=dns_fds;d;d=d->next)if(d->socket==s){long clo=RAW(PROXY_SC_fcntl,d->fd,F_GETFD,0,0,0,0);result=RAW(PROXY_SC_dup3,sock,d->fd,(clo&FD_CLOEXEC)?O_CLOEXEC:0,0,0,0);if(result<0)break;}
-    if(result>=0){s->active=1;
-        /* dup3 removes old epoll watches. Replay saved user events, including
-         * EPOLLET/ONESHOT, on the replacement open file description. */
-        for(struct dns_watch *w=dns_watches;w;w=w->next)if(dns_lookup(w->fd)==s){RAW(PROXY_SC_epoll_ctl,w->epoll,EPOLL_CTL_DEL,w->fd,0,0,0);long r=RAW(PROXY_SC_epoll_ctl,w->epoll,EPOLL_CTL_ADD,w->fd,&w->event,0,0);if(r<0 && result>=0)result=r;}
-    }
-    RAW(PROXY_SC_close,sock,0,0,0,0,0);return result<0?result:0;
-}
+static long dns_poll(void *ptr,unsigned long count,struct timespec *timeout,const void *sigmask,unsigned long sigsize){return RAW(PROXY_SC_ppoll,ptr,count,timeout,sigmask,sigsize,0);}
+static long dns_name(void *out,unsigned *len,const struct sockaddr_in *name){if(!out||!len)return -EFAULT;unsigned n=*len;if(n>sizeof(*name))n=sizeof(*name);p_copy(out,name,n);*len=sizeof(*name);return 0;}
+static void dns_record_local(int fd,struct dns_socket *s){unsigned n=sizeof(s->local);if(!RAW(PROXY_SC_getsockname,fd,&s->local,&n,0,0,0))s->local_port=s->local.sin_port;}
+static long dns_activate(int fd,struct dns_socket *s){if(s->active)return 0;struct sockaddr_in local={0};unsigned n=sizeof(local);long r=RAW(PROXY_SC_getsockname,fd,&local,&n,0,0,0);if(r<0||!local.sin_port){struct sockaddr_in bindaddr={.sin_family=AF_INET,.sin_addr={.s_addr=0x0100007f}};r=RAW(PROXY_SC_bind,fd,&bindaddr,sizeof(bindaddr),0,0,0);if(r<0)return r;}dns_record_local(fd,s);s->active=1;dns_track_port(s->local_port);return 0;}
 static long dns_call(long nr,proxy_arg_t a[6]){
-    {long translated;if(unix_call(nr,a,&translated))return translated;}
-    if(nr==PROXY_SC_socket){
-        long r=RAW(nr,a[0],a[1],a[2],0,0,0);
-        if(r>=0 && dns_path[0] && a[0]==AF_INET){
-            struct dns_socket *s=vfs_palloc(sizeof(*s));struct dns_fd *d=vfs_palloc(sizeof(*d));
-            if(!s || !d){vfs_free(s);vfs_free(d);RAW(PROXY_SC_close,r,0,0,0,0,0);return -ENOMEM;}
-            *s=(struct dns_socket){.refs=1,.type=(int)a[1]&~(SOCK_NONBLOCK|SOCK_CLOEXEC)};
-            proxy_sigmask_t mask=dns_lock();dns_forget((int)r);*d=(struct dns_fd){(int)r,s,dns_fds};dns_fds=d;dns_unlock(mask);
-        }return r;
-    }
-    proxy_sigmask_t mask=dns_lock();struct dns_socket *s=dns_lookup((int)a[0]);
-    if(nr==PROXY_SC_epoll_ctl){
-        struct dns_watch **p=&dns_watches;while(*p && ((*p)->epoll!=a[0] || (*p)->fd!=a[2]))p=&(*p)->next;
-        struct dns_watch *new=NULL;
-        if(nr==PROXY_SC_epoll_ctl && a[1]==EPOLL_CTL_ADD && dns_lookup((int)a[2])){new=vfs_palloc(sizeof(*new));if(!new){dns_unlock(mask);return -ENOMEM;}}
-        long r=RAW(nr,a[0],a[1],a[2],a[3],0,0);
-        if(!r){if(a[1]==EPOLL_CTL_DEL && *p){struct dns_watch *old=*p;*p=old->next;vfs_free(old);}else if(a[1]==EPOLL_CTL_MOD && *p)p_copy(&(*p)->event,(void *)(uintptr_t)a[3],sizeof(struct epoll_event));else if(new){*new=(struct dns_watch){.epoll=(int)a[0],.fd=(int)a[2],.next=dns_watches};p_copy(&new->event,(void *)(uintptr_t)a[3],sizeof(new->event));dns_watches=new;new=NULL;}}
-        vfs_free(new);dns_unlock(mask);return r;
-    }
-    int target=0;
-    if(nr==PROXY_SC_connect)target=dns_address((void *)(uintptr_t)a[1],a[2]);
-    if(nr==PROXY_SC_sendto)target=dns_address((void *)(uintptr_t)a[4],a[5]);
-    if(nr==PROXY_SC_sendmsg && a[1]){struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);target=dns_address((void *)(uintptr_t)m.name,m.namelen);}
-    if(nr==PROXY_SC_sendmmsg && a[1] && a[2]>0){struct proxy_message m=arch_mmsg_read((void *)(uintptr_t)a[1],0);target=dns_address((void *)(uintptr_t)m.name,m.namelen);}
-    if(target){if(!s){dns_unlock(mask);return -EBADF;}long r=dns_convert((int)a[0],s);if(r<0){dns_unlock(mask);return r;}if(nr==PROXY_SC_connect){s->connected=1;dns_unlock(mask);return 0;}}
-    int active=s && s->active,connected=active && s->connected;int type=s?s->type:0;struct sockaddr_in local={0};if(active)local=s->local;
-    dns_unlock(mask);
-    if(!active)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-    if(nr==PROXY_SC_connect)return -EAFNOSUPPORT;
-    if(nr==PROXY_SC_getpeername)return connected?dns_name((void *)(uintptr_t)a[1],(void *)(uintptr_t)a[2],&dns_endpoint):-ENOTCONN;
-    if(nr==PROXY_SC_getsockname)return dns_name((void *)(uintptr_t)a[1],(void *)(uintptr_t)a[2],&local);
-    if(nr==PROXY_SC_getsockopt && a[1]==SOL_SOCKET && (a[2]==SO_TYPE || a[2]==SO_DOMAIN || a[2]==SO_PROTOCOL)){
-        int value=a[2]==SO_TYPE?type:a[2]==SO_DOMAIN?AF_INET:type==SOCK_DGRAM?IPPROTO_UDP:IPPROTO_TCP;
-        if(!a[3] || !a[4])return -EFAULT;
-        unsigned n=*(unsigned *)a[4];if(n>sizeof(value))n=sizeof(value);p_copy((void *)(uintptr_t)a[3],&value,n);*(unsigned *)a[4]=sizeof(value);return 0;
-    }
-    if(nr==PROXY_SC_sendto){if(a[4] && !target)return -EAFNOSUPPORT;return RAW(nr,a[0],a[1],a[2],a[3],0,0);}
-    if(nr==PROXY_SC_sendmsg && a[1]){struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);if(m.name && !dns_address((void *)(uintptr_t)m.name,m.namelen))return -EAFNOSUPPORT;m.name=0;m.namelen=0;return arch_message_call(nr,a[0],&m,a[2]);}
-    if(nr==PROXY_SC_sendmmsg && a[1] && a[2]>0){
-        unsigned count=(unsigned)a[2];if(count>1024)count=1024;
-        void *m=vfs_alloc(arch_mmsg_size(count));if(!m)return -ENOMEM;p_copy(m,(void *)(uintptr_t)a[1],arch_mmsg_size(count));
-        for(unsigned i=0;i<count;i++){struct proxy_message message=arch_mmsg_read(m,i);if(message.name && !dns_address((void *)(uintptr_t)message.name,message.namelen)){vfs_free(m);return -EAFNOSUPPORT;}arch_mmsg_no_name(m,i);}
-        long r=RAW(nr,a[0],m,count,a[3],0,0);if(r>0)for(long i=0;i<r;i++)arch_mmsg_result((void *)(uintptr_t)a[1],m,i);vfs_free(m);return r;
-    }
-    if(nr==PROXY_SC_recvfrom){long r=RAW(nr,a[0],a[1],a[2],a[3],0,0);if(r>=0 && a[4]){long e=dns_name((void *)(uintptr_t)a[4],(void *)(uintptr_t)a[5],&dns_endpoint);if(e<0)return e;}return r;}
-    if(nr==PROXY_SC_recvmsg && a[1]){void *out=(void *)(uintptr_t)a[1];struct proxy_message m=arch_message_read(out);void *name=(void *)(uintptr_t)m.name;unsigned len=m.namelen;m.name=0;m.namelen=0;long r=arch_message_call(nr,a[0],&m,a[2]);if(r>=0){m.flags&=~MSG_EOR;if(name){long e=dns_name(name,&len,&dns_endpoint);if(e<0)return e;m.namelen=len;}else m.namelen=0;arch_message_results(out,m);}return r;}
+    if(nr==PROXY_SC_socket){long r=RAW(nr,a[0],a[1],a[2],0,0,0);if(r>=0&&a[0]==AF_INET){int type=(int)a[1]&0xf;if(type==SOCK_DGRAM||type==SOCK_STREAM){struct dns_socket *s=vfs_palloc(sizeof(*s));struct dns_fd *d=vfs_palloc(sizeof(*d));if(!s||!d){vfs_free(s);vfs_free(d);RAW(PROXY_SC_close,r,0,0,0,0,0);return -ENOMEM;}*s=(struct dns_socket){.refs=1,.type=type};proxy_sigmask_t m=dns_lock();*d=(struct dns_fd){(int)r,s,dns_fds};dns_fds=d;dns_unlock(m);}}return r;}
+    proxy_sigmask_t lock=dns_lock();struct dns_socket *s=dns_lookup((int)a[0]);int tracked=s!=NULL;int active=s&&s->active;int connected=s&&s->connected;struct sockaddr_in local=s?s->local:(struct sockaddr_in){0};dns_unlock(lock);
+    int target=0;if(nr==PROXY_SC_connect)target=dns_address((void *)(uintptr_t)a[1],a[2]);if(nr==PROXY_SC_sendto)target=dns_address((void *)(uintptr_t)a[4],a[5]);if(nr==PROXY_SC_sendmsg&&a[1]){struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);target=dns_address((void *)(uintptr_t)m.name,m.namelen);}if(nr==PROXY_SC_sendmmsg&&a[1]&&a[2]){unsigned count=(unsigned)a[2];if(count>1024)count=1024;for(unsigned i=0;i<count&&!target;i++){struct proxy_message m=arch_mmsg_read((void *)(uintptr_t)a[1],i);target=dns_address((void *)(uintptr_t)m.name,m.namelen);}}
+    if(target){if(nr==PROXY_SC_connect&&tracked&&s->type==SOCK_STREAM)return -ECONNREFUSED;if(!tracked)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(dns_start()<0)return -EIO;
+        if(nr==PROXY_SC_connect){long r=RAW(nr,a[0],&dns_helper_addr,sizeof(dns_helper_addr),0,0,0);if(r<0)return r;lock=dns_lock();s=dns_lookup((int)a[0]);if(s){s->active=1;s->connected=1;dns_record_local((int)a[0],s);dns_track_port(s->local_port);}dns_unlock(lock);return 0;}
+        if(nr==PROXY_SC_sendto){struct sockaddr_in loop=dns_helper_addr;long ar=dns_activate((int)a[0],s);if(ar<0)return ar;return RAW(nr,a[0],a[1],a[2],a[3],&loop,sizeof(loop));}
+        if(nr==PROXY_SC_sendmsg&&a[1]){struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);struct proxy_message x=m;x.name=(uintptr_t)&dns_helper_addr;x.namelen=sizeof(dns_helper_addr);long ar=dns_activate((int)a[0],s);if(ar<0)return ar;return arch_message_call(nr,a[0],&x,a[2]);}
+        if(nr==PROXY_SC_sendmmsg&&a[1]&&a[2]){unsigned count=(unsigned)a[2];if(count>1024)count=1024;size_t size=arch_mmsg_size(count);void *copy=vfs_alloc(size);if(!copy)return -ENOMEM;p_copy(copy,(void *)(uintptr_t)a[1],size);long ar=dns_activate((int)a[0],s);if(ar<0){vfs_free(copy);return ar;}for(unsigned i=0;i<count;i++){struct proxy_message m=arch_mmsg_read(copy,i);if(m.name&&dns_address((void *)(uintptr_t)m.name,m.namelen)){struct arch_mmsghdr *h=copy;h[i].msg_hdr.msg_name=&dns_helper_addr;h[i].msg_hdr.msg_namelen=sizeof(dns_helper_addr);}}long r=RAW(nr,a[0],copy,count,a[3],0,0);if(r>0)for(long i=0;i<r;i++)arch_mmsg_result((void *)(uintptr_t)a[1],copy,(unsigned)i);vfs_free(copy);return r;}}
+    if(active&&nr==PROXY_SC_connect)return -ECONNREFUSED;
+    if(active&&nr==PROXY_SC_getpeername)return connected?dns_name((void *)(uintptr_t)a[1],(unsigned *)(uintptr_t)a[2],&dns_endpoint):-ENOTCONN;
+    if(active&&nr==PROXY_SC_getsockname)return dns_name((void *)(uintptr_t)a[1],(unsigned *)(uintptr_t)a[2],&local);
+    if(active&&nr==PROXY_SC_recvfrom){long r=RAW(nr,a[0],a[1],a[2],a[3],0,0);if(r>=0&&a[4])dns_name((void *)(uintptr_t)a[4],(unsigned *)(uintptr_t)a[5],&dns_endpoint);return r;}
+    if(active&&nr==PROXY_SC_recvmsg&&a[1]){void *out=(void *)(uintptr_t)a[1];struct proxy_message m=arch_message_read(out);void *name=(void *)(uintptr_t)m.name;unsigned namelen=m.namelen;m.name=0;m.namelen=0;long r=arch_message_call(nr,a[0],&m,a[2]);if(r>=0&&name){dns_name(name,&namelen,&dns_endpoint);m.namelen=namelen;arch_message_results(out,m);}return r;}
+    (void)dns_port_owned;(void)dns_track_port;(void)dns_untrack_port;
     return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
 }
