@@ -16,6 +16,18 @@ static int arch_app_install(void) {
         unsigned jump=branch?compat_jump:native_jump;bpf[jump].k=n-jump-1;
         const int *allowed=branch?android_i386_allowed:android_x86_64_allowed;
         unsigned count=branch?sizeof(android_i386_allowed)/sizeof(int):sizeof(android_x86_64_allowed)/sizeof(int);
+        if(!branch) {
+            /* The DNS helper clone trampoline needs its kernel-selected child
+             * stack. Do not route this one clone through clone_retry. */
+            uint64_t clone_ip=arch_gateway_pc(2);
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,arch_encode_syscall(PROXY_SC_clone));
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(clone_ip>>32));
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)clone_ip);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
         for(unsigned i=0;i<count;i++) {
             ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,allowed[i]);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
@@ -58,6 +70,16 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    /* The DNS helper clone trampoline must retain its kernel-selected child
+     * stack; clone_retry's app-stack continuation is invalid for this path. */
+    if(!peer) {
+        ip=arch_gateway_pc(2);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(ip>>32));
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)ip);
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    }
     /* Keep resident linker code from replacing the proxy's SIGSYS handler.
      * Let ordinary signal actions and read-only queries stay native. */
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));

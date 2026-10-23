@@ -243,8 +243,11 @@ APK native-library path used in production.
 
 DNS uses a per-process helper thread and a UDP socket bound to 127.0.0.1 on an
 ephemeral port. On first DNS use, the proxy creates that thread with a raw
-`clone` syscall on its own mmap'd stack; all signals are blocked in the new
-thread, which uses no libc or TLS. For each query it opens
+`clone` syscall on its own mmap'd stack. The exact post-syscall gateway PC is
+allowed through both seccomp filters so the kernel can preserve the supplied
+child stack instead of entering the app-stack `clone_retry` trampoline. The
+assembly wrapper restores the parent's callee-saved registers; the child uses
+no libc or TLS. For each query it opens
 `/dev/socket/dnsproxyd`, sends netd's NUL-terminated `resnsend 0 0 <base64>`
 command, then polls that fd alongside its UDP socket. Replies use netd's
 big-endian status and length header followed by the DNS packet. Responses are
@@ -261,7 +264,8 @@ dnsproxyd and real host UDP/epoll/pthreads. It checks the command bytes against
 a fixed libnetd_client vector, error and truncated replies, connected UDP, sendto/sendmsg/
 sendmmsg, parallel queries, poll/epoll, blocking reads, `MSG_PEEK`, foreign
 source rejection, fork restart, and no wakeups on an ordinary socket. Device
-testing against netd is still required.
+testing against netd is still required. `tests/raw-clone-gateway.c` verifies
+custom-stack thread creation through an exact-PC seccomp exception.
 
 O_TMPFILE deliberately returns EOPNOTSUPP after normal virtual mount policy
 checks. Callers use named temporary files and rename; no anonymous-inode

@@ -38,6 +38,8 @@ proxy_raw_clone_thread:
  xor %edx,%edx
  xor %esi,%esi
  int $0x80
+.global proxy_raw_clone_after
+proxy_raw_clone_after:
  test %eax,%eax
  jnz 1f
  mov %ecx,%esp
