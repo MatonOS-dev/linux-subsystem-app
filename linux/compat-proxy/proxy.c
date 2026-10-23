@@ -131,12 +131,16 @@ static long dispatch_owner;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
 struct tls_entry { struct user_desc desc; int real_entry; int valid; };
 #define PROXY_TLS_ENTRIES 3
+struct ldt_entry { struct user_desc desc; unsigned char valid; };
+static struct ldt_entry *ldt_entries;
+static size_t ldt_capacity;
 #endif
 struct thread_state {
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     struct tls_entry tls[PROXY_TLS_ENTRIES];
     unsigned reserved;
+    int reserved_real;
 #endif
 };
 struct thread_node {struct thread_state state;struct thread_node *next;};
@@ -165,14 +169,23 @@ static struct thread_state *thread_state(void) {
 static int tls_slot_for_real(struct thread_state *thread, int real_entry) {
     for (int i=0;i<PROXY_TLS_ENTRIES;i++)
         if(thread->tls[i].valid && thread->tls[i].real_entry==real_entry)return i;
+    if(thread->reserved && thread->reserved_real==real_entry)return PROXY_TLS_ENTRIES-1;
     return -1;
+}
+static int tls_reserve(struct thread_state *thread) {
+    if(thread->reserved)return 0;
+    struct user_desc d={.entry_number=(unsigned)-1,.seg_32bit=1,
+        .contents=0,.read_exec_only=1,.seg_not_present=1,.useable=1};
+    long r=RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0);
+    if(r<0)return (int)r;
+    thread->reserved_real=(int)d.entry_number;thread->reserved=1;return 0;
 }
 static long tls_set(struct thread_state *thread, uintptr_t user) {
     struct user_desc desc;
     if(!user || proxy_copy(&desc,(const void *)user,sizeof(desc)))return -EFAULT;
     int slot=-1;
     if(desc.entry_number==UINT32_MAX) {
-        for(int i=0;i<PROXY_TLS_ENTRIES-(int)thread->reserved;i++)
+        for(int i=0;i<PROXY_TLS_ENTRIES;i++)
             if(!thread->tls[i].valid){slot=i;break;}
         if(slot<0)return -ESRCH;
     } else if(desc.entry_number>=PROXY_TLS_ENTRIES) {
@@ -181,8 +194,10 @@ static long tls_set(struct thread_state *thread, uintptr_t user) {
         slot=tls_slot_for_real(thread,(int)desc.entry_number);
         if(slot<0)return -ESRCH;
     } else slot=(int)desc.entry_number;
+    if(slot==PROXY_TLS_ENTRIES-1){int r=tls_reserve(thread);if(r)return r;}
     struct user_desc kernel_desc=desc;
-    kernel_desc.entry_number=thread->tls[slot].valid?thread->tls[slot].real_entry:-1;
+    kernel_desc.entry_number=slot==PROXY_TLS_ENTRIES-1 && thread->reserved
+        ? thread->reserved_real : (thread->tls[slot].valid?thread->tls[slot].real_entry:-1);
     long result=RAW(PROXY_SC_set_thread_area,(long)&kernel_desc,0,0,0,0,0);
     if(result<0)return result;
     desc.entry_number=kernel_desc.entry_number;
@@ -190,6 +205,16 @@ static long tls_set(struct thread_state *thread, uintptr_t user) {
     thread->tls[slot].desc=desc;
     thread->tls[slot].real_entry=kernel_desc.entry_number;
     thread->tls[slot].valid=1;
+    return 0;
+}
+/* Bionic may claim this once per thread.  The returned selector remains
+ * stable; Linux slot 2 can temporarily reuse its descriptor while payload
+ * code is active.  The caller restores its descriptor before resuming bionic. */
+int proxy_tls_claim_reserved(unsigned *selector) {
+    struct thread_state *thread=thread_state();
+    if(!thread || !selector)return -1;
+    int r=tls_reserve(thread);if(r)return r;
+    *selector=((unsigned)thread->reserved_real<<3)|3u;
     return 0;
 }
 static long tls_get(struct thread_state *thread, uintptr_t user) {
@@ -202,6 +227,60 @@ static long tls_get(struct thread_state *thread, uintptr_t user) {
     desc.entry_number=thread->tls[slot].real_entry;
     return proxy_copy((void *)user,&desc,sizeof(desc))?-EFAULT:0;
 }
+static int ldt_grow(size_t need) {
+    if(need>8192)return -EINVAL;
+    if(need<=ldt_capacity)return 0;
+    size_t cap=ldt_capacity?ldt_capacity:16;
+    while(cap<need){if(cap>4096){cap=8192;break;}cap*=2;}
+    if(cap>SIZE_MAX/sizeof(*ldt_entries))return -ENOMEM;
+    struct ldt_entry *next=vfs_alloc(cap*sizeof(*next));if(!next)return -ENOMEM;
+    for(size_t i=0;i<cap;i++)next[i]=(struct ldt_entry){0};
+    for(size_t i=0;i<ldt_capacity;i++)next[i]=ldt_entries[i];
+    if(ldt_entries)vfs_free(ldt_entries);
+    ldt_entries=next;ldt_capacity=cap;return 0;
+}
+static long ldt_call(unsigned func, uintptr_t ptr, size_t bytes) {
+    if(func==2)return 0; /* read_default: no default LDT entries */
+    if(func==1 || func==0x11) {
+        struct user_desc d;
+        if(!ptr || proxy_copy(&d,(void *)ptr,sizeof(d)))return -EFAULT;
+        if(!d.seg_32bit || d.contents!=0)return -EINVAL;
+        if(d.entry_number>=8192)return -EINVAL;
+        int r=ldt_grow((size_t)d.entry_number+1);if(r)return r;
+        ldt_entries[d.entry_number].desc=d;
+        ldt_entries[d.entry_number].valid=!(d.seg_not_present ||
+            (d.base_addr==0 && d.limit==0 && d.read_exec_only));
+        return 0;
+    }
+    if(func==0) {
+        if(!ptr && bytes)return -EFAULT;
+        size_t copied=0;
+        for(size_t i=0;i<ldt_capacity && copied+8<=bytes;i++) {
+            uint64_t raw=0;
+            if(ldt_entries[i].valid) {
+                struct user_desc d=ldt_entries[i].desc;
+                raw|=(uint64_t)(d.limit&0xffffu);
+                raw|=(uint64_t)(d.base_addr&0xffffu)<<16;
+                raw|=(uint64_t)((d.base_addr>>16)&0xffu)<<32;
+                raw|=(uint64_t)(d.seg_32bit&1u)<<54;
+                raw|=(uint64_t)(d.contents&3u)<<52;
+                raw|=(uint64_t)(d.read_exec_only?0:1)<<41;
+                raw|=(uint64_t)(d.limit&0xf0000u)<<32;
+                raw|=(uint64_t)((d.base_addr>>24)&0xffu)<<56;
+                raw|=(uint64_t)(d.useable&1u)<<53;
+                raw|=(uint64_t)(d.limit_in_pages?1u:0u)<<55;
+                raw|=UINT64_C(1)<<47; /* present */
+                raw|=UINT64_C(1)<<44; /* code/data */
+                raw|=UINT64_C(3)<<45; /* user privilege */
+                raw|=UINT64_C(1)<<40; /* accessed, writable data */
+            }
+            if(proxy_copy((void *)(ptr+copied),&raw,8))return copied?(long)copied:-EFAULT;
+            copied+=8;
+        }
+        return (long)copied;
+    }
+    return -EINVAL;
+}
 /* Called in the child clone continuation before payload code runs. The kernel
  * installed this descriptor as part of CLONE_SETTLS; mirror it in our table. */
 void proxy_clone_tls_child(unsigned flags, const struct user_desc *user_desc) {
@@ -212,7 +291,7 @@ void proxy_clone_tls_child(unsigned flags, const struct user_desc *user_desc) {
     if(proxy_copy(&desc,user_desc,sizeof(desc)))return;
     int slot=desc.entry_number<PROXY_TLS_ENTRIES?desc.entry_number:-1;
     if(slot<0) {
-        for(int i=0;i<PROXY_TLS_ENTRIES-(int)thread->reserved;i++)
+        for(int i=0;i<PROXY_TLS_ENTRIES;i++)
             if(!thread->tls[i].valid){slot=i;break;}
     }
     if(slot<0 || slot>=PROXY_TLS_ENTRIES)return;
@@ -593,7 +672,7 @@ static int ours(long n) {
     case PROXY_SC_close_range:case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_close:case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
     case PROXY_SC_capget:case PROXY_SC_capset:case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:
 #if ARCH_AUDIT == AUDIT_ARCH_I386
-    case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:
+    case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:case PROXY_SC_modify_ldt:
 #endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
     case PROXY_SC_prctl:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
@@ -737,8 +816,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             trace_word(" call_addr=",(uintptr_t)info->si_call_addr);
             trace_word(" pc=",ARCH_CONTEXT(uc,ARCH_PC)); emit("\n");
         }
-        /* SYS_USER_DISPATCH belongs to the app, never to this syscall proxy. */
-        dispatch_app(sig,info,opaque);(*arch_signal_mask(uc))&=~SIGSYS_BIT;
+        dispatch_app(sig,info,opaque);
+        (*arch_signal_mask(uc))&=~SIGSYS_BIT;
         RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
         arch_signal_stack_ready(uc);
         if(selector && dispatch_selector==selector) *selector=saved;
@@ -903,6 +982,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         result=thread?tls_set(thread,(uintptr_t)a[0]):-ENOMEM;break;
     case PROXY_SC_get_thread_area:
         result=thread?tls_get(thread,(uintptr_t)a[0]):-ENOMEM;break;
+    case PROXY_SC_modify_ldt:
+        result=ldt_call((unsigned)a[0],(uintptr_t)a[1],(size_t)a[2]);break;
 #endif
     case PROXY_SC_sigaltstack: {
         /* App altstack changes are virtual: the kernel retains our private stack.
@@ -975,6 +1056,9 @@ clone_retry:
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+            if(ldt_entries){vfs_free(ldt_entries);ldt_entries=NULL;ldt_capacity=0;}
+#endif
             vfs_network_payload((namespaces&CLONE_NEWNET)!=0);
             proxy_host_snapshot((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3]);
             ipc_exec();

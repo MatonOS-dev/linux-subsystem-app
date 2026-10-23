@@ -1454,3 +1454,18 @@ NEWNET remain unchanged.
 index/name/flags/configuration, and the host ioctl path outside virtual
 NEWNET. The separate `TIOCGWINSZ` denial on a pipe is expected: Linux returns
 `ENOTTY`, so it needs no virtual handling. No VM test was run.
+
+### i386 TLS2 groundwork (2026-10-23)
+
+The proxy has a reserved-GDT-slot claim entry point and virtual slot 2 can
+use that reserved entry; callers must restore their resident descriptor before
+resuming resident/bionic execution. `modify_ldt` function 0 reads the emulated
+table; functions 1 and 0x11 accept only 32-bit data descriptors, with code and
+16-bit descriptors rejected as `EINVAL`. The table grows with overflow checks,
+survives fork through private mappings, and is cleared on resident exec.
+
+This work is partial. i386 host checks cover LDT write/read and code/16-bit
+rejection. Selector-load remapping on SIGSEGV is not complete: the attempted
+FS-load test failed, so payloads cannot yet use LDT descriptors. The required
+three-slot multi-thread/signal test also remains open because this host could
+not claim the extra physical GDT slot.

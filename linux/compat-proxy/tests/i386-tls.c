@@ -66,6 +66,18 @@ int main(void) {
     __asm__ volatile("movl %%gs:0,%0":"=r"(loaded));
     __asm__ volatile("mov %0,%%gs"::"rm"(old_gs):"memory");
     check(loaded==value,"GS selector reads allocated TLS entry");
+    struct user_desc ldt={.entry_number=1,.base_addr=(unsigned long)&value,
+        .limit=0xfffff,.seg_32bit=1,.contents=0,.read_exec_only=0,
+        .limit_in_pages=1,.seg_not_present=0,.useable=1};
+    check(syscall(123,1,&ldt,sizeof(ldt))==0,"modify_ldt data write");
+    unsigned char raw[16]={0};
+    check(syscall(123,0,raw,sizeof(raw))==sizeof(raw),"modify_ldt read");
+    check(raw[8]!=0 || raw[9]!=0 || raw[10]!=0 || raw[11]!=0,
+          "modify_ldt read returns stored descriptor");
+    ldt.contents=2;
+    check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects code descriptors");
+    ldt.contents=0;ldt.seg_32bit=0;
+    check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects 16-bit descriptors");
     static const char pass[]="PASS i386 pthread TLS, set/get_thread_area, and GS selector read\n";
     write(1,pass,sizeof(pass)-1);
     return 0;
