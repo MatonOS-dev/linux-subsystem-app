@@ -6,6 +6,8 @@
 struct adopt_api;
 struct mv_scope { unsigned unused; };
 static inline long mv_open(const char *p) {(void)p;return -1;}
+static inline long mv_open_write(const char *p,int m) {(void)p;(void)m;return -1;}
+static inline long mv_write_fd(long f,const void *p,size_t n) {(void)f;(void)p;(void)n;return -1;}
 static inline long mv_read(long f,void *p,size_t n) {(void)f;(void)p;(void)n;return -1;}
 static inline void mv_close(long f) {(void)f;}
 static inline int mv_socketpair(int p[2]) {(void)p;return -1;}

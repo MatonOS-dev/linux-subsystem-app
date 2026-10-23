@@ -172,13 +172,12 @@ public final class InstallTransaction {
             long verifyTotal=plannedPayloadBytesKnown?plannedPayloadBytes:-1;
             report("verify",82,verified,verifyTotal,"Package verification complete");
             report("staging",82,-1,-1,"Packages downloaded; preparing install packs");
-            DnsForwarder.release();
             callback.onComplete(operationId,new JSONObject().put("version",1).put("appRef",appRef).put("appCommit",appCommit)
                     .put("origin",remote).put("deployments",rows).toString());
         }catch(Throwable error) {
             Log.e(TAG,"Install worker failed for "+appRef,error);
             fail(error.getMessage()==null?error.toString():error.getMessage());
-        }finally{DnsForwarder.release();}
+        }
     }
 
     private void checkCancelled()throws java.io.IOException {if(cancelled.get())throw new java.io.IOException("Install cancelled");}
@@ -199,7 +198,7 @@ public final class InstallTransaction {
             cache=requireDirectory(root,"cache");tmp=requireDirectory(root,"tmp");run=requireDirectory(root,"run");
             String dns=LoaderCommand.resolverAddress();File resolv=new File(run,"install-resolv.conf");LoaderCommand.writeResolv(resolv,dns);
             prefix.add(LoaderCommand.loader(context).getAbsolutePath());prefix.add("--parent-pid");prefix.add(Integer.toString(android.os.Process.myPid()));
-            LoaderCommand.addDns(prefix,dns,WorkDirs.root(context));LoaderCommand.addResolvMaps(prefix,resolv);
+            LoaderCommand.addDns(prefix,dns);LoaderCommand.addResolvMaps(prefix,resolv);
             File descriptor=new File(root,"origin.flatpakrepo");
             if(!origin.url.isEmpty())Files.write(descriptor.toPath(),origin.flatpakrepo().getBytes(StandardCharsets.UTF_8));
             if(configure) {

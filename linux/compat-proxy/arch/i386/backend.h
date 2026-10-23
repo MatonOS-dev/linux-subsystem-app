@@ -44,8 +44,9 @@ static inline void arch_signal_stack_ready(void *context) {
 
 /* BPF matches the kernel-reported return PC, not a guessed opcode length. */
 static inline uint64_t arch_gateway_pc(unsigned which) {
-    extern char proxy_raw_after[], proxy_clone_after[];
-    return (uintptr_t)(which ? proxy_clone_after : proxy_raw_after);
+    extern char proxy_raw_after[], proxy_clone_after[], proxy_raw_clone_after[];
+    return (uintptr_t)(which == 1 ? proxy_clone_after :
+                       which == 2 ? proxy_raw_clone_after : proxy_raw_after);
 }
 
 #define ARCH_POLICY_HEADER "build/app-policy-i386.h"

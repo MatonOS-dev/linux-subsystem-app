@@ -23,7 +23,8 @@ static const char *bootstrap_field(const struct maton_gpu_bootstrap *p,const cha
            !strcmp(key,"MATON_LINUX_PHDR")?p->phdr:
            !strcmp(key,"MATON_LINUX_PHNUM")?p->phnum:
            !strcmp(key,"MATON_GPU_EGL")?p->egl:
-           !strcmp(key,"MATON_GPU_GLES")?p->gles:0;
+           !strcmp(key,"MATON_GPU_GLES")?p->gles:
+           !strcmp(key,"MATON_EGL_CACHE")?p->egl_cache:0;
 }
 const char *mv_env(const char *key) {
     const struct maton_gpu_bootstrap *cached=__atomic_load_n(&cached_bootstrap,__ATOMIC_ACQUIRE);

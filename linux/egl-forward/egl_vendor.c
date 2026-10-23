@@ -174,6 +174,7 @@ struct wl_egl_window_abi {
     struct wl_surface *surface;
 };
 struct mv_egl_surface {
+    EGLSurface handle; /* Stable app-visible handle: the first pbuffer created. */
     EGLDisplay display;
     EGLConfig config;
     EGLSurface pbuffer;
@@ -186,18 +187,53 @@ struct mv_egl_surface {
     EGLint width, height;
     GLuint texture, framebuffer;
     int submitted, swap_interval;
+    unsigned refs; /* Includes one table reference while published. */
+    int removed;
     struct mv_egl_surface *next;
 };
 struct mv_ahb_desc { uint32_t width,height,layers,format; uint64_t usage; uint32_t stride,rfu0; uint64_t rfu1; };
 static struct mv_egl_surface *mv_surfaces;
+static void *mv_egl_ext(const char *name);
+static unsigned mv_surface_lock;
+static void mv_surface_lock_acquire(void) {
+    while (__atomic_test_and_set(&mv_surface_lock, __ATOMIC_ACQUIRE)) {}
+}
+static void mv_surface_lock_release(void) { __atomic_clear(&mv_surface_lock, __ATOMIC_RELEASE); }
 static void *mv_android_lib;
 static void *mv_android_symbol(const char *name) {
     if (!mv_android_lib) mv_android_lib = mv_bridge->open("/system/lib64/libandroid.so", 2);
     return mv_android_lib ? mv_bridge->symbol(mv_android_lib, name) : 0;
 }
 static struct mv_egl_surface *mv_surface_find(EGLSurface handle) {
-    for (struct mv_egl_surface *s=mv_surfaces;s;s=s->next) if ((EGLSurface)s==handle) return s;
-    return 0;
+    mv_surface_lock_acquire();
+    struct mv_egl_surface *found=0;
+    for (struct mv_egl_surface *s=mv_surfaces;s;s=s->next) if (s->handle==handle) { ++s->refs; found=s; break; }
+    mv_surface_lock_release();
+    return found;
+}
+static void mv_surface_put(struct mv_egl_surface *s) {
+    if (!s) return;
+    mv_surface_lock_acquire(); int release=--s->refs==0; mv_surface_lock_release();
+    if (!release) return;
+    struct mv_scope scope;
+    if (mv_enter(&scope)) {
+        typedef EGLBoolean (*di_fn)(EGLDisplay,void *); di_fn di=(di_fn)mv_egl_ext("eglDestroyImageKHR"); if(s->image&&di)di(s->display,s->image);
+        typedef void (*rel_fn)(void *); rel_fn rel=(void (*)(void *))mv_android_symbol("AHardwareBuffer_release"); if(s->ahb&&rel)rel(s->ahb);
+        typedef EGLBoolean (*ds_fn)(EGLDisplay,EGLSurface); ds_fn ds=(ds_fn)mv_resolve("eglDestroySurface",MV_EGL); if(s->pbuffer&&ds)ds(s->display,s->pbuffer);
+        typedef void (*del_fn)(GLsizei,const GLuint *); del_fn dt=(del_fn)mv_resolve("glDeleteTextures",MV_GLES),df=(del_fn)mv_resolve("glDeleteFramebuffers",MV_GLES);
+        if(s->texture&&dt)dt(1,&s->texture); if(s->framebuffer&&df)df(1,&s->framebuffer);
+        switch_back(&scope);
+    }
+    if(s->buffer)mv_wl_buffer_destroy(s->buffer); if(s->sync)mv_wl_sync_surface_destroy(s->sync); if(s->wayland)mv_wl_dmabuf_destroy(s->wayland);
+    mv_free(s);
+}
+static void mv_surface_publish(struct mv_egl_surface *s) {
+    mv_surface_lock_acquire(); s->refs=1; s->next=mv_surfaces; mv_surfaces=s; mv_surface_lock_release();
+}
+static int mv_surface_unpublish(struct mv_egl_surface *s) {
+    mv_surface_lock_acquire(); struct mv_egl_surface **p=&mv_surfaces; while(*p&&*p!=s)p=&(*p)->next;
+    int found=*p==s; if(found){*p=s->next;s->next=0;s->removed=1;} mv_surface_lock_release();
+    if(found)mv_surface_put(s); return found;
 }
 static void *mv_egl_ext(const char *name) { return (void *)mv_android_egl_get_proc(name); }
 static void *mv_current_gl_resolve(const char *name) {
@@ -250,8 +286,9 @@ static EGLSurface mv_eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig co
     s->buffer=s->wayland?mv_wl_ahb_create_buffer(s->wayland,(uint32_t)s->width,(uint32_t)s->height,0x34324241u,pair[0]):0;
     mv_close(pair[0]);
     if (!s->wayland || !s->sync || !s->buffer) goto fail;
-    s->next=mv_surfaces; mv_surfaces=s;
-    return (EGLSurface)s;
+    s->handle=s->pbuffer;
+    mv_surface_publish(s);
+    return s->handle;
 fail:
     if (s->buffer) mv_wl_buffer_destroy(s->buffer);
     if (s->sync) mv_wl_sync_surface_destroy(s->sync);
@@ -279,13 +316,13 @@ static int mv_surface_resize(struct mv_egl_surface *s) {
     EGLSurface replacement=mv_eglCreatePlatformWindowSurface(s->display,s->config,s->window,0);
     struct mv_egl_surface *n=mv_surface_find(replacement); if(!n)return 0;
     struct mv_scope scope;
-    if(!mv_enter(&scope)){mv_eglDestroySurface(s->display,replacement);return 0;}
+    if(!mv_enter(&scope)){mv_eglDestroySurface(s->display,replacement);mv_surface_put(n);return 0;}
     typedef EGLContext (*getctx_fn)(void); getctx_fn getctx=(getctx_fn)mv_resolve("eglGetCurrentContext",MV_EGL);
     typedef EGLSurface (*get_surface_fn)(EGLint); get_surface_fn get_surface=(get_surface_fn)mv_resolve("eglGetCurrentSurface",MV_EGL);
     typedef EGLBoolean (*make_fn)(EGLDisplay,EGLSurface,EGLSurface,EGLContext); make_fn make=(make_fn)mv_resolve("eglMakeCurrent",MV_EGL);
     EGLContext ctx=getctx?getctx():EGL_NO_CONTEXT;
     EGLSurface draw=get_surface?get_surface(EGL_DRAW):EGL_NO_SURFACE, read=get_surface?get_surface(EGL_READ):EGL_NO_SURFACE;
-    if(ctx&&(draw==s->pbuffer||read==s->pbuffer)&&(!make||!make(s->display,n->pbuffer,n->pbuffer,ctx))){switch_back(&scope);mv_eglDestroySurface(s->display,replacement);return 0;}
+    if(ctx&&(draw==s->pbuffer||read==s->pbuffer)&&(!make||!make(s->display,n->pbuffer,n->pbuffer,ctx))){switch_back(&scope);mv_eglDestroySurface(s->display,replacement);mv_surface_put(n);return 0;}
     typedef void (*delete_fn)(GLsizei,const GLuint *); delete_fn deltex=(delete_fn)mv_resolve("glDeleteTextures",MV_GLES),delfb=(delete_fn)mv_resolve("glDeleteFramebuffers",MV_GLES);
     if(s->texture&&deltex)deltex(1,&s->texture);if(s->framebuffer&&delfb)delfb(1,&s->framebuffer);
     typedef EGLBoolean (*di_fn)(EGLDisplay,void *); di_fn di=(di_fn)mv_egl_ext("eglDestroyImageKHR"); if(s->image&&di)di(s->display,s->image);
@@ -293,45 +330,56 @@ static int mv_surface_resize(struct mv_egl_surface *s) {
     typedef EGLBoolean (*ds_fn)(EGLDisplay,EGLSurface); ds_fn ds=(ds_fn)mv_resolve("eglDestroySurface",MV_EGL); if(s->pbuffer&&ds)ds(s->display,s->pbuffer);
     switch_back(&scope);
     mv_wl_buffer_destroy(s->buffer);mv_wl_sync_surface_destroy(s->sync);mv_wl_dmabuf_destroy(s->wayland);
-    struct mv_egl_surface **link=&mv_surfaces;while(*link&&*link!=n)link=&(*link)->next;if(*link)*link=n->next;
-    struct mv_egl_surface *next=s->next; *s=*n; s->next=next; mv_free(n); return 1;
+    /* Keep the first pbuffer as the application handle; translate it to the
+     * current native pbuffer at every Android EGL call after a resize. */
+    mv_surface_lock_acquire();
+    EGLSurface old_pbuffer=s->pbuffer; void *old_image=s->image,*old_ahb=s->ahb;
+    struct mv_wl_dmabuf *old_wayland=s->wayland; struct mv_wl_buffer *old_buffer=s->buffer; struct mv_wl_sync_surface *old_sync=s->sync;
+    s->pbuffer=n->pbuffer; s->image=n->image; s->ahb=n->ahb; s->wayland=n->wayland; s->buffer=n->buffer; s->sync=n->sync;
+    s->width=n->width; s->height=n->height; s->texture=n->texture; s->framebuffer=n->framebuffer; s->submitted=0;
+    n->pbuffer=EGL_NO_SURFACE; n->image=0; n->ahb=0; n->wayland=0; n->buffer=0; n->sync=0; n->texture=0; n->framebuffer=0;
+    mv_surface_lock_release();
+    if(old_image){typedef EGLBoolean(*f)(EGLDisplay,void*);f x=(f)mv_egl_ext("eglDestroyImageKHR");if(x)x(s->display,old_image);}
+    if(old_ahb){typedef void(*f)(void*);f x=(f)mv_android_symbol("AHardwareBuffer_release");if(x)x(old_ahb);}
+    if(old_pbuffer){typedef EGLBoolean(*f)(EGLDisplay,EGLSurface);f x=(f)mv_resolve("eglDestroySurface",MV_EGL);if(x)x(s->display,old_pbuffer);}
+    if(old_buffer)mv_wl_buffer_destroy(old_buffer); if(old_sync)mv_wl_sync_surface_destroy(old_sync); if(old_wayland)mv_wl_dmabuf_destroy(old_wayland);
+    mv_surface_unpublish(n); mv_surface_put(n); return 1;
 }
 static EGLBoolean mv_eglDestroySurface(EGLDisplay dpy,EGLSurface handle) {
     struct mv_egl_surface *s=mv_surface_find(handle);
     if (!s) { struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
         typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface); fn_t fn=(fn_t)mv_resolve("eglDestroySurface",MV_EGL); EGLBoolean r=fn?fn(dpy,handle):EGL_FALSE; switch_back(&scope); return r; }
-    if(s->submitted)while(!mv_wl_buffer_released(s->buffer))if(mv_wl_dmabuf_dispatch_one(s->wayland)<0)return EGL_FALSE;
-    struct mv_egl_surface **p=&mv_surfaces; while(*p&&*p!=s)p=&(*p)->next; if(*p)*p=s->next;
-    struct mv_scope scope; if (!mv_enter(&scope)) return EGL_FALSE;
-    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface); fn_t fn=(fn_t)mv_resolve("eglDestroySurface",MV_EGL);
-    EGLBoolean ok=fn?fn(dpy,s->pbuffer):EGL_FALSE;
-    typedef void (*delete_fn)(GLsizei,const GLuint *); delete_fn dt=(delete_fn)mv_resolve("glDeleteTextures",MV_GLES),df=(delete_fn)mv_resolve("glDeleteFramebuffers",MV_GLES);
-    if(s->texture&&dt)dt(1,&s->texture);if(s->framebuffer&&df)df(1,&s->framebuffer);
-    typedef EGLBoolean (*di_fn)(EGLDisplay,void *); di_fn di=(di_fn)mv_egl_ext("eglDestroyImageKHR"); if(s->image&&di)di(dpy,s->image);
-    typedef void (*rel_fn)(void *); rel_fn rel=(rel_fn)mv_android_symbol("AHardwareBuffer_release"); if(s->ahb&&rel)rel(s->ahb);
-    switch_back(&scope);
-    if(s->buffer)mv_wl_buffer_destroy(s->buffer); if(s->sync)mv_wl_sync_surface_destroy(s->sync); if(s->wayland)mv_wl_dmabuf_destroy(s->wayland); mv_free(s); return ok;
+    if(s->submitted)while(!mv_wl_buffer_released(s->buffer))if(mv_wl_dmabuf_dispatch_one(s->wayland)<0){mv_surface_put(s);return EGL_FALSE;}
+    if (!mv_surface_unpublish(s)) { mv_surface_put(s); return EGL_FALSE; }
+    /* Unpublishing drops the table reference; this operation drops its lookup
+     * reference. Active swaps/queries keep the resources alive until their puts. */
+    mv_surface_put(s);
+    return EGL_TRUE;
 }
 static EGLBoolean mv_eglMakeCurrent(EGLDisplay dpy,EGLSurface draw,EGLSurface read,EGLContext ctx) {
     struct mv_egl_surface *ds=mv_surface_find(draw),*rs=mv_surface_find(read);
-    if(ds&&!mv_surface_resize(ds))return EGL_FALSE;
-    if(rs&&rs!=ds&&!mv_surface_resize(rs))return EGL_FALSE;
-    struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
-    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLSurface,EGLContext); fn_t fn=(fn_t)mv_resolve("eglMakeCurrent",MV_EGL);
-    EGLBoolean ok=fn?fn(dpy,ds?ds->pbuffer:draw,rs?rs->pbuffer:read,ctx):EGL_FALSE; switch_back(&scope); return ok;
+    EGLBoolean result=EGL_FALSE;
+    if((!ds||mv_surface_resize(ds)) && (!rs||rs==ds||mv_surface_resize(rs))) {
+        struct mv_scope scope;
+        if(mv_ready()&&mv_enter(&scope)) {
+            typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLSurface,EGLContext); fn_t fn=(fn_t)mv_resolve("eglMakeCurrent",MV_EGL);
+            result=fn?fn(dpy,ds?ds->pbuffer:draw,rs?rs->pbuffer:read,ctx):EGL_FALSE; switch_back(&scope);
+        }
+    }
+    mv_surface_put(ds); if(rs!=ds)mv_surface_put(rs);
+    return result;
 }
 static EGLSurface mv_eglGetCurrentSurface(EGLint which) {
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_NO_SURFACE;
     typedef EGLSurface (*fn_t)(EGLint); fn_t fn=(fn_t)mv_resolve("eglGetCurrentSurface",MV_EGL);
     EGLSurface current=fn?fn(which):EGL_NO_SURFACE; switch_back(&scope);
-    for(struct mv_egl_surface *s=mv_surfaces;s;s=s->next)if(s->pbuffer==current)return (EGLSurface)s;
-    return current;
+    EGLSurface result=current;
+    mv_surface_lock_acquire();
+    for(struct mv_egl_surface *s=mv_surfaces;s;s=s->next) if(s->pbuffer==current) { result=s->handle; break; }
+    mv_surface_lock_release();
+    return result;
 }
-static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
-    struct mv_egl_surface *s=mv_surface_find(handle);
-    if(!s){struct mv_scope scope;if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
-        typedef EGLBoolean (*swap_fn)(EGLDisplay,EGLSurface);swap_fn swap=(swap_fn)mv_resolve("eglSwapBuffers",MV_EGL);
-        EGLBoolean result=swap?swap(dpy,handle):EGL_FALSE;switch_back(&scope);return result;}
+static EGLBoolean mv_eglSwapBuffers_owned(EGLDisplay dpy, struct mv_egl_surface *s) {
     if((s->width!=s->window->width||s->height!=s->window->height)&&!mv_surface_resize(s))return EGL_FALSE;
     if (s->submitted) {
         while (!mv_wl_buffer_released(s->buffer)) if (mv_wl_dmabuf_dispatch_one(s->wayland)<0) return EGL_FALSE;
@@ -390,20 +438,35 @@ static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
     if(fence>=0)mv_close(fence);
     return ok;
 }
+static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
+    struct mv_egl_surface *s=mv_surface_find(handle);
+    if(s) { EGLBoolean r=mv_eglSwapBuffers_owned(dpy,s); mv_surface_put(s); return r; }
+    struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
+    typedef EGLBoolean (*swap_fn)(EGLDisplay,EGLSurface); swap_fn swap=(swap_fn)mv_resolve("eglSwapBuffers",MV_EGL);
+    EGLBoolean result=swap?swap(dpy,handle):EGL_FALSE; switch_back(&scope); return result;
+}
 static EGLBoolean mv_eglSwapInterval(EGLDisplay dpy,EGLint interval) {
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
-    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLint); fn_t fn=(fn_t)mv_resolve("eglSwapInterval",MV_EGL); EGLBoolean r=fn?fn(dpy,interval):EGL_FALSE;
+    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLint); fn_t fn=(fn_t)mv_resolve("eglSwapInterval",MV_EGL);
     typedef EGLSurface (*get_surface_fn)(EGLint); get_surface_fn get_surface=(get_surface_fn)mv_resolve("eglGetCurrentSurface",MV_EGL);
-    EGLSurface current=get_surface?get_surface(EGL_DRAW):EGL_NO_SURFACE;switch_back(&scope);
-    if(r)for(struct mv_egl_surface *s=mv_surfaces;s;s=s->next)if(s->pbuffer==current){s->swap_interval=interval;break;}return r;
+    EGLBoolean r=fn?fn(dpy,interval):EGL_FALSE; EGLSurface current=get_surface?get_surface(EGL_DRAW):EGL_NO_SURFACE; switch_back(&scope);
+    struct mv_egl_surface *found=0;
+    if(r) { mv_surface_lock_acquire(); for(struct mv_egl_surface *s=mv_surfaces;s;s=s->next) if(s->pbuffer==current){++s->refs;found=s;break;} mv_surface_lock_release(); }
+    if(found){found->swap_interval=interval;mv_surface_put(found);} return r;
 }
 static EGLBoolean mv_eglQuerySurface(EGLDisplay dpy,EGLSurface handle,EGLint attr,EGLint *value) {
-    struct mv_egl_surface *s=mv_surface_find(handle); if(s && value && (attr==EGL_WIDTH||attr==EGL_HEIGHT)){*value=attr==EGL_WIDTH?s->width:s->height;return EGL_TRUE;}
-    struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE; typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint *); fn_t fn=(fn_t)mv_resolve("eglQuerySurface",MV_EGL); EGLBoolean r=fn?fn(dpy,handle,attr,value):EGL_FALSE; switch_back(&scope); return r;
+    struct mv_egl_surface *s=mv_surface_find(handle);
+    if(s && value && (attr==EGL_WIDTH||attr==EGL_HEIGHT)) { *value=attr==EGL_WIDTH?s->width:s->height; mv_surface_put(s); return EGL_TRUE; }
+    EGLSurface native=s?s->pbuffer:handle;
+    struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope)){mv_surface_put(s);return EGL_FALSE;}
+    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint *); fn_t fn=(fn_t)mv_resolve("eglQuerySurface",MV_EGL);
+    EGLBoolean r=fn?fn(dpy,native,attr,value):EGL_FALSE; switch_back(&scope); mv_surface_put(s); return r;
 }
 static EGLBoolean mv_eglSurfaceAttrib(EGLDisplay dpy,EGLSurface handle,EGLint attr,EGLint value) {
-    struct mv_egl_surface *s=mv_surface_find(handle); if(s){(void)dpy;(void)attr;(void)value;return EGL_FALSE;}
-    struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE; typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint); fn_t fn=(fn_t)mv_resolve("eglSurfaceAttrib",MV_EGL); EGLBoolean r=fn?fn(dpy,handle,attr,value):EGL_FALSE; switch_back(&scope); return r;
+    struct mv_egl_surface *s=mv_surface_find(handle); EGLSurface native=s?s->pbuffer:handle;
+    struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope)){mv_surface_put(s);return EGL_FALSE;}
+    typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint); fn_t fn=(fn_t)mv_resolve("eglSurfaceAttrib",MV_EGL);
+    EGLBoolean r=fn?fn(dpy,native,attr,value):EGL_FALSE; switch_back(&scope); mv_surface_put(s); return r;
 }
 
 /* Android's EGL is used as the implementation, while the surfaceless
@@ -412,6 +475,7 @@ static EGLBoolean mv_eglSurfaceAttrib(EGLDisplay dpy,EGLSurface handle,EGLint at
  * display. The strings are copied before restoring Linux TLS. */
 static char mv_extension_string[2][16384];
 static int mv_extension_lock[2];
+#include "egl_extensions.inc"
 static int mv_has_token(const char *list, const char *token) {
     size_t len = 0;
     while (token[len]) ++len;
@@ -442,6 +506,83 @@ static EGLBoolean mv_append_token(char *dst, const char *src, const char *token)
     }
     return EGL_TRUE;
 }
+static char mv_extension_blocklist[8192];
+static int mv_extension_probe_state;
+static char mv_extension_probe_key[1024];
+static char mv_extension_cache_path[512];
+static size_t mv_extension_len(const char *s){size_t n=0;while(s[n])n++;return n;}
+static void mv_extension_paths(char *key,size_t cap) {
+    if(!mv_property_get){
+        if(!mv_libc)mv_libc=mv_bridge->open("/system/lib64/libc.so",2);
+        if(mv_libc)mv_property_get=(int(*)(const char*,char*))mv_bridge->symbol(mv_libc,"__system_property_get");
+    }
+    const char *props[]={"ro.build.fingerprint","vendor.maton.graphics.backend","vendor.maton.graphics.renderer","vendor.maton.graphics.egl","vendor.maton.graphics.gles","vendor.maton.graphics.vulkan"};
+    size_t n=0;
+    for(size_t i=0;i<sizeof(props)/sizeof(props[0]);i++){
+        char value[192]={0};if(mv_property_get)mv_property_get(props[i],value);
+        for(size_t j=0;props[i][j]&&n+1<cap;j++)key[n++]=props[i][j];
+        if(n+1<cap)key[n++]='=';
+        for(size_t j=0;value[j]&&n+1<cap;j++)key[n++]=value[j];
+        if(n+1<cap)key[n++]=';';
+    }
+    key[n]=0;
+    if(mv_extension_cache_path[0])return;
+    const char *dir=mv_env("MATON_EGL_CACHE");if(!dir||!dir[0])return;
+    static const char suffix[]="/matonos-egl-extensions.cache";size_t d=0;
+    while(dir[d]&&d+sizeof(suffix)<sizeof(mv_extension_cache_path)){mv_extension_cache_path[d]=dir[d];d++;}
+    if(dir[d]){mv_extension_cache_path[0]=0;return;}
+    for(size_t i=0;i<sizeof(suffix);i++)mv_extension_cache_path[d+i]=suffix[i];
+}
+static void mv_extension_probe(const char *advertised) {
+    char key[sizeof(mv_extension_probe_key)];mv_extension_paths(key,sizeof(key));
+    for(;;){
+        int state=__atomic_load_n(&mv_extension_probe_state,__ATOMIC_ACQUIRE);
+        if(state==2&&!strcmp(key,mv_extension_probe_key))return;
+        if(state==1)continue;
+        int expected=state;
+        if(__atomic_compare_exchange_n(&mv_extension_probe_state,&expected,1,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))break;
+    }
+    mv_extension_blocklist[0]=0;
+    if(mv_extension_cache_path[0]){
+        char data[9216];size_t n=0;long fd=mv_open(mv_extension_cache_path);
+        if(fd>=0){while(n+1<sizeof(data)){long r=mv_read(fd,data+n,sizeof(data)-1-n);if(r<=0)break;n+=(size_t)r;}mv_close(fd);data[n]=0;
+            size_t k=0;while(k<n&&data[k]!='\n')k++;
+            if(k==mv_extension_len(key)&&!memcmp(key,data,k)){size_t q=k+1;for(size_t i=q;i<n&&i-q+1<sizeof(mv_extension_blocklist);i++)mv_extension_blocklist[i-q]=data[i];mv_extension_blocklist[n-q]=0;memcpy(mv_extension_probe_key,key,mv_extension_len(key)+1);__atomic_store_n(&mv_extension_probe_state,2,__ATOMIC_RELEASE);return;}
+        }
+    }
+    for(size_t i=0;i<MV_EGL_EXTENSION_COUNT;i++){
+        const struct mv_egl_extension_desc *e=&mv_egl_extensions[i];
+        if(e->excluded||!mv_has_token(advertised,e->name))continue;
+        char command[160];size_t n=0;int failed=0;
+        for(const char *p=e->commands;;p++){
+            if(*p&&*p!=' '){if(n+1<sizeof(command))command[n++]=*p;continue;}
+            if(n){command[n]=0;if(!mv_android_egl_get_proc||!mv_android_egl_get_proc(command))failed=1;n=0;}
+            if(!*p)break;
+        }
+        if(failed){size_t used=mv_extension_len(mv_extension_blocklist),len=mv_extension_len(e->name);if(used+len+2<sizeof(mv_extension_blocklist)){if(used)mv_extension_blocklist[used++]=' ';memcpy(mv_extension_blocklist+used,e->name,len+1);}}
+    }
+    memcpy(mv_extension_probe_key,key,mv_extension_len(key)+1);
+    if(mv_extension_cache_path[0]){
+        char data[9216];size_t n=0;for(size_t i=0;key[i]&&n+1<sizeof(data);i++)data[n++]=key[i];data[n++]='\n';
+        for(size_t i=0;mv_extension_blocklist[i]&&n+1<sizeof(data);i++)data[n++]=mv_extension_blocklist[i];
+        long out=mv_open_write(mv_extension_cache_path,0600);
+        if(out>=0){mv_write_fd(out,data,n);mv_close(out);}
+    }
+    __atomic_store_n(&mv_extension_probe_state,2,__ATOMIC_RELEASE);
+}
+static int mv_extension_hidden(const char *token) {
+    for(size_t i=0;i<MV_EGL_EXTENSION_COUNT;i++)if(!strcmp(token,mv_egl_extensions[i].name))return mv_egl_extensions[i].excluded||mv_has_token(mv_extension_blocklist,token);
+    return 0;
+}
+static EGLBoolean mv_filter_extensions(char *dst,const char *src) {
+    size_t used=0;const char *p=src;
+    while(*p){while(*p==' ')p++;const char *start=p;while(*p&&*p!=' ')p++;size_t len=(size_t)(p-start);if(!len)break;
+        char token[256];if(len>=sizeof(token))continue;memcpy(token,start,len);token[len]=0;if(mv_extension_hidden(token))continue;
+        if(used&&used+1<sizeof(mv_extension_string[0]))dst[used++]=' ';
+        if(used+len>=sizeof(mv_extension_string[0]))return EGL_FALSE;memcpy(dst+used,token,len);used+=len;dst[used]=0;
+    }
+    return EGL_TRUE;
+}
 static const char *mv_eglQueryString(EGLDisplay dpy, EGLint name) {
     struct mv_scope scope;
     if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); return 0; }
@@ -457,7 +598,9 @@ static const char *mv_eglQueryString(EGLDisplay dpy, EGLint name) {
     if (name != EGL_EXTENSIONS || !result) { switch_back(&scope); return result; }
     int index = dpy == EGL_NO_DISPLAY ? 0 : 1;
     while (__atomic_exchange_n(&mv_extension_lock[index], 1, __ATOMIC_ACQUIRE)) {}
-    EGLBoolean ok = mv_append_token(mv_extension_string[index], result, "EGL_MESA_platform_surfaceless");
+    mv_extension_probe(result);
+    EGLBoolean ok = mv_filter_extensions(mv_extension_string[index], result);
+    if(ok)ok = mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_MESA_platform_surfaceless");
     if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_KHR_platform_wayland");
     if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_EXT_platform_wayland");
     switch_back(&scope);

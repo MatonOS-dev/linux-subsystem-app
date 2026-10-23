@@ -19,6 +19,8 @@ static inline long mv_sys(long n,long a,long b,long c,long d,long e,long f) {
     return r;
 }
 static inline long mv_open(const char *p) {return mv_sys(257,-100,(long)p,0,0,0,0);}
+static inline long mv_open_write(const char *p,int mode) {return mv_sys(257,-100,(long)p,1|64|512,mode,0,0);}
+static inline long mv_write_fd(long fd,const void *p,size_t n) {return mv_sys(1,fd,(long)p,n,0,0,0);}
 static inline long mv_read(long fd,void *p,size_t n) {return mv_sys(0,fd,(long)p,n,0,0,0);}
 static inline void mv_close(long fd) {mv_sys(3,fd,0,0,0,0,0);}
 static inline int mv_socketpair(int pair[2]) { return (int)mv_sys(53,1,5,0,(long)pair,0,0); }

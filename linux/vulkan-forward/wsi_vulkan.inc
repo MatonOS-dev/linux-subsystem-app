@@ -340,10 +340,26 @@ static VkResult mv_vkGetSwapchainImagesKHR(VkDevice device,VkSwapchainKHR swapch
     struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return VK_ERROR_OUT_OF_DATE_KHR;
     return mv_wsi_images((void *)(uintptr_t)swapchain,count,images);
 }
+static uint64_t mv_wsi_now_ns(void) {
+#if defined(__x86_64__)
+    struct { long tv_sec, tv_nsec; } ts;
+    register long nr __asm__("rax")=228;
+    register long a __asm__("rdi")=1;
+    register long b __asm__("rsi")=(long)&ts;
+    long r;
+    __asm__ volatile("syscall":"=a"(r):"a"(nr),"D"(a),"S"(b):"rcx","r11","memory");
+    if(r<0)return 0;
+    return (uint64_t)ts.tv_sec*1000000000ull+(uint64_t)ts.tv_nsec;
+#else
+    return 0;
+#endif
+}
 static VkResult mv_vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR swapchain,uint64_t timeout,
         VkSemaphore semaphore,VkFence fence,uint32_t *index) {
     struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return VK_ERROR_OUT_OF_DATE_KHR;
     struct mv_wsi_swapchain *chain=(void *)(uintptr_t)swapchain;
+    uint64_t start=timeout==UINT64_MAX?0:mv_wsi_now_ns();
+    uint64_t deadline=timeout==UINT64_MAX||UINT64_MAX-start<timeout?UINT64_MAX:start+timeout;
     for(;;) {
         (void)mv_wl_dmabuf_dispatch(live->surface->dmabuf);
         mv_wsi_collect_releases(chain);
@@ -360,7 +376,18 @@ static VkResult mv_vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR swapchai
             if(sr)mv_wsi_cancel_acquire(chain,*index);return sr;
         }
         if(!timeout)return VK_NOT_READY;
-        if(mv_wl_dmabuf_dispatch_one(live->surface->dmabuf)<0)return VK_ERROR_SURFACE_LOST_KHR;
+        int wait_ms=-1;
+        if(timeout!=UINT64_MAX) {
+            uint64_t now=mv_wsi_now_ns();
+            if(!now||now>=deadline)return VK_TIMEOUT;
+            uint64_t remaining=deadline-now;
+            uint64_t rounded=remaining/1000000ull+(remaining%1000000ull!=0);
+            wait_ms=rounded>2147483647ull?2147483647:(int)rounded;
+        }
+        int dispatched=mv_wl_dmabuf_dispatch_timeout(live->surface->dmabuf,wait_ms);
+        if(dispatched==0)return VK_TIMEOUT;
+        if(dispatched==-4)continue;
+        if(dispatched<0)return VK_ERROR_SURFACE_LOST_KHR;
     }
 }
 static VkResult mv_vkAcquireNextImage2KHR(VkDevice device,const VkAcquireNextImageInfoKHR *info,uint32_t *index) {

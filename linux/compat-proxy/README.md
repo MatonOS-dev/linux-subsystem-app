@@ -241,38 +241,31 @@ See ../subsystem/V3-LAUNCH.md for the production spec, paths, retirement and
 remaining image checks. The musl host fixture stages tools at the subsystem
 APK native-library path used in production.
 
-Round 26 DNS: `--dns-forwarder 127.x.y.z:53 --dns-socket /private/runtime/dns/forwarder`
-configures an exact app-visible IPv4 resolver and its Unix transport base.
-The stub listens on `<base>.udp` (SOCK_SEQPACKET) and `<base>.tcp`
-(SOCK_STREAM), in an app-owned mode-0700 directory with mode-0600 sockets.
-Both sides check the kernel's SO_PEERCRED UID against their own UID. There
-are no UDP/TCP Internet listeners and no NETLINK_SOCK_DIAG calls.
-
-On the first DNS connect/send, the proxy replaces the Internet socket's open
-file description with the appropriate Unix socket while keeping all tracked
-fd aliases, CLOEXEC, nonblocking flags, timeout/buffer options, and epoll
-registrations. Kernel queues continue to supply poll/epoll readiness and
-packet boundaries. A poll started before first DNS I/O rechecks unconverted
-Internet fds in 10 ms slices, so it follows concurrent conversion. recvfrom/recvmsg and getpeername synthesize the original
-IPv4 server at port 53. DNS TCP uses its ordinary two-byte framing and supports
-persistent connections; truncated UDP responses trigger normal glibc TCP
-fallback. Other Internet sockets stay native. The copied app filter remains
-in force. NEWNET sockets cannot be converted, and a direct Unix connect to
-the DNS path is also denied from NEWNET. V3Launcher does not start/configure a
-forwarder without the stub's INTERNET permission. DNS remains a per-stub
-public-API Java service using DnsResolver/netd as the app UID; linuxd/Binder
-carry no DNS fds. UDP query tasks use bounded concurrency so one slow answer
-does not stall other queries on the same channel.
-
-`tests/run.sh` includes mocked-kernel production transport tests and attempts
-`tests/dns-host.py` (explicit SKIP when this host forbids Unix socket bind).
-Run `python3 tests/dns-host.py` directly to require real glibc UDP/TCP lookup,
-automatic truncation fallback, parallel threads, timeouts, aliases, source
-addresses, poll/epoll and sendmsg/sendmmsg. `tests/resolv-host.py` covers mapped
-resolv.conf, getaddrinfo/getent, HostCommand and the no-network Flatpak case.
-The Java DnsForwarderTest checks the exact UID predicate, not real kernel
-credentials. Fresh enforcing-device testing must still confirm app-to-app
-Unix socket access under stock SELinux and real netd responses.
+DNS uses a per-process helper thread and a UDP socket bound to 127.0.0.1 on an
+ephemeral port. On first DNS use, the proxy creates that thread with a raw
+`clone` syscall on its own mmap'd stack. The exact post-syscall gateway PC is
+allowed through both seccomp filters so the kernel can preserve the supplied
+child stack instead of entering the app-stack `clone_retry` trampoline. The
+assembly wrapper restores the parent's callee-saved registers; the child uses
+no libc or TLS. For each query it opens
+`/dev/socket/dnsproxyd`, sends netd's NUL-terminated `resnsend 0 0 <base64>`
+command, then polls that fd alongside its UDP socket. Replies use netd's
+big-endian status and length header followed by the DNS packet. Responses are
+returned to the original client address. The proxy records source ports of its
+own DNS sockets and the helper drops datagrams from every unrecognized port. UDP connect/sendto/
+sendmsg/sendmmsg keep the app's original socket and rewrite only the configured
+loopback endpoint; peer and receive source addresses are reported as the
+configured endpoint. DNS TCP connect returns `ECONNREFUSED`. Ordinary Internet
+sockets retain normal readiness and address behavior. Each fork child starts
+its own helper lazily. `tests/dns-translation.c` covers endpoint parsing,
+TCP refusal, ordinary socket names, and endpoint matching with mocked syscalls.
+`tests/dns-helper.c` exercises the asynchronous loop against a mock AF_UNIX
+dnsproxyd and real host UDP/epoll/pthreads. It checks the command bytes against
+a fixed libnetd_client vector, error and truncated replies, connected UDP, sendto/sendmsg/
+sendmmsg, parallel queries, poll/epoll, blocking reads, `MSG_PEEK`, foreign
+source rejection, fork restart, and no wakeups on an ordinary socket. Device
+testing against netd is still required. `tests/raw-clone-gateway.c` verifies
+custom-stack thread creation through an exact-PC seccomp exception.
 
 O_TMPFILE deliberately returns EOPNOTSUPP after normal virtual mount policy
 checks. Callers use named temporary files and rename; no anonymous-inode
@@ -623,14 +616,12 @@ address-space, descriptor and cache-space exhaustion can still fail calls.
 
 Remaining compatibility gaps:
 
-- The loader accepts ELFCLASS64/EM_X86_64 only, and its filter kills other
-  syscall architectures. **This does not make Steam's 32-bit client work.**
-  i386 needs an ELF32 loader, 32-bit signal/register and raw-syscall gateways,
-  a copied i386 policy and IPC ABI translations. Those translations include
-  ipc(117), semget/semctl(393/394), shmget/shmctl/shmat/shmdt(395–398),
-  msgget/msgsnd/msgrcv/msgctl(399–402), and semtimedop_time64(420), as well as
-  old multiplexer argument/structure/time layouts. Merely adding numbers
-  to the present x86_64 dispatch is insufficient. x32 is also unsupported.
+- i386 payloads run under their own ELF32 proxy (static and dynamic, 64<->32
+  exec handoff, dual-architecture filters, mixed-class SysV IPC; see "Round
+  30 run 3" and "run 4" below). x32 is rejected. What i386 still lacks is
+  outside the proxy: the in-process GPU forwarders and thread adoption are
+  x86_64 only (32-bit GPU is planned via Mesa Venus to a 64-bit render
+  server), and Flatpak's i386 compat extensions are untested end to end.
 - SHM_LOCK/SHM_UNLOCK return ENOSYS, SHM_HUGETLB returns EOPNOTSUPP, MSG_COPY
   returns ENOSYS. SHM_INFO reports allocated pages and object count but does
   not reproduce resident/swap statistics.
@@ -719,7 +710,7 @@ selecting leaf mounts. The old first map alone was invisible to Flatpak's
 `g_file_test` fallback after the broker rejected SessionHelper RequestSession.
 Stock Flatpak now finds and read-only binds the file; no Flatpak patch or
 SessionHelper emulation is needed. HostCommand forks the completed app root,
-including its resolver bind and DNS translation state.
+including its resolver bind; DNS helper state is process-local and starts lazily.
 
 Stock Flatpak constructs resolver binds even with `--unshare-net`. At a
 successful payload exec in a Flatpak root (`/.flatpak-info`), the proxy hides
@@ -727,18 +718,17 @@ successful payload exec in a Flatpak root (`/.flatpak-info`), the proxy hides
 Construction is unaffected; the existing network filter continues to deny
 connections. This state also reaches HostCommand children.
 
-Validation: `tests/resolv-host.py --offline` reproduces the old missing map,
-checks the canonical-map fallback decision and glibc resolver configuration
-(127.x, port 53), and tests both direct-bind and monitor-symlink layouts with
-and without NEWNET. Host/NDK builds and `tests/run.sh` pass. SDK-36 javac
-compilation of V3Launcher with dependency fixtures passes. The full socket
-variant `python3 tests/resolv-host.py` checks actual getaddrinfo queries at an
-ephemeral forwarder port from both payload and HostCommand, but cannot run
-in a sandbox forbidding host sockets. Device validation is pending: see
+Validation: resolver bind mapping and NEWNET hiding are covered by the
+existing VFS tests. Host/NDK builds and `tests/run.sh` pass. SDK-36 javac
+compilation of V3Launcher with dependency fixtures passes. Device validation is pending: see
 `out/pc-logs/agents/v3-resolv-result.md` for fresh-image steps. No kernel,
 SELinux or shared-file changes are required.
 
 ### Round 30: i386 design and P1 gate (support not implemented)
+
+*Historical: written before i386 support landed. The filter and loader gaps
+described here were closed in runs 3 and 4 below (abd18d8, 8a9e02d); the design
+notes remain as reference.*
 
 P0 chooses a separate freestanding ELF32/EM_386 resident proxy, sharing C
 algorithms with the ELF64 build through explicit ABI adapters. Build it with
@@ -800,7 +790,7 @@ ABI adapters are mandatory, including for internal raw syscalls:
   payload copies. Internal VFS and link bookkeeping need canonical metadata.
 - sockaddr layouts generally share fixed fields, but msghdr, iovec and cmsghdr
   have 32-bit pointers/size words/alignment. socketcall(102) decodes an
-  argument-word array; direct socket calls must use the same DNS translation.
+  argument-word array; direct socket calls must use the same DNS endpoint rewrite.
   Convert cmsg lengths/alignment and preserve SCM_RIGHTS private-fd guards.
 - Legacy timespec/timeval have 32-bit seconds; time64 syscalls use 64-bit
   seconds and nanoseconds in their kernel structures. Convert explicitly,
@@ -911,6 +901,8 @@ of those gates for a future implementation.
 
 
 ### Round 30 unrestricted rerun: partial architecture extraction
+
+*Historical: the i386 loader and P2/P3 were implemented in runs 3 and 4 below.*
 
 The earlier runner failure above is superseded: native ELF32 exit and
 stat64/open/read/write fixtures now pass without the Codex sandbox. The P1
@@ -1445,3 +1437,20 @@ still reach the proxy's virtual stack implementation. `tests/resident-altstack.c
 installs the actual BPF and verifies a resident call succeeds with SIGSYS
 blocked, while an otherwise identical payload call still traps. This fixes
 Extreme Tux Racer's startup exit 159; it does not repair Xwayland presentation.
+
+### Virtual NEWNET interface ioctls (2026-10-23)
+
+Within virtual NEWNET, loopback interface requests are answered from the
+virtual interface table regardless of the descriptor's socket family. This
+covers `SIOCGIFINDEX`, `SIOCGIFNAME`, `SIOCGIFFLAGS`, `SIOCSIFFLAGS`, and
+`SIOCGIFCONF`; the virtual loopback is interface 1 and starts up. The x86
+payload filters match the interface ioctl request values for both x86_64 and
+i386, then let the inherited proxy filter trap and dispatch ioctl. Avoiding a
+second `SECCOMP_RET_TRAP` is required because stacked traps recursively enter
+proxy signal handling. Other ioctl requests and behavior outside virtual
+NEWNET remain unchanged.
+
+`tests/net.c` covers AF_INET and AF_UNIX datagram control sockets, loopback
+index/name/flags/configuration, and the host ioctl path outside virtual
+NEWNET. The separate `TIOCGWINSZ` denial on a pipe is expected: Linux returns
+`ENOTTY`, so it needs no virtual handling. No VM test was run.

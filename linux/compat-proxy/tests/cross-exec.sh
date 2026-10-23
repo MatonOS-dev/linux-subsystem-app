@@ -26,8 +26,4 @@ if command -v bwrap >/dev/null; then
     cat build/cross-bwrap.out
 fi
 
-cc -no-pie -O2 -Wall -Wextra -Werror tests/cross-dns.c -o build/cross-dns64
-"$compiler" -c -O2 -fno-stack-protector -Wall -Wextra -Werror tests/cross-dns.c -o build/cross-dns32.o
-ld -m elf_i386 -o build/cross-dns32 --dynamic-linker "$interpreter" build/i386-p1/entry.o build/cross-dns32.o "$libc"
-python3 tests/cross-dns.py
 python3 tests/state-reject.py

@@ -9,6 +9,8 @@ build/resident-ranges
 bash tests/resident-fds.sh
 cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-altstack.c loader.c vfs.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S -o build/resident-altstack
 build/resident-altstack
+cc -O2 -Wall -Wextra -Werror -pthread tests/raw-clone-gateway.c tests/raw-clone-gateway.S -o build/raw-clone-gateway
+timeout 10 build/raw-clone-gateway
 if [[ ${1:-} == --i386-p2 ]]; then
     bash tests/i386-p1.sh
     exec bash tests/i386-dynamic.sh
@@ -98,10 +100,8 @@ cat build/publication.out
 
 cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-translation.c -o build/dns-translation
 build/dns-translation
-# Real Unix tests run when the host permits socket bind.
-python3 tests/dns-host.py --skip-unavailable
-
-
+cc -O2 -Wall -Wextra -Werror -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-helper.c -o build/dns-helper
+timeout 5 build/dns-helper
 cc -no-pie -O2 -Wall -Wextra -Werror tests/links.c -o build/links-test
 links_fixture=$(mktemp -d "$PWD/build/links-fixture.XXXXXX")
 timeout 20 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/links-test" "$links_fixture" >build/links-test.out 2>build/links-test.log

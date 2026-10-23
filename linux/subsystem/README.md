@@ -1,11 +1,11 @@
 # Per-app compositor host
 
 Each signed stub runs PerAppRuntime, the wlroots native core, Xwayland,
-SessionBus, JavaPortal, SessionAudio and DNS forwarding in its own process and
+SessionBus, JavaPortal and SessionAudio in its own process and
 UID. The host APK supplies the shared library and native assets; it does not
 coordinate another app's Linux launch. V3Launcher runs the compat-proxy loader
 from the host nativeLibraryDir. See [v3 launch](V3-LAUNCH.md),
-[stub format](STUBS.md) and [DNS](DNS-FORWARDER.md).
+[stub format](STUBS.md) and [per-process DNS](DNS-FORWARDER.md).
 
 StubService creates `<dataDir>/runtime` itself, canonicalizes the path and
 sets mode 0700. Wayland, bus, portal-backend, pulse and X11 sockets stay below

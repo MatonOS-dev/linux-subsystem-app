@@ -44,10 +44,20 @@ resolve against the desktop EGL driver's dispatch table. Desktop-only
 commands also resolve from that driver, never AOSP's limited GLES proc
 table. There is no Zink fallback in this step.
 
-Each registry-generated EGL/GLES thunk caches the Android entry point, enters
-resident TLS, makes one typed call, and restores Linux TLS. Unknown
-`eglGetProcAddress` names return NULL. The adapter does not forward Linux
-allocation callbacks or native window handles to Android.
+Each registry-generated EGL core and extension thunk caches the Android entry
+point, enters resident TLS, makes one typed call, and restores Linux TLS.
+Extension spellings and promoted aliases are generated from `egl.xml`; EGL
+image, sync, device, platform-display, and native-fence commands pass through.
+The extension string removes entries whose registered command signatures need
+Android-only native handles, then probes every advertised extension command
+with Android's `eglGetProcAddress` and removes extensions with missing
+commands. Probe results are cached in the stub's `XDG_CACHE_HOME` as
+`matonos-egl-extensions.cache`, keyed by `ro.build.fingerprint` and the
+graphics backend/renderer/EGL/GLES/Vulkan properties. The launcher copies that
+app-private cache path into the read-only GPU bootstrap, so processes of that
+stub can share it. If it cannot read or write the cache, probing continues
+in-process. Unknown `eglGetProcAddress` names return NULL. Linux allocation
+callbacks and Linux window handles are not passed to Android.
 
 ## Build and host checks
 
@@ -64,6 +74,7 @@ CC=clang-21 READELF=llvm-readelf-21 \
   bash linux/egl-forward/build.sh "$OUT" "$DEPS" "$NDK"
 CC=clang-21 bash linux/egl-forward/tests/run-host.sh \
   "$OUT/tests" "$OUT" "$DEPS"
+bash linux/egl-forward/tests/egl-extensions.sh "$DEPS" "$OUT/extension-tests"
 ```
 
 The build checks zero `DT_NEEDED`, a single dynamic export (`__egl_Main`), and
@@ -79,6 +90,9 @@ bridge. `desktop.c` exercises a compatibility-profile pbuffer with
 The offscreen program needs to run inside the adopted Android EGL bridge; host
 Mesa's GLVND vendor ABI is not the Android library interface and is not a
 substitute runtime.
+
+`egl-extensions.sh` checks the five requested extension spellings, the
+generated Android-handle exclusion, token filtering, and cache-key invalidation.
 
 Host verification on 2026-10-17: pinned inputs fetched; the DSO built with zero
 `DT_NEEDED`, one dynamic export, and arm64/riscv64 stub compilation; the GLVND

@@ -70,8 +70,8 @@ static struct {
 uintptr_t adopt_api_address(void) { return (uintptr_t)&api; }
 
 /* FSGSBASE is a CPU feature; the kernel advertises it in AT_HWCAP2 bit 1 and
- * the launcher/ICD publish the same bit. rdfsbase is then a register read with
- * no trap; without it we fall back to arch_prctl(ARCH_GET_FS) through the
+ * the launcher/ICD publish the same bit. rdfsbase/wrfsbase are then register
+ * accesses with no syscall; without it we fall back to arch_prctl through the
  * always-allowed raw gateway. */
 static uintptr_t backend_fs_read(void) {
     uintptr_t fs=0;
@@ -80,6 +80,7 @@ static uintptr_t backend_fs_read(void) {
     return fs;
 }
 static void backend_fs_write(uintptr_t fs) {
+    if(fs_fast) { __asm__ volatile("wrfsbase %0"::"r"(fs):"memory"); return; }
     if(R(arch_prctl,0x1002,fs,0,0,0,0)) __builtin_trap();
 }
 /* Zero-initialised table memory for the FS map, from the raw gateway; never

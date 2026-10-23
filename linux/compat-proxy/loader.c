@@ -423,8 +423,8 @@ int main(int argc,char **argv,char **environ) {
         else if(p_equal(argv[i],"--host-command-fd") && i+1<argc) {extern int proxy_host_test(int);int fd=0;for(char *s=argv[i+1];*s;s++){if(*s<'0'||*s>'9')return 2;fd=fd*10+*s-'0';}proxy_host_test(fd);i+=2;}
 #endif
         else if(p_equal(argv[i],"--host-command") && i+1<argc) {if(proxy_host_command(argv[i+1]))return 2;i+=2;}
-        else if(p_equal(argv[i],"--dns-socket") && i+1<argc) {if(proxy_dns_socket(argv[i+1]))return 2;i+=2;}
-        else if(p_equal(argv[i],"--dns-forwarder") && i+1<argc) {if(proxy_dns_forwarder(argv[i+1]))return 2;i+=2;}
+        else if(p_equal(argv[i],"--dns-forwarder") && i+1<argc) {if(proxy_dns_forwarder(argv[i+1]))return 2;
+            i+=2;}
         else if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}
         else if(p_equal(argv[i],"--count") && i+1<argc) {proxy_count_init(argv[i+1]);i+=2;}
@@ -446,6 +446,8 @@ int main(int argc,char **argv,char **environ) {
         bridge.open=dlopen;
         bridge.symbol=dlsym;
         bridge.error=gpu_bridge_error;
+    }
+    if(gpu_bridge_enabled) {
         gpu_egl=dlopen(NULL,RTLD_NOW|RTLD_LOCAL);
         gpu_gles=gpu_egl;
     }
@@ -490,14 +492,18 @@ int main(int argc,char **argv,char **environ) {
 #endif
     r=proxy_install(android);
     if(r) {proxy_log("filter-error",0,r);return 1;}
-    proxy_host_snapshot(environ);
 #if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
     if(gpu_bridge_enabled) {
         bridge.owner=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
         if(RAW(PROXY_SC_arch_prctl,0x1003,&bridge.tls,0,0,0,0)) return 3;
+        if(adopt_install()) return 5;
+    }
+#endif
+    proxy_host_snapshot(environ);
+#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+    if(gpu_bridge_enabled) {
         char value[32];
         snprintf(value,sizeof(value),"%lx",(unsigned long)&bridge);
-        if(adopt_install()) return 5;
         struct maton_gpu_bootstrap *bootstrap=mmap(NULL,4096,PROT_READ|PROT_WRITE,
                                       MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
         if(bootstrap==MAP_FAILED) return 6;
@@ -507,6 +513,7 @@ int main(int argc,char **argv,char **environ) {
         snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",(unsigned long)(getauxval(AT_HWCAP2)&2));
         snprintf(bootstrap->egl,sizeof(bootstrap->egl),"%lx",(unsigned long)gpu_egl);
         snprintf(bootstrap->gles,sizeof(bootstrap->gles),"%lx",(unsigned long)gpu_gles);
+        snprintf(bootstrap->egl_cache,sizeof(bootstrap->egl_cache),"%s",getenv("XDG_CACHE_HOME")?getenv("XDG_CACHE_HOME"):"");
         uintptr_t *payload=(uintptr_t *)image.stack;
         payload+=1+payload[0]+1; /* argc, argv, NULL */
         while(*payload)payload++;

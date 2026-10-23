@@ -75,12 +75,6 @@ target_link_libraries(maton_compositor PRIVATE
   maton_wlroots maton_wayland-server maton_wayland-client maton_pixman-1 maton_xkbcommon maton_drm
   android log EGL GLESv2 dl)
 
-add_library(maton_dns_forwarder SHARED dns_forwarder_core.c dns_forwarder_android.c)
-target_compile_features(maton_dns_forwarder PRIVATE c_std_11)
-target_compile_options(maton_dns_forwarder PRIVATE -march=x86-64-v2)
-target_include_directories(maton_dns_forwarder PRIVATE "${MATON_COMPOSITOR_ROOT}/native")
-target_link_libraries(maton_dns_forwarder PRIVATE android log)
-
 if(NOT MATON_PIPEWIRE_BUILD)
   set(MATON_PIPEWIRE_BUILD "${MATON_AOSP_ROOT}/out/matonos/pipewire")
 endif()

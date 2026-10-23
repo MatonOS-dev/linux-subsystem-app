@@ -53,6 +53,31 @@ def commands(path, api, max_version, profile=None):
     return [(name, byname[name]) for name in sorted(selected) if name in byname]
 
 egl = [(n, c) for n, c in commands(egl_xml, "egl", (1, 5)) if n not in ("eglQueryString", "eglGetProcAddress")]
+egl_root = ET.parse(egl_xml).getroot()
+egl_commands, egl_aliases = {}, {}
+for c in egl_root.findall("./commands/command"):
+    n = c.get("name") or c.findtext("./proto/name")
+    if n:
+        egl_commands[n] = c
+        a = c.get("alias") or (c.find("alias").get("name") if c.find("alias") is not None else None)
+        if a: egl_aliases[n] = a
+def egl_canonical(name):
+    seen = set()
+    while name in egl_aliases and name not in seen:
+        seen.add(name); name = egl_aliases[name]
+    return name
+egl_extensions = []
+for ext in egl_root.findall("./extensions/extension"):
+    if "egl" not in ext.get("supported", "").split(","): continue
+    names = sorted({x.get("name") for req in ext.findall("require")
+                    if not req.get("api") or "egl" in req.get("api", "").split(",")
+                    for x in req.findall("command") if x.get("name")})
+    if names:
+        egl_extensions.append((ext.get("name", ""), names))
+        for n in names:
+            target = egl_canonical(n)
+            if target in egl_commands and target not in {x for x, _ in egl}:
+                egl.append((target, egl_commands[target]))
 gles = commands(gl_xml, "gles2", (3, 2))
 desktop = commands(gl_xml, "gl", (4, 6), profile="compatibility")
 exposed = {name for name, _ in egl + gles + desktop}
@@ -75,6 +100,10 @@ def canonical(name):
     return name
 
 proc_names = {name: name for name in exposed}
+for _, names in egl_extensions:
+    for name in names:
+        target = egl_canonical(name)
+        if target in {x for x, _ in egl}: proc_names[name] = target
 # libglvnd requires these hand-written EGL vendor entry points.
 proc_names.update({"eglQueryString": "eglQueryString", "eglGetProcAddress": "eglGetProcAddress"})
 for name in aliases:
@@ -93,8 +122,6 @@ def emit_group(path, items, prefix, library):
         proto = ", ".join(params) if params else "void"
         internal = prefix + name
         unsupported = name in {
-            "eglCreateImage", "eglCreatePbufferFromClientBuffer",
-            "eglCreatePixmapSurface", "eglCreatePlatformPixmapSurface",
             "eglCreatePlatformWindowSurface", "eglCreateWindowSurface",
             # Do not let the Android driver invoke a Linux callback on bionic TLS.
             "glDebugMessageCallback",
@@ -180,6 +207,22 @@ pathlib.Path(outdir / "shared_thunks.inc").write_text("\n".join(shared_lines) + 
     "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
             for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop}) +
     "    return 0;\n}\n")
+# Runtime filtering and probing share this exact registry-derived command list.
+android_types = ("ANativeWindow", "AHardwareBuffer", "EGLNativeWindowType",
+                 "EGLNativePixmapType", "AHardwareBuffer_Desc")
+extension_lines = ["/* Generated EGL extension requirements. */",
+                   "struct mv_egl_extension_desc { const char *name; const char *commands; int excluded; };",
+                   "static const struct mv_egl_extension_desc mv_egl_extensions[] = {"]
+for extname, names in egl_extensions:
+    excluded = False
+    for name in names:
+        c = egl_commands.get(egl_canonical(name))
+        if c is not None:
+            signature = decl(c.find("proto")) + " " + " ".join(decl(p) for p in c.findall("param"))
+            if any(t in signature for t in android_types): excluded = True
+    extension_lines.append(f'    {{"{extname}", "{" ".join(names)}", {int(excluded)}}},')
+extension_lines += ["};", f"#define MV_EGL_EXTENSION_COUNT {len(egl_extensions)}"]
+(outdir / "egl_extensions.inc").write_text("\n".join(extension_lines) + "\n")
 (outdir / "coverage.txt").write_text(
     f"{len(eglnames)} EGL 1.5 commands; {len(glesnames)} GLES 2.0–3.2 commands; {len(desktopnames)} desktop GL 1.0–4.6 compatibility commands\n" +
     "EGL: " + ", ".join(eglnames) + "\nGLES: " + ", ".join(glesnames) + "\n")
