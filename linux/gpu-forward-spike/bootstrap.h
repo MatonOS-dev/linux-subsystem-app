@@ -10,6 +10,7 @@ struct maton_gpu_bootstrap {
     /* Linux payload headers; /proc/self/auxv still describes the resident. */
     char phdr[32], phnum[32];
     char egl[32], gles[32];
+    char egl_cache[256];
 };
 /* No libc: also called from the resident exec syscall path. */
 static inline void maton_gpu_payload(struct maton_gpu_bootstrap *b,

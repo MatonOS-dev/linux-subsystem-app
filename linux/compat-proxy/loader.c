@@ -507,6 +507,7 @@ int main(int argc,char **argv,char **environ) {
         snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",(unsigned long)(getauxval(AT_HWCAP2)&2));
         snprintf(bootstrap->egl,sizeof(bootstrap->egl),"%lx",(unsigned long)gpu_egl);
         snprintf(bootstrap->gles,sizeof(bootstrap->gles),"%lx",(unsigned long)gpu_gles);
+        snprintf(bootstrap->egl_cache,sizeof(bootstrap->egl_cache),"%s",getenv("XDG_CACHE_HOME")?getenv("XDG_CACHE_HOME"):"");
         uintptr_t *payload=(uintptr_t *)image.stack;
         payload+=1+payload[0]+1; /* argc, argv, NULL */
         while(*payload)payload++;

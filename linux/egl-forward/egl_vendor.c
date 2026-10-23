@@ -475,6 +475,7 @@ static EGLBoolean mv_eglSurfaceAttrib(EGLDisplay dpy,EGLSurface handle,EGLint at
  * display. The strings are copied before restoring Linux TLS. */
 static char mv_extension_string[2][16384];
 static int mv_extension_lock[2];
+#include "egl_extensions.inc"
 static int mv_has_token(const char *list, const char *token) {
     size_t len = 0;
     while (token[len]) ++len;
@@ -505,6 +506,83 @@ static EGLBoolean mv_append_token(char *dst, const char *src, const char *token)
     }
     return EGL_TRUE;
 }
+static char mv_extension_blocklist[8192];
+static int mv_extension_probe_state;
+static char mv_extension_probe_key[1024];
+static char mv_extension_cache_path[512];
+static size_t mv_extension_len(const char *s){size_t n=0;while(s[n])n++;return n;}
+static void mv_extension_paths(char *key,size_t cap) {
+    if(!mv_property_get){
+        if(!mv_libc)mv_libc=mv_bridge->open("/system/lib64/libc.so",2);
+        if(mv_libc)mv_property_get=(int(*)(const char*,char*))mv_bridge->symbol(mv_libc,"__system_property_get");
+    }
+    const char *props[]={"ro.build.fingerprint","vendor.maton.graphics.backend","vendor.maton.graphics.renderer","vendor.maton.graphics.egl","vendor.maton.graphics.gles","vendor.maton.graphics.vulkan"};
+    size_t n=0;
+    for(size_t i=0;i<sizeof(props)/sizeof(props[0]);i++){
+        char value[192]={0};if(mv_property_get)mv_property_get(props[i],value);
+        for(size_t j=0;props[i][j]&&n+1<cap;j++)key[n++]=props[i][j];
+        if(n+1<cap)key[n++]='=';
+        for(size_t j=0;value[j]&&n+1<cap;j++)key[n++]=value[j];
+        if(n+1<cap)key[n++]=';';
+    }
+    key[n]=0;
+    if(mv_extension_cache_path[0])return;
+    const char *dir=mv_env("MATON_EGL_CACHE");if(!dir||!dir[0])return;
+    static const char suffix[]="/matonos-egl-extensions.cache";size_t d=0;
+    while(dir[d]&&d+sizeof(suffix)<sizeof(mv_extension_cache_path)){mv_extension_cache_path[d]=dir[d];d++;}
+    if(dir[d]){mv_extension_cache_path[0]=0;return;}
+    for(size_t i=0;i<sizeof(suffix);i++)mv_extension_cache_path[d+i]=suffix[i];
+}
+static void mv_extension_probe(const char *advertised) {
+    char key[sizeof(mv_extension_probe_key)];mv_extension_paths(key,sizeof(key));
+    for(;;){
+        int state=__atomic_load_n(&mv_extension_probe_state,__ATOMIC_ACQUIRE);
+        if(state==2&&!strcmp(key,mv_extension_probe_key))return;
+        if(state==1)continue;
+        int expected=state;
+        if(__atomic_compare_exchange_n(&mv_extension_probe_state,&expected,1,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))break;
+    }
+    mv_extension_blocklist[0]=0;
+    if(mv_extension_cache_path[0]){
+        char data[9216];size_t n=0;long fd=mv_open(mv_extension_cache_path);
+        if(fd>=0){while(n+1<sizeof(data)){long r=mv_read(fd,data+n,sizeof(data)-1-n);if(r<=0)break;n+=(size_t)r;}mv_close(fd);data[n]=0;
+            size_t k=0;while(k<n&&data[k]!='\n')k++;
+            if(k==mv_extension_len(key)&&!memcmp(key,data,k)){size_t q=k+1;for(size_t i=q;i<n&&i-q+1<sizeof(mv_extension_blocklist);i++)mv_extension_blocklist[i-q]=data[i];mv_extension_blocklist[n-q]=0;memcpy(mv_extension_probe_key,key,mv_extension_len(key)+1);__atomic_store_n(&mv_extension_probe_state,2,__ATOMIC_RELEASE);return;}
+        }
+    }
+    for(size_t i=0;i<MV_EGL_EXTENSION_COUNT;i++){
+        const struct mv_egl_extension_desc *e=&mv_egl_extensions[i];
+        if(e->excluded||!mv_has_token(advertised,e->name))continue;
+        char command[160];size_t n=0;int failed=0;
+        for(const char *p=e->commands;;p++){
+            if(*p&&*p!=' '){if(n+1<sizeof(command))command[n++]=*p;continue;}
+            if(n){command[n]=0;if(!mv_android_egl_get_proc||!mv_android_egl_get_proc(command))failed=1;n=0;}
+            if(!*p)break;
+        }
+        if(failed){size_t used=mv_extension_len(mv_extension_blocklist),len=mv_extension_len(e->name);if(used+len+2<sizeof(mv_extension_blocklist)){if(used)mv_extension_blocklist[used++]=' ';memcpy(mv_extension_blocklist+used,e->name,len+1);}}
+    }
+    memcpy(mv_extension_probe_key,key,mv_extension_len(key)+1);
+    if(mv_extension_cache_path[0]){
+        char data[9216];size_t n=0;for(size_t i=0;key[i]&&n+1<sizeof(data);i++)data[n++]=key[i];data[n++]='\n';
+        for(size_t i=0;mv_extension_blocklist[i]&&n+1<sizeof(data);i++)data[n++]=mv_extension_blocklist[i];
+        long out=mv_open_write(mv_extension_cache_path,0600);
+        if(out>=0){mv_write_fd(out,data,n);mv_close(out);}
+    }
+    __atomic_store_n(&mv_extension_probe_state,2,__ATOMIC_RELEASE);
+}
+static int mv_extension_hidden(const char *token) {
+    for(size_t i=0;i<MV_EGL_EXTENSION_COUNT;i++)if(!strcmp(token,mv_egl_extensions[i].name))return mv_egl_extensions[i].excluded||mv_has_token(mv_extension_blocklist,token);
+    return 0;
+}
+static EGLBoolean mv_filter_extensions(char *dst,const char *src) {
+    size_t used=0;const char *p=src;
+    while(*p){while(*p==' ')p++;const char *start=p;while(*p&&*p!=' ')p++;size_t len=(size_t)(p-start);if(!len)break;
+        char token[256];if(len>=sizeof(token))continue;memcpy(token,start,len);token[len]=0;if(mv_extension_hidden(token))continue;
+        if(used&&used+1<sizeof(mv_extension_string[0]))dst[used++]=' ';
+        if(used+len>=sizeof(mv_extension_string[0]))return EGL_FALSE;memcpy(dst+used,token,len);used+=len;dst[used]=0;
+    }
+    return EGL_TRUE;
+}
 static const char *mv_eglQueryString(EGLDisplay dpy, EGLint name) {
     struct mv_scope scope;
     if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); return 0; }
@@ -520,7 +598,9 @@ static const char *mv_eglQueryString(EGLDisplay dpy, EGLint name) {
     if (name != EGL_EXTENSIONS || !result) { switch_back(&scope); return result; }
     int index = dpy == EGL_NO_DISPLAY ? 0 : 1;
     while (__atomic_exchange_n(&mv_extension_lock[index], 1, __ATOMIC_ACQUIRE)) {}
-    EGLBoolean ok = mv_append_token(mv_extension_string[index], result, "EGL_MESA_platform_surfaceless");
+    mv_extension_probe(result);
+    EGLBoolean ok = mv_filter_extensions(mv_extension_string[index], result);
+    if(ok)ok = mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_MESA_platform_surfaceless");
     if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_KHR_platform_wayland");
     if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_EXT_platform_wayland");
     switch_back(&scope);
