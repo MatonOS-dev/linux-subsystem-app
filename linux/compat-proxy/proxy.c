@@ -140,6 +140,7 @@ static long dispatch_owner;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
 struct tls_entry { struct user_desc desc; int real_entry; int valid; };
 #define PROXY_TLS_ENTRIES 3
+static int proxy_i386_tls_reservation_enabled;
 struct ldt_entry { struct user_desc desc; unsigned char valid; };
 static struct ldt_entry *ldt_entries;
 static size_t ldt_capacity;
@@ -149,6 +150,7 @@ struct thread_state {
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     struct tls_entry tls[PROXY_TLS_ENTRIES];
     unsigned reserved;
+    unsigned reserved_claimed;
     int reserved_real;
 #endif
 };
@@ -189,6 +191,27 @@ static int tls_reserve(struct thread_state *thread) {
     if(r<0)return (int)r;
     thread->reserved_real=(int)d.entry_number;thread->reserved=1;return 0;
 }
+void proxy_i386_tls_reservation(int enabled) {
+    proxy_i386_tls_reservation_enabled=enabled!=0;
+}
+int proxy_i386_tls_prepare_payload(void) {
+    if(!proxy_i386_tls_reservation_enabled)return 0;
+    struct thread_state *thread=thread_state();
+    return thread?tls_reserve(thread):-ENOMEM;
+}
+static int tls_install_reserved(struct thread_state *thread,const struct user_desc *desc) {
+    struct user_desc install=*desc;
+    install.entry_number=thread->reserved_real;
+    long r=RAW(PROXY_SC_set_thread_area,(long)&install,0,0,0,0,0);
+    return r<0?(int)r:0;
+}
+static int tls_restore_reserved(struct thread_state *thread) {
+    if(thread->tls[PROXY_TLS_ENTRIES-1].valid)
+        return tls_install_reserved(thread,&thread->tls[PROXY_TLS_ENTRIES-1].desc);
+    const struct user_desc placeholder={.entry_number=0,.seg_32bit=1,
+        .contents=0,.read_exec_only=1,.seg_not_present=0,.useable=1};
+    return tls_install_reserved(thread,&placeholder);
+}
 static long tls_set(struct thread_state *thread, uintptr_t user) {
     struct user_desc desc;
     if(!user || proxy_copy(&desc,(const void *)user,sizeof(desc)))return -EFAULT;
@@ -203,29 +226,42 @@ static long tls_set(struct thread_state *thread, uintptr_t user) {
         slot=tls_slot_for_real(thread,(int)desc.entry_number);
         if(slot<0)return -ESRCH;
     } else slot=(int)desc.entry_number;
-    /* The bionic adoption hook can claim this entry early.  Without adoption,
-     * payload slot 2 still claims it on demand and may exhaust the GDT first. */
+    /* Reservation is eager, before payload code runs, when enabled. */
     if(slot==PROXY_TLS_ENTRIES-1){int r=tls_reserve(thread);if(r)return r;}
     struct user_desc kernel_desc=desc;
     kernel_desc.entry_number=slot==PROXY_TLS_ENTRIES-1 && thread->reserved
         ? thread->reserved_real : (thread->tls[slot].valid?thread->tls[slot].real_entry:-1);
-    long result=RAW(PROXY_SC_set_thread_area,(long)&kernel_desc,0,0,0,0,0);
-    if(result<0)return result;
-    desc.entry_number=kernel_desc.entry_number;
+    long result=0;
+    if(slot==PROXY_TLS_ENTRIES-1 && thread->reserved_claimed) {
+        /* Keep the payload's descriptor current while bionic owns the real slot. */
+        desc.entry_number=thread->reserved_real;
+    } else {
+        result=RAW(PROXY_SC_set_thread_area,(long)&kernel_desc,0,0,0,0,0);
+        if(result<0)return result;
+        desc.entry_number=kernel_desc.entry_number;
+    }
     if(proxy_copy((void *)user,&desc,sizeof(desc)))return -EFAULT;
     thread->tls[slot].desc=desc;
     thread->tls[slot].real_entry=kernel_desc.entry_number;
     thread->tls[slot].valid=1;
     return 0;
 }
-/* Bionic may claim this once per thread.  The returned selector remains
- * stable; Linux slot 2 can temporarily reuse its descriptor while payload
- * code is active.  The caller restores its descriptor before resuming bionic. */
-int proxy_tls_claim_reserved(unsigned *selector) {
+/* Bionic adoption temporarily owns the reserved entry. Release restores the
+ * payload's third virtual slot, or the inert placeholder if it is unused. */
+int proxy_tls_claim_reserved(const struct user_desc *owner,unsigned *selector) {
     struct thread_state *thread=thread_state();
-    if(!thread || !selector)return -1;
+    if(!thread || !selector || !owner || thread->reserved_claimed)return -1;
     int r=tls_reserve(thread);if(r)return r;
+    r=tls_install_reserved(thread,owner);if(r)return r;
+    thread->reserved_claimed=1;
     *selector=((unsigned)thread->reserved_real<<3)|3u;
+    return 0;
+}
+int proxy_tls_release_reserved(void) {
+    struct thread_state *thread=thread_state();
+    if(!thread || !thread->reserved || !thread->reserved_claimed)return -1;
+    int r=tls_restore_reserved(thread);if(r)return r;
+    thread->reserved_claimed=0;
     return 0;
 }
 static long tls_get(struct thread_state *thread, uintptr_t user) {
@@ -369,22 +405,18 @@ static void ldt_segv_handler(int sig,siginfo_t *info,void *opaque) {
     dispatch_segv_app(sig,info,opaque);
 }
 /* Called in the child clone continuation before payload code runs. The kernel
- * installed this descriptor as part of CLONE_SETTLS; mirror it in our table. */
+ * installed glibc's CLONE_SETTLS descriptor; reserve the virtual third slot
+ * independently before returning to payload code. */
 void proxy_clone_tls_child(unsigned flags, const struct user_desc *user_desc) {
     if(!(flags&CLONE_SETTLS) || !user_desc)return;
     struct thread_state *thread=thread_state();
     if(!thread)return;
-    struct user_desc desc;
-    if(proxy_copy(&desc,user_desc,sizeof(desc)))return;
-    int slot=desc.entry_number<PROXY_TLS_ENTRIES?desc.entry_number:-1;
-    if(slot<0) {
-        for(int i=0;i<PROXY_TLS_ENTRIES;i++)
-            if(!thread->tls[i].valid){slot=i;break;}
-    }
-    if(slot<0 || slot>=PROXY_TLS_ENTRIES)return;
-    thread->tls[slot].desc=desc;thread->tls[slot].real_entry=desc.entry_number;
-    thread->tls[slot].valid=1;
+    if(proxy_i386_tls_reservation_enabled)tls_reserve(thread);
 }
+#endif
+#if ARCH_AUDIT != AUDIT_ARCH_I386
+void proxy_i386_tls_reservation(int enabled) {(void)enabled;}
+int proxy_i386_tls_prepare_payload(void) {return 0;}
 #endif
 const char *proxy_tmpdir="/tmp";
 /* --trace: log to the original diagnostic sink, independently of app stdio. */

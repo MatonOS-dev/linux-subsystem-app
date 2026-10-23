@@ -383,7 +383,10 @@ failed:
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
     proxy_log_bwrap_args(path,argv);
-    int r=load_inner(path,argv,env,image,0);if(!r)vfs_executable(path);return r;
+    int r=load_inner(path,argv,env,image,0);
+    if(!r)r=proxy_i386_tls_prepare_payload();
+    if(!r)vfs_executable(path);
+    return r;
 }
 #ifndef PROXY_LIBRARY
 int main(int argc,char **argv,char **environ) {
@@ -426,6 +429,7 @@ int main(int argc,char **argv,char **environ) {
         else if(p_equal(argv[i],"--dns-forwarder") && i+1<argc) {if(proxy_dns_forwarder(argv[i+1]))return 2;
             i+=2;}
         else if(p_equal(argv[i],"--android-filter")) {android=1;i++;}
+        else if(p_equal(argv[i],"--i386-tls-reserve")) {proxy_i386_tls_reservation(1);i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}
         else if(p_equal(argv[i],"--count") && i+1<argc) {proxy_count_init(argv[i+1]);i+=2;}
         else if(p_equal(argv[i],"--pack-backing") && i+2<argc) {if(pack_backing(argv[i+1],argv[i+2]))return 2;i+=3;}

@@ -52,7 +52,7 @@ libc=${MATON_V3_I386_LIBC:-/usr/lib32/libc.so.6}
 interpreter=${MATON_V3_I386_INTERPRETER:-/lib/ld-linux.so.2}
 ld -m elf_i386 -o build/i386-p1/tls --dynamic-linker "$interpreter" \
     build/i386-p1/entry.o build/i386-p1/tls.o "$libc"
-timeout 20 "$loader" --android-filter "$PWD/build/i386-p1/tls" \
+timeout 20 "$loader" --android-filter --i386-tls-reserve "$PWD/build/i386-p1/tls" \
     >build/i386-p1/tls.out 2>build/i386-p1/tls.log
 grep -qx 'PASS i386 pthread TLS, set/get_thread_area, GS read, modify_ldt, LDT FS remap, and SIGSEGV chaining' build/i386-p1/tls.out
 cat build/i386-p1/tls.out

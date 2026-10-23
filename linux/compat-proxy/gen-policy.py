@@ -63,6 +63,9 @@ for name in inputs[1:]:
     (compat_block if 'BLOCKLIST' in name else compat_allow).update(
         load_syscall_names_from_file(root / name, 'x86'))
 compat_names = merge_names(compat_base, compat_allow, compat_block)
+# TLS descriptors are virtualized by the i386 proxy so payload requests can
+# use the reserved GDT entry while proxy raw syscalls remain permitted.
+compat_names.difference_update({'set_thread_area','get_thread_area','modify_ldt'})
 compat_table = root / 'kernel/uapi/asm-x86/asm/unistd_32.h'
 compat_numbers = {name: int(number) for name, number in re.findall(
     r'^#define __NR_(\w+)\s+(\d+)$', compat_table.read_text(), re.M)}

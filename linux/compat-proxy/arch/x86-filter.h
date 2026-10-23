@@ -50,6 +50,20 @@ static int arch_app_install(void) {
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         }
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+        /* The payload's TLS calls are trapped for virtualization. Permit the
+         * proxy's own raw call site so the handler can update the real GDT. */
+        if(branch) {
+            extern char proxy_raw_after[];
+            const int tls_calls[]={243,244,123};
+            for(unsigned i=0;i<sizeof(tls_calls)/sizeof(tls_calls[0]);i++) {
+                ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,tls_calls[i]);
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+                ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+                ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)(uintptr_t)proxy_raw_after);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+            }
+        }
         for(unsigned i=0;i<count;i++) {
             ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,allowed[i]);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         }

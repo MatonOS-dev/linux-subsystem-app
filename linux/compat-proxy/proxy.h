@@ -24,9 +24,14 @@ static inline void proxy_raw_count_enable(void) {}
 #include "arch/statx.h"
 #include "arch/socket.h"
 struct image { uintptr_t entry, stack; };
+struct user_desc;
 void proxy_image_map(uintptr_t,uintptr_t,uintptr_t,const char *);
 int proxy_load(const char *, char *const *, char *const *, struct image *);
 int proxy_install(int);
+void proxy_i386_tls_reservation(int);
+int proxy_i386_tls_prepare_payload(void);
+int proxy_tls_claim_reserved(const struct user_desc *, unsigned *);
+int proxy_tls_release_reserved(void);
 int proxy_resident_fds_snapshot(int after);
 int proxy_host_command(const char *);
 void proxy_host_snapshot(char *const *);
