@@ -34,7 +34,8 @@ if grep -E -q NEEDED "$out/i386/dynamic.txt"; then echo 'i386 unexpected DT_NEED
 "$readelf" --dyn-syms "$out/i386/libEGL_maton.so" > "$out/i386/symbols.txt"
 i386_exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/i386/symbols.txt" | sort -u)
 [[ "$i386_exports" == $'__egl_Main\nmaton_egl_direct_v1' ]] || { echo "unexpected i386 exports: $i386_exports" >&2; exit 1; }
-"$readelf" -h "$out/i386/libEGL_maton.so" | grep -E -q 'Class:.*ELF32'
+"$readelf" -h "$out/i386/libEGL_maton.so" > "$out/i386/header.txt"
+grep -E -q \'Class:.*ELF32\' "$out/i386/header.txt"
 for arch in aarch64 riscv64; do
   target="$arch-linux-gnu"
   "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -c "$here/runtime.c" -o "$out/runtime-$arch.o"
