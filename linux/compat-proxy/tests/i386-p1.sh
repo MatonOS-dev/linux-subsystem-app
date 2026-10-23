@@ -48,11 +48,12 @@ timeout 10 "$loader" --android-filter "$PWD/build/i386-p1/tls-raw" \
 printf 'PASS i386 raw TLS set/get and GS selector read under proxy\n'
 cc -m32 -nostdinc -fno-stack-protector -fno-pic -O2 -Wall -Wextra -Werror \
     -c tests/i386-tls.c -o build/i386-p1/tls.o
+cc -m32 -c tests/i386-entry.S -o build/i386-p1/entry.o
 libc=${MATON_V3_I386_LIBC:-/usr/lib32/libc.so.6}
 interpreter=${MATON_V3_I386_INTERPRETER:-/lib/ld-linux.so.2}
 ld -m elf_i386 -o build/i386-p1/tls --dynamic-linker "$interpreter" \
     build/i386-p1/entry.o build/i386-p1/tls.o "$libc"
 timeout 20 "$loader" --android-filter --i386-tls-reserve "$PWD/build/i386-p1/tls" \
     >build/i386-p1/tls.out 2>build/i386-p1/tls.log
-grep -qx 'PASS i386 pthread TLS, set/get_thread_area, GS read, modify_ldt, LDT FS remap, and SIGSEGV chaining' build/i386-p1/tls.out
+grep -qx 'PASS i386 pthread TLS, multi-selector LDT cache, far segment loads, and SIGSEGV chaining' build/i386-p1/tls.out
 cat build/i386-p1/tls.out
