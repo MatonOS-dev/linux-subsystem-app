@@ -86,6 +86,12 @@ proxy_clone_after:
  mov 28(%ebp),%eax
  mov %eax,(%esp)
  call ipc_fork_result
+ /* Mirror CLONE_SETTLS's kernel-installed descriptor into the child's
+  * virtual table before control reaches the i386 payload. */
+ push 4(%ebp)                 /* original ESI: TLS descriptor pointer */
+ push 16(%ebp)                /* original EBX: clone flags */
+ call proxy_clone_tls_child
+ add $8,%esp
  fxrstor 16(%esp)
  mov %ebp,%esp
  popal

@@ -32,6 +32,9 @@
 #include <linux/sched.h>
 #include <linux/stat.h>
 #include <linux/limits.h>
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+#include <asm/ldt.h>
+#endif
 #include <linux/prctl.h>
 #include <stddef.h>
 #include <fcntl.h>
@@ -125,7 +128,17 @@ static void exec_signals(void) {
 /* Spike supports a single user-dispatch owner; configuration is per-thread. */
 static volatile unsigned char *dispatch_selector;
 static long dispatch_owner;
-struct thread_state { long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size; };
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+struct tls_entry { struct user_desc desc; int real_entry; int valid; };
+#define PROXY_TLS_ENTRIES 3
+#endif
+struct thread_state {
+    long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+    struct tls_entry tls[PROXY_TLS_ENTRIES];
+    unsigned reserved;
+#endif
+};
 struct thread_node {struct thread_state state;struct thread_node *next;};
 static struct thread_node *threads;
 static struct thread_state *thread_state(void) {
@@ -148,6 +161,65 @@ static struct thread_state *thread_state(void) {
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
     return &p->state;
 }
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+static int tls_slot_for_real(struct thread_state *thread, int real_entry) {
+    for (int i=0;i<PROXY_TLS_ENTRIES;i++)
+        if(thread->tls[i].valid && thread->tls[i].real_entry==real_entry)return i;
+    return -1;
+}
+static long tls_set(struct thread_state *thread, uintptr_t user) {
+    struct user_desc desc;
+    if(!user || proxy_copy(&desc,(const void *)user,sizeof(desc)))return -EFAULT;
+    int slot=-1;
+    if(desc.entry_number==UINT32_MAX) {
+        for(int i=0;i<PROXY_TLS_ENTRIES-(int)thread->reserved;i++)
+            if(!thread->tls[i].valid){slot=i;break;}
+        if(slot<0)return -ESRCH;
+    } else if(desc.entry_number>=PROXY_TLS_ENTRIES) {
+        /* Applications use the real index returned by an earlier allocation. */
+        if(desc.entry_number>INT32_MAX)return -EINVAL;
+        slot=tls_slot_for_real(thread,(int)desc.entry_number);
+        if(slot<0)return -ESRCH;
+    } else slot=(int)desc.entry_number;
+    struct user_desc kernel_desc=desc;
+    kernel_desc.entry_number=thread->tls[slot].valid?thread->tls[slot].real_entry:-1;
+    long result=RAW(PROXY_SC_set_thread_area,(long)&kernel_desc,0,0,0,0,0);
+    if(result<0)return result;
+    desc.entry_number=kernel_desc.entry_number;
+    if(proxy_copy((void *)user,&desc,sizeof(desc)))return -EFAULT;
+    thread->tls[slot].desc=desc;
+    thread->tls[slot].real_entry=kernel_desc.entry_number;
+    thread->tls[slot].valid=1;
+    return 0;
+}
+static long tls_get(struct thread_state *thread, uintptr_t user) {
+    struct user_desc desc;
+    if(!user || proxy_copy(&desc,(const void *)user,sizeof(desc)))return -EFAULT;
+    int slot=desc.entry_number<PROXY_TLS_ENTRIES?desc.entry_number:
+             tls_slot_for_real(thread,desc.entry_number);
+    if(slot<0 || slot>=PROXY_TLS_ENTRIES || !thread->tls[slot].valid)return -ESRCH;
+    desc=thread->tls[slot].desc;
+    desc.entry_number=thread->tls[slot].real_entry;
+    return proxy_copy((void *)user,&desc,sizeof(desc))?-EFAULT:0;
+}
+/* Called in the child clone continuation before payload code runs. The kernel
+ * installed this descriptor as part of CLONE_SETTLS; mirror it in our table. */
+void proxy_clone_tls_child(unsigned flags, const struct user_desc *user_desc) {
+    if(!(flags&CLONE_SETTLS) || !user_desc)return;
+    struct thread_state *thread=thread_state();
+    if(!thread)return;
+    struct user_desc desc;
+    if(proxy_copy(&desc,user_desc,sizeof(desc)))return;
+    int slot=desc.entry_number<PROXY_TLS_ENTRIES?desc.entry_number:-1;
+    if(slot<0) {
+        for(int i=0;i<PROXY_TLS_ENTRIES-(int)thread->reserved;i++)
+            if(!thread->tls[i].valid){slot=i;break;}
+    }
+    if(slot<0 || slot>=PROXY_TLS_ENTRIES)return;
+    thread->tls[slot].desc=desc;thread->tls[slot].real_entry=desc.entry_number;
+    thread->tls[slot].valid=1;
+}
+#endif
 const char *proxy_tmpdir="/tmp";
 /* --trace: log to the original diagnostic sink, independently of app stdio. */
 int proxy_trace;
@@ -520,6 +592,9 @@ static int ours(long n) {
     case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
     case PROXY_SC_close_range:case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_close:case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
     case PROXY_SC_capget:case PROXY_SC_capset:case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+    case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:
+#endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
     case PROXY_SC_prctl:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
@@ -823,6 +898,12 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(!result && a[1])RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&(*arch_signal_mask(uc)),8,0,0);
         break;
     }
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+    case PROXY_SC_set_thread_area:
+        result=thread?tls_set(thread,(uintptr_t)a[0]):-ENOMEM;break;
+    case PROXY_SC_get_thread_area:
+        result=thread?tls_get(thread,(uintptr_t)a[0]):-ENOMEM;break;
+#endif
     case PROXY_SC_sigaltstack: {
         /* App altstack changes are virtual: the kernel retains our private stack.
          * The chained app handler's SA_ONSTACK is currently unsupported. */
