@@ -1465,8 +1465,12 @@ that is not present in that thread's saved DS/ES/FS/GS/SS registers. If every
 cached selector is held, or another TLS user leaves no usable GDT entry, the
 fault is delivered through the application's SIGSEGV disposition, matching
 the kernel's failed selector load rather than choosing an arbitrary victim.
-The host GDT still bounds the number of simultaneously installed descriptors;
-the emulated LDT itself has no such cache-size limit.
+The reserved Android TLS entry is normally allocated when Android TLS is
+claimed; eager reservation remains available for callers that need it, but can
+consume a host GDT slot needed for LDT emulation. Concurrent `modify_ldt` updates and handler snapshots share a lock
+so table growth cannot invalidate another thread's lookup. The host GDT still
+bounds the number of simultaneously installed descriptors; the emulated LDT
+itself has no such cache-size limit.
 
 Supported loads are `mov` to DS/ES/SS/FS/GS, `pop` to DS/ES/SS/FS/GS,
 `lds`/`les`, and `lfs`/`lgs`/`lss` in the 32-bit operand/address forms. The
@@ -1484,13 +1488,13 @@ emulation of privilege checks, far control-transfer stack effects, and signal
 return context. `set_thread_area` is a TLS interface and does not provide that
 CS mechanism, so this phase leaves code transfers unimplemented.
 
-The proxy and i386 loader compile with `bash build.sh`. Runtime acceptance is
-still open: `tests/i386-p1.sh` currently terminates in its dynamic TLS fixture
-with SIGSEGV before its PASS line. `tests/run.sh` also currently stops earlier
-while compiling the separate `i386-thread-adopt` fixture because its
-`struct user_desc` declaration is incomplete on this host. The new multi-
-selector and far-load assertions are in that dynamic TLS fixture, but have not
-passed under the proxy yet.
+The `struct user_desc` ABI definition lives in the i386 adoption header so
+both the adoption implementation and host fixture compile when multilib
+headers only forward-declare it. `tests/i386-p1.sh` exercises five selectors
+per worker across four workers, `lds`/`les`/`lss`, a nonzero-base ES write,
+an expand-down read, and a child-process segment-limit fault delivered to the
+app SIGSEGV disposition. `tests/run.sh` includes the six-thread adoption
+fixture and the full proxy suite.
 
 ### i386 thread-adoption backend (2026-10-23)
 

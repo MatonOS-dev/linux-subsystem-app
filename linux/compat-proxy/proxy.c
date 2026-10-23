@@ -144,6 +144,13 @@ static int proxy_i386_tls_reservation_enabled;
 struct ldt_entry { struct user_desc desc; unsigned char valid; };
 static struct ldt_entry *ldt_entries;
 static size_t ldt_capacity;
+/* modify_ldt is process-wide. Serialize growth/writes with SIGSEGV readers. */
+static volatile int ldt_lock;
+static void ldt_lock_acquire(void) {
+    while(__atomic_exchange_n(&ldt_lock,1,__ATOMIC_ACQUIRE))
+        while(__atomic_load_n(&ldt_lock,__ATOMIC_RELAXED)) __asm__ volatile("pause");
+}
+static void ldt_lock_release(void) { __atomic_store_n(&ldt_lock,0,__ATOMIC_RELEASE); }
 #define PROXY_LDT_CACHE_ENTRIES 3
 struct ldt_cache_entry { unsigned selector; unsigned age; int real_entry; unsigned valid; };
 #endif
@@ -290,7 +297,7 @@ static int ldt_grow(size_t need) {
     if(ldt_entries)vfs_free(ldt_entries);
     ldt_entries=next;ldt_capacity=cap;return 0;
 }
-static long ldt_call(unsigned func, uintptr_t ptr, size_t bytes) {
+static long ldt_call_locked(unsigned func, uintptr_t ptr, size_t bytes) {
     if(func==2)return 0; /* read_default: no default LDT entries */
     if(func==1 || func==0x11) {
         struct user_desc d;
@@ -337,6 +344,9 @@ static long ldt_call(unsigned func, uintptr_t ptr, size_t bytes) {
     }
     return -EINVAL;
 }
+static long ldt_call(unsigned func,uintptr_t ptr,size_t bytes) {
+    ldt_lock_acquire();long result=ldt_call_locked(func,ptr,bytes);ldt_lock_release();return result;
+}
 static uint32_t *i386_reg(ucontext_t *uc,unsigned r) {
     static const int indices[8]={REG_EAX,REG_ECX,REG_EDX,REG_EBX,REG_ESP,REG_EBP,REG_ESI,REG_EDI};
     return (uint32_t *)&uc->uc_mcontext.gregs[indices[r&7]];
@@ -372,7 +382,8 @@ static int i386_cache_held(ucontext_t *uc,const struct ldt_cache_entry *cache) {
     return 0;
 }
 static int ldt_cache_install(struct thread_state *thread,ucontext_t *uc,
-                             unsigned selector,int *real_entry) {
+                             unsigned selector,const struct user_desc *source,
+                             int *real_entry) {
     unsigned index=selector>>3;
     for(int i=0;i<PROXY_LDT_CACHE_ENTRIES;i++) {
         struct ldt_cache_entry *c=&thread->ldt_cache[i];
@@ -391,7 +402,7 @@ static int ldt_cache_install(struct thread_state *thread,ucontext_t *uc,
         if(slot<0)return -1;
     }
     struct ldt_cache_entry *c=&thread->ldt_cache[slot];
-    struct user_desc d=ldt_entries[index].desc;
+    struct user_desc d=*source;
     d.entry_number=c->valid?(unsigned)c->real_entry:UINT32_MAX;
     long r=RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0);
     if(r<0 && !c->valid) {
@@ -405,7 +416,7 @@ static int ldt_cache_install(struct thread_state *thread,ucontext_t *uc,
             }
         }
         if(victim<0)return -1;
-        slot=victim;c=&thread->ldt_cache[slot];d=ldt_entries[index].desc;
+        slot=victim;c=&thread->ldt_cache[slot];d=*source;
         d.entry_number=(unsigned)c->real_entry;
         r=RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0);
     }
@@ -469,11 +480,17 @@ static void ldt_segv_handler(int sig,siginfo_t *info,void *opaque) {
             }
         }
     }
-    if(ilen && (selector&4) && (selector>>3)<ldt_capacity && ldt_entries[selector>>3].valid && target>=0) {
+    struct user_desc ldt_desc;int ldt_valid=0;
+    if(ilen && (selector&4) && target>=0) {
+        unsigned index=selector>>3;
+        ldt_lock_acquire();
+        if(index<ldt_capacity && ldt_entries[index].valid) {ldt_desc=ldt_entries[index].desc;ldt_valid=1;}
+        ldt_lock_release();
+    }
+    if(ldt_valid) {
         struct thread_state *thread=thread_state();
-        if(thread && !thread->reserved)tls_reserve(thread);
         int entry=-1;
-        if(thread && !ldt_cache_install(thread,uc,selector,&entry)) {
+        if(thread && !ldt_cache_install(thread,uc,selector,&ldt_desc,&entry)) {
             static const int indices[6]={REG_ES,REG_CS,REG_SS,REG_DS,REG_FS,REG_GS};
             unsigned real=((unsigned)entry<<3)|3u;
             if(load_offset>=0)*i386_reg(uc,(unsigned)load_offset)=offset;
