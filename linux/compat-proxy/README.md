@@ -623,14 +623,12 @@ address-space, descriptor and cache-space exhaustion can still fail calls.
 
 Remaining compatibility gaps:
 
-- The loader accepts ELFCLASS64/EM_X86_64 only, and its filter kills other
-  syscall architectures. **This does not make Steam's 32-bit client work.**
-  i386 needs an ELF32 loader, 32-bit signal/register and raw-syscall gateways,
-  a copied i386 policy and IPC ABI translations. Those translations include
-  ipc(117), semget/semctl(393/394), shmget/shmctl/shmat/shmdt(395–398),
-  msgget/msgsnd/msgrcv/msgctl(399–402), and semtimedop_time64(420), as well as
-  old multiplexer argument/structure/time layouts. Merely adding numbers
-  to the present x86_64 dispatch is insufficient. x32 is also unsupported.
+- i386 payloads run under their own ELF32 proxy (static and dynamic, 64<->32
+  exec handoff, dual-architecture filters, mixed-class SysV IPC; see "Round
+  30 run 3" and "run 4" below). x32 is rejected. What i386 still lacks is
+  outside the proxy: the in-process GPU forwarders and thread adoption are
+  x86_64 only (32-bit GPU is planned via Mesa Venus to a 64-bit render
+  server), and Flatpak's i386 compat extensions are untested end to end.
 - SHM_LOCK/SHM_UNLOCK return ENOSYS, SHM_HUGETLB returns EOPNOTSUPP, MSG_COPY
   returns ENOSYS. SHM_INFO reports allocated pages and object count but does
   not reproduce resident/swap statistics.
@@ -739,6 +737,10 @@ in a sandbox forbidding host sockets. Device validation is pending: see
 SELinux or shared-file changes are required.
 
 ### Round 30: i386 design and P1 gate (support not implemented)
+
+*Historical: written before i386 support landed. The filter and loader gaps
+described here were closed in runs 3 and 4 below (abd18d8, 8a9e02d); the design
+notes remain as reference.*
 
 P0 chooses a separate freestanding ELF32/EM_386 resident proxy, sharing C
 algorithms with the ELF64 build through explicit ABI adapters. Build it with
@@ -911,6 +913,8 @@ of those gates for a future implementation.
 
 
 ### Round 30 unrestricted rerun: partial architecture extraction
+
+*Historical: the i386 loader and P2/P3 were implemented in runs 3 and 4 below.*
 
 The earlier runner failure above is superseded: native ELF32 exit and
 stat64/open/read/write fixtures now pass without the Codex sandbox. The P1
