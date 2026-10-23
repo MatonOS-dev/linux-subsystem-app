@@ -72,7 +72,7 @@ final class V3Launcher {
         if (new File(cache, "v3-trace").exists()) command.add("--trace");
         if (context.checkSelfPermission(android.Manifest.permission.INTERNET) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            LoaderCommand.addDns(command, dns, WorkDirs.root(context));
+            LoaderCommand.addDns(command, dns);
         }
         File commandSocket=new File(runtime.directory(),"host-command");
         if(commandSocket.exists()&&!commandSocket.delete())throw new java.io.IOException("Cannot remove stale command socket");

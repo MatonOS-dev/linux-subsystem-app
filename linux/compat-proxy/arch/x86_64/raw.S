@@ -14,6 +14,40 @@ proxy_raw:
 .global proxy_raw_after
 proxy_raw_after:
     ret
+.global proxy_raw_clone_thread
+.type proxy_raw_clone_thread,@function
+proxy_raw_clone_thread:
+    /* (flags, stack_top, entry, arg); child starts on the supplied stack. */
+    push %r12
+    push %r13
+    mov %rdx,%r12
+    mov %rcx,%r13
+    mov %rdi,%rax
+    mov %rsi,%rdi
+    mov %rsi,%rsi
+    mov %rsi,%rsi
+    /* clone(flags, child_stack, parent_tid, child_tid, tls) */
+    mov %rax,%rdi
+    mov %rsi,%rsi
+    xor %edx,%edx
+    xor %r10d,%r10d
+    xor %r8d,%r8d
+    mov $56,%eax
+    syscall
+.global proxy_raw_clone_after
+proxy_raw_clone_after:
+    test %rax,%rax
+    jz 2f
+    pop %r13
+    pop %r12
+    ret
+2:
+    mov %r13,%rdi
+    call *%r12
+    mov %eax,%edi
+    mov $60,%eax
+    syscall
+    ud2
 .global proxy_restore
 .type proxy_restore,@function
 proxy_restore:
@@ -80,13 +114,12 @@ proxy_clone_after:
     pop %rax
     lea 128(%rsp),%rsp
     jmp *proxy_clone_resume(%rip)
-/* raw.S is also linked by standalone IPC tests with no proxy DNS state. */
-.weak dns_fork_result
-.type dns_fork_result,@function
-dns_fork_result:
-    ret
 .weak adopt_fork_child
 .type adopt_fork_child,@function
 adopt_fork_child:
+    ret
+.weak dns_fork_result
+.type dns_fork_result,@function
+dns_fork_result:
     ret
 .section .note.GNU-stack,"",@progbits

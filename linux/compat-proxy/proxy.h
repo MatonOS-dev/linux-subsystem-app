@@ -33,7 +33,6 @@ void proxy_host_snapshot(char *const *);
 extern int proxy_diagnostic_fd;
 int proxy_diagnostics_init(void);
 int proxy_dns_forwarder(const char *);
-int proxy_dns_socket(const char *);
 int proxy_mount(const char *, const char *);
 const char *proxy_path(const char *, char *, size_t);
 void proxy_log(const char *, long, long);

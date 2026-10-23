@@ -7,7 +7,6 @@ static dependency set are linked with musl as static PIEs, then the Flatpak,
 OSTree and bubblewrap CLI objects are relinked through `make-multicall.py`.
 The result is packaged as `libmatonos-flatpak.so`; `tools/build-flatpak-helpers.sh`
 builds the `libmatonos-app-flatpak.so` launcher with the same static musl
-toolchain. Both keep their installed names for APK compatibility.
 
 Use the repository root `build.sh --build-dependencies` entry point. Source,
 build and output directories stay under the Alpine scratch tree; set
@@ -25,4 +24,4 @@ comes from the filtered MatonOS device repository. Image-only store applets
 and their helper sources are excluded. Per-app launch wrappers are compiled
 from ../matonos-app-tool.c by tools/build-flatpak-helpers.sh. The former
 Bionic compatibility header and Android resolver hooks are not part of this
-build; installer DNS comes from the existing per-app musl DNS forwarder.
+build; installer DNS is handled per process by the compat proxy.
