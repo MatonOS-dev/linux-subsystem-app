@@ -14,7 +14,11 @@ void maton_test_symbol(void) {}
 EOF
 rm -f "$OUT/libGLX_maton.so"
 cp "$OUT/libGLX_maton.so.0" "$OUT/libGLX_maton.so"
+cc -m32 -march=corei7 -shared -nostdlib -Wl,-soname,libmaton_vulkan_i386.so -o "$OUT/libmaton_vulkan_i386.so" -x c - <<'EOF'
+void maton_i386_test_symbol(void) {}
+EOF
 python3 "$ROOT/linux/gl-maton/build.py" "$OUT/extension" \
-  "$OUT/libmaton_vulkan.so" "$OUT/libEGL_maton.so" --glx "$OUT/libGLX_maton.so.0" --branch 26.08
+  "$OUT/libmaton_vulkan.so" "$OUT/libEGL_maton.so" --glx "$OUT/libGLX_maton.so.0" \
+  --vulkan-i386 "$OUT/libmaton_vulkan_i386.so" --branch 26.08
 python3 "$ROOT/linux/gl-maton/tests/verify.py" "$OUT/extension"
 echo 'PASS Maton Flatpak GL extension layout, metadata and OSTree pack'

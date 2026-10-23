@@ -16,7 +16,7 @@ def run(*args):
     subprocess.run(args, check=True, stdout=subprocess.PIPE, text=True)
 
 
-def build(out, vulkan, egl, glx, branch):
+def build(out, vulkan, egl, glx, branch, vulkan_i386):
     out = pathlib.Path(out).resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
@@ -25,6 +25,8 @@ def build(out, vulkan, egl, glx, branch):
     (files / "glvnd/egl_vendor.d").mkdir(parents=True)
     (files / "vulkan/icd.d").mkdir(parents=True)
     shutil.copy2(vulkan, files / "lib/libmaton_vulkan.so")
+    if vulkan_i386:
+        shutil.copy2(vulkan_i386, files / "lib/libmaton_vulkan_i386.so")
     shutil.copy2(egl, files / "lib/libEGL_maton.so")
     shutil.copy2(glx, files / "lib/libGLX_maton.so.0")
     (files / "lib/libGLX_maton.so").write_bytes((files / "lib/libGLX_maton.so.0").read_bytes())
@@ -32,6 +34,11 @@ def build(out, vulkan, egl, glx, branch):
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libmaton_vulkan.so",\n'
         '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
+    if vulkan_i386:
+        (files / "vulkan/icd.d/maton_icd_i386.json").write_text(
+            '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
+            '    "library_path": "libmaton_vulkan_i386.so",\n'
+            '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
     (files / "glvnd/egl_vendor.d/10_maton.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
@@ -74,8 +81,9 @@ if __name__ == "__main__":
     parser.add_argument("vulkan")
     parser.add_argument("egl")
     parser.add_argument("--glx", required=True, help="built libGLX_maton.so")
+    parser.add_argument("--vulkan-i386", help="freestanding ELF32 Vulkan forwarder")
     parser.add_argument("--branch", default="26.08")
     args = parser.parse_args()
     if not args.branch or "/" in args.branch:
         parser.error("invalid runtime extension branch")
-    build(args.out, args.vulkan, args.egl, args.glx, args.branch)
+    build(args.out, args.vulkan, args.egl, args.glx, args.branch, args.vulkan_i386)

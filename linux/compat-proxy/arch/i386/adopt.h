@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdatomic.h>
-#include <asm/ldt.h>
 
 /* Keep the v2 API prefix in lockstep with the x86_64 provider. i386 cannot
  * key by a TLS base: GS is a selector, often the same virtual selector on
@@ -17,6 +16,8 @@ struct adopt_thread {
     _Atomic unsigned scope_state; /* 0=app, 1=transition, 2=Android TLS */
     _Atomic unsigned scope_depth;
 };
+struct adopt_scope;
+struct user_desc;
 struct adopt_api {
     unsigned version;
     struct adopt_thread *(*current)(void);
@@ -25,6 +26,10 @@ struct adopt_api {
     _Atomic unsigned clones, clone3s;
     size_t (*live)(void);
     _Atomic unsigned fork_prepares, fork_parents, fork_children, vforks;
+    /* Vulkan/EGL forwarders use these appended v2 hooks to enter bionic's
+     * GS TLS scope without duplicating the proxy's reserved-GDT lifecycle. */
+    int (*switch_in)(struct adopt_scope *);
+    void (*switch_out)(struct adopt_scope *);
 };
 struct adopt_scope {
     struct adopt_thread *thread;

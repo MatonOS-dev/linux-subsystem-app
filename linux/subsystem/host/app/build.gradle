@@ -51,7 +51,8 @@ def vulkanOutput = System.getenv('MATON_VULKAN_OUT') ?: "$aospRoot/out/matonos/v
 def vulkanHeaders = System.getenv('MATON_VULKAN_HEADERS') ?: "$vulkanOutput/src/Vulkan-Headers-1.4.341"
 def buildVulkanForward = tasks.register('buildVulkanForward', Exec) {
     inputs.files fileTree('../../../vulkan-forward') { exclude 'build/**' }
-    outputs.files new File(vulkanOutput, 'libmaton_vulkan.so'), new File(vulkanOutput, 'maton_icd.json')
+    outputs.files new File(vulkanOutput, 'libmaton_vulkan.so'), new File(vulkanOutput, 'maton_icd.json'),
+            new File(vulkanOutput, 'i386/libmaton_vulkan.so')
     outputs.upToDateWhen { false }
     environment 'CMAKE', System.getenv('CMAKE') ?: '/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake'
     commandLine 'bash', file('../../../vulkan-forward/build.sh').absolutePath, vulkanOutput, vulkanHeaders
@@ -97,6 +98,7 @@ def buildGlMaton = tasks.register('buildGlMaton', Exec) {
     commandLine 'python3', file('../../../gl-maton/build.py').absolutePath,
             glMatonOutput.absolutePath, new File(vulkanOutput, 'libmaton_vulkan.so').absolutePath,
             new File(eglOutput, 'libEGL_maton.so').absolutePath,
+            '--vulkan-i386', new File(vulkanOutput, 'i386/libmaton_vulkan.so').absolutePath,
             '--glx', new File(glxOutput, 'libGLX_maton.so.0').absolutePath,
             // Template branch only: the stub rewrites metadata/deploy for each app's runtime.
             '--branch', '26.08'

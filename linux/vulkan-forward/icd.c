@@ -82,12 +82,19 @@ static int mv_init(void) {
     if(!mv_bridge) {static const char m[]="maton-vulkan: bootstrap bridge pointer missing\n";mv_write(m,sizeof(m)-1);}
     if(!mv_adopt) {static const char m[]="maton-vulkan: bootstrap adoption pointer missing\n";mv_write(m,sizeof(m)-1);}
     if(mv_bridge && mv_bridge->version!=2) {static const char m[]="maton-vulkan: bootstrap bridge version invalid\n";mv_write(m,sizeof(m)-1);}
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__i386__)
     if(mv_adopt && mv_adopt->version!=2) {static const char m[]="maton-vulkan: adoption API version invalid\n";mv_write(m,sizeof(m)-1);}
 #endif
     struct mv_scope s;
     if(mv_bridge && mv_bridge->version==2 && mv_enter(&s)) {
-        void *lib=mv_bridge->open("/system/lib64/libvulkan.so",2);
+#if defined(__i386__)
+        const char *vulkan_path="/system/lib/libvulkan.so";
+        const char *android_path="/system/lib/libandroid.so";
+#else
+        const char *vulkan_path="/system/lib64/libvulkan.so";
+        const char *android_path="/system/lib64/libandroid.so";
+#endif
+        void *lib=mv_bridge->open(vulkan_path,2);
         if(!lib) {
             static const char m[]="maton-vulkan: bridge open libvulkan failed: ";mv_write(m,sizeof(m)-1);
             const char *e=mv_bridge->error?mv_bridge->error():0;
@@ -97,7 +104,7 @@ static int mv_init(void) {
         mv_trace_result("maton-vulkan: bridge libvulkan",lib?0:-1,0);
         if(lib)mv_gipa=(PFN_vkGetInstanceProcAddr)mv_bridge->symbol(lib,"vkGetInstanceProcAddr");
         if(lib && !mv_gipa) {static const char m[]="maton-vulkan: vkGetInstanceProcAddr symbol missing\n";mv_write(m,sizeof(m)-1);}
-        void *android=mv_bridge->open("/system/lib64/libandroid.so",2);
+        void *android=mv_bridge->open(android_path,2);
         if(android) {
             mv_ahb_native_handle=(void *)mv_bridge->symbol(android,"AHardwareBuffer_getNativeHandle");
             mv_ahb_describe=(void *)mv_bridge->symbol(android,"AHardwareBuffer_describe");

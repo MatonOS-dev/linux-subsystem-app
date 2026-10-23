@@ -10,6 +10,9 @@ flags=(-std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -fno-stack-protector -I"$
 "$out/runtime-test"
 "$cc" "${flags[@]}" "$here/tests/abi-test.c" -o "$out/abi-test"
 "$out/abi-test"
+"$cc" -m32 -march=corei7 -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-stack-protector \
+  -I"$here" -c "$here/tests/abi-i386-test.c" -o "$out/abi-i386-test.o"
+echo 'PASS i386 adoption API and GS scope ABI offsets'
 "$cc" "${flags[@]}" -I"$headers/include" "$here/tests/query-test.c" -ldl -o "$out/query-test"
 env -u MATON_GPU_BRIDGE -u MATON_THREAD_ADOPT "$out/query-test" "$out/libmaton_vulkan.so"
 "$cc" "${flags[@]}" "$here/tests/switch-bench.c" "$here/runtime.c" -o "$out/switch-bench"

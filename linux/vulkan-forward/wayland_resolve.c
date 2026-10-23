@@ -4,6 +4,20 @@
 
 #include <elf.h>
 
+/* This process image is ELF32 when Flatpak launches an i386 payload. Keep
+ * the same resolver logic, but use the runtime loader's native class. */
+#if defined(__i386__)
+#define Elf64_Addr Elf32_Addr
+#define Elf64_Dyn Elf32_Dyn
+#define Elf64_Ehdr Elf32_Ehdr
+#define Elf64_Phdr Elf32_Phdr
+#define Elf64_Sym Elf32_Sym
+#define Elf64_Xword Elf32_Word
+#define MV_ELF_CLASS ELFCLASS32
+#else
+#define MV_ELF_CLASS ELFCLASS64
+#endif
+
 struct mv_link_map {
     Elf64_Addr addr;
     char *name;
@@ -166,7 +180,7 @@ static void *from_maps(const char *name) {
     }
     if(matched && start && low<high) {
             Elf64_Ehdr *eh=(Elf64_Ehdr *)start;
-            if(contains(low,high,(Elf64_Addr)eh,sizeof(*eh)) && !memcmp(eh->e_ident,ELFMAG,SELFMAG) && eh->e_ident[EI_CLASS]==ELFCLASS64) {
+            if(contains(low,high,(Elf64_Addr)eh,sizeof(*eh)) && !memcmp(eh->e_ident,ELFMAG,SELFMAG) && eh->e_ident[EI_CLASS]==MV_ELF_CLASS) {
                 Elf64_Phdr *ph=(void *)(start+eh->e_phoff);Elf64_Addr bias=start;
                 for(unsigned i=0;i<eh->e_phnum;i++)if(ph[i].p_type==PT_LOAD && ph[i].p_offset==0){bias=start-(ph[i].p_vaddr&~(Elf64_Addr)4095);break;}
                 Elf64_Dyn *dynamic=0;

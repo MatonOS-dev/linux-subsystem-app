@@ -79,9 +79,13 @@ Missing publication/adoption fails with a diagnostic, not a wrong-TLS call.
 Read access to the process's maps is required; unavailable proc access fails
 closed. This discovery is process-local plumbing, not a security boundary.
 
-Only `arch/x86_64/backend.h` contains CPU instructions/syscall numbers. The
-backend switches only the FS pointer while resident Android Vulkan calls run.
-Compiler atomic builtins provide synchronization. Arm64/riscv64 backends are
+Architecture backends contain the CPU instructions and syscall numbers. The
+x86_64 backend switches the FS pointer while resident Android Vulkan calls run.
+The i386 backend uses `int 0x80`, ELF32 and `/system/lib` Android libraries; it
+enters bionic TLS through the appended v2 adoption `switch_in`/`switch_out`
+hooks, which own the reserved-GDT selector lifecycle. Its ICD is built for the
+`corei7` ISA level and has its own manifest. Compiler atomic builtins provide
+synchronization. Arm64/riscv64 backends are
 compile-only, fail-closed slots; the core, validators and generated thunks compile
 for both targets, but runtime TPIDR_EL0/tp switching/adoption is not implemented.
 
@@ -108,10 +112,11 @@ bash linux/vulkan-forward/tests/run.sh "$OUT/build" "$HEADERS"
 bash linux/vulkan-forward/tests/build-offscreen.sh "$OUT/tests" "$HEADERS" "$OUT/loader-build"
 ```
 
-`build.sh` checks ELF dependencies and cross-compiles runtime/core/generated code
-for aarch64-linux-gnu and riscv64-linux-gnu. `tests/run.sh` checks the three exports,
-zero undefined symbols, helper/allocator behavior (8 threads × 1,000 iterations),
-adoption ABI offsets, and absent-bridge refusal. Test shaders are compiled to
+`build.sh` checks the x86_64 and i386 ELF dependencies/exports and cross-compiles
+runtime/core/generated code for aarch64-linux-gnu and riscv64-linux-gnu.
+`tests/run.sh` checks both ICDs, the x86_64 and i386 adoption ABI offsets,
+helper/allocator behavior (8 threads × 1,000 iterations), and absent-bridge
+refusal. Test shaders are compiled to
 SPIR-V and embedded at build time; this run used glslang 15.1.0.
 
 Build `gpu-forward-spike/spike3/build-android.sh` from an external scratch copy of
@@ -162,7 +167,8 @@ libc independence with a dynamic musl loader; details are in STAGE-C.md. Desktop
 presentation still requires the later WSI/ANativeWindow/AHB work.
 
 Production packaging is wired through the host APK build. `linux/gl-maton/`
-builds the forwarder into `org.freedesktop.Platform.GL.maton`, mounted at
+packages both `libmaton_vulkan.so` and ELF32 `libmaton_vulkan_i386.so`, with
+separate ICD manifests, into `org.freedesktop.Platform.GL.maton`, mounted at
 `/usr/lib/x86_64-linux-gnu/GL/maton`. The launcher selects it through
 `FLATPAK_GL_DRIVERS=maton:default` and passes `--gpu-bridge` to the
 Android-linked production loader. The ICD manifest follows the runtime's
@@ -172,9 +178,11 @@ The forwarder then calls the Android Vulkan loader and its selected device
 grant. This path is offscreen only: desktop presentation remains the separate
 WSI stage.
 
-Still unverified: real GPU drivers, signal/reentrant calls during a
-switched-TLS call, extension execution beyond the exercised paths, allocation
-failure injection, and runtime architectures other than x86_64. The Flatpak
+Still unverified: i386 device runtime, real GPU drivers, signal/reentrant calls
+during a switched-TLS call, extension execution beyond the exercised paths, and
+allocation failure injection. i386 device testing also depends on the subsystem
+launcher registering Android TLS for every adopted i386 thread before entering
+the payload. The Flatpak
 acceptance check must use the actual stub launch path on a freshly booted image.
 No shared-tree or kernel changes are required.
 

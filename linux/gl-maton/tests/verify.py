@@ -29,9 +29,11 @@ rows = pack.read_index(root / "objects.index")
 paths = {row["path"]: row for row in rows}
 expected = {
     "/lib/libmaton_vulkan.so",
+    "/lib/libmaton_vulkan_i386.so",
     "/lib/libEGL_maton.so",
     "/lib/libGLX_maton.so.0",
     "/vulkan/icd.d/maton_icd.json",
+    "/vulkan/icd.d/maton_icd_i386.json",
     "/glvnd/egl_vendor.d/10_maton.json",
 }
 assert expected <= paths.keys(), paths.keys()
@@ -46,5 +48,7 @@ def payload(path):
 
 assert '"library_path": "libmaton_vulkan.so"' in payload(
     "/vulkan/icd.d/maton_icd.json")
+assert '"library_path": "libmaton_vulkan_i386.so"' in payload(
+    "/vulkan/icd.d/maton_icd_i386.json")
 assert '"library_path": "libEGL_maton.so"' in payload("/glvnd/egl_vendor.d/10_maton.json")
 assert (root / "objects.ostree").read_bytes().startswith(b"MTPKOBJ1")

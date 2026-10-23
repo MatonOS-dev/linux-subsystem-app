@@ -86,6 +86,8 @@ static struct adopt_api api = {
     .lookup = NULL,
     .identity = identity,
     .live = live,
+    .switch_in = adopt_switch_in,
+    .switch_out = adopt_switch_out,
 };
 struct adopt_api *adopt_api_get(void) { return &api; }
 uintptr_t adopt_api_address(void) { return (uintptr_t)&api; }
