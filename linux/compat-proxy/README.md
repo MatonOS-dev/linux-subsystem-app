@@ -1469,3 +1469,22 @@ rejection. Selector-load remapping on SIGSEGV is not complete: the attempted
 FS-load test failed, so payloads cannot yet use LDT descriptors. The required
 three-slot multi-thread/signal test also remains open because this host could
 not claim the extra physical GDT slot.
+
+### i386 thread-adoption backend (2026-10-23)
+
+`arch/i386/thread-adopt.c` provides the version-2 adoption API prefix and
+GS switch scopes for i386 forwarders. It keys registered threads by kernel
+TID because a GS selector is not a unique thread identity. The thread creator
+must call `adopt_register_current()` with that thread's bionic TLS block before
+entering Linux payload code. A switch claims the proxy's reserved TLS entry,
+loads its returned selector, and on exit releases the entry before reloading
+the saved application selector (the descriptor update alone does not refresh
+the CPU's hidden GS cache). Nested calls already using the Android selector
+are left in that scope.
+
+The host acceptance test uses per-thread LDT descriptors to exercise the
+same selector/descriptor lifecycle, including six threads and a signal handler.
+It does not exercise the proxy's real GDT claim hook. The i386 loader still
+needs clone/thread lifecycle wiring to register bionic TLS for every adopted
+thread; i386 graphics forwarders also need their own `switch_to_android()`
+wrapper using this scope API. No VM or Android runtime test was run.
