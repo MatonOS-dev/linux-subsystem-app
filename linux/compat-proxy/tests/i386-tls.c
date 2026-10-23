@@ -7,6 +7,9 @@ extern int pthread_join(unsigned long,void **);
 extern long syscall(long,...);
 extern long write(int,const void *,unsigned long);
 extern void _exit(int);
+extern void (*signal(int,void (*)(int)))(int);
+extern int raise(int);
+#define TEST_SIGSEGV 11
 
 /* Linux's 32-bit asm/ldt.h wire structure. Some hosts lack multilib headers. */
 struct user_desc {
@@ -23,6 +26,8 @@ struct user_desc {
 
 static __thread volatile int thread_value;
 static volatile int threads_ready;
+static volatile int segv_chained;
+static void app_segv(int sig) { if(sig==TEST_SIGSEGV)segv_chained++; }
 
 static void check(int ok, const char *what) {
     if (!ok) {
@@ -74,11 +79,22 @@ int main(void) {
     check(syscall(123,0,raw,sizeof(raw))==sizeof(raw),"modify_ldt read");
     check(raw[8]!=0 || raw[9]!=0 || raw[10]!=0 || raw[11]!=0,
           "modify_ldt read returns stored descriptor");
+    check(signal(TEST_SIGSEGV,app_segv)!=((void (*)(int))-1),"install app SIGSEGV handler");
+    check(raise(TEST_SIGSEGV)==0 && segv_chained==1,"proxy chains non-LDT SIGSEGV to app handler");
+    unsigned short old_fs,ldt_selector=(1u<<3)|7u;
+    uint32_t ldt_loaded=0;
+    __asm__ volatile("mov %%fs,%0\n\t"
+                     "movw %2,%%fs\n\t"
+                     "movl %%fs:0,%1\n\t"
+                     "mov %0,%%fs"
+                     :"=r"(old_fs),"=r"(ldt_loaded)
+                     :"m"(ldt_selector):"memory");
+    check(ldt_loaded==value,"LDT FS selector remapped and reads descriptor base");
     ldt.contents=2;
     check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects code descriptors");
     ldt.contents=0;ldt.seg_32bit=0;
     check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects 16-bit descriptors");
-    static const char pass[]="PASS i386 pthread TLS, set/get_thread_area, and GS selector read\n";
+    static const char pass[]="PASS i386 pthread TLS, set/get_thread_area, GS read, modify_ldt, LDT FS remap, and SIGSEGV chaining\n";
     write(1,pass,sizeof(pass)-1);
     return 0;
 }
