@@ -80,6 +80,17 @@ for ext in egl_root.findall("./extensions/extension"):
                 egl.append((target, egl_commands[target]))
 gles = commands(gl_xml, "gles2", (3, 2))
 desktop = commands(gl_xml, "gl", (4, 6), profile="compatibility")
+# EXT framebuffer binds are deliberately not registry aliases of core binds
+# (EXT permits creating names on bind). SFML uses the EXT spelling throughout
+# atlas growth; exposing only its aliased siblings leaves bind as a no-op.
+gl_root = ET.parse(gl_xml).getroot()
+gl_commands = {c.findtext("./proto/name"): c for c in gl_root.findall("./commands/command")}
+for ext in gl_root.findall("./extensions/extension"):
+    if ext.get("name") == "GL_EXT_framebuffer_object":
+        for entry in ext.findall("./require/command"):
+            name = entry.get("name")
+            if name not in {n for n, _ in desktop}:
+                desktop.append((name, gl_commands[name]))
 exposed = {name for name, _ in egl + gles + desktop}
 # glXGetProcAddress accepts extension spellings as well as promoted core
 # names.  The registry's alias declarations describe these as the same ABI;
@@ -142,15 +153,15 @@ def emit_group(path, items, prefix, library):
             lines += ["    return (" + ret + ")0;", "}"]
             names.append(name)
             continue
-        lines.append(f"static uintptr_t mv_cache_{name};")
+        lines.append(f"static uintptr_t mv_cache_{internal};")
         # Function pointer declarators in Khronos parameters are uncommon but
         # retain the registry declaration as the call prototype when present.
         lines += [f"static __attribute__((unused)) {ret} {internal}({proto}) {{",
                   "    struct mv_scope scope;",
                   "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
                   f'    typedef {ret} (*fn_t)({proto});',
-                  f"    fn_t fn = (fn_t)__atomic_load_n(&mv_cache_{name}, __ATOMIC_ACQUIRE);",
-                  f'    if (!fn) {{ fn = (fn_t)mv_resolve("{name}", {library}); if (fn) __atomic_store_n(&mv_cache_{name}, (uintptr_t)fn, __ATOMIC_RELEASE); }}',
+                  f"    fn_t fn = (fn_t)__atomic_load_n(&mv_cache_{internal}, __ATOMIC_ACQUIRE);",
+                  f'    if (!fn) {{ fn = (fn_t)mv_resolve("{name}", {library}); if (fn) __atomic_store_n(&mv_cache_{internal}, (uintptr_t)fn, __ATOMIC_RELEASE); }}',
                   "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
                   *([f"    {ret} ret = fn({args});"] if ret != "void" else [f"    fn({args});"]),
                   "    switch_back(&scope);",

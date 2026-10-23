@@ -17,3 +17,5 @@ cc=${CC:-cc}
 # Keep the on-device depth/stencil regression probe buildable on developer hosts.
 "$cc" -std=c11 -O2 "$ROOT/glx-forward/tests/depth-stencil.c" \
   -o "$OUT/depth-stencil-test" -lGL -lX11
+"$cc" -std=c11 -O2 "$ROOT/glx-forward/tests/atlas2.c" \
+  -o "$OUT/atlas2-test" -lGL -lX11
