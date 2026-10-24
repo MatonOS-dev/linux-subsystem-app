@@ -618,3 +618,37 @@ intervening instruction remains visible to CRC32C. The regression fixture first
 failed against full-window normalization, then passed with this check. Resident
 exec also retains its original real cache root when Flatpak changes
 XDG_CACHE_HOME to a virtual sandbox path.
+
+### Residual startup costs and reproducible measurements
+
+Lazy lookup now exits after the containing symbol; FDE lookup tests the trapped
+address before expensive overlap checks. Logging includes scan time, encoding,
+active status and per-process active site counts. The fcntl entry preserves
+F_GETFD/F_SETFD's native bypass without FP save/C dispatch; an app seccomp TRAP
+at that native entry still chains to the app handler. Arena lookup can reuse
+the existing proven stack-page owner instead of repeatedly calling gettid;
+unknown/ambiguous pages keep the raw lookup. Six-thread, fork, signal and
+nested-filter tests cover these paths.
+
+`tests/flatpak-rewrite-ab.py INSTALL OUTPUT` runs an isolated pre-populated
+installation with native/off/on routes, per-process sampled peak RSS, a timeout,
+and logs for every run. It uses pidfd readiness to avoid adding a polling tick
+to elapsed time. `--no-vulkan-driver` selects the old incompatible-driver case;
+`--route on --patch-log --runs 2` measures first/second launch and publications.
+`tests/site-coverage-live.c` exercises main-thread and pthread wrappers before
+reporting live syscall/call-RAX byte counts, using ELF symbol bounds on glibc
+and musl. These counts describe exercised symbols, not whole-libc coverage.
+
+The current isolated installation has VulkanInfo commit
+70cf1f60ab232fbbea5cd4246262b0ca72630fe97cf0b35f41502c7b23ae7b04.
+The required full pull updated the original 1b installation and installed a
+software Vulkan driver extension. Thus current numbers are paired route A/Bs,
+not an exact before/after reproduction of 1b's older app/runtime installation.
+The no-driver case explicitly sets VK_DRIVER_FILES=/nonexistent inside Flatpak.
+
+Performance remains an open issue: default-on is retained as requested, but
+these host repetitions do not establish on < off consistently. A trial leaving
+all generic fcntl sites unpatched also failed to establish that target, so that
+coverage reduction was discarded. Do not present the implementation as having
+met the whole-workload speed target. The detailed timings and limitations are
+in the task's final report under out/pc-logs/agents/site-rewrite-2.final.md.

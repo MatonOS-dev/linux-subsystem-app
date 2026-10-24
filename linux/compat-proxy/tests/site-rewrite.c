@@ -76,12 +76,16 @@ static void nested(void){
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
         BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,SYS_newfstatat,0,1),
         BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,SYS_fcntl,0,1),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_TRAP),
         BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
     };
     struct sock_fprog filter={sizeof(code)/sizeof(code[0]),code};
     assert(!prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0));
     assert(!prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&filter));
     struct stat st;assert(rw_stat(AT_FDCWD,"/etc/hosts",&st,0)==-EPERM);
+    assert(rw_fcntl(0,F_GETFD,0)==-EPERM);
+    assert(rw_fcntl(0,F_SETFD,0)==-EPERM);
     _exit(0);
 }
 static void protected_file(const char *path,int enabled){

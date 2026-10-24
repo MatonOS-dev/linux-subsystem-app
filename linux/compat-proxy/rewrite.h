@@ -18,6 +18,7 @@ struct rewrite_site {uint32_t offset;unsigned nr,window;unsigned char original[1
 struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice,target;size_t size,count,capacity,function_offset,function_size;uint32_t function_crc;struct rewrite_site *sites;};
 static struct rewrite_scan *rewrite_scans;
 static unsigned rewrite_busy;
+static int proxy_rewrite_internal_site(uintptr_t pc){return arch_rewrite_internal_site(pc);}
 static int proxy_rewrite_traps(long nr){return rewrite_enabled && (nr==PROXY_SC_mprotect || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap);}
 static uint64_t rewrite_clock(void){
     struct {int64_t sec,nsec;} t={0};
@@ -44,7 +45,7 @@ static unsigned rewrite_apply(uintptr_t addr,unsigned nr,unsigned w,const unsign
     __atomic_store_n(&rewrite_records,record,__ATOMIC_RELEASE);
     if(RAW(PROXY_SC_mprotect,page,4096,PROT_READ|PROT_EXEC,0,0,0)>=0 &&
        RAW(PROXY_SC_mremap,page,4096,4096,MREMAP_MAYMOVE|MREMAP_FIXED,addr&~(uintptr_t)4095,0)>=0){
-        if(rewrite_log){crash_text("v3 rewrite patch path=");crash_text(record->path);proxy_log("rewrite-address",addr,nr);proxy_log("rewrite-offset",record->offset,record->sequence);}
+        if(rewrite_log){crash_text("v3 rewrite patch path=");crash_text(record->path);crash_text("\n");proxy_log("rewrite-address",addr,nr);proxy_log("rewrite-offset",record->offset,record->sequence);}
         return 1;
     }
     record->active=0;
@@ -245,10 +246,12 @@ static void rewrite_fde_ranges(const unsigned char *ehdata,size_t ehn,uint64_t e
                     for(unsigned si=0;si<nsections;si++){
                         const Elf64_Shdr *text=&sections[si];
                         if(text->sh_type!=SHT_PROGBITS || (text->sh_flags&(SHF_EXECINSTR|SHF_ALLOC))!=(SHF_EXECINSTR|SHF_ALLOC) || pc<text->sh_addr || pc-text->sh_addr>text->sh_size || range>text->sh_size-(pc-text->sh_addr))continue;
-                        int named=0;for(size_t j=0;j<nsymbols;j++)if(ELF64_ST_TYPE(symbols[j].st_info)==STT_FUNC && symbols[j].st_shndx==si && symbols[j].st_size && symbols[j].st_value<pc+range && symbols[j].st_value+symbols[j].st_size>pc){named=1;break;}
-                        if(named)break;
                         uint64_t file=text->sh_offset+(pc-text->sh_addr);
                         if(file<mapoff || file-mapoff>mapsize || range>mapsize-(file-mapoff))break;
+                        uintptr_t function=begin+(uintptr_t)(file-mapoff);
+                        if(rewrite_target<function || rewrite_target-function>=range)break;
+                        int named=0;for(size_t j=0;j<nsymbols;j++)if(ELF64_ST_TYPE(symbols[j].st_info)==STT_FUNC && symbols[j].st_shndx==si && symbols[j].st_size && symbols[j].st_value<pc+range && symbols[j].st_value+symbols[j].st_size>pc){named=1;break;}
+                        if(named)break;
                         Elf64_Sym synthetic={.st_value=pc,.st_size=range,.st_shndx=(Elf64_Section)si,.st_info=ELF64_ST_INFO(STB_LOCAL,STT_FUNC)};
                         rewrite_function((unsigned char *)(begin+(uintptr_t)(file-mapoff)),(size_t)range,scan,begin,&synthetic,symbols,nsymbols);break;
                     }
@@ -328,6 +331,8 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
         if(f<offset || f-offset>=size || sym.st_size>size-(f-offset))continue;
         if(rewrite_target<begin+f-offset || rewrite_target-(begin+f-offset)>=sym.st_size)continue;
         patched+=rewrite_function((unsigned char *)(begin+(uintptr_t)(f-offset)),sym.st_size,scan,begin,&sym,symbols,used/sizeof(*symbols));
+        /* FDE fallback is forbidden for any named range, even a rejected one. */
+        goto cleanup;
     }
     if(eh.e_shstrndx<eh.e_shnum){
         Elf64_Shdr *names=&sections[eh.e_shstrndx];
@@ -355,7 +360,7 @@ cleanup:
     vfs_free(symbols);vfs_free(sections);
     if(scan){rewrite_cache_write(scan);scan->next=rewrite_scans;rewrite_scans=scan;}
 done:
-    if(proxy_trace){proxy_log("rewrite-sites",patched,size);proxy_log("rewrite-scan-ns",rewrite_clock()-started,size);}
+    if(proxy_trace || rewrite_log){proxy_log("rewrite-sites",patched,size);proxy_log("rewrite-scan-ns",rewrite_clock()-started,size);}
     __atomic_store_n(&rewrite_busy,0,__ATOMIC_RELEASE);
 }
 static void rewrite_invalidate(uintptr_t,size_t);
@@ -404,13 +409,20 @@ static void rewrite_invalidate(uintptr_t begin,size_t size){
 static void proxy_rewrite_dump(void *context){
     ucontext_t *uc=context;uintptr_t pc=ARCH_CONTEXT(uc,ARCH_PC),sp=ARCH_CONTEXT(uc,ARCH_STACK);
     for(struct rewrite_record *r=__atomic_load_n(&rewrite_records,__ATOMIC_ACQUIRE);r;r=r->next){
-        crash_text("v3 rewrite registry path=");crash_text(r->path);
+        crash_text("v3 rewrite registry path=");crash_text(r->path);crash_text("\n");
         proxy_log("rewrite-site",r->address,r->nr);proxy_log("rewrite-file-offset",r->offset,r->window);
         proxy_log("rewrite-sequence-time",r->sequence,r->time);
+        proxy_log("rewrite-encoding-active",r->original[0]==0xb8?0xb8:0x48c7c0,r->active);
         if((pc>>12)==(r->address>>12))proxy_log("rewrite-fault-page",pc,r->address);
         for(unsigned i=0;i<16;i++){uintptr_t value;if(proxy_copy(&value,(void *)(sp+i*sizeof(value)),sizeof(value)))break;
             if(value==r->ret || (value>>12)==(r->address>>12))proxy_log("rewrite-stack-hit",value,i);}
     }
+}
+static void proxy_rewrite_exit(void){
+    if(!rewrite_log)return;
+    unsigned count=0;
+    for(struct rewrite_record *r=rewrite_records;r;r=r->next)if(r->active)count++;
+    proxy_log("rewrite-process-sites",count,rewrite_sequence);
 }
 /* Track only unpublished, readable, private file mappings. Keep no duplicate
  * descriptor: if the loader closes/reuses it before mprotect, identity failure
@@ -465,7 +477,9 @@ void proxy_rewrite_cache_init(const char *root){(void)root;}
 void proxy_rewrite_relocate(uintptr_t o,uintptr_t d,size_t n){(void)o;(void)d;(void)n;}
 static void proxy_rewrite_trap_site(uintptr_t pc,long nr){(void)pc;(void)nr;}
 static void proxy_rewrite_dump(void *ctx){(void)ctx;}
+static void proxy_rewrite_exit(void){}
 static long rewrite_slow(long nr,proxy_arg_t *a){(void)nr;(void)a;return -ENOSYS;}
+static int proxy_rewrite_internal_site(uintptr_t pc){(void)pc;return 0;}
 static int proxy_rewrite_traps(long nr){(void)nr;return 0;}
 static void proxy_rewrite_after(long nr,proxy_arg_t *a,long r){(void)nr;(void)a;(void)r;}
 int proxy_rewrite_init(const char *s,int logging){(void)logging;(void)s;proxy_log("rewrite-off",0,0);return 0;}

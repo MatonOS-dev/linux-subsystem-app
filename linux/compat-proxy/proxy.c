@@ -195,6 +195,14 @@ static void thread_state_cache_forget(struct thread_state *state){
 }
 void proxy_thread_state_invalidate(void){uintptr_t stack=(uintptr_t)&stack,page=stack&~(uintptr_t)4095;
     for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)if(c->page==page)__atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);}
+/* Allocation hot paths can reuse an already proven stack-page owner without
+ * allocating state or issuing a syscall. Unknown/ambiguous pages return zero. */
+long proxy_stack_tid(uintptr_t sp){
+    uintptr_t page=sp&~(uintptr_t)4095;
+    for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
+        if(c->page==page){struct thread_state *state=__atomic_load_n(&c->state,__ATOMIC_ACQUIRE);return state?state->tid:0;}
+    return 0;
+}
 static void thread_state_cache_invalidate_all(void){
     for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
         __atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);
@@ -1401,7 +1409,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     struct thread_state *direct=NULL;
     if(info->si_code==SYS_SECCOMP &&
        (internal_pc==arch_gateway_pc(0) || internal_pc+2==arch_gateway_pc(0)))direct=thread_state();
-    int internal_trap=direct && direct->direct_depth;
+    int internal_trap=(direct && direct->direct_depth) || proxy_rewrite_internal_site(internal_pc);
     if(info->si_code!=SYS_SECCOMP || internal_trap) {
         if(proxy_trace) {
             emit("v3 signal-delivery sig="); crash_hex(sig);
@@ -1508,8 +1516,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         result=file_dispatch(nr,a);break;
     case PROXY_SC_getdents64:result=file_dispatch(nr,a);break;
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
-    case PROXY_SC_exit:vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit:proxy_rewrite_exit();vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:result=file_dispatch(nr,a);break;

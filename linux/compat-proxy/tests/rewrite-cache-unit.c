@@ -8,6 +8,7 @@ void *vfs_alloc(size_t n){return malloc(n);}
 void vfs_free(void *p){free(p);}
 void p_copy(void *out,const void *in,size_t n){memcpy(out,in,n);}
 int main(void){
+    assert(rewrite_crc((const unsigned char *)"123456789",9)==0xe3069283U);
     unsigned char original[]={0xb8,1,1,0,0,0x49,0x89,0xca,15,5,0xc3};
     unsigned char live[sizeof(original)];memcpy(live,original,sizeof(live));
     struct rewrite_record record={.address=(uintptr_t)live,.window=10,.active=1,.nr=257};

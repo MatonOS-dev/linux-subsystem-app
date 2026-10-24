@@ -4,7 +4,7 @@
 static uintptr_t arch_rewrite_table;
 static int arch_rewrite_init(void) {
     if(arch_rewrite_table)return 1;
-    extern void proxy_rewrite_entry_common(void);
+    extern void proxy_rewrite_entry_common(void),proxy_rewrite_fcntl_entry(void);
     const size_t bytes=512*32;
     long m=RAW(PROXY_SC_mmap,0,bytes,PROT_READ|PROT_WRITE,
                MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT,-1,0);
@@ -14,7 +14,8 @@ static int arch_rewrite_init(void) {
     for(unsigned i=0;i<512;i++){
         unsigned char *s=p+32*i;
         s[0]=0xf3;s[1]=0x0f;s[2]=0x1e;s[3]=0xfa;
-        s[4]=0x49;s[5]=0xbb;p_copy(s+6,&common,8);
+        uintptr_t target=i==72?(uintptr_t)proxy_rewrite_fcntl_entry:common;
+        s[4]=0x49;s[5]=0xbb;p_copy(s+6,&target,8);
         s[14]=0x41;s[15]=0xff;s[16]=0xe3;
     }
     if(RAW(PROXY_SC_mprotect,m,bytes,PROT_READ|PROT_EXEC,0,0,0)<0){
@@ -137,4 +138,9 @@ static void arch_rewrite_patch(unsigned char *p,unsigned nr,unsigned window){
 static long rewrite_slow(long nr,proxy_arg_t *a){
     extern long proxy_rewrite_trap(long,proxy_arg_t *);
     return proxy_rewrite_trap(arch_encode_syscall(nr),a);
+}
+
+static int arch_rewrite_internal_site(uintptr_t pc){
+    extern char proxy_rewrite_fcntl_after[];
+    return pc==(uintptr_t)proxy_rewrite_fcntl_after;
 }
