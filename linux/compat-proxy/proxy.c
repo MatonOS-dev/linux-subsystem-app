@@ -63,9 +63,8 @@ static int private_close_fd(int fd){
     return fd==proxy_count_fd || vfs_private_fd(fd) || resident_fd_owned(fd);
 }
 static struct kernel_action chained;
-#if ARCH_AUDIT == AUDIT_ARCH_I386
 static struct kernel_action chained_segv;
-#endif
+static void rewrite_segv_handler(int,siginfo_t *,void *);
 int proxy_diagnostics_init(void) {
     if(proxy_diagnostic_fd!=2)return 0;
     /* F_DUPFD keeps the original sink through resident exec, without CLOEXEC.
@@ -94,6 +93,7 @@ void proxy_image_map(uintptr_t lo,uintptr_t hi,uintptr_t offset,const char *path
     p_copy(m->path,path,p_len(path)+1);m->lo=lo;m->hi=hi;m->offset=offset;
     m->next=image_maps;image_maps=m;
 }
+static void proxy_rewrite_dump(void *);
 static void crash_report(int sig,siginfo_t *info,void *context) {
     ucontext_t *uc=context;uintptr_t pc=ARCH_CONTEXT(uc,ARCH_PC);
     crash_text("v3 fatal signal=");crash_hex(sig);
@@ -105,6 +105,7 @@ static void crash_report(int sig,siginfo_t *info,void *context) {
     for(struct image_map *m=image_maps;m;m=m->next)if(pc>=m->lo && pc<m->hi){
         crash_text("v3 fatal image=");crash_text(m->path);crash_text(" elf-offset=");crash_hex(pc-m->lo+m->offset);crash_text("\n");break;
     }
+    proxy_rewrite_dump(context);
     /* Raw maps: bypass virtual proc paths; no libc/TLS/allocation in a crash. */
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
     if(fd>=0){char line[1024];size_t n=0;char c;
@@ -126,8 +127,10 @@ static void exec_signals(void) {
         struct kernel_action old={0},next={0};
         if(RAW(PROXY_SC_rt_sigaction,sig,0,&old,8,0,0)<0)continue;
         if(old.handler==1 && sig!=SIGSEGV)continue; /* synchronous SIGSEGV still needs proxy handling */
+        if(sig==SIGSEGV)chained_segv=(struct kernel_action){0};
         if(sig==SIGSEGV || sig==SIGBUS || sig==SIGILL || sig==SIGFPE || sig==SIGABRT)
             next=(struct kernel_action){(uintptr_t)crash_report,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+        if(sig==SIGSEGV)next=(struct kernel_action){(uintptr_t)rewrite_segv_handler,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
 #if ARCH_AUDIT == AUDIT_ARCH_I386
         if(sig==SIGSEGV)next=(struct kernel_action){(uintptr_t)ldt_segv_handler,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
 #endif
@@ -996,6 +999,9 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     proxy_args args;p_copy(args,saved,sizeof(args));proxy_arg_t *a=args;
     nr=arch_decode_syscall(nr);
     if(nr==PROXY_SC_readlink){a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;nr=PROXY_SC_readlinkat;}
+    /* Match native filter bypasses, including CLOEXEC on private fds. */
+    if(nr==PROXY_SC_fcntl && (a[1]==F_GETFD || a[1]==F_SETFD ||
+       a[1]==F_GETFL || a[1]==F_SETFL))return RAW(nr,a[0],a[1],a[2],0,0,0);
     if(nr==PROXY_SC_fcntl && a[1]!=F_GETFD && a[1]!=F_SETFD && a[1]!=F_GETFL &&
        a[1]!=F_SETFL && a[1]!=F_DUPFD && a[1]!=F_DUPFD_CLOEXEC)return rewrite_slow(nr,a);
     struct thread_state *thread;
@@ -1017,6 +1023,31 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     return result;
 }
 #include "rewrite.h"
+static void rewrite_segv_handler(int sig,siginfo_t *info,void *context){
+#ifdef ARCH_REWRITE_HEADER
+    ucontext_t *uc=context;
+    uintptr_t nr=(uintptr_t)info->si_addr,sp=ARCH_CONTEXT(uc,ARCH_STACK),ret=0;
+    if(info->si_code==SEGV_MAPERR && nr<512 && (uintptr_t)ARCH_CONTEXT(uc,ARCH_PC)==nr &&
+       !proxy_copy(&ret,(void *)sp,sizeof(ret))){
+        for(struct rewrite_record *r=__atomic_load_n(&rewrite_records,__ATOMIC_ACQUIRE);r;r=r->next)if(r->active && r->ret==ret && r->nr==nr){
+            proxy_arg_t a[6]={ARCH_CONTEXT(uc,ARCH_ARG0),ARCH_CONTEXT(uc,ARCH_ARG1),ARCH_CONTEXT(uc,ARCH_ARG2),ARCH_CONTEXT(uc,ARCH_ARG3),ARCH_CONTEXT(uc,ARCH_ARG4),ARCH_CONTEXT(uc,ARCH_ARG5)};
+            ARCH_CONTEXT(uc,ARCH_RESULT)=proxy_direct_dispatch((long)nr,a);
+            ARCH_CONTEXT(uc,ARCH_STACK)=sp+sizeof(ret);ARCH_CONTEXT(uc,ARCH_PC)=ret;
+            if(rewrite_log)proxy_log("rewrite-race-recovered",ret,nr);
+            return;
+        }
+    }
+#endif
+    struct kernel_action action=chained_segv;
+    if(action.handler<=1){crash_report(sig,info,context);return;}
+    if(action.flags&SA_RESETHAND)chained_segv.handler=0;
+    proxy_sigmask_t old=0,mask=action.mask&~SIGSYS_BIT;
+    RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
+    if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,context);
+    else ((void (*)(int))action.handler)(sig);
+    old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
+}
+
 /* Translate before path dispatch so forbidden legacy instructions are never
  * replayed under the inherited Android filter. x86_64 stat layouts match. */
 /* Flatpak verbose output does not include the sealed --args bundle in this
@@ -1402,6 +1433,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
     long result=-ENOSYS;
     if(call.error){result=call.error;goto finish;}
+    proxy_rewrite_trap_site((uintptr_t)info->si_call_addr,info->si_syscall);
     uintptr_t syscall_pc=(uintptr_t)info->si_call_addr;
     int syscall_mapping=android_library_mapping_state(syscall_pc);
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
@@ -1539,17 +1571,19 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             if(a[2]) p_copy((void *)(uintptr_t)a[2],&chained,sizeof(chained));
             if(a[1]) {next.mask&=~SIGSYS_BIT;chained=next;}result=0;
         }
-#if ARCH_AUDIT == AUDIT_ARCH_I386
         else if(a[0]==SIGSEGV) {
             if(a[3]!=8){result=-EINVAL;break;}
             struct kernel_action next=chained_segv;
             if(a[1])p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
             if(a[2])p_copy((void *)(uintptr_t)a[2],&chained_segv,sizeof(chained_segv));
             if(a[1]){next.mask&=~SIGSYS_BIT;chained_segv=next;}
+#if ARCH_AUDIT == AUDIT_ARCH_I386
             struct kernel_action proxy={(uintptr_t)ldt_segv_handler,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+#else
+            struct kernel_action proxy={(uintptr_t)rewrite_segv_handler,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
+#endif
             result=RAW(nr,SIGSEGV,&proxy,0,8,0,0);
         }
-#endif
         else {
             struct kernel_action action;
             if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));action.mask&=~SIGSYS_BIT;a[1]=(long)&action;}

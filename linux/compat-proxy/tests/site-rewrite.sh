@@ -20,3 +20,10 @@ cc -shared -fPIC tests/site-rewrite-fde.S -o build/site-rewrite-fde.so
 strip --strip-all build/site-rewrite-fde.so
 MATON_PROXY_REWRITE=1 timeout 60 build/linux-layer-v3 --android-filter \
     "$PWD/build/site-rewrite-fde"
+cc -O2 -Wall -Wextra -Werror -pthread tests/site-rewrite-lazy.c tests/site-rewrite-lazy.S -o build/site-rewrite-lazy
+for enabled in 0 1; do
+    MATON_PROXY_REWRITE=$enabled MATON_PROXY_REWRITE_LOG=1 timeout 60 build/linux-layer-v3 --android-filter \
+        "$PWD/build/site-rewrite-lazy" "$enabled" 2>build/site-rewrite-lazy-$enabled.log
+done
+grep -q 'rewrite-race-recovered' build/site-rewrite-lazy-1.log
+grep -q 'rewrite registry path=' build/site-rewrite-lazy-1.log

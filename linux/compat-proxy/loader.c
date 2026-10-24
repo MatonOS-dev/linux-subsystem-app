@@ -313,6 +313,7 @@ static void commit_elf(struct mapped *m){
         long r=RAW(PROXY_SC_mremap,m->area+offset,PAGE,PAGE,3,m->target+offset,0);
         if(bad(r))RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
     }
+    proxy_rewrite_relocate(m->area,m->target,m->size);
 }
 static uintptr_t stack_string(uintptr_t *cursor,const char *s) {
     size_t n=p_len(s)+1; *cursor-=n; p_copy((void *)*cursor,s,n); return *cursor;
@@ -420,7 +421,9 @@ int proxy_load(const char *path,char *const *argv,char *const *env,struct image 
     const char *rewrite_option=0;
     for(size_t i=0;env && env[i];i++)
         if(p_equal(env[i],"MATON_PROXY_REWRITE=0")){rewrite_option=env[i];break;}
-    proxy_rewrite_init(rewrite_option);
+    int rewrite_logging=0;
+    for(size_t i=0;env && env[i];i++)if(p_equal(env[i],"MATON_PROXY_REWRITE_LOG=1"))rewrite_logging=1;
+    proxy_rewrite_init(rewrite_option,rewrite_logging);
     int r=load_inner(path,argv,env,image,0);
     if(!r)r=proxy_i386_tls_prepare_payload();
     if(!r)vfs_executable(path);

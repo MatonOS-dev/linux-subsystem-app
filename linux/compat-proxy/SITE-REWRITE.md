@@ -1,6 +1,7 @@
 # Syscall-site rewriting and proxy measurements
 
-Version 1 implements default-on **load-time** x86_64 rewriting.
+The current backend implements default-on **lazy** x86_64 rewriting.
+The version 1 load-time results below are historical.
 `MATON_PROXY_REWRITE=0` is the kill switch; unset or `=1` enables it.
 Each proxy startup logs `rewrite-on` or `rewrite-off` (unsupported backends
 remain off). Only complete, unambiguous
@@ -552,3 +553,28 @@ diagnosing why proxy `--no-deploy` stalls in the Flatpak pull path. Preserve
 the trap fallback for cancellation/restart semantics and app-owned user
 dispatch. i386 rewriting, arm64 rewriting, anonymous/JIT handling and runtime
 discovery/parking remain out of scope for this x86_64 phase.
+
+## Lazy discovery (site-rewrite-2)
+
+Executable mappings now register their backing descriptor without decoding text.
+The first supported SYS_SECCOMP trap identifies the containing symbol/FDE
+function. Only that function is decoded; rejected sites are remembered for the
+mapping lifetime. The trapped syscall number must match the constant load.
+The number load and syscall may be separated by instructions proven not to use
+RAX or change control flow/stack state. Interior branch targets reject the
+window. Both edits retain their sizes and publish together in one anonymous
+RX page replacement; cross-page windows stay trapped.
+
+A process registry is published before executable bytes, retaining object path,
+file offset, number, window length, timestamp and sequence. Fatal diagnostics
+check the PC and sixteen stack slots against its sites/pages and dump every
+record. MATON_PROXY_REWRITE_LOG=1 logs publications and race recovery.
+SIGSEGV recovers only a low-number fault whose PC and registered call return
+address match the original syscall; other faults chain to the app handler.
+The forced-race fixture parks a thread after its original number load, publishes
+from another thread, then resumes it at the rewritten call. Six-thread and
+signal fixtures remain in the suite. No thread parking is used in production.
+
+Validation: build.sh, tests/run.sh and tests/i386-p1.sh passed on the host
+(logs site-rewrite-2-resume-{build2,tests2,i3862}.log). Persistent decisions and
+new workload measurements are tracked in the subsequent work.

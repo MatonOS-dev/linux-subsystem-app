@@ -101,8 +101,9 @@ static void protected_file(const char *path,int enabled){
     assert(offset);
     assert(!mprotect(map,st.st_size,PROT_READ|PROT_EXEC));
     long (*fn)(long,const char *,long,long)=(void *)(map+offset);
-    assert(rewritten(fn)==enabled);
+    assert(!rewritten(fn));
     long opened=fn(AT_FDCWD,"/etc/hosts",O_RDONLY,0);assert(opened>=0);close((int)opened);
+    assert(rewritten(fn)==enabled);
     assert(!munmap(map,st.st_size));
     /* Replacing a pending file mapping with anonymous bytes via mremap must
      * invalidate its file provenance, even if the copied ELF looks identical. */
@@ -119,16 +120,13 @@ static void protected_file(const char *path,int enabled){
 }
 int main(int argc,char **argv){
     assert(argc==3);int enabled=atoi(argv[1]);
-    assert(rewritten(rw_open)==enabled && rewritten(rw_open9)==enabled);
-    assert(rewritten(rw_stat)==enabled && rewritten(rw_statx)==enabled);
+    assert(!rewritten(rw_open) && !rewritten(rw_open9));
+    assert(!rewritten(rw_stat) && !rewritten(rw_statx));
     assert(!rewritten(rw_overlap_outer) && !rewritten(rw_overlap_inner));
     struct stat preserved;assert(!rw_preserve("/etc/hosts",&preserved));
     char preserved_link[4096];assert(!rw_preserve_link("/proc/self/exe",preserved_link,sizeof(preserved_link)));
     assert(!rewritten(rw_branch) && !rewritten(rw_redzone) && !rewritten(rw_straddle));
     one();
-    assert(rewritten(rw_close)==enabled && rewritten(rw_fstat)==enabled && rewritten(rw_lseek)==enabled);
-    assert(rewritten(rw_readlink)==enabled && rewritten(rw_readlinkat)==enabled && rewritten(rw_getdents)==enabled);
-    assert(rewritten(rw_fcntl)==enabled);
     long check=rw_open(AT_FDCWD,"/etc/hosts",O_RDONLY,0);assert(check>=0);
     struct stat st;assert(!rw_fstat(check,&st));assert(rw_lseek(check,0,SEEK_END)==st.st_size);
     assert(rw_fcntl(check,F_GETFD,0)>=0);
@@ -139,6 +137,11 @@ int main(int argc,char **argv){
     assert(rw_readlinkat(AT_FDCWD,"/proc/self/exe",buffer,sizeof(buffer))>0);
     check=rw_open(AT_FDCWD,"/tmp",O_RDONLY|O_DIRECTORY,0);assert(check>=0);
     assert(rw_getdents(check,buffer,sizeof(buffer))>=0);assert(!rw_close(check));
+    assert(rewritten(rw_close)==enabled && rewritten(rw_fstat)==enabled && rewritten(rw_lseek)==enabled);
+    assert(rewritten(rw_readlink)==enabled && rewritten(rw_readlinkat)==enabled && rewritten(rw_getdents)==enabled);
+    assert(rewritten(rw_fcntl)==enabled);
+    assert(rewritten(rw_open)==enabled && rewritten(rw_open9)==enabled);
+    assert(rewritten(rw_stat)==enabled && rewritten(rw_statx)==enabled);
     protected_file(argv[2],enabled);
     long fd=rw_branch(AT_FDCWD,"/etc/hosts",O_RDONLY,0);assert(fd>=0);close((int)fd);
     fd=rw_redzone(AT_FDCWD,"/etc/hosts",O_RDONLY,0);assert(fd>=0);close((int)fd);
@@ -152,8 +155,8 @@ int main(int argc,char **argv){
     assert(!memcmp(jit,code,sizeof(code)));assert(!munmap(jit,4096));
     for(int i=0;i<3;i++){
         void *lib=dlopen(argv[2],RTLD_NOW|RTLD_LOCAL);if(!lib){puts(dlerror());abort();}
-        long (*fn)(long,const char *,long,long)=dlsym(lib,"rw_open");assert(fn && rewritten(fn)==enabled);
-        fd=fn(AT_FDCWD,"/etc/hosts",O_RDONLY,0);assert(fd>=0);close((int)fd);assert(!dlclose(lib));
+        long (*fn)(long,const char *,long,long)=dlsym(lib,"rw_open");assert(fn && !rewritten(fn));
+        fd=fn(AT_FDCWD,"/etc/hosts",O_RDONLY,0);assert(fd>=0);close((int)fd);assert(rewritten(fn)==enabled);assert(!dlclose(lib));
     }
     pid_t child=fork();assert(child>=0);
     if(!child){one();_exit(0);}int status;assert(waitpid(child,&status,0)==child && status==0);
