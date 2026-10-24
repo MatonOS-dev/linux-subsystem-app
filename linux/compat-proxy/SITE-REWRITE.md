@@ -596,3 +596,16 @@ The decoder normalizes earlier registered patches when proving a second site
 in the same function. Unrelated mremap operations preserve recovery records;
 only affected source/destination ranges are invalidated. Integration tests
 exercise first/second launch, checksum mismatch and truncated cache files.
+
+### Host pull stall fixed
+
+The wait was Flatpak/libcurl's resolver completion pipes (17 and 19 in the
+captured process), not mistranslated poll readiness. The resolver thread's UDP
+socket targeted systemd-resolved at 127.0.0.53:53; the proxy redirected it to
+its helper, which attempted /dev/socket/dnsproxyd and got ENOENT on the host.
+The helper dropped those requests, leaving libc in DNS retries and Flatpak in
+poll. Host builds now leave DNS native by default; Android builds retain the
+netd route, and explicit --dns-forwarder still enables the test route.
+The new dns-host fixture checks the exact affected address without requiring
+network access; the existing mocked netd helper suite still verifies Android
+forwarding. Full warm pull+deploy now completes in both rewrite modes.
