@@ -676,6 +676,7 @@ static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-usern
 static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)return -EINVAL;unsigned limit=0;size_t k=0;for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10)return -ERANGE;limit=limit*10+digit;}if(!k || (k<len && !(k+1==len && buf[k]=='\n')))return -EINVAL;long r=RAW(PROXY_SC_write,fd,buf,len,0,0,0);if(r>=0)userns_remaining=limit;return r;}
 
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
+static int self_cwd(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/cwd",5);return p_equal(path,name) || p_equal(path,"/proc/self/cwd") || p_equal(path,"/proc/thread-self/cwd");}
 /* filename_create() checks the dentry before the mount's read-only flag.
  * Do the same for virtual packed entries as well as host-backed paths. */
 static int path_exists(const char *path) {
@@ -787,11 +788,14 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==PROXY_SC_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==PROXY_SC_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
+    if(nr==PROXY_SC_readlinkat && self_cwd(p)){long error=0;char *logical=vfs_getcwd(&error);if(!logical){e=error;goto done;}size_t n=p_len(logical);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],logical,n);vfs_free(logical);e=(long)n;goto done;}
     if(nr==PROXY_SC_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=-EOPNOTSUPP;
     else if(nr==PROXY_SC_linkat)e=links_publish(p,q,a[4]);
     else if(nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2)e=links_name_call(nr,a,p,q);
     else if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     else e=links_path_call(nr,a,p);
+    if(e>=0 && q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2))vfs_fd_rename(p,q);
+    if(e>=0 && ((nr==PROXY_SC_openat && (a[2]&O_CREAT)) || nr==PROXY_SC_linkat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))links_cache_invalidate();
     if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record((int)e,fd,original_path);
     if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
@@ -1073,8 +1077,9 @@ static void unhandled_once(long id,long kernel_nr){
 }
 /* Android loads platform libraries lazily, after the initial syscall filter
  * snapshot. Their syscall sites keep native Android semantics. */
-struct android_pc_cache_entry {uintptr_t begin,end;int state;};
+struct android_pc_cache_entry {volatile uintptr_t begin,end;volatile unsigned long epoch;int state;};
 static struct android_pc_cache_entry android_pc_cache[256];
+static volatile unsigned long android_pc_cache_epoch=1;
 static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end) {
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
     if(fd<0)return 0;
@@ -1111,25 +1116,36 @@ done:
     return found;
 }
 static int android_library_mapping_state(uintptr_t pc) {
+    unsigned long epoch=__atomic_load_n(&android_pc_cache_epoch,__ATOMIC_ACQUIRE);
     for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
         struct android_pc_cache_entry *entry=&android_pc_cache[i];
         int state=__atomic_load_n(&entry->state,__ATOMIC_ACQUIRE);
-        if(state>0&&pc>=entry->begin&&pc<entry->end)return state;
+        unsigned long cached_epoch=__atomic_load_n(&entry->epoch,__ATOMIC_RELAXED);
+        uintptr_t begin=__atomic_load_n(&entry->begin,__ATOMIC_RELAXED),end=__atomic_load_n(&entry->end,__ATOMIC_RELAXED);
+        if(state>0&&cached_epoch==epoch&&pc>=begin&&pc<end)return state;
+        if(state==-2&&cached_epoch==epoch&&pc>=begin&&pc<end)return 0;
+        if(state && state!=-1 && cached_epoch!=epoch){int stale=state;__atomic_compare_exchange_n(&entry->state,&stale,0,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);}
     }
     uintptr_t begin=0,end=0;
     int state=android_library_mapping(pc,&begin,&end);
-    if(!state)return 0;
+    if(!state && !(begin<end && pc>=begin && pc<end))return 0;
     for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
         int expected=0;
         if(__atomic_compare_exchange_n(&android_pc_cache[i].state,&expected,-1,0,
                 __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) {
-            android_pc_cache[i].begin=begin;
-            android_pc_cache[i].end=end;
-            __atomic_store_n(&android_pc_cache[i].state,state,__ATOMIC_RELEASE);
+            __atomic_store_n(&android_pc_cache[i].begin,begin,__ATOMIC_RELAXED);
+            __atomic_store_n(&android_pc_cache[i].end,end,__ATOMIC_RELAXED);
+            __atomic_store_n(&android_pc_cache[i].epoch,__atomic_load_n(&android_pc_cache_epoch,__ATOMIC_ACQUIRE),__ATOMIC_RELAXED);
+            __atomic_store_n(&android_pc_cache[i].state,state?state:-2,__ATOMIC_RELEASE);
             break;
         }
     }
     return state;
+}
+static void android_pc_cache_invalidate(void){
+    __atomic_add_fetch(&android_pc_cache_epoch,1,__ATOMIC_RELEASE);
+    for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++)
+        __atomic_store_n(&android_pc_cache[i].state,0,__ATOMIC_RELEASE);
 }
 #include "payload-filter.h"
 static void handler(int sig,siginfo_t *info,void *opaque) {
@@ -1479,6 +1495,7 @@ clone_retry:
     default:break;
     }
 finish:
+    if(result>=0 && (nr==PROXY_SC_mmap || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap))android_pc_cache_invalidate();
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace){
         proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);

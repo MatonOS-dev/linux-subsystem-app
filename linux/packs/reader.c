@@ -120,20 +120,32 @@ int mtp_lookup(const mtp_index *i,const char *path,mtp_object *out) {
     char normalized[4096];
     if(mtp_normalize_path(path,normalized,sizeof(normalized)))return -1;
     const char *key=*normalized?normalized:"/";
-    for(size_t n=0;n<i->count;n++) {
-        const char *stored=i->items[n].path;
-        if(!strcmp(stored,key) || (*normalized && stored[0]=='/' && !strcmp(stored+1,normalized))) {
-            *out=i->items[n];return 0;
-        }
-    }
+    /* Pack writers sort records by UTF-8 path bytes. Use that stable order as
+     * the immutable lookup index instead of rescanning every object on each
+     * open/stat. Accept both canonical slash-prefixed paths and older relative
+     * records. */
+    size_t lo=0,hi=i->count;
+    while(lo<hi){size_t mid=lo+(hi-lo)/2;if(strcmp(i->items[mid].path,key)<0)lo=mid+1;else hi=mid;}
+    if(lo<i->count&&!strcmp(i->items[lo].path,key)){*out=i->items[lo];return 0;}
+    if(*normalized){char absolute[4097];size_t length=strlen(normalized);absolute[0]='/';for(size_t n=0;n<=length;n++)absolute[n+1]=normalized[n];lo=0;hi=i->count;
+        while(lo<hi){size_t mid=lo+(hi-lo)/2;if(strcmp(i->items[mid].path,absolute)<0)lo=mid+1;else hi=mid;}
+        if(lo<i->count&&!strcmp(i->items[lo].path,absolute)){*out=i->items[lo];return 0;}}
     return 1;
 }
 int mtp_stat(const mtp_index *i,const char *path,mtp_object *out) { return mtp_lookup(i,path,out); }
 int mtp_readdir(const mtp_index *i,const char *dir,size_t *cursor,const char **name,mtp_object *out) {
     if(!i||!dir||!cursor||!name)return -1;
-    size_t dl=strlen(dir);
-    if(dl && dir[dl-1]=='/')dl--;
-    for(size_t n=*cursor;n<i->count;n++){const char *p=i->items[n].path;size_t l=strlen(p);if(l<=dl||memcmp(p,dir,dl)||p[dl]!='/')continue;
-        const char *child=p+dl+1;if(!*child||strchr(child,'/'))continue;*cursor=n+1;*name=child;if(out)*out=i->items[n];return 1;}
+    char normalized[4096];if(mtp_normalize_path(dir,normalized,sizeof(normalized)))return -1;
+    int absolute=i->count&&i->items[0].path[0]=='/';size_t dl=strlen(normalized);
+    while(dl&&normalized[dl-1]=='/')normalized[--dl]=0;
+    char prefix[4096];size_t prefix_length=0;
+    if(absolute)prefix[prefix_length++]='/';
+    if(dl){if(dl>sizeof(prefix)-prefix_length-2)return -1;for(size_t n=0;n<dl;n++)prefix[prefix_length++]=normalized[n];}
+    if(dl){prefix[prefix_length++]='/';}
+    prefix[prefix_length]=0;
+    size_t n=*cursor;
+    if(!n){size_t lo=0,hi=i->count;while(lo<hi){size_t mid=lo+(hi-lo)/2;if(strcmp(i->items[mid].path,prefix)<0)lo=mid+1;else hi=mid;}n=lo;}
+    for(;n<i->count;n++){const char *p=i->items[n].path;size_t l=strlen(p);if(l<prefix_length||memcmp(p,prefix,prefix_length))break;
+        const char *child=p+prefix_length;if(!*child||strchr(child,'/'))continue;*cursor=n+1;*name=child;if(out)*out=i->items[n];return 1;}
     *cursor=i->count;return 0;
 }

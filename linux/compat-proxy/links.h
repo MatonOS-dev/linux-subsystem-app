@@ -16,3 +16,4 @@ long links_dents(long,void *,long);
 
 
 int links_marker(const char *);
+void links_cache_invalidate(void);

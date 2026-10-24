@@ -62,6 +62,7 @@ mkdir -p build/legacy-fixture build/nested-fixture
 rm -f build/fixture-dir/hard-symlink
 ln -sfn /virtual-v3/fixture build/fixture-dir/absolute
 ln -sfn fixture build/fixture-dir/relative
+ln -sfn /virtual-v3/fixture build/nested-fixture/cross-mount
 for test in legacy paths; do
     cc -no-pie -O2 -Wall -Wextra -Werror "tests/$test.c" -o "build/$test"
 done

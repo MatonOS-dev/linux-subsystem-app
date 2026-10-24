@@ -58,8 +58,15 @@ directories and symlinks have no pack offset. The reader validates truncation
 and integer bounds while loading the index.
 
 The compat proxy consumes this reader through `mtp_index_open_buffer` with
-its own allocator. `MTP_FREESTANDING` omits only the libc file-opening wrapper
-and heap callbacks; hosted reader users keep the existing filename API.
+its own allocator. Each mounted deployment owns one parsed, immutable index
+for the lifetime of that mount; the index bytes travel with that deployment's
+signed APK split, and a package update creates a new mount/index instance.
+There is no mutable cross-deployment path cache to invalidate or reuse across
+updates. Since the writer sorts records by path, path/stat lookups use binary
+search and directory enumeration starts at the matching sorted range. Thus
+backing offsets, stat/statx metadata and directory entries all come from the
+same deployment index. `MTP_FREESTANDING` omits only the libc file-opening
+wrapper and heap callbacks; hosted reader users keep the existing filename API.
 `../compat-proxy/tests/pack-host.py` exercises real index/ZIP mounts without
 extracting the payloads, including execution and dynamic shared-library mmap.
 

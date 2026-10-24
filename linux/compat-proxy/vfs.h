@@ -27,6 +27,7 @@ void vfs_fd_close(int);
 long vfs_fd_dup(int,int);
 char *vfs_fd_name(int);
 void vfs_fd_record(int,int,const char *);
+void vfs_fd_rename(const char *,const char *);
 char *vfs_proc_fd_name(const char *);
 void vfs_executable(const char *);
 char *vfs_exe(void);
