@@ -43,5 +43,9 @@
         <receiver android:name=".bootstrap.BootstrapResultReceiver" android:exported="false" />
         <!-- Internal support UI; Linux apps have their own launcher entries. -->
         <activity android:name=".MainActivity" android:exported="false" />
+        <!-- Stubs wait on this before their first EROFS mount (pin set after boot). -->
+        <activity android:name=".ErofsPinActivity" android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" android:noHistory="true" />
     </application>
 </manifest>

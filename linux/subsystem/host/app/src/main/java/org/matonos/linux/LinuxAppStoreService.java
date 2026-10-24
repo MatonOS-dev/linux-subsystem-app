@@ -336,6 +336,8 @@ public final class LinuxAppStoreService extends Service {
         private static final int CLEANUP_JOB_ID=0x4d41544f;
         @Override public void onReceive(Context context,Intent intent) {
             if(!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()))return;
+            PendingResult pending=goAsync();
+            new Thread(()->{ErofsPin.ensure();pending.finish();}).start();
             android.app.job.JobInfo job=new android.app.job.JobInfo.Builder(CLEANUP_JOB_ID,
                     new ComponentName(context,CleanupJobService.class)).setPersisted(true).build();
             android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
