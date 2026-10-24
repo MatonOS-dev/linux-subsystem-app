@@ -11,10 +11,16 @@ mkdir -p "$(dirname "$output")"
 chmod 0755 "$(dirname "$output")"
 python3 "$source_dir/gen-policy.py"
 builtins=$("$compiler" --print-libgcc-file-name)
+link_flags=(-nostdlib -static -Wl,-no-pie)
+backend_sources=("$source_dir/arch/i386/entry.S")
+if [[ ${MATON_I386_GPU_BRIDGE:-0} == 1 ]]; then
+  link_flags=(-DMATON_GPU_BRIDGE -fPIE -pie -Wl,-z,now)
+  backend_sources=("$source_dir/arch/i386/adopt.S" "$source_dir/arch/i386/thread-adopt.c" -pthread -ldl -lEGL -lGLESv2)
+fi
 "$compiler" -m32 -march=i686 -msse2 "${counter_flags[@]}" -DPROXY_ARCH_BACKEND='"i386/backend.h"' \
-  -nostdlib -static -Wl,-no-pie -Wl,--image-base=0x70000000 -Wl,--section-start=.proxy_gateway=0x70300000 \
+  "${link_flags[@]}" -Wl,--image-base=0x70000000 -Wl,--section-start=.proxy_gateway=0x70300000 \
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$source_dir"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
-  "$source_dir"/arch/i386/{raw.S,entry.S} "$builtins" -o "$output"
+  "$source_dir"/arch/i386/raw.S "${backend_sources[@]}" "$builtins" -o "$output"
 
 chmod 0755 "$output"

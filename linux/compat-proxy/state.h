@@ -13,7 +13,7 @@ void state_string(struct state *,char **);
 int state_live(int);
 int state_private_fd(int);
 int state_exec(const char *,char *const *,char *const *);
-extern int state_android;
+extern int state_android, state_gpu_bridge;
 int state_import(const char *,const char *);
 void vfs_state(struct state *);
 void ipc_state(struct state *);
