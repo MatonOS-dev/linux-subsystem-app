@@ -51,13 +51,41 @@ static int marked_device(const char *dir,uint64_t *device){
  return 1;
 }
 int links_marker(const char *path){const char *name=path;for(const char *p=path;*p;p++)if(*p=='/')name=p+1;return p_equal(name,".v3-store-root");}
+/* Marker roots change only through path-mutating syscalls handled by path_call.
+ * A small direct-mapped cache avoids reopening every ancestor marker for each
+ * stat/open. A failed try-lock falls back to the uncached walk, so an
+ * interrupting signal handler cannot deadlock on a lock held by its caller. */
+struct tree_cache_entry {uint64_t generation,device;int marked;char key[PATH_MAX],root[PATH_MAX];};
+static struct tree_cache_entry tree_cache[8];
+static volatile unsigned tree_cache_lock;
+static volatile uint64_t tree_cache_generation=1;
+void links_cache_invalidate(void){__atomic_add_fetch(&tree_cache_generation,1,__ATOMIC_RELEASE);}
+static int tree_cache_trylock(void){unsigned unlocked=0;return __atomic_compare_exchange_n(&tree_cache_lock,&unlocked,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED);}
+static void tree_cache_unlock(void){__atomic_store_n(&tree_cache_lock,0,__ATOMIC_RELEASE);}
+static uint64_t tree_cache_hash(const char *p){uint64_t h=UINT64_C(1469598103934665603);for(;*p;p++){h^=(unsigned char)*p;h*=UINT64_C(1099511628211);}return h;}
 static int tree(char *root,const char *path){
- char up[PATH_MAX];if(!parent(root,path))return 0;
+ char up[PATH_MAX],key[PATH_MAX];if(!parent(key,path))return 0;
+ uint64_t generation=__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE),hash=tree_cache_hash(key);size_t slot=(size_t)hash&7;
+ if(tree_cache_trylock()){
+  struct tree_cache_entry *cached=&tree_cache[slot];int hit=cached->generation==generation && p_equal(cached->key,key),marked=hit&&cached->marked;uint64_t device=cached->device;
+  if(hit && marked)p_copy(root,cached->root,p_len(cached->root)+1);
+  tree_cache_unlock();
+  if(hit){if(!marked)return 0;if(private_dir(root,device))return 1;links_cache_invalidate();}
+ }
+ p_copy(root,key,p_len(key)+1);int marked=0;uint64_t device=0;
  for(;;){
-  uint64_t device;if(marked_device(root,&device))return private_dir(root,device);
-  if(!parent(up,root) || p_equal(up,root))return 0;
+  if(marked_device(root,&device)){marked=private_dir(root,device);break;}
+  if(!parent(up,root) || p_equal(up,root)){marked=0;break;}
   p_copy(root,up,p_len(up)+1);
  }
+ if(tree_cache_trylock()){
+  if(generation==__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE)){
+   struct tree_cache_entry *cached=&tree_cache[slot];cached->generation=generation;cached->device=device;cached->marked=marked;
+   p_copy(cached->key,key,p_len(key)+1);if(marked)p_copy(cached->root,root,p_len(root)+1);else cached->root[0]=0;
+  }
+  tree_cache_unlock();
+ }
+ return marked;
 }
 /* One constant-time index entry per physical placeholder inode. Values are
  * relative object IDs, so directory relocation needs no target rewriting. */
@@ -68,7 +96,7 @@ static int index_path(char *out,const char *store,const struct proxy_stat *st){
 }
 int links_target(const char *name,char *out){
  struct proxy_stat st;char root[PATH_MAX],store[PATH_MAX],entry[PATH_MAX],id[36];
- if(arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !tree(root,name) || !catpath(store,root,".v3-inodes") || !index_path(entry,store,&st))return 0;
+ if(!tree(root,name) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes") || !index_path(entry,store,&st))return 0;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return 0;
  long n=RAW(PROXY_SC_read,fd,id,sizeof(id),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
  if(n!=35 || id[0]!='i' || id[1]!='-' || id[34])return 0;
@@ -300,6 +328,7 @@ long links_dents(long fd,void *buf,long size){
  long r=dents_locked(fd,buf,size);if(lock>=0)unlock(lock);return r;
 }
 void links_payload_fd_stat(int fd,void *wire){struct proxy_stat s;arch_stat_decode(&s,wire);links_fd_stat(fd,&s);arch_stat_nlink(wire,s.st_nlink);}
+void links_payload_path_stat(const char *path,void *wire,int extended){struct proxy_stat s;if(extended){struct statx *x=wire;s=(struct proxy_stat){.st_mode=x->stx_mode,.st_nlink=x->stx_nlink};links_stat(path,&s);arch_statx_nlink(wire,s.st_nlink);}else{arch_stat_decode(&s,wire);links_stat(path,&s);arch_stat_nlink(wire,s.st_nlink);}}
 
 long links_publish(const char *source,const char *target,long flags){
  char root[PATH_MAX],other[PATH_MAX];int left=tree(root,source),right=tree(other,target);

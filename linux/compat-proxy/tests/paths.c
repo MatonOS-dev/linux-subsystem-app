@@ -16,9 +16,13 @@ int main(int argc,char **argv){
  CHECK(argc==3);CHECK(unshare(CLONE_NEWNS|CLONE_NEWUSER)==0);
  CHECK(mount(argv[1],"/virtual-v3",NULL,MS_BIND,NULL)==0);CHECK(mount(argv[2],"/virtual-v3/nested",NULL,MS_BIND,NULL)==0);
  int fd=open("/virtual-v3",O_DIRECTORY);CHECK(fd>=0);int f=openat(fd,"fixture",O_RDONLY);CHECK(f>=0);close(f);
+ int nestedfd=open("/virtual-v3/nested",O_DIRECTORY|O_RDONLY);CHECK(nestedfd>=0);
+ f=openat(nestedfd,"../fixture",O_RDONLY);CHECK(f>=0);close(f);
  CHECK(chdir("/virtual-v3/nested")==0);f=open("../fixture",O_RDONLY);CHECK(f>=0);close(f);
+ f=open("cross-mount",O_RDONLY);CHECK(f>=0);close(f);
  CHECK(mount("/virtual-v3","/alias-v3",NULL,MS_BIND|MS_REC,NULL)==0);CHECK(chdir("/alias-v3/nested")==0);
  char cwd[1024];CHECK(getcwd(cwd,sizeof(cwd)) && !strcmp(cwd,"/alias-v3/nested"));CHECK(chdir("/virtual-v3/nested")==0);CHECK(getcwd(cwd,sizeof(cwd)) && !strcmp(cwd,"/virtual-v3/nested"));
+ char cwdlink[1024];ssize_t cwdlen=readlink("/proc/self/cwd",cwdlink,sizeof(cwdlink)-1);CHECK(cwdlen>0);cwdlink[cwdlen]=0;CHECK(!strcmp(cwdlink,"/virtual-v3/nested"));
  f=open("/virtual-v3/absolute",O_RDONLY);CHECK(f>=0);close(f);f=open("/virtual-v3/relative",O_RDONLY);CHECK(f>=0);close(f);
  struct stat st;CHECK(lstat("/virtual-v3/absolute",&st)==0 && S_ISLNK(st.st_mode));
  CHECK(linkat(AT_FDCWD,"/virtual-v3/absolute",AT_FDCWD,"/virtual-v3/hard-symlink",0)==0);
@@ -29,6 +33,11 @@ int main(int argc,char **argv){
  errno=0;CHECK(open("/virtual-v3/missing/../fixture",O_RDONLY)==-1 && errno==ENOENT);
  CHECK(umount2("/alias-v3/nested",MNT_DETACH)==0);CHECK(umount2("/alias-v3",MNT_DETACH)==0);
  char proc[64],link[1024];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",fd);ssize_t n=readlink(proc,link,sizeof(link)-1);CHECK(n>0);link[n]=0;CHECK(!strcmp(link,"/virtual-v3"));close(fd);
+ int tracked=open("/virtual-v3/rename-old",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(tracked>=0);CHECK(write(tracked,"x",1)==1);
+ CHECK(rename("/virtual-v3/rename-old","/virtual-v3/rename-new")==0);
+ snprintf(proc,sizeof(proc),"/proc/self/fd/%d",tracked);n=readlink(proc,link,sizeof(link)-1);CHECK(n>0);link[n]=0;CHECK(!strcmp(link,"/virtual-v3/rename-new"));
+ CHECK(rename("/virtual-v3/rename-new","/virtual-v3/rename-old")==0);n=readlink(proc,link,sizeof(link)-1);CHECK(n>0);link[n]=0;CHECK(!strcmp(link,"/virtual-v3/rename-old"));
+ CHECK(unlink("/virtual-v3/rename-old")==0);close(tracked);close(nestedfd);
  errno=0;CHECK(rename("/virtual-v3/fixture","/virtual-v3/nested/elsewhere")==-1 && errno==EXDEV);
  errno=0;CHECK(linkat(AT_FDCWD,"/virtual-v3/fixture",AT_FDCWD,"/virtual-v3/nested/elsewhere",0)==-1 && errno==EXDEV);
  CHECK(mount(NULL,"/virtual-v3",NULL,MS_BIND|MS_REMOUNT|MS_RDONLY,NULL)==0);errno=0;CHECK(open("/virtual-v3/new",O_CREAT|O_WRONLY,0600)==-1 && errno==EROFS);

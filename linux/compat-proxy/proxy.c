@@ -620,7 +620,16 @@ int proxy_trace;
 static volatile uint64_t proxy_counts[PROXY_SC_count];
 static volatile uint64_t proxy_syscall_ns[PROXY_SC_count];
 static volatile uint64_t proxy_handler_ns,proxy_vfs_ns;
-uint64_t proxy_count_now(void){if(proxy_count_fd<0)return 0;struct {long sec,nsec;} ts={0};if(RAW(PROXY_SC_clock_gettime,1,&ts,0,0,0,0)<0)return 0;return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;}
+uint64_t proxy_count_now(void){
+#ifdef PROXY_PROFILE
+    return 0; /* Keep --count's two clock syscalls/trap out of TSC profiling. */
+#else
+    if(proxy_count_fd<0)return 0;
+    struct {long sec,nsec;} ts={0};
+    if(RAW(PROXY_SC_clock_gettime,1,&ts,0,0,0,0)<0)return 0;
+    return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;
+#endif
+}
 void proxy_count_init(const char *path){if(!path || !*path)return;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0);if(fd>=0){proxy_count_fd=(int)fd;proxy_raw_count_enable();}}
 void proxy_count_resolution(uint64_t ns){__atomic_fetch_add(&proxy_vfs_ns,ns,__ATOMIC_RELAXED);}
 static void count_u64(char *b,size_t *n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[(*n)++]=d[--k];}
@@ -637,6 +646,7 @@ void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*64+
     for(int i=0;i<PROXY_SC_count;i++)if(raw_syscalls[i]){b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='S';b[n++]='C';b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,raw_syscalls[i]);b[n++]='\n';}
     for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';}}
     RAW(PROXY_SC_write,proxy_count_fd,b,n,0,0,0);
+    vfs_profile_dump();
 }
 static void emit(const char *s) { RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p_len(s),0,0,0); }
 static void trace_word(const char *label,uint64_t value) {
@@ -679,6 +689,7 @@ static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-usern
 static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)return -EINVAL;unsigned limit=0;size_t k=0;for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10)return -ERANGE;limit=limit*10+digit;}if(!k || (k<len && !(k+1==len && buf[k]=='\n')))return -EINVAL;long r=RAW(PROXY_SC_write,fd,buf,len,0,0,0);if(r>=0)userns_remaining=limit;return r;}
 
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
+static int self_cwd(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/cwd",5);return p_equal(path,name) || p_equal(path,"/proc/self/cwd") || p_equal(path,"/proc/thread-self/cwd");}
 /* filename_create() checks the dentry before the mount's read-only flag.
  * Do the same for virtual packed entries as well as host-backed paths. */
 static int path_exists(const char *path) {
@@ -714,8 +725,8 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if((nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx) && fd==AT_FDCWD &&
             original_path && *original_path && !(stat_flags&AT_NO_AUTOMOUNT) &&
             (nr!=PROXY_SC_statx || (a[3]&STATX_MODE))){
-        int fastfd=-1;
-        if(!vfs_openat2_path_fd(fd,original_path,follow,&fastfd)){
+        int fastfd=-1;char *fastpath=NULL;
+        if(!vfs_openat2_path_fd(fd,original_path,follow,&fastfd,&fastpath)){
             long fast_result;
             if(nr==PROXY_SC_newfstatat)
                 fast_result=RAW(nr,fastfd,"",a[2],a[3]|AT_EMPTY_PATH,0,0);
@@ -725,14 +736,14 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
             if(!fast_result && nr==PROXY_SC_newfstatat){
                 struct stat *st=(void *)(uintptr_t)a[2];
                 fallback=S_ISREG(st->st_mode) && (st->st_mode&S_ISVTX);
-                if(!fallback)links_payload_fd_stat(fastfd,st);
+                if(!fallback)links_payload_path_stat(fastpath,st,0);
             }else if(!fast_result){
                 struct statx *sx=(void *)(uintptr_t)a[4];
                 fallback=S_ISREG(sx->stx_mode) && (sx->stx_mode&S_ISVTX);
-                if(!fallback){struct proxy_stat st;if(!arch_stat_fd(fastfd,&st)){links_fd_stat(fastfd,&st);arch_statx_nlink(sx,st.st_nlink);}}
+                if(!fallback)links_payload_path_stat(fastpath,sx,1);
             }
             RAW(PROXY_SC_close,fastfd,0,0,0,0,0);
-            if(!fallback)return fast_result;
+            vfs_free(fastpath);if(!fallback)return fast_result;
         }
     }
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path,(int)a[2]);if(synthetic!=-ENOSYS)return synthetic;}
@@ -790,11 +801,14 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==PROXY_SC_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==PROXY_SC_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
+    if(nr==PROXY_SC_readlinkat && self_cwd(p)){long error=0;char *logical=vfs_getcwd(&error);if(!logical){e=error;goto done;}size_t n=p_len(logical);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],logical,n);vfs_free(logical);e=(long)n;goto done;}
     if(nr==PROXY_SC_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=-EOPNOTSUPP;
     else if(nr==PROXY_SC_linkat)e=links_publish(p,q,a[4]);
     else if(nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2)e=links_name_call(nr,a,p,q);
     else if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     else e=links_path_call(nr,a,p);
+    if(e>=0 && q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2))vfs_fd_rename(p,q);
+    if(e>=0 && ((nr==PROXY_SC_openat && (a[2]&O_CREAT)) || nr==PROXY_SC_linkat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))links_cache_invalidate();
     if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record((int)e,fd,original_path);
     if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
@@ -1076,8 +1090,9 @@ static void unhandled_once(long id,long kernel_nr){
 }
 /* Android loads platform libraries lazily, after the initial syscall filter
  * snapshot. Their syscall sites keep native Android semantics. */
-struct android_pc_cache_entry {uintptr_t begin,end;int state;};
+struct android_pc_cache_entry {volatile uintptr_t begin,end;volatile unsigned long epoch;int state;};
 static struct android_pc_cache_entry android_pc_cache[256];
+static volatile unsigned long android_pc_cache_epoch=1;
 static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end) {
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
     if(fd<0)return 0;
@@ -1114,25 +1129,36 @@ done:
     return found;
 }
 static int android_library_mapping_state(uintptr_t pc) {
+    unsigned long epoch=__atomic_load_n(&android_pc_cache_epoch,__ATOMIC_ACQUIRE);
     for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
         struct android_pc_cache_entry *entry=&android_pc_cache[i];
         int state=__atomic_load_n(&entry->state,__ATOMIC_ACQUIRE);
-        if(state>0&&pc>=entry->begin&&pc<entry->end)return state;
+        unsigned long cached_epoch=__atomic_load_n(&entry->epoch,__ATOMIC_RELAXED);
+        uintptr_t begin=__atomic_load_n(&entry->begin,__ATOMIC_RELAXED),end=__atomic_load_n(&entry->end,__ATOMIC_RELAXED);
+        if(state>0&&cached_epoch==epoch&&pc>=begin&&pc<end)return state;
+        if(state==-2&&cached_epoch==epoch&&pc>=begin&&pc<end)return 0;
+        if(state && state!=-1 && cached_epoch!=epoch){int stale=state;__atomic_compare_exchange_n(&entry->state,&stale,0,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);}
     }
     uintptr_t begin=0,end=0;
     int state=android_library_mapping(pc,&begin,&end);
-    if(!state)return 0;
+    if(!state && !(begin<end && pc>=begin && pc<end))return 0;
     for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
         int expected=0;
         if(__atomic_compare_exchange_n(&android_pc_cache[i].state,&expected,-1,0,
                 __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) {
-            android_pc_cache[i].begin=begin;
-            android_pc_cache[i].end=end;
-            __atomic_store_n(&android_pc_cache[i].state,state,__ATOMIC_RELEASE);
+            __atomic_store_n(&android_pc_cache[i].begin,begin,__ATOMIC_RELAXED);
+            __atomic_store_n(&android_pc_cache[i].end,end,__ATOMIC_RELAXED);
+            __atomic_store_n(&android_pc_cache[i].epoch,__atomic_load_n(&android_pc_cache_epoch,__ATOMIC_ACQUIRE),__ATOMIC_RELAXED);
+            __atomic_store_n(&android_pc_cache[i].state,state?state:-2,__ATOMIC_RELEASE);
             break;
         }
     }
     return state;
+}
+static void android_pc_cache_invalidate(void){
+    __atomic_add_fetch(&android_pc_cache_epoch,1,__ATOMIC_RELEASE);
+    for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++)
+        __atomic_store_n(&android_pc_cache[i].state,0,__ATOMIC_RELEASE);
 }
 #include "payload-filter.h"
 static void handler(int sig,siginfo_t *info,void *opaque) {
@@ -1176,6 +1202,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         return;
     }
     vfs_trap_resume();
+    PROFILE_BEGIN();
     thread=thread_state();
     if(thread)vfs_trap_begin(thread->signal_stack,thread->signal_stack_size);
     uint64_t raw_calls_at_entry=proxy_raw_count_now();
@@ -1481,6 +1508,7 @@ clone_retry:
     default:break;
     }
 finish:
+    if(result>=0 && (nr==PROXY_SC_mmap || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap))android_pc_cache_invalidate();
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace){
         proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
@@ -1509,6 +1537,7 @@ clean_mask:
         emit(" munmap=");crash_hex(proxy_raw_count_for(PROXY_SC_munmap));emit("\n");
     }
     if(count_started){uint64_t ended=proxy_count_now();if(ended>=count_started){uint64_t elapsed=ended-count_started;__atomic_fetch_add(&proxy_handler_ns,elapsed,__ATOMIC_RELAXED);if(count_id>=0 && count_id<PROXY_SC_count)__atomic_fetch_add(&proxy_syscall_ns[count_id],elapsed,__ATOMIC_RELAXED);}}
+    PROFILE_END(8);
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
     (*arch_signal_mask(uc))&=~SIGSYS_BIT;
     RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);

@@ -10,7 +10,7 @@ trap 'rm -rf "$fixture"' EXIT
 printf 'compat proxy trap benchmark fixture\n' >"$fixture/file"
 
 printf 'native and proxied payload syscall cost; each run is a fresh process\n'
-for mode in getpid open stat; do
+for mode in getpid open stat statx; do
     for route in native proxied; do
         for ((run=1; run<=repetitions; run++)); do
             if [[ $mode == getpid ]]; then path=-
