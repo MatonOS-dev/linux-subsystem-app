@@ -683,6 +683,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_inotify_add_watch)follow=!(a[2]&IN_DONT_FOLLOW);
     if(nr==PROXY_SC_name_to_handle_at)follow=!!(a[4]&AT_SYMLINK_FOLLOW);
     if(nr==PROXY_SC_linkat)follow=(a[4]&AT_SYMLINK_FOLLOW)?VFS_FOLLOW_LINK_SOURCE:0;
+    int writing=nr==PROXY_SC_setxattr || nr==PROXY_SC_lsetxattr || nr==PROXY_SC_removexattr || nr==PROXY_SC_lremovexattr || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || nr==PROXY_SC_truncate || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
     if(nr==PROXY_SC_getxattrat || nr==PROXY_SC_listxattrat || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
@@ -696,8 +697,33 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         proxy_log("path-input",nr,fd);
         emit("v3 path input ");emit(original_path);emit("\n");
     }
+    long stat_flags=nr==PROXY_SC_newfstatat?a[3]:nr==PROXY_SC_statx?a[2]:0;
+    if((nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx) && fd==AT_FDCWD &&
+            original_path && *original_path && !(stat_flags&AT_NO_AUTOMOUNT) &&
+            (nr!=PROXY_SC_statx || (a[3]&STATX_MODE))){
+        int fastfd=-1;
+        if(!vfs_openat2_path_fd(fd,original_path,follow,&fastfd)){
+            long fast_result;
+            if(nr==PROXY_SC_newfstatat)
+                fast_result=RAW(nr,fastfd,"",a[2],a[3]|AT_EMPTY_PATH,0,0);
+            else
+                fast_result=RAW(nr,fastfd,"",a[2]|AT_EMPTY_PATH,a[3],a[4],0);
+            int fallback=0;
+            if(!fast_result && nr==PROXY_SC_newfstatat){
+                struct stat *st=(void *)(uintptr_t)a[2];
+                fallback=S_ISREG(st->st_mode) && (st->st_mode&S_ISVTX);
+                if(!fallback)links_payload_fd_stat(fastfd,st);
+            }else if(!fast_result){
+                struct statx *sx=(void *)(uintptr_t)a[4];
+                fallback=S_ISREG(sx->stx_mode) && (sx->stx_mode&S_ISVTX);
+                if(!fallback){struct proxy_stat st;if(!arch_stat_fd(fastfd,&st)){links_fd_stat(fastfd,&st);arch_statx_nlink(sx,st.st_nlink);}}
+            }
+            RAW(PROXY_SC_close,fastfd,0,0,0,0,0);
+            if(!fallback)return fast_result;
+        }
+    }
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path,(int)a[2]);if(synthetic!=-ENOSYS)return synthetic;}
-    long e=0;void *pm=NULL,*qm=NULL;char *p=vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
+    long e=0;void *pm=NULL,*qm=NULL;char *p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
     char *q=NULL;
     if(proxy_trace){emit("v3 path resolved ");emit(p);emit("\n");}
     int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
@@ -708,8 +734,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     int packed=0;e=pack_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;pack_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p,(int)a[2]);if(e!=-ENOSYS)goto done;}
-    int writing=nr==PROXY_SC_setxattr || nr==PROXY_SC_lsetxattr || nr==PROXY_SC_removexattr || nr==PROXY_SC_lremovexattr || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
-    if(writing || nr==PROXY_SC_truncate)vfs_resolve_cache_invalidate();
+    if(writing)vfs_resolve_cache_invalidate();
     if((writing || nr==PROXY_SC_truncate) && (links_marker(p) || (q && links_marker(q)))){e=-EPERM;goto done;}
     if(writing){e=vfs_mount_readonly(pm);int create_pack_root=pack_mount_root(p)&&(nr==PROXY_SC_mkdirat||(nr==PROXY_SC_openat&&(a[2]&O_CREAT)));if(e && create_pack_root)e=0;if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
