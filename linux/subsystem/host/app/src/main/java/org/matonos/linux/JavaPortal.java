@@ -40,8 +40,11 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
     private volatile List<FileDescriptor> activeDescriptors=Collections.emptyList();
     private volatile File flatpakUserDir,flatpakSystemDir;
     JavaPortal(Context context,File directory,Consumer<Boolean> changed,Launcher launcher) throws Exception {
-        commands=new HostCommandBackend(new SandboxCommandSpawner(directory),message->{PeerConnection peer=connection;if(peer!=null)try{peer.send(message);}catch(IOException ignored){}});
         this.context=context;this.changed=changed;this.launcher=launcher;
+        android.content.pm.ApplicationInfo host=context.getPackageManager().getApplicationInfo("org.matonos.linux",0);
+        File flatpakCommand=new File(host.nativeLibraryDir,"libmatonos-app-flatpak.so");
+        String flatpakPath=flatpakCommand.isFile()&&flatpakCommand.canExecute()?flatpakCommand.getAbsolutePath():null;
+        commands=new HostCommandBackend(new SandboxCommandSpawner(directory),message->{PeerConnection peer=connection;if(peer!=null)try{peer.send(message);}catch(IOException ignored){}},flatpakPath);
         new java.security.SecureRandom().nextBytes(secret);
         path=new File(directory,"portal-backend");if(path.exists()&&!path.delete())throw new IOException("Stale portal socket");
         shortPath=ShortSocketPath.open(directory);
@@ -68,12 +71,19 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
                     List<byte[]> argv=Arrays.asList(nul(portalPath),nul("portal"),nul("--no-idle-exit"),nul("--verbose"));
                     Map<String,String> env=new LinkedHashMap<>();
                     env.put("PATH",portal.getParent()+":/system/bin:/system/xbin");
+                    // The portal normally executes /usr/bin/flatpak for Spawn.
+                    // Use the unprivileged trampoline so Spawn selects the CLI
+                    // applet and preserves the matching nested bwrap executable.
+                    env.put("FLATPAK",new File(portal.getParentFile(),
+                            "libmatonos-app-flatpak.so").getAbsolutePath());
                     // The command runs in the captured Flatpak root, where
                     // PerAppRuntime publishes the stub runtime at /run/flatpak.
                     env.put("XDG_RUNTIME_DIR","/run/flatpak");
                     env.put("DBUS_SESSION_BUS_ADDRESS","unix:path=/run/flatpak/bus");
                     env.put("FLATPAK_BWRAP",new File(portal.getParentFile(),
                             "libmatonos-app-bwrap.so").getAbsolutePath());
+                    if(new File(context.getCacheDir(),"flatpak-portal-debug").isFile())
+                        env.put("G_MESSAGES_DEBUG","all");
                     File userDir=flatpakUserDir,systemDir=flatpakSystemDir;
                     if(userDir!=null)env.put("FLATPAK_USER_DIR",userDir.getAbsolutePath());
                     if(systemDir!=null)env.put("FLATPAK_SYSTEM_DIR",systemDir.getAbsolutePath());

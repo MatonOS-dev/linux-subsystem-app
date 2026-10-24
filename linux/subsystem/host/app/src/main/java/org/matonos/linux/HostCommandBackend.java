@@ -26,11 +26,16 @@ final class HostCommandBackend implements AutoCloseable {
     }
     private final Spawner spawner;
     private final Consumer<Message> output;
+    private final byte[] flatpakExecutable;
     private final Map<Integer,Entry> children=new HashMap<>();
     private Child portal;
     private int serial;
     private boolean closed;
-    HostCommandBackend(Spawner spawner,Consumer<Message> output){this.spawner=spawner;this.output=output;}
+    HostCommandBackend(Spawner spawner,Consumer<Message> output){this(spawner,output,null);}
+    HostCommandBackend(Spawner spawner,Consumer<Message> output,String flatpakExecutable){
+        this.spawner=spawner;this.output=output;
+        this.flatpakExecutable=flatpakExecutable==null?null:(flatpakExecutable+"\0").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
     private Message reply(Message c,int type,String sig,Object... body){
         Message m=new Message();m.type=type;m.serial=++serial;m.sender=":1.0";m.destination=c.sender;
         m.replySerial=c.serial;m.signature=sig;m.body=Arrays.asList(body);return m;
@@ -59,6 +64,7 @@ final class HostCommandBackend implements AutoCloseable {
                 signature(c,"ayaaya{uh}a{ss}u");int flags=(Integer)c.body.get(4);if((flags&~3)!=0)throw new IllegalArgumentException("Unsupported flags");
                 byte[] cwd=bytes(c.body.get(0));List<byte[]> argv=new ArrayList<>();for(Object arg:(List<?>)c.body.get(1))argv.add(bytes(arg));
                 if(argv.isEmpty()||argv.get(0).length<2)throw new IllegalArgumentException("Empty command");
+                if(flatpakExecutable!=null&&Arrays.equals(argv.get(0),"flatpak\0".getBytes(java.nio.charset.StandardCharsets.UTF_8)))argv.set(0,flatpakExecutable.clone());
                 Map<Integer,FileDescriptor> fds=new LinkedHashMap<>();
                 for(Object pair:(List<?>)c.body.get(2)){List<?> p=(List<?>)pair;int target=(Integer)p.get(0),index=(Integer)p.get(1);
                     if(target<0||index<0||index>=c.fds.size()||fds.containsKey(target))throw new IllegalArgumentException("Invalid fd mapping");fds.put(target,c.fds.get(index));}
