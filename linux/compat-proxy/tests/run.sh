@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+cc -O2 -Wall -Wextra -Werror tests/payload-filter.c -o build/payload-filter
+build/payload-filter
 cc -O2 -Wall -Wextra -Werror -pthread tests/i386-thread-adopt.c \
     arch/i386/thread-adopt.c -o build/i386-thread-adopt
 timeout 15 build/i386-thread-adopt

@@ -10,20 +10,26 @@
 #include <sys/prctl.h>
 #include <signal.h>
 #include <sys/stat.h>
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/auxv.h>
 #include <sys/prctl.h>
+#if defined(__i386__)
+#include "arch/i386/adopt.h"
+#else
 #include "arch/x86_64/adopt.h"
 #include "../gpu-forward-spike/spike3/adopt.h"
+#endif
 #include "../gpu-forward-spike/bootstrap.h"
 #include "../gpu-forward-spike/bridge.h"
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 static struct maton_gpu_bootstrap *gpu_bootstrap;
+#ifndef PROXY_LIBRARY
 static const char *gpu_bridge_error(void) { return dlerror(); }
+#endif
 #endif
 
 #define PAGE 4096UL
@@ -31,6 +37,28 @@ static const char *gpu_bridge_error(void) { return dlerror(); }
 #define UP(x) (((x)+PAGE-1)&~(PAGE-1))
 #define STACK_SIZE (4UL<<20)
 struct mapped { uintptr_t entry, phdr, base, area, size, target; unsigned phnum; char interp[4096]; };
+static int resident_collision(uintptr_t low,uintptr_t high) {
+#if defined(__i386__) && defined(MATON_GPU_BRIDGE)
+    /* ELF32 PIE is relocated into the kernel's available address space. Its
+     * link-time 0x70000000 layout is not its live reservation after ASLR. */
+    extern const unsigned char __ehdr_start[];
+    const arch_elf_ehdr *eh=(const void *)__ehdr_start;
+    const arch_elf_phdr *ph=(const void *)(__ehdr_start+eh->e_phoff);
+    uintptr_t bias=0;
+    for(unsigned i=0;i<eh->e_phnum;i++)if(ph[i].p_type==PT_LOAD && !ph[i].p_offset) {
+        bias=(uintptr_t)__ehdr_start-ph[i].p_vaddr;break;
+    }
+    for(unsigned i=0;i<eh->e_phnum;i++)if(ph[i].p_type==PT_LOAD) {
+        uintptr_t begin=DOWN(bias+ph[i].p_vaddr);
+        uintptr_t end=UP(bias+ph[i].p_vaddr+ph[i].p_memsz);
+        if(high>begin && low<end)return 1;
+    }
+    return 0;
+#else
+    return high>ARCH_RESIDENT_LO && low<ARCH_RESIDENT_HI;
+#endif
+}
+
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
@@ -211,7 +239,7 @@ static int map_elf(const char *path,struct mapped *out) {
     }
     if(high<=low) goto done;
     /* Refuse collision with the resident proxy rather than overwriting it. */
-    if(eh.e_type==ET_EXEC && high>ARCH_RESIDENT_LO && low<ARCH_RESIDENT_HI) goto done;
+    if(eh.e_type==ET_EXEC && resident_collision(low,high)) goto done;
     /* Stage away from the caller, including fixed-address executables. */
     long area=RAW(PROXY_SC_mmap,0,high-low,PROT_NONE,
                   MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
@@ -363,7 +391,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     *v++=0; p_copy(v,aux,sizeof(aux));
     vfs_free(av);vfs_free(ev);commit_elf(&main);commit_elf(&interp);
     image->entry=entry;image->stack=sp;
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
     /* The resident survives exec. Publish this payload, rather than leaving
      * GPU clients looking at the original bwrap/launcher link map. The private
      * mapping is copy-on-write across fork, like the payload it describes. */
@@ -405,12 +433,12 @@ int main(int argc,char **argv,char **environ) {
     if(proxy_diagnostics_init())return 1;
     vfs_temp_gc();
     int android=0,i=resumed?4:1; long parent=0;
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
-    int gpu_bridge_enabled=0;
+#ifdef MATON_GPU_BRIDGE
+    int gpu_bridge_enabled=state_gpu_bridge;
     static void *gpu_egl, *gpu_gles;
 #endif
     while(i<argc && argv[i][0]=='-') {
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
         if(p_equal(argv[i],"--gpu-bridge")) {gpu_bridge_enabled=1;i++;}
         else
 #endif
@@ -440,10 +468,16 @@ int main(int argc,char **argv,char **environ) {
     }
     if(i==argc) return 2;
     if(resumed)android=state_android;else state_android=android;
+#ifdef MATON_GPU_BRIDGE
+    state_gpu_bridge=gpu_bridge_enabled;
+#if defined(__i386__)
+    if(gpu_bridge_enabled)proxy_i386_tls_reservation(1);
+#endif
+#endif
     vfs_gpu_init();
     struct image image; int r=proxy_load(argv[i],argv+i+(resumed?1:0),environ,&image);
     if(r) {proxy_log("load-error",0,r);return 1;}
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
     static struct gpu_bridge bridge;
     if(gpu_bridge_enabled) {
         bridge.version=2;
@@ -460,7 +494,7 @@ int main(int argc,char **argv,char **environ) {
      * native-library syscall ranges. EGL dispatch loads the hardware driver
      * lazily on first initialization; calls from the adopted Linux thread
      * must keep those driver's Android syscalls native too. */
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
     if(gpu_bridge_enabled) {
         if(proxy_resident_fds_snapshot(0)) return 7;
         EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -496,15 +530,17 @@ int main(int argc,char **argv,char **environ) {
 #endif
     r=proxy_install(android);
     if(r) {proxy_log("filter-error",0,r);return 1;}
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
     if(gpu_bridge_enabled) {
         bridge.owner=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
+#if defined(__x86_64__)
         if(RAW(PROXY_SC_arch_prctl,0x1003,&bridge.tls,0,0,0,0)) return 3;
+#endif
         if(adopt_install()) return 5;
     }
 #endif
     proxy_host_snapshot(environ);
-#if defined(__x86_64__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
     if(gpu_bridge_enabled) {
         char value[32];
         snprintf(value,sizeof(value),"%lx",(unsigned long)&bridge);

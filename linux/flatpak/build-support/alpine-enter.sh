@@ -3,13 +3,18 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ARCH=${ARCH:-$(uname -m)}
 SCRATCH=${SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+FLATPAK_MUSL_WORK=${FLATPAK_MUSL_WORK:-$SCRATCH/flatpak-musl}
+FLATPAK_CACHE=${FLATPAK_CACHE:-$SCRATCH/flatpak-musl/cache}
 ROOTFS=$SCRATCH/rootfs/$ARCH
 GPGME_LITE_SRC=${GPGME_LITE_SRC:-$(CDPATH= cd -- "$HERE/../../DullPGP" && pwd)}
 [ -x "$ROOTFS/bin/sh" ] || { echo "Missing offline Alpine build root: $ROOTFS" >&2; exit 1; }
 [ -f "$GPGME_LITE_SRC/Makefile" ] || { echo "Missing DullPGP source tree: $GPGME_LITE_SRC" >&2; exit 1; }
+mkdir -p "$FLATPAK_MUSL_WORK" "$FLATPAK_CACHE"
 exec /usr/bin/bwrap \
   --bind "$ROOTFS" / \
   --bind "$SCRATCH" /scratch \
+  --bind "$FLATPAK_MUSL_WORK" /scratch/work \
+  --bind "$FLATPAK_CACHE" /scratch/work/cache \
   --bind "$HERE" /work \
   --bind "$GPGME_LITE_SRC" /work-gpgme-lite \
   --proc /proc --dev /dev --tmpfs /tmp \

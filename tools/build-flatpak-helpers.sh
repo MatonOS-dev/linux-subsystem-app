@@ -56,11 +56,11 @@ for name in $(printf '%s\n' "${!HELPERS[@]}" | sort); do
     continue
   fi
   info "Flatpak helper $name (sources changed)"
-  helper_work=$MUSL_SCRATCH/flatpak-helper-build
+  helper_work=${MATON_FLATPAK_HELPER_WORK:-${FLATPAK_MUSL_WORK:-$MUSL_SCRATCH/flatpak-musl}/helper-build}
   mkdir -p "$helper_work"
   install -m644 "$(source_file "$name")" "$helper_work/$name.c"
-  SCRATCH="$MUSL_SCRATCH" GPGME_LITE_SRC="$GPGME_LITE_SRC" "$ALPINE_ENTER" sh -c \
-    "gcc $CFLAGS /scratch/flatpak-helper-build/$name.c -o /scratch/flatpak-helper-build/$name"
+  SCRATCH="$MUSL_SCRATCH" FLATPAK_MUSL_WORK="${FLATPAK_MUSL_WORK:-$MUSL_SCRATCH/flatpak-musl}" GPGME_LITE_SRC="$GPGME_LITE_SRC" "$ALPINE_ENTER" sh -c \
+    "gcc $CFLAGS /scratch/work/helper-build/$name.c -o /scratch/work/helper-build/$name"
   if readelf -l "$helper_work/$name" | grep -q 'INTERP'; then die "$name unexpectedly has PT_INTERP"; fi
   install -m755 "$helper_work/$name" "$tmp/$name"
   for out in ${HELPERS[$name]}; do install -m755 "$tmp/$name" "$STAGE/$out"; done

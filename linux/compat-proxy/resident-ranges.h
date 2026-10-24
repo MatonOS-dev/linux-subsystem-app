@@ -28,7 +28,9 @@ struct arch_ip_range { uint64_t begin, end; unsigned linker; };
 /* The host Android linker is part of the resident bionic runtime. Match its
  * known full map paths exactly; payload glibc/musl loaders never qualify. */
 static inline int resident_linker_path(const char *path) {
-    return resident_path_equal(path, "/apex/com.android.runtime/bin/linker64") ||
+    return resident_path_equal(path, "/apex/com.android.runtime/bin/linker") ||
+           resident_path_equal(path, "/system/bin/linker") ||
+           resident_path_equal(path, "/apex/com.android.runtime/bin/linker64") ||
            resident_path_equal(path, "/system/bin/linker64");
 }
 

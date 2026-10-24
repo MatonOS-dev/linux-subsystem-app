@@ -95,7 +95,14 @@ proxy_clone_after:
  fxrstor 16(%esp)
  mov %ebp,%esp
  popal
- jmp *proxy_clone_resume
+ /* PIC continuation: preserve every payload register and flags. */
+ push %eax
+ call 2f
+2: pop %eax
+ lea proxy_clone_resume-2b(%eax),%eax
+ mov (%eax),%eax
+ xchg %eax,(%esp)
+ ret
 .weak dns_fork_result
 dns_fork_result:
  ret
