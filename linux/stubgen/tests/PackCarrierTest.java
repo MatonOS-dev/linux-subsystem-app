@@ -12,6 +12,22 @@ import com.android.apksig.ApkVerifier;
 
 /** Uses a disposable real signer; checks the signed ZIP's original indexed offsets. */
 public final class PackCarrierTest {
+ private static long localHeaderOffset(RandomAccessFile file,String wanted)throws Exception {
+  long end=file.length()-22;file.seek(end);byte[] eocd=new byte[22];file.readFully(eocd);
+  if((eocd[0]&255)!=0x50||(eocd[1]&255)!=0x4b)throw new AssertionError("ZIP end record missing");
+  int count=(eocd[10]&255)|((eocd[11]&255)<<8);
+  long at=Integer.toUnsignedLong((eocd[16]&255)|((eocd[17]&255)<<8)|((eocd[18]&255)<<16)|(eocd[19]<<24));
+  for(int i=0;i<count;i++) {
+   file.seek(at);byte[] h=new byte[46];file.readFully(h);
+   if((h[0]&255)!=0x50||(h[1]&255)!=0x4b||(h[2]&255)!=0x01||(h[3]&255)!=0x02)throw new AssertionError("ZIP central entry missing");
+   int nameLength=(h[28]&255)|((h[29]&255)<<8),extraLength=(h[30]&255)|((h[31]&255)<<8),commentLength=(h[32]&255)|((h[33]&255)<<8);
+   byte[] name=new byte[nameLength];file.readFully(name);
+   long local=Integer.toUnsignedLong((h[42]&255)|((h[43]&255)<<8)|((h[44]&255)<<16)|(h[45]<<24));
+   if(wanted.equals(new String(name,java.nio.charset.StandardCharsets.UTF_8)))return local;
+   at+=46L+nameLength+extraLength+commentLength;
+  }
+  throw new AssertionError("ZIP entry missing: "+wanted);
+ }
  public static void main(String[] args)throws Exception {
   File dir=new File(args[0]);File payload=new File(dir,"payload");Files.write(payload.toPath(),new byte[8193]);
   ObjectPacks.Entry row=new ObjectPacks.Entry("/payload","a".repeat(64),"file",0100755);row.source=payload;
@@ -47,6 +63,28 @@ public final class PackCarrierTest {
   sign.invoke(null,unsigned,signed,kc.newInstance(key,cert));
   ApkVerifier.Result result=new ApkVerifier.Builder(signed).setMinCheckedPlatformVersion(30).build().verify();
   if(!result.isVerified())throw new AssertionError(result.getErrors().toString());
+  File erofsUnsigned=org.matonos.linuxhost.stubgen.StubGenerator.generateErofsPackUnsigned(
+          dir,"flatpak.org.example.Test",payload,44);
+  File erofsSigned=new File(dir,"erofs-signed.apk");sign.invoke(null,erofsUnsigned,erofsSigned,kc.newInstance(key,cert));
+  ApkVerifier.Result erofsResult=new ApkVerifier.Builder(erofsSigned).setMinCheckedPlatformVersion(30).build().verify();
+  if(!erofsResult.isVerified())throw new AssertionError(erofsResult.getErrors().toString());
+  try(ZipFile zip=new ZipFile(erofsSigned);RandomAccessFile carrier=new RandomAccessFile(erofsSigned,"r")) {
+   String erofsEntry="assets/matonos/deployment.erofs";
+   ZipEntry image=zip.getEntry(erofsEntry),metadataEntry=zip.getEntry("assets/matonos/erofs-pack.json");
+   if(image==null||metadataEntry==null||image.getMethod()!=ZipEntry.STORED)throw new AssertionError("Missing stored EROFS carrier metadata/image");
+   byte[] metadataBytes;try(InputStream input=zip.getInputStream(metadataEntry)){metadataBytes=input.readAllBytes();}
+   String metadataText=new String(metadataBytes,java.nio.charset.StandardCharsets.UTF_8);
+   String imageHash=ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(payload.toPath())));
+   if(!metadataText.contains("\"image_sha256\":\""+imageHash+"\"")
+           ||!metadataText.contains("\"image_size\":"+payload.length())
+           ||!metadataText.contains("\"offset_rule\":\"zip-local-header-v1\""))throw new AssertionError(metadataText);
+   long local=localHeaderOffset(carrier,erofsEntry);carrier.seek(local);byte[] header=new byte[30];carrier.readFully(header);
+   int nameLength=(header[26]&255)|((header[27]&255)<<8),extraLength=(header[28]&255)|((header[29]&255)<<8);
+   long imageOffset=local+30+nameLength+extraLength;
+   if(imageOffset%4096!=0||imageOffset<local||image.getSize()!=payload.length())throw new AssertionError("EROFS image entry alignment/local-header rule failed");
+   if(!new ApkVerifier.Builder(erofsSigned).setMinCheckedPlatformVersion(30).build().verify().isVerified())throw new AssertionError("EROFS split signature");
+  }
+  Files.deleteIfExists(erofsUnsigned.toPath());
   try(RandomAccessFile f=new RandomAccessFile(signed,"r");ZipFile zip=new ZipFile(signed)) {
    f.seek(0);byte[] header=new byte[30];f.readFully(header);
    int names=(header[26]&255)|((header[27]&255)<<8),extra=(header[28]&255)|((header[29]&255)<<8);

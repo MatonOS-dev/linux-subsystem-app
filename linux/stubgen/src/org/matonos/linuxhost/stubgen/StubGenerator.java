@@ -7,10 +7,13 @@ import com.android.apksig.ApkSigner;
 
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
+import java.io.BufferedInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
@@ -290,6 +293,74 @@ public final class StubGenerator {
             ObjectPacks.carrier(pack,unsigned,encoder.packManifest(split));
             sign(unsigned,output);return output;
         } finally {unsigned.delete();}
+    }
+
+    /** Builds a signed split carrying one stored, page-aligned EROFS deployment.
+     * The split metadata is inside the signed APK and lets mountd locate the
+     * bytes from the ZIP local header without extracting the image. */
+    public static File generateErofsPack(File workDir, String packageName, File image,
+            File output, int revision) throws Exception {
+        File unsigned=generateErofsPackUnsigned(workDir,packageName,image,revision);
+        try {sign(unsigned,output);return output;}
+        finally {unsigned.delete();}
+    }
+
+    /** Writes the EROFS split before APK signing; used by host signing tests. */
+    public static File generateErofsPackUnsigned(File workDir, String packageName, File image,
+            int revision) throws Exception {
+        if(revision<0)throw new IllegalArgumentException("Negative split revision");
+        if(!packageName.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"))
+            throw new IllegalArgumentException("Invalid package name");
+        if(!image.isFile() || image.length()==0)throw new IOException("Missing EROFS image");
+        String digest=fileSha256(image);
+        String split="erofs_"+digest;
+        String entry="assets/matonos/deployment.erofs";
+        byte[] metadata=("{\"format\":\"matonos-erofs-pack-v1\",\"image_entry\":\""+entry+
+                "\",\"image_size\":"+image.length()+",\"image_sha256\":\""+digest+
+                "\",\"offset_rule\":\"zip-local-header-v1\",\"offset_entry\":\""+entry+"\"}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
+        encoder.revisionCode=revision;
+        File unsigned=File.createTempFile("matonos-erofs-",".apk",workDir);
+        try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
+            put(zip,"AndroidManifest.xml",encoder.packManifest(split));
+            put(zip,"assets/matonos/erofs-pack.json",metadata);
+            putStoredAligned(zip,entry,image,4096);
+        } catch(Exception error) {unsigned.delete();throw error;}
+        if(image.length()<=0 || !digest.equals(fileSha256(image))) {
+            unsigned.delete();throw new IOException("EROFS image changed while creating split");
+        }
+        return unsigned;
+    }
+
+    private static String fileSha256(File file) throws Exception {
+        java.security.MessageDigest digest=java.security.MessageDigest.getInstance("SHA-256");
+        try(InputStream input=new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buffer=new byte[65536];int count;
+            while((count=input.read(buffer))!=-1)digest.update(buffer,0,count);
+        }
+        return ObjectPacks.hex(digest.digest());
+    }
+
+    private static void putStoredAligned(ZipOutputStream zip,String name,File file,int alignment) throws Exception {
+        if(!(zip instanceof AlignedZipOutputStream))throw new IOException("ZIP stream cannot report offsets");
+        long start=((AlignedZipOutputStream)zip).bytesWritten();
+        int nameLength=name.getBytes(StandardCharsets.UTF_8).length;
+        int padding=(int)(-(start+30+nameLength+4)&(alignment-1));
+        byte[] extra=new byte[4+padding];put16(extra,0,0x4d54);put16(extra,2,padding);
+        CRC32 crc=new CRC32();
+        try(InputStream input=new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buffer=new byte[65536];int count;while((count=input.read(buffer))!=-1)crc.update(buffer,0,count);
+        }
+        ZipEntry entry=new ZipEntry(name);entry.setMethod(ZipEntry.STORED);
+        entry.setSize(file.length());entry.setCompressedSize(file.length());entry.setCrc(crc.getValue());
+        entry.setExtra(extra);zip.putNextEntry(entry);
+        try(InputStream input=new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buffer=new byte[65536];int count;while((count=input.read(buffer))!=-1)zip.write(buffer,0,count);
+        }
+        zip.closeEntry();
+        long payload=start+30+nameLength+extra.length;
+        if(payload%alignment!=0)throw new IOException("EROFS ZIP payload is not aligned");
     }
 
     /** Identity of the launcher components: the label, MIME types and icon. */
