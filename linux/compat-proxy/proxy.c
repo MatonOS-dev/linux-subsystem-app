@@ -992,7 +992,7 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     /* Reserved packed files stay in the reserve unless the caller names a
      * lower descriptor (dup2/dup3), which keeps exact shared-offset dup
      * semantics; reads stay trapped there. A full reserve gets a copy. */
-    if(pack_reserved((int)a[0])){
+    if(pack_readable((int)a[0])){
         int dupfd=nr==PROXY_SC_dup || (nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC));
         if(dupfd){
             long cmd=nr==PROXY_SC_fcntl?a[1]:F_DUPFD;long floor=nr==PROXY_SC_fcntl?a[2]:0;
@@ -1004,6 +1004,15 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
         }
     }
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    /* An explicit lower target for a readable packed file: trap that one
+     * number so its reads still reach the proxy, or replace it with a copy. */
+    if(result>=0 && nr==PROXY_SC_dup3 && pack_readable((int)a[0]) && result<proxy_fd_reserve && proxy_fd_trap((int)result)){
+        long copy=pack_copy_of((int)a[0],(a[2]&O_CLOEXEC)!=0);
+        if(copy<0){RAW(PROXY_SC_close,result,0,0,0,0,0);return copy;}
+        long placed=RAW(PROXY_SC_dup3,copy,result,a[2],0,0,0);RAW(PROXY_SC_close,copy,0,0,0,0,0);
+        if(placed>=0){pack_close((int)placed);vfs_fd_close((int)placed);}
+        return placed;
+    }
         if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
     return result;
 }
@@ -1898,6 +1907,17 @@ clean_mask:
 /* Resident entry deliberately shares syscall translation, not installation.
  * Its caller owns thread routing and must intercept process-global operations. */
 #include ARCH_FILTER_HEADER
+/* Per-descriptor read traps for packed files below the window. Each one is a
+ * small filter that can never be removed; the kernel caps a process's total
+ * filter size, so a caller that gets an error replaces the descriptor with a
+ * standalone copy instead. Already-trapped numbers are not trapped twice. */
+static int fd_traps[256];static unsigned fd_trap_count;
+int proxy_fd_trap(int fd){
+    for(unsigned i=0;i<fd_trap_count;i++)if(fd_traps[i]==fd)return 0;
+    if(fd_trap_count>=sizeof(fd_traps)/sizeof(fd_traps[0]))return -ENOSPC;
+    int r=arch_fd_trap_install(fd);if(r)return r;
+    fd_traps[fd_trap_count++]=fd;proxy_log("pack-fd-trap",fd,0);return 0;
+}
 static struct arch_ip_range *resident_bionic_ranges(size_t *count, int *error) {
     *count=0; *error=0;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);

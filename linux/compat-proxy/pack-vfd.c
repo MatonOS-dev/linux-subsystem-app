@@ -143,6 +143,11 @@ long pack_copy(int source,uint64_t offset,uint64_t length,uint64_t position,int 
  if(name && proxy_trace){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 pack-copy ",13,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,name,p_len(name),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}
  return fd;
 }
+/* A packed file a payload read could reach (not a directory, symlink or O_PATH). */
+int pack_readable(int fd){
+ struct pack_fd *f=pack_find(fd);if(!f || p_equal(f->object.kind,"dir") || p_equal(f->object.kind,"symlink"))return 0;
+ long flags=RAW(PROXY_SC_fcntl,fd,F_GETFL,0,0,0,0);return flags>=0 && !(flags&O_PATH);
+}
 /* A packed file descriptor that lives in the reserve. */
 int pack_reserved(int fd){struct pack_fd *f=pack_find(fd);return f && fd>=proxy_fd_reserve;}
 /* Duplicate a reserved packed file below the reserve: the slot gets a copy at
@@ -176,7 +181,15 @@ long pack_open(const char *path,int flags){
    * free one: close(0); open()) keeps the POSIX lowest-descriptor result. A
    * full reserve gets a standalone copy. */
   long low=fd;
-  if(low<3){fd=low;}
+  if(low<3){
+   /* Reads below the window are native: trap this one number, or copy. */
+   fd=low;
+   if(proxy_fd_trap((int)fd)){
+    RAW(PROXY_SC_close,fd,0,0,0,0,0);
+    long copy=pack_copy(carrier,o.offset,o.length,0,(flags&O_CLOEXEC)!=0,path);
+    RAW(PROXY_SC_close,carrier,0,0,0,0,0);return copy;
+   }
+  }
   else {
   long placed=RAW(PROXY_SC_fcntl,carrier,dup_cmd,proxy_fd_reserve,0,0,0);
   RAW(PROXY_SC_close,low,0,0,0,0,0);

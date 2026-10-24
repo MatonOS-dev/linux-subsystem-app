@@ -129,8 +129,10 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
     }
-    /* Payload writes on descriptors outside the proxy window reach Linux
-     * directly. Proxy-private descriptors live in the window; pack carriers are read-only, so the kernel itself rejects
+    /* Payload reads and writes on descriptors outside the proxy window reach
+     * Linux directly. Readable packed files and proxy-private descriptors
+     * live in the window; a packed file that must sit lower gets its own
+     * per-descriptor trap (arch_fd_trap_install). Pack carriers are read-only, so the kernel itself rejects
      * writes to them. Known exception: SysV IPC arena descriptors stay where
      * openat put them (moving them hangs tests/site-rewrite-exec, cause not
      * yet found); they are private only during an in-flight IPC handoff.
@@ -139,7 +141,8 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         /* ftruncate stays trapped: on a read-only pack carrier Linux says
          * EINVAL, where a read-only packed file must report EBADF. */
         const long writes[]={PROXY_SC_write,PROXY_SC_writev,PROXY_SC_pwrite64,PROXY_SC_pwritev,
-            PROXY_SC_pwritev2,PROXY_SC_fallocate};
+            PROXY_SC_pwritev2,PROXY_SC_fallocate,
+            PROXY_SC_read,PROXY_SC_readv,PROXY_SC_pread64,PROXY_SC_preadv,PROXY_SC_preadv2,PROXY_SC_lseek};
         unsigned pending[sizeof(writes)/sizeof(writes[0])],waiting=0;
         for(unsigned i=0;i<sizeof(writes)/sizeof(writes[0]);i++){
             long native_nr=encode(writes[i]);if(native_nr<0)continue;
@@ -286,5 +289,60 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     }
     struct sock_fprog prog={(unsigned short)n,bpf};
     return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+}
+/* One extra filter trapping the read family on a single descriptor number:
+ * a readable packed file that must sit below the proxy window. Both ABIs,
+ * with the same raw-gateway exemptions as the main filter. All threads. */
+static int arch_fd_trap_install(int fd) {
+    struct sock_filter bpf[256];unsigned n=0;
+    const long reads[]={PROXY_SC_read,PROXY_SC_readv,PROXY_SC_pread64,PROXY_SC_preadv,PROXY_SC_preadv2,PROXY_SC_lseek};
+    const unsigned count=sizeof(reads)/sizeof(reads[0]);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT);
+    unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT==AUDIT_ARCH_I386?AUDIT_ARCH_X86_64:AUDIT_ARCH_I386);
+    unsigned peer_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    for(unsigned peer=0;peer<2;peer++) {
+        unsigned jump=peer?peer_jump:native_jump;bpf[jump].k=n-jump-1;
+#ifdef MATON_GPU_BRIDGE
+        if(peer) { ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);continue; }
+#endif
+        long (*encode)(long)=peer?arch_peer_encode_syscall:arch_encode_syscall;
+        unsigned audit=peer?(ARCH_AUDIT==AUDIT_ARCH_I386?AUDIT_ARCH_X86_64:AUDIT_ARCH_I386):ARCH_AUDIT;
+        uint64_t gateway=audit==AUDIT_ARCH_I386?UINT64_C(0x70300000):UINT64_C(0x600000300000);
+        uint64_t gates[2]={peer?gateway+0x42:arch_gateway_pc(0),peer?gateway+0x102:arch_gateway_pc(1)};
+        unsigned pending[8],waiting=0;
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+        for(unsigned i=0;i<count;i++){
+            long native_nr=encode(reads[i]);if(native_nr<0)continue;
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,native_nr);
+            pending[waiting++]=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+        }
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        for(unsigned i=0;i<waiting;i++)bpf[pending[i]].k=n-pending[i]-1;
+        /* Descriptor match: high word zero and low word equal. */
+        unsigned allow[4],allows=0;
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0])+4);
+        allow[allows++]=n;ADD(BPF_JMP|BPF_JEQ|BPF_K,0,0,0);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+        allow[allows++]=n;ADD(BPF_JMP|BPF_JEQ|BPF_K,0,0,(uint32_t)fd);
+        /* The proxy's own raw calls on this descriptor pass. */
+        unsigned gate_allow[2];
+        for(unsigned g=0;g<2;g++){
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,2,(uint32_t)(gates[g]>>32));
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+            gate_allow[g]=n;ADD(BPF_JMP|BPF_JEQ|BPF_K,0,0,(uint32_t)gates[g]);
+        }
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+        unsigned target=n;ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        /* Mismatching descriptor words allow; matching gateway words allow. */
+        for(unsigned i=0;i<allows;i++)bpf[allow[i]].jf=(uint8_t)(target-allow[i]-1);
+        for(unsigned g=0;g<2;g++)bpf[gate_allow[g]].jt=(uint8_t)(target-gate_allow[g]-1);
+    }
+    struct sock_fprog prog={(unsigned short)n,bpf};
+    long r=RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,SECCOMP_FILTER_FLAG_TSYNC,&prog,0,0,0);
+    return r?(r<0?(int)r:-EBUSY):0;
 }
 #undef ADD

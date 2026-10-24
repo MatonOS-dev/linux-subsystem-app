@@ -56,6 +56,8 @@ long pack_pread(int,void *,size_t,int64_t);
 void pack_close(int);
 long pack_dup(int,int);
 int pack_reserved(int);
+int pack_readable(int);
+void pack_close(int);
 long pack_copy_of(int,int);
 int pack_tracked(int);
 int pack_private(int);

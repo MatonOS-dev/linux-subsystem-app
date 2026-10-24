@@ -39,6 +39,7 @@ void proxy_profile_section(unsigned,uint64_t);
 extern long proxy_fd_reserve,proxy_fd_reserve_end;
 extern int proxy_fd_reserve_ready;
 long proxy_fd_relocate(long);
+int proxy_fd_trap(int);
 #define PROXY_PRIVATE_FD_FLOOR proxy_fd_reserve
 void proxy_fd_reserve_init(void);
 long proxy_private_fd(long);
