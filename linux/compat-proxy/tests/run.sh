@@ -120,8 +120,6 @@ cat build/publication.out
 
 cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-translation.c -o build/dns-translation
 build/dns-translation
-cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-host.c -o build/dns-host
-build/dns-host
 cc -O2 -Wall -Wextra -Werror -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-helper.c -o build/dns-helper
 timeout 5 build/dns-helper
 cc -no-pie -O2 -Wall -Wextra -Werror tests/links.c -o build/links-test

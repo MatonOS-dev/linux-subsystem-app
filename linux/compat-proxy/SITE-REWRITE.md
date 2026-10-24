@@ -1,10 +1,7 @@
 # Syscall-site rewriting and proxy measurements
 
-The current backend implements default-on **lazy** x86_64 rewriting.
-The version 1 load-time results below are historical.
-`MATON_PROXY_REWRITE=0` is the kill switch; unset or `=1` enables it.
-Each proxy startup logs `rewrite-on` or `rewrite-off` (unsupported backends
-remain off). Only complete, unambiguous
+Version 1 implements opt-in **load-time** x86_64 rewriting with
+`MATON_PROXY_REWRITE=1`. The default remains SIGSYS. Only complete, unambiguous
 ELF function symbols that the conservative backend can decode qualify.
 Anonymous/JIT code is never scanned. Supported architectures going forward are
 x86_64, i386 and arm64; the latter two retain SIGSYS in this phase.
@@ -587,102 +584,3 @@ diagnosing why proxy `--no-deploy` stalls in the Flatpak pull path. Preserve
 the trap fallback for cancellation/restart semantics and app-owned user
 dispatch. i386 rewriting, arm64 rewriting, anonymous/JIT handling and runtime
 discovery/parking remain out of scope for this x86_64 phase.
-
-## Lazy discovery (site-rewrite-2)
-
-Executable mappings now register their backing descriptor without decoding text.
-The first supported SYS_SECCOMP trap identifies the containing symbol/FDE
-function. Only that function is decoded; rejected sites are remembered for the
-mapping lifetime. The trapped syscall number must match the constant load.
-The number load and syscall may be separated by instructions proven not to use
-RAX or change control flow/stack state. Interior branch targets reject the
-window. Both edits retain their sizes and publish together in one anonymous
-RX page replacement; cross-page windows stay trapped.
-
-A process registry is published before executable bytes, retaining object path,
-file offset, number, window length, timestamp and sequence. Fatal diagnostics
-check the PC and sixteen stack slots against its sites/pages and dump every
-record. MATON_PROXY_REWRITE_LOG=1 logs publications and race recovery.
-SIGSEGV recovers only a low-number fault whose PC and registered call return
-address match the original syscall; other faults chain to the app handler.
-The forced-race fixture parks a thread after its original number load, publishes
-from another thread, then resumes it at the rewritten call. Six-thread and
-signal fixtures remain in the suite. No thread parking is used in production.
-
-Validation: build.sh, tests/run.sh and tests/i386-p1.sh passed on the host
-(logs site-rewrite-2-resume-{build2,tests2,i3862}.log). Persistent decisions and
-new workload measurements are tracked in the subsequent work.
-
-### Persistent site decisions
-
-XDG_CACHE_HOME/maton-rewrite-v2 holds atomic per-site decision files shared
-across an app's processes and relaunches. The launcher already provides its
-per-stub XDG_CACHE_HOME. Missing/unwritable cache means ordinary lazy discovery.
-Keys contain GNU build-id when available, device/inode, size, nanosecond
-mtime/ctime, packed slice and syscall file offset. Plans and proof rejections
-retain their function extent and hardware SSE4.2 CRC32C. Lookups validate the
-live function checksum before reuse and original window bytes before publishing.
-Truncated, malformed or checksum-mismatched records are empty cache entries.
-Temporary writes rename atomically; simultaneous processes can safely replace
-the same decision. Rejections without a known function extent stay memory-only.
-
-The decoder normalizes earlier registered patches when proving a second site
-in the same function. Unrelated mremap operations preserve recovery records;
-only affected source/destination ranges are invalidated. Integration tests
-exercise first/second launch, checksum mismatch and truncated cache files.
-
-### Host pull stall fixed
-
-The wait was Flatpak/libcurl's resolver completion pipes (17 and 19 in the
-captured process), not mistranslated poll readiness. The resolver thread's UDP
-socket targeted systemd-resolved at 127.0.0.53:53; the proxy redirected it to
-its helper, which attempted /dev/socket/dnsproxyd and got ENOENT on the host.
-The helper dropped those requests, leaving libc in DNS retries and Flatpak in
-poll. Host builds now leave DNS native by default; Android builds retain the
-netd route, and explicit --dns-forwarder still enables the test route.
-The new dns-host fixture checks the exact affected address without requiring
-network access; the existing mocked netd helper suite still verifies Android
-forwarding. Full warm pull+deploy now completes in both rewrite modes.
-
-### Proof checksum correction
-
-Normalization now restores an earlier registered window only if every live
-byte still matches our exact published encoding. An app's change to an
-intervening instruction remains visible to CRC32C. The regression fixture first
-failed against full-window normalization, then passed with this check. Resident
-exec also retains its original real cache root when Flatpak changes
-XDG_CACHE_HOME to a virtual sandbox path.
-
-### Residual startup costs and reproducible measurements
-
-Lazy lookup now exits after the containing symbol; FDE lookup tests the trapped
-address before expensive overlap checks. Logging includes scan time, encoding,
-active status and per-process active site counts. The fcntl entry preserves
-F_GETFD/F_SETFD's native bypass without FP save/C dispatch; an app seccomp TRAP
-at that native entry still chains to the app handler. Arena lookup can reuse
-the existing proven stack-page owner instead of repeatedly calling gettid;
-unknown/ambiguous pages keep the raw lookup. Six-thread, fork, signal and
-nested-filter tests cover these paths.
-
-`tests/flatpak-rewrite-ab.py INSTALL OUTPUT` runs an isolated pre-populated
-installation with native/off/on routes, per-process sampled peak RSS, a timeout,
-and logs for every run. It uses pidfd readiness to avoid adding a polling tick
-to elapsed time. `--no-vulkan-driver` selects the old incompatible-driver case;
-`--route on --patch-log --runs 2` measures first/second launch and publications.
-`tests/site-coverage-live.c` exercises main-thread and pthread wrappers before
-reporting live syscall/call-RAX byte counts, using ELF symbol bounds on glibc
-and musl. These counts describe exercised symbols, not whole-libc coverage.
-
-The current isolated installation has VulkanInfo commit
-70cf1f60ab232fbbea5cd4246262b0ca72630fe97cf0b35f41502c7b23ae7b04.
-The required full pull updated the original 1b installation and installed a
-software Vulkan driver extension. Thus current numbers are paired route A/Bs,
-not an exact before/after reproduction of 1b's older app/runtime installation.
-The no-driver case explicitly sets VK_DRIVER_FILES=/nonexistent inside Flatpak.
-
-Performance remains an open issue: default-on is retained as requested, but
-these host repetitions do not establish on < off consistently. A trial leaving
-all generic fcntl sites unpatched also failed to establish that target, so that
-coverage reduction was discarded. Do not present the implementation as having
-met the whole-workload speed target. The detailed timings and limitations are
-in the task's final report under out/pc-logs/agents/site-rewrite-2.final.md.

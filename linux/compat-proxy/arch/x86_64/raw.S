@@ -170,26 +170,6 @@ proxy_rewrite_entry_common:
     pop %r12
     popfq
     ret
-/* Preserve the million-descriptor spawn sweep's native F_GETFD/F_SETFD
- * bypass. These exact commands already pass the proxy filter; avoid FXSAVE,
- * C dispatch and allocation scopes. Other commands use the regular entry.
- * An app filter's TRAP here is explicitly chained by the SIGSYS demux. */
-.global proxy_rewrite_fcntl_entry
-.type proxy_rewrite_fcntl_entry,@function
-proxy_rewrite_fcntl_entry:
-    pushfq
-    cmp $1,%rsi
-    je 1f
-    cmp $2,%rsi
-    je 1f
-    popfq
-    jmp proxy_rewrite_entry_common
-1:  popfq
-    mov $72,%eax
-    syscall
-.global proxy_rewrite_fcntl_after
-proxy_rewrite_fcntl_after:
-    ret
 /* Deliberately outside .proxy_gateway: locking/unknown fcntl commands
  * retain the original SIGSYS dispatch and restart behavior. */
 .global proxy_rewrite_trap

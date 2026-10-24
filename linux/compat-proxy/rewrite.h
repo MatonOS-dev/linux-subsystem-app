@@ -1,24 +1,12 @@
-/* Lazy ELF function decoder. This file intentionally has no architecture tests;
+/* Load-time ELF scanner. This file intentionally has no architecture tests;
  * instruction proof and entry generation are selected by the backend. */
 #ifdef ARCH_REWRITE_HEADER
 #include ARCH_REWRITE_HEADER
-static int rewrite_enabled, rewrite_log;
-static uintptr_t rewrite_target;
-static unsigned rewrite_nr;
-struct rewrite_mapping {struct rewrite_mapping *next;uintptr_t begin;size_t size;uint64_t offset;int fd;char path[512];};
-static struct rewrite_mapping *rewrite_mappings;
-struct rewrite_record {struct rewrite_record *next;uintptr_t address,ret;uint64_t offset,sequence,time;unsigned nr,window,active;unsigned char original[128];char path[512];};
-static struct rewrite_record *rewrite_records;
-static struct rewrite_mapping *rewrite_current;
-static uint64_t rewrite_sequence;
-struct rewrite_attempt {struct rewrite_attempt *next;uintptr_t pc;struct rewrite_mapping *map;};
-static struct rewrite_attempt *rewrite_attempts;
-
-struct rewrite_site {uint32_t offset;unsigned nr,window;unsigned char original[128];};
-struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice,target;size_t size,count,capacity,function_offset,function_size;uint32_t function_crc;struct rewrite_site *sites;};
+static int rewrite_enabled;
+struct rewrite_site {uint32_t offset;unsigned nr,window;unsigned char original[9];};
+struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice;size_t size,count,capacity;struct rewrite_site *sites;};
 static struct rewrite_scan *rewrite_scans;
 static unsigned rewrite_busy;
-static int proxy_rewrite_internal_site(uintptr_t pc){return arch_rewrite_internal_site(pc);}
 static int proxy_rewrite_traps(long nr){return rewrite_enabled && (nr==PROXY_SC_mprotect || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap);}
 static uint64_t rewrite_clock(void){
     struct {int64_t sec,nsec;} t={0};
@@ -27,41 +15,22 @@ static uint64_t rewrite_clock(void){
 }
 static unsigned rewrite_apply(uintptr_t addr,unsigned nr,unsigned w,const unsigned char *original){
     if((addr&4095)+w>4096)return 0;
-    struct rewrite_record *record=vfs_palloc(sizeof(*record));
-    if(!record)return 0;
     const unsigned char *old=(void *)addr;
-    for(unsigned j=0;j<w;j++)if(old[j]!=original[j]){vfs_free(record);return 0;}
+    for(unsigned j=0;j<w;j++)if(old[j]!=original[j])return 0;
     long page=RAW(PROXY_SC_mmap,0,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-    if((unsigned long)page>=(unsigned long)-4095){vfs_free(record);return 0;}
+    if((unsigned long)page>=(unsigned long)-4095)return 0;
     p_copy((void *)(uintptr_t)page,(void *)(addr&~(uintptr_t)4095),4096);
     arch_rewrite_patch((unsigned char *)(uintptr_t)page+(addr&4095),nr,w);
-    p_copy(record->original,original,w);
-    record->address=addr;record->ret=addr+w;record->nr=nr;record->window=w;
-    record->offset=rewrite_current->offset+addr-rewrite_current->begin;
-    p_copy(record->path,rewrite_current->path,sizeof(record->path));
-    record->time=rewrite_clock();record->sequence=++rewrite_sequence;
-    record->active=1;record->next=rewrite_records;
-    /* Publish the recovery record BEFORE executable bytes become visible. */
-    __atomic_store_n(&rewrite_records,record,__ATOMIC_RELEASE);
     if(RAW(PROXY_SC_mprotect,page,4096,PROT_READ|PROT_EXEC,0,0,0)>=0 &&
-       RAW(PROXY_SC_mremap,page,4096,4096,MREMAP_MAYMOVE|MREMAP_FIXED,addr&~(uintptr_t)4095,0)>=0){
-        if(rewrite_log){crash_text("v3 rewrite patch path=");crash_text(record->path);crash_text("\n");proxy_log("rewrite-address",addr,nr);proxy_log("rewrite-offset",record->offset,record->sequence);}
-        return 1;
-    }
-    record->active=0;
+       RAW(PROXY_SC_mremap,page,4096,4096,MREMAP_MAYMOVE|MREMAP_FIXED,addr&~(uintptr_t)4095,0)>=0)return 1;
     RAW(PROXY_SC_munmap,page,4096,0,0,0,0);return 0;
 }
-int proxy_rewrite_init(const char *s,int logging){
-    rewrite_log=logging;
-    if(s && p_equal(s,"MATON_PROXY_REWRITE=0")){
-        rewrite_enabled=0;proxy_log("rewrite-off",0,0);return 0;
-    }
+int proxy_rewrite_init(const char *s){
+    if(!s || !p_equal(s,"MATON_PROXY_REWRITE=1"))return 0;
     rewrite_enabled=arch_rewrite_init();
-    proxy_log(rewrite_enabled?"rewrite-on":"rewrite-off",0,0);
     proxy_rewrite_table=arch_rewrite_table;
     return rewrite_enabled;
 }
-#include "rewrite-cache.h"
 /* A complete ELF or FDE range is the unit of proof. Unsupported instructions,
  * unproven stack state, indirect flow or interior branch targets reject it. */
 static int rewrite_redzone_path_clean(const struct rewrite_insn *ins,const size_t *offsets,size_t count,size_t size,size_t start){
@@ -79,31 +48,14 @@ static int rewrite_redzone_path_clean(const struct rewrite_insn *ins,const size_
     vfs_free(seen);vfs_free(queue);return safe;
 }
 static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_scan *scan,uintptr_t begin,const Elf64_Sym *symbol,const Elf64_Sym *all,size_t nsymbols){
-    if(rewrite_target<(uintptr_t)p || rewrite_target-(uintptr_t)p>=size)return 0;
-    if(scan){scan->function_offset=(uintptr_t)p-begin;scan->function_size=size;scan->function_crc=rewrite_function_crc(p,size);}
     size_t pos=0,count=0,capacity=size;
     if(!size || capacity>SIZE_MAX/sizeof(struct rewrite_insn) || capacity>SIZE_MAX/sizeof(size_t))return 0;
     struct rewrite_insn *ins=vfs_alloc(capacity*sizeof(*ins));
     size_t *offsets=vfs_alloc(capacity*sizeof(*offsets));
     if(!ins || !offsets){vfs_free(ins);vfs_free(offsets);return 0;}
-    unsigned char *text=rewrite_function_bytes(p,size);
-    if(!text){vfs_free(ins);vfs_free(offsets);return 0;}
     while(pos<size){
-        if(count==capacity || !arch_rewrite_decode(text+pos,size-pos,&ins[count])){vfs_free(text);vfs_free(ins);vfs_free(offsets);return 0;}
+        if(count==capacity || !arch_rewrite_decode(p+pos,size-pos,&ins[count])){vfs_free(ins);vfs_free(offsets);return 0;}
         offsets[count]=pos;pos+=ins[count++].size;
-    }
-    vfs_free(text);
-    /* Walk backward over the forward-decoded stream, never raw byte patterns.
-     * Unknown RAX use, control flow and stack changes keep the site trapped. */
-    for(size_t k=0;k<count;k++)if(ins[k].syscall){
-        for(size_t q=k;q>0;){q--;
-            if(ins[q].number){
-                size_t w=offsets[k]+2-offsets[q];
-                if(w<=128 && (uintptr_t)p+offsets[k]==rewrite_target && ins[q].nr==rewrite_nr)ins[q].window=(unsigned)w;
-                break;
-            }
-            if(ins[q].rax || ins[q].flow || ins[q].target!=INT64_MIN || ins[q].stack_delta)break;
-        }
     }
     for(size_t j=0;j<count;j++)if(ins[j].target!=INT64_MIN && ins[j].flow!=3){
         int64_t target=(int64_t)offsets[j]+ins[j].target;
@@ -173,7 +125,7 @@ static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_sca
         uintptr_t addr=(uintptr_t)p+offsets[k];
         unsigned w=ins[k].window;
         if((addr&4095)+w>4096)continue;
-        unsigned char original[128];p_copy(original,(void *)addr,w);
+        unsigned char original[9];p_copy(original,(void *)addr,w);
         if(scan && addr-begin<=UINT32_MAX){
             if(scan->count==scan->capacity){
                 size_t next=scan->capacity?scan->capacity*2:16;
@@ -246,12 +198,10 @@ static void rewrite_fde_ranges(const unsigned char *ehdata,size_t ehn,uint64_t e
                     for(unsigned si=0;si<nsections;si++){
                         const Elf64_Shdr *text=&sections[si];
                         if(text->sh_type!=SHT_PROGBITS || (text->sh_flags&(SHF_EXECINSTR|SHF_ALLOC))!=(SHF_EXECINSTR|SHF_ALLOC) || pc<text->sh_addr || pc-text->sh_addr>text->sh_size || range>text->sh_size-(pc-text->sh_addr))continue;
-                        uint64_t file=text->sh_offset+(pc-text->sh_addr);
-                        if(file<mapoff || file-mapoff>mapsize || range>mapsize-(file-mapoff))break;
-                        uintptr_t function=begin+(uintptr_t)(file-mapoff);
-                        if(rewrite_target<function || rewrite_target-function>=range)break;
                         int named=0;for(size_t j=0;j<nsymbols;j++)if(ELF64_ST_TYPE(symbols[j].st_info)==STT_FUNC && symbols[j].st_shndx==si && symbols[j].st_size && symbols[j].st_value<pc+range && symbols[j].st_value+symbols[j].st_size>pc){named=1;break;}
                         if(named)break;
+                        uint64_t file=text->sh_offset+(pc-text->sh_addr);
+                        if(file<mapoff || file-mapoff>mapsize || range>mapsize-(file-mapoff))break;
                         Elf64_Sym synthetic={.st_value=pc,.st_size=range,.st_shndx=(Elf64_Section)si,.st_info=ELF64_ST_INFO(STB_LOCAL,STT_FUNC)};
                         rewrite_function((unsigned char *)(begin+(uintptr_t)(file-mapoff)),(size_t)range,scan,begin,&synthetic,symbols,nsymbols);break;
                     }
@@ -263,23 +213,23 @@ static void rewrite_fde_ranges(const unsigned char *ehdata,size_t ehn,uint64_t e
 }
 /* File offsets rather than load biases also cover independently mapped PT_LOADs.
  * pack_pread uses logical file offsets for packed ELF carriers. */
-static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset){
+void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
     if(!rewrite_enabled || !size || begin>UINTPTR_MAX-size)return;
     /* Try-lock, never wait in a signal frame (or after a concurrent fork).
      * Cache contention merely leaves this mapping on SIGSYS. */
+    if(__atomic_exchange_n(&rewrite_busy,1,__ATOMIC_ACQUIRE))return;
     uint64_t started=rewrite_clock();unsigned patched=0;
     struct statx identity={0};struct rewrite_scan *scan=NULL;
     int identified=RAW(PROXY_SC_statx,fd,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&identity,0)==0;
     uint64_t slice=pack_slice_start(fd);
     if(identified)for(scan=rewrite_scans;scan;scan=scan->next){
         struct statx *a=&scan->identity,*b=&identity;
-        if(scan->target==rewrite_target-begin && scan->offset==offset && scan->size==size && scan->slice==slice &&
+        if(scan->offset==offset && scan->size==size && scan->slice==slice &&
            a->stx_ino==b->stx_ino && a->stx_dev_major==b->stx_dev_major && a->stx_dev_minor==b->stx_dev_minor &&
            a->stx_size==b->stx_size && a->stx_mtime.tv_sec==b->stx_mtime.tv_sec &&
            a->stx_mtime.tv_nsec==b->stx_mtime.tv_nsec && a->stx_ctime.tv_sec==b->stx_ctime.tv_sec &&
            a->stx_ctime.tv_nsec==b->stx_ctime.tv_nsec)break;
     }
-    if(scan && (!scan->function_size || scan->function_offset>size || scan->function_size>size-scan->function_offset || rewrite_function_crc((void *)(begin+scan->function_offset),scan->function_size)!=scan->function_crc))scan=NULL;
     if(scan){
         for(unsigned i=0;i<scan->count;i++){
             struct rewrite_site *site=&scan->sites[i];
@@ -290,9 +240,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     }
     if(identified){
         scan=vfs_palloc(sizeof(*scan));
-        if(scan){scan->target=rewrite_target-begin;scan->identity=identity;scan->offset=offset;scan->size=size;scan->slice=slice;
-            if(rewrite_cache_read(scan,begin)){vfs_free(scan);goto done;}
-        }
+        if(scan){scan->identity=identity;scan->offset=offset;scan->size=size;scan->slice=slice;}
     }
     Elf64_Ehdr eh;Elf64_Shdr *sections=NULL;Elf64_Sym *symbols=NULL;
     if(pack_pread(fd,&eh,sizeof(eh),0)!=sizeof(eh) ||
@@ -329,10 +277,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
         if(text.sh_offset>UINT64_MAX-(sym.st_value-text.sh_addr))continue;
         uint64_t f=text.sh_offset+sym.st_value-text.sh_addr;
         if(f<offset || f-offset>=size || sym.st_size>size-(f-offset))continue;
-        if(rewrite_target<begin+f-offset || rewrite_target-(begin+f-offset)>=sym.st_size)continue;
         patched+=rewrite_function((unsigned char *)(begin+(uintptr_t)(f-offset)),sym.st_size,scan,begin,&sym,symbols,used/sizeof(*symbols));
-        /* FDE fallback is forbidden for any named range, even a rejected one. */
-        goto cleanup;
     }
     if(eh.e_shstrndx<eh.e_shnum){
         Elf64_Shdr *names=&sections[eh.e_shstrndx];
@@ -358,71 +303,10 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     }
 cleanup:
     vfs_free(symbols);vfs_free(sections);
-    if(scan){rewrite_cache_write(scan);scan->next=rewrite_scans;rewrite_scans=scan;}
+    if(scan){scan->next=rewrite_scans;rewrite_scans=scan;}
 done:
-    if(proxy_trace || rewrite_log){proxy_log("rewrite-sites",patched,size);proxy_log("rewrite-scan-ns",rewrite_clock()-started,size);}
+    if(proxy_trace){proxy_log("rewrite-sites",patched,size);proxy_log("rewrite-scan-ns",rewrite_clock()-started,size);}
     __atomic_store_n(&rewrite_busy,0,__ATOMIC_RELEASE);
-}
-static void rewrite_invalidate(uintptr_t,size_t);
-/* Registration only retains the backing object; no text decoding at load time. */
-void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
-    if(!rewrite_enabled || !size || begin>UINTPTR_MAX-size)return;
-    rewrite_invalidate(begin,size);
-    struct rewrite_mapping *m=vfs_palloc(sizeof(*m));if(!m)return;
-    long copy=RAW(PROXY_SC_fcntl,fd,F_DUPFD_CLOEXEC,256,0,0,0);
-    if(copy<0){vfs_free(m);return;}
-    if(pack_dup(fd,(int)copy)<0 || resident_fd_set((int)copy,2)<0){RAW(PROXY_SC_close,copy,0,0,0,0,0);vfs_free(m);return;}
-    m->begin=begin;m->size=size;m->offset=offset;m->fd=(int)copy;
-    char name[64]="/proc/self/fd/";size_t n=p_len(name);char digits[16];size_t k=0;unsigned v=(unsigned)fd;
-    do{digits[k++]=(char)('0'+v%10);v/=10;}while(v);
-    while(k)name[n++]=digits[--k];
-    name[n]=0;
-    long len=RAW(PROXY_SC_readlinkat,AT_FDCWD,name,m->path,sizeof(m->path)-1,0,0);
-    if(len>=0)m->path[len]=0;
-    m->next=rewrite_mappings;__atomic_store_n(&rewrite_mappings,m,__ATOMIC_RELEASE);
-}
-void proxy_rewrite_relocate(uintptr_t old,uintptr_t dest,size_t size){
-    for(struct rewrite_mapping *m=rewrite_mappings;m;m=m->next)
-        if(m->size && m->begin>=old && m->begin-old<size)m->begin=dest+(m->begin-old);
-}
-static void proxy_rewrite_trap_site(uintptr_t continuation,long nr){
-    if(!rewrite_enabled || !arch_rewrite_number(nr) || continuation<2)return;
-    uintptr_t pc=continuation-2;
-    struct rewrite_mapping *m;
-    for(m=rewrite_mappings;m;m=m->next)if(m->size && pc>=m->begin && pc-m->begin<m->size)break;
-    if(!m)return;
-    /* The discovery lock also protects target/current and the attempts list. */
-    if(__atomic_exchange_n(&rewrite_busy,1,__ATOMIC_ACQUIRE))return;
-    for(struct rewrite_attempt *a=rewrite_attempts;a;a=a->next)if(a->map==m && a->pc==pc){__atomic_store_n(&rewrite_busy,0,__ATOMIC_RELEASE);return;}
-    struct rewrite_attempt *a=vfs_palloc(sizeof(*a));
-    if(!a){__atomic_store_n(&rewrite_busy,0,__ATOMIC_RELEASE);return;}
-    a->map=m;a->pc=pc;a->next=rewrite_attempts;rewrite_attempts=a;
-    rewrite_target=pc;rewrite_nr=(unsigned)nr;rewrite_current=m;
-    rewrite_discover(m->fd,m->begin,m->size,m->offset);
-}
-static void rewrite_invalidate(uintptr_t begin,size_t size){
-    for(struct rewrite_mapping *m=rewrite_mappings;m;m=m->next)if(m->size && begin<m->begin+m->size && begin+size>m->begin){
-        m->size=0;resident_fd_set(m->fd,0);pack_close(m->fd);RAW(PROXY_SC_close,m->fd,0,0,0,0,0);
-    }
-    for(struct rewrite_record *r=rewrite_records;r;r=r->next)if(begin<r->address+r->window && begin+size>r->address)r->active=0;
-}
-static void proxy_rewrite_dump(void *context){
-    ucontext_t *uc=context;uintptr_t pc=ARCH_CONTEXT(uc,ARCH_PC),sp=ARCH_CONTEXT(uc,ARCH_STACK);
-    for(struct rewrite_record *r=__atomic_load_n(&rewrite_records,__ATOMIC_ACQUIRE);r;r=r->next){
-        crash_text("v3 rewrite registry path=");crash_text(r->path);crash_text("\n");
-        proxy_log("rewrite-site",r->address,r->nr);proxy_log("rewrite-file-offset",r->offset,r->window);
-        proxy_log("rewrite-sequence-time",r->sequence,r->time);
-        proxy_log("rewrite-encoding-active",r->original[0]==0xb8?0xb8:0x48c7c0,r->active);
-        if((pc>>12)==(r->address>>12))proxy_log("rewrite-fault-page",pc,r->address);
-        for(unsigned i=0;i<16;i++){uintptr_t value;if(proxy_copy(&value,(void *)(sp+i*sizeof(value)),sizeof(value)))break;
-            if(value==r->ret || (value>>12)==(r->address>>12))proxy_log("rewrite-stack-hit",value,i);}
-    }
-}
-static void proxy_rewrite_exit(void){
-    if(!rewrite_log)return;
-    unsigned count=0;
-    for(struct rewrite_record *r=rewrite_records;r;r=r->next)if(r->active)count++;
-    proxy_log("rewrite-process-sites",count,rewrite_sequence);
 }
 /* Track only unpublished, readable, private file mappings. Keep no duplicate
  * descriptor: if the loader closes/reuses it before mprotect, identity failure
@@ -435,8 +319,6 @@ static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
        (nr!=PROXY_SC_mmap && nr!=PROXY_SC_munmap && nr!=PROXY_SC_mprotect && nr!=PROXY_SC_mremap))return;
     if(__atomic_exchange_n(&rewrite_pending_busy,1,__ATOMIC_ACQUIRE))return;
     if(nr==PROXY_SC_mremap){
-        rewrite_invalidate((uintptr_t)a[0],(size_t)a[1]);
-        if(result!=(long)a[0])rewrite_invalidate((uintptr_t)result,(size_t)a[2]);
         for(unsigned i=0;i<128;i++)rewrite_pending[i].size=0;
         goto done;
     }
@@ -444,9 +326,6 @@ static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
     size_t size=(size_t)a[1];
     if(size>SIZE_MAX-4095 || begin>UINTPTR_MAX-((size+4095)&~(size_t)4095))goto done;
     size=(size+4095)&~(size_t)4095;
-    int registered=nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) &&
-        (a[3]&MAP_PRIVATE) && (a[2]&(PROT_READ|PROT_WRITE|PROT_EXEC))==(PROT_READ|PROT_EXEC);
-    if(!registered && (nr!=PROXY_SC_mprotect || (a[2]&(PROT_WRITE|PROT_EXEC))!=PROT_EXEC))rewrite_invalidate(begin,size);
     for(unsigned i=0;i<128;i++){
         struct rewrite_pending *p=&rewrite_pending[i];
         if(!p->size || begin>=p->begin+p->size || begin+size<=p->begin)continue;
@@ -473,15 +352,9 @@ done:
 }
 
 #else
-void proxy_rewrite_cache_init(const char *root){(void)root;}
-void proxy_rewrite_relocate(uintptr_t o,uintptr_t d,size_t n){(void)o;(void)d;(void)n;}
-static void proxy_rewrite_trap_site(uintptr_t pc,long nr){(void)pc;(void)nr;}
-static void proxy_rewrite_dump(void *ctx){(void)ctx;}
-static void proxy_rewrite_exit(void){}
 static long rewrite_slow(long nr,proxy_arg_t *a){(void)nr;(void)a;return -ENOSYS;}
-static int proxy_rewrite_internal_site(uintptr_t pc){(void)pc;return 0;}
 static int proxy_rewrite_traps(long nr){(void)nr;return 0;}
 static void proxy_rewrite_after(long nr,proxy_arg_t *a,long r){(void)nr;(void)a;(void)r;}
-int proxy_rewrite_init(const char *s,int logging){(void)logging;(void)s;proxy_log("rewrite-off",0,0);return 0;}
+int proxy_rewrite_init(const char *s){(void)s;return 0;}
 void proxy_rewrite_mapping(int fd,uintptr_t b,size_t n,uint64_t o){(void)fd;(void)b;(void)n;(void)o;}
 #endif
