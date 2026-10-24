@@ -609,3 +609,12 @@ netd route, and explicit --dns-forwarder still enables the test route.
 The new dns-host fixture checks the exact affected address without requiring
 network access; the existing mocked netd helper suite still verifies Android
 forwarding. Full warm pull+deploy now completes in both rewrite modes.
+
+### Proof checksum correction
+
+Normalization now restores an earlier registered window only if every live
+byte still matches our exact published encoding. An app's change to an
+intervening instruction remains visible to CRC32C. The regression fixture first
+failed against full-window normalization, then passed with this check. Resident
+exec also retains its original real cache root when Flatpak changes
+XDG_CACHE_HOME to a virtual sandbox path.

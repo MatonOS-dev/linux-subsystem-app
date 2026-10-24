@@ -52,3 +52,6 @@ XDG_CACHE_HOME="$cache" MATON_PROXY_REWRITE=1 MATON_PROXY_REWRITE_LOG=1 timeout 
     build/linux-layer-v3 --android-filter "$PWD/build/site-rewrite-lazy" 1 \
     >build/rewrite-cache-corrupt.log 2>&1
 if grep -q rewrite-persistent-hit build/rewrite-cache-corrupt.log; then exit 1; fi
+
+cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/rewrite-cache-unit.c -o build/rewrite-cache-unit
+build/rewrite-cache-unit

@@ -13,8 +13,12 @@ static uint32_t rewrite_crc(const unsigned char *p,size_t n){
 static unsigned char *rewrite_function_bytes(const unsigned char *p,size_t n){
     unsigned char *copy=vfs_alloc(n);if(!copy)return NULL;p_copy(copy,p,n);
     uintptr_t begin=(uintptr_t)p;
-    for(struct rewrite_record *r=rewrite_records;r;r=r->next)if(r->active && r->address>=begin && r->window<=n && r->address-begin<=n-r->window)
-        p_copy(copy+r->address-begin,r->original,r->window);
+    for(struct rewrite_record *r=rewrite_records;r;r=r->next)if(r->active && r->address>=begin && r->window<=n && r->address-begin<=n-r->window){
+        unsigned char expected[128];p_copy(expected,r->original,r->window);arch_rewrite_patch(expected,r->nr,r->window);
+        size_t off=r->address-begin,j=0;while(j<r->window && copy[off+j]==expected[j])j++;
+        /* Restore only a window that still exactly matches our publication. */
+        if(j==r->window)p_copy(copy+off,r->original,r->window);
+    }
     return copy;
 }
 static uint32_t rewrite_function_crc(const unsigned char *p,size_t n){
@@ -55,7 +59,9 @@ static int rewrite_cache_name(char *path,const struct rewrite_key *key,int tempo
     path[n]=0;return 1;
 }
 void proxy_rewrite_cache_init(const char *root){
-    rewrite_cache_dir[0]=0;
+    /* Resident exec keeps the real per-stub root even when Flatpak replaces
+     * XDG_CACHE_HOME with a virtual sandbox path. */
+    if(rewrite_cache_dir[0])return;
     if(!root || root[0]!='/' || p_len(root)>sizeof(rewrite_cache_dir)-32)return;
     size_t n=p_len(root);p_copy(rewrite_cache_dir,root,n);
     p_copy(rewrite_cache_dir+n,"/maton-rewrite-v2",sizeof("/maton-rewrite-v2"));
