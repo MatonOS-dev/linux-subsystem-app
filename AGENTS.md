@@ -13,6 +13,11 @@ expose an environment marker with version, name synthesised /proc content and re
 ([anon:matonos-…]) honestly, and make errors mention when the layer was involved. A per-app D-Bus portal for reading
 layer details and setting per-app knobs (rewrite on/off, logging) is welcome.
 
+Crashes caused by the layer are reported as **MatonOS crashes**, not app crashes: attribute a fatal signal to the
+layer when the fault is in proxy code, entries or stubs, inside a direct dispatch, at or near a patched site (rewrite
+registry), or after a failed layer self-check. Other crashes are app crashes, annotated as running under the layer,
+with the layer state (version, rewrite registry, recent proxied calls) attached.
+
 ## Do not add xdg-desktop-portal
 
 `xdg-desktop-portal` (the `org.freedesktop.portal.*` frontend, and `xdg-permission-store` with it) is explicitly
