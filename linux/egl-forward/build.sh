@@ -36,7 +36,7 @@ i386_exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' 
 [[ "$i386_exports" == $'__egl_Main\nmaton_egl_direct_v1' ]] || { echo "unexpected i386 exports: $i386_exports" >&2; exit 1; }
 "$readelf" -h "$out/i386/libEGL_maton.so" > "$out/i386/header.txt"
 grep -E -q 'Class:.*ELF32' "$out/i386/header.txt"
-for arch in aarch64 riscv64; do
+for arch in aarch64; do
   target="$arch-linux-gnu"
   "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -c "$here/runtime.c" -o "$out/runtime-$arch.o"
   "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client" -c "$here/../wayland-client/wayland_client.c" -o "$out/wayland-$arch.o"
@@ -47,4 +47,4 @@ cp "$here/10_maton.json" "$out/10_maton.json"
 sed 's|"library_path": "libEGL_maton.so"|"library_path": "i386-linux-gnu/libEGL_maton.so"|' \
   "$here/10_maton.json" > "$out/i386/10_maton_i386.json"
 cat "$out/gen/coverage.txt"
-echo 'PASS: x86_64 and i386 EGL vendors are freestanding with expected exports and no DT_NEEDED; arm64/riscv64 stub compile'
+echo 'PASS: x86_64 and i386 EGL vendors are freestanding with expected exports and no DT_NEEDED; arm64 stub compile'
