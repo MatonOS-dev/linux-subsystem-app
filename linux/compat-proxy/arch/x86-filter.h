@@ -90,7 +90,17 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
      * is allowed here before any instruction-pointer or argument load, so
      * the kernel's seccomp action cache marks it constant-allow and skips
      * this filter entirely. Only the special numbers continue to the
-     * gateway, resident-range and argument logic, which is unchanged. */
+     * gateway, resident-range and argument logic, which is unchanged.
+     * libc's million-descriptor CLOEXEC sweep comes first: exact
+     * F_GETFD/F_SETFD are allowed from anywhere below as well. */
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,7,encode(PROXY_SC_fcntl));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1])+4);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,4,0);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,F_GETFD);
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,F_SETFD);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
     {
         unsigned pending[512],waiting=0;
         for(long nr=0;nr<512;nr++) {

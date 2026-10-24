@@ -1379,10 +1379,18 @@ static int android_library_mapping_state(uintptr_t pc) {
     }
     return state;
 }
-static void android_pc_cache_invalidate(void){
-    __atomic_add_fetch(&android_pc_cache_epoch,1,__ATOMIC_RELEASE);
-    for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++)
-        __atomic_store_n(&android_pc_cache[i].state,0,__ATOMIC_RELEASE);
+/* A mapping change only affects cached ranges it overlaps. The loader maps
+ * constantly; dropping every entry made nearly each trap reread
+ * /proc/self/maps. */
+static void android_pc_cache_invalidate_range(uintptr_t lo,uintptr_t hi){
+    if(hi<lo)hi=UINTPTR_MAX;
+    for(size_t i=0;i<sizeof(android_pc_cache)/sizeof(android_pc_cache[0]);i++) {
+        struct android_pc_cache_entry *entry=&android_pc_cache[i];
+        int state=__atomic_load_n(&entry->state,__ATOMIC_ACQUIRE);
+        if(!state || state==-1)continue;
+        uintptr_t begin=__atomic_load_n(&entry->begin,__ATOMIC_RELAXED),end=__atomic_load_n(&entry->end,__ATOMIC_RELAXED);
+        if(begin<hi && lo<end)__atomic_compare_exchange_n(&entry->state,&state,0,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);
+    }
 }
 #include "payload-filter.h"
 static void handler(int sig,siginfo_t *info,void *opaque) {
@@ -1746,7 +1754,12 @@ clone_retry:
     }
 finish:
     proxy_rewrite_after(nr,a,result);
-    if(result>=0 && (nr==PROXY_SC_mmap || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap))android_pc_cache_invalidate();
+    if(result>=0 && nr==PROXY_SC_mmap)android_pc_cache_invalidate_range((uintptr_t)result,(uintptr_t)result+(uintptr_t)a[1]);
+    if(result>=0 && nr==PROXY_SC_munmap)android_pc_cache_invalidate_range((uintptr_t)a[0],(uintptr_t)a[0]+(uintptr_t)a[1]);
+    if(result>=0 && nr==PROXY_SC_mremap){
+        android_pc_cache_invalidate_range((uintptr_t)a[0],(uintptr_t)a[0]+(uintptr_t)a[1]);
+        android_pc_cache_invalidate_range((uintptr_t)result,(uintptr_t)result+(uintptr_t)a[2]);
+    }
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace){
         if(result==-EBADF){
