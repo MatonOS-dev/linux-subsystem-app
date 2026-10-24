@@ -1588,6 +1588,14 @@ finish:
     if(result>=0 && (nr==PROXY_SC_mmap || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap))android_pc_cache_invalidate();
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace){
+        if(result==-EBADF){
+            emit("v3 ebadf syscall=");crash_hex((uint64_t)original);
+            trace_word(" ip=",(uintptr_t)info->si_call_addr);
+            for(unsigned i=0;i<6;i++){
+                emit(" arg=");crash_hex((uint64_t)a[i]);
+            }
+            emit("\n");
+        }
         proxy_log(!app_allowed(original)?"android":(ours(original)?"ours":"android"),original,result);
         /* Path translation may perform its own metadata probes. Keep the
          * triggering userspace syscall site in the trace so SELinux reports

@@ -41,6 +41,13 @@ public final class HostCommandBackendTest {
         c=command(0);check(backend.dispatch(wire(c)).get(0).error.endsWith("InvalidArgs"),"invalid fd handle");
         Message prop=call("Get","ss",HostCommandBackend.IFACE,"version");prop.iface="org.freedesktop.DBus.Properties";check(((Variant)wire(backend.dispatch(wire(prop)).get(0)).body.get(0)).value.equals(1),"version");
         backend.close();check(launched.get(1).closed&&launched.get(1).signal==9,"runtime closes command group");
+        final String[] normalized={null};
+        HostCommandBackend alias=new HostCommandBackend((cwd,argv,fds,env,flags)->{
+            normalized[0]=new String(argv.get(0),java.nio.charset.StandardCharsets.UTF_8);
+            Child child=new Child(99);child.exit(0);return child;
+        },signals::add,"/native/libmatonos-app-flatpak.so");
+        Message flatpak=call("HostCommand","ayaaya{uh}a{ss}u",bytes("/"),Arrays.asList(bytes("flatpak"),bytes("--version")),Collections.emptyList(),Collections.emptyList(),0);
+        alias.dispatch(wire(flatpak));check("/native/libmatonos-app-flatpak.so\0".equals(normalized[0]),"flatpak command resolves to the packaged launcher");alias.close();
         System.out.println("PASS Development wire signature/fds, real pid, version, reply-before-exit, raw wait status, sender ownership, flags, WATCH_BUS, runtime cleanup");
     }
 }

@@ -142,10 +142,22 @@ static char *join(const char *a,const char *b) {
 struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
 int proxy_diagnostic_fd=2;
-int vfs_private_fd(int fd){if(pack_private(fd)||state_private_fd(fd))return 1;if(ipc_private_fd(fd))return 1;if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd)return 1;for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd)return 1;return 0;}
+int vfs_private_fd(int fd){
+    if(pack_private(fd)){if(proxy_trace&&fd>=128)proxy_log("private-pack",fd,0);return 1;}
+    if(state_private_fd(fd)){if(proxy_trace&&fd>=128)proxy_log("private-state",fd,0);return 1;}
+    if(ipc_private_fd(fd)){if(proxy_trace&&fd>=128)proxy_log("private-ipc",fd,0);return 1;}
+    if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd){if(proxy_trace&&fd>=128)proxy_log("private-diagnostic",fd,0);return 1;}
+    for(struct temp_lock *l=temp_locks;l;l=l->next)if(l->fd==fd){if(proxy_trace&&fd>=128)proxy_log("private-lock",fd,0);return 1;}
+    return 0;
+}
 static int temp_parent(void){extern const char *proxy_tmpdir;return (int)RAW(PROXY_SC_openat,AT_FDCWD,proxy_tmpdir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);}
 static int temp_own(const char *path){
     int fd=(int)RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW,0,0,0);if(fd<0)return fd;
+    /* Flatpak's Spawn protocol assigns forwarded descriptors in the 128+
+     * range. Keep our inherited flock descriptors out of that payload range
+     * so a child can map app-fd/usr-fd without colliding with proxy ownership. */
+    long reserved=RAW(PROXY_SC_fcntl,fd,F_DUPFD,512,0,0,0);
+    if(reserved>=0){RAW(PROXY_SC_close,fd,0,0,0,0,0);fd=(int)reserved;}
     struct temp_lock *l=vfs_palloc(sizeof(*l));if(!l){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
     long e=RAW(PROXY_SC_flock,fd,LOCK_EX|LOCK_NB,0,0,0,0);
     if(e){vfs_free(l);RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)e;}

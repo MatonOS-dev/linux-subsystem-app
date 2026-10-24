@@ -24,6 +24,7 @@ int main(int argc,char **argv){
   snprintf(outside,sizeof(outside),"%s/keep",argv[1]);
   assert(!mkdir(live,0700)&&!mkdir(stale,0700)&&!mkdir(legacy,0700)&&!mkdir(outside,0700));
   assert(!temp_own(live)&&!temp_own(stale));
+  assert(temp_locks->fd>=512&&temp_locks->next->fd>=512);
   /* An unlocked marker is stale even when the PID in the name exists. */
   close(temp_locks->fd);temp_locks=temp_locks->next;
   snprintf(link,sizeof(link),"%s/link",stale);assert(!symlink(outside,link));

@@ -52,6 +52,13 @@ directly; Java continues to serve the other portal interfaces. The proxy
 publishes the caller's runtime and instance data under `/run/flatpak`, and the
 portal reads caller metadata through the proc-root VFS view.
 
+The portal's Spawn child uses its `FLATPAK` executable override to call the
+unprivileged `libmatonos-app-flatpak.so` trampoline. The trampoline selects
+the Flatpak CLI applet and the matching nested bwrap executable because the
+stub runtime does not provide a separate `/usr/bin/flatpak` executable.
+The per-stub HostCommand backend also maps the stock `flatpak` command name
+used by `flatpak-spawn --host` to this packaged trampoline.
+
 Flatpak deployments are rebuilt per launch. The standard per-user
 `overrides/` directory is kept under the stub's home and linked into each
 generated deployment so `flatpak override --user` survives those rebuilds.
@@ -61,12 +68,12 @@ in the task brief. It runs the broker ownership/wire tests, proxy proc-root
 and bwrap host tests, Java portal tests, APK signing checks and the x86 ISA
 audit. The upstream portal suite was also run separately (5 tests passed).
 That suite does not yet cover Spawn `app-fd`/`usr-fd`, expose-pids negotiation,
-or SpawnSignal; those host cases remain open. On the persistent VM at
-`127.0.0.1:5556`, the portal starts and stays alive, and the portal name no
-longer fails with `ServiceUnknown`. Steam still exits before opening its own
-window; pressure-vessel `Spawn` and `SpawnSignal` behavior in the Steam launch
-remains unverified. The temporary `STEAM_DISABLE_SANDBOX=1` value appeared in
-the generated `.flatpak-info` environment, but produced no visible change and
-Steam's console log was not updated during that attempt. The override was then
-removed with `flatpak override --user --unset-env`. Never ship that variable
-as a default.
+or SpawnSignal. A persistent-VM probe confirmed that host-mode Spawn resolves
+the packaged Flatpak CLI and reports child exit status 0. The ordinary sandbox
+probe no longer hits `EBADF`; it reaches Flatpak but exits 1 because that test
+invocation's app ref is not installed in the per-app user installation. The
+Steam launch still has not produced a login window: `console-linux.txt` only
+records a new logger open, so Steam startup beyond its early bootstrap remains
+unresolved. The VM screenshot and logs are in
+`/mnt/data/aosp/out/pc-logs/agents/steam5/`. Do not set
+`STEAM_DISABLE_SANDBOX` as a default.
