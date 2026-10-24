@@ -139,6 +139,11 @@ static gboolean forward_call(gpointer data) {
 }
 gboolean broker_portal_forward(Broker* b,GDBusConnection* connection,GDBusMessage* message,const char* owner) {
     const char* path=g_dbus_message_get_path(message);
+    const char* destination=g_dbus_message_get_destination(message);
+    /* The stock Flatpak portal owns this name directly on the session bus.
+     * Java continues to provide the other desktop portal interfaces. */
+    if((destination&&g_str_equal(destination,"org.freedesktop.portal.Flatpak")) ||
+            g_str_equal(g_dbus_message_get_interface(message),"org.freedesktop.portal.Flatpak"))return FALSE;
     if(g_strcmp0(g_dbus_message_get_interface(message),"org.freedesktop.DBus.Peer")==0)return FALSE;
     if(!broker_session_data(b)||!path || !(g_str_equal(path,"/org/freedesktop/portal/desktop") ||
             g_str_has_prefix(path,"/org/freedesktop/portal/desktop/") ||

@@ -535,8 +535,22 @@ if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
     char *s=readlink_dynamic(p,error);if(!s)return NULL;char *q=vfs_reverse(s);vfs_free(s);return q;
 }
+/* The proxy emulates bwrap mounts in its VFS instead of changing the kernel
+ * mount namespace. A Flatpak portal child runs in the same resident proxy as
+ * its app, so /proc/<pid>/root must resolve through that VFS view too. */
+static char *proxy_proc_root_path(const char *path){
+    if(!path||!prefix(path,"/proc")||path[5]!='/')return NULL;
+    const char *p=path+6,*digits=p;
+    while(*p>='0'&&*p<='9')p++;
+    if(p==digits||!prefix(p,"/root"))return NULL;
+    p+=5;
+    if(*p&&*p!='/')return NULL;
+    return dupstr(*p?p:"/");
+}
 static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *error,void **identity,int *cacheable,int allow_fast){
     *error=0;if(!path){*error=-EFAULT;return NULL;}if(!*path){*error=-ENOENT;return NULL;}
+    char *proc_root=proxy_proc_root_path(path);
+    if(proc_root){char *answer=vfs_resolve_mount_impl(fd,proc_root,follow,error,identity,cacheable,allow_fast);vfs_free(proc_root);return answer;}
     if(cacheable)*cacheable=1;
     /* Polling roots are immutable generated directories. Re-check the current
      * mount source so an unmount/overmount cannot reuse a stale fast answer. */
@@ -749,6 +763,7 @@ char *vfs_temp_create(long *error){
     else{*error=RAW(PROXY_SC_flock,parent,LOCK_EX,0,0,0,0);if(!*error)*error=RAW(PROXY_SC_mkdirat,AT_FDCWD,src,0700,0,0,0);if(!*error)*error=temp_own(src);RAW(PROXY_SC_close,parent,0,0,0,0,0);}
     if(*error){vfs_free(src);return NULL;}return src;
 }
+void proxy_host_snapshot(char *const *env);
 long vfs_mount(const char *source,const char *target,const char *type,unsigned long flags){
     if(flags&(MS_PRIVATE|MS_SLAVE|MS_SHARED|MS_UNBINDABLE))return 0;
     long e=0;char *canonical=NULL;
@@ -776,7 +791,12 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
             char *child=join(dest,m->target+p_len(virtual_source));if(!child){e=-ENOMEM;break;}e=proxy_mount(m->source,child);vfs_free(child);if(e)break;table->flags=m->flags;table->pack_shadow=m->pack_shadow;
         }}
         vfs_free(virtual_source);
-    }vfs_free(src);vfs_free(dest);return e;
+    }
+    /* Flatpak makes /.flatpak-info as the final bwrap root is assembled.
+     * Start the per-stub command channel only once that app view is live, so
+     * portal children share the completed VFS and can read it via proc root. */
+    if(!e && target){size_t n=p_len(target);if(n>=14 && p_equal(target+n-14,"/.flatpak-info"))proxy_host_snapshot(NULL);}
+    vfs_free(src);vfs_free(dest);return e;
 }
 long vfs_shm_init(void){
     long e=0;char *directory=vfs_temp_create(&e);if(!directory)return e;

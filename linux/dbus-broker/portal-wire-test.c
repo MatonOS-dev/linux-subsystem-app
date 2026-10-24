@@ -44,6 +44,9 @@ int main(void) {
     g_variant_unref(appearance);g_variant_unref(dict);g_object_unref(call);g_object_unref(reply);
     call=method("org.freedesktop.portal.Unknown","Nope",NULL,4);reply=exchange(&backend,pair[1],input,output,call);
     g_assert_cmpstr(g_dbus_message_get_error_name(reply),==,"org.freedesktop.DBus.Error.UnknownMethod");g_object_unref(call);g_object_unref(reply);
+    call=method("org.freedesktop.portal.Flatpak","Spawn",g_variant_new("()"),5);
+    g_dbus_message_set_destination(call,"org.freedesktop.portal.Flatpak");
+    g_assert_false(broker_portal_forward(NULL,NULL,call,":1.42"));g_object_unref(call);
     close(input);close(output);waitpid(child,NULL,0);g_spawn_close_pid(child);
     /* SCM_RIGHTS preserves the file capability and never sends a pathname. */
     char filename[]="/tmp/maton-portal-fd-XXXXXX";int file=mkstemp(filename);g_assert_cmpint(file,>=,0);unlink(filename);
@@ -75,5 +78,5 @@ int main(void) {
     header[1]=GUINT32_TO_LE(1);g_assert_cmpint(write(pair[1],header,8),==,8);
     g_assert_false(receive_frame(pair[0],G_IO_IN,&parser));g_assert_cmpint(parser.fd,==,-1);
     g_free(blob);g_object_unref(call);g_object_unref(reply);g_byte_array_unref(parser.input);g_hash_table_unref(parser.pending);close(pair[1]);
-    g_print("PASS: GLib/Java little/big-endian messages, nested Settings variants/dictionaries/accent tuple, Java errors and SCM_RIGHTS capability with CLOEXEC; fragmented receive and malformed frames\n");return 0;
+    g_print("PASS: GLib/Java portal routing and wire codec, Settings variants, Flatpak upstream bypass, SCM_RIGHTS, fragmented receive and malformed frames\n");return 0;
 }

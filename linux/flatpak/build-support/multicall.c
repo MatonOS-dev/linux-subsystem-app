@@ -5,11 +5,12 @@
 extern int flatpak_main(int argc, char **argv);
 extern int ostree_cli_main(int argc, char **argv);
 extern int bwrap_main(int argc, char **argv);
+extern int portal_main(int argc, char **argv);
 
 static int
 usage(void)
 {
-  fprintf(stderr, "Usage: matonos-flatpak {flatpak|ostree|bwrap} [args...]\n");
+  fprintf(stderr, "Usage: matonos-flatpak {flatpak|ostree|bwrap|portal} [args...]\n");
   return 2;
 }
 
@@ -22,6 +23,9 @@ dispatch(const char *tool, int argc, char **argv)
     return ostree_cli_main(argc, argv);
   if (strcmp(tool, "bwrap") == 0)
     return bwrap_main(argc, argv);
+  /* Stock Flatpak portal, launched per stub on its private session bus. */
+  if (strcmp(tool, "portal") == 0)
+    return portal_main(argc, argv);
   return usage();
 }
 
@@ -45,7 +49,8 @@ main(int argc, char **argv)
    * self-reexecs to Flatpak's command table. */
   if (strcmp(argv[1], "flatpak") == 0 ||
       strcmp(argv[1], "ostree") == 0 ||
-      strcmp(argv[1], "bwrap") == 0)
+      strcmp(argv[1], "bwrap") == 0 ||
+      strcmp(argv[1], "portal") == 0)
     return dispatch(argv[1], argc - 1, argv + 1);
 
   return flatpak_main(argc, argv);

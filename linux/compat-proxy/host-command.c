@@ -10,12 +10,22 @@
 static const char *host_command_socket;
 static char host_command_short[sizeof(((struct sockaddr_un *)0)->sun_path)];
 static char host_command_name[NAME_MAX+1];
+static char host_command_directory[PATH_MAX];
 static long host_command_dir = -1;
 static int host_command_started;
+static char *const *host_command_env;
 static volatile int hc_stopping;
 #ifdef HOST_COMMAND_TEST
 int proxy_host_test(int fd){hc_test_fd=fd;return 0;}
 #endif
+static int hc_set_short_path(void) {
+    size_t at=0;const char *prefix="/proc/self/fd/";while(*prefix)host_command_short[at++]=*prefix++;
+    char digits[24];int nd=0;unsigned long fd=(unsigned long)host_command_dir;
+    do{digits[nd++]=(char)('0'+fd%10);fd/=10;}while(fd);while(nd)host_command_short[at++]=digits[--nd];
+    host_command_short[at++]='/';size_t tail=p_len(host_command_name);
+    if(at+tail>=sizeof(host_command_short))return -ENAMETOOLONG;
+    p_copy(host_command_short+at,host_command_name,tail+1);return 0;
+}
 static void hc_stop(int signal) { (void)signal; hc_stopping=1; }
 static int hc_io(int fd,void *buf,size_t size,int writing) {
     char *p=buf;
@@ -146,7 +156,11 @@ static void hc_worker(int socket,char *const *original,long server) {
         int keep[HC_FDS+1];for(int i=0;i<nfds;i++)keep[i]=copies[i];keep[nfds]=pipe[1];hc_close_except(keep,nfds+1);
         long null=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/null",O_RDWR,0,0,0);
         if(null<0){error=(int)null;goto child_fail;}
-        for(int i=0;i<3;i++)if(null!=i)RAW(PROXY_SC_dup3,null,i,0,0,0,0);
+        /* Keep upstream portal diagnostics attached to the stub's captured
+         * output; other host commands remain silent as before. */
+        int portal=argv[1]&&p_len(argv[1])==6&&argv[1][0]=='p'&&argv[1][1]=='o'&&
+                   argv[1][2]=='r'&&argv[1][3]=='t'&&argv[1][4]=='a'&&argv[1][5]=='l';
+        for(int i=0;i<3;i++)if(null!=i&&!(portal&&i==2))RAW(PROXY_SC_dup3,null,i,0,0,0,0);
         if(null>2)RAW(PROXY_SC_close,null,0,0,0,0,0);
         for(int i=0;i<nfds;i++){long r=RAW(PROXY_SC_dup3,copies[i],targets[i],0,0,0,0);if(r<0){error=(int)r;goto child_fail;}RAW(PROXY_SC_close,copies[i],0,0,0,0,0);vfs_fd_close((int)targets[i]);}
         for(int i=0;i<nfds;i++)if(targets[i]<3){struct termios tty;if(RAW(PROXY_SC_ioctl,targets[i],TCGETS,&tty,0,0,0)==0){RAW(PROXY_SC_ioctl,targets[i],TIOCSCTTY,0,0,0,0);break;}}
@@ -214,17 +228,11 @@ int proxy_host_command(const char *path) {
     const char *slash=path+n;while(slash>path&&*slash!='/')slash--;
     size_t tail=n-(size_t)(slash-path)-1;if(!tail||tail>NAME_MAX)return -EINVAL;
     p_copy(host_command_name,slash+1,tail);host_command_name[tail]=0;
-    char directory[PATH_MAX];p_copy(directory,path,(size_t)(slash-path));directory[slash-path]=0;
-    if(!directory[0]){directory[0]='/';directory[1]=0;}
-    size_t at=0;const char *prefix="/proc/self/fd/";while(*prefix)host_command_short[at++]=*prefix++;
-    char digits[24];int nd=0;unsigned long fd;
-    host_command_dir=RAW(PROXY_SC_openat,AT_FDCWD,directory,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);
+    p_copy(host_command_directory,path,(size_t)(slash-path));host_command_directory[slash-path]=0;
+    if(!host_command_directory[0]){host_command_directory[0]='/';host_command_directory[1]=0;}
+    host_command_dir=RAW(PROXY_SC_openat,AT_FDCWD,host_command_directory,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);
     if(host_command_dir<0)return (int)host_command_dir;
-    fd=(unsigned long)host_command_dir;
-    do{digits[nd++]=(char)('0'+fd%10);fd/=10;}while(fd);while(nd)host_command_short[at++]=digits[--nd];
-    host_command_short[at++]='/';
-    if(at+tail>=sizeof(host_command_short)){RAW(PROXY_SC_close,host_command_dir,0,0,0,0,0);host_command_dir=-1;return -ENAMETOOLONG;}
-    p_copy(host_command_short+at,host_command_name,tail+1);
+    int short_result=hc_set_short_path();if(short_result){RAW(PROXY_SC_close,host_command_dir,0,0,0,0,0);host_command_dir=-1;return short_result;}
     host_command_socket=path;return 0;
 }
 void proxy_host_snapshot(char *const *env) {
@@ -234,8 +242,12 @@ void proxy_host_snapshot(char *const *env) {
     if(!host_command_socket)return;
 #endif
     if(host_command_started)return;
-    long error;char *info=vfs_resolve(AT_FDCWD,"/.flatpak-info",1,&error);if(!info)return;
-    struct proxy_stat st;long found=arch_stat_at(AT_FDCWD,info,&st,0);vfs_free(info);if(found<0)return;
+    if(env){
+        host_command_env=env;
+        long error;char *info=vfs_resolve(AT_FDCWD,"/.flatpak-info",1,&error);if(!info)return;
+        struct proxy_stat st;long found=arch_stat_at(AT_FDCWD,info,&st,0);vfs_free(info);if(found<0)return;
+    }else if(!host_command_env)return;
+    env=(char *const *)host_command_env;
 #ifdef HOST_COMMAND_TEST
     if(hc_test_fd>=0){
         host_command_started=1;long parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0);long pid=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
@@ -243,13 +255,21 @@ void proxy_host_snapshot(char *const *env) {
         RAW(PROXY_SC_close,hc_test_fd,0,0,0,0,0);hc_test_fd=-1;return;
     }
 #endif
+    /* bwrap closes private loader FDs while constructing the app view. Reopen
+     * the runtime directory and refresh the proc-fd socket address now. */
+    host_command_dir=RAW(PROXY_SC_openat,AT_FDCWD,host_command_directory,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);
+    if(host_command_dir<0){proxy_log("host-command-open-dir-failed",host_command_dir,0);return;}
+    int short_result=hc_set_short_path();if(short_result){proxy_log("host-command-short-path-failed",short_result,0);return;}
     host_command_started=1;
     long socket=RAW(PROXY_SC_socket,AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,0,0,0);if(socket<0)return;
     struct sockaddr_un address={.sun_family=AF_UNIX};p_copy(address.sun_path,host_command_short,p_len(host_command_short)+1);
     /* Launcher removes stale sockets before bootstrapping this runtime. */
-    if(RAW(PROXY_SC_bind,socket,&address,offsetof(struct sockaddr_un,sun_path)+p_len(host_command_short)+1,0,0,0)<0||RAW(PROXY_SC_fchmodat,host_command_dir,host_command_name,0600,0,0,0)<0||RAW(PROXY_SC_listen,socket,16,0,0,0,0)<0){RAW(PROXY_SC_close,socket,0,0,0,0,0);return;}
+    long bind_result=RAW(PROXY_SC_bind,socket,&address,offsetof(struct sockaddr_un,sun_path)+p_len(host_command_short)+1,0,0,0);
+    if(bind_result<0){proxy_log("host-command-bind-failed",bind_result,0);RAW(PROXY_SC_close,socket,0,0,0,0,0);return;}
+    if(RAW(PROXY_SC_fchmodat,host_command_dir,host_command_name,0600,0,0,0)<0||RAW(PROXY_SC_listen,socket,16,0,0,0,0)<0){RAW(PROXY_SC_close,socket,0,0,0,0,0);return;}
     long parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0),pid=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
     if(!pid)hc_server((int)socket,env,parent);
+    if(pid>0)proxy_log("host-command-start",pid,0);
     RAW(PROXY_SC_close,socket,0,0,0,0,0);
     if(pid<0)RAW(PROXY_SC_unlinkat,host_command_dir,host_command_name,0,0,0,0);
 }

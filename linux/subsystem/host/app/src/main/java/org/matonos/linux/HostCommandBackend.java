@@ -27,6 +27,7 @@ final class HostCommandBackend implements AutoCloseable {
     private final Spawner spawner;
     private final Consumer<Message> output;
     private final Map<Integer,Entry> children=new HashMap<>();
+    private Child portal;
     private int serial;
     private boolean closed;
     HostCommandBackend(Spawner spawner,Consumer<Message> output){this.spawner=spawner;this.output=output;}
@@ -79,6 +80,20 @@ final class HostCommandBackend implements AutoCloseable {
         }catch(IllegalArgumentException e){return error(c,"org.freedesktop.DBus.Error.InvalidArgs",e.getMessage());}
         catch(Exception e){return error(c,"org.freedesktop.DBus.Error.Failed","Sandbox command failed: "+e.getMessage());}
     }
+    /** Launch the upstream Flatpak portal inside the resident compat-proxy
+     * filesystem. This keeps its /proc and bwrap view aligned with the app. */
+    synchronized void startFlatpakPortal(List<byte[]> argv,Map<String,String> env) throws Exception {
+        if(closed||portal!=null)return;
+        Child child=spawner.spawn(new byte[]{0},argv,Collections.emptyMap(),env,0);
+        if(child.pid()<=0){child.close();throw new IllegalStateException("Invalid portal PID");}
+        portal=child;
+        Thread watcher=new Thread(()->{
+            try{int status=child.waitStatus();java.util.logging.Logger.getLogger("MatonPortal").info("Upstream Flatpak portal exited with wait status "+status);}
+            catch(Exception error){java.util.logging.Logger.getLogger("MatonPortal").warning("Lost upstream Flatpak portal process: "+error);}
+            finally{child.close();synchronized(HostCommandBackend.this){if(portal==child)portal=null;}}
+        },"flatpak-portal");
+        watcher.setDaemon(true);watcher.start();
+    }
     private List<Message> error(Message c,String name,String reason){Message m=reply(c,3,"s",reason);m.error=name;return Collections.singletonList(m);}
     /** Start reaping only after the method reply has been written to the bus. */
     synchronized void replied(Message c){
@@ -93,7 +108,7 @@ final class HostCommandBackend implements AutoCloseable {
         }catch(Exception ignored){}finally{e.child.close();synchronized(this){children.remove(e.child.pid(),e);}}
     }
     synchronized void disconnected(String owner){for(Entry e:children.values())if(e.watch&&e.owner.equals(owner))e.child.close();}
-    @Override public synchronized void close(){closed=true;for(Entry e:children.values()){try{e.child.signal(9,true);}catch(Exception ignored){}e.child.close();}children.clear();spawner.close();}
+    @Override public synchronized void close(){closed=true;for(Entry e:children.values()){try{e.child.signal(9,true);}catch(Exception ignored){}e.child.close();}children.clear();if(portal!=null){try{portal.signal(9,true);}catch(Exception ignored){}portal.close();portal=null;}spawner.close();}
     static final String XML="<node><interface name='"+IFACE+"'><property name='version' type='u' access='read'/>"
         +"<method name='HostCommand'><arg type='ay' direction='in'/><arg type='aay' direction='in'/><arg type='a{uh}' direction='in'/><arg type='a{ss}' direction='in'/><arg type='u' direction='in'/><arg type='u' direction='out'/></method>"
         +"<method name='HostCommandSignal'><arg type='u' direction='in'/><arg type='u' direction='in'/><arg type='b' direction='in'/></method>"

@@ -38,6 +38,7 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
     private volatile boolean stopped, held;
     private volatile PeerConnection connection;
     private volatile List<FileDescriptor> activeDescriptors=Collections.emptyList();
+    private volatile File flatpakUserDir,flatpakSystemDir;
     JavaPortal(Context context,File directory,Consumer<Boolean> changed,Launcher launcher) throws Exception {
         commands=new HostCommandBackend(new SandboxCommandSpawner(directory),message->{PeerConnection peer=connection;if(peer!=null)try{peer.send(message);}catch(IOException ignored){}});
         this.context=context;this.changed=changed;this.launcher=launcher;
@@ -46,9 +47,54 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
         shortPath=ShortSocketPath.open(directory);
         bound.bind(new LocalSocketAddress(shortPath.path("portal-backend"),LocalSocketAddress.Namespace.FILESYSTEM));Os.chmod(path.getAbsolutePath(),0600);
         server=new LocalServerSocket(bound.getFileDescriptor());new Thread(this::serve,"java-portals").start();
+        new Thread(this::startFlatpakPortal,"flatpak-portal-start").start();
+    }
+    private void startFlatpakPortal() {
+        File socket=new File(path.getParentFile(),"host-command");
+        Log.i("MatonPortal","Waiting for compat-proxy command socket at "+socket);
+        try {
+            for(int attempt=0;attempt<300&&!stopped;attempt++) {
+                if(socket.exists()) {
+                    Log.i("MatonPortal","Compat-proxy command socket is ready");
+                    // Dispatch the upstream portal applet directly. The
+                    // ordinary app trampoline selects the CLI and interprets
+                    // "portal" as a CLI command instead of an applet.
+                    android.content.pm.ApplicationInfo host=context.getPackageManager()
+                            .getApplicationInfo("org.matonos.linux",0);
+                    File portal=new File(host.nativeLibraryDir,"libmatonos-flatpak.so");
+                    if(!portal.isFile()||!portal.canExecute())
+                        throw new IOException("Upstream Flatpak launcher is missing");
+                    String portalPath=portal.getAbsolutePath();
+                    List<byte[]> argv=Arrays.asList(nul(portalPath),nul("portal"),nul("--no-idle-exit"),nul("--verbose"));
+                    Map<String,String> env=new LinkedHashMap<>();
+                    env.put("PATH",portal.getParent()+":/system/bin:/system/xbin");
+                    // The command runs in the captured Flatpak root, where
+                    // PerAppRuntime publishes the stub runtime at /run/flatpak.
+                    env.put("XDG_RUNTIME_DIR","/run/flatpak");
+                    env.put("DBUS_SESSION_BUS_ADDRESS","unix:path=/run/flatpak/bus");
+                    env.put("FLATPAK_BWRAP",new File(portal.getParentFile(),
+                            "libmatonos-app-bwrap.so").getAbsolutePath());
+                    File userDir=flatpakUserDir,systemDir=flatpakSystemDir;
+                    if(userDir!=null)env.put("FLATPAK_USER_DIR",userDir.getAbsolutePath());
+                    if(systemDir!=null)env.put("FLATPAK_SYSTEM_DIR",systemDir.getAbsolutePath());
+                    try {commands.startFlatpakPortal(argv,env);Log.i("MatonPortal","Started upstream Flatpak portal in compat proxy");return;}
+                    catch(Exception error) {Log.w("MatonPortal","Cannot start upstream Flatpak portal",error);}
+                }
+                try {Thread.sleep(100);}catch(InterruptedException error){Thread.currentThread().interrupt();return;}
+            }
+            if(!stopped)Log.w("MatonPortal","Compat-proxy command socket did not appear before timeout");
+        } catch(Exception error) {
+            if(!stopped)Log.w("MatonPortal","Upstream Flatpak portal unavailable",error);
+        }
+    }
+    private static byte[] nul(String value) {
+        byte[] text=value.getBytes(StandardCharsets.UTF_8),result=Arrays.copyOf(text,text.length+1);return result;
     }
     String secret() {StringBuilder s=new StringBuilder();for(byte b:secret)s.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return s.toString();}
     boolean isHeld() {return held;}
+    void setFlatpakDirectories(File userDir,File systemDir) {
+        flatpakUserDir=userDir;flatpakSystemDir=systemDir;
+    }
     private static void readFully(InputStream in,byte[] data) throws IOException {
         int offset=0;while(offset<data.length){int n=in.read(data,offset,data.length-offset);if(n<=0)throw new EOFException();offset+=n;}
     }

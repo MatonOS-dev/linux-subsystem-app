@@ -208,7 +208,9 @@ FLATPAK_CXXFLAGS="$COMPAT_CXXFLAGS"
 # stub-hosted per-app bus (dbus-java + broker) filters D-Bus, so no app uses
 # xdg-dbus-proxy. Leaving the option unset would build Flatpak's bundled copy.
 meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dgtkdoc=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-app-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="-static-pie -static" -Dcpp_link_args="-static-pie -static"
-"$NINJA" -C "$BUILD/flatpak" -j "$JOBS"
+# Build the CLI and the stock org.freedesktop.portal.Flatpak daemon; the
+# multicall relinker consumes both sets of objects.
+"$NINJA" -C "$BUILD/flatpak" -j "$JOBS" app/flatpak portal/flatpak-portal
 python3 "$HERE/make-multicall.py" "$BUILD" "$OUT/matonos-flatpak.unstripped" "$OBJCOPY" "$CC"
 install -m755 "$OUT/matonos-flatpak.unstripped" "$OUT/matonos-flatpak.symbols"
 "$STRIP" --strip-all "$OUT/matonos-flatpak.unstripped" -o "$OUT/matonos-flatpak"

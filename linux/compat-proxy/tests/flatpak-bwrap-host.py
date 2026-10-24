@@ -129,7 +129,7 @@ def phase(name, payload=False):
         args+=['--perms','0600','--file',data(info),'/.flatpak-info',
                '--ro-bind-data',data(info),'/.flatpak-info',
                '--setenv','container','flatpak']
-        command=['/bin/bash','-c','ls /app /usr; head -2 /etc/passwd; cat /run/flatpak/info; /app/filter-check']
+        command=['/bin/bash','-c','ls /app /usr; head -2 /etc/passwd; cat /run/flatpak/info; cmp /.flatpak-info "/proc/$$/root/.flatpak-info"; echo proc-root-ok; /app/filter-check']
     else:
         command=ldconfig_command
     args+=['--seccomp',data(flatpak_filter_bytes(payload))]
@@ -169,7 +169,9 @@ def phase(name, payload=False):
         if payload:
             os.close(sync_write);opened.remove(sync_write)
             assert os.read(sync_read,1)==b'', 'bwrap monitor retained sync fd'
-            assert b'filter-ok' in (build/('musl-flatpak-'+name+'.out')).read_bytes()
+            payload_out=(build/('musl-flatpak-'+name+'.out')).read_bytes()
+            assert b'filter-ok' in payload_out
+            assert b'proc-root-ok' in payload_out
         else: assert (fixture/'cache'/pathlib.Path(command[3]).name).stat().st_size>0
         print('PASS static musl Flatpak-shaped '+name)
     finally:
