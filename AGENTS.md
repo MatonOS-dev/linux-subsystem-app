@@ -9,6 +9,14 @@ When goals conflict: **Google-certifiable Android > performance > compatibility 
 Hand-written x86_64/i386 assembly is welcome on hot paths when it measurably beats the compiler. Keep it under
 `arch/<arch>/`, documented, with a C reference implementation and a test that compares both.
 
+## File access: real mounts via the mountd APEX only (user, 2026-10-24)
+
+Linux apps get their filesystem view from real mounts made by the MatonOS mount daemon (an updatable APEX that this
+app bundles and updates). Packs are EROFS images loop-mounted from the APK splits. The translation path (proxy VFS
+translation speed-ups, syscall-site rewriting) is frozen and archived under `archive/translation/*` tags — do not
+extend it. If the mount APEX is missing or cannot be brought to the matching version, fail loudly; there is no
+translation fallback.
+
 ## The compatibility layer is loud, never hidden
 
 Do not disguise the compat proxy/layer as native Linux. Make it detectable and self-describing: say so in logs,
