@@ -38,9 +38,12 @@ if [[ ! -s $MATON_VULKAN_HEADERS/registry/vk.xml ]]; then
   bash "$ROOT/linux/vulkan-forward/build-tools.sh" "$VULKAN_DEPS"
 fi
 export MUSL_SCRATCH=${MATON_MUSL_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+export FLATPAK_MUSL_WORK=${MATON_FLATPAK_SCRATCH:-$OUTPUT/flatpak/scratch/flatpak-musl}
+# Source downloads are immutable during builds and remain shared. Every
+# generated Flatpak file lives under this invocation's subsystem output.
 export CACHE_DIR=${MATON_FLATPAK_CACHE:-$MUSL_SCRATCH/flatpak-musl/cache}
-export BUILD_DIR=${MATON_FLATPAK_BUILD:-$MUSL_SCRATCH/flatpak-musl/build}
-export OUT_DIR=${MATON_FLATPAK_OUT:-$MUSL_SCRATCH/flatpak-musl/out}
+export BUILD_DIR=${MATON_FLATPAK_BUILD:-$FLATPAK_MUSL_WORK/build}
+export OUT_DIR=${MATON_FLATPAK_OUT:-$FLATPAK_MUSL_WORK/out}
 # Used by the separately Android-linked session broker build.
 export MATON_FLATPAK_NDK=$OUTPUT/flatpak
 export MATON_FLATPAK_PLAN_BUILD=${MATON_FLATPAK_PLAN_BUILD:-$BUILD_DIR/flatpak}
@@ -49,12 +52,13 @@ export MATON_FLATPAK_PLAN_OUT=${MATON_FLATPAK_PLAN_OUT:-$BUILD_DIR/plan}
 # prefix; only Linux-side Flatpak executables use the musl prefix above.
 export MATON_FLATPAK_PREFIX=$OUTPUT/flatpak/build/prefix
 export MATON_FLATPAK_PLAN_OUT=$OUTPUT/plan
+export MATON_FLATPAK_HELPER_WORK=$FLATPAK_MUSL_WORK/helper-build
 export MATON_DBUS_ANDROID_OUT=$OUTPUT/broker
 if [[ ${1:-} == --build-dependencies ]]; then
   JOBS=$MATON_BUILD_JOBS sh "$FLATPAK/fetch.sh"
   JOBS=$MATON_BUILD_JOBS bash "$FLATPAK/build-musl.sh"
+  bash "$ROOT/tools/build-flatpak-plan-musl.sh"
   install -m755 "$OUT_DIR/matonos-flatpak" "$ROOT/linux/flatpak/prebuilt/static/x86_64/matonos-flatpak"
-  cp "$OUT_DIR/SOURCE" "$ROOT/linux/flatpak/prebuilt/static/SOURCE"
   python3 "$ROOT/tools/fetch-compositor.py"
   MATON_COMPOSITOR_BOOTSTRAP=1 bash "$ROOT/linux/subsystem/build-compositor.sh"
   bash "$ROOT/linux/subsystem/build-xwayland.sh"

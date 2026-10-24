@@ -8,15 +8,23 @@ OSTree and bubblewrap CLI objects are relinked through `make-multicall.py`.
 The result is packaged as `libmatonos-flatpak.so`; `tools/build-flatpak-helpers.sh`
 builds the `libmatonos-app-flatpak.so` launcher with the same static musl
 
-Use the repository root `build.sh --build-dependencies` entry point. Source,
-build and output directories stay under the Alpine scratch tree; set
-`MATON_MUSL_SCRATCH` to use another Alpine 3.24.2 root/scratch pair.
+Use the repository root `build.sh --build-dependencies` entry point. The Alpine
+root and immutable download cache are shared, while each invocation's build,
+plan, helper, and generated output directories live under
+`$MATON_SUBSYSTEM_OUT/flatpak/scratch/flatpak-musl` and are bound at
+`/scratch/work` inside the sandbox. `MATON_MUSL_SCRATCH` selects the Alpine
+3.24.2 root and shared download cache.
 
-Set CACHE_DIR, BUILD_DIR and OUT_DIR under `MUSL_SCRATCH`. JOBS is limited to
-four. The optional START_AT=flatpak reuses prepared dependency
+The shared `CACHE_DIR` stays under `MUSL_SCRATCH`; `BUILD_DIR` and `OUT_DIR`
+stay under the per-invocation work directory. JOBS is limited to four. The
+optional START_AT=flatpak reuses prepared dependency
 archives and OSTree/bubblewrap objects; the default builds all dependencies.
-The final SOURCE contains locked revisions and SHA-256 hashes for the
-multicall and APK helpers. `HELPERS.sha256` records the static musl launcher
+Builds write generated hash manifests under the output directory and never
+rewrite the tracked `prebuilt/static/SOURCE`. After intentionally refreshing
+the shipped static prebuilts, run `MATON_SUBSYSTEM_OUT=/path/to/output tools/refresh-flatpak-prebuilt-source.sh`
+from the repo root; this explicitly updates the tracked manifest. The
+final SOURCE contains locked revisions and SHA-256 hashes for the multicall
+and APK helpers. `HELPERS.sha256` records the static musl launcher
 recipe and the standalone bwrap artifact hash.
 
 Carried from MatonOS_apexs flatpak/; source history for the APK components

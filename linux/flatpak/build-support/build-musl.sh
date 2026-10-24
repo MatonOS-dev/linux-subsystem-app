@@ -6,21 +6,25 @@ WORK=${FLATPAK_MUSL_WORK:-$SCRATCH/flatpak-musl}
 HOST_CACHE=${CACHE_DIR:-$WORK/cache}
 HOST_BUILD=${BUILD_DIR:-$WORK/build}
 HOST_OUT=${OUT_DIR:-$WORK/out}
-for path in "$HOST_CACHE" "$HOST_BUILD" "$HOST_OUT"; do
+case "$(realpath -m "$HOST_CACHE")" in
+  "$(realpath -m "$SCRATCH")"/*) ;;
+  *) echo "Flatpak musl cache must be under MUSL_SCRATCH: $HOST_CACHE" >&2; exit 2;;
+esac
+for path in "$HOST_BUILD" "$HOST_OUT"; do
   case "$(realpath -m "$path")" in
-    "$(realpath -m "$SCRATCH")"/*) ;;
-    *) echo "Flatpak musl work paths must be under MUSL_SCRATCH: $path" >&2; exit 2;;
+    "$(realpath -m "$WORK")"/*) ;;
+    *) echo "Flatpak musl generated paths must be under FLATPAK_MUSL_WORK: $path" >&2; exit 2;;
   esac
 done
 mkdir -p "$HOST_CACHE" "$HOST_BUILD" "$HOST_OUT"
-inner_path() { printf '/scratch/%s' "${1#"$(realpath -m "$SCRATCH")"/}"; }
-SCRATCH="$SCRATCH" GPGME_LITE_SRC="$HOST_CACHE/src/DullPGP" \
-  CACHE_DIR="$(inner_path "$HOST_CACHE")" \
-  BUILD_DIR="$(inner_path "$HOST_BUILD")" OUT_DIR="$(inner_path "$HOST_OUT")" \
+cache_inner_path() { printf '/scratch/%s' "${1#"$(realpath -m "$SCRATCH")"/}"; }
+work_inner_path() { printf '/scratch/work/%s' "${1#"$(realpath -m "$WORK")"/}"; }
+SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$HOST_CACHE" GPGME_LITE_SRC="$HOST_CACHE/src/DullPGP" \
+  CACHE_DIR="$(cache_inner_path "$HOST_CACHE")" \
+  BUILD_DIR="$(work_inner_path "$HOST_BUILD")" OUT_DIR="$(work_inner_path "$HOST_OUT")" \
   JOBS=${JOBS:-4} START_AT=${START_AT:-all} \
   "$HERE/alpine-enter.sh" /work/build.sh
 install -m755 "$HOST_OUT/matonos-flatpak" "$HERE/../prebuilt/static/x86_64/matonos-flatpak"
-install -m644 "$HOST_OUT/SOURCE" "$HERE/../prebuilt/static/SOURCE"
 bash "$HERE/../../../tools/build-flatpak-helpers.sh"
 {
   sed -E '/^[0-9a-f]{64}  matonos-flatpak$/d' "$HOST_OUT/SOURCE"
@@ -29,4 +33,3 @@ bash "$HERE/../../../tools/build-flatpak-helpers.sh"
   (cd "$HERE/../prebuilt/static/x86_64" && sha256sum matonos-flatpak matonos-app-flatpak matonos-app-bwrap)
   awk '$2 != "matonos-app-bwrap"' "$HERE/../prebuilt/static/x86_64/HELPERS.sha256"
 } > "$HOST_OUT/SOURCE.complete"
-install -m644 "$HOST_OUT/SOURCE.complete" "$HERE/../prebuilt/static/SOURCE"
