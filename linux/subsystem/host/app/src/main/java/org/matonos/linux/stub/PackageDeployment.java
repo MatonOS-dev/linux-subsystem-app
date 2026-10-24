@@ -143,7 +143,7 @@ final class PackageDeployment {
         Files.createDirectories(root.resolve("repo/tmp"));
         Files.write(root.resolve("repo/config"),"[core]\nrepo_version=1\nmode=bare-user-only\n".getBytes(StandardCharsets.UTF_8));
     }
-    /** Same text as gpu-forward-spike/flatpak/metadata.in for the given runtime branch. */
+    /** Same text as gpu-bridge-common/flatpak/metadata.in for the given runtime branch. */
     static String metadata(String branch) {
         return "[Runtime]\nname=org.freedesktop.Platform.GL.maton\nruntime=org.freedesktop.Platform/x86_64/"+branch
                 +"\nsdk=org.freedesktop.Sdk/x86_64/"+branch+"\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/"+branch+"\n";

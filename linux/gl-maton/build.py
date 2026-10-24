@@ -55,7 +55,7 @@ def build(out, vulkan, egl, glx, branch, vulkan_i386, egl_i386, glx_i386):
             '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
             '    "library_path": "i386-linux-gnu/libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
 
-    metadata = (ROOT / "linux/gpu-forward-spike/flatpak/metadata.in").read_text()
+    metadata = (ROOT / "linux/gpu-bridge-common/flatpak/metadata.in").read_text()
     metadata = metadata.replace("@RUNTIME_BRANCH@", branch)
     (out / "metadata").write_text(metadata, encoding="utf-8")
     repo = out / "repo"
