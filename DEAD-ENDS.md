@@ -39,6 +39,21 @@ project owner. The code is preserved only as tags, not branches.
   replacing the minigbm-fork dma-buf wrapping and the native-handle-fd-0
   assumption. `linux-dmabuf` stays for standard clients.
 
+## 3. Namespaces / real mounts for Linux file access (mountd)
+
+Any design that gives Linux processes real mounts runs into an AOSP neverallow:
+- `app.te:600` — apps hold no capability class at all, including `cap_userns`, so
+  the stub can never mount, `move_mount`, `chroot` or use a user namespace.
+- `app.te:746` — apps may perform no filesystem operation other than statfs.
+- A privileged daemon (mountd APEX) attaching into the app's mount namespace
+  needs new root mountpoints in the image, or `pivot_root` of the whole app
+  (ART included), or spawning app-domain processes outside zygote.
+
+Explored 2026-10-24 (EROFS/composefs pack views, file-backed EROFS + fsoffset,
+detached overlay fds, pivot_root): all dropped. File syscalls stay on proxy
+translation + load-time site rewriting. Parked work: device-tree branch
+`mountd-apex`, subsystem branch `erofs-pipeline`.
+
 ## Related rejected direction
 
 - **Direct per-window Android `Surface`/swapchain in the Linux process:** needs
