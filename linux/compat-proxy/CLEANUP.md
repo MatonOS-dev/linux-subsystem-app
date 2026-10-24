@@ -87,3 +87,39 @@ The baseline `bash tests/run.sh` run on this host produced:
   metadata paths as the first measurement targets. Use profiles and counters
   to identify dominant functions before changing allocation, lookup or trap
   dispatch code.
+
+## fd-bookkeeping rewrite baseline (2026-10-24)
+
+Baseline on branch `proxy-fdbook`, before the fd-bookkeeping rewrite. The full
+required build and suites passed. `tests/trap-bench.sh 20000 5` measured the
+following medians (five fresh payload processes):
+
+| Operation | Native | Proxied | Delta |
+|---|---:|---:|---:|
+| `getpid` | 317.6 ns/op | 409.0 ns/op | +91.4 ns/op |
+| translated `open` | 2.28 µs/op | 109.46 µs/op | +107.18 µs/op |
+| translated `stat` | 1.37 µs/op | 52.06 µs/op | +50.69 µs/op |
+
+An instrumented 1,000-operation payload run (`PROXY_RAW_COUNTER=1`) reported
+2,021 traps / 46,253 raw calls for open (22.88 calls/trap), and 1,021 traps /
+15,253 raw calls for stat (14.94 calls/trap). The extra traps are the
+loader/setup workload in the same process, so these ratios are an upper bound
+for the isolated payload operation. Existing `--count` output attributes raw
+calls by syscall ID, not by C call site; exact per-call-site counts require
+adding a return-address counter before they can be claimed.
+
+The active candidate sites along the translated open/stat paths are:
+
+| Call-site group | Open path | Stat path | Reason / bookkeeping relation |
+|---|---|---|---|
+| Handler timing and signal routing (`proxy.c`) | clock reads around the trapped operation; signal mask operations only when chaining an app SIGSYS handler | same | Fixed handler work; not fd state. |
+| Openat2 resolver (`vfs.c:resolve_openat2_fast`) | open backing root, `openat2` target, close backing root; on non-fd-return resolution read `/proc/self/fd/N` and close target | open backing root, `openat2` target, close backing root; fd-return variant avoids the proc readlink | Resolution work; the stat fast path then uses the retained fd. |
+| Stat operation (`proxy.c` fast stat branch) | — | one `newfstatat(AT_EMPTY_PATH)` and close retained target fd | Metadata query and temporary resolver fd lifecycle. |
+| Tracked open name (`vfs.c:vfs_fd_record`) | persistent path allocation, signal-mask + atomic lock, linked-list scan/update | — | Direct fd-bookkeeping cost; candidate for indexed in-memory table and pooled storage. |
+| Other fixed trap-arena allocations (`vfs.c`) | allocation growth may `mmap`; arena end reuses blocks | same | Amortized workspace, not fd metadata. |
+
+The syscall-ID counters also show why the aggregate cannot be read as a
+call-site table: the process includes setup, timer and arena activity. In
+particular, syscall IDs 213 (`openat`), 206 (`nanosleep`), 212
+(`open_tree_attr`), 267 (`rt_sigpending`) and 27 (`clone3`) occur in the
+instrumented run; only a subset belongs to the measured pathname handler.
