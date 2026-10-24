@@ -21,8 +21,19 @@ static char *runtime_for_metadata(FlatpakRef *ref,GKeyFile *metadata) {
         return g_key_file_get_string(metadata,"ExtensionOf","runtime",NULL);
     return NULL;
 }
-static char *parent_for_metadata(GKeyFile *metadata) {
-    return g_key_file_get_string(metadata,"ExtensionOf","ref",NULL);
+static char *parent_for_metadata(FlatpakRef *ref,GKeyFile *metadata) {
+    g_autofree char *parent=g_key_file_get_string(metadata,"ExtensionOf","ref",NULL);
+    /* Freedesktop's i386 compatibility extensions (Compat.i386, GL32,
+     * codecs_extra.i386, and related drivers) are x86_64 refs. Their metadata
+     * can name the i386 ABI runtime as ExtensionOf.ref, but Flathub does not
+     * publish that runtime ref. Flatpak resolves the extension point through
+     * the app's declared x86_64 runtime; do not turn this metadata relation
+     * into a dependency pull. */
+    if(parent&&flatpak_ref_get_kind(ref)==FLATPAK_REF_KIND_RUNTIME&&
+       !strcmp(flatpak_ref_get_arch(ref),"x86_64")&&
+       g_str_has_prefix(parent,"runtime/org.freedesktop.Platform/i386/"))
+        return NULL;
+    return g_steal_pointer(&parent);
 }
 static gboolean has_extensions(GKeyFile *metadata) {
     g_auto(GStrv) groups=g_key_file_get_groups(metadata,NULL);
@@ -38,7 +49,7 @@ static int local_requirements(const char *filename,const char *name) {
     g_autoptr(FlatpakRef) ref=parse_ref(name,&error);
     if(!ref||!g_key_file_load_from_file(metadata,filename,G_KEY_FILE_NONE,&error)){fprintf(stderr,"%s\n",error?error->message:"Invalid metadata");return 1;}
     g_autofree char *runtime=runtime_for_metadata(ref,metadata);
-    g_autofree char *parent=parent_for_metadata(metadata);
+    g_autofree char *parent=parent_for_metadata(ref,metadata);
     string(runtime?runtime:"");string(parent?parent:"");number(has_extensions(metadata)?1:0);return fflush(stdout)?2:0;
 }
 int main(int argc,char **argv) {
@@ -60,7 +71,7 @@ int main(int argc,char **argv) {
         if(!remote_ref||!bytes)goto failed;
         gsize length=0;const char *data=g_bytes_get_data(bytes,&length);
         if(length>128*1024||!g_key_file_load_from_data(metadata,data,length,G_KEY_FILE_NONE,&error))goto failed;
-        text=g_strndup(data,length);runtime=runtime_for_metadata(ref,metadata);parent=parent_for_metadata(metadata);
+        text=g_strndup(data,length);runtime=runtime_for_metadata(ref,metadata);parent=parent_for_metadata(ref,metadata);
         commit=g_strdup(flatpak_ref_get_commit((FlatpakRef*)remote_ref));
     }
     if(argc==4) {
@@ -68,6 +79,12 @@ int main(int argc,char **argv) {
         string(runtime?runtime:"");string(parent?parent:"");number(has_extensions(metadata)?1:0);number(0);
         return fflush(stdout)?2:0;
     }
+    /* The transaction's scratch installation has fetched remote metadata but
+     * may not yet have the OSTree summary that Flatpak's related-ref resolver
+     * reads. Refresh through Flatpak first so extension refs (including
+     * Compat.i386 selected from Steam's extension point) come from its own
+     * resolver, not a locally synthesized ref. */
+    if(!flatpak_installation_update_remote_sync(installation,argv[2],NULL,&error))goto failed;
     related=flatpak_installation_list_remote_related_refs_sync(installation,argv[2],argv[3],NULL,&error);
     if(!related)goto failed;
     uint32_t count=0;for(guint i=0;i<related->len;i++)if(flatpak_related_ref_should_download(g_ptr_array_index(related,i)))count++;

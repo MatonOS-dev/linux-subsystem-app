@@ -25,6 +25,22 @@ public final class PackageMountsTest {
   try{PackageMounts.mountPoint(extension,extensionMetadata,Collections.emptyMap());fail("missing parent must fail clearly");}
   catch(java.io.IOException expected){assertTrue(expected.getMessage().contains(parent));}
  }
+ @Test public void i386ExtensionsUseOnlyThePlannedX86_64ExtensionPoint() throws Exception {
+  String runtime="runtime/org.freedesktop.Platform/x86_64/26.08";
+  String compat="runtime/org.freedesktop.Platform.Compat.i386/x86_64/26.08";
+  String compatMetadata="[ExtensionOf]\nref=runtime/org.freedesktop.Platform/i386/26.08\n";
+  String app="app/com.valvesoftware.Steam/x86_64/stable";
+  Map<String,String> staged=new HashMap<>();
+  staged.put(runtime,"[Runtime]\nname=org.freedesktop.Platform\n");
+  staged.put(app,"[Application]\nruntime=org.freedesktop.Platform/x86_64/26.08\n"+
+    "[Extension org.freedesktop.Platform.Compat.i386]\ndirectory=lib/i386-linux-gnu\n"+
+    "[Extension org.freedesktop.Platform.GL32]\ndirectory=lib/i386-linux-gnu/GL\n");
+  assertEquals("/usr/lib/i386-linux-gnu",PackageMounts.mountPoint(compat,compatMetadata,staged));
+  String gl32="runtime/org.freedesktop.Platform.GL32.default/x86_64/26.08";
+  assertEquals("/usr/lib/i386-linux-gnu/GL",PackageMounts.mountPoint(gl32,compatMetadata,staged));
+  try{PackageMounts.mountPoint(compat,compatMetadata,Collections.emptyMap());fail("must not invent the x86_64 parent ref");}
+  catch(java.io.IOException expected){assertTrue(expected.getMessage().contains("runtime/org.freedesktop.Platform/i386/26.08"));}
+ }
  @Test public void rejectsMissingAndEscapingDirectory() throws Exception {
   String ref="runtime/org.freedesktop.Platform.Codec/x86_64/26.08",parent="runtime/org.freedesktop.Platform/x86_64/26.08";
   try{PackageMounts.mountPoint(ref,"[ExtensionOf]\nref="+parent+"\n",Collections.singletonMap(parent,"[Extension org.freedesktop.Platform.Codec]\nversion=26.08\n"));fail();}catch(java.io.IOException expected){}
