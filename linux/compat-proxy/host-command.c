@@ -13,7 +13,6 @@ static char host_command_name[NAME_MAX+1];
 static char host_command_directory[PATH_MAX];
 static long host_command_dir = -1;
 static int host_command_started;
-static char *const *host_command_env;
 static volatile int hc_stopping;
 #ifdef HOST_COMMAND_TEST
 int proxy_host_test(int fd){hc_test_fd=fd;return 0;}
@@ -243,11 +242,9 @@ void proxy_host_snapshot(char *const *env) {
 #endif
     if(host_command_started)return;
     if(env){
-        host_command_env=env;
         long error;char *info=vfs_resolve(AT_FDCWD,"/.flatpak-info",1,&error);if(!info)return;
         struct proxy_stat st;long found=arch_stat_at(AT_FDCWD,info,&st,0);vfs_free(info);if(found<0)return;
-    }else if(!host_command_env)return;
-    env=(char *const *)host_command_env;
+    }else return;
 #ifdef HOST_COMMAND_TEST
     if(hc_test_fd>=0){
         host_command_started=1;long parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0);long pid=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
