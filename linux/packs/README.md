@@ -29,17 +29,24 @@ entry's ZIP local header (`header offset + 30 + filename length + extra-field
 length`), then checks the exact image size and SHA-256 before mounting. It
 must not infer an offset by scanning for the EROFS magic bytes.
 
-This is the pack/carrier API; current InstallTransaction continues producing
-the existing indexed ZIP carriers until its install pipeline has a packaged
-`mkfs.erofs` executable and calls `generateErofsPack` for each deployment.
-That switch is deliberately not hidden: until then the existing pack-vfd
-translation route remains the working fallback. The host image writer is
-ready for that hookup, and the signed split builder takes a prepared image.
+The on-device `StagedPacks` path now invokes the packaged static-musl
+`mkfs.erofs` as a separate executable for each app and runtime deployment.
+It uses LZ4HC level 12, preserves deployment mtimes, sets root ownership,
+uses a ref/commit-derived UUID and a fixed mkfs timestamp, and holds the
+worker count at four. The store signs one EROFS split per deployment and
+hands that split to the existing `PackageInstaller` session planner. An
+identical image reuses its existing content-addressed split on update.
+
+The tool is pinned to erofs-utils v1.9.4 and built as an x86_64 static-musl
+PIE; see `prebuilt/README.md`, `build-mkfs-erofs.sh` and `licenses/` for the
+source, rebuild, and GPL-2.0-or-later notice. It is packaged as an executable
+JNI library and invoked by path; MatonOS does not link it.
 
 Host check (does not require mount privilege):
 
 ```sh
 python3 linux/packs/tests/erofs-host.py
+FSCK_EROFS=/path/to/fsck.erofs python3 linux/packs/tests/android-pipeline-host.py
 ```
 
 It creates an app/runtime-shaped fixture, runs `fsck.erofs`, compares the
@@ -53,6 +60,18 @@ select explicit erofs-utils binaries. mkfs time and extracted/image sizes are
 reported for each fixture. For mount performance, use the same deployment and
 cache state on a host that permits loop mounts; the small synthetic fixture
 is an integrity check, not a representative size benchmark.
+
+`android-pipeline-host.py` executes the packaged static tool with the same
+deterministic options as the Android staging path, runs fsck, and checks that
+two builds of the same tree are byte-identical. `linux/stubgen/tests/run-tests.sh`
+checks the signed EROFS split, embedded metadata, image hash/size, and ZIP
+payload alignment. No QEMU VM is needed for these host checks.
+
+Real Tux Racer and GNOME Calculator deployment size/time measurements remain
+open: there are no local Flatpak deployment trees in the host cache, and the
+pinned static Flatpak client cannot validate Flathub TLS on this host
+(`remote-add` reports curl error 60). The synthetic integrity fixture result
+must not be treated as either application's measurement.
 
 `pack.py` is a Python 3 host tool using PyGObject/libostree 2024.5. It reads
 real OSTree repositories in `bare-user` mode. `reader.c` is the C99 lookup

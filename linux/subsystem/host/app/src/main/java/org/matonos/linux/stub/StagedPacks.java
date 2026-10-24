@@ -15,6 +15,7 @@ public final class StagedPacks {
             File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed) throws Exception {
         org.matonos.linux.WorkDirs.require(installation);
         File deployment=DeployManifest.stagedDeployment(installation,manifest);
+        buildErofs(context,new File(deployment,"files"),manifest,output,cancelled);
         File operation=installation.getParentFile();
         File sourceRepo=new File(installation,"repo");
         OstreePacks.Command source=command(context,operation,sourceRepo,cancelled);
@@ -65,6 +66,35 @@ public final class StagedPacks {
             // informational walk runs; that must not fail a completed install.
             android.util.Log.w("MatonInstall","Cannot measure temporary operation size",error);
         }
+    }
+
+    /** Build one deterministic EROFS filesystem for this Flatpak deployment. */
+    private static void buildErofs(Context context,File tree,JSONObject manifest,File output,
+            BooleanSupplier cancelled) throws Exception {
+        if(!tree.isDirectory()||Files.isSymbolicLink(tree.toPath()))throw new IOException("Missing deployment files tree");
+        if(cancelled.getAsBoolean())throw new IOException("EROFS build cancelled");
+        if(!output.isDirectory()&&!output.mkdirs())throw new IOException("Cannot create EROFS output directory");
+        File image=new File(output,"deployment.erofs"),log=new File(output,"mkfs-erofs.log");
+        String identity=manifest.getString("appRef")+"\n"+manifest.getString("appCommit");
+        byte[] digest=java.security.MessageDigest.getInstance("SHA-256").digest(identity.getBytes(StandardCharsets.UTF_8));
+        StringBuilder uuid=new StringBuilder();
+        for(int i=0;i<16;i++) {if(i==4||i==6||i==8||i==10)uuid.append('-');uuid.append(String.format(java.util.Locale.ROOT,"%02x",digest[i]&255));}
+        // Set UUID version/variant bits while retaining a stable ref/commit identity.
+        uuid.setCharAt(14,'5');
+        int variant=Character.digit(uuid.charAt(19),16);uuid.setCharAt(19,Character.forDigit((variant&3)|8,16));
+        File executable=LoaderCommand.tool(context,"libmatonos-mkfs-erofs.so");
+        Process process=new ProcessBuilder(executable.getAbsolutePath(),"-zlz4hc,12","--preserve-mtime",
+                "--all-root","--mkfs-time","-T","0","--workers=4",
+                "-U",uuid.toString(),image.getAbsolutePath(),tree.getAbsolutePath())
+                .redirectErrorStream(true).redirectOutput(log).start();
+        try {
+            while(!process.waitFor(250,java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                if(cancelled.getAsBoolean()) {process.destroyForcibly();throw new IOException("EROFS build cancelled");}
+            }
+            if(process.exitValue()!=0)throw new IOException("mkfs.erofs failed: "+new String(Files.readAllBytes(log.toPath()),StandardCharsets.UTF_8));
+        } finally {if(process.isAlive())process.destroyForcibly();}
+        if(!image.isFile()||image.length()==0)throw new IOException("mkfs.erofs produced no image");
+        org.matonos.linux.WorkDirs.require(output);
     }
 
     private static void record(File sourceRepo,File deployment,JSONObject manifest,File output) throws Exception {

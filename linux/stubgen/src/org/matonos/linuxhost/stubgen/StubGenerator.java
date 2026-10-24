@@ -305,6 +305,12 @@ public final class StubGenerator {
         finally {unsigned.delete();}
     }
 
+    /** Split name for a prepared image, identical to the signed carrier identity. */
+    public static String erofsSplitName(File image) throws Exception {
+        if(!image.isFile()||image.length()==0)throw new IOException("Missing EROFS image");
+        return "erofs_"+fileSha256(image);
+    }
+
     /** Writes the EROFS split before APK signing; used by host signing tests. */
     public static File generateErofsPackUnsigned(File workDir, String packageName, File image,
             int revision) throws Exception {
@@ -317,7 +323,8 @@ public final class StubGenerator {
         String entry="assets/matonos/deployment.erofs";
         byte[] metadata=("{\"format\":\"matonos-erofs-pack-v1\",\"image_entry\":\""+entry+
                 "\",\"image_size\":"+image.length()+",\"image_sha256\":\""+digest+
-                "\",\"offset_rule\":\"zip-local-header-v1\",\"offset_entry\":\""+entry+"\"}\n")
+                "\",\"offset_rule\":\"zip-local-header-v1\",\"offset_entry\":\""+entry+
+                "\",\"compression\":\"lz4hc\"}\n")
                 .getBytes(StandardCharsets.UTF_8);
         BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
         encoder.revisionCode=revision;

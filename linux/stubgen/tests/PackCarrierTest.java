@@ -77,7 +77,9 @@ public final class PackCarrierTest {
    String imageHash=ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(payload.toPath())));
    if(!metadataText.contains("\"image_sha256\":\""+imageHash+"\"")
            ||!metadataText.contains("\"image_size\":"+payload.length())
-           ||!metadataText.contains("\"offset_rule\":\"zip-local-header-v1\""))throw new AssertionError(metadataText);
+           ||!metadataText.contains("\"offset_rule\":\"zip-local-header-v1\"")
+           ||!metadataText.contains("\"offset_entry\":\""+erofsEntry+"\"")
+           ||!metadataText.contains("\"compression\":\"lz4hc\""))throw new AssertionError(metadataText);
    long local=localHeaderOffset(carrier,erofsEntry);carrier.seek(local);byte[] header=new byte[30];carrier.readFully(header);
    int nameLength=(header[26]&255)|((header[27]&255)<<8),extraLength=(header[28]&255)|((header[29]&255)<<8);
    long imageOffset=local+30+nameLength+extraLength;

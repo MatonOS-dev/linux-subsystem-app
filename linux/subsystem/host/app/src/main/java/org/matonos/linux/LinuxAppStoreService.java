@@ -504,7 +504,7 @@ public final class LinuxAppStoreService extends Service {
         if(full || !prior.contains(index)) {
             StubGenerator.generateIndex(work,pkg,objects,new File(artifacts,index+".apk"),revision);available.add(index);
         }
-        addContentPacks(op,pkg,work,objects,artifacts,installed,prior,full,revision,desired,available);
+        addErofsSplit(op,pkg,work,objects,artifacts,installed,prior,full,revision,desired,available);
         if(launchable)for(String split:prior)if(split.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX))desired.add(split);
         // Everything needed after this point is now in the pack artifacts,
         // generated APKs, or the captured launcher values. Drop this package's
@@ -527,10 +527,7 @@ public final class LinuxAppStoreService extends Service {
                 java.util.List<String> installedNow=after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames);
                 java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
                 desired2.add(index);
-                for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:contentEntries(objects))if(row.kind.equals("file")) {
-                    String split="pack_"+row.pack.substring(5,69);
-                    if(!desired2.contains(split))desired2.add(split);
-                }
+                desired2.add(StubGenerator.erofsSplitName(new File(objects,"deployment.erofs")));
                 if(applied!=null){String split=applied.getName().replace(".apk","");desired2.add(split);available2.add(split);}
                 if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
                 runPackSession(op,pkg,artifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
@@ -538,38 +535,23 @@ public final class LinuxAppStoreService extends Service {
         });
     }
 
-    /** The index/metadata bytes produced by {@code StagedPacks.build}. */
-    private static byte[] readIndex(File objects) throws Exception {
-        return java.nio.file.Files.readAllBytes(new File(objects,"objects.index").toPath());
-    }
-
-    private static java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> contentEntries(File objects) throws Exception {
-        java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=new java.util.ArrayList<>(
-                org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")));
-        File original=new File(objects,"original.index");
-        if(original.isFile())entries.addAll(org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(original));
-        return entries;
-    }
-
-    /** Adds every content pack an index names, reusing installed carriers. */
-    private void addContentPacks(Operation op,String pkg,File work,File objects,File artifacts,PackageInfo installed,java.util.List<String> prior,
+    /** Adds the signed EROFS deployment split, reusing an identical image. */
+    private void addErofsSplit(Operation op,String pkg,File work,File objects,File artifacts,PackageInfo installed,java.util.List<String> prior,
             boolean full,int revision,java.util.List<String> desired,java.util.List<String> available) throws Exception {
-        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:contentEntries(objects)) {
-            if(!row.kind.equals("file"))continue;
-            String split="pack_"+row.pack.substring(5,69);
-            if(desired.contains(split))continue;
-            desired.add(split);
-            File destination=new File(artifacts,split+".apk");
-            if(installed!=null && prior.contains(split) && installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
-                if(full) {
-                    int position=prior.indexOf(split);
-                    java.nio.file.Files.copy(java.nio.file.Path.of(installed.applicationInfo.splitSourceDirs[position]),destination.toPath());
-                    available.add(split);
-                }
-            } else {
-                if(op.cancelled)throw new java.io.IOException("Install cancelled");
-                StubGenerator.generatePack(work,pkg,new File(objects,row.pack),destination,revision);available.add(split);
+        if(op.cancelled)throw new java.io.IOException("Install cancelled");
+        File image=new File(objects,"deployment.erofs");
+        String split=StubGenerator.erofsSplitName(image);
+        desired.add(split);
+        File destination=new File(artifacts,split+".apk");
+        if(installed!=null && prior.contains(split) && installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
+            if(full) {
+                int position=prior.indexOf(split);
+                java.nio.file.Files.copy(java.nio.file.Path.of(installed.applicationInfo.splitSourceDirs[position]),destination.toPath());
+                available.add(split);
             }
+        } else {
+            StubGenerator.generateErofsPack(work,pkg,image,destination,revision);
+            available.add(split);
         }
     }
 
