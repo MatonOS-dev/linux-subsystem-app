@@ -52,36 +52,78 @@ static int marked_device(const char *dir,uint64_t *device){
 }
 int links_marker(const char *path){const char *name=path;for(const char *p=path;*p;p++)if(*p=='/')name=p+1;return p_equal(name,".v3-store-root");}
 /* Marker roots change only through path-mutating syscalls handled by path_call.
- * A small direct-mapped cache avoids reopening every ancestor marker for each
- * stat/open. A failed try-lock falls back to the uncached walk, so an
- * interrupting signal handler cannot deadlock on a lock held by its caller. */
-struct tree_cache_entry {uint64_t generation,device;int marked;char key[PATH_MAX],root[PATH_MAX];};
-static struct tree_cache_entry tree_cache[8];
+ * Every directory on a walk shares the walk's answer (its nearest marker root,
+ * or none), so the walk caches each directory it visited: sibling and child
+ * lookups then cost no marker probes. Roots live in a small side table so a
+ * cache slot only holds its own key. A failed try-lock falls back to the
+ * uncached walk, so an interrupting signal handler cannot deadlock on a lock
+ * held by its caller. Keys too long for a slot are simply not cached. */
+#define TREE_CACHE_SLOTS 256
+#define TREE_CACHE_KEY 480
+#define TREE_ROOTS 8
+#define TREE_WALK_DEPTH 64
+struct tree_cache_entry {uint64_t generation;int root;char key[TREE_CACHE_KEY];};
+struct tree_root {uint64_t generation,device;char path[PATH_MAX];};
+static struct tree_cache_entry tree_cache[TREE_CACHE_SLOTS];
+static struct tree_root tree_roots[TREE_ROOTS];
 static volatile unsigned tree_cache_lock;
 static volatile uint64_t tree_cache_generation=1;
 void links_cache_invalidate(void){__atomic_add_fetch(&tree_cache_generation,1,__ATOMIC_RELEASE);}
 static int tree_cache_trylock(void){unsigned unlocked=0;return __atomic_compare_exchange_n(&tree_cache_lock,&unlocked,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED);}
 static void tree_cache_unlock(void){__atomic_store_n(&tree_cache_lock,0,__ATOMIC_RELEASE);}
 static uint64_t tree_cache_hash(const char *p){uint64_t h=UINT64_C(1469598103934665603);for(;*p;p++){h^=(unsigned char)*p;h*=UINT64_C(1099511628211);}return h;}
+/* Caller holds the lock. Returns -2 on miss, -1 for "no marker", else a root index. */
+static int tree_cache_get(const char *dir,uint64_t generation){
+ if(p_len(dir)>=TREE_CACHE_KEY)return -2;
+ struct tree_cache_entry *e=&tree_cache[tree_cache_hash(dir)%TREE_CACHE_SLOTS];
+ if(e->generation!=generation || !p_equal(e->key,dir))return -2;
+ if(e->root>=0 && tree_roots[e->root].generation!=generation)return -2;
+ return e->root;
+}
+static void tree_cache_put(const char *dir,uint64_t generation,int root){
+ size_t n=p_len(dir);if(n>=TREE_CACHE_KEY)return;
+ struct tree_cache_entry *e=&tree_cache[tree_cache_hash(dir)%TREE_CACHE_SLOTS];
+ e->generation=generation;e->root=root;p_copy(e->key,dir,n+1);
+}
+static int tree_root_put(const char *path,uint64_t device,uint64_t generation){
+ for(int i=0;i<TREE_ROOTS;i++)if(tree_roots[i].generation==generation && p_equal(tree_roots[i].path,path)){tree_roots[i].device=device;return i;}
+ for(int i=0;i<TREE_ROOTS;i++)if(tree_roots[i].generation!=generation){
+  tree_roots[i].generation=generation;tree_roots[i].device=device;p_copy(tree_roots[i].path,path,p_len(path)+1);return i;
+ }
+ return -2;
+}
 static int tree(char *root,const char *path){
  char up[PATH_MAX],key[PATH_MAX];if(!parent(key,path))return 0;
- uint64_t generation=__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE),hash=tree_cache_hash(key);size_t slot=(size_t)hash&7;
- if(tree_cache_trylock()){
-  struct tree_cache_entry *cached=&tree_cache[slot];int hit=cached->generation==generation && p_equal(cached->key,key),marked=hit&&cached->marked;uint64_t device=cached->device;
-  if(hit && marked)p_copy(root,cached->root,p_len(cached->root)+1);
-  tree_cache_unlock();
-  if(hit){if(!marked)return 0;if(private_dir(root,device))return 1;links_cache_invalidate();}
- }
- p_copy(root,key,p_len(key)+1);int marked=0;uint64_t device=0;
+ uint64_t generation=__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE),device=0;
+ /* Offsets into key of each directory walked past without an answer. */
+ size_t visited[TREE_WALK_DEPTH];int depth=0,marked=0,cached=-2;
+ p_copy(root,key,p_len(key)+1);
  for(;;){
+  if(tree_cache_trylock()){
+   cached=tree_cache_get(root,generation);
+   if(cached>=0){device=tree_roots[cached].device;p_copy(root,tree_roots[cached].path,p_len(tree_roots[cached].path)+1);}
+   tree_cache_unlock();
+  }
+  if(cached==-1){marked=0;break;}
+  if(cached>=0){
+   marked=private_dir(root,device);
+   if(!marked){links_cache_invalidate();return tree(root,path);}
+   break;
+  }
   if(marked_device(root,&device)){marked=private_dir(root,device);break;}
+  if(depth<TREE_WALK_DEPTH)visited[depth++]=p_len(root);
   if(!parent(up,root) || p_equal(up,root)){marked=0;break;}
   p_copy(root,up,p_len(up)+1);
  }
  if(tree_cache_trylock()){
   if(generation==__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE)){
-   struct tree_cache_entry *cached=&tree_cache[slot];cached->generation=generation;cached->device=device;cached->marked=marked;
-   p_copy(cached->key,key,p_len(key)+1);if(marked)p_copy(cached->root,root,p_len(root)+1);else cached->root[0]=0;
+   int index=marked?tree_root_put(root,device,generation):-1;
+   if(index!=-2){
+    /* The walked directories are prefixes of key; truncate in place. */
+    char dir[PATH_MAX];
+    for(int i=0;i<depth;i++){p_copy(dir,key,visited[i]);dir[visited[i]]=0;tree_cache_put(dir,generation,index);}
+    if(marked)tree_cache_put(root,generation,index);
+   }
   }
   tree_cache_unlock();
  }
