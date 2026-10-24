@@ -23,6 +23,16 @@ public final class InstallTransaction {
     private static final java.util.regex.Pattern INDEX_SPLIT =
             java.util.regex.Pattern.compile("index_[0-9a-f]{64}");
     private static final int MAX_LINE = 2048;
+    // Flatpak/OSTree content is addressed by digest. A shared cache plus a
+    // per-snapshot monitor lets the next job reuse completed object downloads.
+    private static final Map<String,SnapshotLock> PULL_LOCKS=new java.util.HashMap<>();
+    private static final class SnapshotLock { int users; }
+    private static synchronized SnapshotLock retainPullLock(String key) {
+        SnapshotLock lock=PULL_LOCKS.get(key);if(lock==null){lock=new SnapshotLock();PULL_LOCKS.put(key,lock);}lock.users++;return lock;
+    }
+    private static synchronized void releasePullLock(String key,SnapshotLock lock) {
+        if(--lock.users==0)PULL_LOCKS.remove(key,lock);
+    }
 
     /** Notified exactly once, on the worker thread, after the worker is done. */
     public interface Completion { void workerFinished(); }
@@ -39,15 +49,18 @@ public final class InstallTransaction {
     private final String appRef;
     private final String remote;
     private final AtomicBoolean cancelled = new AtomicBoolean();
-    private volatile Process process;
+    private final java.util.Set<Process> processes=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private AutoCloseable cacheLease;
     private int lastReportedPercent = -1;
     private long lastReportedAt;
     private long plannedBytes;
     private boolean plannedBytesKnown=true;
-    private long completedBytes;
-    private int packageCount;
-    private int packageIndex;
-    private long verifiedPayloadBytes;
+    private final java.util.concurrent.atomic.AtomicLong completedBytes=new java.util.concurrent.atomic.AtomicLong();
+    private final Object progressLock=new Object();
+    private final Map<String,Integer> refProgress=new java.util.HashMap<>();
+    private final Map<String,Long> refPartialBytes=new java.util.HashMap<>();
+    private int downloadRefCount;
+    private final java.util.concurrent.atomic.AtomicLong verifiedPayloadBytes=new java.util.concurrent.atomic.AtomicLong();
     private long plannedPayloadBytes;
     private boolean plannedPayloadBytesKnown=true;
 
@@ -80,7 +93,11 @@ public final class InstallTransaction {
     public void start(Completion completion) {
         Thread worker = new Thread(() -> {
             try { install(); }
-            finally { completion.workerFinished(); }
+            finally {
+                AutoCloseable lease; synchronized(this){lease=cacheLease;cacheLease=null;}
+                if(lease!=null)try{lease.close();}catch(Exception ignored){}
+                completion.workerFinished();
+            }
         }, "maton-install");
         worker.setDaemon(true);
         worker.start();
@@ -94,8 +111,7 @@ public final class InstallTransaction {
     /** Stops this operation's worker regardless of how it is addressed. */
     public void cancel() {
         cancelled.set(true);
-        Process child = process;
-        if (child != null) child.destroyForcibly();
+        for(Process child:processes)child.destroyForcibly();
     }
 
     private void install() {
@@ -146,21 +162,39 @@ public final class InstallTransaction {
                 mounts.put(node.ref,mount);
             }
             org.json.JSONArray rows=new org.json.JSONArray();String appCommit=null;
-            packageCount=plan.size();plannedBytes=0;plannedBytesKnown=true;
+            plannedBytes=0;plannedBytesKnown=true;
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)if(!node.reused) {
+                synchronized(progressLock){refProgress.put(node.ref,0);downloadRefCount++;}
                 long size=downloadSize(node.info.metadata);if(size<0)plannedBytesKnown=false;else plannedBytes+=size;
                 long payload=metadataSize(node.info.metadata,"xa.installed-size");if(payload<0)plannedPayloadBytesKnown=false;else plannedPayloadBytes+=payload;
             }
-            // All provider choices complete before the first content pull.
+            // Provider choices finish before pulls. Distinct per-ref roots let
+            // independent runtimes/extensions pull concurrently without sharing
+            // mutable Flatpak installation state.
+            org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> pulled=
+                    org.matonos.linuxhost.stubgen.PlanExecutor.execute(plan,
+                            Runtime.getRuntime().availableProcessors(),node->{
+                checkCancelled();if(node.reused)return null;
+                int index=plan.indexOf(node);String location=node.ref.equals(appRef)?"":"package-"+index;
+                Scratch scratch=new Scratch(location.isEmpty()?operation:new File(operation,location),node.origin);
+                scratch.seed(installed,node.ref);
+                String pullKey=node.origin+"\n"+node.ref+"\n"+node.info.commit;
+                SnapshotLock pullLock=retainPullLock(pullKey);
+                try { synchronized(pullLock) { checkCancelled();scratch.pull(node); } }
+                finally { releasePullLock(pullKey,pullLock); }
+                return null;
+            });
+            if(!pulled.completed.containsKey(appRef)) {
+                Throwable error=pulled.failed.get(appRef);
+                if(error==null)for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)
+                    if(pulled.failed.containsKey(node.ref)){error=pulled.failed.get(node.ref);break;}
+                if(error instanceof Exception)throw (Exception)error;
+                throw new java.io.IOException("Requested ref could not be staged because a dependency failed",error);
+            }
             for(int i=0;i<plan.size();i++) {
-                checkCancelled();org.matonos.linuxhost.stubgen.DependencyPlan.Node node=plan.get(i);
+                org.matonos.linuxhost.stubgen.DependencyPlan.Node node=plan.get(i);
+                if(!pulled.completed.containsKey(node.ref))continue;
                 String location=node.ref.equals(appRef)?"":"package-"+i;
-                if(!node.reused) {
-                    packageIndex=i;
-                    Scratch scratch=new Scratch(location.isEmpty()?operation:new File(operation,location),node.origin);
-                    scratch.seed(installed,node.ref);
-                    scratch.pull(node);
-                }
                 org.json.JSONArray dependencies=new org.json.JSONArray();for(String ref:node.dependencies)dependencies.put(ref);
                 rows.put(new JSONObject().put("ref",node.ref).put("commit",node.info.commit).put("origin",node.origin)
                         .put("metadata",metadata.get(node.ref)).put("mount",mounts.get(node.ref)).put("location",location)
@@ -168,7 +202,7 @@ public final class InstallTransaction {
                 if(node.ref.equals(appRef))appCommit=node.info.commit;
             }
             if(appCommit==null)throw new java.io.IOException("Plan has no requested ref");
-            long verified=plannedPayloadBytesKnown?verifiedPayloadBytes:-1;
+            long verified=plannedPayloadBytesKnown?verifiedPayloadBytes.get():-1;
             long verifyTotal=plannedPayloadBytesKnown?plannedPayloadBytes:-1;
             report("verify",82,verified,verifyTotal,"Package verification complete");
             report("staging",82,-1,-1,"Packages downloaded; preparing install packs");
@@ -195,7 +229,10 @@ public final class InstallTransaction {
             }
             markStoreRoot(new File(root,"installation"));
             installation=requireDirectory(root,"installation");home=requireDirectory(root,"home");
-            cache=requireDirectory(root,"cache");tmp=requireDirectory(root,"tmp");run=requireDirectory(root,"run");
+            File sharedCache=new File(WorkDirs.root(context),"flatpak-cache");
+            synchronized(InstallTransaction.this) { if(cacheLease==null)cacheLease=WorkDirs.keep(sharedCache); }
+            Files.createDirectories(sharedCache.toPath());
+            cache=sharedCache.getCanonicalFile();tmp=requireDirectory(root,"tmp");run=requireDirectory(root,"run");
             String dns=LoaderCommand.resolverAddress();File resolv=new File(run,"install-resolv.conf");LoaderCommand.writeResolv(resolv,dns);
             prefix.add(LoaderCommand.loader(context).getAbsolutePath());prefix.add("--parent-pid");prefix.add(Integer.toString(android.os.Process.myPid()));
             LoaderCommand.addDns(prefix,dns);LoaderCommand.addResolvMaps(prefix,resolv);
@@ -222,7 +259,7 @@ public final class InstallTransaction {
             env.put("XDG_DATA_HOME",new File(home,".local/share").getAbsolutePath());env.put("XDG_CONFIG_HOME",new File(home,".config").getAbsolutePath());env.put("XDG_CACHE_HOME",cache.getAbsolutePath());
             env.put("FLATPAK_SYSTEM_DIR",installation.getAbsolutePath());env.put("FLATPAK_USER_DIR",installation.getAbsolutePath());env.put("FLATPAK_SYSTEM_CACHE_DIR",cache.getAbsolutePath());env.put("FLATPAK_DOWNLOAD_TMPDIR",tmp.getAbsolutePath());
             for(String key:new String[]{"SSL_CERT_DIR","CURL_CA_BUNDLE","G_TLS_CA_PATH"})env.put(key,"/apex/com.android.conscrypt/cacerts");
-            Process child=builder.start();process=child;
+            Process child=builder.start();processes.add(child);if(cancelled.get())child.destroyForcibly();
             try {
                 byte[] output;
                 try(java.io.InputStream in=child.getInputStream()){output=in.readNBytes(4*1024*1024+1);if(output.length>4*1024*1024)throw new java.io.IOException("Flatpak output exceeds limit");}
@@ -230,7 +267,7 @@ public final class InstallTransaction {
                 if(status==3&&absentAllowed)return null;
                 if(status!=0)throw new java.io.IOException("Flatpak operation failed: "+new String(Files.readAllBytes(error.toPath()),StandardCharsets.UTF_8));
                 return output;
-            }finally{process=null;child.destroyForcibly();error.delete();}
+            }finally{processes.remove(child);child.destroyForcibly();error.delete();}
         }
         byte[] cli(String... args)throws Exception {
             java.util.List<String> tail=new ArrayList<>();tail.add(LoaderCommand.tool(context,LoaderCommand.FLATPAK_CLI).getAbsolutePath());java.util.Collections.addAll(tail,args);
@@ -314,25 +351,25 @@ public final class InstallTransaction {
             if(total<=0||!plannedBytesKnown)total=-1;
             report("download",5,-1,-1,"Downloading "+node.ref+" from "+origin.display());
             InstallProgress parser=new InstallProgress();
-                cliProgress(parser,total,size,"install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas",origin.name,node.ref);
+                cliProgress(node.ref,parser,total,size,"install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas",origin.name,node.ref);
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             if(!node.info.commit.equals(manifest.getString("appCommit"))) {
                 // install has no --commit option; update can bind the downloaded
                 // deployment to the exact snapshot inspected before any pull.
-                cliProgress(parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
+                cliProgress(node.ref,parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
                 manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             }
             if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,
                     org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(DeployManifest.stagedDeployment(installation,manifest),"metadata"))))
                 throw new java.io.IOException("Pulled deployment differs from planned Flatpak commit");
             StagedPacks.verify(context,installation,()->cancelled.get());
-            long payload=metadataSize(node.info.metadata,"xa.installed-size");if(payload>0)verifiedPayloadBytes+=payload;
+            long payload=metadataSize(node.info.metadata,"xa.installed-size");if(payload>0)verifiedPayloadBytes.addAndGet(payload);
         }
-        private void cliProgress(InstallProgress parser,long total,long packageBytes,String... args)throws Exception {
+        private void cliProgress(String ref,InstallProgress parser,long total,long packageBytes,String... args)throws Exception {
             java.util.List<String> tail=new ArrayList<>();tail.add(LoaderCommand.tool(context,LoaderCommand.FLATPAK_CLI).getAbsolutePath());java.util.Collections.addAll(tail,args);
-            commandProgress(tail,parser,total,packageBytes);
+            commandProgress(ref,tail,parser,total,packageBytes);
         }
-        private void commandProgress(java.util.List<String> tail,InstallProgress parser,long total,long packageBytes)throws Exception {
+        private void commandProgress(String ref,java.util.List<String> tail,InstallProgress parser,long total,long packageBytes)throws Exception {
             checkCancelled();java.util.List<String> command=new ArrayList<>(prefix);command.addAll(tail);
             File error=File.createTempFile("flatpak-",".log",tmp);
             ProcessBuilder builder=new ProcessBuilder(command).directory(home).redirectError(error);
@@ -342,17 +379,36 @@ public final class InstallTransaction {
             env.put("FLATPAK_SYSTEM_DIR",installation.getAbsolutePath());env.put("FLATPAK_USER_DIR",installation.getAbsolutePath());
             env.put("FLATPAK_SYSTEM_CACHE_DIR",cache.getAbsolutePath());env.put("FLATPAK_DOWNLOAD_TMPDIR",tmp.getAbsolutePath());
             for(String key:new String[]{"SSL_CERT_DIR","CURL_CA_BUNDLE","G_TLS_CA_PATH"})env.put(key,"/apex/com.android.conscrypt/cacerts");
-            Process child=builder.start();process=child;
+            Process child=builder.start();processes.add(child);if(cancelled.get())child.destroyForcibly();
             try(java.io.BufferedReader reader=new java.io.BufferedReader(new InputStreamReader(child.getInputStream(),StandardCharsets.UTF_8))) {
                 String line;long lastSent=0;int lastPercent=-1;
-                while((line=reader.readLine())!=null) {int p=InstallProgress.parsePercent(line);if(p>=0&&(p!=lastPercent||System.currentTimeMillis()-lastSent>=250)) {
-                    long done=total>0?completedBytes+(Math.max(1,packageBytes)*p/100):-1;
-                    int phasePercent=total>0?(int)Math.min(100,done*100/total):(packageIndex+1)*p/Math.max(1,packageCount);
+                while((line=reader.readLine())!=null) {checkCancelled();int p=InstallProgress.parsePercent(line);if(p>=0&&(p!=lastPercent||System.currentTimeMillis()-lastSent>=250)) {
+                    int phasePercent=updateProgress(ref,p,packageBytes,total);
+                    long done=total>0?aggregateBytes():-1;
                     report("download",5+(phasePercent*70/100),done,total,line);lastPercent=p;lastSent=System.currentTimeMillis();}}
                 int status=child.waitFor();checkCancelled();if(status!=0)throw new java.io.IOException("Flatpak operation failed: "+readErrorLog(error));
-                completedBytes+=Math.max(1,packageBytes);
-            } finally {process=null;child.destroyForcibly();error.delete();}
+                completeProgress(ref,packageBytes);
+            } finally {processes.remove(child);child.destroyForcibly();error.delete();}
         }
+    }
+    private int updateProgress(String ref,int percent,long packageBytes,long total) {
+        synchronized(progressLock) {
+            refProgress.put(ref,percent);
+            if(total>0)refPartialBytes.put(ref,Math.max(1,packageBytes)*percent/100);
+            if(total>0)return (int)Math.min(100,aggregateBytesLocked()*100/total);
+            long sum=0;for(int value:refProgress.values())sum+=value;
+            return (int)(sum/Math.max(1,downloadRefCount));
+        }
+    }
+    private void completeProgress(String ref,long packageBytes) {
+        synchronized(progressLock) {
+            completedBytes.addAndGet(Math.max(1,packageBytes));
+            refPartialBytes.remove(ref);refProgress.put(ref,100);
+        }
+    }
+    private long aggregateBytes() { synchronized(progressLock){return aggregateBytesLocked();} }
+    private long aggregateBytesLocked() {
+        long value=completedBytes.get();for(long partial:refPartialBytes.values())value+=partial;return value;
     }
     /** Count allocated blocks once per inode, including hardlinked checkouts. */
     public static long allocatedBytes(File root)throws Exception {
