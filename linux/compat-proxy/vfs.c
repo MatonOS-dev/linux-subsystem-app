@@ -763,7 +763,6 @@ char *vfs_temp_create(long *error){
     else{*error=RAW(PROXY_SC_flock,parent,LOCK_EX,0,0,0,0);if(!*error)*error=RAW(PROXY_SC_mkdirat,AT_FDCWD,src,0700,0,0,0);if(!*error)*error=temp_own(src);RAW(PROXY_SC_close,parent,0,0,0,0,0);}
     if(*error){vfs_free(src);return NULL;}return src;
 }
-void proxy_host_snapshot(char *const *env);
 long vfs_mount(const char *source,const char *target,const char *type,unsigned long flags){
     if(flags&(MS_PRIVATE|MS_SLAVE|MS_SHARED|MS_UNBINDABLE))return 0;
     long e=0;char *canonical=NULL;
@@ -792,10 +791,6 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
         }}
         vfs_free(virtual_source);
     }
-    /* Flatpak makes /.flatpak-info as the final bwrap root is assembled.
-     * Start the per-stub command channel only once that app view is live, so
-     * portal children share the completed VFS and can read it via proc root. */
-    if(!e && target){size_t n=p_len(target);if(n>=14 && p_equal(target+n-14,"/.flatpak-info"))proxy_host_snapshot(NULL);}
     vfs_free(src);vfs_free(dest);return e;
 }
 long vfs_shm_init(void){
