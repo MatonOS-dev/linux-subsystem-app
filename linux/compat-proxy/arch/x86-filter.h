@@ -101,6 +101,33 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,F_SETFD);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    /* ioctl reaches Linux unless the proxy rewrites it: a proxy-private
+     * descriptor, termios2 (translated to termios), reflink clone requests
+     * (answered EOPNOTSUPP) or interface requests (virtual network namespace).
+     * Pack descriptors take no ioctl translation. The request is compared in
+     * its low 32 bits, as the kernel's command is an unsigned int. */
+    {
+        const uint32_t rewritten[]={(uint32_t)V3_TCGETS2,(uint32_t)V3_TCSETS2,(uint32_t)V3_TCSETSW2,
+            (uint32_t)V3_TCSETSF2,(uint32_t)FICLONE,(uint32_t)FICLONERANGE,
+            SIOCGIFNAME,SIOCGIFCONF,SIOCGIFFLAGS,SIOCSIFFLAGS,
+            SIOCGIFADDR,SIOCSIFADDR,SIOCGIFDSTADDR,SIOCSIFDSTADDR,
+            SIOCGIFBRDADDR,SIOCSIFBRDADDR,SIOCGIFNETMASK,SIOCSIFNETMASK,
+            SIOCGIFMETRIC,SIOCSIFMETRIC,SIOCGIFMEM,SIOCSIFMEM,
+            SIOCGIFMTU,SIOCSIFMTU,SIOCGIFHWADDR,SIOCSIFHWADDR,
+            SIOCGIFINDEX,SIOCSIFPFLAGS,SIOCGIFPFLAGS,SIOCGIFTXQLEN,SIOCSIFTXQLEN};
+        const unsigned count=sizeof(rewritten)/sizeof(rewritten[0]);
+        /* Layout: JEQ ioctl; LD fd hi; JEQ 0; LD fd lo; JGE floor; LD req;
+         * count x JEQ; RET ALLOW; LD nr. Taken branches land on LD nr. */
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,(uint8_t)(count+6),encode(PROXY_SC_ioctl));
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0])+4);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,(uint8_t)(count+4),0);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+        ADD(BPF_JMP|BPF_JGE|BPF_K,(uint8_t)(count+2),0,PROXY_PRIVATE_FD_FLOOR);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+        for(unsigned i=0;i<count;i++)ADD(BPF_JMP|BPF_JEQ|BPF_K,(uint8_t)(count-i),0,rewritten[i]);
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    }
     /* Payload writes on descriptors below the proxy-private floor reach
      * Linux directly. Proxy-private descriptors live at PROXY_PRIVATE_FD_FLOOR
      * and above; pack carriers are read-only, so the kernel itself rejects
