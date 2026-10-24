@@ -35,7 +35,7 @@ public final class DependencyPlan {
         public final Info info;
         public final boolean reused;
         public final List<String> dependencies=new ArrayList<>();
-        Node(String ref,String origin,Info info,boolean reused){this.ref=ref;this.origin=origin;this.info=info;this.reused=reused;}
+        public Node(String ref,String origin,Info info,boolean reused){this.ref=ref;this.origin=origin;this.info=info;this.reused=reused;}
     }
     private final Backend backend;
     private final List<String> origins;
