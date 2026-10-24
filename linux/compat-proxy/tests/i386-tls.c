@@ -167,8 +167,13 @@ int main(void) {
     int child_status=0;
     check(waitpid(child,&child_status,0)==child,"wait for limit-fault fixture");
     check(child_status==(99<<8),"segment limit violation reaches SIGSEGV disposition");
-    ldt.contents=2;
-    check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects code descriptors");
+    struct user_desc code={.entry_number=9,.base_addr=(unsigned)&value,
+        .limit=0xfffff,.seg_32bit=1,.contents=2,.read_exec_only=0,
+        .limit_in_pages=1,.seg_not_present=0,.useable=1};
+    check(syscall(123,1,&code,sizeof(code))==-1,
+          "modify_ldt rejects code descriptors blocked by Android app policy");
+    code.seg_32bit=0;
+    check(syscall(123,1,&code,sizeof(code))==-1,"modify_ldt rejects 16-bit code descriptors");
     ldt.contents=0;ldt.seg_32bit=0;
     check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects 16-bit descriptors");
     static const char pass[]="PASS i386 pthread TLS, multi-selector LDT cache, far segment loads, and SIGSEGV chaining\n";

@@ -335,8 +335,10 @@ static long ldt_call_locked(unsigned func, uintptr_t ptr, size_t bytes) {
     if(func==1 || func==0x11) {
         struct user_desc d;
         if(!ptr || proxy_copy(&d,(void *)ptr,sizeof(d)))return -EFAULT;
-        /* User TLS GDT entries can represent 32-bit data descriptors, both
-         * expand-up and expand-down, including read-only data. */
+        /* Only 32-bit data descriptors can be represented by our GDT TLS
+         * cache. Code descriptors need modify_ldt(2), which Android's app
+         * seccomp policy blocks; attempting a raw call from this handler
+         * re-enters SIGSYS and cannot safely emulate a CS transition. */
         if(!d.seg_32bit || d.limit>0xfffffu || d.contents>1 || d.read_exec_only>1 ||
            d.limit_in_pages>1 || d.seg_not_present>1 || d.useable>1)return -EINVAL;
         if(d.entry_number>=8192)return -EINVAL;
