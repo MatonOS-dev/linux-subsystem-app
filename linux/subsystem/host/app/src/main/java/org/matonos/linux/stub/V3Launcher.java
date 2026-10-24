@@ -95,6 +95,7 @@ final class V3Launcher {
         Context host=context.createPackageContext("org.matonos.linux",0);
         boolean matonGlEnabled=runtimeMetadata!=null;
         File deployment=PackageDeployment.prepare(context,ref);
+        runtime.setFlatpakDirectories(deployment,new File(deployment,"system"));
         if(matonGlEnabled) {
             String runtimeRef=null;
             for(DeclaredPackages.Entry entry:packages)
@@ -125,6 +126,7 @@ final class V3Launcher {
             }
         }
         command.addAll(DeclaredPackages.arguments(packages,launchWork,true,deployment));
+        File nativeTools=LoaderCommand.nativeLibraryDir(context);
         java.util.Collections.addAll(command,
                 LoaderCommand.tool(context, LoaderCommand.FLATPAK_CLI).getAbsolutePath(),
                 // The session bus is the stub's private broker, which enforces the app's
@@ -132,6 +134,7 @@ final class V3Launcher {
                 "--user", "run", "--socket=wayland", "--socket=x11", "--socket=session-bus",
                 "--no-documents-portal",
                 "--no-a11y-bus", "--nofilesystem=host", "--nofilesystem=/tmp",
+                "--filesystem="+nativeTools.getAbsolutePath()+":ro",
                 "--nodevice=all", "--device=dri",
                 "--env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1", "--env=GTK_CSD=0",
                 "--env=NO_AT_BRIDGE=1",

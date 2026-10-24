@@ -41,3 +41,32 @@ and their helper sources are excluded. Per-app launch wrappers are compiled
 from ../matonos-app-tool.c by tools/build-flatpak-helpers.sh. The former
 Bionic compatibility header and Android resolver hooks are not part of this
 build; installer DNS is handled per process by the compat proxy.
+
+## Upstream Flatpak portal
+
+The `portal/flatpak-portal` objects from the pinned Flatpak tree are linked
+into `libmatonos-flatpak.so` as the `portal` multicall applet. Each stub starts
+it through the compat proxy on its private session bus. The broker reserves
+`org.freedesktop.portal.Flatpak` for this process and forwards its calls
+directly; Java continues to serve the other portal interfaces. The proxy
+publishes the caller's runtime and instance data under `/run/flatpak`, and the
+portal reads caller metadata through the proc-root VFS view.
+
+Flatpak deployments are rebuilt per launch. The standard per-user
+`overrides/` directory is kept under the stub's home and linked into each
+generated deployment so `flatpak override --user` survives those rebuilds.
+
+Host verification: run the repository `build.sh` with the signed-APK settings
+in the task brief. It runs the broker ownership/wire tests, proxy proc-root
+and bwrap host tests, Java portal tests, APK signing checks and the x86 ISA
+audit. The upstream portal suite was also run separately (5 tests passed).
+That suite does not yet cover Spawn `app-fd`/`usr-fd`, expose-pids negotiation,
+or SpawnSignal; those host cases remain open. On the persistent VM at
+`127.0.0.1:5556`, the portal starts and stays alive, and the portal name no
+longer fails with `ServiceUnknown`. Steam still exits before opening its own
+window; pressure-vessel `Spawn` and `SpawnSignal` behavior in the Steam launch
+remains unverified. The temporary `STEAM_DISABLE_SANDBOX=1` value appeared in
+the generated `.flatpak-info` environment, but produced no visible change and
+Steam's console log was not updated during that attempt. The override was then
+removed with `flatpak override --user --unset-env`. Never ship that variable
+as a default.

@@ -1,7 +1,7 @@
 # Static musl Flatpak tool inputs
 
 The directory name is retained for APK path stability. All three shipped
-executables are static musl binaries: the `matonos-flatpak` Flatpak/OSTree/bwrap multicall,
+executables are static musl binaries: the `matonos-flatpak` Flatpak/OSTree/bwrap/portal multicall,
 the `matonos-app-flatpak` per-app launcher, and `matonos-app-bwrap` bubblewrap
 0.13.0. Their Linux syscalls therefore do not enter Android's Bionic wrappers.
 `HELPERS.sha256` fingerprints the launcher compiler and source and records the

@@ -39,12 +39,24 @@ ostree_objects = run(
 objects = [os.path.join(ostree, x) for x in ostree_objects]
 objects.extend(sorted(glob.glob(os.path.join(bwrap, "bwrap.p", "*.c.o"))))
 
+# The stock org.freedesktop.portal.Flatpak implementation is a separate
+# Meson target. Link the same objects the standalone portal links (they are
+# not part of the CLI target) and rename its entry point for dispatch.
+portal_cmd = run(["ninja", "-C", flatpak, "-t", "commands", "portal/flatpak-portal"], capture=True)
+portal_link = shlex.split(portal_cmd.strip().splitlines()[-1])
+portal_objects = []
+for token in portal_link[1:]:
+    if token.endswith(".o"):
+        path = token if os.path.isabs(token) else os.path.join(flatpak, token)
+        portal_objects.append(os.path.abspath(path))
+
 source = os.path.join(os.path.dirname(__file__), "multicall.c")
 with tempfile.TemporaryDirectory(prefix="matonos-multicall-") as td:
     renamed = {
         os.path.join(flatpak, "app/flatpak.p/flatpak-main.c.o"): "flatpak_main",
         os.path.join(ostree, "src/ostree/ostree-main.o"): "ostree_cli_main",
         os.path.join(bwrap, "bwrap.p/bubblewrap.c.o"): "bwrap_main",
+        os.path.join(flatpak, "portal/flatpak-portal.p/flatpak-portal.c.o"): "portal_main",
     }
     replacements = {}
     for index, (obj, symbol) in enumerate(renamed.items()):
@@ -54,6 +66,7 @@ with tempfile.TemporaryDirectory(prefix="matonos-multicall-") as td:
         replacements[obj] = copied
     args = [replacements.get(os.path.abspath(os.path.join(flatpak, x)) if not os.path.isabs(x) else x, x) for x in args]
     objects = [replacements.get(x, x) for x in objects]
+    objects.extend(replacements.get(x, x) for x in portal_objects if x not in objects)
     insertion = next((i for i, x in enumerate(args) if x.endswith(".a") or x == "-Wl,--start-group"), len(args))
     args[insertion:insertion] = objects
     group_end = next((i for i, x in enumerate(args) if x == "-Wl,--end-group"), len(args))

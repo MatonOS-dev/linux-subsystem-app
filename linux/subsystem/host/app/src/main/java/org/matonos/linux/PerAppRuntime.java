@@ -99,6 +99,9 @@ public final class PerAppRuntime implements AutoCloseable {
     }
 
     public File directory() { return directory; }
+    public void setFlatpakDirectories(File userDir,File systemDir) {
+        bus.setFlatpakDirectories(userDir,systemDir);
+    }
     public String waylandSocket() { return new File(directory, "wayland-0").getAbsolutePath(); }
     public synchronized void setWindowHost(WindowHost host, int requestedWindow) {
         this.host = host;

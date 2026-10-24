@@ -324,8 +324,10 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
             g_str_equal(name, "org.freedesktop.DBus") || (flags & ~7u) != 0) {
             return_dbus_error(inv, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid bus name"); return;
         }
-        if (g_str_equal(name,"org.freedesktop.portal.Flatpak") ||
-                name_is_denied(name) || !(access_for(b, name) & ACCESS_OWN)) {
+        /* The upstream per-stub Flatpak portal owns this one exact reserved
+         * portal name. It is granted explicitly by that stub's bus policy;
+         * wildcard app ownership remains unable to claim portal names. */
+        if (name_is_denied(name) || !(access_for(b, name) & ACCESS_OWN)) {
             return_dbus_error(inv, "org.freedesktop.DBus.Error.AccessDenied", "Name is denied by broker policy"); return;
         }
         const char *old = owner_of(b, name);

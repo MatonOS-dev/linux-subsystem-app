@@ -36,6 +36,12 @@ final class PackageDeployment {
             DeclaredPackages.Entry entry=packages.get(i);
             entry.record.materialize(i==0?root:new File(root,"system"),entry.mount);
         }
+        // Deployments are reconstructed for each launch, but Flatpak's
+        // per-user overrides are user state and must survive that rebuild.
+        Path durableOverrides=new File(context.getDataDir(),
+                "home/.local/share/flatpak/overrides").toPath();
+        Files.createDirectories(durableOverrides);
+        Files.createSymbolicLink(root.toPath().resolve("overrides"),durableOverrides);
         return root;
     }
     /** Add the subsystem's bundled GL driver as a normal Flatpak runtime extension deployment. */

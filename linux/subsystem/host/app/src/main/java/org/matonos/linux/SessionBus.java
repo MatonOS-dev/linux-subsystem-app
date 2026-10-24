@@ -36,7 +36,7 @@ final class SessionBus implements AutoCloseable {
         try (FileOutputStream out = new FileOutputStream(policy)) {
             // The bus is private to this app: it may register and call any
             // name except the reserved portal/bus services (broker.c).
-            out.write(("own " + app + "\nown *\ntalk *\ntalk org.freedesktop.portal.Flatpak\ntalk org.freedesktop.portal.Desktop\ntalk org.freedesktop.Flatpak\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("own " + app + "\nown *\nown org.freedesktop.portal.Flatpak\ntalk *\ntalk org.freedesktop.portal.Flatpak\ntalk org.freedesktop.portal.Desktop\ntalk org.freedesktop.Flatpak\n").getBytes(StandardCharsets.UTF_8));
         }
         Os.chmod(policy.getAbsolutePath(), 0600);
         portals = new JavaPortal(context, directory, changed, launcher);
@@ -57,6 +57,9 @@ final class SessionBus implements AutoCloseable {
     }
 
     boolean isAlive() { return running; }
+    void setFlatpakDirectories(File userDir,File systemDir) {
+        portals.setFlatpakDirectories(userDir,systemDir);
+    }
 
     @Override public void close() {
         running = false;
