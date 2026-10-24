@@ -1,7 +1,9 @@
 # Syscall-site rewriting and proxy measurements
 
-Version 1 implements opt-in **load-time** x86_64 rewriting with
-`MATON_PROXY_REWRITE=1`. The default remains SIGSYS. Only complete, unambiguous
+Version 1 implements default-on **load-time** x86_64 rewriting.
+`MATON_PROXY_REWRITE=0` is the kill switch; unset or `=1` enables it.
+Each proxy startup logs `rewrite-on` or `rewrite-off` (unsupported backends
+remain off). Only complete, unambiguous
 ELF function symbols that the conservative backend can decode qualify.
 Anonymous/JIT code is never scanned. Supported architectures going forward are
 x86_64, i386 and arm64; the latter two retain SIGSYS in this phase.

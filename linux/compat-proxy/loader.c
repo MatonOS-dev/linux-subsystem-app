@@ -417,8 +417,10 @@ failed:
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
     proxy_log_bwrap_args(path,argv);
+    const char *rewrite_option=0;
     for(size_t i=0;env && env[i];i++)
-        if(p_equal(env[i],"MATON_PROXY_REWRITE=1")){proxy_rewrite_init(env[i]);break;}
+        if(p_equal(env[i],"MATON_PROXY_REWRITE=0")){rewrite_option=env[i];break;}
+    proxy_rewrite_init(rewrite_option);
     int r=load_inner(path,argv,env,image,0);
     if(!r)r=proxy_i386_tls_prepare_payload();
     if(!r)vfs_executable(path);

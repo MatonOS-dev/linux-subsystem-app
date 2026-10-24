@@ -26,8 +26,11 @@ static unsigned rewrite_apply(uintptr_t addr,unsigned nr,unsigned w,const unsign
     RAW(PROXY_SC_munmap,page,4096,0,0,0,0);return 0;
 }
 int proxy_rewrite_init(const char *s){
-    if(!s || !p_equal(s,"MATON_PROXY_REWRITE=1"))return 0;
+    if(s && p_equal(s,"MATON_PROXY_REWRITE=0")){
+        rewrite_enabled=0;proxy_log("rewrite-off",0,0);return 0;
+    }
     rewrite_enabled=arch_rewrite_init();
+    proxy_log(rewrite_enabled?"rewrite-on":"rewrite-off",0,0);
     proxy_rewrite_table=arch_rewrite_table;
     return rewrite_enabled;
 }
@@ -355,6 +358,6 @@ done:
 static long rewrite_slow(long nr,proxy_arg_t *a){(void)nr;(void)a;return -ENOSYS;}
 static int proxy_rewrite_traps(long nr){(void)nr;return 0;}
 static void proxy_rewrite_after(long nr,proxy_arg_t *a,long r){(void)nr;(void)a;(void)r;}
-int proxy_rewrite_init(const char *s){(void)s;return 0;}
+int proxy_rewrite_init(const char *s){(void)s;proxy_log("rewrite-off",0,0);return 0;}
 void proxy_rewrite_mapping(int fd,uintptr_t b,size_t n,uint64_t o){(void)fd;(void)b;(void)n;(void)o;}
 #endif
