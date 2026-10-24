@@ -1,5 +1,59 @@
 # OSTree APK packs (format v1)
 
+## EROFS deployment carriers (v1 prototype)
+
+`erofs_pack.py` builds one read-only EROFS image from an already deployed app
+or runtime tree. The default is LZ4HC level 12; `--compression lzma` selects
+LZMA level 9 when image size matters more than mount/read cost. The image
+keeps source ownership, modes, symlinks, modification times and xattrs. The
+filesystem assigns inode numbers in its stable source-tree traversal order;
+the host test checks this by building the same tree twice. Build with the
+newest stable `erofs-utils` available for the target release. The utility is
+GPL-2+, not GPL-3; keep it a pack-time tool and publish its source/license
+notices when distributing the binary.
+
+Example:
+
+```sh
+python3 linux/packs/erofs_pack.py --tree DEPLOYMENT/files \
+  --image OUT/deployment.erofs --metadata OUT/erofs-pack.json
+```
+
+The metadata records image size, SHA-256, compressor and the
+`zip-local-header-v1` offset rule. `StubGenerator.generateErofsPack` creates a
+code-free `erofs_<image-sha256>` APK split. It stores the image as
+`assets/matonos/deployment.erofs`, uncompressed, with its payload aligned to
+4096 bytes, and embeds `assets/matonos/erofs-pack.json` beside it. The JSON is
+covered by APK signing. The reader obtains the data offset from the named
+entry's ZIP local header (`header offset + 30 + filename length + extra-field
+length`), then checks the exact image size and SHA-256 before mounting. It
+must not infer an offset by scanning for the EROFS magic bytes.
+
+This is the pack/carrier API; current InstallTransaction continues producing
+the existing indexed ZIP carriers until its install pipeline has a packaged
+`mkfs.erofs` executable and calls `generateErofsPack` for each deployment.
+That switch is deliberately not hidden: until then the existing pack-vfd
+translation route remains the working fallback. The host image writer is
+ready for that hookup, and the signed split builder takes a prepared image.
+
+Host check (does not require mount privilege):
+
+```sh
+python3 linux/packs/tests/erofs-host.py
+```
+
+It creates an app/runtime-shaped fixture, runs `fsck.erofs`, compares the
+extracted tree's paths, bytes, ownership and modes, checks symlink and xattr
+metadata plus stable inode assignment, and builds an aligned ZIP carrier to
+verify the local-header offset and SHA-256 rule. If `unshare -rm` and EROFS
+loop mounting are permitted, it mounts directly from the APK payload and
+benchmarks stat/open against the extracted tree; otherwise it reports the
+mount benchmark as skipped. `MKFS_EROFS`, `FSCK_EROFS` and `DUMP_EROFS` can
+select explicit erofs-utils binaries. mkfs time and extracted/image sizes are
+reported for each fixture. For mount performance, use the same deployment and
+cache state on a host that permits loop mounts; the small synthetic fixture
+is an integrity check, not a representative size benchmark.
+
 `pack.py` is a Python 3 host tool using PyGObject/libostree 2024.5. It reads
 real OSTree repositories in `bare-user` mode. `reader.c` is the C99 lookup
 library intended for the compat proxy. Run `./tests/run.sh` to generate a
