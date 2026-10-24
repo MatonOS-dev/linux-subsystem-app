@@ -9,8 +9,8 @@ fixture=$(mktemp -d "$PWD/build/trap-bench.XXXXXX")
 trap 'rm -rf "$fixture"' EXIT
 printf 'compat proxy trap benchmark fixture\n' >"$fixture/file"
 
-printf 'native and proxied payload syscall cost; each run is a fresh process\n'
-for mode in getpid open stat statx; do
+printf 'native, trapped no-op and proxied payload syscall cost; each run is a fresh process\n'
+for mode in noop getpid open stat statx; do
     for route in native proxied; do
         for ((run=1; run<=repetitions; run++)); do
             if [[ $mode == getpid ]]; then path=-
@@ -20,8 +20,16 @@ for mode in getpid open stat statx; do
             if [[ $route == native ]]; then
                 build/trap-bench "$mode" "$iterations" "$path"
             else
-                build/linux-layer-v3 --android-filter --map "$fixture" /bench \
-                    build/trap-bench "$mode" "$iterations" "$path"
+                # The no-op uses an unknown syscall that the proxy traps and
+                # answers with -ENOSYS. Its per-call diagnostic is deliberately
+                # suppressed so stderr writes do not dominate the measurement.
+                if [[ $mode == noop ]]; then
+                    build/linux-layer-v3 --android-filter --map "$fixture" /bench \
+                        build/trap-bench "$mode" "$iterations" "$path" 2>/dev/null
+                else
+                    build/linux-layer-v3 --android-filter --map "$fixture" /bench \
+                        build/trap-bench "$mode" "$iterations" "$path"
+                fi
             fi
         done
     done

@@ -1,7 +1,26 @@
 # Syscall-site rewrite proposal and proxy measurements
 
-This is a design only. The proxy changes in this branch add optional counters;
-they do not rewrite syscall sites.
+Version 1 is load-time rewriting, disabled unless
+`MATON_PROXY_REWRITE=1` is set. It scans eligible executable functions before
+their code runs and leaves every unproven site on the SIGSYS path. Anonymous
+and JIT mappings remain trapped. The current implementation status and
+measurements are recorded below.
+
+### Trapped no-op baseline (2026-10-24)
+
+`tests/trap-bench.sh 20000 5` compares native execution with an unknown x86_64
+syscall (`1000`) that the proxy traps and answers with `-ENOSYS` without a
+kernel syscall. This isolates signal delivery, proxy dispatch and sigreturn;
+the proxy's one-time unknown-syscall diagnostic is redirected away from the
+timed output. Host results, median of five fresh-process runs:
+
+| Mode | Median | Range |
+|---|---:|---:|
+| Native unknown syscall | 314 ns/op | 280–328 ns/op |
+| Trapped no-op (`-ENOSYS`) | 4.86 µs/op | 4.77–5.35 µs/op |
+
+This is a host microbenchmark, not an Android device result. The proxied
+unknown syscall is intentionally unsupported and is not a rewrite candidate.
 
 ## Host measurements
 
@@ -223,11 +242,17 @@ The first item is now measured; remaining items are estimates.
 
 ### Mapping and W^X
 
-The first `SIGSYS` is the authoritative site discovery event. Accept it only
-when `si_code == SYS_SECCOMP`, the decoded syscall is supported by the proxy,
-and the architecture backend confirms that the reported call address contains
-the expected syscall opcode. Do not infer a site from the syscall number
-alone.
+Version 1 does not discover or modify code from a SIGSYS handler. For the main
+executable and interpreter, scan after mapping and before jumping to the entry
+point. For shared objects, scan the anonymous executable copy created while
+handling a file-backed `mmap(PROT_EXEC)`, before returning from that mapping
+call. The scanner accepts only complete, linearly disassembled function ranges
+from ELF symbols or `.eh_frame` FDEs. It validates each candidate syscall
+encoding and direct branch targets within that function. Unknown instruction
+boundaries, ambiguous ranges, unsupported syscall numbers and any failed
+proof leave the site unchanged on the trap path. There is no thread parking
+in this version because executable pages are not yet published to running
+code when rewritten.
 
 For a private executable file mapping, make an anonymous page copy at the same
 virtual address: allocate a separate anonymous RW page, copy the original
@@ -377,16 +402,14 @@ x86_64, but it needs a two-instruction window, page-aligned stubs or a third
   Concurrent modification of `SVC`→`B` is architecturally permitted; publish
   with `dc cvau`/`ic ivau`/`isb`. BTI does not apply to direct branches. Sites
   whose stub cannot be placed within ±128 MiB stay on the trap.
-- **riscv64 (decided):** no site rewriting for now; every syscall stays on
-  the SIGSYS trap path. (Reasons: `jal` reaches only ±1 MiB, longer reach
-  needs a scratch register, `ecall` may be only 2-byte aligned with the C
-  extension, and cross-hart icache sync needs an extra syscall.)
+The supported architecture set is x86_64, i386 and arm64. Version 1 implements
+only the x86_64 primary encoding. i386 and arm64 remain on the SIGSYS path for
+later phases; there is no riscv64 backend slot.
 
-Order: x86_64 (shipping), then arm64.
+### Later-version concurrency and process semantics
 
-### Concurrency and process semantics
-
-- **Patch races:** publishing an RX anonymous page is atomic at the mapping
+- **Patch races:** runtime rewriting of already-published pages requires
+  publishing an RX anonymous page atomically at the mapping
   level, but another thread may already be executing the old page or may enter
   the site during publication. Before replacement, signal every thread in the
   mm with a reserved real-time signal, park them in a minimal handler, and

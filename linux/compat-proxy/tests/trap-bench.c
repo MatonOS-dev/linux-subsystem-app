@@ -58,6 +58,17 @@ int main(int argc, char **argv) {
     } else for (unsigned long i = 0; i < iterations; ++i) {
         if (!strcmp(mode, "getpid")) {
             checksum += syscall(SYS_getpid);
+        } else if (!strcmp(mode, "noop")) {
+            /* Syscall 1000 is unknown to the x86_64 decoder. The proxy returns
+             * -ENOSYS without entering the kernel, isolating SIGSYS delivery,
+             * handler dispatch and return. */
+            errno = 0;
+            long r = syscall(1000);
+            if (r != -1 || errno != ENOSYS) {
+                fprintf(stderr, "unknown-syscall no-op returned %ld errno=%d\n", r, errno);
+                return 1;
+            }
+            checksum += errno;
         } else if (!strcmp(mode, "stat")) {
             long r = syscall(SYS_newfstatat, AT_FDCWD, path, &st, 0);
             if (r) { perror("newfstatat"); return 1; }
