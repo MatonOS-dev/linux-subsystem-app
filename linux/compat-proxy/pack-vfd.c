@@ -96,7 +96,7 @@ long pack_mount(const char *target,const char *index,const char *directory){
   vfs_free(empty);
  }
  if(!e){
-  m->io_fd=RAW(PROXY_SC_memfd_create,"pack-position-lock",0,0,0,0,0);
+  m->io_fd=proxy_private_fd(RAW(PROXY_SC_memfd_create,"pack-position-lock",0,0,0,0,0));
   if(m->io_fd<0)e=m->io_fd;
   if(!e)e=RAW(PROXY_SC_ftruncate,m->io_fd,4096,0,0,0,0);
   if(!e){long area=RAW(PROXY_SC_mmap,0,4096,PROT_READ|PROT_WRITE,MAP_SHARED,m->io_fd,0);if((unsigned long)area>=(unsigned long)-4095)e=area;else m->io_owner=(void *)area;}

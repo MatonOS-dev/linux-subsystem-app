@@ -69,7 +69,7 @@ int proxy_diagnostics_init(void) {
     if(proxy_diagnostic_fd!=2)return 0;
     /* F_DUPFD keeps the original sink through resident exec, without CLOEXEC.
      * The VFS private-fd guard protects it from the payload's fd sweeps. */
-    long fd=RAW(PROXY_SC_fcntl,2,F_DUPFD,256,0,0,0);
+    long fd=RAW(PROXY_SC_fcntl,2,F_DUPFD,PROXY_PRIVATE_FD_FLOOR,0,0,0);
     if(fd<0)return (int)fd;
     proxy_diagnostic_fd=(int)fd;return 0;
 }
@@ -747,7 +747,7 @@ uint64_t proxy_count_now(void){
     return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;
 #endif
 }
-void proxy_count_init(const char *path){if(!path || !*path)return;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0);if(fd>=0){proxy_count_fd=(int)fd;proxy_raw_count_enable();}}
+void proxy_count_init(const char *path){if(!path || !*path)return;long fd=proxy_private_fd(RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0));if(fd>=0){proxy_count_fd=(int)fd;proxy_raw_count_enable();}}
 void proxy_count_resolution(uint64_t ns){__atomic_fetch_add(&proxy_vfs_ns,ns,__ATOMIC_RELAXED);}
 static void count_u64(char *b,size_t *n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[(*n)++]=d[--k];}
 void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*64+128];size_t n=0;
@@ -797,13 +797,29 @@ static unsigned long namespace_clone_flags;
 uintptr_t proxy_clone_resume;
 extern char proxy_clone_entry[],proxy_clone_after[];
 static unsigned userns_remaining=~0U;
-struct sysctl_fd {int fd;struct sysctl_fd *next;};
+struct sysctl_fd {int fd;struct sysctl_fd *next;int seen_len;char seen[12];};
 static struct sysctl_fd *sysctl_fds;
-static int sysctl_tracked(int fd){for(struct sysctl_fd *p=sysctl_fds;p;p=p->next)if(p->fd==fd)return 1;return 0;}
+static void sysctl_sync(void);
 static void sysctl_close(int fd){struct sysctl_fd **p=&sysctl_fds;while(*p){struct sysctl_fd *d=*p;if(d->fd==fd){*p=d->next;vfs_free(d);return;}p=&d->next;}}
-static void sysctl_dup(int from,int to){if(from==to)return;int tracked=sysctl_tracked(from);sysctl_close(to);if(tracked){struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(p){*p=(struct sysctl_fd){to,sysctl_fds};sysctl_fds=p;}}}
-static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-userns-limit",cloexec?1:0,0,0,0,0);if(fd<0)return fd;struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*p=(struct sysctl_fd){(int)fd,sysctl_fds};sysctl_fds=p;return fd;}
-static long sysctl_write(int fd,const char *buf,size_t len){if(!len || len>11)return -EINVAL;unsigned limit=0;size_t k=0;for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10)return -ERANGE;limit=limit*10+digit;}if(!k || (k<len && !(k+1==len && buf[k]=='\n')))return -EINVAL;long r=RAW(PROXY_SC_write,fd,buf,len,0,0,0);if(r>=0)userns_remaining=limit;return r;}
+/* A duplicate shares the open file; it inherits the last applied content. */
+static void sysctl_dup(int from,int to){if(from==to)return;struct sysctl_fd *src=NULL;for(struct sysctl_fd *q=sysctl_fds;q;q=q->next)if(q->fd==from){src=q;break;}sysctl_close(to);if(src){struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(p){*p=*src;p->fd=to;p->next=sysctl_fds;sysctl_fds=p;}}}
+static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-userns-limit",cloexec?1:0,0,0,0,0);if(fd<0)return fd;struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*p=(struct sysctl_fd){(int)fd,sysctl_fds,0,{0}};sysctl_fds=p;return fd;}
+/* Writes to the virtual sysctl reach its memfd natively (the filter lets low-fd
+ * writes through). The limit is read back lazily before namespace checks: a
+ * changed, valid content ("N" or "N\n") becomes the new limit; anything else
+ * is ignored, like a write the kernel would have rejected. */
+static void sysctl_sync(void){
+    for(struct sysctl_fd *p=sysctl_fds;p;p=p->next){
+        char buf[12];long len=RAW(PROXY_SC_pread64,p->fd,buf,sizeof(buf),0,0,0);
+        if(len<=0 || len>11)continue;
+        if(len==p->seen_len){int same=1;for(long i=0;i<len;i++)if(buf[i]!=p->seen[i]){same=0;break;}if(same)continue;}
+        p->seen_len=(int)len;for(long i=0;i<len;i++)p->seen[i]=buf[i];
+        unsigned limit=0;long k=0;int overflow=0;
+        for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10){overflow=1;break;}limit=limit*10+digit;}
+        if(overflow || !k || (k<len && !(k+1==len && buf[k]=='\n')))continue;
+        userns_remaining=limit;
+    }
+}
 
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
 static int self_cwd(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/cwd",5);return p_equal(path,name) || p_equal(path,"/proc/self/cwd") || p_equal(path,"/proc/thread-self/cwd");}
@@ -968,6 +984,8 @@ static long rewrite_slow(long,proxy_arg_t *);
 static long modernize(long,proxy_arg_t *,long *);
 static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     long result;
+    /* dup3 may replace a sysctl descriptor; apply its written limit first. */
+    if(nr==PROXY_SC_dup3 && sysctl_fds)sysctl_sync();
     if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&private_close_fd((int)a[1])))return -EBADF;
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
@@ -981,6 +999,8 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
     case PROXY_SC_readlink:return path_call(nr,a,0,-1);
     case PROXY_SC_close:{
         if(private_close_fd((int)a[0]))return 0;
+        /* A written limit must apply before its last descriptor goes away. */
+        if(sysctl_fds)sysctl_sync();
         long r=RAW(PROXY_SC_close,a[0],0,0,0,0,0);
         if(!r){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}
         return r;
@@ -1532,8 +1552,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
     case PROXY_SC_exit:proxy_rewrite_exit();vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
-    case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
+    case PROXY_SC_write:result=RAW(nr,a[0],a[1],a[2],0,0,0);break;
+    case PROXY_SC_close_range:if(sysctl_fds)sysctl_sync();result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:result=file_dispatch(nr,a);break;
     case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
         result=descriptor_dup_dispatch(nr,a);break;
@@ -1643,7 +1663,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     case PROXY_SC_unshare:
         result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;
-        if(!result && (a[0]&CLONE_NEWUSER) && !userns_remaining)result=-EPERM;
+        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining)result=-EPERM;}
         if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
         break;
     case PROXY_SC_mount:result=vfs_mount((char *)(uintptr_t)a[0],(char *)(uintptr_t)a[1],(char *)(uintptr_t)a[2],(unsigned long)a[3]);break;
@@ -1666,6 +1686,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
         if((a[0]&NS_FLAGS) && (a[0]&CLONE_VM)){result=-ENOTSUP;break;}
+        if(a[0]&CLONE_NEWUSER)sysctl_sync();
         if((a[0]&CLONE_NEWUSER) && !userns_remaining){result=-EPERM;break;}
         if(!(a[0]&CLONE_VM)){
             if(a[0]&CLONE_FILES){result=-ENOTSUP;break;}
@@ -1880,5 +1901,7 @@ void proxy_state(struct state *s){
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;
  count=state_count(s,count);if(s->error)return;
  if(!s->reading){for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))state_word(s,d->fd);}
- else for(uint64_t i=0;i<count&&!s->error;i++){struct sysctl_fd *d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->fd=state_word(s,0);d->next=sysctl_fds;sysctl_fds=d;}
+ else for(uint64_t i=0;i<count&&!s->error;i++){struct sysctl_fd *d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->fd=state_word(s,0);d->next=sysctl_fds;sysctl_fds=d;
+     /* userns_remaining crossed exec; the current content is already applied. */
+     long len=RAW(PROXY_SC_pread64,d->fd,d->seen,sizeof(d->seen),0,0,0);d->seen_len=len>0?(int)len:0;}
 }

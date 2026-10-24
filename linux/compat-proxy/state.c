@@ -11,6 +11,15 @@
 #include <linux/memfd.h>
 int state_android, state_gpu_bridge;
 static int private_fd=-1;
+/* Move a fresh private descriptor to the private range, keeping its
+ * close-on-exec state. Consumes fd; returns the new fd or an error. */
+long proxy_private_fd(long fd){
+ if(fd<0 || fd>=PROXY_PRIVATE_FD_FLOOR)return fd;
+ long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);
+ long moved=RAW(PROXY_SC_fcntl,fd,(flags>0 && (flags&FD_CLOEXEC))?F_DUPFD_CLOEXEC:F_DUPFD,PROXY_PRIVATE_FD_FLOOR,0,0,0);
+ RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ return moved;
+}
 int state_private_fd(int fd){return private_fd>=0 && fd==private_fd;}
 int state_live(int fd){long f=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);return f>=0 && !(f&FD_CLOEXEC);}
 void state_bytes(struct state *s,void *p,size_t n){
@@ -85,7 +94,7 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(arch_stat_at(AT_FDCWD,"/proc/self/exe",&running,0)||arch_stat_fd(fd,&chosen)||!S_ISREG(chosen.st_mode)||chosen.st_uid!=running.st_uid||(chosen.st_mode&0022)||!(chosen.st_mode&0111))error=-EPERM;
  unsigned char header[20];if(!error && (RAW(PROXY_SC_pread64,fd,header,20,0,0,0)!=20||arch_handoff_class(header)!=1))error=-ENOEXEC;
  if(error){RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
- private_fd=RAW(PROXY_SC_memfd_create,"matonos-v3-exec",MFD_ALLOW_SEALING,0,0,0,0);
+ private_fd=proxy_private_fd(RAW(PROXY_SC_memfd_create,"matonos-v3-exec",MFD_ALLOW_SEALING,0,0,0,0));
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};

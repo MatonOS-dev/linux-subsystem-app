@@ -210,7 +210,7 @@ static int temp_own(const char *path){
     /* Flatpak's Spawn protocol assigns forwarded descriptors in the 128+
      * range. Keep our inherited flock descriptors out of that payload range
      * so a child can map app-fd/usr-fd without colliding with proxy ownership. */
-    long reserved=RAW(PROXY_SC_fcntl,fd,F_DUPFD,512,0,0,0);
+    long reserved=RAW(PROXY_SC_fcntl,fd,F_DUPFD,PROXY_PRIVATE_FD_FLOOR,0,0,0);
     if(reserved>=0){RAW(PROXY_SC_close,fd,0,0,0,0,0);fd=(int)reserved;}
     struct temp_lock *l=vfs_palloc(sizeof(*l));if(!l){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
     long e=RAW(PROXY_SC_flock,fd,LOCK_EX|LOCK_NB,0,0,0,0);

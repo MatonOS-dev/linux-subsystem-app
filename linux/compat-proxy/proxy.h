@@ -33,6 +33,10 @@ void proxy_profile_section(unsigned,uint64_t);
 #define PROFILE_END(section) ((void)(section))
 #endif
 #include "arch/stat.h"
+/* The seccomp filter lets payload writes below this floor reach Linux
+ * directly. Every writable proxy-private descriptor must live at or above it. */
+#define PROXY_PRIVATE_FD_FLOOR 512
+long proxy_private_fd(long);
 #include "arch/statx.h"
 #include "arch/socket.h"
 struct image { uintptr_t entry, stack; };

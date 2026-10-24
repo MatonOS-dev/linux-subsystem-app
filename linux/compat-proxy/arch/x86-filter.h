@@ -101,6 +101,34 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,F_SETFD);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    /* Payload writes on descriptors below the proxy-private floor reach
+     * Linux directly. Proxy-private descriptors live at PROXY_PRIVATE_FD_FLOOR
+     * and above; pack carriers are read-only, so the kernel itself rejects
+     * writes to them. Known exception: SysV IPC arena descriptors stay where
+     * openat put them (moving them hangs tests/site-rewrite-exec, cause not
+     * yet found); they are private only during an in-flight IPC handoff.
+     * The descriptor is an int: the high word must be zero. */
+    {
+        /* ftruncate stays trapped: on a read-only pack carrier Linux says
+         * EINVAL, where a read-only packed file must report EBADF. */
+        const long writes[]={PROXY_SC_write,PROXY_SC_writev,PROXY_SC_pwrite64,PROXY_SC_pwritev,
+            PROXY_SC_pwritev2,PROXY_SC_fallocate};
+        unsigned pending[sizeof(writes)/sizeof(writes[0])],waiting=0;
+        for(unsigned i=0;i<sizeof(writes)/sizeof(writes[0]);i++){
+            long native_nr=encode(writes[i]);if(native_nr<0)continue;
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,native_nr);
+            pending[waiting++]=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+        }
+        unsigned skip=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+        for(unsigned i=0;i<waiting;i++)bpf[pending[i]].k=n-pending[i]-1;
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0])+4);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+        ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,PROXY_PRIVATE_FD_FLOOR);
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+        bpf[skip].k=n-skip-1;
+    }
     {
         unsigned pending[512],waiting=0;
         for(long nr=0;nr<512;nr++) {
