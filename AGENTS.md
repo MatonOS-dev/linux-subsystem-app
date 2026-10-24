@@ -6,6 +6,13 @@ Shared by all agents (Claude, codex, opencode) working in this repository.
 
 When goals conflict: **Google-certifiable Android > performance > compatibility > simplicity.**
 
+## The compatibility layer is loud, never hidden
+
+Do not disguise the compat proxy/layer as native Linux. Make it detectable and self-describing: say so in logs,
+expose an environment marker with version, name synthesised /proc content and rewritten anonymous pages
+([anon:matonos-…]) honestly, and make errors mention when the layer was involved. A per-app D-Bus portal for reading
+layer details and setting per-app knobs (rewrite on/off, logging) is welcome.
+
 ## Do not add xdg-desktop-portal
 
 `xdg-desktop-portal` (the `org.freedesktop.portal.*` frontend, and `xdg-permission-store` with it) is explicitly
