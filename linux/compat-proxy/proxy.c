@@ -857,8 +857,8 @@ static long modernize(long nr,proxy_arg_t *a,long *answer) {
     default:return nr;
     }
 }
-/* DNS transport lives on the application's original fd numbers. */
-#include "dns-unix.h"
+/* DNS interception preserves the application's original fd numbers. */
+#include "dns-netd.h"
 /* Filesystem AF_UNIX addresses are paths: translate them through the virtual
  * mount table like any path call (Wayland, X11, PulseAudio, D-Bus sockets).
  * Abstract and unnamed addresses pass through. Returns 1 when handled. */
