@@ -58,8 +58,50 @@ public final class PackageMounts {
     }
     public static String mountPoint(String ref,String metadata,java.util.Map<String,String> parentMetadata) throws IOException {
         String parent=extensionParent(metadata);if(parent==null){if(ref.startsWith("runtime/"))return "/usr";throw new IOException("Application deployment is not a Flatpak extension: "+ref);}
-        String parentText=parentMetadata.get(parent);if(parentText==null)throw new IOException("Extension parent deployment is missing: "+parent);
+        String parentText=parentMetadata.get(parent);
+        if(parentText==null) {
+            Parent resolved=plannedX86_64Parent(ref,extensionId(ref),parent,parentMetadata);
+            if(resolved!=null){parent=resolved.ref;parentText=resolved.metadata;}
+        }
+        if(parentText==null)throw new IOException("Extension parent deployment is missing: "+parent);
         String id=extensionId(ref);String dir=extensionDirectory(parentText,id);if(dir==null)throw new IOException("Flatpak metadata has no directory for extension "+id);return (parent.startsWith("app/")?"/app/":"/usr/")+dir;
+    }
+    /**
+     * Freedesktop's x86_64 Compat.i386 and GL32 refs can declare an i386
+     * ExtensionOf.ref even though the installable parent is the already
+     * planned x86_64 runtime whose metadata declares that extension point.
+     * Resolve only against staged refs; never synthesize a replacement ref.
+     */
+    private static final class Parent {
+        final String ref,metadata;
+        Parent(String ref,String metadata){this.ref=ref;this.metadata=metadata;}
+    }
+    private static Parent plannedX86_64Parent(String extension,String id,String missingParent,
+            java.util.Map<String,String> metadata) throws IOException {
+        String[] extensionParts=extension.split("/",-1),parentParts=missingParent.split("/",-1);
+        if(extensionParts.length!=4||!extensionParts[0].equals("runtime")||!extensionParts[2].equals("x86_64")||
+                parentParts.length!=4||!parentParts[0].equals("runtime")||
+                !parentParts[1].equals("org.freedesktop.Platform")||!parentParts[2].equals("i386"))return null;
+        Parent match=null;
+        for(java.util.Map.Entry<String,String> entry:metadata.entrySet()) {
+            String[] candidate=entry.getKey().split("/",-1);
+            if(extensionDirectory(entry.getValue(),id)==null)continue;
+            String runtimeRef=entry.getKey();
+            if(candidate.length==4&&candidate[0].equals("app")) {
+                String declared=value(entry.getValue(),"Application","runtime");
+                if(declared==null)continue;
+                String staged="runtime/"+declared;
+                if(!metadata.containsKey(staged))continue;
+                runtimeRef=staged;
+                candidate=runtimeRef.split("/",-1);
+            }
+            if(candidate.length!=4||!candidate[0].equals("runtime")||!candidate[2].equals("x86_64"))continue;
+            Parent found=new Parent(runtimeRef,entry.getValue());
+            if(match!=null&&!match.ref.equals(found.ref))
+                throw new IOException("Ambiguous staged x86_64 parent for extension "+id);
+            match=found;
+        }
+        return match;
     }
     static String extensionDirectory(String metadata,String id) throws IOException {
         for(String candidate=id;;) {

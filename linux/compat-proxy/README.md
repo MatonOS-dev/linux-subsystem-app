@@ -123,8 +123,11 @@ their own records through this common interface.
 - The DNS forwarder supports UDP only and depends on Android netd's
   `dnsproxyd` socket and wire protocol.
 - i386 segmented-memory emulation supports a bounded set of 32-bit data
-  descriptor operations; implicit code-segment reloads and code descriptors
-  are outside scope.
+  descriptor operations. Code descriptors and far CS transfers are dropped:
+  Android's inherited app seccomp policy blocks `modify_ldt`, and
+  `set_thread_area` rejects code descriptors. Supporting them needs an Android
+  syscall-policy change or a different kernel interface, so the proxy returns
+  `EINVAL` instead of attempting a raw syscall that re-enters SIGSYS.
 
 For production acceptance, freshly boot an image, disable idle suspend in the
 VM, run the installed host and stubs under their app UIDs, then validate
@@ -133,6 +136,14 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
 
 ## Changelog
 
+- **2026-10-24:** Investigated 32-bit LDT code segments for Steam. The proxy's
+  raw `modify_ldt` attempt is trapped again by the inherited Android app
+  filter; a focused `strace` shows the blocked syscall and recursive SIGSYS.
+  `set_thread_area` rejects a 32-bit code descriptor with `EINVAL`. Since the
+  user policy is zero AOSP patches, far `jmp`/`call`/`retf` and CS loads are
+  dropped for now. The i386 fixture asserts explicit rejection. Steam's test
+  installer separately stops before download because dependency planning asks
+  Flathub for the unavailable `runtime/org.freedesktop.Platform/i386/26.08`.
 - **2026-10-24:** Fixed i386 resident TLS discovery under Android's app policy:
   `get_thread_area` (244) is blocked even from a raw gateway; querying an
   untracked initial descriptor returned `-ESRCH` and caused loader exit 5.

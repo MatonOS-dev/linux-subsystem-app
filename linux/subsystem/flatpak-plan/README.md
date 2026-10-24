@@ -32,3 +32,12 @@ build packages the stripped PIE as `libmatonos-flatpak-plan.so`.
 Host validation: `linux/stubgen/tests/run-tests.sh` covers planning,
 origin-bound repair, package graphs, mounts, failure handling and signed record
 round trips. The subsystem app build compiles the native adapter.
+
+For the Steam multiarch regression, run
+`python3 linux/subsystem/flatpak-plan/tests/compat_i386.py <plan-output>/libmatonos-flatpak-plan.so`.
+Steam's signed app metadata declares Compat.i386 and GL32, while those
+x86_64 extension refs' metadata names an unavailable i386 parent runtime.
+Planning keeps the app's declared x86_64 runtime and leaves the extensions to
+Flatpak's related-ref resolver. Mount construction resolves their directory
+from the app's authenticated extension declaration and requires its declared
+x86_64 runtime to already be staged.

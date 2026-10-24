@@ -89,16 +89,21 @@ final class PackageDeployment {
         if(!record.ref.equals(ref)||!new String(record.metadata,StandardCharsets.UTF_8).contains("name = org.freedesktop.Platform.Compat.i386"))
             throw new IOException("Installed i386 compatibility extension ref mismatch");
         String mount="/usr/lib/i386-linux-gnu";
-        record.materialize(systemRoot,mount);
-        Path branchRoot=systemRoot.toPath().resolve(ref),version=branchRoot.resolve(record.commit);
+        // PackageDeployment.prepare() already materialized every declared
+        // package from its signed record. Recreate the Flatpak-canonical
+        // metadata in place; DeploymentRecord.materialize() is intentionally
+        // a first-write operation and its files/ createDirectory would fail.
+        Path version=systemRoot.toPath().resolve(ref).resolve(record.commit);
+        Path files=version.resolve("files");
+        if(!Files.isDirectory(files,LinkOption.NOFOLLOW_LINKS)||Files.isSymbolicLink(files))
+            throw new IOException("Missing materialized i386 compatibility extension");
         Files.write(version.resolve("metadata"),compatMetadata(branch).getBytes(StandardCharsets.UTF_8));
         Files.write(version.resolve("deploy"),DeployRecord.extension(record.remote,record.commit,branch));
         File apk=new File(pkg.applicationInfo.sourceDir);
         java.util.List<String> args=new java.util.ArrayList<>(org.matonos.linuxhost.stubgen.PackLaunch.arguments(
                 apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount));
-        File files=version.resolve("files").toFile();
-        args.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(mount,files));
-        return new CompatI386(files,args);
+        args.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(mount,files.toFile()));
+        return new CompatI386(files.toFile(),args);
     }
     static String withI386ExtensionPoints(String metadata,String branch) {
         StringBuilder result=new StringBuilder(metadata);
