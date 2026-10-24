@@ -79,3 +79,7 @@ The current QEMU run passes context creation, binding, pbuffer drawing and
 game startup, but fails steps 3 and 4. First check plain Xlib drawing/readback
 and the launcher screenshot as baselines. Do not treat the shim as complete
 until presentation passes.
+
+The frame-pacing syscalls use each process's Linux ABI: x86_64 `syscall`,
+i386 `int 0x80` with the time32 `timespec` layout. Exercise both without a
+GPU or libc with `bash tests/timing.sh /absolute/external/output`.

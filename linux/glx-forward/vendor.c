@@ -89,9 +89,7 @@ static void contexts_lock_acquire(void){while(__atomic_exchange_n(&contexts_lock
 static void contexts_lock_release(void){__atomic_store_n(&contexts_lock,0,__ATOMIC_RELEASE);} static const char exts[]="GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control GLX_EXT_visual_info";
 extern long write(int,const void*,unsigned long);
 static void egl_diag(const char*s){size_t n=0;while(s[n])n++;(void)write(2,s,n);}
-struct timespec { long tv_sec, tv_nsec; };
-static long sys_clock_gettime(long id,struct timespec*t){long r;__asm__ volatile("syscall":"=a"(r):"0"(228),"D"(id),"S"(t):"rcx","r11","memory");return r;}
-static long sys_nanosleep(const struct timespec*t){long r;__asm__ volatile("syscall":"=a"(r):"0"(35),"D"(t):"rcx","r11","memory");return r;}
+#include "timing.h"
 static unsigned long long monotonic_ns(void){struct timespec t;if(sys_clock_gettime(1,&t))return 0;return (unsigned long long)t.tv_sec*1000000000ull+(unsigned long long)t.tv_nsec;}
 static void pace_present(struct ctx*x){if(!x||x->swap_interval<=0)return;unsigned long long now=monotonic_ns();if(!now)return;unsigned long long period=16666667ull*(unsigned)x->swap_interval;if(x->last_present_ns&&now-x->last_present_ns<period){unsigned long long left=period-(now-x->last_present_ns);struct timespec t={(long)(left/1000000000ull),(long)(left%1000000000ull)};(void)sys_nanosleep(&t);}x->last_present_ns=monotonic_ns();}
 static void reset_egl_probe(void){
