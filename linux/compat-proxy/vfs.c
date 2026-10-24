@@ -311,14 +311,12 @@ struct fd_name {struct fd_name *next;int fd;char *path;};
 static struct fd_name *fd_names;
 /* Only protect the fd-name bookkeeping, never a payload syscall (flock may
  * block). Block signals during the short critical section so an app handler
- * cannot reenter it. A fork child may discard an inherited parent's owner. */
-static unsigned long fd_names_owner;
+ * cannot reenter it. Fork children reset the copied lock before payload runs. */
 static proxy_sigmask_t fd_names_lock(void){
     proxy_sigmask_t all=~UINT64_C(0),mask=0;
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
-    unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     for(;;){unsigned long owner=__atomic_load_n(&fd_names_owner,__ATOMIC_RELAXED);
-        if(!owner || owner!=pid){if(__atomic_compare_exchange_n(&fd_names_owner,&owner,pid,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return mask;}
+        if(!owner){unsigned long unlocked=0;if(__atomic_compare_exchange_n(&fd_names_owner,&unlocked,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return mask;}
         __asm__ volatile("pause");
     }
 }
