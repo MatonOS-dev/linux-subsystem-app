@@ -55,6 +55,8 @@ long pack_open(const char *,int);
 long pack_pread(int,void *,size_t,int64_t);
 void pack_close(int);
 long pack_dup(int,int);
+int pack_reserved(int);
+long pack_copy_of(int,int);
 int pack_tracked(int);
 int pack_private(int);
 int pack_is_directory(int);

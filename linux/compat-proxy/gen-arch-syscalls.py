@@ -46,7 +46,7 @@ native = read_table(spec)
 
 compat = read_table(spec.with_name('unistd_32.h'))
 alias = {'mmap':'mmap2','newfstatat':'fstatat64','stat':'stat64','lstat':'lstat64','fstat':'fstat64',
- 'fcntl':'fcntl64','select':'_newselect'}
+ 'fcntl':'fcntl64','select':'_newselect','getrlimit':'ugetrlimit'}
 for name in ['getuid','geteuid','getgid','getegid','setuid','setgid','setreuid','setregid',
  'setresuid','setresgid','setfsuid','setfsgid','setgroups','getgroups','getresuid','getresgid',
  'chown','fchown','lchown']:

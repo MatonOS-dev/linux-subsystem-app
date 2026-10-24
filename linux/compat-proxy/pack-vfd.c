@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <unistd.h>
 #include <linux/stat.h>
+#include <linux/memfd.h>
 static int pack_cmp(const void *a,const void *b,size_t n){const unsigned char *x=a,*y=b;for(size_t i=0;i<n;i++)if(x[i]!=y[i])return x[i]-y[i];return 0;}
 static int pack_strcmp(const char *a,const char *b){while(*a && *a==*b){a++;b++;}return (unsigned char)*a-(unsigned char)*b;}
 static char *pack_chr(const char *s,int c){do{if(*s==c)return (char *)s;}while(*s++);return NULL;}
@@ -122,6 +123,36 @@ long pack_mount(const char *target,const char *index,const char *directory){
  m->next=pack_mounts;pack_mounts=m;return 0;
 }
 void pack_close(int fd){struct pack_fd **p=&pack_fds;while(*p&&(*p)->fd!=fd)p=&(*p)->next;if(*p){struct pack_fd *old=*p;*p=old->next;vfs_free(old);}}
+/* A standalone copy of one packed file at the lowest free descriptor: a real
+ * memfd, so reads need no translation. Costs memory for the file size; used
+ * only where a packed file must sit below the reserve. Loud by design. */
+long pack_copy(int source,uint64_t offset,uint64_t length,uint64_t position,int cloexec,const char *name){
+ long memfd=RAW(PROXY_SC_memfd_create,"v3-pack-copy",cloexec?MFD_CLOEXEC:0,0,0,0,0);if(memfd<0)return memfd;
+ uint64_t done=0;
+ while(done<length){
+  int64_t in=(int64_t)(offset+done);
+  long n=RAW(PROXY_SC_copy_file_range,source,&in,memfd,0,length-done,0);
+  if(n==0)break;
+  if(n<0){RAW(PROXY_SC_close,memfd,0,0,0,0,0);return n;}
+  done+=(uint64_t)n;
+ }
+ if(done!=length){RAW(PROXY_SC_close,memfd,0,0,0,0,0);return -EIO;}
+ RAW(PROXY_SC_lseek,memfd,(long)position,SEEK_SET,0,0,0);
+ long fd=RAW(PROXY_SC_fcntl,memfd,cloexec?F_DUPFD_CLOEXEC:F_DUPFD,0,0,0,0);RAW(PROXY_SC_close,memfd,0,0,0,0,0);
+ proxy_log("pack-copy",(long)length,fd);
+ if(name && proxy_trace){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 pack-copy ",13,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,name,p_len(name),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}
+ return fd;
+}
+/* A packed file descriptor that lives in the reserve. */
+int pack_reserved(int fd){struct pack_fd *f=pack_find(fd);return f && fd>=proxy_fd_reserve;}
+/* Duplicate a reserved packed file below the reserve: the slot gets a copy at
+ * the descriptor's current position (it no longer shares the offset). */
+long pack_copy_of(int fd,int cloexec){
+ struct pack_fd *f=pack_find(fd);if(!f)return -EBADF;
+ long position=RAW(PROXY_SC_lseek,fd,0,SEEK_CUR,0,0,0);if(position<0)return position;
+ uint64_t relative=(uint64_t)position>f->object.offset?(uint64_t)position-f->object.offset:0;
+ return pack_copy(fd,f->object.offset,f->object.length,relative,cloexec,f->object.path);
+}
 long pack_dup(int from,int to){if(from==to)return 0;struct pack_fd *f=pack_find(from);struct pack_fd copy;if(f)copy=*f;pack_close(to);if(f){f=vfs_palloc(sizeof(*f));if(!f)return -ENOMEM;*f=copy;f->fd=to;f->next=pack_fds;pack_fds=f;}return 0;}
 long pack_open(const char *path,int flags){
  struct pack_mount *m=pack_lookup(path);if(!m)return -ENOSYS;
@@ -137,7 +168,26 @@ long pack_open(const char *path,int flags){
  if(source==m->directory){carrier=RAW(PROXY_SC_openat,source,".",(path_only?O_PATH:O_RDONLY)|O_DIRECTORY|O_CLOEXEC,0,0,0);}
  else {char proc[64]="/proc/self/fd/";gpu_number(proc+14,source);carrier=RAW(PROXY_SC_openat,AT_FDCWD,proc,O_RDONLY|O_CLOEXEC,0,0,0);}
  if(carrier<0)return carrier;
- long fd=RAW(PROXY_SC_fcntl,carrier,(flags&O_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,0,0,0,0);RAW(PROXY_SC_close,carrier,0,0,0,0,0);if(fd<0)return fd;
+ long dup_cmd=(flags&O_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD;
+ long fd=RAW(PROXY_SC_fcntl,carrier,dup_cmd,0,0,0,0);if(fd<0){RAW(PROXY_SC_close,carrier,0,0,0,0,0);return fd;}
+ if(!dir && !path_only){
+  /* Readable packed files live in the proxy reserve, so the filter can let
+   * reads on lower descriptors reach Linux. A stdio slot (0-2 is the lowest
+   * free one: close(0); open()) keeps the POSIX lowest-descriptor result. A
+   * full reserve gets a standalone copy. */
+  long low=fd;
+  if(low<3){fd=low;}
+  else {
+  long placed=RAW(PROXY_SC_fcntl,carrier,dup_cmd,proxy_fd_reserve,0,0,0);
+  RAW(PROXY_SC_close,low,0,0,0,0,0);
+  if(placed<0){
+   long copy=pack_copy(carrier,o.offset,o.length,0,(flags&O_CLOEXEC)!=0,path);
+   RAW(PROXY_SC_close,carrier,0,0,0,0,0);return copy;
+  }
+  fd=placed;
+  }
+ }
+ RAW(PROXY_SC_close,carrier,0,0,0,0,0);
  e=path_only?0:RAW(PROXY_SC_lseek,fd,dir?0:o.offset,SEEK_SET,0,0,0);
  struct pack_fd *f=e<0?NULL:vfs_palloc(sizeof(*f));if(!f){RAW(PROXY_SC_close,fd,0,0,0,0,0);return e<0?e:-ENOMEM;}
  uint64_t root_dev,root_ino;int root_identity;pack_root_identity(m,&o,path,&root_dev,&root_ino,&root_identity);

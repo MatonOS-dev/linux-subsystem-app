@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <unistd.h>
+#include <sys/resource.h>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
@@ -54,14 +55,16 @@ int main(int argc,char **argv,char **env){
  char inode[5];CHECK(pread(tmpalias,inode,5,0)==5&&!memcmp(inode,"inode",5));
  CHECK(fcntl(dead,F_GETFD)==-1&&errno==EBADF);
  char text[32]={0};CHECK(read(fd,text,5)==5&&!memcmp(text,"cross",5));CHECK(lseek(alias,0,SEEK_CUR)==5);CHECK(lseek(fd,0,SEEK_SET)==0);
- /* The diagnostic sink is duplicated at or above 512 (PROXY_PRIVATE_FD_FLOOR). Payload probes and
+ /* The diagnostic sink is the first descriptor of the proxy reserve, which
+  * starts at the payload's visible NOFILE hard limit. Payload probes and
   * close cannot steal it; the second exec must still emit its trace. */
- int private_flags=fcntl(512,F_GETFD);
+ struct rlimit visible;CHECK(!getrlimit(RLIMIT_NOFILE,&visible));int reserved=(int)visible.rlim_max;
+ int private_flags=fcntl(reserved,F_GETFD);
  /* Native F_GETFD may expose the private descriptor's kernel state. */
  CHECK(private_flags>=0 || errno==EBADF);
- if(private_flags>=0)CHECK(!fcntl(512,F_SETFD,FD_CLOEXEC));
- CHECK(close(512)==0);
- CHECK(read(512,text,1)==-1&&errno==EBADF);
+ if(private_flags>=0)CHECK(!fcntl(reserved,F_SETFD,FD_CLOEXEC));
+ CHECK(close(reserved)==0);
+ CHECK(read(reserved,text,1)==-1&&errno==EBADF);
  struct stat st;CHECK(!syscall(sizeof(long)==4?195:4,"/v3-cross-file",&st)&&st.st_size==6);
  int *memory=shmat_(shm);CHECK(memory!=(void *)-1);
  if(!strcmp(argv[3],"one")){
