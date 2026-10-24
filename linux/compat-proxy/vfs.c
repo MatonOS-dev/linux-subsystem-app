@@ -17,8 +17,9 @@
 #include <limits.h>
 struct allocation {size_t size;};
 struct arena_block {struct arena_block *next;size_t size,used;};
-struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;struct arena_block *blocks;};
+struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;uint64_t raw_by_nr[PROXY_SC_count],raw_sum_by_nr[PROXY_SC_count];struct arena_block *blocks;};
 static struct trap_arena *trap_arenas;
+static unsigned long fd_names_owner;
 volatile int proxy_raw_counter_enabled;
 static struct trap_arena *arena_for_stack(uintptr_t sp){
     for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
@@ -36,7 +37,7 @@ static struct trap_arena *arena_for_address(uintptr_t sp){
     return NULL;
 }
 #ifdef PROXY_RAW_COUNTER
-void proxy_raw_count_one(long nr){if(!proxy_raw_counter_enabled)return;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return;a->raw_calls++;switch(nr){case PROXY_SC_openat:a->openat_calls++;break;case PROXY_SC_readlinkat:a->readlinkat_calls++;break;case PROXY_SC_newfstatat:a->newfstatat_calls++;break;case PROXY_SC_geteuid:a->geteuid_calls++;break;case PROXY_SC_mmap:a->mmap_calls++;break;case PROXY_SC_munmap:a->munmap_calls++;break;}}
+void proxy_raw_count_one(long nr){if(!proxy_raw_counter_enabled)return;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return;a->raw_calls++;if(nr>=0 && nr<PROXY_SC_count)a->raw_by_nr[nr]++;switch(nr){case PROXY_SC_openat:a->openat_calls++;break;case PROXY_SC_readlinkat:a->readlinkat_calls++;break;case PROXY_SC_newfstatat:a->newfstatat_calls++;break;case PROXY_SC_geteuid:a->geteuid_calls++;break;case PROXY_SC_mmap:a->mmap_calls++;break;case PROXY_SC_munmap:a->munmap_calls++;break;}}
 void proxy_raw_count_enable(void){proxy_raw_counter_enabled=1;}
 uint64_t proxy_raw_count_now(void){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);return a?a->raw_calls:0;}
 uint64_t proxy_raw_count_for(long nr){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return 0;switch(nr){case PROXY_SC_openat:return a->openat_calls;case PROXY_SC_readlinkat:return a->readlinkat_calls;case PROXY_SC_newfstatat:return a->newfstatat_calls;case PROXY_SC_geteuid:return a->geteuid_calls;case PROXY_SC_mmap:return a->mmap_calls;case PROXY_SC_munmap:return a->munmap_calls;default:return 0;}}
@@ -64,6 +65,7 @@ void vfs_trap_begin(void *base,size_t size){
     }
     if(!a->active){a->lo=lo;a->hi=hi;a->active=1;
         a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;
+        for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=0;
         for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
     }
 }
@@ -75,16 +77,17 @@ void vfs_trap_thread_exit(void *base,size_t size){
  while(b){struct arena_block *next=b->next;RAW(PROXY_SC_munmap,b,sizeof(*b)+b->size,0,0,0,0);b=next;}
  a->lo=a->hi=0;
 }
-void vfs_trap_resume(void){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return;a->active=1;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;}
+void vfs_trap_resume(void){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return;a->active=1;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=0;for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;}
 void vfs_trap_end(void){
     uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return;
-    a->trap_count++;a->raw_sum+=a->raw_calls;a->openat_sum+=a->openat_calls;a->readlinkat_sum+=a->readlinkat_calls;a->newfstatat_sum+=a->newfstatat_calls;a->geteuid_sum+=a->geteuid_calls;a->mmap_sum+=a->mmap_calls;a->munmap_sum+=a->munmap_calls;
+    a->trap_count++;a->raw_sum+=a->raw_calls;a->openat_sum+=a->openat_calls;a->readlinkat_sum+=a->readlinkat_calls;a->newfstatat_sum+=a->newfstatat_calls;a->geteuid_sum+=a->geteuid_calls;a->mmap_sum+=a->mmap_calls;a->munmap_sum+=a->munmap_calls;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_sum_by_nr[i]+=a->raw_by_nr[i];
     for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
     a->active=0;
 }
 void vfs_raw_count_summary(uint64_t *traps,uint64_t *calls){uint64_t t=0,c=0;for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){t+=a->trap_count;c+=a->raw_sum;}if(traps)*traps=t;if(calls)*calls=c;}
 void vfs_raw_category_summary(uint64_t out[6]){uint64_t v[6]={0};for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){v[0]+=a->openat_sum;v[1]+=a->readlinkat_sum;v[2]+=a->newfstatat_sum;v[3]+=a->geteuid_sum;v[4]+=a->mmap_sum;v[5]+=a->munmap_sum;}for(unsigned i=0;i<6;i++)out[i]=v[i];}
-void vfs_raw_count_fork_child(void){for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;}}
+void vfs_raw_syscall_summary(uint64_t out[PROXY_SC_count]){for(unsigned i=0;i<PROXY_SC_count;i++)out[i]=0;for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)for(unsigned i=0;i<PROXY_SC_count;i++)out[i]+=a->raw_sum_by_nr[i];}
+void vfs_raw_count_fork_child(void){__atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=a->raw_sum_by_nr[i]=0;}}
 void *vfs_palloc(size_t n) {
     if(n>SIZE_MAX-sizeof(struct allocation)-4095) return NULL;
     size_t bytes=(n+sizeof(struct allocation)+4095)&~(size_t)4095;

@@ -611,7 +611,7 @@ uint64_t proxy_count_now(void){if(proxy_count_fd<0)return 0;struct {long sec,nse
 void proxy_count_init(const char *path){if(!path || !*path)return;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0);if(fd>=0){proxy_count_fd=(int)fd;proxy_raw_count_enable();}}
 void proxy_count_resolution(uint64_t ns){__atomic_fetch_add(&proxy_vfs_ns,ns,__ATOMIC_RELAXED);}
 static void count_u64(char *b,size_t *n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[(*n)++]=d[--k];}
-void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*32+128];size_t n=0;
+void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*64+128];size_t n=0;
     uint64_t handler=__atomic_exchange_n(&proxy_handler_ns,0,__ATOMIC_RELAXED);
     uint64_t vfs=__atomic_exchange_n(&proxy_vfs_ns,0,__ATOMIC_RELAXED);
     b[n++]='P';b[n++]='I';b[n++]='D';b[n++]='=';count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';b[n++]='H';b[n++]='=';count_u64(b,&n,handler);b[n++]=' ';b[n++]='V';b[n++]='=';count_u64(b,&n,vfs);b[n++]='\n';
@@ -620,6 +620,8 @@ void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*32+
     uint64_t raw_categories[6];vfs_raw_category_summary(raw_categories);
     b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='C';b[n++]='A';b[n++]='T';
     for(unsigned i=0;i<6;i++){b[n++]=' ';count_u64(b,&n,raw_categories[i]);}b[n++]='\n';
+    uint64_t raw_syscalls[PROXY_SC_count];vfs_raw_syscall_summary(raw_syscalls);
+    for(int i=0;i<PROXY_SC_count;i++)if(raw_syscalls[i]){b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='S';b[n++]='C';b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,raw_syscalls[i]);b[n++]='\n';}
     for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';}}
     RAW(PROXY_SC_write,proxy_count_fd,b,n,0,0,0);
 }

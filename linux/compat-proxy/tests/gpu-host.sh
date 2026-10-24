@@ -4,7 +4,13 @@ cd "$(dirname "$0")/.."
 if [[ ${COMPAT_GPU_SKIP_BUILD:-0} != 1 ]]; then ./build.sh; fi
 cc -no-pie -O2 -Wall -Wextra -Werror tests/gpu-sysfs.c build/liblinux-layer-v3.a -o build/gpu-sysfs
 sed 's/\<proxy_raw\>/gpu_test_raw/g' arch/x86_64/raw.S >build/gpu-raw.S
-cc -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c tests/gpu-raw.c build/gpu-raw.S entry.S -o build/gpu-loader
+counter_flags=()
+gpu_profile_args=()
+if [[ -n ${COMPAT_GPU_COUNT:-} ]]; then
+    counter_flags=(-DPROXY_RAW_COUNTER)
+    gpu_profile_args=(--count "$COMPAT_GPU_COUNT")
+fi
+cc "${counter_flags[@]}" -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c tests/gpu-raw.c build/gpu-raw.S entry.S -o build/gpu-loader
 fixture=$(mktemp -d /mnt/data/aosp/out/gpusys-test.XXXXXX)
 trap 'rm -rf "$fixture"' EXIT
 mkdir "$fixture/dri" "$fixture/tmp" "$fixture/props"
@@ -49,7 +55,7 @@ struct.pack_into('<I',dirty,serial,struct.unpack_from('<I',dirty,serial)[0]|1)
 PY
 prop=u:object_r:vendor_maton_graphics_prop:s0
 cp "$fixture/hardware" "$fixture/props/$prop"
-TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$PWD/build/gpu-sysfs" >build/gpu-sysfs.out 2>build/gpu-sysfs.log
+TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter "${gpu_profile_args[@]}" --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$PWD/build/gpu-sysfs" >build/gpu-sysfs.out 2>build/gpu-sysfs.log
 cat build/gpu-sysfs.out
 if command -v bwrap >/dev/null; then
     TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$(command -v bwrap)" --ro-bind / / --proc /proc --dev /dev "$PWD/build/gpu-sysfs" >build/gpu-bwrap.out 2>build/gpu-bwrap.log
