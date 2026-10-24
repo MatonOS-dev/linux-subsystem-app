@@ -136,3 +136,22 @@ loader_scanned_icd_add: Could not get 'vkCreateInstance' via 'vk_icdGetInstanceP
 `vulkaninfo` then exits with `vkCreateInstance failed with
 ERROR_INCOMPATIBLE_DRIVER`. This confirms extension discovery and library
 loading; forwarder initialization is the next separate issue.
+
+Assigned VM result (v45, 2026-10-24): the `25.08` i386 compat runtime and
+`org.freedesktop.Platform.GL32.maton` were both mounted. The GL32 tree was
+mounted at `/usr/lib/i386-linux-gnu/GL/maton` with its `lib/` directory and
+merged ICD/vendor metadata at the expected locations. A test-only Flatpak
+`features=multiarch` override allowed ELF32 payloads through `setup_seccomp`;
+the hook used to write this override was removed after testing and is not in
+the product APK. The EGL and GLX probes reached the Maton EGL forwarder, which
+reported `GPU bootstrap bridge or adoption API missing`; EGL returned
+`EGL_BAD_DISPLAY`, and no GLX pixel-readback pass was obtained. The Vulkan
+probe was launched as ELF32 but did not enumerate a usable Maton device.
+
+The remaining blocker is cross-ABI GPU adoption. The bootstrap currently
+publishes x86_64 bridge/adoption function addresses, while ELF32 forwarders
+parse them into 32-bit pointers and cannot call x86_64 code in 32-bit mode.
+The i386 adoption backend is not wired to an i386-callable resident bridge.
+Completing this needs a 32-bit callable bridge or an explicit cross-ABI RPC
+gateway, plus working bionic TLS registration for the payload threads; the
+GL32 packaging fix alone cannot provide rendering.
