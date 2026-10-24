@@ -22,6 +22,10 @@ No `xdg-dbus-proxy` and no own/talk name filter: each app's bus exists only for 
 The session bus stays our in-stub broker for now (no per-app bus daemon process). Elsewhere, prefer upstream code
 over our own where it does the job (less code to maintain).
 
+Future direction (keep designs compatible with it): Android app intents may be exposed over an app's D-Bus, and
+cross-app messaging runs app ↔ its bus ↔ binder ↔ other app's bus ↔ app, bridged by the in-stub broker. Cross-app
+policy belongs at the binder hop (Android permissions/intent rules), not in a D-Bus name filter.
+
 Upstream Flatpak's own services are a different case and are used: `flatpak-portal`
 (`org.freedesktop.portal.Flatpak`) and `flatpak-session-helper` (`org.freedesktop.Flatpak`), built from our pinned
 Flatpak tree and run per stub.
