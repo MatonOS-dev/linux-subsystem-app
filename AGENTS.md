@@ -19,8 +19,8 @@ xdg-desktop-portal.
 ## No D-Bus name filtering
 
 No `xdg-dbus-proxy` and no own/talk name filter: each app's bus exists only for that app, so filtering is pointless.
-The session bus is a stock upstream bus daemon run inside the stub; prefer upstream code over our own where it does
-the job (less code to maintain).
+The session bus stays our in-stub broker for now (no per-app bus daemon process). Elsewhere, prefer upstream code
+over our own where it does the job (less code to maintain).
 
 Upstream Flatpak's own services are a different case and are used: `flatpak-portal`
 (`org.freedesktop.portal.Flatpak`) and `flatpak-session-helper` (`org.freedesktop.Flatpak`), built from our pinned
