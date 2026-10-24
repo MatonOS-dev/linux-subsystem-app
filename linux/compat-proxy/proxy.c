@@ -707,6 +707,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;pack_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p,(int)a[2]);if(e!=-ENOSYS)goto done;}
     int writing=nr==PROXY_SC_setxattr || nr==PROXY_SC_lsetxattr || nr==PROXY_SC_removexattr || nr==PROXY_SC_lremovexattr || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_linkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat || nr==PROXY_SC_utimensat || nr==PROXY_SC_mknodat || (nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)));
+    if(writing || nr==PROXY_SC_truncate)vfs_resolve_cache_invalidate();
     if((writing || nr==PROXY_SC_truncate) && (links_marker(p) || (q && links_marker(q)))){e=-EPERM;goto done;}
     if(writing){e=vfs_mount_readonly(pm);int create_pack_root=pack_mount_root(p)&&(nr==PROXY_SC_mkdirat||(nr==PROXY_SC_openat&&(a[2]&O_CREAT)));if(e && create_pack_root)e=0;if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}

@@ -39,6 +39,13 @@ mkdir -p build/fixture-dir
 printf 'mount-ok\n' >build/fixture-dir/fixture
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/mounts" "$PWD/build/fixture-dir" >build/mounts.out 2>build/mounts.log
 cat build/mounts.out
+cc -no-pie -O2 -Wall -Wextra -Werror tests/resolve-cache.c -o build/resolve-cache
+mkdir -p build/cache-source-a build/cache-source-b
+printf a >build/cache-source-a/file
+printf bb >build/cache-source-b/file
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/resolve-cache" \
+    "$PWD/build/cache-source-a" "$PWD/build/cache-source-b" >build/resolve-cache.out 2>build/resolve-cache.log
+cat build/resolve-cache.out
 timeout 15 build/linux-layer-v3 --android-filter /bin/bash -c 'printf pipe-ok | cat' >build/pipeline.out 2>build/pipeline.log
 grep -qx pipe-ok build/pipeline.out
 printf 'PASS host bash -> ls/cat and dup2 pipeline under copied Android app filter\n'

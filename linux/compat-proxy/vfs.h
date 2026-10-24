@@ -11,6 +11,7 @@ void vfs_trap_thread_exit(void *,size_t);
 void vfs_raw_count_summary(uint64_t *,uint64_t *);
 void vfs_raw_category_summary(uint64_t[6]);
 void vfs_raw_count_fork_child(void);
+void vfs_resolve_cache_invalidate(void);
 char *vfs_resolve(int, const char *, int, long *);
 /* Follow symlinks, but retain a final proc fd magic link for linkat. */
 #define VFS_FOLLOW_LINK_SOURCE 2

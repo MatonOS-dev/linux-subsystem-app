@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <limits.h>
 struct allocation {size_t size;};
 struct arena_block {struct arena_block *next;size_t size,used;};
 struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;struct arena_block *blocks;};
@@ -184,6 +185,38 @@ static char *root,*executable,*cwd;
 static char *oldroot_view;
 static int stacked_oldroot;
 static int hide_resolver;
+static int prefix(const char *,const char *);
+#define RESOLVE_CACHE_ENTRIES 16
+struct resolve_cache_entry {
+    unsigned valid;
+    int follow;
+    size_t key_len, value_len;
+    void *identity;
+    char key[PATH_MAX], value[PATH_MAX];
+};
+static struct resolve_cache_entry resolve_cache[RESOLVE_CACHE_ENTRIES];
+static volatile int resolve_cache_lock;
+static unsigned resolve_cache_next;
+static void resolve_cache_acquire(void) {
+    int unlocked=0;
+    while(!__atomic_compare_exchange_n(&resolve_cache_lock,&unlocked,1,0,
+            __ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) {
+        unlocked=0;
+        __asm__ volatile("pause");
+    }
+}
+static void resolve_cache_release(void) {
+    __atomic_store_n(&resolve_cache_lock,0,__ATOMIC_RELEASE);
+}
+void vfs_resolve_cache_invalidate(void) {
+    resolve_cache_acquire();
+    for(unsigned i=0;i<RESOLVE_CACHE_ENTRIES;i++)resolve_cache[i].valid=0;
+    resolve_cache_release();
+}
+static int resolve_cacheable_path(const char *path) {
+    return path && path[0]=='/' && !prefix(path,"/sys") &&
+        !prefix(path,"/proc") && !prefix(path,"/dev");
+}
 void vfs_network_payload(int isolated){
     if(!isolated || hide_resolver || !root)return;
     long e=0;char *info=vfs_resolve(AT_FDCWD,"/.flatpak-info",1,&e);
@@ -310,8 +343,9 @@ if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
     char *s=readlink_dynamic(p,error);if(!s)return NULL;char *q=vfs_reverse(s);vfs_free(s);return q;
 }
-static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *error,void **identity){
+static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *error,void **identity,int *cacheable){
     *error=0;if(!path){*error=-EFAULT;return NULL;}if(!*path){*error=-ENOENT;return NULL;}
+    if(cacheable)*cacheable=1;
     /* Polling roots are immutable generated directories. Re-check the current
      * mount source so an unmount/overmount cannot reuse a stale fast answer. */
     if(p_equal(path,"/sys/bus") || p_equal(path,"/sys/class")){
@@ -342,6 +376,7 @@ restart:;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);
+        if(target && cacheable)*cacheable=0;
         if(!target && input[i]=='/'){
             struct proxy_stat st;long status=pack_stat(host,&st);
             if(status==-ENOSYS){
@@ -392,10 +427,44 @@ restart:;
 fail:vfs_free(input);vfs_free(out);return NULL;
 }
 char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **identity){
+    size_t key_len=path?p_len(path):0;
+    if(fd==AT_FDCWD && follow && resolve_cacheable_path(path) && key_len<PATH_MAX){
+        resolve_cache_acquire();
+        for(unsigned i=0;i<RESOLVE_CACHE_ENTRIES;i++){
+            struct resolve_cache_entry *entry=&resolve_cache[i];
+            if(entry->valid && entry->follow==follow && entry->key_len==key_len &&
+                    p_equal(entry->key,path)){
+                char *answer=vfs_alloc(entry->value_len+1);
+                if(answer){p_copy(answer,entry->value,entry->value_len+1);if(identity)*identity=entry->identity;}
+                resolve_cache_release();
+                if(!answer){*error=-ENOMEM;return NULL;}
+                /* Recovery is observable even when pathname translation is cached. */
+                links_recover_path(answer);
+                *error=0;
+                return answer;
+            }
+        }
+        resolve_cache_release();
+    }
     uint64_t started=proxy_count_now();
-    char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity);
+    int cacheable=0;
+    char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable);
     uint64_t ended=proxy_count_now();
     if(started && ended>=started)proxy_count_resolution(ended-started);
+    if(answer && cacheable && identity && fd==AT_FDCWD && follow &&
+            resolve_cacheable_path(path) && key_len<PATH_MAX){
+        size_t value_len=p_len(answer);
+        if(value_len<PATH_MAX){
+            resolve_cache_acquire();
+            unsigned slot=resolve_cache_next++%RESOLVE_CACHE_ENTRIES;
+            struct resolve_cache_entry *entry=&resolve_cache[slot];
+            entry->valid=0;entry->follow=follow;entry->key_len=key_len;
+            entry->value_len=value_len;entry->identity=*identity;
+            p_copy(entry->key,path,key_len+1);p_copy(entry->value,answer,value_len+1);
+            entry->valid=1;
+            resolve_cache_release();
+        }
+    }
     return answer;
 }
 char *vfs_resolve(int fd,const char *path,int follow,long *error){return vfs_resolve_mount(fd,path,follow,error,NULL);}
@@ -422,7 +491,7 @@ int vfs_has_nested_mount(const char *path,const char *ancestor,int staging){
     return 0;
 }
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
-int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_palloc(sizeof(*m));if(!m)return -ENOMEM;m->source=vfs_palloc(p_len(source)+1);m->target=vfs_palloc(p_len(target)+1);if(m->source)p_copy(m->source,source,p_len(source)+1);if(m->target)p_copy(m->target,target,p_len(target)+1);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;
+int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_palloc(sizeof(*m));if(!m)return -ENOMEM;m->source=vfs_palloc(p_len(source)+1);m->target=vfs_palloc(p_len(target)+1);if(m->source)p_copy(m->source,source,p_len(source)+1);if(m->target)p_copy(m->target,target,p_len(target)+1);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;vfs_resolve_cache_invalidate();
     proxy_log("mount-owner",PROXY_SC_mount,0);
     RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
 const char *proxy_path(const char *path,char *buffer,size_t size){long e;char *p=vfs_resolve(AT_FDCWD,path,1,&e);if(!p)return NULL;size_t n=p_len(p);if(n>=size){vfs_free(p);return NULL;}p_copy(buffer,p,n+1);vfs_free(p);return buffer;}
@@ -492,9 +561,9 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
         vfs_free(virtual_source);
     }vfs_free(src);vfs_free(dest);return e;
 }
-long vfs_unmount(const char *target){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;char *oldroot_global=oldroot_view?(root?join(root,oldroot_view):dupstr(oldroot_view)):NULL;if(oldroot_global && p_equal(dest,oldroot_global)){vfs_free(oldroot_view);oldroot_view=NULL;}vfs_free(oldroot_global);struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
-long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(PROXY_SC_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(PROXY_SC_close,fd,0,0,0,0,0);char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;}
-long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
+long vfs_unmount(const char *target){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;char *oldroot_global=oldroot_view?(root?join(root,oldroot_view):dupstr(oldroot_view)):NULL;if(oldroot_global && p_equal(dest,oldroot_global)){vfs_free(oldroot_view);oldroot_view=NULL;}vfs_free(oldroot_global);struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_resolve_cache_invalidate();vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
+long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(PROXY_SC_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(PROXY_SC_close,fd,0,0,0,0,0);char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_resolve_cache_invalidate();vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;}
+long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_target(target,&e);if(!next)return e;vfs_resolve_cache_invalidate();RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 pivot ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,next,p_len(next),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
     stacked_oldroot=p_equal(target,old);
     if(!p_equal(target,old)){char *oldhost=physical(root?root:"/");char *dest=global_target(old,&e);
         if(!dest || !oldhost){vfs_free(next);vfs_free(dest);vfs_free(oldhost);return -ENOMEM;}struct mount *prior=table;
