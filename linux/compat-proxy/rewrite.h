@@ -4,8 +4,9 @@
 #include ARCH_REWRITE_HEADER
 static int rewrite_enabled;
 struct rewrite_site {uint32_t offset;unsigned nr,window;unsigned char original[9];};
-struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice;size_t size,count,capacity;struct rewrite_site *sites;};
+struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice;size_t size;unsigned count;struct rewrite_site sites[512];};
 static struct rewrite_scan *rewrite_scans;
+static unsigned rewrite_cache_count;
 static unsigned rewrite_busy;
 static int proxy_rewrite_traps(long nr){return rewrite_enabled && (nr==PROXY_SC_mprotect || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap);}
 static uint64_t rewrite_clock(void){
@@ -31,84 +32,28 @@ int proxy_rewrite_init(const char *s){
     proxy_rewrite_table=arch_rewrite_table;
     return rewrite_enabled;
 }
-/* A complete ELF or FDE range is the unit of proof. Unsupported instructions,
- * unproven stack state, indirect flow or interior branch targets reject it. */
-static int rewrite_redzone_path_clean(const struct rewrite_insn *ins,const size_t *offsets,size_t count,size_t size,size_t start){
-    unsigned char *seen=vfs_alloc(count);size_t *queue=vfs_alloc(count*sizeof(*queue));
-    if(!seen || !queue){vfs_free(seen);vfs_free(queue);return 0;}
-    size_t head=0,tail=0;queue[tail++]=start;seen[start]=1;int safe=1;
-    while(head<tail && safe){size_t k=queue[head++];
-        if(ins[k].stack_access || ins[k].stack_delta){safe=0;break;}
-        size_t succ[2],ns=0;
-        if(ins[k].flow!=2 && ins[k].flow!=1 && k+1<count)succ[ns++]=k+1;
-        if(ins[k].target!=INT64_MIN && ins[k].flow!=3){int64_t target=(int64_t)offsets[k]+ins[k].target;
-            if(target>=0 && (uint64_t)target<size){size_t q=0;while(q<count && offsets[q]!=(size_t)target)q++;if(q<count)succ[ns++]=q;}}
-        for(size_t q=0;q<ns;q++)if(!seen[succ[q]]){seen[succ[q]]=1;queue[tail++]=succ[q];}
-    }
-    vfs_free(seen);vfs_free(queue);return safe;
-}
+/* A complete bounded symbol is the unit of proof. Unsupported instructions,
+ * stack use, indirect flow or interior branch targets reject it atomically. */
 static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_scan *scan,uintptr_t begin,const Elf64_Sym *symbol,const Elf64_Sym *all,size_t nsymbols){
-    size_t pos=0,count=0,capacity=size;
-    if(!size || capacity>SIZE_MAX/sizeof(struct rewrite_insn) || capacity>SIZE_MAX/sizeof(size_t))return 0;
-    struct rewrite_insn *ins=vfs_alloc(capacity*sizeof(*ins));
-    size_t *offsets=vfs_alloc(capacity*sizeof(*offsets));
-    if(!ins || !offsets){vfs_free(ins);vfs_free(offsets);return 0;}
+    struct rewrite_insn ins[512];size_t offsets[512],pos=0,count=0;
+    if(size>4096 || !size)return 0;
     while(pos<size){
-        if(count==capacity || !arch_rewrite_decode(p+pos,size-pos,&ins[count])){vfs_free(ins);vfs_free(offsets);return 0;}
+        if(count==512 || !arch_rewrite_decode(p+pos,size-pos,&ins[count]))return 0;
         offsets[count]=pos;pos+=ins[count++].size;
     }
-    for(size_t j=0;j<count;j++)if(ins[j].target!=INT64_MIN && ins[j].flow!=3){
+    for(size_t j=0;j<count;j++)if(ins[j].target!=INT64_MIN){
         int64_t target=(int64_t)offsets[j]+ins[j].target;
         if(target>=0 && (uint64_t)target<size){
             int boundary=0;
             for(size_t k=0;k<count;k++)if((uint64_t)target==offsets[k])boundary=1;
-            if(!boundary){vfs_free(ins);vfs_free(offsets);return 0;}
+            if(!boundary)return 0;
         }
         for(size_t k=0;k<count;k++)if(ins[k].window &&
-            target>(int64_t)offsets[k] && target<(int64_t)(offsets[k]+ins[k].window)){vfs_free(ins);vfs_free(offsets);return 0;}
+            target>(int64_t)offsets[k] && target<(int64_t)(offsets[k]+ins[k].window))return 0;
     }
     int interesting=0;
     for(size_t k=0;k<count;k++)if(ins[k].window)interesting=1;
-    if(!interesting){vfs_free(ins);vfs_free(offsets);return 0;}
-    int has_stack=0;
-    for(size_t k=0;k<count;k++)if(ins[k].stack_delta || ins[k].stack_access)has_stack=1;
-    int64_t *depth=vfs_alloc(count*sizeof(*depth));
-    int *clean=vfs_alloc(count*sizeof(*clean));
-    if(!depth || !clean){vfs_free(depth);vfs_free(clean);vfs_free(ins);vfs_free(offsets);return 0;}
-    for(size_t k=0;k<count;k++){depth[k]=INT64_MIN;clean[k]=-1;}
-    depth[0]=0;int changed_depth=1;
-    while(changed_depth){
-        changed_depth=0;
-        for(size_t k=0;k<count;k++)if(depth[k]!=INT64_MIN){
-            int64_t out=depth[k];
-            if(ins[k].stack_delta==INT_MIN){continue;}
-            if((ins[k].stack_delta>0 && out>INT64_MAX-ins[k].stack_delta) ||
-               (ins[k].stack_delta<0 && out<INT64_MIN-ins[k].stack_delta)){vfs_free(depth);vfs_free(clean);vfs_free(ins);vfs_free(offsets);return 0;}
-            out+=ins[k].stack_delta;
-            size_t succ[2],ns=0;
-            if(ins[k].flow!=2 && ins[k].flow!=1 && k+1<count)succ[ns++]=k+1;
-            if(ins[k].target!=INT64_MIN && ins[k].flow!=3){
-                int64_t target=(int64_t)offsets[k]+ins[k].target;
-                if(target>=0 && (uint64_t)target<size){size_t q=0;while(q<count && offsets[q]!=(size_t)target)q++;if(q<count && ins[k].flow!=1)succ[ns++]=q;else if(q<count)succ[ns++]=q;}
-            }
-            for(size_t q=0;q<ns;q++){
-                size_t to=succ[q];
-                if(depth[to]==INT64_MIN){depth[to]=out;changed_depth=1;}
-                else if(depth[to]!=out){vfs_free(depth);vfs_free(clean);vfs_free(ins);vfs_free(offsets);return 0;}
-            }
-        }
-    }
-    clean[0]=1;int changed_clean=1;
-    while(changed_clean){changed_clean=0;
-        for(size_t k=0;k<count;k++)if(clean[k]>=0){
-            int out=clean[k] && !ins[k].stack_access && !ins[k].stack_delta;
-            size_t succ[2],ns=0;
-            if(ins[k].flow!=2 && ins[k].flow!=1 && k+1<count)succ[ns++]=k+1;
-            if(ins[k].target!=INT64_MIN && ins[k].flow!=3){int64_t target=(int64_t)offsets[k]+ins[k].target;
-                if(target>=0 && (uint64_t)target<size){size_t q=0;while(q<count && offsets[q]!=(size_t)target)q++;if(q<count)succ[ns++]=q;}}
-            for(size_t q=0;q<ns;q++){size_t to=succ[q];if(clean[to]<0){clean[to]=out;changed_clean=1;}else if(clean[to] && !out){clean[to]=0;changed_clean=1;}}
-        }
-    }
+    if(!interesting)return 0;
     /* Aliases with identical bounds are fine. Partial/contained overlaps from
      * either ELF symbol table make the instruction stream ambiguous. */
     for(size_t j=0;j<nsymbols;j++){
@@ -116,100 +61,23 @@ static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_sca
         if((ELF64_ST_TYPE(other->st_info)!=STT_FUNC && ELF64_ST_TYPE(other->st_info)!=STT_GNU_IFUNC) ||
            other->st_shndx!=symbol->st_shndx || !other->st_size)continue;
         if(other->st_value==symbol->st_value && other->st_size==symbol->st_size)continue;
-        if(other->st_value>UINT64_MAX-other->st_size){vfs_free(clean);vfs_free(depth);vfs_free(ins);vfs_free(offsets);return 0;}
-        if(other->st_value<symbol->st_value+symbol->st_size && other->st_value+other->st_size>symbol->st_value){vfs_free(clean);vfs_free(depth);vfs_free(ins);vfs_free(offsets);return 0;}
+        if(other->st_value>UINT64_MAX-other->st_size)return 0;
+        if(other->st_value<symbol->st_value+symbol->st_size && other->st_value+other->st_size>symbol->st_value)return 0;
     }
     unsigned changed=0;
-    for(size_t k=0;k<count;k++)if(ins[k].window && ((!has_stack) || (depth[k]!=INT64_MIN && depth[k]>0) ||
-        (depth[k]==0 && clean[k]==1 && rewrite_redzone_path_clean(ins,offsets,count,size,k)))){
+    for(size_t k=0;k<count;k++)if(ins[k].window){
         uintptr_t addr=(uintptr_t)p+offsets[k];
         unsigned w=ins[k].window;
         if((addr&4095)+w>4096)continue;
         unsigned char original[9];p_copy(original,(void *)addr,w);
-        if(scan && addr-begin<=UINT32_MAX){
-            if(scan->count==scan->capacity){
-                size_t next=scan->capacity?scan->capacity*2:16;
-                if(next<scan->capacity || next>SIZE_MAX/sizeof(*scan->sites))next=0;
-                struct rewrite_site *grown=next?vfs_palloc(next*sizeof(*grown)):NULL;
-                if(grown){if(scan->sites){p_copy(grown,scan->sites,scan->count*sizeof(*grown));vfs_free(scan->sites);}scan->sites=grown;scan->capacity=next;}
-            }
-            if(scan->count<scan->capacity){
-                struct rewrite_site *site=&scan->sites[scan->count++];
-                site->offset=(uint32_t)(addr-begin);site->nr=ins[k].nr;site->window=w;
-                p_copy(site->original,original,w);
-            }
+        if(scan && scan->count<512 && addr-begin<=UINT32_MAX){
+            struct rewrite_site *site=&scan->sites[scan->count++];
+            site->offset=(uint32_t)(addr-begin);site->nr=ins[k].nr;site->window=w;
+            p_copy(site->original,original,w);
         }
         changed+=rewrite_apply(addr,ins[k].nr,w,original);
     }
-    vfs_free(clean);vfs_free(depth);vfs_free(ins);vfs_free(offsets);return changed;
-}
-static int rewrite_uleb(const unsigned char *p,size_t n,size_t *at,uint64_t *value){
-    uint64_t v=0;unsigned shift=0;
-    while(*at<n && shift<64){unsigned char b=p[(*at)++];v|=(uint64_t)(b&127)<<shift;if(!(b&128)){*value=v;return 1;}shift+=7;}
-    return 0;
-}
-static int rewrite_encoded(const unsigned char *p,size_t n,size_t *at,unsigned enc,uint64_t pc,uint64_t *value){
-    unsigned form=enc&15;uint64_t v=0;int64_t sv=0;
-    if(enc==0xff || (enc&0x80))return 0;
-    if(form==0){if(n-*at<8)return 0;p_copy(&v,p+*at,8);*at+=8;}
-    else if(form==3 || form==11){if(n-*at<4)return 0;int32_t x;p_copy(&x,p+*at,4);*at+=4;sv=x;v=(uint64_t)sv;}
-    else if(form==1){if(!rewrite_uleb(p,n,at,&v))return 0;}
-    else return 0;
-    if(enc&0x70){if((enc&0x70)!=0x10)return 0;v+=pc;}
-    *value=v;return 1;
-}
-static int rewrite_fde_encoding(const unsigned char *p,size_t n,size_t cie,unsigned *encoding){
-    if(cie+9>n)return 0;
-    size_t at=cie+8;
-    unsigned version=p[at++];if(version<1 || version>4)return 0;
-    size_t aug=at;while(at<n && p[at])at++;if(at==n)return 0;
-    int has_z=p[aug]=='z';at++;
-    uint64_t ignored;if(!rewrite_uleb(p,n,&at,&ignored))return 0;
-    /* data alignment is SLEB128 */
-    unsigned shift=0;while(at<n && shift<64){unsigned char b=p[at++];shift+=7;if(!(b&128))break;}if(at>n)return 0;
-    if(version==1){if(at>=n)return 0;at++;}else if(!rewrite_uleb(p,n,&at,&ignored))return 0;
-    *encoding=0;
-    if(has_z){uint64_t len;if(!rewrite_uleb(p,n,&at,&len) || len>n-at)return 0;size_t end=at+(size_t)len;
-        for(size_t i=aug+1;p[i] && i<n;i++){
-            if(p[i]=='R'){if(at>=end)return 0;*encoding=p[at++];}
-            else if(p[i]=='L'){if(at>=end)return 0;at++;}
-            else if(p[i]=='P'){if(at>=end)return 0;unsigned e=p[at++];uint64_t x;if(!rewrite_encoded(p,end,&at,e,at,&x))return 0;}
-            else if(p[i]=='S'){}
-            else return 0;
-        }
-    }
-    return 1;
-}
-static void rewrite_fde_ranges(const unsigned char *ehdata,size_t ehn,uint64_t ehaddr,
-                              const Elf64_Shdr *sections,unsigned nsections,
-                              struct rewrite_scan *scan,uintptr_t begin,size_t mapsize,uint64_t mapoff,
-                              const Elf64_Sym *symbols,size_t nsymbols){
-    size_t at=0;
-    while(at+4<=ehn){size_t rec=at;uint64_t len32=0;p_copy(&len32,ehdata+at,4);at+=4;if(!len32)continue;
-        size_t idsize=4;uint64_t len=len32;if(len32==UINT32_MAX){if(at+8>ehn)break;p_copy(&len,ehdata+at,8);at+=8;idsize=8;}
-        if(len>ehn-at || len<idsize)break;
-        size_t end=at+(size_t)len;uint64_t id=0;
-        if(idsize==4){uint32_t x;p_copy(&x,ehdata+at,4);id=x;}else p_copy(&id,ehdata+at,8);
-        if(id!=0){size_t ciefield=at;uint64_t cie=(uint64_t)ciefield-id;unsigned enc=0;
-            if(cie<rec && rewrite_fde_encoding(ehdata,ehn,(size_t)cie,&enc)){
-                size_t p=at+idsize;uint64_t pc=0,range=0;uint64_t field_pc=ehaddr+p;
-                if(rewrite_encoded(ehdata,end,&p,enc,field_pc,&pc) &&
-                   rewrite_encoded(ehdata,end,&p,enc&15,0,&range) && range && pc<=UINT64_MAX-range){
-                    for(unsigned si=0;si<nsections;si++){
-                        const Elf64_Shdr *text=&sections[si];
-                        if(text->sh_type!=SHT_PROGBITS || (text->sh_flags&(SHF_EXECINSTR|SHF_ALLOC))!=(SHF_EXECINSTR|SHF_ALLOC) || pc<text->sh_addr || pc-text->sh_addr>text->sh_size || range>text->sh_size-(pc-text->sh_addr))continue;
-                        int named=0;for(size_t j=0;j<nsymbols;j++)if(ELF64_ST_TYPE(symbols[j].st_info)==STT_FUNC && symbols[j].st_shndx==si && symbols[j].st_size && symbols[j].st_value<pc+range && symbols[j].st_value+symbols[j].st_size>pc){named=1;break;}
-                        if(named)break;
-                        uint64_t file=text->sh_offset+(pc-text->sh_addr);
-                        if(file<mapoff || file-mapoff>mapsize || range>mapsize-(file-mapoff))break;
-                        Elf64_Sym synthetic={.st_value=pc,.st_size=range,.st_shndx=(Elf64_Section)si,.st_info=ELF64_ST_INFO(STB_LOCAL,STT_FUNC)};
-                        rewrite_function((unsigned char *)(begin+(uintptr_t)(file-mapoff)),(size_t)range,scan,begin,&synthetic,symbols,nsymbols);break;
-                    }
-                }
-            }
-        }
-        at=end;
-    }
+    return changed;
 }
 /* File offsets rather than load biases also cover independently mapped PT_LOADs.
  * pack_pread uses logical file offsets for packed ELF carriers. */
@@ -238,7 +106,7 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
         if(proxy_trace)proxy_log("rewrite-cache-hit",scan->count,size);
         goto done;
     }
-    if(identified){
+    if(identified && rewrite_cache_count<64){
         scan=vfs_palloc(sizeof(*scan));
         if(scan){scan->identity=identity;scan->offset=offset;scan->size=size;scan->slice=slice;}
     }
@@ -259,7 +127,8 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
             symbol_bytes+=sh->sh_size;
         }
     }
-    if(symbol_bytes){symbols=vfs_alloc(symbol_bytes);if(!symbols)goto cleanup;}
+    if(!symbol_bytes)goto cleanup;
+    symbols=vfs_alloc(symbol_bytes);if(!symbols)goto cleanup;
     size_t used=0;
     for(unsigned i=0;i<eh.e_shnum;i++){
         Elf64_Shdr *sh=&sections[i];
@@ -269,7 +138,7 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
     }
     for(size_t j=0;j<used/sizeof(*symbols);j++){
         Elf64_Sym sym=symbols[j];
-        if(ELF64_ST_TYPE(sym.st_info)!=STT_FUNC || !sym.st_size ||
+        if(ELF64_ST_TYPE(sym.st_info)!=STT_FUNC || !sym.st_size || sym.st_size>4096 ||
            !sym.st_shndx || sym.st_shndx>=eh.e_shnum || sym.st_value>UINT64_MAX-sym.st_size)continue;
         Elf64_Shdr text=sections[sym.st_shndx];
         if(text.sh_type!=SHT_PROGBITS || (text.sh_flags&(SHF_EXECINSTR|SHF_ALLOC))!=(SHF_EXECINSTR|SHF_ALLOC) || sym.st_value<text.sh_addr ||
@@ -279,31 +148,9 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
         if(f<offset || f-offset>=size || sym.st_size>size-(f-offset))continue;
         patched+=rewrite_function((unsigned char *)(begin+(uintptr_t)(f-offset)),sym.st_size,scan,begin,&sym,symbols,used/sizeof(*symbols));
     }
-    if(eh.e_shstrndx<eh.e_shnum){
-        Elf64_Shdr *names=&sections[eh.e_shstrndx];
-        if(names->sh_size<=SIZE_MAX && names->sh_offset<=UINT64_MAX-names->sh_size){
-            unsigned char *strings=vfs_alloc((size_t)names->sh_size);
-            if(strings && pack_pread(fd,strings,(size_t)names->sh_size,names->sh_offset)==(long)names->sh_size){
-                for(unsigned i=0;i<eh.e_shnum;i++)if(sections[i].sh_name<names->sh_size){
-                    size_t q=sections[i].sh_name;const char *want=".eh_frame";size_t k=0;
-                    while(q<names->sh_size && strings[q] && want[k] && strings[q]==want[k]){q++;k++;}
-                    if(want[k] || q>=names->sh_size || strings[q])continue;
-                    Elf64_Shdr *frame=&sections[i];
-                    if(frame->sh_size<=SIZE_MAX && frame->sh_offset<=UINT64_MAX-frame->sh_size){
-                        unsigned char *data=vfs_alloc((size_t)frame->sh_size);
-                        if(data && pack_pread(fd,data,(size_t)frame->sh_size,frame->sh_offset)==(long)frame->sh_size)
-                            rewrite_fde_ranges(data,(size_t)frame->sh_size,frame->sh_addr,sections,eh.e_shnum,scan,begin,size,offset,symbols,used/sizeof(*symbols));
-                        vfs_free(data);
-                    }
-                    break;
-                }
-            }
-            vfs_free(strings);
-        }
-    }
 cleanup:
     vfs_free(symbols);vfs_free(sections);
-    if(scan){scan->next=rewrite_scans;rewrite_scans=scan;}
+    if(scan){scan->next=rewrite_scans;rewrite_scans=scan;rewrite_cache_count++;}
 done:
     if(proxy_trace){proxy_log("rewrite-sites",patched,size);proxy_log("rewrite-scan-ns",rewrite_clock()-started,size);}
     __atomic_store_n(&rewrite_busy,0,__ATOMIC_RELEASE);

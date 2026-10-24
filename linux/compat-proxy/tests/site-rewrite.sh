@@ -10,8 +10,3 @@ for binary in site-rewrite site-rewrite-exec; do
             "$PWD/build/$binary" "$enabled" "$PWD/build/site-rewrite.so"
     done
 done
-cc -O2 -Wall -Wextra -Werror tests/site-rewrite-fde.c -ldl -o build/site-rewrite-fde
-cc -shared -fPIC tests/site-rewrite-fde.S -o build/site-rewrite-fde.so
-strip --strip-all build/site-rewrite-fde.so
-MATON_PROXY_REWRITE=1 timeout 60 build/linux-layer-v3 --android-filter \
-    "$PWD/build/site-rewrite-fde"

@@ -4,7 +4,6 @@
 #include <elf.h>
 #include <link.h>
 #include <stdio.h>
-#include <stdlib.h>
 int main(void){
     const char *names[]={"openat","close","fstatat","__fxstatat","statx","fstat","readlink","readlinkat","getdents64","lseek","fcntl"};
     for(unsigned j=0;j<sizeof(names)/sizeof(*names);j++){
@@ -17,7 +16,6 @@ int main(void){
         }
         printf("coverage %-12s bytes=%lu primary_trapped=%u patched=%u\n",names[j],(unsigned long)symbol->st_size,trapped,patched);
     }
-    if(getenv("SITE_COVERAGE_ONLY"))return 0;
     puts("loading libstdc++.so.6");fflush(stdout);
     void *large=dlopen("libstdc++.so.6",RTLD_NOW|RTLD_LOCAL);assert(large);assert(!dlclose(large));
     for(unsigned i=0;i<3;i++){
