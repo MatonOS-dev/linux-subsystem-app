@@ -1,6 +1,13 @@
 # Flatpak binary recipe for the v3.5 subsystem APK
 
-`fetch.sh` verifies `sources.lock`; `build-musl.sh` runs the current
+`fetch.sh` verifies `sources.lock` and applies the small tracked
+`patches/0001-run-create-private-dev-shm-when-host-lacks-it.patch` to Flatpak's
+general device setup. When the host has no `/dev/shm` entry, the runner adds a
+private `--tmpfs /dev/shm`; the compatibility proxy backs it with session
+storage under the app cache. This preserves Flatpak's normal per-sandbox POSIX
+shared-memory semantics on hosts without that directory.
+
+`build-musl.sh` runs the current
 `build.sh` recipe inside the offline Alpine 3.24.2 x86_64 root at
 `/mnt/data/aosp/out/pc-logs/musl-324`. Flatpak, OSTree, bubblewrap and their
 static dependency set are linked with musl as static PIEs, then the Flatpak,

@@ -1,0 +1,19 @@
+--- a/common/flatpak-run.c
++++ b/common/flatpak-run.c
+@@ -591,6 +591,16 @@
+         }
+     }
+ 
++  /* Android-based hosts do not necessarily provide /dev/shm.  Still give
++   * each sandbox the private POSIX shared-memory filesystem that desktop
++   * Flatpak normally creates here.  bwrap's --tmpfs is virtualized by the
++   * compatibility proxy and backed by app-private temporary storage there. */
++  if (!g_file_test ("/dev/shm", G_FILE_TEST_IS_DIR) &&
++      !g_file_test ("/dev/shm", G_FILE_TEST_IS_SYMLINK))
++    flatpak_bwrap_add_args (bwrap,
++                            "--tmpfs", "/dev/shm",
++                            NULL);
++
+   exports = flatpak_context_get_exports_full (context,
+                                               app_id_dir, previous_app_id_dirs,
+                                               TRUE, TRUE,
