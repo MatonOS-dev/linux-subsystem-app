@@ -167,9 +167,33 @@ struct thread_state {
 };
 struct thread_node {struct thread_state state;struct thread_node *next;};
 static struct thread_node *threads;
+#if ARCH_AUDIT == AUDIT_ARCH_I386 && defined(MATON_GPU_BRIDGE)
+static long threads_pid;
+#endif
 static struct thread_state *thread_state(void) {
     long tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
     for(struct thread_node *p=threads;p;p=p->next) if(p->state.tid==tid)return &p->state;
+#if ARCH_AUDIT == AUDIT_ARCH_I386 && defined(MATON_GPU_BRIDGE)
+    long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+    if(threads_pid && pid!=threads_pid) {
+        unsigned short gs;__asm__ volatile("movw %%gs,%0":"=rm"(gs));
+        struct user_desc current={.entry_number=gs>>3};
+        if(gs && !(gs&4) && !RAW(PROXY_SC_get_thread_area,&current,0,0,0,0,0)) {
+            for(struct thread_node *p=threads;p;p=p->next)
+                for(unsigned i=0;i<PROXY_TLS_ENTRIES;i++) {
+                    struct tls_entry *entry=&p->state.tls[i];
+                    if(entry->valid && entry->real_entry==(int)current.entry_number &&
+                       entry->desc.base_addr==current.base_addr) {
+                        /* Fork copied this thread's GDT, virtual slots and
+                         * altstack. Retain the reservation rather than trying
+                         * to allocate a fourth hardware TLS descriptor. */
+                        p->state.tid=tid;threads_pid=pid;return &p->state;
+                    }
+                }
+        }
+    }
+    threads_pid=pid;
+#endif
     struct thread_node *p=vfs_palloc(sizeof(*p));if(!p)return NULL;
     p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
     stack_t current;
@@ -501,6 +525,68 @@ static void ldt_segv_handler(int sig,siginfo_t *info,void *opaque) {
     }
     dispatch_segv_app(sig,info,opaque);
 }
+#ifdef MATON_GPU_BRIDGE
+/* A fresh bionic pthread becomes an adopted payload thread. Free its native
+ * TLS descriptor before installing the opaque CLONE_SETTLS descriptor, then
+ * reserve the third virtual slot. No libc may run with GS cleared. */
+int proxy_i386_tls_enter(unsigned native_gs) {
+    struct thread_state *thread=thread_state();
+    if(!thread || !thread->reserved)return -ESRCH;
+    __asm__ volatile("xor %%eax,%%eax; mov %%ax,%%gs" ::: "eax","memory");
+    /* The linker may retain its temporary startup TLS descriptor as well as
+     * libc's current one. Neither is needed while payload code runs: bionic
+     * enters through the reserved descriptor using the saved current base. */
+    unsigned native_entry=native_gs>>3;
+    for(unsigned entry=native_entry-2;entry<=native_entry+2;entry++) {
+        if(entry==(unsigned)thread->reserved_real)continue;
+        struct user_desc probe={.entry_number=entry};
+        if(RAW(PROXY_SC_get_thread_area,&probe,0,0,0,0,0))continue;
+        struct user_desc empty={.entry_number=entry,.read_exec_only=1,.seg_not_present=1};
+        long result=RAW(PROXY_SC_set_thread_area,&empty,0,0,0,0,0);
+        if(result)return result;
+    }
+    return 0;
+}
+int proxy_i386_tls_start(const struct user_desc *app,unsigned native_gs,long parent_tid) {
+    struct thread_state *thread=thread_state(),*parent=NULL;
+    if(!thread)return -ENOMEM;
+    for(struct thread_node *p=threads;p;p=p->next)
+        if(p->state.tid==parent_tid) {parent=&p->state;break;}
+    if(!parent || !parent->reserved)return -ESRCH;
+    /* The creator stays parked until this copy is complete. These are our
+     * virtual kernel descriptors, including the app's third slot while the
+     * real slot was temporarily owned by the parent's bionic scope. */
+    p_copy(thread->tls,parent->tls,sizeof(thread->tls));
+    thread->reserved=1;thread->reserved_real=parent->reserved_real;
+    thread->reserved_claimed=0;
+    int slot=tls_slot_for_real(thread,(int)app->entry_number);
+    if(slot<0)return -ESRCH;
+    thread->tls[slot].desc=*app;thread->tls[slot].real_entry=app->entry_number;
+    thread->tls[slot].valid=1;
+    __asm__ volatile("xor %%eax,%%eax; mov %%ax,%%gs" ::: "eax","memory");
+    struct user_desc empty={.entry_number=native_gs>>3,
+                           .read_exec_only=1,.seg_not_present=1};
+    long result=RAW(PROXY_SC_set_thread_area,&empty,0,0,0,0,0);
+    if(result)return result;
+    for(unsigned i=0;i<PROXY_TLS_ENTRIES;i++)if(thread->tls[i].valid) {
+        struct user_desc install=thread->tls[i].desc;
+        result=RAW(PROXY_SC_set_thread_area,&install,0,0,0,0,0);
+        if(result)return result;
+    }
+    return tls_restore_reserved(thread);
+}
+
+void proxy_i386_thread_exit(void) {
+    struct thread_state *thread=thread_state();
+    if(!thread)return;
+    vfs_trap_thread_exit(thread->signal_stack,thread->signal_stack_size);
+    stack_t disabled={.ss_flags=SS_DISABLE};
+    RAW(PROXY_SC_sigaltstack,&disabled,0,0,0,0,0);
+    RAW(PROXY_SC_munmap,thread->signal_stack,thread->signal_stack_size,0,0,0,0);
+    thread->tid=0;
+}
+
+#endif
 /* Called in the child clone continuation before payload code runs. The kernel
  * installed glibc's CLONE_SETTLS descriptor; reserve the virtual third slot
  * independently before returning to payload code. */
@@ -879,6 +965,9 @@ done:
 }
 static int ours(long n) {
     if(ipc_ours(n))return 1;
+#if defined(__i386__) && defined(MATON_GPU_BRIDGE)
+    if(n==PROXY_SC_set_tid_address || n==PROXY_SC_set_robust_list || n==PROXY_SC_get_robust_list)return 1;
+#endif
     switch(n) {
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
     case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
@@ -971,6 +1060,11 @@ static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end)
             }
             *begin=lo;*end=hi;
             if(resident_android_library_path(p)) found=1;
+#if defined(__i386__) && defined(MATON_GPU_BRIDGE)
+            /* i386 bionic and glibc share the kernel's syscall trampoline.
+             * Its origin is per-call TLS state, never a permanent exemption. */
+            if(p_equal(p,"[vdso]"))found=2;
+#endif
             goto done;
         }
     }
@@ -999,6 +1093,7 @@ static int android_library_mapping_state(uintptr_t pc) {
     }
     return state;
 }
+#include "payload-filter.h"
 static void handler(int sig,siginfo_t *info,void *opaque) {
     uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
     ucontext_t *uc=opaque;
@@ -1055,6 +1150,10 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(call.error){result=call.error;goto finish;}
     uintptr_t syscall_pc=(uintptr_t)info->si_call_addr;
     int syscall_mapping=android_library_mapping_state(syscall_pc);
+#if defined(__i386__) && defined(MATON_GPU_BRIDGE)
+    extern int adopt_i386_native(void);
+    if(syscall_mapping==2)syscall_mapping=state_gpu_bridge && adopt_i386_native();
+#endif
     if(proxy_trace && (nr==PROXY_SC_mmap || nr==PROXY_SC_ioctl) && syscall_mapping) {
         emit("v3 graphics-route nr=");crash_hex((uint64_t)nr);
         trace_word(" native=",syscall_mapping);
@@ -1072,6 +1171,10 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
         goto clean_mask;
     }
+#if defined(__i386__) && defined(MATON_GPU_BRIDGE)
+    extern int adopt_i386_syscall(long,proxy_arg_t *,void *,long *);
+    if(adopt_i386_syscall(nr,a,uc,&result))goto finish;
+#endif
     /* signalfd readiness is evaluated against the thread's signal state.
      * Infinite poll must wait outside the SIGSYS frame, with the application's
      * mask restored, rather than nesting the wait in a signal handler. */
@@ -1162,7 +1265,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
                 result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);
                 if(!result && dispatch_owner==tid) {dispatch_selector=NULL;dispatch_owner=0;}
             } else result=-EINVAL;
-        } else result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        } else result=payload_filter(nr,a);
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
         break;
     case PROXY_SC_seccomp:
@@ -1170,7 +1273,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             emit("v3 seccomp op="); crash_hex(a[0]);
             trace_word(" flags=",a[1]); trace_word(" args=",a[2]);
         }
-        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        result=payload_filter(nr,a);
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
         break;
     case PROXY_SC_rt_sigaction:

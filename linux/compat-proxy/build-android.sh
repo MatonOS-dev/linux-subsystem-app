@@ -26,7 +26,7 @@ python3 "$build_source/gen-policy.py"
   "$build_source"/arch/x86_64/{raw.S,adopt.S} -pthread -ldl -lEGL -lGLESv2 \
   -o "$output/libmatonos-v3-loader.so"
 
-bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"
+MATON_I386_GPU_BRIDGE=1 bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"
 
 chmod 0755 "$output/libmatonos-v3-loader.so"
 

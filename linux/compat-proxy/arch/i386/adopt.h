@@ -55,6 +55,7 @@ struct adopt_scope {
  * entry each time the thread enters an Android call. */
 int adopt_register_current(uintptr_t android_tls);
 int adopt_install(void);
+_Noreturn void adopt_launch(uintptr_t entry, uintptr_t stack);
 uintptr_t adopt_api_address(void);
 struct adopt_thread *adopt_current(void);
 struct adopt_api *adopt_api_get(void);
