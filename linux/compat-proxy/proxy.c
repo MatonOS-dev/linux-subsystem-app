@@ -954,6 +954,7 @@ done:
 static void dns_close(int);
 static void dns_dup(int,int);
 static long rewrite_slow(long,proxy_arg_t *);
+static long modernize(long,proxy_arg_t *,long *);
 static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     long result;
     if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&private_close_fd((int)a[1])))return -EBADF;
@@ -995,6 +996,11 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
      * may rewrite arguments, but syscall-preserved registers restore verbatim. */
     proxy_args args;p_copy(args,saved,sizeof(args));proxy_arg_t *a=args;
     nr=arch_decode_syscall(nr);
+#if defined(__i386__)
+    /* i386 stat64 is the legacy path form; feed the same normalized
+     * newfstatat path handling used by the trapped dispatcher. */
+    if(nr==PROXY_SC_stat || nr==PROXY_SC_lstat)nr=modernize(nr,a,NULL);
+#endif
     if(nr==PROXY_SC_readlink){a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;nr=PROXY_SC_readlinkat;}
     if(nr==PROXY_SC_fcntl && a[1]!=F_GETFD && a[1]!=F_SETFD && a[1]!=F_GETFL &&
        a[1]!=F_SETFL && a[1]!=F_DUPFD && a[1]!=F_DUPFD_CLOEXEC)return rewrite_slow(nr,a);
