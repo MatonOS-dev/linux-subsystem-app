@@ -101,13 +101,28 @@ final class V3Launcher {
                 if(entry.record.ref.startsWith("runtime/org.freedesktop.Platform/x86_64/")) {runtimeRef=entry.record.ref;break;}
             String runtimeBranch=runtimeRef==null?"":runtimeRef.substring(runtimeRef.lastIndexOf('/')+1);
             String glBranch=PackageMounts.glExtensionBranch(runtimeMetadata,runtimeBranch);
-            File extensionFiles=PackageDeployment.prepareGlExtension(new File(deployment,"system"),
+            File systemRoot=new File(deployment,"system");
+            File extensionFiles=PackageDeployment.prepareGlExtension(systemRoot,
                     new File(host.getApplicationInfo().sourceDir),glBranch);
             command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(
                     new File(host.getApplicationInfo().sourceDir), "assets/gl-maton", launchWork,
                     extensionFiles.getAbsolutePath()));
             command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(
                     extensionFiles.getAbsolutePath(),extensionFiles));
+            PackageDeployment.CompatI386 compat=PackageDeployment.prepareCompatI386(
+                    context,systemRoot,launchWork,runtimeBranch);
+            if(compat!=null) {
+                PackageDeployment.enableI386Runtime(systemRoot,runtimeBranch);
+                command.add("--i386-tls-reserve");
+                command.addAll(compat.arguments);
+                File gl32=PackageDeployment.prepareGl32Extension(systemRoot,
+                        new File(host.getApplicationInfo().sourceDir),runtimeBranch);
+                command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(
+                        new File(host.getApplicationInfo().sourceDir),"assets/gl-maton-i386",launchWork,
+                        gl32.getAbsolutePath()));
+                command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(
+                        gl32.getAbsolutePath(),gl32));
+            }
         }
         command.addAll(DeclaredPackages.arguments(packages,launchWork,true,deployment));
         java.util.Collections.addAll(command,

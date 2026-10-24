@@ -57,3 +57,21 @@ assert '"library_path": "libEGL_maton.so"' in payload("/glvnd/egl_vendor.d/10_ma
 assert '"library_path": "i386-linux-gnu/libEGL_maton.so"' in payload(
     "/glvnd/egl_vendor.d/10_maton_i386.json")
 assert (root / "objects.ostree").read_bytes().startswith(b"MTPKOBJ1")
+
+gl32 = root / "gl32"
+gl32_metadata = (gl32 / "metadata").read_text()
+assert "name=org.freedesktop.Platform.GL32.maton" in gl32_metadata
+assert (gl32 / "ref.txt").read_text().splitlines()[0] == \
+       "runtime/org.freedesktop.Platform.GL32.maton/x86_64/26.08"
+gl32_rows = pack.read_index(gl32 / "objects.index")
+gl32_paths = {row["path"] for row in gl32_rows}
+assert {
+    "/lib/libEGL_maton.so",
+    "/lib/libGLX_maton.so.0",
+    "/lib/libGLX_maton.so",
+    "/lib/libmaton_vulkan_i386.so",
+    "/glvnd/egl_vendor.d/10_maton_i386.json",
+    "/vulkan/icd.d/maton_icd_i386.json",
+} <= gl32_paths
+assert "/lib/i386-linux-gnu/libEGL_maton.so" not in gl32_paths
+assert "/glvnd/egl_vendor.d/10_maton.json" not in gl32_paths

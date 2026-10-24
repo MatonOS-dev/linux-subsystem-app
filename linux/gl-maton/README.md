@@ -1,4 +1,4 @@
-# Maton Flatpak GL extension
+# Maton Flatpak GL extensions
 
 The subsystem APK carries the x86_64 forwarders as the Flatpak extension
 `org.freedesktop.Platform.GL.maton`. The selected `26.08` branch matches the
@@ -9,6 +9,12 @@ assigned runtime. Its runtime metadata advertises
 launch; a mismatch fails with a clear error rather than silently selecting an
 incompatible extension.
 
+The APK also carries the i386 forwarders as a separate
+`org.freedesktop.Platform.GL32.maton` extension. Its extension point mounts at
+`/usr/lib/i386-linux-gnu/GL/maton`, so its payload uses the same relative
+`lib/` layout as the x86_64 extension; it must not add another
+`i386-linux-gnu/` level below that mount.
+
 GLVND loads `libGLX_maton.so.0` by the `__GLX_VENDOR_LIBRARY_NAME=maton`
 selection when the Maton GL extension is enabled. It renders through the EGL
 forwarder into a pbuffer and copies frames to the X window with XPutImage. The
@@ -17,6 +23,7 @@ Platform metadata lists `vulkan/icd.d;glvnd/egl_vendor.d;...` relative to the
 extension root; flatpak merges only those into `GL/vulkan/icd.d` etc.):
 
 ```text
+# x86_64 forwarders
 lib/libEGL_maton.so
 lib/libGLX_maton.so.0
 # libGLX_maton.so is a regular duplicate for OSTree compatibility
@@ -24,18 +31,34 @@ lib/libGLX_maton.so
 lib/libmaton_vulkan.so
 vulkan/icd.d/maton_icd.json
 glvnd/egl_vendor.d/10_maton.json
+
+# i386 ICD in the standard GL extension
+lib/libmaton_vulkan_i386.so
+vulkan/icd.d/maton_icd_i386.json
+glvnd/egl_vendor.d/10_maton_i386.json
+
+# nested i386 EGL/GLX for multiarch x86_64 runtimes
 lib/i386-linux-gnu/libEGL_maton.so
 lib/i386-linux-gnu/libGLX_maton.so.0
-# regular duplicate for GLVND basename lookup
 lib/i386-linux-gnu/libGLX_maton.so
+```
+
+The separate GL32 extension contains:
+
+```text
+lib/libEGL_maton.so
+lib/libGLX_maton.so.0
+lib/libGLX_maton.so
 lib/libmaton_vulkan_i386.so
 vulkan/icd.d/maton_icd_i386.json
 glvnd/egl_vendor.d/10_maton_i386.json
 ```
 
-The i386 EGL manifest selects the i386 DSO in the runtime's multiarch
-directory, which avoids replacing the x86_64 vendor names. Both architectures'
-forwarders remain freestanding and have no `DT_NEEDED` entries. Build task
+The GL32 EGL manifest selects `libEGL_maton.so` from the extension's `lib/`
+directory, which is mounted at `/usr/lib/i386-linux-gnu/GL/maton/lib`. The
+standard GL extension's i386 manifest selects its nested i386 DSO. Both
+architectures' forwarders remain freestanding and have no `DT_NEEDED` entries.
+Build task
 `buildGlMaton` commits the extension files to a local OSTree repo, then uses
 the existing `linux/packs/pack.py` format. `packageGlMaton` places the ref
 metadata, index, OSTree objects and immutable content packs in the signed
@@ -113,3 +136,22 @@ loader_scanned_icd_add: Could not get 'vkCreateInstance' via 'vk_icdGetInstanceP
 `vulkaninfo` then exits with `vkCreateInstance failed with
 ERROR_INCOMPATIBLE_DRIVER`. This confirms extension discovery and library
 loading; forwarder initialization is the next separate issue.
+
+Assigned VM result (v45, 2026-10-24): the `25.08` i386 compat runtime and
+`org.freedesktop.Platform.GL32.maton` were both mounted. The GL32 tree was
+mounted at `/usr/lib/i386-linux-gnu/GL/maton` with its `lib/` directory and
+merged ICD/vendor metadata at the expected locations. A test-only Flatpak
+`features=multiarch` override allowed ELF32 payloads through `setup_seccomp`;
+the hook used to write this override was removed after testing and is not in
+the product APK. The EGL and GLX probes reached the Maton EGL forwarder, which
+reported `GPU bootstrap bridge or adoption API missing`; EGL returned
+`EGL_BAD_DISPLAY`, and no GLX pixel-readback pass was obtained. The Vulkan
+probe was launched as ELF32 but did not enumerate a usable Maton device.
+
+The remaining blocker is cross-ABI GPU adoption. The bootstrap currently
+publishes x86_64 bridge/adoption function addresses, while ELF32 forwarders
+parse them into 32-bit pointers and cannot call x86_64 code in 32-bit mode.
+The i386 adoption backend is not wired to an i386-callable resident bridge.
+Completing this needs a 32-bit callable bridge or an explicit cross-ABI RPC
+gateway, plus working bionic TLS registration for the payload threads; the
+GL32 packaging fix alone cannot provide rendering.
