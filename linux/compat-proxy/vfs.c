@@ -189,17 +189,20 @@ static char *oldroot_view;
 static int stacked_oldroot;
 static int hide_resolver;
 static int prefix(const char *,const char *);
-#define RESOLVE_CACHE_ENTRIES 16
 struct resolve_cache_entry {
     unsigned valid;
     int follow;
     size_t key_len, value_len;
     void *identity;
+    uint64_t hash;
+    size_t next;
     char key[PATH_MAX], value[PATH_MAX];
 };
-static struct resolve_cache_entry resolve_cache[RESOLVE_CACHE_ENTRIES];
+static struct resolve_cache_entry *resolve_cache;
+static size_t resolve_cache_count,resolve_cache_capacity;
+static size_t *resolve_cache_buckets;
+static size_t resolve_cache_bucket_count;
 static volatile int resolve_cache_lock;
-static unsigned resolve_cache_next;
 static void resolve_cache_acquire(void) {
     int unlocked=0;
     while(!__atomic_compare_exchange_n(&resolve_cache_lock,&unlocked,1,0,
@@ -213,12 +216,37 @@ static void resolve_cache_release(void) {
 }
 void vfs_resolve_cache_invalidate(void) {
     resolve_cache_acquire();
-    for(unsigned i=0;i<RESOLVE_CACHE_ENTRIES;i++)resolve_cache[i].valid=0;
+    for(size_t i=0;i<resolve_cache_count;i++)resolve_cache[i].valid=0;
+    for(size_t i=0;i<resolve_cache_bucket_count;i++)resolve_cache_buckets[i]=0;
+    resolve_cache_count=0;
     resolve_cache_release();
 }
 static int resolve_cacheable_path(const char *path) {
     return path && path[0]=='/' && !prefix(path,"/sys") &&
         !prefix(path,"/proc") && !prefix(path,"/dev");
+}
+static uint64_t resolve_cache_hash(const char *path,size_t length,int follow){
+    uint64_t h=UINT64_C(1469598103934665603)^(uint64_t)follow;
+    for(size_t i=0;i<length;i++){h^=(unsigned char)path[i];h*=UINT64_C(1099511628211);}
+    return h?h:1;
+}
+static int resolve_cache_reserve(size_t needed){
+    if(needed>resolve_cache_capacity){size_t capacity=resolve_cache_capacity?resolve_cache_capacity:16;
+        while(capacity<needed){if(capacity>SIZE_MAX/2)return 0;capacity*=2;}
+        if(capacity>SIZE_MAX/sizeof(*resolve_cache))return 0;
+        size_t bytes=capacity*sizeof(*resolve_cache);struct resolve_cache_entry *entries=vfs_palloc(bytes);if(!entries)return 0;
+        for(size_t i=0;i<resolve_cache_count;i++)entries[i]=resolve_cache[i];
+        vfs_free(resolve_cache);resolve_cache=entries;resolve_cache_capacity=capacity;
+    }
+    if(!resolve_cache_bucket_count || needed>resolve_cache_bucket_count-resolve_cache_bucket_count/4){
+        size_t buckets=resolve_cache_bucket_count?resolve_cache_bucket_count:32;
+        while(needed>buckets-buckets/4){if(buckets>SIZE_MAX/2)return 0;buckets*=2;}
+        if(buckets>SIZE_MAX/sizeof(*resolve_cache_buckets))return 0;
+        size_t *table=vfs_palloc(buckets*sizeof(*table));if(!table)return 0;
+        for(size_t i=0;i<resolve_cache_count;i++)if(resolve_cache[i].valid){size_t slot=(size_t)resolve_cache[i].hash&(buckets-1);resolve_cache[i].next=table[slot];table[slot]=i+1;}
+        vfs_free(resolve_cache_buckets);resolve_cache_buckets=table;resolve_cache_bucket_count=buckets;
+    }
+    return 1;
 }
 void vfs_network_payload(int isolated){
     if(!isolated || hide_resolver || !root)return;
@@ -433,10 +461,10 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
     size_t key_len=path?p_len(path):0;
     if(fd==AT_FDCWD && follow && resolve_cacheable_path(path) && key_len<PATH_MAX){
         resolve_cache_acquire();
-        for(unsigned i=0;i<RESOLVE_CACHE_ENTRIES;i++){
-            struct resolve_cache_entry *entry=&resolve_cache[i];
-            if(entry->valid && entry->follow==follow && entry->key_len==key_len &&
-                    p_equal(entry->key,path)){
+        uint64_t hash=resolve_cache_hash(path,key_len,follow);
+        if(resolve_cache_bucket_count){size_t index=resolve_cache_buckets[(size_t)hash&(resolve_cache_bucket_count-1)];
+          while(index){struct resolve_cache_entry *entry=&resolve_cache[index-1];
+            if(entry->valid && entry->hash==hash && entry->follow==follow && entry->key_len==key_len && p_equal(entry->key,path)){
                 char *answer=vfs_alloc(entry->value_len+1);
                 if(answer){p_copy(answer,entry->value,entry->value_len+1);if(identity)*identity=entry->identity;}
                 resolve_cache_release();
@@ -446,9 +474,12 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
                 *error=0;
                 return answer;
             }
+            index=entry->next;
+          }
         }
         resolve_cache_release();
     }
+    uint64_t hash=resolve_cache_hash(path?path:"",key_len,follow);
     uint64_t started=proxy_count_now();
     int cacheable=0;
     char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable);
@@ -459,12 +490,15 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
         size_t value_len=p_len(answer);
         if(value_len<PATH_MAX){
             resolve_cache_acquire();
-            unsigned slot=resolve_cache_next++%RESOLVE_CACHE_ENTRIES;
-            struct resolve_cache_entry *entry=&resolve_cache[slot];
-            entry->valid=0;entry->follow=follow;entry->key_len=key_len;
-            entry->value_len=value_len;entry->identity=*identity;
-            p_copy(entry->key,path,key_len+1);p_copy(entry->value,answer,value_len+1);
-            entry->valid=1;
+            size_t slot=resolve_cache_count;
+            if(resolve_cache_reserve(resolve_cache_count+1)){
+                resolve_cache_count++;
+                struct resolve_cache_entry *entry=&resolve_cache[slot];size_t bucket=(size_t)hash&(resolve_cache_bucket_count-1);
+                entry->valid=0;entry->follow=follow;entry->key_len=key_len;
+                entry->value_len=value_len;entry->identity=*identity;entry->hash=hash;entry->next=resolve_cache_buckets[bucket];
+                p_copy(entry->key,path,key_len+1);p_copy(entry->value,answer,value_len+1);
+                entry->valid=1;resolve_cache_buckets[bucket]=slot+1;
+            }
             resolve_cache_release();
         }
     }
