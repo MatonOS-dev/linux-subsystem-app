@@ -4,7 +4,7 @@
 #include ARCH_REWRITE_HEADER
 static int rewrite_enabled;
 struct rewrite_site {uint32_t offset;unsigned nr,window;unsigned char original[9];};
-struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice;size_t size;unsigned count;struct rewrite_site sites[512];};
+struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice;size_t size,count,capacity;struct rewrite_site *sites;};
 static struct rewrite_scan *rewrite_scans;
 static unsigned rewrite_cache_count;
 static unsigned rewrite_busy;
@@ -35,10 +35,13 @@ int proxy_rewrite_init(const char *s){
 /* A complete bounded symbol is the unit of proof. Unsupported instructions,
  * stack use, indirect flow or interior branch targets reject it atomically. */
 static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_scan *scan,uintptr_t begin,const Elf64_Sym *symbol,const Elf64_Sym *all,size_t nsymbols){
-    struct rewrite_insn ins[512];size_t offsets[512],pos=0,count=0;
-    if(size>4096 || !size)return 0;
+    size_t pos=0,count=0,capacity=size;
+    if(!size || capacity>SIZE_MAX/sizeof(struct rewrite_insn) || capacity>SIZE_MAX/sizeof(size_t))return 0;
+    struct rewrite_insn *ins=vfs_alloc(capacity*sizeof(*ins));
+    size_t *offsets=vfs_alloc(capacity*sizeof(*offsets));
+    if(!ins || !offsets){vfs_free(ins);vfs_free(offsets);return 0;}
     while(pos<size){
-        if(count==512 || !arch_rewrite_decode(p+pos,size-pos,&ins[count]))return 0;
+        if(count==capacity || !arch_rewrite_decode(p+pos,size-pos,&ins[count])){vfs_free(ins);vfs_free(offsets);return 0;}
         offsets[count]=pos;pos+=ins[count++].size;
     }
     for(size_t j=0;j<count;j++)if(ins[j].target!=INT64_MIN){
@@ -53,7 +56,7 @@ static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_sca
     }
     int interesting=0;
     for(size_t k=0;k<count;k++)if(ins[k].window)interesting=1;
-    if(!interesting)return 0;
+    if(!interesting){vfs_free(ins);vfs_free(offsets);return 0;}
     /* Aliases with identical bounds are fine. Partial/contained overlaps from
      * either ELF symbol table make the instruction stream ambiguous. */
     for(size_t j=0;j<nsymbols;j++){
@@ -61,8 +64,8 @@ static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_sca
         if((ELF64_ST_TYPE(other->st_info)!=STT_FUNC && ELF64_ST_TYPE(other->st_info)!=STT_GNU_IFUNC) ||
            other->st_shndx!=symbol->st_shndx || !other->st_size)continue;
         if(other->st_value==symbol->st_value && other->st_size==symbol->st_size)continue;
-        if(other->st_value>UINT64_MAX-other->st_size)return 0;
-        if(other->st_value<symbol->st_value+symbol->st_size && other->st_value+other->st_size>symbol->st_value)return 0;
+        if(other->st_value>UINT64_MAX-other->st_size){vfs_free(ins);vfs_free(offsets);return 0;}
+        if(other->st_value<symbol->st_value+symbol->st_size && other->st_value+other->st_size>symbol->st_value){vfs_free(ins);vfs_free(offsets);return 0;}
     }
     unsigned changed=0;
     for(size_t k=0;k<count;k++)if(ins[k].window){
@@ -70,14 +73,22 @@ static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_sca
         unsigned w=ins[k].window;
         if((addr&4095)+w>4096)continue;
         unsigned char original[9];p_copy(original,(void *)addr,w);
-        if(scan && scan->count<512 && addr-begin<=UINT32_MAX){
-            struct rewrite_site *site=&scan->sites[scan->count++];
-            site->offset=(uint32_t)(addr-begin);site->nr=ins[k].nr;site->window=w;
-            p_copy(site->original,original,w);
+        if(scan && addr-begin<=UINT32_MAX){
+            if(scan->count==scan->capacity){
+                size_t next=scan->capacity?scan->capacity*2:16;
+                if(next<scan->capacity || next>SIZE_MAX/sizeof(*scan->sites))next=0;
+                struct rewrite_site *grown=next?vfs_palloc(next*sizeof(*grown)):NULL;
+                if(grown){if(scan->sites)p_copy(grown,scan->sites,scan->count*sizeof(*grown));scan->sites=grown;scan->capacity=next;}
+            }
+            if(scan->count<scan->capacity){
+                struct rewrite_site *site=&scan->sites[scan->count++];
+                site->offset=(uint32_t)(addr-begin);site->nr=ins[k].nr;site->window=w;
+                p_copy(site->original,original,w);
+            }
         }
         changed+=rewrite_apply(addr,ins[k].nr,w,original);
     }
-    return changed;
+    vfs_free(ins);vfs_free(offsets);return changed;
 }
 /* File offsets rather than load biases also cover independently mapped PT_LOADs.
  * pack_pread uses logical file offsets for packed ELF carriers. */
@@ -106,7 +117,7 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
         if(proxy_trace)proxy_log("rewrite-cache-hit",scan->count,size);
         goto done;
     }
-    if(identified && rewrite_cache_count<64){
+    if(identified){
         scan=vfs_palloc(sizeof(*scan));
         if(scan){scan->identity=identity;scan->offset=offset;scan->size=size;scan->slice=slice;}
     }
@@ -138,7 +149,7 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
     }
     for(size_t j=0;j<used/sizeof(*symbols);j++){
         Elf64_Sym sym=symbols[j];
-        if(ELF64_ST_TYPE(sym.st_info)!=STT_FUNC || !sym.st_size || sym.st_size>4096 ||
+        if(ELF64_ST_TYPE(sym.st_info)!=STT_FUNC || !sym.st_size ||
            !sym.st_shndx || sym.st_shndx>=eh.e_shnum || sym.st_value>UINT64_MAX-sym.st_size)continue;
         Elf64_Shdr text=sections[sym.st_shndx];
         if(text.sh_type!=SHT_PROGBITS || (text.sh_flags&(SHF_EXECINSTR|SHF_ALLOC))!=(SHF_EXECINSTR|SHF_ALLOC) || sym.st_value<text.sh_addr ||
