@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+source "$(dirname "$here")/i386-flags.sh"
 out=${1:?usage: build.sh ABSOLUTE_OUTPUT_DIR VULKAN_HEADERS_SOURCE}
 headers=${2:?pinned Vulkan-Headers v1.4.341 source required}
 case "$out" in /*) ;; *) echo 'output must be absolute' >&2; exit 2;; esac
@@ -28,7 +29,7 @@ PY
 }
 check_icd "$out/libmaton_vulkan.so" x86_64
 mkdir -p "$out/i386"
-i386_flags=(-m32 -march=corei7 -std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/i386")
+i386_flags=("${MATON_I386_ISA_FLAGS[@]}" -std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/i386")
 "$cc" "${i386_flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wayland_resolve.c" -o "$out/i386/libmaton_vulkan.so"
 check_icd "$out/i386/libmaton_vulkan.so" i386
 for arch in aarch64; do

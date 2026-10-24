@@ -26,10 +26,10 @@
 #include "arch/i386/adopt.h"
 #else
 #include "arch/x86_64/adopt.h"
-#include "../gpu-forward-spike/spike3/adopt.h"
+#include "../gpu-bridge-common/adopt.h"
 #endif
-#include "../gpu-forward-spike/bootstrap.h"
-#include "../gpu-forward-spike/bridge.h"
+#include "../gpu-bridge-common/bootstrap.h"
+#include "../gpu-bridge-common/bridge.h"
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 static struct maton_gpu_bootstrap *gpu_bootstrap;

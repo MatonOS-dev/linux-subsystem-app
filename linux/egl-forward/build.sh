@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+source "$(dirname "$here")/i386-flags.sh"
 out=${1:?usage: build.sh ABSOLUTE_OUTPUT_DIR DEPS_DIR NDK}
 deps=${2:?pinned EGL/GLES registries and libglvnd headers required}
 ndk=${3:?Android NDK r30 required for EGL/GLES headers}
@@ -27,7 +28,7 @@ if grep -E -q NEEDED "$out/dynamic.txt"; then echo 'unexpected DT_NEEDED' >&2; e
 exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/symbols.txt" | sort -u)
 [[ "$exports" == $'__egl_Main\nmaton_egl_direct_v1' ]] || { echo "unexpected exports: $exports" >&2; exit 1; }
 mkdir -p "$out/i386"
-i386_flags=(-m32 -march=corei7 -std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/i386" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client")
+i386_flags=("${MATON_I386_ISA_FLAGS[@]}" -std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/i386" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client")
 "$cc" "${i386_flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/../vulkan-forward/wayland_resolve.c" "$here/../wayland-client/wayland_client.c" "$here/egl_vendor.c" -o "$out/i386/libEGL_maton.so"
 "$readelf" -d "$out/i386/libEGL_maton.so" > "$out/i386/dynamic.txt"
 if grep -E -q NEEDED "$out/i386/dynamic.txt"; then echo 'i386 unexpected DT_NEEDED' >&2; exit 1; fi

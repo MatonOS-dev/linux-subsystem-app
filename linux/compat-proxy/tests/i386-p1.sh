@@ -60,7 +60,8 @@ timeout 20 "$loader" --android-filter "$PWD/build/i386-p1/tls" \
 grep -qx 'PASS i386 pthread TLS, flat LDT code, far transfers, segment loads, and SIGSEGV chaining' build/i386-p1/tls.out
 cat build/i386-p1/tls.out
 
-# AT_SYSINFO is opt-in. Exercise the exact %gs:0x10 entry with ELF32 glibc,
+# AT_SYSINFO is on by default; MATON_PROXY_REWRITE=0 exercises the trap route.
+# Exercise the exact %gs:0x10 entry with ELF32 glibc,
 # including file-class dispatch, asynchronous signals and copied TLS on fork/
 # pthread/exec. Both modes must preserve the same syscall results.
 cc -m32 -nostdinc -fno-stack-protector -fno-pic -O2 -Wall -Wextra -Werror \
@@ -71,17 +72,24 @@ ld -m elf_i386 -o build/i386-p1/sysinfo --dynamic-linker "$interpreter" \
     build/i386-p1/sysinfo-start.o build/i386-p1/sysinfo-entry.o \
     build/i386-p1/sysinfo.o "$libc"
 ln -sf fixture "$PWD/build/i386-p1/fastlink"
-for rewrite in 0 1; do
+for rewrite in default 0; do
+    if [[ $rewrite == default ]]; then
+        env_prefix=(env -u MATON_PROXY_REWRITE)
+        label=default
+    else
+        env_prefix=(env MATON_PROXY_REWRITE=0)
+        label=0
+    fi
     set +e
-    MATON_PROXY_REWRITE=$rewrite timeout 45 "$loader" --android-filter \
+    "${env_prefix[@]}" timeout 45 "$loader" --android-filter \
         --map "$PWD/build/i386-p1/fixture" /i386-fastpath-file \
         --map "$PWD/build/i386-p1/fastlink" /i386-fastpath-link \
-        "$PWD/build/i386-p1/sysinfo" >"build/i386-p1/sysinfo-$rewrite.out" \
-        2>"build/i386-p1/sysinfo-$rewrite.log"
+        "$PWD/build/i386-p1/sysinfo" >"build/i386-p1/sysinfo-$label.out" \
+        2>"build/i386-p1/sysinfo-$label.log"
     result=$?
     set -e
-    if (( result != 0 )); then cat "build/i386-p1/sysinfo-$rewrite.log" >&2; exit "$result"; fi
-    grep -q '^PASS i386 AT_SYSINFO=' "build/i386-p1/sysinfo-$rewrite.out"
+    if (( result != 0 )); then cat "build/i386-p1/sysinfo-$label.log" >&2; exit "$result"; fi
+    grep -q '^PASS i386 AT_SYSINFO=' "build/i386-p1/sysinfo-$label.out"
 done
 echo 'PASS i386 AT_SYSINFO proxy/trap equivalence, file syscalls, signals, threads, fork and exec'
 

@@ -2,6 +2,7 @@
 # Freestanding ELF32; the NDK supplies headers even without host multilib dev.
 set -euo pipefail
 source_dir=$(cd "$(dirname "$0")" && pwd)
+source "$(dirname "$source_dir")/i386-flags.sh"
 output=${1:-$source_dir/build/linux-layer-v3-i386}
 ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/android-ndk-r30}}
 compiler=${MATON_V3_I386_CC:-$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android36-clang}
@@ -27,7 +28,7 @@ if [[ ${MATON_I386_GPU_BRIDGE:-0} == 1 ]]; then
     -pthread -ldl -lEGL -lGLESv2
   )
 fi
-"$compiler" -m32 -march=i686 -msse2 "${counter_flags[@]}" -DPROXY_ARCH_BACKEND='"i386/backend.h"' \
+"$compiler" "${MATON_I386_ISA_FLAGS[@]}" "${counter_flags[@]}" -DPROXY_ARCH_BACKEND='"i386/backend.h"' \
   "${link_flags[@]}" -Wl,--image-base=0x70000000 -Wl,--section-start=.proxy_gateway=0x70300000 \
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$source_dir"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \

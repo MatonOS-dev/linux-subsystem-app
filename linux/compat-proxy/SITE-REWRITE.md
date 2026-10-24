@@ -548,7 +548,7 @@ Runtime output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-freedesktop-ste
 
 ## i386 AT_SYSINFO fast path (2026-10-24)
 
-Opt-in `MATON_PROXY_REWRITE=1` now sets ELF32 `AT_SYSINFO` to the proxy's
+By default, ELF32 `AT_SYSINFO` points to the proxy's
 generic i386 entry. It takes the syscall number from EAX and calls the same
 direct file dispatcher used by x86_64 for openat, close, stat64,
 fstatat64/fstat64, statx, readlink/readlinkat, getdents64, `_llseek`, and
@@ -556,11 +556,12 @@ non-locking fcntl64 commands. Other numbers and locking fcntl commands execute
 the ordinary `int $0x80` trap route. No instruction sites are patched. The
 entry saves all general registers and flags, returns through `ret`, and uses
 the trap path when CS is not the flat user code selector (`0x23`). The
-kill-switch is the existing `MATON_PROXY_REWRITE=0`; default behavior remains
-the inherited vDSO entry. The setting is recalculated on each exec and a
-change in state is logged.
+kill-switch is the existing `MATON_PROXY_REWRITE=0`, which restores the
+inherited vDSO entry. The setting is recalculated on each exec and a change
+in state is logged.
 
-`tests/i386-p1.sh` verifies identical syscall outcomes with the feature off/on
+`tests/i386-p1.sh` verifies identical syscall outcomes with the feature on by
+default and with the kill-switch set
 using the host's dynamically linked glibc probe. It covers file syscall
 classes, preservation of general registers/flags, a signal during repeated
 entry use, pthread TLS, fork, exec with a fresh auxv (including switching the

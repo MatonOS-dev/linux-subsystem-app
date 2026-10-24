@@ -54,7 +54,7 @@ static int file_calls(void) {
     failures+=check(i386_vsyscall6(140,fd,0,1,(long)&seek_result,SEEK_SET,0)==0 && seek_result==1,"_llseek");
     char byte=0; failures+=check(read((int)fd,&byte,1)==1,"read");
     const char *enabled=getenv("MATON_PROXY_REWRITE");
-    if(enabled && !strcmp(enabled,"1"))failures+=check(i386_check_sysinfo_preserve((int)fd)==0,"AT_SYSINFO register/flags preservation and close");
+    if(!enabled || strcmp(enabled,"0"))failures+=check(i386_check_sysinfo_preserve((int)fd)==0,"AT_SYSINFO register/flags preservation and close");
     else failures+=check(i386_vsyscall6(6,fd,0,0,0,0,0)==0,"close");
     char link[256];
     failures+=check(i386_vsyscall6(85,(long)"/i386-fastpath-link",(long)link,sizeof(link),0,0,0)>0,"readlink");
@@ -69,7 +69,7 @@ static void *thread_main(void *arg) { (void)arg; for(int i=0;i<100;i++)if(file_c
 int main(int argc,char **argv) {
     uintptr_t sysinfo=getauxval(32);
     const char *enabled=getenv("MATON_PROXY_REWRITE");
-    if(enabled && !strcmp(enabled,"1") && (sysinfo<0x70300000u || sysinfo>=0x70400000u)) {
+    if((!enabled || strcmp(enabled,"0")) && (sysinfo<0x70300000u || sysinfo>=0x70400000u)) {
         fprintf(stderr,"AT_SYSINFO did not select the proxy entry: %08x\n",(unsigned)sysinfo);return 1;
     }
     if(enabled && !strcmp(enabled,"0") && sysinfo>=0x70300000u && sysinfo<0x70400000u) {

@@ -5,10 +5,10 @@ static int sysinfo_enabled;
 static int sysinfo_configured;
 
 void proxy_i386_sysinfo_configure(char *const *env) {
-    int enabled=0;
+    int enabled=1;
     for (size_t i=0; env && env[i]; i++) {
-        if (p_equal(env[i], "MATON_PROXY_REWRITE=1")) {
-            enabled=1;
+        if (p_equal(env[i], "MATON_PROXY_REWRITE=0")) {
+            enabled=0;
             break;
         }
     }

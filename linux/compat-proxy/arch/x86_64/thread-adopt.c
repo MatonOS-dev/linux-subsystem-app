@@ -6,7 +6,7 @@
  * may execute with the wrong FS. All resident pthread symbols are bound at
  * startup by the build's -z now. */
 #define _GNU_SOURCE
-#include "../../../gpu-forward-spike/spike3/adopt.h"
+#include "../../../gpu-bridge-common/adopt.h"
 #include "adopt.h"
 #include "../../adopt-map.h"
 #include "../../vfs.h"
