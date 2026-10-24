@@ -43,6 +43,7 @@ static struct sockaddr_in dns_endpoint={.sin_family=AF_INET,.sin_port=0x3500,.si
 struct dns_socket {unsigned refs;int type,active,connected;struct sockaddr_in local;unsigned short local_port;};
 struct dns_fd {int fd;struct dns_socket *socket;struct dns_fd *next;};
 static struct dns_fd *dns_fds;
+static volatile unsigned dns_fd_present;
 static unsigned dns_mutex;
 static volatile long dns_owner_pid;
 static proxy_sigmask_t dns_lock(void);
@@ -71,9 +72,9 @@ static proxy_sigmask_t dns_lock(void){dns_after_fork();proxy_sigmask_t all=~UINT
 static void dns_unlock(proxy_sigmask_t old){__atomic_store_n(&dns_mutex,0,__ATOMIC_RELEASE);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);}
 static struct dns_socket *dns_lookup(int fd){for(struct dns_fd *p=dns_fds;p;p=p->next)if(p->fd==fd)return p->socket;return NULL;}
 static void dns_untrack_port(unsigned short port);
-static void dns_forget(int fd){struct dns_fd **p=&dns_fds;while(*p){struct dns_fd *d=*p;if(d->fd!=fd){p=&d->next;continue;}*p=d->next;if(!--d->socket->refs){if(d->socket->active)dns_untrack_port(d->socket->local_port);vfs_free(d->socket);}vfs_free(d);return;}}
-static void dns_close(int fd){proxy_sigmask_t m=dns_lock();dns_forget(fd);dns_unlock(m);}
-static void dns_dup(int from,int to){if(from==to)return;proxy_sigmask_t m=dns_lock();struct dns_socket *s=dns_lookup(from);dns_forget(to);if(s){struct dns_fd *d=vfs_palloc(sizeof(*d));if(d){*d=(struct dns_fd){to,s,dns_fds};s->refs++;dns_fds=d;}}dns_unlock(m);}
+static void dns_forget(int fd){struct dns_fd **p=&dns_fds;while(*p){struct dns_fd *d=*p;if(d->fd!=fd){p=&d->next;continue;}*p=d->next;if(!--d->socket->refs){if(d->socket->active)dns_untrack_port(d->socket->local_port);vfs_free(d->socket);}vfs_free(d);if(!dns_fds)__atomic_store_n(&dns_fd_present,0,__ATOMIC_RELEASE);return;}}
+static void dns_close(int fd){if(!__atomic_load_n(&dns_fd_present,__ATOMIC_ACQUIRE))return;proxy_sigmask_t m=dns_lock();dns_forget(fd);dns_unlock(m);}
+static void dns_dup(int from,int to){if(from==to||!__atomic_load_n(&dns_fd_present,__ATOMIC_ACQUIRE))return;proxy_sigmask_t m=dns_lock();struct dns_socket *s=dns_lookup(from);dns_forget(to);if(s){struct dns_fd *d=vfs_palloc(sizeof(*d));if(d){*d=(struct dns_fd){to,s,dns_fds};s->refs++;dns_fds=d;__atomic_store_n(&dns_fd_present,1,__ATOMIC_RELEASE);}}dns_unlock(m);}
 static unsigned short dns_swap(unsigned short n){return (unsigned short)((n<<8)|(n>>8));}
 int proxy_dns_forwarder(const char *text){unsigned char b[4];for(unsigned i=0;i<4;i++){unsigned n=0,d=0;while(*text>='0'&&*text<='9'){n=n*10+*text++-'0';if(n>255)return -EINVAL;d++;}if(!d||*text++!=(i==3?':':'.'))return -EINVAL;b[i]=n;}if(!p_equal(text,"53")||b[0]!=127)return -EINVAL;dns_endpoint=(struct sockaddr_in){.sin_family=AF_INET,.sin_port=dns_swap(53)};p_copy(&dns_endpoint.sin_addr,b,4);return 0;}
 static int dns_address(const void *addr,unsigned long len){if(!dns_endpoint.sin_port||!addr||len<sizeof(struct sockaddr_in))return 0;const struct sockaddr_in *a=addr;return a->sin_family==AF_INET&&a->sin_port==dns_endpoint.sin_port&&a->sin_addr.s_addr==dns_endpoint.sin_addr.s_addr;}
@@ -115,7 +116,7 @@ static long dns_name(void *out,unsigned *len,const struct sockaddr_in *name){if(
 static void dns_record_local(int fd,struct dns_socket *s){unsigned n=sizeof(s->local);if(!RAW(PROXY_SC_getsockname,fd,&s->local,&n,0,0,0))s->local_port=s->local.sin_port;}
 static long dns_activate(int fd,struct dns_socket *s){if(s->active)return 0;struct sockaddr_in local={0};unsigned n=sizeof(local);long r=RAW(PROXY_SC_getsockname,fd,&local,&n,0,0,0);if(r<0||!local.sin_port){struct sockaddr_in bindaddr={.sin_family=AF_INET,.sin_addr={.s_addr=0x0100007f}};r=RAW(PROXY_SC_bind,fd,&bindaddr,sizeof(bindaddr),0,0,0);if(r<0)return r;}dns_record_local(fd,s);s->active=1;dns_track_port(s->local_port);return 0;}
 static long dns_call(long nr,proxy_arg_t a[6]){
-    if(nr==PROXY_SC_socket){long r=RAW(nr,a[0],a[1],a[2],0,0,0);if(r>=0&&a[0]==AF_INET){int type=(int)a[1]&0xf;if(type==SOCK_DGRAM||type==SOCK_STREAM){struct dns_socket *s=vfs_palloc(sizeof(*s));struct dns_fd *d=vfs_palloc(sizeof(*d));if(!s||!d){vfs_free(s);vfs_free(d);RAW(PROXY_SC_close,r,0,0,0,0,0);return -ENOMEM;}*s=(struct dns_socket){.refs=1,.type=type};proxy_sigmask_t m=dns_lock();*d=(struct dns_fd){(int)r,s,dns_fds};dns_fds=d;dns_unlock(m);}}return r;}
+    if(nr==PROXY_SC_socket){long r=RAW(nr,a[0],a[1],a[2],0,0,0);if(r>=0&&a[0]==AF_INET){int type=(int)a[1]&0xf;if(type==SOCK_DGRAM||type==SOCK_STREAM){struct dns_socket *s=vfs_palloc(sizeof(*s));struct dns_fd *d=vfs_palloc(sizeof(*d));if(!s||!d){vfs_free(s);vfs_free(d);RAW(PROXY_SC_close,r,0,0,0,0,0);return -ENOMEM;}*s=(struct dns_socket){.refs=1,.type=type};proxy_sigmask_t m=dns_lock();*d=(struct dns_fd){(int)r,s,dns_fds};dns_fds=d;__atomic_store_n(&dns_fd_present,1,__ATOMIC_RELEASE);dns_unlock(m);}}return r;}
     proxy_sigmask_t lock=dns_lock();struct dns_socket *s=dns_lookup((int)a[0]);int tracked=s!=NULL;int active=s&&s->active;int connected=s&&s->connected;struct sockaddr_in local=s?s->local:(struct sockaddr_in){0};dns_unlock(lock);
     int target=0;if(nr==PROXY_SC_connect)target=dns_address((void *)(uintptr_t)a[1],a[2]);if(nr==PROXY_SC_sendto)target=dns_address((void *)(uintptr_t)a[4],a[5]);if(nr==PROXY_SC_sendmsg&&a[1]){struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);target=dns_address((void *)(uintptr_t)m.name,m.namelen);}if(nr==PROXY_SC_sendmmsg&&a[1]&&a[2]){unsigned count=(unsigned)a[2];if(count>1024)count=1024;for(unsigned i=0;i<count&&!target;i++){struct proxy_message m=arch_mmsg_read((void *)(uintptr_t)a[1],i);target=dns_address((void *)(uintptr_t)m.name,m.namelen);}}
     if(target){if(nr==PROXY_SC_connect&&tracked&&s->type==SOCK_STREAM)return -ECONNREFUSED;if(!tracked)return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(dns_start()<0)return -EIO;

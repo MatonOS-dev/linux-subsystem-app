@@ -177,24 +177,22 @@ first optimization targets.
 opt-in `PROXY_PROFILE=1` TSC/call-site build was used before and after the
 changes. For each profile, the one-operation process was subtracted from a
 20,000-operation process to remove loader/setup work. The final `--count`
-aggregates corroborate the site deltas: open+close has 13 raw calls per pair
-(6.5 per trapped payload syscall); stat has 6 raw calls per trapped syscall.
+aggregates corroborate the site deltas: open+close has 10 raw calls per pair
+(5 per trapped payload syscall); stat has 5 raw calls per trapped syscall.
 
 | Measured operation | Raw call site | Calls / operation | Result |
 |---|---|---:|---|
 | `openat` + `close` | `proxy_restore` (gateway signal-stack restore, `mmap`) | 3 | Runtime gateway work. |
 | `openat` + `close` | `handler` (`gettid`) | 2 | Trap routing. |
-| `openat` + `close` | `path_call` (`faccessat`) | 1 | Path-call bookkeeping. |
+| `openat` + `close` | `path_call` (variable raw `openat`) | 1 | Payload open. |
 | `openat` + `close` | `fd_name_close` (`rt_sigprocmask`) | 1 | Protect fd-table update. |
-| `openat` + `close` | `handler` (`rt_sigprocmask`) | 2 | Signal routing. |
-| `openat` + `close` | `dns_lock` (`getpid`), `dns_close` (`rt_sigprocmask`) | 2 | DNS state cleanup. |
+| `openat` + `close` | `handler` (`rt_sigprocmask`) | 1 | Signal routing. |
 | `openat` + `close` | `vfs_fd_record` (`rt_sigprocmask`) | 2 | Protect fd-table update. |
-| **open+close total** |  | **13** | **6.5 raw calls per trapped payload syscall.** |
+| **open+close total** |  | **10** | **5 raw calls per trapped payload syscall.** |
 | `stat` | `handler` (`newfstatat`) | 2 | Original result and fast-path metadata. |
 | `stat` | `vfs_openat2_path_fd` (`openat2`) | 1 | Resolve translated backing path; the temporary root-fd open/close pair is gone. |
-| `stat` | `links_payload_fd_stat` (`readlinkat`) | 1 | Link-count repair path. |
 | `stat` | `proxy_restore` (`mmap`), `handler` (`gettid`) | 2 | Gateway and trap routing. |
-| **stat total** |  | **6** | **6 raw calls per trapped payload syscall.** |
+| **stat total** |  | **5** | **5 raw calls per trapped payload syscall.** |
 
 The fd-name linked list is now a dynamically grown fd-indexed array. Close
 clears a slot but retains its string capacity for reuse; there is no fd cap.
@@ -219,15 +217,15 @@ processes, same filesystem):
 
 | Operation | Native | Proxied | Ratio |
 |---|---:|---:|---:|
-| `getpid` | 333.85 ns/op | 424.00 ns/op | 1.27× |
-| translated `openat` + `close` | 2.42 µs/op | 14.52 µs/op | 6.00× |
-| translated `stat` | 1.41 µs/op | 10.60 µs/op | 7.52× |
-| translated `statx` | 1.31 µs/op | 11.18 µs/op | 8.55× |
+| `getpid` | 321.89 ns/op | 426.35 ns/op | 1.32× |
+| translated `openat` + `close` | 2.53 µs/op | 13.74 µs/op | 5.43× |
+| translated `stat` | 1.40 µs/op | 7.58 µs/op | 5.40× |
+| translated `statx` | 1.37 µs/op | 8.12 µs/op | 5.95× |
 
 `tests/io-bench.sh 1073741824` compared 10,000 open/close, stat and statx calls
 plus a sequential 1 GiB zero-filled allocated file on the same filesystem.
-The 10k metadata rates were 2.49/14.26 µs (open), 1.39/10.21 µs (stat), and
-1.28/11.03 µs (statx), native/proxied. The page-cache-warmed 1 GiB read took
-72.2/133.0 ms and mmap took 13.76/13.32 ms, native/proxied. These numbers
+The final 10k metadata rates were 2.75/13.56 µs (open), 1.32/8.23 µs (stat),
+and 1.50/7.62 µs (statx), native/proxied. The page-cache-warmed 1 GiB read
+took 90.0/135.0 ms and mmap took 10.0/11.9 ms, native/proxied. These numbers
 measure fd passthrough and memory bandwidth, not cold physical-disk throughput.
 Read and mmap are not handled by the pathname index once the fd is open.

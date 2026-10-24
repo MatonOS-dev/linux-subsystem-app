@@ -298,8 +298,9 @@ struct proxy_open_how {uint64_t flags,mode,resolve;};
  * Magic links, relative/dirfd paths, packed entries, mount roots and all
  * openat2 errors use the existing component walker, which also handles the
  * virtual-root escape and EXDEV rules. */
-static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd){
+static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd,char **outpath){
     if(outfd)*outfd=-1;
+    if(outpath)*outpath=NULL;
     if(fd!=AT_FDCWD || !path || path[0]!='/' || p_equal(path,"/"))return NULL;
     for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
         if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.'))return NULL;
@@ -320,9 +321,10 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
      * that name directly avoids opening and closing a helper root fd on every
      * trapped lookup; NO_SYMLINKS keeps this fast path conservative. */
     long targetfd=RAW(PROXY_SC_openat2,AT_FDCWD,host_path,&how,sizeof(how),0,0);
+    if(targetfd<0){vfs_free(host_path);vfs_free(global);return NULL;}
+    if(outfd){char *marker=dupstr("");if(marker){*outfd=(int)targetfd;if(outpath)*outpath=host_path;else vfs_free(host_path);vfs_free(global);return marker;}}
+    if(outfd&&outpath){RAW(PROXY_SC_close,targetfd,0,0,0,0,0);vfs_free(host_path);vfs_free(global);return NULL;}
     vfs_free(host_path);
-    if(targetfd<0){vfs_free(global);return NULL;}
-    if(outfd){char *marker=dupstr("");if(marker){*outfd=(int)targetfd;vfs_free(global);return marker;}}
     char proc[48]="/proc/self/fd/";size_t k=14;unsigned value=(unsigned)targetfd;char digits[16];size_t d=0;
     do{digits[d++]=(char)('0'+value%10);value/=10;}while(value);
     while(d)proc[k++]=digits[--d];
@@ -339,10 +341,10 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     if(answer && identity)*identity=m;
     vfs_free(global);return answer;
 }
-int vfs_openat2_path_fd(int fd,const char *path,int follow,int *outfd){
+int vfs_openat2_path_fd(int fd,const char *path,int follow,int *outfd,char **outpath){
     PROFILE_BEGIN();
     if(!outfd)return -EINVAL;
-    *outfd=-1;char *marker=resolve_openat2_fast(fd,path,follow,NULL,outfd);
+    *outfd=-1;if(outpath)*outpath=NULL;char *marker=resolve_openat2_fast(fd,path,follow,NULL,outfd,outpath);
     if(!marker){PROFILE_END(5);return -ENOSYS;}
     vfs_free(marker);PROFILE_END(5);return 0;
 }
@@ -482,7 +484,7 @@ static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *err
             int hit=m && p_equal(m->target,global) && p_equal(m->source,gpu_poll_sources[slot]);vfs_free(global);
             if(hit){if(identity)*identity=m;char *answer=dupstr(m->source);if(!answer)*error=-ENOMEM;return answer;}}
     }
-    if(allow_fast){char *fast=resolve_openat2_fast(fd,path,follow,identity,NULL);if(fast)return fast;}
+    if(allow_fast){char *fast=resolve_openat2_fast(fd,path,follow,identity,NULL,NULL);if(fast)return fast;}
     char *input;
     if(path[0]=='/')input=dupstr(path);else {char *base=basepath(fd,error);if(!base)return NULL;input=join(base,path);vfs_free(base);}
     if(!input){*error=-ENOMEM;return NULL;}

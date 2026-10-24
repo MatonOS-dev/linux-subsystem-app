@@ -4,6 +4,7 @@
 long links_publish(const char *,const char *,long);
 struct proxy_stat; struct statx;
 void links_payload_fd_stat(int,void *);
+void links_payload_path_stat(const char *,void *,int);
 void links_fd_stat(int,struct proxy_stat *);
 void links_recover_path(const char *);
 int links_hidden(const char *);

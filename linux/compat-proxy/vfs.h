@@ -15,7 +15,7 @@ void vfs_raw_count_fork_child(void);
 void vfs_profile_dump(void);
 void vfs_resolve_cache_invalidate(void);
 char *vfs_resolve(int, const char *, int, long *);
-int vfs_openat2_path_fd(int,const char *,int,int *);
+int vfs_openat2_path_fd(int,const char *,int,int *,char **);
 /* Follow symlinks, but retain a final proc fd magic link for linkat. */
 #define VFS_FOLLOW_LINK_SOURCE 2
 char *vfs_resolve_mount(int,const char *,int,long *,void **);

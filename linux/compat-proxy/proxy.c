@@ -712,8 +712,8 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if((nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx) && fd==AT_FDCWD &&
             original_path && *original_path && !(stat_flags&AT_NO_AUTOMOUNT) &&
             (nr!=PROXY_SC_statx || (a[3]&STATX_MODE))){
-        int fastfd=-1;
-        if(!vfs_openat2_path_fd(fd,original_path,follow,&fastfd)){
+        int fastfd=-1;char *fastpath=NULL;
+        if(!vfs_openat2_path_fd(fd,original_path,follow,&fastfd,&fastpath)){
             long fast_result;
             if(nr==PROXY_SC_newfstatat)
                 fast_result=RAW(nr,fastfd,"",a[2],a[3]|AT_EMPTY_PATH,0,0);
@@ -723,14 +723,14 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
             if(!fast_result && nr==PROXY_SC_newfstatat){
                 struct stat *st=(void *)(uintptr_t)a[2];
                 fallback=S_ISREG(st->st_mode) && (st->st_mode&S_ISVTX);
-                if(!fallback)links_payload_fd_stat(fastfd,st);
+                if(!fallback)links_payload_path_stat(fastpath,st,0);
             }else if(!fast_result){
                 struct statx *sx=(void *)(uintptr_t)a[4];
                 fallback=S_ISREG(sx->stx_mode) && (sx->stx_mode&S_ISVTX);
-                if(!fallback){struct proxy_stat st;if(!arch_stat_fd(fastfd,&st)){links_fd_stat(fastfd,&st);arch_statx_nlink(sx,st.st_nlink);}}
+                if(!fallback)links_payload_path_stat(fastpath,sx,1);
             }
             RAW(PROXY_SC_close,fastfd,0,0,0,0,0);
-            if(!fallback)return fast_result;
+            vfs_free(fastpath);if(!fallback)return fast_result;
         }
     }
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path,(int)a[2]);if(synthetic!=-ENOSYS)return synthetic;}

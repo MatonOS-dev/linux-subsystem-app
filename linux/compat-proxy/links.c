@@ -328,6 +328,7 @@ long links_dents(long fd,void *buf,long size){
  long r=dents_locked(fd,buf,size);if(lock>=0)unlock(lock);return r;
 }
 void links_payload_fd_stat(int fd,void *wire){struct proxy_stat s;arch_stat_decode(&s,wire);links_fd_stat(fd,&s);arch_stat_nlink(wire,s.st_nlink);}
+void links_payload_path_stat(const char *path,void *wire,int extended){struct proxy_stat s;if(extended){struct statx *x=wire;s=(struct proxy_stat){.st_mode=x->stx_mode,.st_nlink=x->stx_nlink};links_stat(path,&s);arch_statx_nlink(wire,s.st_nlink);}else{arch_stat_decode(&s,wire);links_stat(path,&s);arch_stat_nlink(wire,s.st_nlink);}}
 
 long links_publish(const char *source,const char *target,long flags){
  char root[PATH_MAX],other[PATH_MAX];int left=tree(root,source),right=tree(other,target);
