@@ -160,6 +160,30 @@ target: the medians remain 3.56x native for openat+close and 4.19x for stat.
 The remaining direct dispatch and fd-name lock cost needs further work before
 this path should be presented as a low-overhead replacement.
 
+### Warm Flatpak workload A/B (2026-10-24)
+
+Flatpak 1.14.6 used an isolated user install under
+`/mnt/data/aosp/out/pc-logs/agents/site-rewrite-1b-flatpak`, with the
+Freedesktop 26.08 VulkanInfo app and runtime pulled once. Measurements were
+warm, headless (`DISPLAY` unset), with proxy counters off. Each launch result
+is the median of five runs; VulkanInfo exits with `ERROR_INCOMPATIBLE_DRIVER`
+because this host has no Vulkan driver.
+
+| Workload | Native | Proxy, rewrite off | Proxy, rewrite on |
+|---|---:|---:|---:|
+| VulkanInfo launch | 0.32 s | 0.62 s | 1.88 s |
+| Warm pull + deploy | 5.00 s | did not complete | did not complete |
+| Warm deploy only (`--no-pull`) | — | 1.71 s | 4.06 s |
+
+The no-deploy pull stage completed natively but stalled in `poll()` through
+both proxy modes; the rewrite-off attempt was stopped after 116.95 s and the
+rewrite-on attempt after 67.47 s. The separate no-pull deployment succeeded
+in both proxy modes. Therefore this run does not provide a complete proxy
+pull-plus-deploy A/B, and the warm launch result regresses with rewriting on.
+Raw logs are `site-rewrite-1b-flatpak/launch-ab.log`,
+`pull-deploy-ab.log`, `deploy-proxy0.log`, and `deploy-proxy1.log` under
+`/mnt/data/aosp/out/pc-logs/agents`.
+
 ### Per-trap allocation follow-up (2026-10-19)
 
 The SIGSYS handler now uses a growable per-thread arena carved from its
@@ -521,10 +545,8 @@ Runtime output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-freedesktop-ste
 
 ### Next phases
 
-Broaden x86_64 decoder/stack proofs and add FDE ranges, preserving the trap
-fallback for cancellation/restart semantics and app-owned user dispatch. Then
-implement i386 on this shared load-time core: AT_SYSINFO/virtualized TCB sysinfo
-entry substitution (never patch the vDSO), primary int80 call-table windows,
-six-register preservation and non-flat-code-segment fallback. Arm64 follows
-with its own branch-only backend and cache maintenance. Anonymous/JIT handling
-and runtime discovery/parking belong to a later version, not this one.
+The next work is reducing direct-dispatch overhead to the 2x-native target and
+diagnosing why proxy `--no-deploy` stalls in the Flatpak pull path. Preserve
+the trap fallback for cancellation/restart semantics and app-owned user
+dispatch. i386 rewriting, arm64 rewriting, anonymous/JIT handling and runtime
+discovery/parking remain out of scope for this x86_64 phase.
