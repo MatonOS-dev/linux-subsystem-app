@@ -7,10 +7,11 @@ The x86_64 resident ELF loader and static library. Android's inherited
 seccomp filter, UID and SELinux restrictions stay in force. No real namespace,
 mount, ptrace, or Android change. The virtual filesystem is compatibility
 state, **not containment**. Production stubs launch the Android-linked loader
-from `V3Launcher`; its optional `--gpu-bridge` mode installs x86_64 thread
-adoption and the read-only GPU bootstrap before entering the Linux payload.
-The i386 loader remains freestanding and does not accept this option. Host
-test binaries remain static and do not include the Android bridge backend.
+from `V3Launcher`; its optional `--gpu-bridge` mode installs the architecture's
+thread adoption and read-only GPU bootstrap before entering the Linux payload.
+Both production loaders are Android-linked: x86_64 uses linker64 and i386 uses
+linker and the 32-bit bionic/system graphics libraries. Host test binaries
+remain freestanding and do not include the Android bridge backend.
 
 Build/test: `./build.sh`, `./tests/run.sh` (host cc, -Wall -Wextra -Werror).
 Outputs: `build/linux-layer-v3`, `build/liblinux-layer-v3.a`.
@@ -29,12 +30,69 @@ process. Input hashes are in `build/policy-inputs.sha256`. The full syscall
 complement, with translation/virtual/ENOSYS classifications, is generated in
 `build/trapped-syscalls.{json,md}` on each build.
 
-`build-android.sh` produces the production x86_64 loader as an Android-linked
-executable so bionic remains resident while adopted Linux threads call the
-Vulkan bridge. The normal launch path still enters through `proxy_enter`; only
+`build-android.sh` produces both production loaders as Android-linked
+executables so same-ABI bionic remains resident while adopted Linux threads
+call EGL/GLES/Vulkan. The normal launch path still enters through `proxy_enter`; only
 `--gpu-bridge` selects adoption. That option also publishes the bridge and
 adoption pointers in the named read-only `maton-gpu-bootstrap` mapping used by
 the freestanding Vulkan ICD.
+
+The bridge opt-in is carried in sealed exec state (wire version 4), rather
+than inherited function addresses. `V3Launcher` still supplies one
+`--gpu-bridge` option. On an ELF-class handoff the peer initializes its own
+bionic runtime and publishes callable pointers of that ABI. A production
+filter leaves the peer ABI to Android's inherited policy during linker
+startup; the peer installs its compatibility filter before payload entry.
+The existing strict fixed-gateway peer routing remains in freestanding
+host builds. Flatpak's per-app `features=multiarch` permission is still needed.
+An incoming Flatpak filter gets a narrow ELF32 startup allowance for
+`personality(0xffffffff)` and `personality(PER_LINUX32)`; all other calls and
+personality flags retain the original filter result. This avoids bionic
+aborting before the peer can install its handler. Android's filter and the
+stub UID/SELinux domain remain inherited throughout.
+
+ELF32 PIE may be relocated by ASLR; fixed payload mappings are checked
+against the resident's live ELF segments, rather than its link-time address.
+The i386 backend uses kernel `user_desc` values, not libc TCB layouts.
+It parks a real bionic pthread behind every Linux thread, preserves the
+Linux clone registers and FXSAVE/XSAVE state, and installs the opaque
+`CLONE_SETTLS` descriptor before resuming the payload. GPU calls claim the
+proxy's reserved GDT entry for bionic GS; nested calls share that scope,
+and leaving the outer scope restores the payload descriptor and selector.
+The shared vDSO syscall trampoline routes each call using the thread's
+current adoption state, so glibc and bionic keep their respective semantics.
+Thread exit returns through a consumed signal frame to the resident stack,
+releases the proxy altstack, and only then clears/wakes the app's clear_tid.
+App robust lists stay separate from bionic's kernel-owned list. Process
+fork rebases both registries using the caller's opaque kernel TLS base and
+retains its copied GDT reservation. No x86_64 function address is callable
+or published as the i386 bridge.
+
+Device-only backend check (root diagnostic, no GPU driver required):
+
+```
+bash linux/compat-proxy/tests/i386-adopt-device.sh /external/output 127.0.0.1:5556
+```
+
+This builds a small Android-linked harness and a glibc ELF32 payload outside
+the source tree. It checks the main thread and six pthreads, nested GS
+scopes, bionic identity, join/clear_tid, all three virtual TLS slots and their
+inheritance, inherited FP control, robust owner death, fork followed by
+creating/joining another thread, and resident ELF collision rejection. Temporary
+device files are removed. It does not establish rendering or app-domain
+SELinux compatibility. `tests/run.sh` additionally checks the incoming BPF
+allowance preserves other syscall/flag/ABI results and filter errors.
+
+On the supplied enforcing v45 VM, the bridge reached 32-bit Android EGL,
+but app rendering is blocked by image integration: `/vendor/lib/libgallium_dri.so`,
+`libdrm.so`, `libgbm_mesa.so`, and `hw/vulkan.virtio.so` have `vendor_file`
+labels instead of the app-readable graphics labels used for their 64-bit
+counterparts. App EGL aborts on the denied gallium read. A separate root
+diagnostic also finds that the sphal namespace cannot resolve Mesa's
+`libhardware.so` dependency: only the system 32-bit copy exists, while
+`/vendor/lib64/libhardware.so` is present. Fix and freshly boot the image;
+do not use remount, relabeling, or copied system libraries as a test pass.
+The app-UID EGL/GLX pixel checks and Vulkan enumeration remain required.
 
 Legacy path calls translate to the allowed *at syscalls before replay. Other
 translations include dup2 (including same-fd validation), getpgrp, pipe,
