@@ -34,7 +34,7 @@ public final class LinuxAppStoreService extends Service {
     private static final String INSTALL = "org.matonos.permission.INSTALL_LINUX_APPS";
     private static final String QUERY = "org.matonos.permission.QUERY_LINUX_APPS";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
-    private InstallTransaction activeInstall;
+    private final java.util.Set<InstallTransaction> activeInstalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private android.os.PowerManager.WakeLock installWakeLock;
 
     private void beginInstallForeground() {
@@ -46,21 +46,21 @@ public final class LinuxAppStoreService extends Service {
                 .setOngoing(true).build(),android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         installWakeLock=getSystemService(android.os.PowerManager.class).newWakeLock(
                 android.os.PowerManager.PARTIAL_WAKE_LOCK,"MatonOS:Install");
-        installWakeLock.setReferenceCounted(false);
+        installWakeLock.setReferenceCounted(true);
         installWakeLock.acquire();
     }
 
     private synchronized void finishInstall(InstallTransaction transaction) {
-        if(activeInstall!=transaction)return;
-        activeInstall=null;
+        if(!activeInstalls.remove(transaction))return;
         if(installWakeLock!=null && installWakeLock.isHeld())installWakeLock.release();
-        installWakeLock=null;
-        stopForeground(STOP_FOREGROUND_REMOVE);
+        if(activeInstalls.isEmpty()) { installWakeLock=null; stopForeground(STOP_FOREGROUND_REMOVE); }
     }
 
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // Bound concurrent store jobs by the device's available CPU parallelism.
+    private final ExecutorService worker = Executors.newFixedThreadPool(Math.max(1,Runtime.getRuntime().availableProcessors()));
     private final Map<String, Operation> operations = new ConcurrentHashMap<>();
     private final Map<String, Operation> pending = new ConcurrentHashMap<>();
+    private final Map<String,Object> packageInstallLocks = new ConcurrentHashMap<>();
     private static volatile LinuxAppStoreService instance;
     private interface FinalizePackage {void run()throws Exception;}
     private static final class Operation {
@@ -252,8 +252,7 @@ public final class LinuxAppStoreService extends Service {
                     long packBytes=InstallTransaction.treeBytes(new File(
                             org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,InstallTransaction.packageManifest(staged,op.ref)),"files"));
                     op.callback.onProgress(op.id,"packs",85,0,packBytes);
-                    org.matonos.linux.stub.StagedPacks.build(LinuxAppStoreService.this,installation,InstallTransaction.packageManifest(staged,op.ref),
-                            new File(op.packArtifacts,"objects"),()->op.cancelled,op.installed);
+                    buildAllPacks(op,installation,staged);
                     if(op.cancelled)throw new java.io.IOException("Install cancelled");
                     op.callback.onProgress(op.id,"packs",90,packBytes,packBytes);
                     installDeclaredPackages(op);
@@ -269,12 +268,11 @@ public final class LinuxAppStoreService extends Service {
             }
         };
         synchronized (this) {
-            if (activeInstall != null) throw new IllegalStateException("Another install is active");
             InstallTransaction transaction=InstallTransaction.create(this,stagedCallback,op.stagingId,op.ref,remote);
-            activeInstall=transaction;
+            activeInstalls.add(transaction);
             op.installService=transaction;
             try {
-                beginInstallForeground();
+                if(activeInstalls.size()==1)beginInstallForeground();else installWakeLock.acquire();
                 if(op.cancelled)transaction.cancel();
                 transaction.start(()->finishInstall(transaction));
             } catch(RuntimeException error) {finishInstall(transaction);throw error;}
@@ -401,6 +399,30 @@ public final class LinuxAppStoreService extends Service {
     }
     /** A ref's mount and launcher are parameters; every package uses this path. */
     private void installStubPackage(Operation op,String packageRef,File artifacts,PackageInfo installed,
+            boolean launchable,String mountPoint) throws Exception {
+        String packageName=packageFor(packageRef);
+        Object lock=packageInstallLocks.computeIfAbsent(packageName,key->new Object());
+        synchronized(lock) {
+            if(installed==null)try {
+                PackageInfo current=getPackageManager().getPackageInfo(packageName,PackageManager.GET_SIGNING_CERTIFICATES);
+                JSONObject row=InstallTransaction.row(op.stagedManifest,packageRef);
+                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
+                        current.splitNames,current.applicationInfo.splitSourceDirs);
+                if(packageSignerMatches(current)&&record.ref.equals(packageRef)&&record.commit.equals(row.getString("commit"))
+                        &&record.remote.equals(row.getString("origin")))return;
+                throw new SecurityException("Package was installed by another operation with different content; retry");
+            }catch(PackageManager.NameNotFoundException absent) { }
+            else try {
+                PackageInfo current=getPackageManager().getPackageInfo(packageName,PackageManager.GET_SIGNING_CERTIFICATES);
+                if(!packageSignerMatches(current)||current.getLongVersionCode()!=installed.getLongVersionCode()
+                        ||current.lastUpdateTime!=installed.lastUpdateTime)
+                    throw new SecurityException("Package changed during planning; retry");
+            }catch(PackageManager.NameNotFoundException absent) { throw new SecurityException("Package disappeared during planning; retry",absent); }
+            installStubPackageLocked(op,packageRef,artifacts,installed,launchable,mountPoint);
+        }
+    }
+
+    private void installStubPackageLocked(Operation op,String packageRef,File artifacts,PackageInfo installed,
             boolean launchable,String mountPoint) throws Exception {
         JSONObject packageRow=InstallTransaction.row(op.stagedManifest,packageRef);
         String pkg=packageFor(packageRef),remote=packageRow.getString("origin");
@@ -591,12 +613,48 @@ public final class LinuxAppStoreService extends Service {
                     throw new SecurityException("Declared package changed during planning; retry");
                 continue;
             }
-            if(prior!=null)throw new SecurityException("Declared package was installed during planning; retry");
+            if(prior!=null) {
+                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(prior.splitNames,prior.applicationInfo.splitSourceDirs);
+                if(packageSignerMatches(prior)&&record.ref.equals(ref)&&record.commit.equals(deployment.getString("commit"))
+                        &&record.remote.equals(deployment.getString("origin")))continue;
+                throw new SecurityException("Declared package was installed during planning with different content; retry");
+            }
             File artifacts=new File(op.packArtifacts,"dependency-"+i);
-            if(!artifacts.mkdirs())throw new java.io.IOException("Cannot create package artifacts");
-            File installation=InstallTransaction.installationFor(this,op.stagingId,deployment);
-            org.matonos.linux.stub.StagedPacks.build(this,installation,InstallTransaction.packageManifest(op.stagedManifest,ref),new File(artifacts,"objects"),()->op.cancelled,null);
+            if(!artifacts.isDirectory())throw new java.io.IOException("Missing prepared dependency packs for "+ref);
             installStubPackage(op,ref,artifacts,null,false,deployment.getString("mount"));
+        }
+    }
+
+    /** Pack independent refs in parallel; package commits remain dependency ordered below. */
+    private void buildAllPacks(Operation op,File root,JSONObject manifest) throws Exception {
+        org.json.JSONArray rows=manifest.getJSONArray("deployments");
+        java.util.List<org.matonos.linuxhost.stubgen.DependencyPlan.Node> nodes=new java.util.ArrayList<>();
+        java.util.Map<String,Integer> positions=new java.util.HashMap<>();
+        for(int i=0;i<rows.length();i++) {
+            JSONObject row=rows.getJSONObject(i);String ref=row.getString("ref");positions.put(ref,i);
+            org.matonos.linuxhost.stubgen.DependencyPlan.Node node=new org.matonos.linuxhost.stubgen.DependencyPlan.Node(ref,
+                    row.getString("origin"),null,row.getBoolean("reused"));
+            org.json.JSONArray dependencies=row.getJSONArray("dependencies");
+            for(int d=0;d<dependencies.length();d++)node.dependencies.add(dependencies.getString(d));
+            nodes.add(node);
+        }
+        org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> outcome=org.matonos.linuxhost.stubgen.PlanExecutor.execute(nodes,
+                Runtime.getRuntime().availableProcessors(),node->{
+            if(op.cancelled)throw new java.io.IOException("Install cancelled");
+            if(node.reused)return null;
+            int index=positions.get(node.ref);JSONObject row=rows.getJSONObject(index);
+            File artifacts=node.ref.equals(op.ref)?op.packArtifacts:new File(op.packArtifacts,"dependency-"+index);
+            if(!node.ref.equals(op.ref)&&!artifacts.mkdirs())throw new java.io.IOException("Cannot create package artifacts");
+            File installation=InstallTransaction.installationFor(this,op.stagingId,row);
+            PackageInfo installed=node.ref.equals(op.ref)?op.installed:null;
+            org.matonos.linux.stub.StagedPacks.build(this,installation,InstallTransaction.packageManifest(manifest,node.ref),
+                    new File(artifacts,"objects"),()->op.cancelled,installed);
+            return null;
+        });
+        if(!outcome.completed.containsKey(op.ref)) {
+            Throwable error=outcome.failed.get(op.ref);
+            if(error instanceof Exception)throw (Exception)error;
+            throw new java.io.IOException("Requested package packs could not be built because a dependency failed",error);
         }
     }
 
@@ -690,5 +748,5 @@ public final class LinuxAppStoreService extends Service {
         operations.remove(operationKey(op.uid,op.id),op); pending.remove(operationKey(op.uid,op.id),op);
     }
 
-    @Override public synchronized void onDestroy() { if(activeInstall!=null){activeInstall.cancel();finishInstall(activeInstall);} instance=null; worker.shutdownNow(); super.onDestroy(); }
+    @Override public synchronized void onDestroy() { for(InstallTransaction transaction:new java.util.ArrayList<>(activeInstalls)){transaction.cancel();finishInstall(transaction);} instance=null; worker.shutdownNow(); super.onDestroy(); }
 }
