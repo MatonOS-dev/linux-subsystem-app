@@ -49,6 +49,8 @@ SCAN_FILES = [
 # (file, pattern) -> (allowed occurrences, reason). Every raw read must be
 # either routed through PlaceholderFiles on the same line or justified here.
 ALLOW = {
+    ("StubGenerator.java", "fileinputstream"): (
+        3, "hashes and streams the freshly built EROFS image (mkfs output in a temp dir) into its STORED split entry, not a .v3-store-root tree"),
     ("LinuxAppStoreService.java", "files-readAllBytes"): (
         1, "reads the objects.index writer artifact under flatpak-pack-artifacts, not a .v3-store-root tree"),
     ("LinuxAppStoreService.java", "files-copy"): (
