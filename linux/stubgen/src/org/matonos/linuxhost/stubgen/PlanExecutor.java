@@ -27,7 +27,7 @@ public final class PlanExecutor {
         try {
             for(DependencyPlan.Node node:plan) {
                 List<Future<T>> dependencies=new ArrayList<>();boolean missing=false;
-                for(String ref:node.dependencies) {
+                for(String ref:node.stageDependencies) {
                     Future<T> dependency=futures.get(ref);
                     if(dependency==null) { if(!node.reused)missing=true; }
                     else dependencies.add(dependency);

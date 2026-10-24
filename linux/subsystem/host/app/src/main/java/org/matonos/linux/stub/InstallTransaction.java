@@ -278,12 +278,12 @@ public final class InstallTransaction {
             byte[] output=command(java.util.Arrays.asList(helper,installation.getAbsolutePath(),origin.name,ref),true);
             if(output==null)return null;
             try(java.io.DataInputStream in=new java.io.DataInputStream(new java.io.ByteArrayInputStream(output))) {
-                String commit=field(in,64);byte[] metadata=blob(in,128*1024);String runtime=field(in,1024);
+                String commit=field(in,64);byte[] metadata=blob(in,128*1024);String runtime=field(in,1024),parent=field(in,1024);
                 int extensions=in.readInt();if(extensions<0||extensions>1)throw new java.io.IOException("Invalid extension flag");
                 int count=in.readInt();if(count<0||count>128)throw new java.io.IOException("Invalid related-ref count");
                 java.util.List<String> related=new ArrayList<>();for(int i=0;i<count;i++)related.add(field(in,1024));
                 if(in.read()!=-1)throw new java.io.IOException("Trailing Flatpak plan bytes");
-                return new org.matonos.linuxhost.stubgen.DependencyPlan.Info(commit,metadata,runtime,related,extensions==1);
+                return new org.matonos.linuxhost.stubgen.DependencyPlan.Info(commit,metadata,runtime,parent,related,extensions==1);
             }
         }
         org.matonos.linuxhost.stubgen.DependencyPlan.Info requirements(org.matonos.linuxhost.stubgen.DeploymentRecord record)throws Exception {
@@ -292,8 +292,8 @@ public final class InstallTransaction {
                 String helper=new File(context.getApplicationInfo().nativeLibraryDir,"libmatonos-flatpak-plan.so").getAbsolutePath();
                 byte[] bytes=command(java.util.Arrays.asList(helper,"--requirements",file.getAbsolutePath(),record.ref),false);
                 try(java.io.DataInputStream in=new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes))) {
-                    String runtime=field(in,1024);int related=in.readInt();if(related<0||related>1||in.read()!=-1)throw new java.io.IOException("Invalid Flatpak requirements");
-                    return new org.matonos.linuxhost.stubgen.DependencyPlan.Info(record.commit,record.metadata,runtime,java.util.Collections.emptyList(),related==1);
+                    String runtime=field(in,1024),parent=field(in,1024);int related=in.readInt();if(related<0||related>1||in.read()!=-1)throw new java.io.IOException("Invalid Flatpak requirements");
+                    return new org.matonos.linuxhost.stubgen.DependencyPlan.Info(record.commit,record.metadata,runtime,parent,java.util.Collections.emptyList(),related==1);
                 }
             }finally{file.delete();}
         }

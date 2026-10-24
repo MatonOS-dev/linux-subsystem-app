@@ -280,34 +280,67 @@ public final class LinuxAppStoreService extends Service {
     }
 
     private void sweepWork() {
-        try { WorkDirs.sweep(WorkDirs.root(this)); }
+        sweepWork(this);
+    }
+
+    private static void sweepWork(Context context) {
+        try { WorkDirs.sweep(WorkDirs.root(context)); }
         catch(Exception error) { Log.w(TAG,"Cannot sweep stale work",error); }
     }
 
     private void cleanupUnusedPackages() {
+        cleanupUnusedPackages(this);
+    }
+
+    private static void cleanupUnusedPackages(Context context) {
         try {
+            PackageManager manager=context.getPackageManager();
             java.util.Set<String> needed=new java.util.HashSet<>();
-            for(PackageInfo installed:getPackageManager().getInstalledPackages(PackageManager.GET_META_DATA|PackageManager.GET_SIGNING_CERTIFICATES)) {
+            for(PackageInfo installed:manager.getInstalledPackages(PackageManager.GET_META_DATA|PackageManager.GET_SIGNING_CERTIFICATES)) {
                 if(installed.applicationInfo==null||installed.signingInfo==null||installed.signingInfo.hasMultipleSigners())continue;
-                if(!packageSignerMatches(installed))continue;
-                android.content.pm.ApplicationInfo entry=getPackageManager().getApplicationInfo(installed.packageName,PackageManager.GET_META_DATA);
+                if(!packageSignerMatches(context,installed))continue;
+                android.content.pm.ApplicationInfo entry=manager.getApplicationInfo(installed.packageName,PackageManager.GET_META_DATA);
                 if(entry.metaData==null)continue;
                 String map=entry.metaData.getString(StubGenerator.DEPENDENCIES_META);
                 if(map!=null)for(String row:map.split(";")){String[] fields=row.split(">",3);if(fields.length==3)needed.add(fields[1]);}
             }
-            for(PackageInfo installed:getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
+            for(PackageInfo installed:manager.getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
                 if(installed.packageName==null||!installed.packageName.startsWith("flatpak."))continue;
                 if(installed.splitNames!=null&&java.util.Arrays.stream(installed.splitNames).anyMatch(name->name.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX)))continue;
-                if(needed.contains(installed.packageName)||!packageSignerMatches(installed))continue;
-                String action=getPackageName()+".PACKAGE_CLEAN."+java.util.UUID.randomUUID();
-                PendingIntent status=PendingIntent.getBroadcast(this,0,new Intent(action).setPackage(getPackageName()),PendingIntent.FLAG_MUTABLE);
-                getPackageManager().getPackageInstaller().uninstall(installed.packageName,status.getIntentSender());
+                if(needed.contains(installed.packageName)||!packageSignerMatches(context,installed))continue;
+                String action=context.getPackageName()+".PACKAGE_CLEAN."+java.util.UUID.randomUUID();
+                PendingIntent status=PendingIntent.getBroadcast(context,0,new Intent(action).setPackage(context.getPackageName()),PendingIntent.FLAG_MUTABLE);
+                manager.getPackageInstaller().uninstall(installed.packageName,status.getIntentSender());
             }
         } catch(Exception error){Log.w(TAG,"Runtime cleanup scan failed",error);}
     }
 
+    /** System-scheduled cleanup avoids starting a background service from BOOT_COMPLETED. */
+    public static final class CleanupJobService extends android.app.job.JobService {
+        private Thread cleanupThread;
+        @Override public boolean onStartJob(android.app.job.JobParameters params) {
+            cleanupThread=new Thread(()->{
+                try { sweepWork(this); cleanupUnusedPackages(this); }
+                finally { jobFinished(params,false); cleanupThread=null; }
+            },"matonos-package-cleanup");
+            cleanupThread.start();
+            return true;
+        }
+        @Override public boolean onStopJob(android.app.job.JobParameters params) {
+            Thread thread=cleanupThread;if(thread!=null)thread.interrupt();
+            return true;
+        }
+    }
+
     public static final class BootReceiver extends android.content.BroadcastReceiver {
-        @Override public void onReceive(Context context,Intent intent){if(!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()))return;context.startService(new Intent(context,LinuxAppStoreService.class).setAction("org.matonos.linux.CLEAN_UNUSED_PACKAGES"));}
+        private static final int CLEANUP_JOB_ID=0x4d41544f;
+        @Override public void onReceive(Context context,Intent intent) {
+            if(!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()))return;
+            android.app.job.JobInfo job=new android.app.job.JobInfo.Builder(CLEANUP_JOB_ID,
+                    new ComponentName(context,CleanupJobService.class)).setPersisted(true).build();
+            android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
+            if(scheduler!=null)scheduler.schedule(job);
+        }
     }
 
 
@@ -372,6 +405,10 @@ public final class LinuxAppStoreService extends Service {
     private static String operationKey(int uid,String id) { return uid+":"+id; }
 
     private boolean packageSignerMatches(PackageInfo info) {
+        return packageSignerMatches(this,info);
+    }
+
+    private static boolean packageSignerMatches(Context context,PackageInfo info) {
         try {
             if(info.signingInfo==null||info.signingInfo.hasMultipleSigners())return false;
             android.content.pm.Signature[] signers=info.signingInfo.getApkContentsSigners();

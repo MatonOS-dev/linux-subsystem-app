@@ -57,8 +57,14 @@ public final class StagedPacks {
         org.matonos.linux.WorkDirs.require(installation);
         org.matonos.linux.WorkDirs.require(output);
         record(sourceRepo,deployment,manifest,output);
-        android.util.Log.i("MatonInstall","Temporary operation allocated bytes after packs: "+
-                InstallTransaction.allocatedBytes(operation)+"; available: "+operation.getUsableSpace());
+        try {
+            android.util.Log.i("MatonInstall","Temporary operation allocated bytes after packs: "+
+                    InstallTransaction.allocatedBytes(operation)+"; available: "+operation.getUsableSpace());
+        } catch(Exception error) {
+            // Concurrent packers may remove OSTree temp files while this
+            // informational walk runs; that must not fail a completed install.
+            android.util.Log.w("MatonInstall","Cannot measure temporary operation size",error);
+        }
     }
 
     private static void record(File sourceRepo,File deployment,JSONObject manifest,File output) throws Exception {

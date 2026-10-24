@@ -21,6 +21,9 @@ static char *runtime_for_metadata(FlatpakRef *ref,GKeyFile *metadata) {
         return g_key_file_get_string(metadata,"ExtensionOf","runtime",NULL);
     return NULL;
 }
+static char *parent_for_metadata(GKeyFile *metadata) {
+    return g_key_file_get_string(metadata,"ExtensionOf","ref",NULL);
+}
 static gboolean has_extensions(GKeyFile *metadata) {
     g_auto(GStrv) groups=g_key_file_get_groups(metadata,NULL);
     for(guint i=0;groups[i];i++)if(g_str_has_prefix(groups[i],"Extension "))return TRUE;
@@ -35,7 +38,8 @@ static int local_requirements(const char *filename,const char *name) {
     g_autoptr(FlatpakRef) ref=parse_ref(name,&error);
     if(!ref||!g_key_file_load_from_file(metadata,filename,G_KEY_FILE_NONE,&error)){fprintf(stderr,"%s\n",error?error->message:"Invalid metadata");return 1;}
     g_autofree char *runtime=runtime_for_metadata(ref,metadata);
-    string(runtime?runtime:"");number(has_extensions(metadata)?1:0);return fflush(stdout)?2:0;
+    g_autofree char *parent=parent_for_metadata(metadata);
+    string(runtime?runtime:"");string(parent?parent:"");number(has_extensions(metadata)?1:0);return fflush(stdout)?2:0;
 }
 int main(int argc,char **argv) {
     if(argc==4&&!strcmp(argv[1],"--requirements"))return local_requirements(argv[2],argv[3]);
@@ -45,7 +49,7 @@ int main(int argc,char **argv) {
     g_autoptr(FlatpakInstallation) installation=flatpak_installation_new_for_path(path,FALSE,NULL,&error);
     g_autoptr(FlatpakRef) ref=parse_ref(argv[3],&error);
     g_autoptr(GKeyFile) metadata=g_key_file_new();
-    g_autofree char *text=NULL,*runtime=NULL,*commit=NULL;
+    g_autofree char *text=NULL,*runtime=NULL,*parent=NULL,*commit=NULL;
     g_autoptr(GPtrArray) related=NULL;
     if(!installation||!ref)goto failed;
     if(argc==5) {
@@ -56,12 +60,12 @@ int main(int argc,char **argv) {
         if(!remote_ref||!bytes)goto failed;
         gsize length=0;const char *data=g_bytes_get_data(bytes,&length);
         if(length>128*1024||!g_key_file_load_from_data(metadata,data,length,G_KEY_FILE_NONE,&error))goto failed;
-        text=g_strndup(data,length);runtime=runtime_for_metadata(ref,metadata);
+        text=g_strndup(data,length);runtime=runtime_for_metadata(ref,metadata);parent=parent_for_metadata(metadata);
         commit=g_strdup(flatpak_ref_get_commit((FlatpakRef*)remote_ref));
     }
     if(argc==4) {
         string(commit?commit:"");string(text?text:"");
-        string(runtime?runtime:"");number(has_extensions(metadata)?1:0);number(0);
+        string(runtime?runtime:"");string(parent?parent:"");number(has_extensions(metadata)?1:0);number(0);
         return fflush(stdout)?2:0;
     }
     related=flatpak_installation_list_remote_related_refs_sync(installation,argv[2],argv[3],NULL,&error);

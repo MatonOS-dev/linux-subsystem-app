@@ -33,6 +33,8 @@
         <service android:name=".stub.StubService" android:exported="false" />
         <service android:name=".LinuxAppStoreService" android:exported="true"
             android:foregroundServiceType="dataSync" />
+        <service android:name=".LinuxAppStoreService$CleanupJobService" android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
         <receiver android:name=".LinuxAppStoreService$BootReceiver" android:exported="true">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
         </receiver>

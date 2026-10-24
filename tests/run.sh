@@ -4,6 +4,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:?output directory outside the repository required}
 mkdir -p "$OUT"
 python3 "$ROOT/tests/bootstrap-version-rule.py"
+python3 "$ROOT/tests/cleanup-job-contract.py"
 cc -O2 -Wall -Wextra -Werror "$ROOT/tests/short-socket-path.c" -o "$OUT/short-socket-path"
 "$OUT/short-socket-path"
 mkdir -p "$OUT/install-progress"

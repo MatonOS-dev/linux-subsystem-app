@@ -7,6 +7,7 @@ public final class DependencyPlanTest {
     static final String FIRST,OTHER;static final byte[] OBJECT={1,2,3};static final String COMMIT;
     static {try{FIRST=new RemoteOrigin("first","https://first.example/repo","AQID").encode();OTHER=new RemoteOrigin("other","https://other.example/repo","AQID").encode();COMMIT=ObjectPacks.hex(java.security.MessageDigest.getInstance("SHA-256").digest(OBJECT));}catch(Exception e){throw new ExceptionInInitializerError(e);}}
     static DependencyPlan.Info info(String runtime,String... related)throws Exception{return new DependencyPlan.Info(COMMIT,"[Runtime]\n".getBytes(),runtime,Arrays.asList(related));}
+    static DependencyPlan.Info extension(String parent)throws Exception{return new DependencyPlan.Info(COMMIT,"[ExtensionOf]\n".getBytes(),"",parent,List.of(),false);}
     static DeploymentRecord record(String ref,String origin,DeploymentRecord.Dependency... dependencies)throws Exception{return new DeploymentRecord(ref,COMMIT,origin,"[Runtime]\n".getBytes(),new byte[]{1},OBJECT,Arrays.asList(dependencies));}
     static class Fake implements DependencyPlan.Backend {
         final Map<String,DeploymentRecord> installed=new HashMap<>();final Map<String,String> recorded=new HashMap<>();
@@ -71,6 +72,20 @@ public final class DependencyPlanTest {
         };
         crossRemoteExtension.add(APP,FIRST,info("")).add(GL,OTHER,info(""));
         check(node(crossRemoteExtension.plan(false),GL).origin.equals(OTHER));
+        String gnomeRuntime="runtime/org.gnome.Platform/x86_64/46",extension="runtime/org.freedesktop.Platform.Locale/x86_64/26.08",parent="runtime/org.freedesktop.Platform/x86_64/26.08";
+        Fake extensionParent=new Fake(){
+            @Override public List<String> related(String ref,String origin,DependencyPlan.Info info){return ref.equals(APP)?List.of(extension):info.related;}
+        };
+        extensionParent.add(APP,FIRST,info("org.gnome.Platform/x86_64/46"))
+                .add(gnomeRuntime,FIRST,info(""))
+                .add(extension,OTHER,extension(parent))
+                .add(parent,FIRST,info(""));
+        plan=extensionParent.plan(false);
+        check(node(plan,extension).dependencies.contains(parent));
+        check(plan.indexOf(node(plan,parent))<plan.indexOf(node(plan,extension)));
+        check(node(plan,parent).origin.equals(FIRST));
+        PlanExecutor.Outcome<Integer> staged=PlanExecutor.execute(plan,4,ignored->1);
+        check(staged.completed.containsKey(APP)&&staged.skipped.isEmpty()&&staged.failed.isEmpty());
         Fake fallback=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable")).add(RUNTIME,OTHER,info(""));
         check(node(fallback.plan(false),RUNTIME).origin.equals(OTHER)&&fallback.choices.isEmpty());
         Fake absent=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable"));rejects(()->absent.plan(false));

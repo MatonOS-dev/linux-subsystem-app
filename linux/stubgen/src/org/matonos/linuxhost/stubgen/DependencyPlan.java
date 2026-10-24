@@ -7,18 +7,21 @@ import java.util.*;
  * Metadata interpretation and related-ref selection belong to the Flatpak adapter. */
 public final class DependencyPlan {
     public static final class Info {
-        public final String commit,runtime;
+        public final String commit,runtime,parent;
         public final byte[] metadata;
         public final List<String> related;
         public final boolean mayHaveRelated;
         public Info(String commit,byte[] metadata,String runtime,List<String> related)throws IOException {
-            this(commit,metadata,runtime,related,true);
+            this(commit,metadata,runtime,"",related,true);
         }
         public Info(String commit,byte[] metadata,String runtime,List<String> related,boolean mayHaveRelated)throws IOException {
+            this(commit,metadata,runtime,"",related,mayHaveRelated);
+        }
+        public Info(String commit,byte[] metadata,String runtime,String parent,List<String> related,boolean mayHaveRelated)throws IOException {
             this.mayHaveRelated=mayHaveRelated;
             if(commit==null||!commit.matches("[0-9a-f]{64}")||metadata==null||metadata.length==0||metadata.length>128*1024)
                 throw new IOException("Invalid Flatpak inspection result");
-            this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.related=List.copyOf(related);
+            this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.parent=parent;this.related=List.copyOf(related);
         }
     }
     public interface Backend {
@@ -35,6 +38,8 @@ public final class DependencyPlan {
         public final Info info;
         public final boolean reused;
         public final List<String> dependencies=new ArrayList<>();
+        /** Required inputs to fetch before this ref; related refs are only staged alongside it. */
+        public final List<String> stageDependencies=new ArrayList<>();
         public Node(String ref,String origin,Info info,boolean reused){this.ref=ref;this.origin=origin;this.info=info;this.reused=reused;}
     }
     private final Backend backend;
@@ -76,13 +81,18 @@ public final class DependencyPlan {
             }
         }
         Node node=new Node(ref,origin,info,!root&&installed!=null);nodes.put(ref,node);
+        // Related Flatpak extensions can belong to a second runtime. Pull that
+        // parent too so apply_extra has its authenticated metadata available.
+        if(info.parent!=null&&!info.parent.isEmpty()) {
+            node.dependencies.add(info.parent);node.stageDependencies.add(info.parent);visit(info.parent,null,false,repair);
+        }
         if(recorded!=null) {
             for(DeploymentRecord.Dependency dependency:recorded.dependencies){
-                node.dependencies.add(dependency.ref);visit(dependency.ref,dependency.remote,false,true);
+                node.dependencies.add(dependency.ref);node.stageDependencies.add(dependency.ref);visit(dependency.ref,dependency.remote,false,true);
             }
             if(info.runtime!=null&&!info.runtime.isEmpty()) {
                 String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;
-                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);visit(runtime,null,false,true);}
+                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,true);}
             }
             order.add(node);
             if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:backend.related(ref,origin,info))if(!node.dependencies.contains(related)) {
@@ -93,7 +103,7 @@ public final class DependencyPlan {
             // need their parent's runtime for apply_extra, so stage the parent first.
             if(info.runtime!=null&&!info.runtime.isEmpty()) {
                 String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;
-                node.dependencies.add(runtime);visit(runtime,null,false,repair);
+                node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,repair);
             }
             order.add(node);
             for(String related:backend.related(ref,origin,info))if(!node.dependencies.contains(related)) {

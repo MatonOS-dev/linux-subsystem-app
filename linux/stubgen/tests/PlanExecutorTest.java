@@ -7,7 +7,8 @@ import java.util.concurrent.atomic.*;
 public final class PlanExecutorTest {
     static DependencyPlan.Node node(String ref,String... dependencies) {
         DependencyPlan.Node node=new DependencyPlan.Node(ref,"remote",null,false);
-        node.dependencies.addAll(Arrays.asList(dependencies));return node;
+        node.dependencies.addAll(Arrays.asList(dependencies));
+        node.stageDependencies.addAll(Arrays.asList(dependencies));return node;
     }
     static void check(boolean condition,String message) { if(!condition)throw new AssertionError(message); }
     public static void main(String[] args)throws Exception {
