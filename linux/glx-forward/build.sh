@@ -30,6 +30,6 @@ if grep -E -q NEEDED "$out/i386/dynamic.txt"; then echo 'i386 unexpected DT_NEED
 i386_exports=$(awk '$4 == "FUNC" && $5 == "GLOBAL" && $7 != "UND" { print $8 }' "$out/i386/symbols.txt" | sed 's/@.*//' | sort -u)
 [[ "$i386_exports" == __glx_Main ]] || { echo "unexpected i386 exports: $i386_exports" >&2; exit 1; }
 "$readelf" -h "$out/i386/libGLX_maton.so.0" > "$out/i386/header.txt"
-grep -E -q \'Class:.*ELF32\' "$out/i386/header.txt"
+grep -E -q 'Class:.*ELF32' "$out/i386/header.txt"
 ln -sf libGLX_maton.so.0 "$out/i386/libGLX_maton.so"
 echo 'PASS: x86_64 and i386 GLX vendor DSOs; no DT_NEEDED; only __glx_Main exported'
