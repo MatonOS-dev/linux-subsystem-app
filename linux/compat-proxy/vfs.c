@@ -268,6 +268,54 @@ static struct mount *lookup(const char *path){
     return best;
 }
 static char *physical(const char *path){struct mount *m=lookup(path);if(!m)return dupstr(path);return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));}
+struct proxy_open_how {uint64_t flags,mode,resolve;};
+#define PROXY_RESOLVE_NO_XDEV       0x01
+#define PROXY_RESOLVE_NO_MAGICLINKS 0x02
+#define PROXY_RESOLVE_NO_SYMLINKS   0x04
+#define PROXY_RESOLVE_IN_ROOT       0x10
+/* Resolve ordinary absolute names in one kernel path walk. Virtual mounts are
+ * represented by their backing directory fd. This path is deliberately
+ * limited to names without dot components or symlinks: dot-dot can cross a
+ * virtual mount boundary, and an absolute symlink under a virtual mount is
+ * rooted at the virtual root rather than that mount's backing directory.
+ * Magic links, relative/dirfd paths, packed entries, mount roots and all
+ * openat2 errors use the existing component walker, which also handles the
+ * virtual-root escape and EXDEV rules. */
+static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity){
+    if(fd!=AT_FDCWD || !path || path[0]!='/' || p_equal(path,"/"))return NULL;
+    for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
+        if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.'))return NULL;
+    }
+    char *global=root?join(root,path):dupstr(path);if(!global)return NULL;
+    struct proxy_stat packed;
+    if(pack_stat(global,&packed)!=-ENOSYS){vfs_free(global);return NULL;}
+    struct mount *m=lookup(global);char *base=NULL;const char *relative=NULL;
+    if(m){base=dupstr(m->source);size_t n=p_len(m->target);relative=global+(n==1?0:n);}
+    else {const char *virtual_root=root?root:"/";base=physical(virtual_root);size_t n=p_len(virtual_root);relative=global+(n==1?0:n);}
+    if(!base || !relative || !*relative){vfs_free(base);vfs_free(global);return NULL;}
+    while(*relative=='/')relative++;
+    if(!*relative){vfs_free(base);vfs_free(global);return NULL;}
+    long rootfd=RAW(PROXY_SC_openat,AT_FDCWD,base,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);vfs_free(base);
+    if(rootfd<0){vfs_free(global);return NULL;}
+    struct proxy_open_how how={.flags=O_PATH|O_CLOEXEC|(!follow?O_NOFOLLOW:0),
+        .resolve=PROXY_RESOLVE_IN_ROOT|PROXY_RESOLVE_NO_MAGICLINKS|PROXY_RESOLVE_NO_SYMLINKS};
+    long targetfd=RAW(PROXY_SC_openat2,rootfd,relative,&how,sizeof(how),0,0);
+    if(targetfd<0){RAW(PROXY_SC_close,rootfd,0,0,0,0,0);vfs_free(global);return NULL;}
+    char proc[48]="/proc/self/fd/";size_t k=14;unsigned value=(unsigned)targetfd;char digits[16];size_t d=0;
+    do{digits[d++]=(char)('0'+value%10);value/=10;}while(value);
+    while(d)proc[k++]=digits[--d];
+    proc[k]=0;
+    size_t cap=256;char *answer=NULL;
+    for(;;){char *buffer=vfs_alloc(cap+1);if(!buffer)break;
+        long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,buffer,cap,0,0);
+        if(n<0){vfs_free(buffer);break;}
+        if((size_t)n<cap){buffer[n]=0;answer=buffer;break;}
+        vfs_free(buffer);if(cap>SIZE_MAX/2-1)break;cap*=2;
+    }
+    RAW(PROXY_SC_close,targetfd,0,0,0,0,0);RAW(PROXY_SC_close,rootfd,0,0,0,0,0);
+    if(answer && identity)*identity=m;
+    vfs_free(global);return answer;
+}
 char *vfs_reverse(const char *path){
     struct mount *best=NULL;size_t n=0;
     /* Prefer names reachable in this process's current root. Detached old
@@ -383,6 +431,8 @@ static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *err
             int hit=m && p_equal(m->target,global) && p_equal(m->source,gpu_poll_sources[slot]);vfs_free(global);
             if(hit){if(identity)*identity=m;char *answer=dupstr(m->source);if(!answer)*error=-ENOMEM;return answer;}}
     }
+    char *fast=resolve_openat2_fast(fd,path,follow,identity);
+    if(fast)return fast;
     char *input;
     if(path[0]=='/')input=dupstr(path);else {char *base=basepath(fd,error);if(!base)return NULL;input=join(base,path);vfs_free(base);}
     if(!input){*error=-ENOMEM;return NULL;}
