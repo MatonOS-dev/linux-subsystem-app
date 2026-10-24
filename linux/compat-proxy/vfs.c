@@ -281,12 +281,17 @@ struct proxy_open_how {uint64_t flags,mode,resolve;};
  * Magic links, relative/dirfd paths, packed entries, mount roots and all
  * openat2 errors use the existing component walker, which also handles the
  * virtual-root escape and EXDEV rules. */
-static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity){
+static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd){
+    if(outfd)*outfd=-1;
     if(fd!=AT_FDCWD || !path || path[0]!='/' || p_equal(path,"/"))return NULL;
     for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
         if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.'))return NULL;
     }
     char *global=root?join(root,path):dupstr(path);if(!global)return NULL;
+    if((hide_resolver && (p_equal(path,"/etc/resolv.conf") ||
+            p_equal(path,"/run/host/monitor/resolv.conf")))){vfs_free(global);return NULL;}
+    for(size_t i=0;global[i];){while(global[i]=='/')i++;size_t start=i;while(global[i]&&global[i]!='/')i++;
+        if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
     struct proxy_stat packed;
     if(pack_stat(global,&packed)!=-ENOSYS){vfs_free(global);return NULL;}
     struct mount *m=lookup(global);char *base=NULL;const char *relative=NULL;
@@ -295,12 +300,15 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     if(!base || !relative || !*relative){vfs_free(base);vfs_free(global);return NULL;}
     while(*relative=='/')relative++;
     if(!*relative){vfs_free(base);vfs_free(global);return NULL;}
+    char *host_path=physical(global);
+    if(host_path){links_recover_path(host_path);vfs_free(host_path);}
     long rootfd=RAW(PROXY_SC_openat,AT_FDCWD,base,O_PATH|O_DIRECTORY|O_CLOEXEC,0,0,0);vfs_free(base);
     if(rootfd<0){vfs_free(global);return NULL;}
     struct proxy_open_how how={.flags=O_PATH|O_CLOEXEC|(!follow?O_NOFOLLOW:0),
         .resolve=PROXY_RESOLVE_IN_ROOT|PROXY_RESOLVE_NO_MAGICLINKS|PROXY_RESOLVE_NO_SYMLINKS};
     long targetfd=RAW(PROXY_SC_openat2,rootfd,relative,&how,sizeof(how),0,0);
     if(targetfd<0){RAW(PROXY_SC_close,rootfd,0,0,0,0,0);vfs_free(global);return NULL;}
+    if(outfd){char *marker=dupstr("");if(marker){*outfd=(int)targetfd;RAW(PROXY_SC_close,rootfd,0,0,0,0,0);vfs_free(global);return marker;}}
     char proc[48]="/proc/self/fd/";size_t k=14;unsigned value=(unsigned)targetfd;char digits[16];size_t d=0;
     do{digits[d++]=(char)('0'+value%10);value/=10;}while(value);
     while(d)proc[k++]=digits[--d];
@@ -312,9 +320,17 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
         if((size_t)n<cap){buffer[n]=0;answer=buffer;break;}
         vfs_free(buffer);if(cap>SIZE_MAX/2-1)break;cap*=2;
     }
-    RAW(PROXY_SC_close,targetfd,0,0,0,0,0);RAW(PROXY_SC_close,rootfd,0,0,0,0,0);
+    if(answer && outfd)*outfd=(int)targetfd;
+    else RAW(PROXY_SC_close,targetfd,0,0,0,0,0);
+    RAW(PROXY_SC_close,rootfd,0,0,0,0,0);
     if(answer && identity)*identity=m;
     vfs_free(global);return answer;
+}
+int vfs_openat2_path_fd(int fd,const char *path,int follow,int *outfd){
+    if(!outfd)return -EINVAL;
+    *outfd=-1;char *marker=resolve_openat2_fast(fd,path,follow,NULL,outfd);
+    if(!marker)return -ENOSYS;
+    vfs_free(marker);return 0;
 }
 char *vfs_reverse(const char *path){
     struct mount *best=NULL;size_t n=0;
@@ -420,7 +436,7 @@ if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
     char *s=readlink_dynamic(p,error);if(!s)return NULL;char *q=vfs_reverse(s);vfs_free(s);return q;
 }
-static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *error,void **identity,int *cacheable){
+static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *error,void **identity,int *cacheable,int allow_fast){
     *error=0;if(!path){*error=-EFAULT;return NULL;}if(!*path){*error=-ENOENT;return NULL;}
     if(cacheable)*cacheable=1;
     /* Polling roots are immutable generated directories. Re-check the current
@@ -431,8 +447,7 @@ static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *err
             int hit=m && p_equal(m->target,global) && p_equal(m->source,gpu_poll_sources[slot]);vfs_free(global);
             if(hit){if(identity)*identity=m;char *answer=dupstr(m->source);if(!answer)*error=-ENOMEM;return answer;}}
     }
-    char *fast=resolve_openat2_fast(fd,path,follow,identity);
-    if(fast)return fast;
+    if(allow_fast){char *fast=resolve_openat2_fast(fd,path,follow,identity,NULL);if(fast)return fast;}
     char *input;
     if(path[0]=='/')input=dupstr(path);else {char *base=basepath(fd,error);if(!base)return NULL;input=join(base,path);vfs_free(base);}
     if(!input){*error=-ENOMEM;return NULL;}
@@ -530,7 +545,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
     uint64_t hash=resolve_cache_hash(path?path:"",key_len,follow);
     uint64_t started=proxy_count_now();
     int cacheable=0;
-    char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable);
+    char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable,1);
     uint64_t ended=proxy_count_now();
     if(started && ended>=started)proxy_count_resolution(ended-started);
     if(answer && cacheable && identity && fd==AT_FDCWD && follow &&
@@ -551,6 +566,10 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
         }
     }
     return answer;
+}
+char *vfs_resolve_mount_slow(int fd,const char *path,int follow,long *error,void **identity){
+    int cacheable=0;
+    return vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable,0);
 }
 char *vfs_resolve(int fd,const char *path,int follow,long *error){return vfs_resolve_mount(fd,path,follow,error,NULL);}
 /* A bind source that is a regular file stays referenced by its virtual mount

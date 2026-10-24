@@ -14,9 +14,11 @@ void vfs_raw_syscall_summary(uint64_t[PROXY_SC_count]);
 void vfs_raw_count_fork_child(void);
 void vfs_resolve_cache_invalidate(void);
 char *vfs_resolve(int, const char *, int, long *);
+int vfs_openat2_path_fd(int,const char *,int,int *);
 /* Follow symlinks, but retain a final proc fd magic link for linkat. */
 #define VFS_FOLLOW_LINK_SOURCE 2
 char *vfs_resolve_mount(int,const char *,int,long *,void **);
+char *vfs_resolve_mount_slow(int,const char *,int,long *,void **);
 long vfs_mount_readonly(void *);
 int vfs_is_mount_source(const char *);
 int vfs_has_nested_mount(const char *,const char *,int);
