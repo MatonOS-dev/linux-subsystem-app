@@ -2,6 +2,12 @@
 #include "proxy.h"
 #include "state.h"
 #include "vfs.h"
+#if defined(__i386__)
+#include "arch/i386/sysinfo.h"
+#define PROXY_SYSINFO_AUX(inherited) proxy_i386_sysinfo_value(inherited)
+#else
+#define PROXY_SYSINFO_AUX(inherited) (inherited)
+#endif
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -389,7 +395,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         {AT_GID,{RAW(PROXY_SC_getgid,0,0,0,0,0,0)}},{AT_EGID,{RAW(PROXY_SC_getegid,0,0,0,0,0,0)}},
         {AT_SECURE,{0}},{AT_RANDOM,{random}},{AT_EXECFN,{execfn}},{AT_PLATFORM,{platform}},
         {AT_HWCAP,{proxy_aux(AT_HWCAP)}},{AT_HWCAP2,{proxy_aux(AT_HWCAP2)}},
-        {ARCH_AUX_SYSINFO,{proxy_aux(ARCH_AUX_SYSINFO)}},{AT_SYSINFO_EHDR,{proxy_aux(AT_SYSINFO_EHDR)}},{AT_CLKTCK,{100}},{AT_NULL,{0}}};
+        {ARCH_AUX_SYSINFO,{PROXY_SYSINFO_AUX(proxy_aux(ARCH_AUX_SYSINFO))}},{AT_SYSINFO_EHDR,{proxy_aux(AT_SYSINFO_EHDR)}},{AT_CLKTCK,{100}},{AT_NULL,{0}}};
     size_t words=1+ac+1+ec+1+sizeof(aux)/(sizeof(uintptr_t));
     uintptr_t sp=(cur-words*sizeof(uintptr_t))&~15UL,*v=(uintptr_t *)sp;
     *v++=ac; for(unsigned i=0;i<ac;i++) *v++=av[i]; *v++=0;
@@ -417,6 +423,9 @@ failed:
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
     proxy_log_bwrap_args(path,argv);
+#if defined(__i386__)
+    proxy_i386_sysinfo_configure(env);
+#endif
     for(size_t i=0;env && env[i];i++)
         if(p_equal(env[i],"MATON_PROXY_REWRITE=1")){proxy_rewrite_init(env[i]);break;}
     int r=load_inner(path,argv,env,image,0);
