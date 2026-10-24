@@ -3,8 +3,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/i386-p1
-libc=${MATON_V3_I386_LIBC:-/usr/lib32/libc.so.6}
-interpreter=${MATON_V3_I386_INTERPRETER:-/lib/ld-linux.so.2}
 cc -m32 -nostdlib -static -no-pie -Wl,--build-id=none \
     tests/i386-static.S -o build/i386-p1/hello
 printf 'i386-p1-ok\n!!' > build/i386-p1/fixture
@@ -59,70 +57,3 @@ timeout 20 "$loader" --android-filter "$PWD/build/i386-p1/tls" \
     >build/i386-p1/tls.out 2>build/i386-p1/tls.log
 grep -qx 'PASS i386 pthread TLS, flat LDT code, far transfers, segment loads, and SIGSEGV chaining' build/i386-p1/tls.out
 cat build/i386-p1/tls.out
-
-# AT_SYSINFO is opt-in. Exercise the exact %gs:0x10 entry with ELF32 glibc,
-# including file-class dispatch, asynchronous signals and copied TLS on fork/
-# pthread/exec. Both modes must preserve the same syscall results.
-cc -m32 -nostdinc -fno-stack-protector -fno-pic -O2 -Wall -Wextra -Werror \
-    -c tests/i386-sysinfo.c -o build/i386-p1/sysinfo.o
-cc -m32 -c tests/i386-sysinfo.S -o build/i386-p1/sysinfo-entry.o
-cc -m32 -c tests/i386-entry.S -o build/i386-p1/sysinfo-start.o
-ld -m elf_i386 -o build/i386-p1/sysinfo --dynamic-linker "$interpreter" \
-    build/i386-p1/sysinfo-start.o build/i386-p1/sysinfo-entry.o \
-    build/i386-p1/sysinfo.o "$libc"
-ln -sf fixture "$PWD/build/i386-p1/fastlink"
-for rewrite in 0 1; do
-    set +e
-    MATON_PROXY_REWRITE=$rewrite timeout 45 "$loader" --android-filter \
-        --map "$PWD/build/i386-p1/fixture" /i386-fastpath-file \
-        --map "$PWD/build/i386-p1/fastlink" /i386-fastpath-link \
-        "$PWD/build/i386-p1/sysinfo" >"build/i386-p1/sysinfo-$rewrite.out" \
-        2>"build/i386-p1/sysinfo-$rewrite.log"
-    result=$?
-    set -e
-    if (( result != 0 )); then cat "build/i386-p1/sysinfo-$rewrite.log" >&2; exit "$result"; fi
-    grep -q '^PASS i386 AT_SYSINFO=' "build/i386-p1/sysinfo-$rewrite.out"
-done
-echo 'PASS i386 AT_SYSINFO proxy/trap equivalence, file syscalls, signals, threads, fork and exec'
-
-musl_libc=${MATON_V3_I386_MUSL_LIBC:-}
-musl_interpreter=${MATON_V3_I386_MUSL_INTERPRETER:-}
-if [[ -n $musl_libc && -n $musl_interpreter && -f $musl_libc && -f $musl_interpreter ]]; then
-    ld -m elf_i386 -o build/i386-p1/sysinfo-musl --dynamic-linker "$musl_interpreter" \
-        build/i386-p1/sysinfo-start.o build/i386-p1/sysinfo-entry.o \
-        build/i386-p1/sysinfo.o "$musl_libc"
-    for rewrite in 0 1; do
-        MATON_PROXY_REWRITE=$rewrite MATON_I386_DLOPEN=libc.so timeout 45 "$loader" --android-filter \
-            --map "$PWD/build/i386-p1/fixture" /i386-fastpath-file \
-            --map "$PWD/build/i386-p1/fastlink" /i386-fastpath-link \
-            "$PWD/build/i386-p1/sysinfo-musl" \
-            >"build/i386-p1/sysinfo-musl-$rewrite.out" \
-            2>"build/i386-p1/sysinfo-musl-$rewrite.log"
-        grep -q '^PASS i386 AT_SYSINFO=' "build/i386-p1/sysinfo-musl-$rewrite.out"
-    done
-    echo 'PASS i386 musl AT_SYSINFO proxy/trap equivalence, signals, threads, fork and exec'
-else
-    echo 'SKIP i386 musl AT_SYSINFO probe: set MATON_V3_I386_MUSL_LIBC and MATON_V3_I386_MUSL_INTERPRETER'
-fi
-
-# Compare the kernel vDSO trampoline, SIGSYS trap route and proxy AT_SYSINFO
-# entry using identical raw wrappers and operations.
-cc -m32 -nostdinc -fno-stack-protector -fno-pic -O2 -Wall -Wextra -Werror \
-    -c tests/i386-sysinfo-bench.c -o build/i386-p1/sysinfo-bench.o
-ld -m elf_i386 -o build/i386-p1/sysinfo-bench --dynamic-linker "$interpreter" \
-    build/i386-p1/sysinfo-start.o build/i386-p1/sysinfo-entry.o \
-    build/i386-p1/sysinfo-bench.o "$libc"
-: > build/i386-p1/sysinfo-bench-results.txt
-for route in native trapped fast; do
-    for run in 1 2 3 4 5; do
-        case "$route" in
-            native) timeout 30 build/i386-p1/sysinfo-bench "$PWD/build/i386-p1/fixture" 5000 ;;
-            trapped|fast)
-                rewrite=0; [[ $route == fast ]] && rewrite=1
-                MATON_PROXY_REWRITE=$rewrite timeout 30 "$loader" --android-filter \
-                    --map "$PWD/build/i386-p1/fixture" /i386-fastpath-file \
-                    "$PWD/build/i386-p1/sysinfo-bench" /i386-fastpath-file 5000 ;;
-        esac >> build/i386-p1/sysinfo-bench-results.txt
-    done
-done
-cat build/i386-p1/sysinfo-bench-results.txt

@@ -543,40 +543,6 @@ without unrelated host libraries.
 Host output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-host-step2.log`.
 Runtime output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-freedesktop-step2.log`.
 
-## i386 AT_SYSINFO fast path (2026-10-24)
-
-Opt-in `MATON_PROXY_REWRITE=1` now sets ELF32 `AT_SYSINFO` to the proxy's
-generic i386 entry. It takes the syscall number from EAX and calls the same
-direct file dispatcher used by x86_64 for openat, close, stat64,
-fstatat64/fstat64, statx, readlink/readlinkat, getdents64, `_llseek`, and
-non-locking fcntl64 commands. Other numbers and locking fcntl commands execute
-the ordinary `int $0x80` trap route. No instruction sites are patched. The
-entry saves all general registers and flags, returns through `ret`, and uses
-the trap path when CS is not the flat user code selector (`0x23`). The
-kill-switch is the existing `MATON_PROXY_REWRITE=0`; default behavior remains
-the inherited vDSO entry. The setting is recalculated on each exec and a
-change in state is logged.
-
-`tests/i386-p1.sh` verifies identical syscall outcomes with the feature off/on
-using the host's dynamically linked glibc probe. It covers file syscall
-classes, preservation of general registers/flags, a signal during repeated
-entry use, pthread TLS, fork, exec with a fresh auxv (including switching the
-fast path off), and dlopen/dlclose. It also benchmarks five 5,000-operation
-runs per route on this host (x86_64,
-glibc 2.39, kernel 7.0.0-38-generic), median nanoseconds/op:
-
-| Operation | Native vDSO | Proxy SIGSYS | Proxy AT_SYSINFO | Reduction vs SIGSYS |
-|---|---:|---:|---:|---:|
-| openat + close | 2,502 | 14,997 | 9,145 | 39.0% |
-| stat64 | 1,297 | 8,506 | 6,097 | 28.3% |
-| statx | 1,296 | 8,680 | 6,370 | 26.6% |
-
-This microbenchmark improves on SIGSYS but remains about 3.7–4.9x native.
-It is a host result, not an Android device measurement. The glibc test passed;
-this host has no i386 musl compiler/runtime pair, so the optional musl probe
-reports SKIP unless `MATON_V3_I386_MUSL_LIBC` and
-`MATON_V3_I386_MUSL_INTERPRETER` are supplied.
-
 ### Next phases
 
 The next work is reducing direct-dispatch overhead to the 2x-native target and
