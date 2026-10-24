@@ -1,0 +1,4 @@
+# name|kind|location|version|sha256
+erofs-utils|tar|https://github.com/erofs/erofs-utils/archive/refs/tags/v1.9.4.tar.gz|v1.9.4|7d135aa2550326a5acf20f53c518aea5a8900015ce50700044e40f818c31dd80
+toolchain|environment|Alpine 3.24.2 x86_64|GCC 15.2.0; musl 1.2.6-r2|--
+liblz4|environment|Alpine 3.24.2 x86_64|LZ4 1.10.0|--

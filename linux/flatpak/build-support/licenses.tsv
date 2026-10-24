@@ -18,3 +18,4 @@ flatpak-portal|LGPL-2.1-or-later
 libffi|MIT
 pcre2|BSD-3-Clause
 e2fsprogs-headers|GPL-2.0-only AND LGPL-2.0-only AND BSD-3-Clause
+erofs-utils|GPL-2.0-or-later
