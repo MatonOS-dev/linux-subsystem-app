@@ -4,6 +4,7 @@
 #include "vfs.h"
 #include "state.h"
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/resource.h>
 #include <errno.h>
 #include <sys/mman.h>
@@ -12,20 +13,39 @@
 #include <linux/memfd.h>
 int state_android, state_gpu_bridge;
 static int private_fd=-1;
-long proxy_fd_reserve=512;
-/* The proxy works at the top of the payload's own soft NOFILE limit; the
- * limit is not virtualized. The larger the range, the smaller our share: up
- * to 60Ki we take half, up to 120Ki a third, beyond that a quarter. Fixed at
- * first launch; the payload may raise or lower its limit freely afterwards
- * (a reserve that no longer fits falls back to packed-file copies). */
+long proxy_fd_reserve=512,proxy_fd_reserve_end=LONG_MAX;
+int proxy_fd_reserve_ready;
+/* The proxy owns a window [reserve, reserve_end) at the top of the payload's
+ * soft NOFILE limit at first launch: 1/2 of it up to 60Ki, 1/3 up to 120Ki,
+ * else 1/4 (Android 32Ki -> 16Ki..32Ki). The real soft limit is raised by the
+ * window size, so the payload keeps its full descriptor count: its
+ * descriptors skip the window (proxy_fd_relocate) and continue above it. The
+ * window crosses exec in the state handoff; it is never recomputed. */
 void proxy_fd_reserve_init(void){
- static int ready;if(ready)return;ready=1;
+ if(proxy_fd_reserve_ready)return;
+ proxy_fd_reserve_ready=1;
  struct {uint64_t cur,max;} real={0,0};
  if(RAW(PROXY_SC_prlimit64,0,RLIMIT_NOFILE,0,&real,0,0))return;
  uint64_t soft=real.cur==~UINT64_C(0)?UINT64_C(1048576):real.cur;
  if(soft<16)return;
- uint64_t share=soft<=UINT64_C(60)*1024?2:soft<=UINT64_C(120)*1024?3:4;
- proxy_fd_reserve=(long)(soft-soft/share);
+ uint64_t share=soft<=UINT64_C(60)*1024?2:soft<=UINT64_C(120)*1024?3:4,size=soft/share;
+ proxy_fd_reserve=(long)(soft-size);proxy_fd_reserve_end=(long)soft;
+ /* Hard limit too low to grow: the payload simply has the window less. */
+ uint64_t raised=soft+size;if(real.max!=~UINT64_C(0) && raised>real.max)raised=real.max;
+ struct {uint64_t cur,max;} next={raised,real.max};
+ if(raised>soft)RAW(PROXY_SC_prlimit64,0,RLIMIT_NOFILE,&next,0,0,0);
+}
+/* A payload descriptor the kernel placed inside the window moves to the first
+ * free number above it, keeping close-on-exec. Consumes fd. Returns the fd
+ * unchanged when nothing above is free; the caller then refuses it, since the
+ * payload has used its full descriptor count and the window stays ours. */
+long proxy_fd_relocate(long fd){
+ if(fd<proxy_fd_reserve || fd>=proxy_fd_reserve_end)return fd;
+ long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);
+ long moved=RAW(PROXY_SC_fcntl,fd,(flags>0 && (flags&FD_CLOEXEC))?F_DUPFD_CLOEXEC:F_DUPFD,proxy_fd_reserve_end,0,0,0);
+ if(moved<0)return fd;
+ RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ return moved;
 }
 /* Move a fresh private descriptor to the private range, keeping its
  * close-on-exec state. Consumes fd; returns the new fd or an error. */

@@ -12,7 +12,7 @@ const char *proxy_tmpdir;
 int ipc_private_fd(int fd){(void)fd;return 0;}
 int state_private_fd(int fd){(void)fd;return 0;}
 int proxy_trace;
-long proxy_fd_reserve=512;
+long proxy_fd_reserve=512,proxy_fd_reserve_end=0x7fffffff;
 void proxy_log(const char *m,long a,long b){(void)m;(void)a;(void)b;}
 size_t p_len(const char *s){return strlen(s);}
 void p_copy(void *d,const void *s,size_t n){memcpy(d,s,n);}

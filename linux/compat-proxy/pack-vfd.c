@@ -180,6 +180,8 @@ long pack_open(const char *path,int flags){
   else {
   long placed=RAW(PROXY_SC_fcntl,carrier,dup_cmd,proxy_fd_reserve,0,0,0);
   RAW(PROXY_SC_close,low,0,0,0,0,0);
+  /* Above the window reads would not trap: a full window means a copy. */
+  if(placed>=proxy_fd_reserve_end){RAW(PROXY_SC_close,placed,0,0,0,0,0);placed=-EMFILE;}
   if(placed<0){
    long copy=pack_copy(carrier,o.offset,o.length,0,(flags&O_CLOEXEC)!=0,path);
    RAW(PROXY_SC_close,carrier,0,0,0,0,0);return copy;

@@ -102,7 +102,7 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
     /* ioctl reaches Linux unless the proxy rewrites it: a proxy-private
-     * descriptor, termios2 (translated to termios), reflink clone requests
+     * descriptor (in the window), termios2 (translated to termios), reflink clone requests
      * (answered EOPNOTSUPP) or interface requests (virtual network namespace).
      * Pack descriptors take no ioctl translation. The request is compared in
      * its low 32 bits, as the kernel's command is an unsigned int. */
@@ -116,21 +116,21 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
             SIOCGIFMTU,SIOCSIFMTU,SIOCGIFHWADDR,SIOCSIFHWADDR,
             SIOCGIFINDEX,SIOCSIFPFLAGS,SIOCGIFPFLAGS,SIOCGIFTXQLEN,SIOCSIFTXQLEN};
         const unsigned count=sizeof(rewritten)/sizeof(rewritten[0]);
-        /* Layout: JEQ ioctl; LD fd hi; JEQ 0; LD fd lo; JGE floor; LD req;
-         * count x JEQ; RET ALLOW; LD nr. Taken branches land on LD nr. */
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,(uint8_t)(count+6),encode(PROXY_SC_ioctl));
+        /* Layout: JEQ ioctl; LD fd hi; JEQ 0; LD fd lo; JGE window; JGE end;
+         * LD req; count x JEQ; RET ALLOW; LD nr. Trap branches land on LD nr. */
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,(uint8_t)(count+7),encode(PROXY_SC_ioctl));
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0])+4);
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,(uint8_t)(count+4),0);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,(uint8_t)(count+5),0);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
-        ADD(BPF_JMP|BPF_JGE|BPF_K,(uint8_t)(count+2),0,PROXY_PRIVATE_FD_FLOOR);
+        ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve);
+        ADD(BPF_JMP|BPF_JGE|BPF_K,0,(uint8_t)(count+2),(uint32_t)proxy_fd_reserve_end);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
         for(unsigned i=0;i<count;i++)ADD(BPF_JMP|BPF_JEQ|BPF_K,(uint8_t)(count-i),0,rewritten[i]);
         ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
     }
-    /* Payload writes on descriptors below the proxy-private floor reach
-     * Linux directly. Proxy-private descriptors live at PROXY_PRIVATE_FD_FLOOR
-     * and above; pack carriers are read-only, so the kernel itself rejects
+    /* Payload writes on descriptors outside the proxy window reach Linux
+     * directly. Proxy-private descriptors live in the window; pack carriers are read-only, so the kernel itself rejects
      * writes to them. Known exception: SysV IPC arena descriptors stay where
      * openat put them (moving them hangs tests/site-rewrite-exec, cause not
      * yet found); they are private only during an in-flight IPC handoff.
@@ -149,9 +149,10 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         unsigned skip=n;ADD(BPF_JMP|BPF_JA,0,0,0);
         for(unsigned i=0;i<waiting;i++)bpf[pending[i]].k=n-pending[i]-1;
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0])+4);
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,4,0);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
-        ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,PROXY_PRIVATE_FD_FLOOR);
+        ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve);
+        ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve_end);
         ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
         bpf[skip].k=n-skip-1;
@@ -160,7 +161,7 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         unsigned pending[512],waiting=0;
         for(long nr=0;nr<512;nr++) {
             long id=decode(nr);
-            int special=ours(id) ||
+            int special=ours(id) || fd_creator(id) ||
                 (audit==AUDIT_ARCH_I386 && (nr==102 || nr==117 || nr==243 || nr==244)) ||
                 nr==encode(PROXY_SC_rt_sigaction) || nr==encode(PROXY_SC_fcntl) ||
                 nr==encode(PROXY_SC_clone) || nr==encode(PROXY_SC_sendto) ||
@@ -276,7 +277,7 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    for(long nr=0;nr<512;nr++) if((ours(decode(nr)) ||
+    for(long nr=0;nr<512;nr++) if((ours(decode(nr)) || fd_creator(decode(nr)) ||
         (audit==AUDIT_ARCH_I386 && (nr==102 || nr==117 || nr==243 || nr==244))) &&
         nr!=encode(PROXY_SC_clone) && nr!=encode(PROXY_SC_sendto)) {
         ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);

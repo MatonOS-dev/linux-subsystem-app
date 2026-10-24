@@ -1037,6 +1037,57 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
     }
 }
 /* Both entries use the same VFS dispatch; no ucontext is fabricated. */
+/* Calls that hand the payload new lowest-free descriptors. The kernel may put
+ * one inside the proxy window; it is moved above the window on return.
+ * Descriptors received over SCM_RIGHTS are not moved (correct; they trap). */
+static int fd_creator(long n) {
+    switch(n) {
+    case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_creat:
+    case PROXY_SC_socket:case PROXY_SC_accept:case PROXY_SC_accept4:case PROXY_SC_dup:
+    case PROXY_SC_pipe:case PROXY_SC_pipe2:case PROXY_SC_socketpair:
+    case PROXY_SC_eventfd:case PROXY_SC_eventfd2:case PROXY_SC_epoll_create:case PROXY_SC_epoll_create1:
+    case PROXY_SC_memfd_create:case PROXY_SC_timerfd_create:case PROXY_SC_signalfd:case PROXY_SC_signalfd4:
+    case PROXY_SC_inotify_init:case PROXY_SC_inotify_init1:case PROXY_SC_fanotify_init:case PROXY_SC_userfaultfd:
+    case PROXY_SC_perf_event_open:case PROXY_SC_pidfd_open:case PROXY_SC_pidfd_getfd:case PROXY_SC_open_by_handle_at:
+    case PROXY_SC_memfd_secret:case PROXY_SC_landlock_create_ruleset:case PROXY_SC_io_uring_setup:
+    case PROXY_SC_open_tree:case PROXY_SC_fsopen:case PROXY_SC_fsmount:case PROXY_SC_fspick:
+        return 1;
+    default:return 0;
+    }
+}
+static long window_leave(long fd){
+    if(fd<proxy_fd_reserve || fd>=proxy_fd_reserve_end || pack_reserved((int)fd) || vfs_private_fd((int)fd))return fd;
+    long moved=proxy_fd_relocate(fd);
+    if(moved==fd){
+        /* Payload descriptor count exhausted: the native kernel says EMFILE. */
+        RAW(PROXY_SC_close,fd,0,0,0,0,0);dns_close((int)fd);vfs_fd_close((int)fd);net_close((int)fd);sysctl_close((int)fd);
+        return -EMFILE;
+    }
+    {
+        vfs_fd_dup((int)fd,(int)moved);dns_dup((int)fd,(int)moved);net_dup((int)fd,(int)moved);sysctl_dup((int)fd,(int)moved);
+        dns_close((int)fd);vfs_fd_close((int)fd);net_close((int)fd);sysctl_close((int)fd);
+    }
+    return moved;
+}
+/* Keep the proxy window free of payload descriptors (packed files and
+ * proxy-private descriptors belong there; nothing else). */
+static long creator_finish(long nr,proxy_arg_t *a,long result){
+    if(result<0 || !(fd_creator(nr) || (nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))))return result;
+    if(nr==PROXY_SC_pipe2 || nr==PROXY_SC_socketpair){
+        int pair[2];void *where=(void *)(uintptr_t)(nr==PROXY_SC_pipe2?a[0]:a[3]);
+        if(!proxy_copy(pair,where,sizeof(pair))){
+            long first=window_leave(pair[0]),second=window_leave(pair[1]);
+            if(first<0 || second<0){
+                if(first>=0)RAW(PROXY_SC_close,first,0,0,0,0,0);
+                if(second>=0)RAW(PROXY_SC_close,second,0,0,0,0,0);
+                return -EMFILE;
+            }
+            pair[0]=(int)first;pair[1]=(int)second;proxy_copy(where,pair,sizeof(pair));
+        }
+        return result;
+    }
+    return window_leave(result);
+}
 long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     PROFILE_BEGIN();
     /* The entry's save area must remain immutable: modernize/pack dispatch
@@ -1067,6 +1118,7 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     else {
         {PROFILE_BEGIN();result=pack_call(nr,a,&packed);if(!packed)result=file_dispatch(nr,a);PROFILE_END(11);}
     }
+    result=creator_finish(nr,a,result);
     vfs_direct_end(arena);
     if(thread)thread->direct_depth--;
     PROFILE_END(8);
@@ -1790,6 +1842,7 @@ clone_retry:
     default:break;
     }
 finish:
+    result=creator_finish(nr,a,result);
     proxy_rewrite_after(nr,a,result);
     if(result>=0 && nr==PROXY_SC_mmap)android_pc_cache_invalidate_range((uintptr_t)result,(uintptr_t)result+(uintptr_t)a[1]);
     if(result>=0 && nr==PROXY_SC_munmap)android_pc_cache_invalidate_range((uintptr_t)a[0],(uintptr_t)a[0]+(uintptr_t)a[1]);
@@ -1912,6 +1965,7 @@ void proxy_state(struct state *s){
  chained.handler=state_word(s,chained.handler==1?1:0);
  proxy_trace=state_word(s,proxy_trace);proxy_diagnostic_fd=state_word(s,proxy_diagnostic_fd);
  namespaces=state_word(s,namespaces);userns_remaining=state_word(s,userns_remaining);
+ proxy_fd_reserve=state_word(s,proxy_fd_reserve);proxy_fd_reserve_end=state_word(s,proxy_fd_reserve_end);if(s->reading)proxy_fd_reserve_ready=1;
  state_string(s,(char **)&proxy_tmpdir);
  state_string(s,(char **)&host_command_socket);host_command_started=state_word(s,host_command_started);
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;
