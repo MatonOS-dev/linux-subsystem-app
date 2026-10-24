@@ -8,6 +8,13 @@
 #include <sys/mman.h>
 #include <errno.h>
 extern long proxy_raw_clone_thread(unsigned long,void *,void (*)(void *),void *);
+#if defined(__ANDROID__) || defined(DNS_PROXY_PATH)
+#define DNS_DEFAULT_PORT 0x3500
+#else
+/* A host resolver is already usable. Redirecting it to Android netd would
+ * silently drop queries on hosts without /dev/socket/dnsproxyd. */
+#define DNS_DEFAULT_PORT 0
+#endif
 #ifndef DNS_PROXY_PATH
 #define DNS_PROXY_PATH "/dev/socket/dnsproxyd"
 #endif
@@ -37,7 +44,7 @@ static int dns_netd_result(int fd,int *rcode,void *answer,size_t capacity){
 }
 /* Default Android private resolver; --dns-forwarder can select a test or
  * alternate loopback address, but state no longer depends on exec snapshots. */
-static struct sockaddr_in dns_endpoint={.sin_family=AF_INET,.sin_port=0x3500,.sin_addr={.s_addr=0x3500007f}};
+static struct sockaddr_in dns_endpoint={.sin_family=AF_INET,.sin_port=DNS_DEFAULT_PORT,.sin_addr={.s_addr=0x3500007f}};
 /* Legacy launch argument retained temporarily for callers; no filesystem
  * transport is used by this implementation. */
 struct dns_socket {unsigned refs;int type,active,connected;struct sockaddr_in local;unsigned short local_port;};

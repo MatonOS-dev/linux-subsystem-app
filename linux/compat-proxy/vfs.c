@@ -39,11 +39,14 @@ void vfs_profile_dump(void){char b[128];for(size_t i=0;i<1024;i++){struct profil
 void vfs_profile_dump(void){}
 #endif
 volatile int proxy_raw_counter_enabled;
+/* Standalone VFS fixtures do not link the proxy thread-state registry. */
+extern long proxy_stack_tid(uintptr_t) __attribute__((weak));
 static struct trap_arena *arena_for_stack(uintptr_t sp){
     struct trap_arena *best=NULL;long tid=0;
     for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){
         if(!a->active || sp<a->lo || sp>=a->hi)continue;
         if(a->direct_tid){
+            if(!tid && proxy_stack_tid)tid=proxy_stack_tid(sp);
             if(!tid)tid=arch_raw_call(PROXY_SC_gettid,0,0,0,0,0,0);
             if(a->direct_tid!=tid)continue;
         }
