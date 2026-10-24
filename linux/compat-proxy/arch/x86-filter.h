@@ -86,6 +86,27 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
     ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,0x40000000);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    /* Number-only fast path. Every syscall the checks below would not trap
+     * is allowed here before any instruction-pointer or argument load, so
+     * the kernel's seccomp action cache marks it constant-allow and skips
+     * this filter entirely. Only the special numbers continue to the
+     * gateway, resident-range and argument logic, which is unchanged. */
+    {
+        unsigned pending[512],waiting=0;
+        for(long nr=0;nr<512;nr++) {
+            long id=decode(nr);
+            int special=ours(id) ||
+                (audit==AUDIT_ARCH_I386 && (nr==102 || nr==117 || nr==243 || nr==244)) ||
+                nr==encode(PROXY_SC_rt_sigaction) || nr==encode(PROXY_SC_fcntl) ||
+                nr==encode(PROXY_SC_clone) || nr==encode(PROXY_SC_sendto) ||
+                (resident_fds_enabled && id>=0 && resident_fd_call(id));
+            if(!special)continue;
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,nr);
+            pending[waiting++]=n;ADD(BPF_JMP|BPF_JA,0,0,0);
+        }
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        for(unsigned i=0;i<waiting;i++)bpf[pending[i]].k=n-pending[i]-1;
+    }
     /* Raw proxy gateways must pass before the rt_sigaction guard below. */
     uint64_t ip=peer?gateway+0x42:arch_gateway_pc(0);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
