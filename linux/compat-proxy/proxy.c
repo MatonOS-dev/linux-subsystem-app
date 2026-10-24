@@ -163,6 +163,7 @@ struct thread_state {
     int reserved_real;
     unsigned ldt_age;
     struct ldt_cache_entry ldt_cache[PROXY_LDT_CACHE_ENTRIES];
+    unsigned logical_cs;
 #endif
 };
 struct thread_node {struct thread_state state;struct thread_node *next;};
@@ -335,17 +336,17 @@ static long ldt_call_locked(unsigned func, uintptr_t ptr, size_t bytes) {
     if(func==1 || func==0x11) {
         struct user_desc d;
         if(!ptr || proxy_copy(&d,(void *)ptr,sizeof(d)))return -EFAULT;
-        /* Only 32-bit data descriptors can be represented by our GDT TLS
-         * cache. Code descriptors need modify_ldt(2), which Android's app
-         * seccomp policy blocks; attempting a raw call from this handler
-         * re-enters SIGSYS and cannot safely emulate a CS transition. */
-        if(!d.seg_32bit || d.limit>0xfffffu || d.contents>1 || d.read_exec_only>1 ||
+        /* Flat 32-bit code is used only by emulated far control transfers;
+         * its limit is intentionally not enforced (unlike hardware). */
+        int code=d.contents==2;
+        if(!d.seg_32bit || (!code && d.limit>0xfffffu) || (d.contents>1 && !code) || d.read_exec_only>1 ||
            d.limit_in_pages>1 || d.seg_not_present>1 || d.useable>1)return -EINVAL;
+        if(code && (d.base_addr!=0 || d.seg_not_present))return -EINVAL;
         if(d.entry_number>=8192)return -EINVAL;
         int r=ldt_grow((size_t)d.entry_number+1);if(r)return r;
         ldt_entries[d.entry_number].desc=d;
         ldt_entries[d.entry_number].valid=!(d.seg_not_present ||
-            (d.base_addr==0 && d.limit==0 && d.read_exec_only));
+            (d.contents!=2 && d.base_addr==0 && d.limit==0 && d.read_exec_only));
         return 0;
     }
     if(func==0) {
@@ -359,18 +360,18 @@ static long ldt_call_locked(unsigned func, uintptr_t ptr, size_t bytes) {
                 raw|=(uint64_t)(d.base_addr&0xffffu)<<16;
                 raw|=(uint64_t)((d.base_addr>>16)&0xffu)<<32;
                 raw|=(uint64_t)(d.seg_32bit&1u)<<54;
-                raw|=(uint64_t)(d.contents&3u)<<52;
                 raw|=(uint64_t)(d.read_exec_only?0:1)<<41;
                 raw|=(uint64_t)(d.limit&0xf0000u)<<32;
                 raw|=(uint64_t)((d.base_addr>>24)&0xffu)<<56;
-                raw|=(uint64_t)(d.useable&1u)<<53;
+                raw|=(uint64_t)(d.useable&1u)<<52;
                 raw|=(uint64_t)(d.limit_in_pages?1u:0u)<<55;
                 raw|=UINT64_C(1)<<47; /* present */
                 raw|=UINT64_C(1)<<44; /* code/data */
                 raw|=UINT64_C(3)<<45; /* user privilege */
                 raw|=UINT64_C(1)<<40; /* accessed */
                 raw|=(uint64_t)(d.contents&1u)<<42; /* expand-down data */
-                raw|=(uint64_t)(d.read_exec_only?0:1)<<41; /* writable data */
+                raw|=(uint64_t)(d.read_exec_only?0:1)<<41; /* writable data / readable code */
+                if(d.contents==2)raw|=UINT64_C(1)<<43; /* executable code */
             }
             if(proxy_copy((void *)(ptr+copied),&raw,8))return copied?(long)copied:-EFAULT;
             copied+=8;
@@ -475,12 +476,51 @@ static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
     else ((void (*)(int))action.handler)(sig);
     old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
 }
+static int ldt_is_flat_code(unsigned selector) {
+    if(!(selector&4) || (selector&3)!=3)return 0;
+    unsigned index=selector>>3;int valid=0;
+    ldt_lock_acquire();
+    if(index<ldt_capacity && ldt_entries[index].valid) {
+        const struct user_desc *d=&ldt_entries[index].desc;
+        valid=d->contents==2 && d->seg_32bit && d->base_addr==0 && !d->seg_not_present;
+    }
+    ldt_lock_release();return valid;
+}
+static int i386_code_selector(unsigned selector) {
+    return selector==0x23 || ldt_is_flat_code(selector);
+}
+static int i386_stack_read(uint32_t sp,void *value,size_t size) {
+    return proxy_copy(value,(const void *)(uintptr_t)sp,size)==0;
+}
+static int i386_stack_write(uint32_t sp,const void *value,size_t size) {
+    return proxy_copy((void *)(uintptr_t)sp,value,size)==0;
+}
 static void ldt_segv_handler(int sig,siginfo_t *info,void *opaque) {
     ucontext_t *uc=opaque;unsigned char op[16];size_t n=0,ilen=0;uint32_t selector=0,address=0;
     int target=-1,load_offset=-1;uint32_t offset=0;int pop=0;
     uintptr_t pc=(uintptr_t)uc->uc_mcontext.gregs[REG_EIP];
+    int transfer=0,transfer_kind=0; /* 1 jump, 2 call, 3 retf, 4 iret */
+    unsigned transfer_selector=0;uint32_t transfer_offset=0;unsigned ret_adjust=0;
     if(info->si_code==SI_KERNEL && pc && !proxy_copy(op,(void *)pc,sizeof(op))) {
-        if(op[0]==0x8e) {
+        if(op[0]==0x9a) { /* lcall ptr16:32 */
+            p_copy(&transfer_offset,op+1,4);p_copy(&transfer_selector,op+5,2);ilen=7;
+            transfer=1;transfer_kind=2;
+        } else if(op[0]==0xea) { /* ljmp ptr16:32 */
+            p_copy(&transfer_offset,op+1,4);p_copy(&transfer_selector,op+5,2);ilen=7;
+            transfer=1;transfer_kind=1;
+        } else if(op[0]==0xff) {
+            unsigned m=op[1],ext=(m>>3)&7;size_t elen=2;
+            if((ext==3 || ext==5) && !i386_ea(uc,op,&elen,m,&address) &&
+               !proxy_copy(&transfer_offset,(void *)(uintptr_t)address,4) &&
+               !proxy_copy(&transfer_selector,(void *)(uintptr_t)(address+4),2)) {
+                ilen=elen;transfer=1;transfer_kind=ext==3?2:1;
+            }
+        } else if(op[0]==0xcb || op[0]==0xca) { /* retf / retf imm16 */
+            transfer=1;transfer_kind=3;ilen=op[0]==0xcb?1:3;
+            if(op[0]==0xca){unsigned short adjust;p_copy(&adjust,op+1,2);ret_adjust=adjust;}
+        } else if(op[0]==0xcf) { /* iret */
+            transfer=1;transfer_kind=4;ilen=1;
+        } else if(op[0]==0x8e) {
             unsigned m=op[1],seg=(m>>3)&7; n=2;
             if(seg==0 || seg==2 || seg==3 || seg==4 || seg==5) {
                 if((m>>6)==3){selector=*i386_reg(uc,m&7)&0xffff;ilen=2;}
@@ -519,6 +559,38 @@ static void ldt_segv_handler(int sig,siginfo_t *info,void *opaque) {
                 load_offset=(int)((m>>3)&7);target=2;ilen=elen;
             }
         }
+    }
+    if(transfer && ilen) {
+        uint32_t sp=(uint32_t)uc->uc_mcontext.gregs[REG_ESP];
+        struct thread_state *thread=thread_state();
+        unsigned current_cs=thread && thread->logical_cs?thread->logical_cs:0x23;
+        int valid=0;
+        if(transfer_kind==1 || transfer_kind==2) {
+            valid=ldt_is_flat_code(transfer_selector);
+            if(valid && transfer_kind==2) {
+                uint32_t return_eip=(uint32_t)(pc+ilen),cs_word=current_cs;
+                uint32_t next_sp=sp-4;
+                if(!i386_stack_write(next_sp,&cs_word,4))valid=0;
+                else { next_sp-=4;if(!i386_stack_write(next_sp,&return_eip,4))valid=0;
+                    else uc->uc_mcontext.gregs[REG_ESP]=(greg_t)next_sp; }
+            }
+            if(valid && thread)thread->logical_cs=transfer_selector;
+            if(valid)uc->uc_mcontext.gregs[REG_EIP]=(greg_t)transfer_offset;
+        } else {
+            uint32_t return_eip=0,cs_word=0,flags=0;
+            unsigned count=transfer_kind==4?3:2;
+            if(i386_stack_read(sp,&return_eip,4) &&
+               i386_stack_read(sp+4,&cs_word,4) &&
+               (count==2 || i386_stack_read(sp+8,&flags,4)) &&
+               i386_code_selector(cs_word&0xffffu)) {
+                transfer_selector=cs_word&0xffffu;valid=1;
+                uc->uc_mcontext.gregs[REG_EIP]=(greg_t)return_eip;
+                uc->uc_mcontext.gregs[REG_ESP]=(greg_t)(sp+(count==3?12:8)+ret_adjust);
+                if(count==3)uc->uc_mcontext.gregs[REG_EFL]=(greg_t)flags;
+                if(thread)thread->logical_cs=transfer_selector;
+            }
+        }
+        if(valid)return;
     }
     struct user_desc ldt_desc;int ldt_valid=0;
     if(ilen && (selector&4) && target>=0) {

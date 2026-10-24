@@ -55,5 +55,5 @@ ld -m elf_i386 -o build/i386-p1/tls --dynamic-linker "$interpreter" \
     build/i386-p1/entry.o build/i386-p1/tls.o "$libc"
 timeout 20 "$loader" --android-filter "$PWD/build/i386-p1/tls" \
     >build/i386-p1/tls.out 2>build/i386-p1/tls.log
-grep -qx 'PASS i386 pthread TLS, multi-selector LDT cache, far segment loads, and SIGSEGV chaining' build/i386-p1/tls.out
+grep -qx 'PASS i386 pthread TLS, flat LDT code, far transfers, segment loads, and SIGSEGV chaining' build/i386-p1/tls.out
 cat build/i386-p1/tls.out

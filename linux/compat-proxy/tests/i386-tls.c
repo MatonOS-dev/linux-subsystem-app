@@ -31,6 +31,24 @@ static volatile int threads_ready;
 static volatile int segv_chained;
 static volatile int expected_segv;
 static volatile int expected_limit;
+volatile int far_calls,nested_outer_calls,nested_inner_calls,far_jumps,iret_hits;
+extern void flat_code_target(void),flat_nested_outer(void),flat_nested_inner(void),flat_jump_target(void);
+extern void flat_direct_call(void),flat_direct_jump(void),flat_adjust_call(void);
+extern unsigned char i386_far_jump_return[];
+__asm__(".text\n"
+        ".globl flat_code_target\nflat_code_target:\n incl far_calls\n lret\n"
+        ".globl flat_adjust_target\nflat_adjust_target:\n incl far_calls\n lret $4\n"
+        ".globl flat_nested_inner\nflat_nested_inner:\n incl nested_inner_calls\n lret\n"
+        ".globl flat_nested_outer\nflat_nested_outer:\n lcall *nested_inner_ptr\n incl nested_outer_calls\n lret\n"
+        ".globl flat_jump_target\nflat_jump_target:\n incl far_jumps\n jmp i386_far_jump_return\n"
+        ".globl flat_direct_call\nflat_direct_call:\n .byte 0x9a\n .long flat_code_target\n .word 0x4f\n ret\n"
+        ".globl flat_adjust_call\nflat_adjust_call:\n pushl $0\n .byte 0x9a\n .long flat_adjust_target\n .word 0x4f\n ret\n"
+        ".globl flat_direct_jump\nflat_direct_jump:\n .byte 0xea\n .long flat_direct_jump_target\n .word 0x4f\n"
+        ".globl i386_direct_jump_return\ni386_direct_jump_return:\n ret\n"
+        "flat_direct_jump_target:\n incl far_jumps\n jmp i386_direct_jump_return\n"
+        ".data\n.align 4\n"
+        ".globl nested_inner_ptr\nnested_inner_ptr: .long flat_nested_inner\n .word 0x4f\n"
+        ".text\n");
 static void app_segv(int sig) { if(sig==TEST_SIGSEGV) { if(expected_limit) _exit(99); if(!expected_segv) { write(2,"UNEXPECTED SIGSEGV\n",19); _exit(98); } segv_chained++; } }
 
 static void check(int ok, const char *what) {
@@ -167,16 +185,46 @@ int main(void) {
     int child_status=0;
     check(waitpid(child,&child_status,0)==child,"wait for limit-fault fixture");
     check(child_status==(99<<8),"segment limit violation reaches SIGSEGV disposition");
-    struct user_desc code={.entry_number=9,.base_addr=(unsigned)&value,
-        .limit=0xfffff,.seg_32bit=1,.contents=2,.read_exec_only=0,
-        .limit_in_pages=1,.seg_not_present=0,.useable=1};
-    check(syscall(123,1,&code,sizeof(code))==-1,
-          "modify_ldt rejects code descriptors blocked by Android app policy");
-    code.seg_32bit=0;
-    check(syscall(123,1,&code,sizeof(code))==-1,"modify_ldt rejects 16-bit code descriptors");
+    struct user_desc code={.entry_number=9,.base_addr=0,.limit=0xffffffffu,.seg_32bit=1,
+        .contents=2,.read_exec_only=0,.limit_in_pages=0,.seg_not_present=0,.useable=1};
+    check(syscall(123,1,&code,sizeof(code))==0,"modify_ldt accepts flat 32-bit code descriptor");
+    struct { uint32_t offset; unsigned short selector; } codeptr;
+    codeptr.offset=(unsigned long)flat_code_target;codeptr.selector=(unsigned short)((9u<<3)|7u);
+    __asm__ volatile("lcall *%0"::"m"(codeptr):"memory");
+    check(far_calls==1,"far call enters flat LDT code and retf returns");
+    struct user_desc zero_limit_code={.entry_number=10,.base_addr=0,.limit=0,
+        .seg_32bit=1,.contents=2,.read_exec_only=1,.limit_in_pages=0,
+        .seg_not_present=0,.useable=1};
+    check(syscall(123,1,&zero_limit_code,sizeof(zero_limit_code))==0,
+          "modify_ldt accepts execute-only code with zero limit");
+    codeptr.selector=(unsigned short)((10u<<3)|7u);
+    __asm__ volatile("lcall *%0"::"m"(codeptr):"memory");
+    check(far_calls==2,"zero-limit code descriptor remains present");
+    codeptr.selector=(unsigned short)((9u<<3)|7u);
+    flat_direct_call();
+    check(far_calls==3,"direct 9A far call enters flat LDT code");
+    flat_adjust_call();
+    check(far_calls==4,"retf imm16 restores the caller stack");
+    codeptr.offset=(unsigned long)flat_nested_outer;
+    __asm__ volatile("lcall *%0"::"m"(codeptr):"memory");
+    check(nested_outer_calls==1 && nested_inner_calls==1,"nested far calls preserve emulated CS");
+    codeptr.offset=(unsigned long)flat_jump_target;
+    __asm__ volatile("ljmp *%0\n\t.globl i386_far_jump_return\ni386_far_jump_return:"
+                     ::"m"(codeptr):"memory");
+    check(far_jumps==1,"far jmp enters flat LDT code with no limit enforcement");
+    flat_direct_jump();
+    check(far_jumps==2,"direct EA far jmp enters flat LDT code");
+    __asm__ volatile("pushfl\n\tpushl $0x4f\n\tpushl $1f\n\tiret\n1:\tincl iret_hits"
+                     :::"memory","cc");
+    check(iret_hits==1,"iret to emulated flat LDT code selector");
+    code.base_addr=1;
+    check(syscall(123,1,&code,sizeof(code))==-1,"modify_ldt rejects non-flat code descriptors");
+    ldt.contents=2;
+    check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects non-flat code descriptors");
+
     ldt.contents=0;ldt.seg_32bit=0;
     check(syscall(123,1,&ldt,sizeof(ldt))==-1,"modify_ldt rejects 16-bit descriptors");
-    static const char pass[]="PASS i386 pthread TLS, multi-selector LDT cache, far segment loads, and SIGSEGV chaining\n";
+    static const char pass[]="PASS i386 pthread TLS, flat LDT code, far transfers, segment loads, and SIGSEGV chaining\n";
     write(1,pass,sizeof(pass)-1);
     return 0;
 }

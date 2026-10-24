@@ -122,12 +122,15 @@ their own records through this common interface.
   general network namespace implementation.
 - The DNS forwarder supports UDP only and depends on Android netd's
   `dnsproxyd` socket and wire protocol.
-- i386 segmented-memory emulation supports a bounded set of 32-bit data
-  descriptor operations. Code descriptors and far CS transfers are dropped:
-  Android's inherited app seccomp policy blocks `modify_ldt`, and
-  `set_thread_area` rejects code descriptors. Supporting them needs an Android
-  syscall-policy change or a different kernel interface, so the proxy returns
-  `EINVAL` instead of attempting a raw syscall that re-enters SIGSYS.
+- i386 LDT emulation supports 32-bit data descriptors and flat 32-bit,
+  nonconforming code descriptors. Far call/jump, `retf` and `iret` control
+  transfers through those code selectors are emulated with the real user CS
+  (`0x23`); reading `%cs` therefore reports `0x23`, including while executing
+  code reached through an emulated selector. Code descriptor limits are
+  deliberately ignored, which is laxer than hardware. Nonzero-base code
+  (which needs binary translation), conforming code and all 16-bit code remain
+  unsupported and are rejected with `EINVAL`.
+
 
 For production acceptance, freshly boot an image, disable idle suspend in the
 VM, run the installed host and stubs under their app UIDs, then validate
@@ -144,6 +147,10 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
   dropped for now. The i386 fixture asserts explicit rejection. Steam's test
   installer separately stops before download because dependency planning asks
   Flathub for the unavailable `runtime/org.freedesktop.Platform/i386/26.08`.
+- **2026-10-24:** Emulated flat 32-bit LDT code descriptors and far control
+  transfers in the compat proxy. Code limits are ignored; `%cs` remains the
+  real `0x23` selector. Non-flat/conforming/16-bit code remains unsupported.
+
 - **2026-10-24:** Fixed i386 resident TLS discovery under Android's app policy:
   `get_thread_area` (244) is blocked even from a raw gateway; querying an
   untracked initial descriptor returned `-ESRCH` and caused loader exit 5.
