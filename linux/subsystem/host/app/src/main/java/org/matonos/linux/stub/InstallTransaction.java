@@ -356,7 +356,7 @@ public final class InstallTransaction {
             if(!node.info.commit.equals(manifest.getString("appCommit"))) {
                 // install has no --commit option; update can bind the downloaded
                 // deployment to the exact snapshot inspected before any pull.
-                cliProgress(parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
+                cliProgress(node.ref,parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
                 manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             }
             if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,
