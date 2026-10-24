@@ -42,6 +42,8 @@ for name in glib ostree flatpak DullPGP; do
   rev=$(cut -f2 "$CACHE/src/$name.pin")
   git -C "$CACHE/git/$name" archive "$rev" | tar -x -C "$dest"
 done
+patch -s -p1 -d "$CACHE/src/flatpak" \
+  < "$HERE/patches/0001-run-create-private-dev-shm-when-host-lacks-it.patch"
 for pair in 'glib-gvdb:glib/subprojects/gvdb' 'ostree-libglnx:ostree/libglnx' 'ostree-bsdiff:ostree/bsdiff' 'flatpak-libglnx:flatpak/subprojects/libglnx' 'variant-schema-compiler:flatpak/subprojects/variant-schema-compiler'; do
   name=${pair%%:*}; rel=${pair#*:}; rev=$(cut -f2 "$CACHE/src/$name.pin")
   mkdir -p "$CACHE/src/$rel"
