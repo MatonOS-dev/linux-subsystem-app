@@ -33,13 +33,12 @@ void proxy_profile_section(unsigned,uint64_t);
 #define PROFILE_END(section) ((void)(section))
 #endif
 #include "arch/stat.h"
-/* The top of the real RLIMIT_NOFILE range belongs to the proxy (pack and
- * private descriptors); the payload sees only the range below it. The seccomp
- * filter lets payload I/O below this floor reach Linux directly. */
+/* The top of the payload's soft RLIMIT_NOFILE range holds the proxy's pack and
+ * private descriptors. The seccomp filter lets payload I/O below this floor
+ * reach Linux directly. */
 extern long proxy_fd_reserve;
 #define PROXY_PRIVATE_FD_FLOOR proxy_fd_reserve
 void proxy_fd_reserve_init(void);
-extern uint64_t proxy_nofile_cur,proxy_nofile_max;
 long proxy_private_fd(long);
 #include "arch/statx.h"
 #include "arch/socket.h"

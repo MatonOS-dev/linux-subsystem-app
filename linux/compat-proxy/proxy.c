@@ -1296,7 +1296,6 @@ static int ours(long n) {
 #endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
     case PROXY_SC_prctl:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
-    case PROXY_SC_getrlimit:case PROXY_SC_setrlimit:case PROXY_SC_prlimit64:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
     case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:
@@ -1678,29 +1677,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(a[0]) thread->app_stack=next;
         result=0;break;
     }
-    /* The payload sees the lower half of the real NOFILE range; other
-     * resources and other processes keep native semantics. */
-    case PROXY_SC_getrlimit:case PROXY_SC_setrlimit:case PROXY_SC_prlimit64:{
-        long resource=nr==PROXY_SC_prlimit64?a[1]:a[0];
-        int self=nr!=PROXY_SC_prlimit64 || !a[0] || a[0]==RAW(PROXY_SC_getpid,0,0,0,0,0,0);
-        if(resource!=RLIMIT_NOFILE || !self || !proxy_nofile_max){result=RAW(nr,a[0],a[1],a[2],a[3],0,0);break;}
-        void *in=(void *)(uintptr_t)(nr==PROXY_SC_prlimit64?a[2]:nr==PROXY_SC_setrlimit?a[1]:0);
-        void *out=(void *)(uintptr_t)(nr==PROXY_SC_prlimit64?a[3]:nr==PROXY_SC_getrlimit?a[1]:0);
-        uint64_t cur=proxy_nofile_cur,max=proxy_nofile_max;
-        if(in){
-            if(nr==PROXY_SC_prlimit64){uint64_t v[2];result=proxy_copy(v,in,sizeof(v));if(result)break;cur=v[0];max=v[1];}
-            else {unsigned long v[2];result=proxy_copy(v,in,sizeof(v));if(result)break;cur=v[0]==~0UL?~UINT64_C(0):v[0];max=v[1]==~0UL?~UINT64_C(0):v[1];}
-            if(cur>max){result=-EINVAL;break;}
-            if(max>proxy_nofile_max){result=-EPERM;break;}
-        }
-        if(out){
-            if(nr==PROXY_SC_prlimit64){uint64_t v[2]={proxy_nofile_cur,proxy_nofile_max};result=proxy_copy(out,v,sizeof(v));}
-            else {unsigned long v[2]={(unsigned long)proxy_nofile_cur,(unsigned long)proxy_nofile_max};result=proxy_copy(out,v,sizeof(v));}
-            if(result)break;
-        }
-        if(in){proxy_nofile_cur=cur;proxy_nofile_max=max;}
-        result=0;break;
-    }
     case PROXY_SC_unshare:
         result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;
         if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining)result=-EPERM;}
@@ -1936,7 +1912,6 @@ void proxy_state(struct state *s){
  chained.handler=state_word(s,chained.handler==1?1:0);
  proxy_trace=state_word(s,proxy_trace);proxy_diagnostic_fd=state_word(s,proxy_diagnostic_fd);
  namespaces=state_word(s,namespaces);userns_remaining=state_word(s,userns_remaining);
- proxy_nofile_cur=state_word(s,proxy_nofile_cur);proxy_nofile_max=state_word(s,proxy_nofile_max);
  state_string(s,(char **)&proxy_tmpdir);
  state_string(s,(char **)&host_command_socket);host_command_started=state_word(s,host_command_started);
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;

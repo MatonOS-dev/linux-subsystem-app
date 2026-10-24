@@ -13,25 +13,19 @@
 int state_android, state_gpu_bridge;
 static int private_fd=-1;
 long proxy_fd_reserve=512;
-/* Visible RLIMIT_NOFILE for the payload: the real range minus the proxy's
- * reserve. The real soft limit is raised to the real hard limit so reserve
- * placement never fails. Deterministic from the
- * real hard limit, so a re-exec recomputes the same base. */
-uint64_t proxy_nofile_cur,proxy_nofile_max;
+/* The proxy works at the top of the payload's own soft NOFILE limit; the
+ * limit is not virtualized. The larger the range, the smaller our share: up
+ * to 60Ki we take half, up to 120Ki a third, beyond that a quarter. Fixed at
+ * first launch; the payload may raise or lower its limit freely afterwards
+ * (a reserve that no longer fits falls back to packed-file copies). */
 void proxy_fd_reserve_init(void){
  static int ready;if(ready)return;ready=1;
  struct {uint64_t cur,max;} real={0,0};
  if(RAW(PROXY_SC_prlimit64,0,RLIMIT_NOFILE,0,&real,0,0))return;
- uint64_t hard=real.max==~UINT64_C(0)?UINT64_C(1048576):real.max;
- if(hard<16)return;
- /* The larger the real range, the smaller our share: up to 60Ki we keep half,
-  * up to 120Ki a third, beyond that a quarter. */
- uint64_t share=hard<=UINT64_C(60)*1024?2:hard<=UINT64_C(120)*1024?3:4;
- proxy_fd_reserve=(long)(hard-hard/share);
- proxy_nofile_max=(uint64_t)proxy_fd_reserve;
- proxy_nofile_cur=real.cur<proxy_nofile_max?real.cur:proxy_nofile_max;
- struct {uint64_t cur,max;} raised={real.max,real.max};
- RAW(PROXY_SC_prlimit64,0,RLIMIT_NOFILE,&raised,0,0,0);
+ uint64_t soft=real.cur==~UINT64_C(0)?UINT64_C(1048576):real.cur;
+ if(soft<16)return;
+ uint64_t share=soft<=UINT64_C(60)*1024?2:soft<=UINT64_C(120)*1024?3:4;
+ proxy_fd_reserve=(long)(soft-soft/share);
 }
 /* Move a fresh private descriptor to the private range, keeping its
  * close-on-exec state. Consumes fd; returns the new fd or an error. */
