@@ -93,11 +93,27 @@ so its apparent reload is not presented as a cache benchmark.
 | lseek | 1 | 0 |
 | fcntl | 0 | 2 |
 
-These selected symbols are not a whole-libc denominator. Stack-framed
-openat/close/fcntl are deliberately skipped; getdents64 needs a currently
-unsupported conditional-move opcode. Supporting these real glibc wrappers is
-the first coverage follow-up. The simple wrappers in the integration fixture
-prove every listed file syscall class end to end, including fcntl slow fallback.
+| Freedesktop 26.08 libc wrapper | Patched primary sites | Remaining primary sites |
+|---|---:|---:|
+| openat | 1 | 0 |
+| close | 1 | 0 |
+| fstatat | 1 | 0 |
+| __fxstatat | 1 | 0 |
+| statx | 1 | 0 |
+| fstat | 1 | 0 |
+| readlink | 1 | 0 |
+| readlinkat | 1 | 0 |
+| getdents64 | 1 | 0 |
+| lseek | 1 | 0 |
+| fcntl | 1 | 0 |
+
+These selected symbols are not a whole-libc denominator. The updated proof
+uses control-flow stack depth and recognizes the wrapper instructions used by
+both libraries; no selected primary sites remain trapped in either sample.
+The simple wrappers in the integration fixture prove every listed file
+syscall class end to end, including fcntl slow fallback. Host and runtime
+coverage traces are in `/mnt/data/aosp/out/pc-logs/agents/site-coverage-host-step2.log`
+and `site-coverage-freedesktop-step2.log`.
 Register/flags/SSE preservation and readlink's argument-modernization path have
 explicit assembly checks. Overlapping symbols, execute-only file maps and
 anonymous mremap replacements also have trap-fallback tests.
@@ -113,6 +129,60 @@ used a temporary `XDG_DATA_HOME`. Pull and deploy are Flatpak's separate
 runtime and app into a 663 MiB OSTree repo; the proxy comparison used warm
 objects in that same repo, avoiding a second 663 MiB network transfer.
 Launch measurements ran headless with `DISPLAY` unset.
+
+### Direct dispatcher profile and optimization (2026-10-24)
+
+The direct path was measured with `PROXY_PROFILE=1` TSC sections and per-raw
+call-site attribution, then timed without profiling using
+`tests/trap-bench.sh 20000 5` (counts off). The open mode is `openat + close`.
+The median comparison before and after caching thread state by the current
+stack page was:
+
+| Operation | Native before | Rewrite before | Native after | Rewrite after |
+|---|---:|---:|---:|---:|
+| openat + close | 2.252 µs | 8.778 µs | 2.247 µs | 8.011 µs |
+| stat | 1.325 µs | 5.756 µs | 1.288 µs | 5.388 µs |
+
+The cache removes the per-dispatch `gettid` syscall on a known stack page.
+Profiling's section 9 fell from 5,638,820 to 304,494 TSC cycles across 4,005
+direct dispatches. The cache deliberately avoids payload TLS because this
+static proxy starts before the payload TLS layout is available. A stack-page
+collision is marked ambiguous and falls back to `gettid`; fork children clear
+inherited cache entries. Direct arenas are reused, so steady-state dispatch
+does not map a buffer per call. Raw attribution still shows the fd-name
+critical section's signal-mask syscalls; removing those masks would permit a
+signal handler to interrupt a thread while it owns the shared lock and
+deadlock on re-entry, so they remain. The direct-path profile attributed about
+17,850 TSC cycles per dispatch to argument packing and VFS/file dispatch.
+
+This improves the rewrite path but does not meet the requested 2x-native
+target: the medians remain 3.56x native for openat+close and 4.19x for stat.
+The remaining direct dispatch and fd-name lock cost needs further work before
+this path should be presented as a low-overhead replacement.
+
+### Warm Flatpak workload A/B (2026-10-24)
+
+Flatpak 1.14.6 used an isolated user install under
+`/mnt/data/aosp/out/pc-logs/agents/site-rewrite-1b-flatpak`, with the
+Freedesktop 26.08 VulkanInfo app and runtime pulled once. Measurements were
+warm, headless (`DISPLAY` unset), with proxy counters off. Each launch result
+is the median of five runs; VulkanInfo exits with `ERROR_INCOMPATIBLE_DRIVER`
+because this host has no Vulkan driver.
+
+| Workload | Native | Proxy, rewrite off | Proxy, rewrite on |
+|---|---:|---:|---:|
+| VulkanInfo launch | 0.32 s | 0.62 s | 1.88 s |
+| Warm pull + deploy | 5.00 s | did not complete | did not complete |
+| Warm deploy only (`--no-pull`) | — | 1.71 s | 4.06 s |
+
+The no-deploy pull stage completed natively but stalled in `poll()` through
+both proxy modes; the rewrite-off attempt was stopped after 116.95 s and the
+rewrite-on attempt after 67.47 s. The separate no-pull deployment succeeded
+in both proxy modes. Therefore this run does not provide a complete proxy
+pull-plus-deploy A/B, and the warm launch result regresses with rewriting on.
+Raw logs are `site-rewrite-1b-flatpak/launch-ab.log`,
+`pull-deploy-ab.log`, `deploy-proxy0.log`, and `deploy-proxy1.log` under
+`/mnt/data/aosp/out/pc-logs/agents`.
 
 ### Per-trap allocation follow-up (2026-10-19)
 
@@ -337,13 +407,15 @@ exhausted, the mapping overlaps an unsupported operation, or any proof fails,
 leave the code trapped. Noncongruent ELF segments and anonymous mappings are
 not rewrite candidates.
 
-The scanner reads both `.dynsym` and `.symtab`, accepts `STT_FUNC` ranges of
-1–4096 bytes, and linearly decodes the **entire** function before modifying any
-site. Differently bounded overlapping functions, unknown instructions, stack
-references/stack mutation, indirect control flow and incomplete symbols reject
-the function. The first decoder intentionally proves a strict subset of leaf
-wrappers; it does not yet decode FDE-only functions or perform stack/control-flow
-data-flow analysis. No raw byte-match scanner authorizes a patch.
+The scanner reads both `.dynsym` and `.symtab`, accepts complete `STT_FUNC`
+ranges, and linearly decodes the **entire** function before modifying any site.
+It also accepts function extents explicitly supplied by `.eh_frame` FDEs when
+no ELF function symbol overlaps the range. Differently bounded overlapping
+symbols, unknown instructions, indirect control flow and incomplete extents
+reject the function. Stack depth is propagated through direct branches; a site
+is eligible when every incoming path has allocated stack, or when the incoming
+path and every continuation to a return are proven not to use stack memory.
+FDE ranges are never inferred by scanning for syscall byte patterns.
 
 Every in-function direct branch must land on a decoded instruction boundary.
 No branch may land inside a replacement window except at its first byte.
@@ -361,11 +433,10 @@ thread parking, JIT rewriting or modification of already-running code.
 
 Scan plans are cached by device/inode, size, nanosecond mtime/ctime, packed
 carrier slice, file offset and mapping length. Cached windows retain the
-original bytes and are revalidated before publication. The process cache has
-64 mapping plans and 512 windows/plan; saturation falls back to rescanning or
-leaves extra sites trapped. Cache contention never waits in a signal frame;
-that mapping remains trapped. No persistent text-address registry is required
-for published pages.
+original bytes and are revalidated before publication. Mapping plans and their
+site arrays grow dynamically with overflow checks. Allocation failure and
+cache contention leave affected code trapped. No persistent text-address
+registry is required for published pages.
 
 ### One entry table, no per-site stubs
 
@@ -393,10 +464,11 @@ proxy's common ID, and shares path/descriptor dispatch and pack translation
 with SIGSYS. No synthetic ucontext is used. Internal raw syscalls still pass
 all installed filters through the existing gateway.
 
-**Red zone:** the replacement call writes below rsp. This initial proof rejects
-any function mentioning rsp or modifying the stack, rather than guessing
-whether a stack access is safe. This deliberately leaves real stack-framed
-wrappers trapped; supporting them needs control-flow-aware stack proofs.
+**Red zone:** the replacement call writes below rsp. The proof tracks `push`,
+`pop`, and immediate `sub/add rsp` adjustments through the function's direct
+control flow. An unallocated-stack site is accepted only when its incoming
+paths and all continuations to return avoid stack access. Unknown stack changes,
+indirect control flow and inconsistent stack depth still reject the function.
 
 The direct path has per-thread, reusable allocation scopes, including separate
 scopes for signal re-entry. A SIGSYS handler pauses interrupted scopes so its
@@ -414,9 +486,9 @@ SETFD, GETFL, SETFL, DUPFD and DUPFD_CLOEXEC dispatch directly; locking and all
 other commands execute a deliberately trapped syscall from the resident slow
 entry. Descriptor/pack tracking is shared with the ordinary handler.
 
-Everything unproven stays trapped: stack-framed/red-zone functions, unsupported
-decoder opcodes, indirect control flow, absent/ambiguous symbols, FDE-only
-ranges, secondary encodings (including musl cancellation), restartable syscall
+Everything unproven stays trapped: stack-framed/red-zone functions without a
+valid proof, unsupported decoder opcodes, indirect control flow, ambiguous
+extents, secondary encodings (including musl cancellation), restartable syscall
 classes, page boundaries, shared, execute-only or writable executable mappings, anonymous/JIT
 pages, unsupported architectures and failed W^X operations. This is a
 compatibility/performance layer inside the Android app sandbox, not an
@@ -426,8 +498,7 @@ additional security boundary.
 
 `tests/site-coverage.c` reports actual post-load bytes, rather than estimating
 coverage from syscall encodings. The host libc coverage table is recorded with
-the measurement results below. In particular, host openat, close and fcntl
-contain stack operations and remain trapped. The benchmark uses noinline,
+the measurement results below. The benchmark uses noinline,
 fixed-number assembly wrappers that pass exactly the same scanner; native,
 trap and rewrite run identical wrapper code. Generic libc `syscall()` uses a
 dynamic syscall number and would not measure the primary encoding at all.
@@ -445,12 +516,37 @@ The existing `--count` trap/raw summaries retain their SIGSYS meaning; they do
 not yet attribute direct-dispatch calls. Use byte coverage and counts-off
 benchmarks for this phase.
 
+### Phase 1b coverage results (2026-10-24)
+
+The x86_64 decoder now handles the instruction subset used by both host glibc
+2.39 and the Freedesktop 26.08 runtime libc, including `cmov` in `getdents64`.
+Direct conditional/unconditional branches are checked against instruction
+boundaries and stack-depth joins. FDE-only `.eh_frame` ranges are considered
+only when no `STT_FUNC` range overlaps them. The coverage harness can stop after
+the table with `SITE_COVERAGE_ONLY=1`, which permits testing a runtime root
+without unrelated host libraries.
+
+| Wrapper | Host glibc patched / trapped | Freedesktop 26.08 libc patched / trapped |
+|---|---:|---:|
+| openat | 2 / 0 | 1 / 0 |
+| close | 2 / 0 | 1 / 0 |
+| fstatat | 1 / 0 | 1 / 0 |
+| __fxstatat | 1 / 0 | 1 / 0 |
+| statx | 1 / 0 | 1 / 0 |
+| fstat | 1 / 0 | 1 / 0 |
+| readlink | 1 / 0 | 1 / 0 |
+| readlinkat | 1 / 0 | 1 / 0 |
+| getdents64 | 1 / 0 | 1 / 0 |
+| lseek | 1 / 0 | 1 / 0 |
+| fcntl | 2 / 0 | 1 / 0 |
+
+Host output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-host-step2.log`.
+Runtime output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-freedesktop-step2.log`.
+
 ### Next phases
 
-Broaden x86_64 decoder/stack proofs and add FDE ranges, preserving the trap
-fallback for cancellation/restart semantics and app-owned user dispatch. Then
-implement i386 on this shared load-time core: AT_SYSINFO/virtualized TCB sysinfo
-entry substitution (never patch the vDSO), primary int80 call-table windows,
-six-register preservation and non-flat-code-segment fallback. Arm64 follows
-with its own branch-only backend and cache maintenance. Anonymous/JIT handling
-and runtime discovery/parking belong to a later version, not this one.
+The next work is reducing direct-dispatch overhead to the 2x-native target and
+diagnosing why proxy `--no-deploy` stalls in the Flatpak pull path. Preserve
+the trap fallback for cancellation/restart semantics and app-owned user
+dispatch. i386 rewriting, arm64 rewriting, anonymous/JIT handling and runtime
+discovery/parking remain out of scope for this x86_64 phase.

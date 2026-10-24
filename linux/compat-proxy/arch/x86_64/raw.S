@@ -98,6 +98,7 @@ proxy_clone_after:
     /* Saved syscall result is at +72: +0 is the caller's saved RBP. */
     cmpq $0,72(%rbp)
     jne 1f
+    call proxy_thread_state_invalidate
     call adopt_fork_child
 1:
     fxrstor64 (%rsp)
@@ -117,6 +118,10 @@ proxy_clone_after:
 .weak adopt_fork_child
 .type adopt_fork_child,@function
 adopt_fork_child:
+    ret
+.weak proxy_thread_state_invalidate
+.type proxy_thread_state_invalidate,@function
+proxy_thread_state_invalidate:
     ret
 .weak dns_fork_result
 .type dns_fork_result,@function
