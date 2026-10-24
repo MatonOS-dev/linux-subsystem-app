@@ -109,12 +109,15 @@ their own records through this common interface.
 ## Current limitations and device validation
 
 - Host checks do not replace a fresh-image boot or app-UID testing.
-- The latest recorded v45 VM check reached 32-bit EGL but was blocked by
-  missing app-readable labels on several 32-bit graphics libraries and an
-  unresolved 32-bit `libhardware.so` in the vendor namespace. Fix image
-  integration and re-run rendering checks before claiming i386 GPU support.
-- Xwayland presentation and the full installed Flatpak path still need fresh
-  image verification after integration changes.
+- The enforcing v46 VM fixes v45's 32-bit graphics labels and vendor
+  `libhardware.so` dependency. Under the installed Flatpak stub UID, ELF32
+  EGL pbuffer and GLX core-profile pixel readback, GLX alpha checks and Vulkan
+  physical-device enumeration pass. x86_64 rendering and Tux Racer remain
+  regression controls. This establishes the tested virgl path; native PC GPU
+  drivers still need their own hardware checks.
+- An ELF32 app still requires its Compat.i386/GL32 runtime and the per-app
+  Flatpak multiarch feature. The tests use a disposable override; production
+  does not grant this feature globally.
 - Virtual NEWNET covers the current loopback/bwrap setup only; it is not a
   general network namespace implementation.
 - The DNS forwarder supports UDP only and depends on Android netd's
@@ -130,8 +133,14 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
 
 ## Changelog
 
+- **2026-10-24:** Fixed i386 resident TLS discovery under Android's app policy:
+  `get_thread_area` (244) is blocked even from a raw gateway; querying an
+  untracked initial descriptor returned `-ESRCH` and caused loader exit 5.
+  Native bionic startup now reads its x86 TLS self pointer; payload queries
+  use tracked descriptors. The device adoption test enables the app policy.
+  The corresponding GLX frame-pacing fix uses i386 timing syscalls.
 - **2026-10-24:** Added i386 data-segment emulation and resident thread/GPU
-  adoption; recorded the outstanding image-side graphics blockers.
+  adoption; recorded the original v45 image-side graphics blockers.
 - **2026-10-23:** Added virtual loopback interface ioctl support in NEWNET.
 - **2026-10-21:** Preserved resident graphics descriptors and resident pthread
   alternate-stack startup; added fd-lifetime coverage.
@@ -143,3 +152,18 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
   that talks directly to netd's `dnsproxyd` socket.
 - **2026-10:** Added resident exec, mixed-ABI loader handoff, virtual VFS,
   network compatibility, SysV IPC, HostCommand and GPU bridge support.
+
+Run the device adoption regression independently of graphics with
+`bash tests/i386-adopt-device.sh /absolute/external/output 127.0.0.1:5556`.
+It exercises main plus six glibc pthreads, nested scopes, all three TLS slots,
+FP state, robust owner death, fork and collision rejection under the generated
+Android app syscall policy. The root harness supplements, rather than
+replaces, rendering tests launched through an installed app stub.
+
+For native hardware validation, use an image containing both vendor graphics
+ABIs, install Compat.i386 through the subsystem, and launch the four probes
+through a multilib Flatpak stub with its per-app multiarch feature. Require
+EGL/GLX pixel readback, matching alpha pixels and Vulkan's actual GPU name;
+then repeat the x86_64 probes and Tux Racer. Repeat on the RX 6600, Surface
+Pro 3 Intel GPU and HP ProDesk Haswell GPU; the VM result does not establish
+those native-driver paths. Keep SELinux enforcing and disable VM idle sleep.

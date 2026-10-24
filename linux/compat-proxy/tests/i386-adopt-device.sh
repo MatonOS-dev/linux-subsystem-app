@@ -12,6 +12,8 @@ adb_bin=${ADB:-/mnt/data/aosp/out/host/linux-x86/bin/adb}
 adb=("$adb_bin" -s "${2:-127.0.0.1:5556}")
 libc=${MATON_V3_I386_LIBC:-/usr/lib32/libc.so.6}
 interpreter=${MATON_V3_I386_INTERPRETER:-/lib/ld-linux.so.2}
+# Use the checked-out AOSP app policy even on a clean source checkout.
+python3 "$source_dir/gen-policy.py"
 device_dir=/data/local/tmp/maton-i386-adopt-$$
 trap '"${adb[@]}" shell "rm -rf $device_dir" >/dev/null' EXIT
 "$compiler" -DPROXY_ARCH_BACKEND='"i386/backend.h"' -DMATON_GPU_BRIDGE -DPROXY_LIBRARY \
