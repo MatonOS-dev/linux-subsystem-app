@@ -85,7 +85,7 @@ The i386 backend uses `int 0x80`, ELF32 and `/system/lib` Android libraries; it
 enters bionic TLS through the appended v2 adoption `switch_in`/`switch_out`
 hooks, which own the reserved-GDT selector lifecycle. Its ICD is built for the
 `corei7` ISA level and has its own manifest. Compiler atomic builtins provide
-synchronization. Arm64 backends are
+synchronization. Arm64/riscv64 backends are
 compile-only, fail-closed slots; the core, validators and generated thunks compile
 for both targets, but runtime TPIDR_EL0/tp switching/adoption is not implemented.
 
@@ -113,7 +113,7 @@ bash linux/vulkan-forward/tests/build-offscreen.sh "$OUT/tests" "$HEADERS" "$OUT
 ```
 
 `build.sh` checks the x86_64 and i386 ELF dependencies/exports and cross-compiles
-runtime/core/generated code for aarch64-linux-gnu.
+runtime/core/generated code for aarch64-linux-gnu and riscv64-linux-gnu.
 `tests/run.sh` checks both ICDs, the x86_64 and i386 adoption ABI offsets,
 helper/allocator behavior (8 threads × 1,000 iterations), and absent-bridge
 refusal. Test shaders are compiled to

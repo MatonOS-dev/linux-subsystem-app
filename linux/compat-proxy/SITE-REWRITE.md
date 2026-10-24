@@ -1,10 +1,9 @@
-# Syscall-site rewriting and proxy measurements
+# Syscall-site rewrite proposal and proxy measurements
 
-Version 1 implements opt-in **load-time** x86_64 rewriting with
-`MATON_PROXY_REWRITE=1`. The default remains SIGSYS. Only complete, unambiguous
-ELF function symbols that the conservative backend can decode qualify.
-Anonymous/JIT code is never scanned. Supported architectures going forward are
-x86_64, i386 and arm64; the latter two retain SIGSYS in this phase.
+Version 1 is designed for load-time rewriting, disabled unless
+`MATON_PROXY_REWRITE=1` is set. The implementation is not present yet: this
+branch currently records the trapped no-op baseline and retains the existing
+SIGSYS path. Anonymous and JIT mappings remain trapped in the planned v1.
 
 ### Trapped no-op baseline (2026-10-24)
 
@@ -33,74 +32,9 @@ unknown syscall is intentionally unsupported and is not a rewrite candidate.
 | statx | 1.36 µs/op | 7.93 µs/op |
 
 These are single-run baselines; the script's sequential 1 GiB read and mmap
-checks also passed, but do not provide a repeated timing distribution. These measurements precede the implementation; the repeated comparison below
-uses the same fixed-number wrappers for all three routes.
-
-## Phase 1 results (2026-10-24)
-
-Host: x86_64, glibc 2.39, kernel 7.0.0-38-generic, GCC 13.3.0. No VM.
-`tests/trap-bench.sh 20000 5`: median of five fresh-process runs, counts off.
-Native, trap and rewrite all execute the same fixed-number wrappers.
-
-| Operation | Native µs/op | SIGSYS µs/op | Rewrite µs/op | Reduction vs SIGSYS |
-|---|---:|---:|---:|---:|
-| Unknown syscall/no-op | 0.291 | 4.831 | 4.747 | 1.7% |
-| getpid (native bypass) | 0.306 | 0.417 | 0.427 | -2.5% |
-| openat + close | 2.482 | 13.340 | 8.881 | 33.4% |
-| newfstatat | 1.356 | 7.694 | 6.009 | 21.9% |
-| statx | 1.396 | 7.624 | 6.196 | 18.7% |
-
-The no-op and getpid are controls: neither is rewritten; their small changes
-are run variation. The file-class reductions are 33.4%, 21.9% and 18.7% for
-these primary-encoding wrappers, not estimates for a whole application.
-The final implementation also copies the six dispatch arguments before VFS
-translation so the assembly save area always restores the original registers.
-
-`tests/io-bench.sh` (10,000 metadata operations, one run per route):
-
-| I/O metadata operation | Native µs/op | SIGSYS µs/op | Rewrite µs/op |
-|---|---:|---:|---:|
-| openat + close | 2.393 | 13.497 | 9.268 |
-| newfstatat | 1.515 | 7.470 | 6.384 |
-| statx | 1.850 | 7.709 | 6.097 |
-
-The script's 1 GiB sequential read and mmap checks passed for every route.
-Those syscalls are outside the rewrite class; their timings are not evidence
-of rewriting large I/O. The temporary 1 GiB fixture was removed by the script.
-
-One counts-off `tests/site-coverage.c` trace measured these scanner costs,
-including ELF reads, proofs and page publication (not complete dynamic-loader
-time): libc's 1,609,728-byte executable mapping **0.589 ms**, with 10 unique
-sites patched; libstdc++'s 1,343,488-byte executable mapping **0.522 ms**, with
-zero eligible sites. Its libm/libgcc dependencies took 0.088/0.036 ms. These
-are single-run measurements, not timing distributions. The fixture library
-patched 11 sites in 0.160 ms initially; two true unload/reloads hit the plan
-cache and republished them in 0.132/0.152 ms. The cache avoids decoding; it
-still validates and copies pages. libstdc++ remained resident after dlclose,
-so its apparent reload is not presented as a cache benchmark.
-
-| Host glibc 2.39 wrapper | Patched primary sites | Remaining primary sites |
-|---|---:|---:|
-| openat | 0 | 2 |
-| close | 0 | 2 |
-| fstatat | 1 | 0 |
-| __fxstatat | 1 | 0 |
-| statx | 1 | 0 |
-| fstat | 1 | 0 |
-| readlink | 1 | 0 |
-| readlinkat | 1 | 0 |
-| getdents64 | 0 | 1 |
-| lseek | 1 | 0 |
-| fcntl | 0 | 2 |
-
-These selected symbols are not a whole-libc denominator. Stack-framed
-openat/close/fcntl are deliberately skipped; getdents64 needs a currently
-unsupported conditional-move opcode. Supporting these real glibc wrappers is
-the first coverage follow-up. The simple wrappers in the integration fixture
-prove every listed file syscall class end to end, including fcntl slow fallback.
-Register/flags/SSE preservation and readlink's argument-modernization path have
-explicit assembly checks. Overlapping symbols, execute-only file maps and
-anonymous mremap replacements also have trap-fallback tests.
+checks also passed, but do not provide a repeated timing distribution. No
+rewrite timings are available because the rewrite path has not been
+implemented.
 
 ## Host measurements
 
@@ -318,139 +252,232 @@ The first item is now measured; remaining items are estimates.
    seconds here); likely under 1 s wall for this sample. Do not exempt the
    bwrap sandbox payload.
 
-## Version 1 implementation (2026-10-24)
+## Syscall-site rewrite design
 
-### Load-time proof and publication
+### Mapping and W^X
 
-`rewrite.h` is the shared ELF/mapping core, selected through
-`ARCH_REWRITE_HEADER`; `arch/x86_64/rewrite.h` owns instruction decoding, site
-encoding and entry generation. There are no architecture-name conditionals in
-this core. Other backends supply the disabled fallback. ELF records and offsets
-remain fixed-width; addresses pass through `uintptr_t`.
+Version 1 does not discover or modify code from a SIGSYS handler. For the main
+executable and interpreter, scan after mapping and before jumping to the entry
+point. For shared objects, scan the anonymous executable copy created while
+handling a file-backed `mmap(PROT_EXEC)`, before returning from that mapping
+call. The scanner accepts only complete, linearly disassembled function ranges
+from ELF symbols or `.eh_frame` FDEs. It validates each candidate syscall
+encoding and direct branch targets within that function. Unknown instruction
+boundaries, ambiguous ranges, unsupported syscall numbers and any failed
+proof leave the site unchanged on the trap path. There is no thread parking
+in this version because executable pages are not yet published to running
+code when rewritten.
 
-The loader invokes the scanner on the main executable and interpreter's private
-file-backed executable mappings before entering either image. The same mapping
-helper handles libraries/dlopen before returning from trapped mmap. Initially
-readable, private file mappings are recorded for a subsequent trapped mprotect
-that adds execute permission. If the descriptor has closed/reused, tracking is
-exhausted, the mapping overlaps an unsupported operation, or any proof fails,
-leave the code trapped. Noncongruent ELF segments and anonymous mappings are
-not rewrite candidates.
+For a private executable file mapping, make an anonymous page copy at the same
+virtual address: allocate a separate anonymous RW page, copy the original
+page bytes, apply the branch patch and trampoline data, change the copy to RX,
+then replace the old page with `MAP_FIXED`. The file-backed page is never
+writable, so this does not request SELinux `execmod`; the new executable page
+has anonymous provenance. Preserve the original file bytes in the copy except
+for the patched window. Keep the original VMA start, end, and
+protections so normal `munmap` and `dlclose` ranges still remove the mapping.
 
-The scanner reads both `.dynsym` and `.symtab`, accepts `STT_FUNC` ranges of
-1–4096 bytes, and linearly decodes the **entire** function before modifying any
-site. Differently bounded overlapping functions, unknown instructions, stack
-references/stack mutation, indirect control flow and incomplete symbols reject
-the function. The first decoder intentionally proves a strict subset of leaf
-wrappers; it does not yet decode FDE-only functions or perform stack/control-flow
-data-flow analysis. No raw byte-match scanner authorizes a patch.
+There is an unavoidable `/proc/self/maps` difference: the replaced page is
+anonymous and loses its original pathname/device/inode entry. An anon name
+such as `[anon:matonos-syscall-rewrite:<object>:<page>]` can identify it, but
+cannot truthfully preserve file identity. For callers that require file-backed
+identity (mapping scanners, self-inspection, profilers), skip rewriting that
+object. Do not use a writable alias of the executable file or a memfd-backed
+RX mapping as a workaround; SELinux labeling and file identity make those
+approaches less reliable. Anonymous mappings are released by the original
+`munmap`/`dlclose` operation. Track the page only to avoid duplicate patches;
+drop that record when its address range is unmapped or replaced.
 
-Every in-function direct branch must land on a decoded instruction boundary.
-No branch may land inside a replacement window except at its first byte.
-Page-straddling windows remain trapped. A function can contain several sites;
-all function proofs precede its first page replacement.
+### x86_64 site encoding
 
-For each accepted window, copy the original page into a separate anonymous RW
-mapping, patch that copy, change it to RX, then publish with fixed `mremap`.
-The original file mapping is never writable. A failed allocation/protection/
-publication leaves the original window trapped. Every byte outside the window
-is preserved, and normal original-VMA munmap/dlclose ranges remove the copy.
-The replaced page loses its file identity in `/proc/self/maps`; rewriting is
-an explicit opt-in for this reason. There is no first-SIGSYS discovery,
-thread parking, JIT rewriting or modification of already-running code.
+`syscall` is two bytes (`0f 05`), too short for any direct jump. A fixed
+low-address trampoline (zpoline's `call *%rax`) is not available:
+`mmap_min_addr` forbids mapping page 0. The design therefore patches the
+instruction that loads the syscall number together with the `syscall`.
 
-Scan plans are cached by device/inode, size, nanosecond mtime/ctime, packed
-carrier slice, file offset and mapping length. Cached windows retain the
-original bytes and are revalidated before publication. The process cache has
-64 mapping plans and 512 windows/plan; saturation falls back to rescanning or
-leaves extra sites trapped. Cache contention never waits in a signal frame;
-that mapping remains trapped. No persistent text-address registry is required
-for published pages.
-
-### One entry table, no per-site stubs
-
-One 16 KiB anonymous table is allocated below 2 GiB with `MAP_32BIT`, populated
-RW then made RX. Its 512 entries have stride 32:
+**Primary encoding: immediate number, adjacent load (7-byte window).**
 
 ```
-entry(nr) = table_base + nr * 32
-
-before: b8 <nr:32>       0f 05        mov $nr,%eax; syscall
- after: b8 <entry:32>    ff d0        mov $entry,%eax; call *%rax
+before:  b8 nn nn nn nn   mov $nr, %eax      ; 5 bytes
+         0f 05            syscall            ; 2 bytes
+after:   b8 ss ss ss ss   mov $stub, %eax    ; 5 bytes
+         ff e0            jmp *%rax          ; 2 bytes
 ```
 
-The 9-byte `48 c7 c0 <nr:32>; 0f 05` form uses the same 7-byte call plus two
-NOPs. Each table entry begins with ENDBR64 and jumps to the shared assembly
-entry. `%rax` identifies the syscall from its entry address; the pushed return
-address is the original continuation. There is no per-site code allocation.
+- The window is exactly the original two instructions; nothing else moves.
+- Clobbering `%rax` is free: the syscall overwrites it with the result anyway
+  and no code may rely on it across `syscall`.
+- `stub` is a per-site stub. It knows `nr` (it was the immediate), runs the
+  common emulation entry, writes the result to `%rax` and jumps to the
+  instruction after the window with a `jmp rel32` or an absolute jump.
+- `mov $imm32,%eax` zero-extends, so all stubs live below 4 GiB
+  (`MAP_32BIT` or a low hint; `mmap_min_addr` only excludes the first 32 KiB).
+  One global stub area serves every library, wherever it is mapped: no
+  per-library near allocation.
+- The indirect jump goes to a fixed target per site and predicts perfectly.
+  Stubs start with `endbr64` so the scheme stays valid if user-space IBT is
+  enabled later.
+- A `mov $nr,%rax` (`48 c7 c0 imm32`, 7 bytes) adjacent load gives a 9-byte
+  window; use the same stub with two trailing NOPs.
 
-The entry saves flags, all syscall-preserved argument registers and the scratch
-callee-saved register it uses, aligns the C stack and saves/restores legacy
-FP/SSE state with FXSAVE64/FXRSTOR64. C code uses the ordinary ABI, preserving
-the remaining callee-saved registers; only rax/rcx/r11 may change at return.
-The direct dispatcher takes `(nr, args[6])`, decodes the native number to the
-proxy's common ID, and shares path/descriptor dispatch and pack translation
-with SIGSYS. No synthetic ucontext is used. Internal raw syscalls still pass
-all installed filters through the existing gateway.
+**Secondary encoding: number in a register (`jmp rel32`).** When the number is
+not an immediate (`mov %rsi,%rax`, Go's stack load, musl's cancellation
+routine), overwriting `%rax` would lose it. Replace a relocatable preceding
+instruction plus `syscall` (at least 5 bytes) with `jmp rel32` to a per-site
+stub within ±2 GiB, pad with NOPs, run the moved instruction in the stub, and
+read the number from `%rax` at run time. Only relocatable instructions with no
+RIP-relative operand (or with a fixed-up displacement) qualify.
 
-**Red zone:** the replacement call writes below rsp. This initial proof rejects
-any function mentioning rsp or modifying the stack, rather than guessing
-whether a stack access is safe. This deliberately leaves real stack-framed
-wrappers trapped; supporting them needs control-flow-aware stack proofs.
+**Branch rule.** No branch may target any byte inside the window except its
+first byte. A target equal to the window start is fine (retry loops jump back
+to the `mov`); a target on the `syscall` itself is not. Check direct branch
+targets in the containing function; indirect targets cannot be proven, so
+only patch recognised wrapper shapes (below) and keep the trap fallback.
 
-The direct path has per-thread, reusable allocation scopes, including separate
-scopes for signal re-entry. A SIGSYS handler pauses interrupted scopes so its
-arena cannot reset the direct call's buffers. Thread exit releases scope block
-storage; registry nodes persist as in the existing trap-arena registry. Nested
-seccomp TRAP from the raw gateway is recognized using the thread's direct
-marker and chained to the app's SIGSYS handler, without replaying or bypassing
-the denied syscall. Normal signals resume the assembly/C continuation.
+**Everything else stays on the trap:** `xor %eax,%eax; syscall` (4 bytes;
+glibc's `read` wrappers), non-adjacent number loads with intervening
+instructions, unknown shapes, page-straddling windows.
 
-### Eligible class and fallback
+#### Measured coverage (static, 2026-10-19)
 
-The backend recognizes primary sites for openat, close, newfstatat, statx,
-fstat, readlink/readlinkat, getdents64, lseek and fcntl. For fcntl only GETFD,
-SETFD, GETFL, SETFL, DUPFD and DUPFD_CLOEXEC dispatch directly; locking and all
-other commands execute a deliberately trapped syscall from the resident slow
-entry. Descriptor/pack tracking is shared with the ordinary handler.
+glibc from the Freedesktop 26.08 runtime (`libc.so.6`, 484 sites):
 
-Everything unproven stays trapped: stack-framed/red-zone functions, unsupported
-decoder opcodes, indirect control flow, absent/ambiguous symbols, FDE-only
-ranges, secondary encodings (including musl cancellation), restartable syscall
-classes, page boundaries, shared, execute-only or writable executable mappings, anonymous/JIT
-pages, unsupported architectures and failed W^X operations. This is a
-compatibility/performance layer inside the Android app sandbox, not an
-additional security boundary.
+| Shape before `syscall` | Sites | Share |
+|---|---:|---:|
+| `mov $nr,%eax` adjacent (primary) | 409 | 84.5% |
+| `mov $nr,%eax` earlier, non-adjacent | 63 | 13.0% |
+| `mov $nr,%rax` adjacent (9-byte window) | 1 | 0.2% |
+| `xor %eax,%eax` (`read`, nr 0) | 2 | 0.4% |
+| number from a register | 3 | 0.6% |
+| other | 6 | 1.2% |
 
-### Host coverage and tests
+Of the 409 adjacent sites, 13 are direct branch targets — all at the `mov`
+(window start), none at the `syscall`. The hot wrappers from the trap profile
+are all adjacent-immediate: `openat` (4 sites), `newfstatat` (2), `statx`,
+`readlink`, `readlinkat`, `getdents64`, `lseek`, `fcntl`, most of `close`,
+`mmap`, `fstat`. Only `read` uses the `xor` shape.
 
-`tests/site-coverage.c` reports actual post-load bytes, rather than estimating
-coverage from syscall encodings. The host libc coverage table is recorded with
-the measurement results below. In particular, host openat, close and fcntl
-contain stack operations and remain trapped. The benchmark uses noinline,
-fixed-number assembly wrappers that pass exactly the same scanner; native,
-trap and rewrite run identical wrapper code. Generic libc `syscall()` uses a
-dynamic syscall number and would not measure the primary encoding at all.
+musl 1.2.x from Alpine 3.24 (`ld-musl-x86_64.so.1`, 508 sites):
 
-`tests/site-rewrite.sh`, also run by `tests/run.sh`, checks both toggle states:
-7/9-byte windows, each syscall class, descriptor duplication, fcntl lock-command
-fallback, exec, dlopen/reload/dlclose, file-backed mprotect/munmap, fork,
-six-thread hammer, timer signals during proxy execution, nested raw seccomp
-TRAP with an app handler, page-straddling windows, interior branch targets,
-red-zone use and anonymous executable code that retains its syscall bytes.
-No VM or host device passthrough is used. Android binaries are cross-built by
-the existing host suite; Android runtime behavior is not claimed here.
+| Shape before `syscall` | Sites | Share |
+|---|---:|---:|
+| `mov $nr,%eax` adjacent | 290 | 57.1% |
+| `mov $nr,%eax` earlier, non-adjacent | 192 | 37.8% |
+| number from a register | 8 | 1.6% |
+| `mov $nr,%rax` adjacent | 1 | 0.2% |
+| other | 17 | 3.3% |
 
-The existing `--count` trap/raw summaries retain their SIGSYS meaning; they do
-not yet attribute direct-dispatch calls. Use byte coverage and counts-off
-benchmarks for this phase.
+musl's syscalls are inline asm with an `"a"(n)` operand, so the compiler
+schedules the load freely (hence the 38%). Its hot path is different, though:
+every cancellable call (`read`, `write`, `openat`, `close`, `poll`, locking
+`fcntl`, ...) goes through one routine, `__syscall_cp_asm`, with one call site:
 
-### Next phases
+```
+__cp_begin:  mov (%rdi),%eax ; test %eax,%eax ; jne __cp_cancel
+             mov %rsi,%rax                 ; number from a register
+             ... argument shuffle ...
+             mov %r11,0x8(%rsp)            ; 5 bytes  -> relocated
+             syscall                       ; 2 bytes
+__cp_end:    ret
+```
 
-Broaden x86_64 decoder/stack proofs and add FDE ranges, preserving the trap
-fallback for cancellation/restart semantics and app-owned user dispatch. Then
-implement i386 on this shared load-time core: AT_SYSINFO/virtualized TCB sysinfo
-entry substitution (never patch the vDSO), primary int80 call-table windows,
-six-register preservation and non-flat-code-segment fallback. Arm64 follows
-with its own branch-only backend and cache maintenance. Anonymous/JIT handling
-and runtime discovery/parking belong to a later version, not this one.
+This site takes the secondary encoding (`jmp rel32` over
+`mov %r11,0x8(%rsp); syscall`). One patch covers most of musl's hot traffic.
+
+**musl cancellation rule.** musl's cancel handler acts on `pthread_cancel`
+during a blocking syscall only if the interrupted IP lies in
+`[__cp_begin, __cp_end)`. After patching, the blocking call runs from the
+stub, outside that range, so a cancel would only be noticed after the call
+returns. Before patching this site, the stub must preserve cancellation-point
+semantics (e.g. when a signal interrupts the stub's blocking raw syscall,
+rewrite the saved IP to the original `syscall` site so musl's handler sees it
+in range), proven by a test that cancels a thread blocked in `read` under
+musl. Until then this one site stays on the trap. The current SIGSYS path has
+the same property in principle and gets the same test.
+
+bionic's generated syscall stubs are adjacent `mov $nr,%eax; syscall` by
+construction (only relevant if bionic payload code is ever trapped).
+
+### Other architectures
+
+One mechanism on every supported architecture: the core scans eligible
+function ranges, records rewritten sites, dispatches emulation and preserves
+the trap fallback. A backend answers "is this a patchable site", "write the
+jump", "save/restore registers" and "flush the icache". The planned x86_64
+backend writes a 7-byte window (`mov $stub,%eax; jmp *%rax`); the planned
+arm64 backend writes one `b stub`. (`adrp x16,stub; br x16` was considered
+for arm64, but it needs a two-instruction window, page-aligned stubs or a
+third `add`, an `x16` liveness check and non-atomic patching; `b` avoids all
+of that.)
+
+- **arm64 (decided):** plain branch replacement only. `svc #0` (4 B) becomes
+  `b stub` (4 B, ±128 MiB) one for one; no instruction relocation, no other
+  encodings. The per-site stub saves state, emulates (`x8` = nr, `x0`–`x5`
+  args), returns in `x0`, then `b site+4`. No `bl` (it would clobber `x30`).
+  Concurrent modification of `SVC`→`B` is architecturally permitted; publish
+  with `dc cvau`/`ic ivau`/`isb`. BTI does not apply to direct branches. Sites
+  whose stub cannot be placed within ±128 MiB stay on the trap.
+The supported architecture set is x86_64, i386 and arm64. Version 1 targets
+only the x86_64 primary encoding. i386 and arm64 remain on the SIGSYS path for
+later phases.
+
+### Later-version concurrency and process semantics
+
+- **Patch races:** runtime rewriting of already-published pages requires
+  publishing an RX anonymous page atomically at the mapping
+  level, but another thread may already be executing the old page or may enter
+  the site during publication. Before replacement, signal every thread in the
+  mm with a reserved real-time signal, park them in a minimal handler, and
+  verify their saved PCs are outside the page being replaced. Retry briefly;
+  if any thread cannot park or its PC is in the page, skip the patch. Do not
+  spin in an async signal handler while another thread holds proxy/VFS locks.
+  Publish the stub before making the replacement page
+  visible; use release/acquire state and the kernel mapping/TLB synchronization
+  from `mmap(MAP_FIXED)`.
+- **Signals and `sigreturn`:** a signal can arrive while a trampoline saves
+  registers, calls the dispatcher, or returns. Keep per-thread trampoline
+  state and a versioned signal-frame marker. The proxy's signal chaining must
+  preserve the interrupted trampoline PC and saved registers; `sigreturn`
+  resumes the same trampoline continuation exactly once. If the app's own
+  SIGSYS handler or `PR_SET_SYSCALL_USER_DISPATCH` owns the event, do not
+  rewrite it. Preserve existing `SA_RESETHAND`, mask, and altstack behavior.
+- **Clone, vfork, and fork:** `CLONE_VM` shares rewritten text and the patch
+  registry, so it must join the thread parking protocol before it can enter
+  user code. A `vfork` child shares both text and the parent's stack; never
+  patch from the child before exec. Keep the trap path for vfork children and
+  for clone variants that cannot safely register. Forked processes inherit
+  the patched anonymous page by COW, but get a private registry after fork.
+- **Restartable calls:** direct dispatch must reproduce the current handler's
+  `-ERESTARTSYS` behavior, including kernel restart after `sigreturn`,
+  `SA_RESTART`, and non-restarting handlers. The trampoline must retain the
+  original syscall PC and arguments so the signal path can retry or return
+  `EINTR` exactly once. Until that is proven, do not rewrite restartable
+  syscalls; retain their SIGSYS site.
+- **Seccomp inside emulation:** a raw syscall issued by the dispatcher still
+  passes through every installed seccomp filter. An internal-dispatch marker
+  lets the SIGSYS handler recognize and handle a nested trap from a trampoline
+  without recursively rewriting the same site. Never bypass a stacked filter
+  or turn a denied raw syscall into an allowed one. If the filter cannot be
+  honored without recursion, return through the existing trap path.
+- **Wine/user-dispatch:** Wine's own SUD selector and SIGSYS behavior remain
+  application-owned. Only `SYS_SECCOMP` events attributed to a known syscall
+  opcode and outside an app SUD interval are eligible. Keep the current SUD
+  signal chaining path intact.
+- **JIT and self-checking code:** permit anonymous JIT pages only when their
+  owner opts in and the page is stable/executable at the trap. Rewriting
+  changes code bytes and can break checksums, code signing, JIT invalidation,
+  or debugger breakpoints. Detect common JIT write/execute transitions and
+  skip them by default; allow explicit opt-in per process/object. Revalidate
+  that the page contents still match the captured copy before replacement.
+
+### Unpatchable cases and rollout
+
+Keep the signal fallback for shared writable/executable mappings, text pages
+whose file identity is required, windows straddling a page boundary, shapes
+other than the recognised wrappers, unknown prefix/decoder state, overlapping instruction streams, code
+that changes after discovery, unsupported syscall IDs, app-owned SUD/SIGSYS,
+unsafe thread states, vfork children, and restartable calls until restart
+semantics are validated. Start disabled by default behind an environment or
+debug property. Enable one architecture and one syscall class at a time;
+compare counts-off wall timings and counts-on attribution on the same refs.
+

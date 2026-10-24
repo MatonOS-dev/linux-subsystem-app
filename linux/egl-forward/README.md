@@ -82,7 +82,7 @@ bash linux/egl-forward/tests/egl-extensions.sh "$DEPS" "$OUT/extension-tests"
 ```
 
 The build checks zero `DT_NEEDED`, the expected EGL exports, ELF class for each
-x86 build, and compile-only arm64 backends. Run
+x86 build, and compile-only arm64/riscv64 backends. Run
 `tests/proc-aliases.sh "$DEPS" "$OUT/i386-proc"` to exercise proc lookup map
 generation for i386; the checked-in generator emits the same API table for
 both ELF classes. `run-host.sh` checks the GLVND handshake,
@@ -102,7 +102,7 @@ substitute runtime.
 generated Android-handle exclusion, token filtering, and cache-key invalidation.
 
 Host verification on 2026-10-17: pinned inputs fetched; the DSO built with zero
-`DT_NEEDED`, one dynamic export, and arm64 stub compilation; the GLVND
+`DT_NEEDED`, one dynamic export, and arm64/riscv64 stub compilation; the GLVND
 ABI test passed; the offscreen harness compiled. The measured TLS switch pair
 was **31.2 ns** over 1,000,000 pairs on the host (FSGSBASE, including adoption
 lookup). Each EGL/GLES call through this vendor pays one such pair; code paths

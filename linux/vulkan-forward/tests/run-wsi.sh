@@ -26,7 +26,7 @@ flags=(-std=c11 -g -Wall -Wextra -Werror -fno-builtin -fno-stack-protector -I"$h
 "$out/wsi-wayland-test"
 "$cc" "${flags[@]}" -I"$here" "$here/runtime.c" "$here/wayland_resolve.c" "$here/tests/wayland-resolve-test.c" -ldl -o "$out/wayland-resolve-test"
 "$out/wayland-resolve-test"
-for arch in aarch64; do
+for arch in aarch64 riscv64; do
   "$cc" --target="$arch-linux-gnu" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$here" -c "$here/wsi.c" -o "$out/wsi-enabled-$arch.o"
 done
 "$cc" "${flags[@]}" -I"$headers/include" "$here/tests/query-test.c" -ldl -o "$out/query-test"
@@ -37,5 +37,5 @@ s=subprocess.check_output(['llvm-readelf-21','--dyn-syms',sys.argv[1]],text=True
 exports={l.split()[-1] for l in s.splitlines() if 'GLOBAL DEFAULT' in l}
 assert exports=={'vk_icdGetInstanceProcAddr','vk_icdGetPhysicalDeviceProcAddr','vk_icdNegotiateLoaderICDInterfaceVersion'},exports
 assert not [l for l in s.splitlines() if ' UND ' in l and ('GLOBAL' in l or 'WEAK' in l)]
-print('PASS production DSO: three exports, zero undefined; WSI cross-compiles for arm64')
+print('PASS production DSO: three exports, zero undefined; WSI cross-compiles for arm64/riscv64')
 PY

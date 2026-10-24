@@ -1,5 +1,5 @@
 /* Compile-only slot. Runtime forwarding fails closed until adoption and the
- * TPIDR_EL0 (arm64) syscall backend is implemented. */
+ * TPIDR_EL0 (arm64) / tp (riscv64) syscall backend is implemented. */
 #ifndef MATON_VK_BACKEND_H
 #define MATON_VK_BACKEND_H
 #include <stddef.h>

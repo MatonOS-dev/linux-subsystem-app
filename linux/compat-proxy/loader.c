@@ -70,11 +70,7 @@ long proxy_file_mmap(proxy_arg_t *a) {
     int handled=0;
     long r=pack_call(PROXY_SC_mmap,a,&handled);
     if(!handled)r=RAW(PROXY_SC_mmap,a[0],a[1],a[2],a[3],a[4],a[5]);
-    if(r!=-EACCES && r!=-EPERM){
-        if(r>=0 && (a[2]&(PROT_READ|PROT_EXEC))==(PROT_READ|PROT_EXEC) && !(a[2]&PROT_WRITE) && (a[3]&MAP_PRIVATE))
-            proxy_rewrite_mapping((int)a[4],(uintptr_t)r,(size_t)a[1],(uint64_t)a[5]);
-        return r;
-    }
+    if(r!=-EACCES && r!=-EPERM)return r;
     if((a[3]&MAP_SHARED) && (a[2]&PROT_WRITE))return r;
     if(!(a[3]&(MAP_SHARED|MAP_PRIVATE)))return r;
     long area=RAW(PROXY_SC_mmap,a[0],a[1],PROT_READ|PROT_WRITE,
@@ -103,8 +99,6 @@ long proxy_file_mmap(proxy_arg_t *a) {
             proxy_log("exec-mmap-copy",a[4],0);
         }
     }
-    if((a[2]&(PROT_READ|PROT_EXEC))==(PROT_READ|PROT_EXEC) && !(a[2]&PROT_WRITE) && (a[3]&MAP_PRIVATE))
-        proxy_rewrite_mapping((int)a[4],(uintptr_t)area,(size_t)a[1],(uint64_t)a[5]);
     return area;
 failed:
     RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;
@@ -417,8 +411,6 @@ failed:
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
     proxy_log_bwrap_args(path,argv);
-    for(size_t i=0;env && env[i];i++)
-        if(p_equal(env[i],"MATON_PROXY_REWRITE=1")){proxy_rewrite_init(env[i]);break;}
     int r=load_inner(path,argv,env,image,0);
     if(!r)r=proxy_i386_tls_prepare_payload();
     if(!r)vfs_executable(path);

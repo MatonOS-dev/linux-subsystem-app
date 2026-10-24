@@ -18,6 +18,13 @@
     "  add  x16, x16, :lo12:maton_forward_table\n"                             \
     "  ldr  x16, [x16, #" MATON_STR(i) "*8]\n"                                 \
     "  br   x16\n");
+#elif defined(__riscv) && __riscv_xlen == 64
+/* t1 is a caller-saved temporary, free at function entry for a tail jump. */
+#define MATON_FORWARD(name, i) __asm__(                                       \
+    ".globl " #name "\n.type " #name ",@function\n" #name ":\n"               \
+    "  lla  t1, maton_forward_table\n"                                        \
+    "  ld   t1, " MATON_STR(i) "*8(t1)\n"                                     \
+    "  jr   t1\n");
 #else
 #error "MATON_FORWARD: add a tail-jump for this architecture"
 #endif

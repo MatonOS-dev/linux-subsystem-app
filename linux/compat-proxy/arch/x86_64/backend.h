@@ -89,5 +89,3 @@ _Static_assert(sizeof(struct cmsghdr)==16,"cmsg wire size");
 #define ARCH_PEER_LOADER "libmatonos-v3-loader-i386.so"
 #define ARCH_PEER_HOST_LOADER "linux-layer-v3-i386"
 #include "../exec.h"
-
-#define ARCH_REWRITE_HEADER "arch/x86_64/rewrite.h"

@@ -30,7 +30,7 @@ Verified host suites: compat-proxy (including payload and resident Binder
 pass-through), packs, standalone subsystem tests, GL extension, Vulkan
 forwarding and WSI. Adoption round trips measured 25.3 / 25.4 / 29.5 ns for
 1 thread / 64 live bindings / 64 concurrent threads. WSI retains zero
-DT_NEEDED, three exports, no undefined symbols, and arm64
+DT_NEEDED, three exports, no undefined symbols, and arm64/riscv64
 cross-compilation. Signed standalone APK and bootstrap builds passed with
 eight build jobs. Host results do not verify runtime AHB import or presentation.
 
@@ -121,7 +121,8 @@ Host tests cover state transitions, rollback, command interception,
 libwayland symbol resolution, private queue registry/buffer creation,
 socketpair-backed AHB transport request encoding, and sync-file
 request/attach/damage/commit wire encoding. The WSI production build
-checks zero `DT_NEEDED` and cross-compiles shared code for aarch64. The native `maton_compositor` target was built in the isolated
+checks zero `DT_NEEDED` and cross-compiles shared code for aarch64 and
+riscv64. The native `maton_compositor` target was built in the isolated
 `vkwsi-out` directory. Exact commands and results are in the run report.
 
 When a free VM is available, install the APK and run pinned Vulkan-Tools
