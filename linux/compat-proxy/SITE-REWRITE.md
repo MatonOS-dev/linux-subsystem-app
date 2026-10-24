@@ -93,11 +93,27 @@ so its apparent reload is not presented as a cache benchmark.
 | lseek | 1 | 0 |
 | fcntl | 0 | 2 |
 
-These selected symbols are not a whole-libc denominator. Stack-framed
-openat/close/fcntl are deliberately skipped; getdents64 needs a currently
-unsupported conditional-move opcode. Supporting these real glibc wrappers is
-the first coverage follow-up. The simple wrappers in the integration fixture
-prove every listed file syscall class end to end, including fcntl slow fallback.
+| Freedesktop 26.08 libc wrapper | Patched primary sites | Remaining primary sites |
+|---|---:|---:|
+| openat | 1 | 0 |
+| close | 1 | 0 |
+| fstatat | 1 | 0 |
+| __fxstatat | 1 | 0 |
+| statx | 1 | 0 |
+| fstat | 1 | 0 |
+| readlink | 1 | 0 |
+| readlinkat | 1 | 0 |
+| getdents64 | 1 | 0 |
+| lseek | 1 | 0 |
+| fcntl | 1 | 0 |
+
+These selected symbols are not a whole-libc denominator. The updated proof
+uses control-flow stack depth and recognizes the wrapper instructions used by
+both libraries; no selected primary sites remain trapped in either sample.
+The simple wrappers in the integration fixture prove every listed file
+syscall class end to end, including fcntl slow fallback. Host and runtime
+coverage traces are in `/mnt/data/aosp/out/pc-logs/agents/site-coverage-host-step2.log`
+and `site-coverage-freedesktop-step2.log`.
 Register/flags/SSE preservation and readlink's argument-modernization path have
 explicit assembly checks. Overlapping symbols, execute-only file maps and
 anonymous mremap replacements also have trap-fallback tests.
@@ -113,6 +129,36 @@ used a temporary `XDG_DATA_HOME`. Pull and deploy are Flatpak's separate
 runtime and app into a 663 MiB OSTree repo; the proxy comparison used warm
 objects in that same repo, avoiding a second 663 MiB network transfer.
 Launch measurements ran headless with `DISPLAY` unset.
+
+### Direct dispatcher profile and optimization (2026-10-24)
+
+The direct path was measured with `PROXY_PROFILE=1` TSC sections and per-raw
+call-site attribution, then timed without profiling using
+`tests/trap-bench.sh 20000 5` (counts off). The open mode is `openat + close`.
+The median comparison before and after caching thread state by the current
+stack page was:
+
+| Operation | Native before | Rewrite before | Native after | Rewrite after |
+|---|---:|---:|---:|---:|
+| openat + close | 2.252 µs | 8.778 µs | 2.247 µs | 8.011 µs |
+| stat | 1.325 µs | 5.756 µs | 1.288 µs | 5.388 µs |
+
+The cache removes the per-dispatch `gettid` syscall on a known stack page.
+Profiling's section 9 fell from 5,638,820 to 304,494 TSC cycles across 4,005
+direct dispatches. The cache deliberately avoids payload TLS because this
+static proxy starts before the payload TLS layout is available. A stack-page
+collision is marked ambiguous and falls back to `gettid`; fork children clear
+inherited cache entries. Direct arenas are reused, so steady-state dispatch
+does not map a buffer per call. Raw attribution still shows the fd-name
+critical section's signal-mask syscalls; removing those masks would permit a
+signal handler to interrupt a thread while it owns the shared lock and
+deadlock on re-entry, so they remain. The direct-path profile attributed about
+17,850 TSC cycles per dispatch to argument packing and VFS/file dispatch.
+
+This improves the rewrite path but does not meet the requested 2x-native
+target: the medians remain 3.56x native for openat+close and 4.19x for stat.
+The remaining direct dispatch and fd-name lock cost needs further work before
+this path should be presented as a low-overhead replacement.
 
 ### Per-trap allocation follow-up (2026-10-19)
 

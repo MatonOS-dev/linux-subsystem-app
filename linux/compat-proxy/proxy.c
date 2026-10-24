@@ -169,12 +169,42 @@ struct thread_state {
 };
 struct thread_node {struct thread_state state;struct thread_node *next;};
 static struct thread_node *threads;
+/* The static proxy runs before it can rely on the payload's TLS layout. Cache
+ * state by the current stack page instead; stacks are per-thread, and an
+ * ambiguous page falls back to gettid rather than guessing ownership. */
+struct thread_stack_cache {uintptr_t page;struct thread_state *state;struct thread_stack_cache *next;};
+static struct thread_stack_cache *thread_stack_caches;
+static void thread_stack_cache_add(uintptr_t page,struct thread_state *state){
+    struct thread_stack_cache *fresh=NULL;
+    for(;;){
+        struct thread_stack_cache *head=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);
+        for(struct thread_stack_cache *c=head;c;c=c->next){
+            if(c->page==page){if(c->state!=state)__atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);vfs_free(fresh);return;}
+        }
+        if(!fresh){fresh=vfs_palloc(sizeof(*fresh));if(!fresh)return;}
+        fresh->page=page;fresh->state=state;fresh->next=head;
+        if(__atomic_compare_exchange_n(&thread_stack_caches,&head,fresh,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED))return;
+    }
+}
+static void thread_state_cache_forget(struct thread_state *state){
+    for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
+        if(__atomic_load_n(&c->state,__ATOMIC_ACQUIRE)==state)__atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);
+}
+void proxy_thread_state_invalidate(void){uintptr_t stack=(uintptr_t)&stack,page=stack&~(uintptr_t)4095;
+    for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)if(c->page==page)__atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);}
+static void thread_state_cache_invalidate_all(void){
+    for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
+        __atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);
+}
 #if ARCH_AUDIT == AUDIT_ARCH_I386 && defined(MATON_GPU_BRIDGE)
 static long threads_pid;
 #endif
 static struct thread_state *thread_state(void) {
+    uintptr_t stack=(uintptr_t)&stack,page=stack&~(uintptr_t)4095;
+    for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
+        if(c->page==page){struct thread_state *cached=__atomic_load_n(&c->state,__ATOMIC_ACQUIRE);if(cached)return cached;break;}
     long tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
-    for(struct thread_node *p=threads;p;p=p->next) if(p->state.tid==tid)return &p->state;
+    for(struct thread_node *p=threads;p;p=p->next) if(p->state.tid==tid){thread_stack_cache_add(page,&p->state);return &p->state;}
 #if ARCH_AUDIT == AUDIT_ARCH_I386 && defined(MATON_GPU_BRIDGE)
     long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     if(threads_pid && pid!=threads_pid) {
@@ -192,7 +222,7 @@ static struct thread_state *thread_state(void) {
                         /* Fork copied this thread's GDT, virtual slots and
                          * altstack. Retain the reservation rather than trying
                          * to allocate a fourth hardware TLS descriptor. */
-                        p->state.tid=tid;threads_pid=pid;return &p->state;
+                        p->state.tid=tid;threads_pid=pid;thread_stack_cache_add(page,&p->state);return &p->state;
                     }
                 }
         }
@@ -214,7 +244,7 @@ static struct thread_state *thread_state(void) {
     }
     do {p->next=__atomic_load_n(&threads,__ATOMIC_ACQUIRE);}
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
-    return &p->state;
+    thread_stack_cache_add(page,&p->state);return &p->state;
 }
 #if ARCH_AUDIT == AUDIT_ARCH_I386
 static int tls_slot_for_real(struct thread_state *thread, int real_entry) {
@@ -667,6 +697,7 @@ int proxy_i386_tls_start(const struct user_desc *app,unsigned native_gs,long par
 void proxy_i386_thread_exit(void) {
     struct thread_state *thread=thread_state();
     if(!thread)return;
+    thread_state_cache_forget(thread);
     vfs_trap_thread_exit(thread->signal_stack,thread->signal_stack_size);
     stack_t disabled={.ss_flags=SS_DISABLE};
     RAW(PROXY_SC_sigaltstack,&disabled,0,0,0,0,0);
@@ -956,6 +987,7 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
 }
 /* Both entries use the same VFS dispatch; no ucontext is fabricated. */
 long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
+    PROFILE_BEGIN();
     /* The entry's save area must remain immutable: modernize/pack dispatch
      * may rewrite arguments, but syscall-preserved registers restore verbatim. */
     proxy_args args;p_copy(args,saved,sizeof(args));proxy_arg_t *a=args;
@@ -963,20 +995,22 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     if(nr==PROXY_SC_readlink){a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;nr=PROXY_SC_readlinkat;}
     if(nr==PROXY_SC_fcntl && a[1]!=F_GETFD && a[1]!=F_SETFD && a[1]!=F_GETFL &&
        a[1]!=F_SETFL && a[1]!=F_DUPFD && a[1]!=F_DUPFD_CLOEXEC)return rewrite_slow(nr,a);
-    struct thread_state *thread=thread_state();
+    struct thread_state *thread;
+    {PROFILE_BEGIN();thread=thread_state();PROFILE_END(9);}
     if(thread)thread->direct_depth++;
     uintptr_t ceiling=(uintptr_t)&ceiling;
-    void *arena=thread?vfs_direct_begin(thread->tid,ceiling):NULL;
+    void *arena;
+    {PROFILE_BEGIN();arena=thread?vfs_direct_begin(thread->tid,ceiling):NULL;PROFILE_END(10);}
     int packed=0;
     long result;
     if(nr!=PROXY_SC_close && nr!=PROXY_SC_openat && nr!=PROXY_SC_newfstatat &&
        nr!=PROXY_SC_statx && nr!=PROXY_SC_readlink && nr!=PROXY_SC_readlinkat && vfs_private_fd((int)a[0]))result=-EBADF;
     else {
-        result=pack_call(nr,a,&packed);
-        if(!packed)result=file_dispatch(nr,a);
+        {PROFILE_BEGIN();result=pack_call(nr,a,&packed);if(!packed)result=file_dispatch(nr,a);PROFILE_END(11);}
     }
     vfs_direct_end(arena);
     if(thread)thread->direct_depth--;
+    PROFILE_END(8);
     return result;
 }
 #include "rewrite.h"
@@ -1439,7 +1473,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         result=file_dispatch(nr,a);break;
     case PROXY_SC_getdents64:result=file_dispatch(nr,a);break;
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
-    case PROXY_SC_exit:vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit:vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
@@ -1568,7 +1602,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){vfs_raw_count_fork_child();ipc_fork();}break;
+        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();}break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -1582,7 +1616,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
             dns_fork_result(result);ipc_fork_result(result);
 
-            if(!result){vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+            if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
