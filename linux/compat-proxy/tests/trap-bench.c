@@ -12,6 +12,27 @@
 #include <time.h>
 #include <unistd.h>
 
+#if defined(__x86_64__)
+#define FIXED_CALL(name, number) \
+__attribute__((noinline)) static long name(long a,long b,long c,long d,long e) { \
+    register long r10 __asm__("r10")=d; register long r8 __asm__("r8")=e; long out; \
+    __asm__ volatile("mov $" #number ",%%eax; syscall" : "=a"(out) \
+       : "D"(a),"S"(b),"d"(c),"r"(r10),"r"(r8) : "rcx","r11","memory"); \
+    return out; \
+}
+FIXED_CALL(bench_openat,257)
+FIXED_CALL(bench_stat,262)
+FIXED_CALL(bench_statx,332)
+FIXED_CALL(bench_close,3)
+static long checked(long r){if(r<0 && r>=-4095){errno=(int)-r;return -1;}return r;}
+#else
+#define bench_openat(a,b,c,d,e) syscall(SYS_openat,a,b,c,d)
+#define bench_stat(a,b,c,d,e) syscall(SYS_newfstatat,a,b,c,d)
+#define bench_statx(a,b,c,d,e) syscall(SYS_statx,a,b,c,d,e)
+#define bench_close(a,b,c,d,e) syscall(SYS_close,a)
+#define checked(r) (r)
+#endif
+
 static uint64_t now_ns(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts)) { perror("clock_gettime"); exit(1); }
@@ -70,18 +91,18 @@ int main(int argc, char **argv) {
             }
             checksum += errno;
         } else if (!strcmp(mode, "stat")) {
-            long r = syscall(SYS_newfstatat, AT_FDCWD, path, &st, 0);
+            long r = checked(bench_stat(AT_FDCWD, (long)path, (long)&st, 0, 0));
             if (r) { perror("newfstatat"); return 1; }
             checksum += st.st_size;
         } else if (!strcmp(mode, "statx")) {
             struct statx sx;
-            long r = syscall(SYS_statx, AT_FDCWD, path, 0, STATX_BASIC_STATS, &sx);
+            long r = checked(bench_statx(AT_FDCWD, (long)path, 0, STATX_BASIC_STATS, (long)&sx));
             if (r) { perror("statx"); return 1; }
             checksum += sx.stx_size;
         } else if (!strcmp(mode, "open")) {
-            long fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+            long fd = checked(bench_openat(AT_FDCWD, (long)path, O_RDONLY | O_CLOEXEC, 0, 0));
             if (fd < 0) { perror("openat"); return 1; }
-            checksum += syscall(SYS_close, fd);
+            checksum += checked(bench_close(fd,0,0,0,0));
         } else {
             fprintf(stderr, "unknown mode: %s\n", mode);
             return 2;

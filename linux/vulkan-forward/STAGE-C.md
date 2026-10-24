@@ -13,7 +13,7 @@ TLS. The adoption launcher supplies resident threads and the process-local
 bootstrap mapping. Both glibc and musl load exactly the same ICD DSO, not
 separate builds. No libc is linked/bundled in the ICD. Its ELF still has zero
 DT_NEEDED, zero undefined symbols, exactly three exports. Runtime and generated
-code compile freestanding for arm64/riscv64 (runtime backends remain stubs).
+code compile freestanding for arm64 (runtime backends remain stubs).
 Android receives NULL allocation callbacks; app callbacks own wrappers on app TLS.
 
 Coverage remains 283 canonical commands (234 core), 68 aliases, 262 generated
@@ -139,7 +139,7 @@ pixels, sum 1,338,240 and FNV-1a `66d859cf714c4d25`. The shader source differs f
 desktop GLSL 330 and GLES 300. No pbuffer, native window or WSI is involved.
 
 Host runtime/allocator/adoption refusal checks, ELF export/dependency checks and
-arm64/riscv64 freestanding compile checks pass. No validation layers were built
+arm64 freestanding compile checks pass. No validation layers were built
 or run. These are targeted smoke/readback tests, not CTS/conformance coverage.
 
 ## Requirements and limitations

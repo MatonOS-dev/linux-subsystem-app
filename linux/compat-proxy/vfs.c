@@ -17,8 +17,9 @@
 #include <limits.h>
 struct allocation {size_t size;};
 struct arena_block {struct arena_block *next;size_t size,used;};
-struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;uint64_t raw_by_nr[PROXY_SC_count],raw_sum_by_nr[PROXY_SC_count];struct arena_block *blocks;};
+struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active,suspended;long direct_tid;struct trap_arena *pause_next;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;uint64_t raw_by_nr[PROXY_SC_count],raw_sum_by_nr[PROXY_SC_count];struct arena_block *blocks;};
 static struct trap_arena *trap_arenas;
+static int direct_arenas_present;
 static unsigned long fd_names_owner;
 #ifdef PROXY_PROFILE
 struct profile_site { uintptr_t site; long nr; uint64_t calls,cycles; };
@@ -39,9 +40,62 @@ void vfs_profile_dump(void){}
 #endif
 volatile int proxy_raw_counter_enabled;
 static struct trap_arena *arena_for_stack(uintptr_t sp){
+    struct trap_arena *best=NULL;long tid=0;
+    for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){
+        if(!a->active || sp<a->lo || sp>=a->hi)continue;
+        if(a->direct_tid){
+            if(!tid)tid=arch_raw_call(PROXY_SC_gettid,0,0,0,0,0,0);
+            if(a->direct_tid!=tid)continue;
+        }
+        if(!best || (a->direct_tid && (!best->direct_tid || a->hi<best->hi)))best=a;
+    }
+    return best;
+}
+/* Scope tokens are explicit, so a signal calling a rewritten wrapper gets a
+ * different arena instead of resetting buffers still live in the outer call.
+ * The stack bound is only a lookup hint; TID proves ownership, including
+ * overlapping/small stacks. No app TLS register or libc allocator is used. */
+void *vfs_direct_begin(long tid,uintptr_t ceiling){
+    struct trap_arena *a;
+    for(a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
+        if(a->direct_tid==tid && !a->active && !a->suspended)break;
+    if(!a){
+        a=vfs_palloc(sizeof(*a));if(!a)return NULL;
+        a->direct_tid=tid;
+        struct trap_arena *head;
+        do{head=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a->next=head;}
+        while(!__atomic_compare_exchange_n(&trap_arenas,&head,a,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
+    }
+    a->lo=ceiling>1024*1024?ceiling-1024*1024:0;a->hi=ceiling;
+    __atomic_store_n(&direct_arenas_present,1,__ATOMIC_RELAXED);a->active=1;return a;
+}
+void vfs_direct_end(void *token){
+    struct trap_arena *a=token;if(!a)return;
+    for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
+    a->active=0;
+}
+/* A SIGSYS frame must not borrow/reset an interrupted direct scope. The
+ * explicit pause chain also permits the app's SIGSYS handler to call a
+ * rewritten wrapper recursively, on the same alternate signal stack. */
+void *vfs_direct_pause(void){
+    if(!__atomic_load_n(&direct_arenas_present,__ATOMIC_RELAXED))return NULL;
+    long tid=arch_raw_call(PROXY_SC_gettid,0,0,0,0,0,0);
+    struct trap_arena *head=NULL;
     for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
-        if(a->active && sp>=a->lo && sp<a->hi)return a;
-    return NULL;
+        if(a->direct_tid==tid && a->active){a->suspended=1;a->active=0;a->pause_next=head;head=a;}
+    return head;
+}
+void vfs_direct_resume(void *token){
+    struct trap_arena *a=token;
+    while(a){struct trap_arena *next=a->pause_next;a->pause_next=NULL;a->suspended=0;a->active=1;a=next;}
+}
+void vfs_direct_thread_exit(long tid){
+    for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){
+        if(a->direct_tid!=tid)continue;
+        a->active=0;a->suspended=0;
+        struct arena_block *b=a->blocks;a->blocks=NULL;
+        while(b){struct arena_block *next=b->next;RAW(PROXY_SC_munmap,b,b->size+sizeof(*b),0,0,0,0);b=next;}
+    }
 }
 static struct trap_arena *arena_for_range(uintptr_t lo,uintptr_t hi){
     for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
@@ -49,8 +103,10 @@ static struct trap_arena *arena_for_range(uintptr_t lo,uintptr_t hi){
     return NULL;
 }
 static struct trap_arena *arena_for_address(uintptr_t sp){
+    struct trap_arena *direct=arena_for_stack(sp);
+    if(direct && direct->direct_tid)return direct;
     for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
-        if(sp>=a->lo && sp<a->hi)return a;
+        if(!a->direct_tid && sp>=a->lo && sp<a->hi)return a;
     return NULL;
 }
 #ifdef PROXY_RAW_COUNTER
@@ -59,14 +115,9 @@ void proxy_raw_count_enable(void){proxy_raw_counter_enabled=1;}
 uint64_t proxy_raw_count_now(void){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);return a?a->raw_calls:0;}
 uint64_t proxy_raw_count_for(long nr){if(!proxy_raw_counter_enabled)return 0;uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return 0;switch(nr){case PROXY_SC_openat:return a->openat_calls;case PROXY_SC_readlinkat:return a->readlinkat_calls;case PROXY_SC_newfstatat:return a->newfstatat_calls;case PROXY_SC_geteuid:return a->geteuid_calls;case PROXY_SC_mmap:return a->mmap_calls;case PROXY_SC_munmap:return a->munmap_calls;default:return 0;}}
 #endif
-/* Trap-arena memory is only freed by the thread that allocated it, inside the
- * same trap, so only the caller's own arena is searched: walking other threads'
- * blocks would race with vfs_trap_thread_exit unmapping them. */
-static int arena_contains(uintptr_t p){
-    uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return 0;
-    for(struct arena_block *b=a->blocks;b;b=b->next){uintptr_t lo=(uintptr_t)(b+1);if(p>=lo && p<lo+b->size-sizeof(*b))return 1;}
-    return 0;
-}
+/* Allocation headers distinguish bump storage from individually mapped
+ * persistent storage. Free never needs a thread/arena lookup. */
+#define ALLOCATION_ARENA ((size_t)1 << (sizeof(size_t)*8-1))
 void vfs_trap_begin(void *base,size_t size){
     uintptr_t lo=(uintptr_t)base,hi;
     if(!base || !size || size>UINTPTR_MAX-lo)return;
@@ -106,7 +157,7 @@ void vfs_raw_category_summary(uint64_t out[6]){uint64_t v[6]={0};for(struct trap
 void vfs_raw_syscall_summary(uint64_t out[PROXY_SC_count]){for(unsigned i=0;i<PROXY_SC_count;i++)out[i]=0;for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)for(unsigned i=0;i<PROXY_SC_count;i++)out[i]+=a->raw_sum_by_nr[i];}
 void vfs_raw_count_fork_child(void){__atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=a->raw_sum_by_nr[i]=0;}}
 void *vfs_palloc(size_t n) {
-    if(n>SIZE_MAX-sizeof(struct allocation)-4095) return NULL;
+    if(n>ALLOCATION_ARENA-sizeof(struct allocation)-4095) return NULL;
     size_t bytes=(n+sizeof(struct allocation)+4095)&~(size_t)4095;
     long p=RAW(PROXY_SC_mmap,0,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if((unsigned long)p>=(unsigned long)-4095) return NULL;
@@ -114,7 +165,7 @@ void *vfs_palloc(size_t n) {
 }
 void *vfs_alloc(size_t n){
     uintptr_t sp=(uintptr_t)&sp;struct trap_arena *arena=arena_for_stack(sp);if(!arena)return vfs_palloc(n);
-    if(n>SIZE_MAX-sizeof(struct allocation)-15)return NULL;
+    if(n>ALLOCATION_ARENA-sizeof(struct allocation)-15)return NULL;
     size_t need=(n+sizeof(struct allocation)+15)&~(size_t)15;
     struct arena_block *b=arena->blocks;
     while(b && b->size-b->used<need)b=b->next;
@@ -122,13 +173,13 @@ void *vfs_alloc(size_t n){
         long p=RAW(PROXY_SC_mmap,0,bytes+sizeof(*b),PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)p>=(unsigned long)-4095)return NULL;
         b=(void *)p;b->next=arena->blocks;b->size=bytes;b->used=0;arena->blocks=b;
     }
-    struct allocation *a=(void *)((char *)(b+1)+b->used);a->size=need;b->used+=need;
+    struct allocation *a=(void *)((char *)(b+1)+b->used);a->size=need|ALLOCATION_ARENA;b->used+=need;
     /* mmap-backed vfs_alloc historically returned zero-filled storage. Keep
      * that contract for structures which rely on implicit null fields. */
     unsigned char *out=(unsigned char *)(a+1);for(size_t i=0;i<n;i++)out[i]=0;
     return out;
 }
-void vfs_free(void *p) {if(p){if(arena_contains((uintptr_t)p))return;struct allocation *a=(struct allocation *)p-1;RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
+void vfs_free(void *p) {if(p){struct allocation *a=(struct allocation *)p-1;if(a->size&ALLOCATION_ARENA)return;RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
 static char *join(const char *a,const char *b) {
     size_t x=p_len(a),y=p_len(b);if(x>SIZE_MAX-y-2) return NULL;
     char *s=vfs_alloc(x+y+2);if(!s)return NULL;

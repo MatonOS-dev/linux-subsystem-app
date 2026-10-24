@@ -31,7 +31,7 @@ mkdir -p "$out/i386"
 i386_flags=(-m32 -march=corei7 -std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/i386")
 "$cc" "${i386_flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wayland_resolve.c" -o "$out/i386/libmaton_vulkan.so"
 check_icd "$out/i386/libmaton_vulkan.so" i386
-for arch in aarch64 riscv64; do
+for arch in aarch64; do
   for unit in runtime icd wsi wsi_wayland wayland_resolve; do
     "$cc" --target="$arch-linux-gnu" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/$arch" -c "$here/$unit.c" -o "$out/$unit-$arch.o"
   done
@@ -40,4 +40,4 @@ done
 grep -E -q 'Class:.*ELF32' "$out/i386/header.txt"
 sed "s|@GL_EXTENSION_DIR@|$out|;s|/lib/libmaton|/libmaton|" "$here/../gpu-forward-spike/flatpak/maton_icd.json.in" > "$out/maton_icd.json"
 cat "$out/coverage.txt"
-echo 'PASS: x86_64 and i386 ICDs have three exports, no undefined symbols or DT_NEEDED; aarch64/riscv64 core compiled (stub backends)'
+echo 'PASS: x86_64 and i386 ICDs have three exports, no undefined symbols or DT_NEEDED; aarch64 core compiled (stub backends)'

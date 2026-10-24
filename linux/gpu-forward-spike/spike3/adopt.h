@@ -5,7 +5,6 @@
 #include <signal.h>
 #if !defined(__x86_64__)
 /* arm64 slot: TPIDR_EL0, arm64 sigcontext and clone argument order.
- * riscv64 slot: tp, riscv sigcontext and clone argument order.
  * Each needs its own resume/return assembly and seccomp audit ABI. */
 #error "thread adoption backend is currently x86_64 only"
 #endif
