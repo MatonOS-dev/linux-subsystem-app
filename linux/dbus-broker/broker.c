@@ -552,8 +552,13 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
             const char* unique=owner_of(b,destination);
             Client* target=unique ? find_client(b,unique) : NULL;
             // Directed signals require no AddMatch and must never be broadcast.
-            gboolean allowed = destination[0] == ':' ?
-                destination_has_talk_access(b, target) : ((access_for(b, destination) & ACCESS_TALK)!=0);
+            /* A private session bus belongs to one app. Directed signals to
+             * a live unique connection are addressed to that app directly;
+             * unique names do not appear in the well-known owner table used
+             * by destination_has_talk_access(). In particular, the Flatpak
+             * portal sends SpawnExited to its caller's unique name. */
+            gboolean allowed = destination[0] == ':' ? target != NULL :
+                ((access_for(b, destination) & ACCESS_TALK)!=0);
             if (target && allowed) send_raw(target,routed);
             g_object_unref(routed);return NULL;
         }
