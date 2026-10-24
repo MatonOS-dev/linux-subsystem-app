@@ -256,3 +256,5 @@ python3 tests/pack-host.py
 python3 tests/icd-dup-host.py
 
 python3 tests/loader-maps.py
+
+bash tests/site-rewrite.sh

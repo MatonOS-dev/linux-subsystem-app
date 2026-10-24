@@ -155,6 +155,7 @@ static void ldt_lock_release(void) { __atomic_store_n(&ldt_lock,0,__ATOMIC_RELEA
 struct ldt_cache_entry { unsigned selector; unsigned age; int real_entry; unsigned valid; };
 #endif
 struct thread_state {
+    unsigned direct_depth;
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     struct tls_entry tls[PROXY_TLS_ENTRIES];
@@ -916,6 +917,72 @@ done:
     }
     vfs_free(p);vfs_free(q);return e;
 }
+/* Shared file-path dispatch for the ordinary SIGSYS route and the first
+ * direct-rewrite slice.  Keeping translation here preserves the same VFS,
+ * pack and permission behavior on both paths. */
+static void dns_close(int);
+static void dns_dup(int,int);
+static long rewrite_slow(long,proxy_arg_t *);
+static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
+    long result;
+    if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&private_close_fd((int)a[1])))return -EBADF;
+    result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+    return result;
+}
+static long file_dispatch(long nr,proxy_arg_t *a) {
+    switch(nr){
+    case PROXY_SC_fcntl:return descriptor_dup_dispatch(nr,a);
+    case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:case PROXY_SC_readlinkat:
+        return path_call(nr,a,1,-1);
+    case PROXY_SC_readlink:return path_call(nr,a,0,-1);
+    case PROXY_SC_close:{
+        if(private_close_fd((int)a[0]))return 0;
+        long r=RAW(PROXY_SC_close,a[0],0,0,0,0,0);
+        if(!r){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}
+        return r;
+    }
+    case PROXY_SC_fstat:{
+        if(vfs_private_fd((int)a[0]))return -EBADF;
+        long r=RAW(nr,a[0],a[1],0,0,0,0);
+        if(!r)links_payload_fd_stat((int)a[0],(void *)(uintptr_t)a[1]);
+        return r;
+    }
+    case PROXY_SC_getdents64:
+        if(vfs_private_fd((int)a[0]))return -EBADF;
+        return links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);
+    case PROXY_SC_lseek:
+        if(vfs_private_fd((int)a[0]))return -EBADF;
+        return RAW(nr,a[0],a[1],a[2],0,0,0);
+    default:return -ENOSYS;
+    }
+}
+/* Both entries use the same VFS dispatch; no ucontext is fabricated. */
+long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
+    /* The entry's save area must remain immutable: modernize/pack dispatch
+     * may rewrite arguments, but syscall-preserved registers restore verbatim. */
+    proxy_args args;p_copy(args,saved,sizeof(args));proxy_arg_t *a=args;
+    nr=arch_decode_syscall(nr);
+    if(nr==PROXY_SC_readlink){a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;nr=PROXY_SC_readlinkat;}
+    if(nr==PROXY_SC_fcntl && a[1]!=F_GETFD && a[1]!=F_SETFD && a[1]!=F_GETFL &&
+       a[1]!=F_SETFL && a[1]!=F_DUPFD && a[1]!=F_DUPFD_CLOEXEC)return rewrite_slow(nr,a);
+    struct thread_state *thread=thread_state();
+    if(thread)thread->direct_depth++;
+    uintptr_t ceiling=(uintptr_t)&ceiling;
+    void *arena=thread?vfs_direct_begin(thread->tid,ceiling):NULL;
+    int packed=0;
+    long result;
+    if(nr!=PROXY_SC_close && nr!=PROXY_SC_openat && nr!=PROXY_SC_newfstatat &&
+       nr!=PROXY_SC_statx && nr!=PROXY_SC_readlink && nr!=PROXY_SC_readlinkat && vfs_private_fd((int)a[0]))result=-EBADF;
+    else {
+        result=pack_call(nr,a,&packed);
+        if(!packed)result=file_dispatch(nr,a);
+    }
+    vfs_direct_end(arena);
+    if(thread)thread->direct_depth--;
+    return result;
+}
+#include "rewrite.h"
 /* Translate before path dispatch so forbidden legacy instructions are never
  * replayed under the inherited Android filter. x86_64 stat layouts match. */
 /* Flatpak verbose output does not include the sealed --args bundle in this
@@ -1096,6 +1163,7 @@ done:
     RAW(PROXY_SC_close,fd,0,0,0,0,0);return n<0?n:0;
 }
 static int ours(long n) {
+    if(proxy_rewrite_traps(n))return 1;
     if(ipc_ours(n))return 1;
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
     if(n==PROXY_SC_set_tid_address || n==PROXY_SC_set_robust_list || n==PROXY_SC_get_robust_list)return 1;
@@ -1239,6 +1307,7 @@ static void android_pc_cache_invalidate(void){
 }
 #include "payload-filter.h"
 static void handler(int sig,siginfo_t *info,void *opaque) {
+    void *paused_direct=vfs_direct_pause();
     uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
     ucontext_t *uc=opaque;
     volatile unsigned char *selector=dispatch_selector;
@@ -1263,7 +1332,12 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         trace_word("base=",(uintptr_t)ss.ss_sp);trace_word("size=",ss.ss_size);
         trace_word("flags=",ss.ss_flags);emit("\n");
     }
-    if(info->si_code!=SYS_SECCOMP) {
+    uintptr_t internal_pc=(uintptr_t)info->si_call_addr;
+    struct thread_state *direct=NULL;
+    if(info->si_code==SYS_SECCOMP &&
+       (internal_pc==arch_gateway_pc(0) || internal_pc+2==arch_gateway_pc(0)))direct=thread_state();
+    int internal_trap=direct && direct->direct_depth;
+    if(info->si_code!=SYS_SECCOMP || internal_trap) {
         if(proxy_trace) {
             emit("v3 signal-delivery sig="); crash_hex(sig);
             trace_word(" code=",info->si_code);
@@ -1276,6 +1350,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
         arch_signal_stack_ready(uc);
         if(selector && dispatch_selector==selector) *selector=saved;
+        vfs_direct_resume(paused_direct);
         return;
     }
     vfs_trap_resume();
@@ -1353,7 +1428,9 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     if(nr==PROXY_SC_fchmod){struct proxy_stat mode;if(!arch_stat_fd((int)a[0],&mode) && S_ISREG(mode.st_mode))a[1]=(a[1]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}
     switch(nr) {
-    case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
+    case PROXY_SC_mprotect:case PROXY_SC_munmap:case PROXY_SC_mremap:
+        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
+    case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
     case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_sendfile:case PROXY_SC_copy_file_range:case PROXY_SC_splice:case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
         if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
@@ -1361,18 +1438,17 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_getxattr:case PROXY_SC_lgetxattr:case PROXY_SC_listxattr:case PROXY_SC_llistxattr:case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:result=path_call(nr,a,0,-1);break;
     case PROXY_SC_ppoll:if(app_allowed(nr))result=dns_poll((void *)(uintptr_t)a[0],a[1],(void *)(uintptr_t)a[2],(void *)(uintptr_t)a[3],a[4]);break;
     case PROXY_SC_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
-    case PROXY_SC_getdents64:result=links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);break;
-    case PROXY_SC_fstat:result=RAW(nr,a[0],a[1],0,0,0,0);if(!result)links_payload_fd_stat((int)a[0],(void *)(uintptr_t)a[1]);break;
-    case PROXY_SC_exit:ipc_thread_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_lseek:case PROXY_SC_readlink:case PROXY_SC_readlinkat:
+        result=file_dispatch(nr,a);break;
+    case PROXY_SC_getdents64:result=file_dispatch(nr,a);break;
+    case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
+    case PROXY_SC_exit:vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_exit_group:if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=sysctl_tracked((int)a[0])?sysctl_write((int)a[0],(void *)(uintptr_t)a[1],a[2]):RAW(nr,a[0],a[1],a[2],0,0,0);break;
     case PROXY_SC_close_range:result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
-    case PROXY_SC_close:if(private_close_fd((int)a[0])){result=0;break;}result=RAW(PROXY_SC_close,a[0],0,0,0,0,0);if(!result){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}break;
+    case PROXY_SC_close:result=file_dispatch(nr,a);break;
     case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
-        if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&private_close_fd((int)a[1]))){result=-EBADF;break;}
-        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);result=tracked;break;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
-        break;
+        result=descriptor_dup_dispatch(nr,a);break;
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
         if(nr==PROXY_SC_ioctl && termios2_call(a,&result)){if(proxy_trace)proxy_log("tty-ioctl",a[1],result);break;}
@@ -1559,7 +1635,7 @@ clone_retry:
     }
     case PROXY_SC_chdir:result=vfs_chdir(AT_FDCWD,(char *)(uintptr_t)a[0]);break;
     case PROXY_SC_fchdir:result=vfs_chdir((int)a[0],NULL);break;
-    case PROXY_SC_open:case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_access:case PROXY_SC_readlink:
+    case PROXY_SC_open:case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_access:
     case PROXY_SC_mkdir:case PROXY_SC_unlink:case PROXY_SC_chmod:case PROXY_SC_chown:case PROXY_SC_lchown:case PROXY_SC_statfs:
         result=path_call(nr,a,0,-1);break;
     case PROXY_SC_openat2:result=-ENOSYS;break; /* bwrap uses its checked openat fallback. */
@@ -1572,8 +1648,10 @@ clone_retry:
         result=-ENOSYS;break;
     /* futimens(fd): a NULL path names the fd itself; there is no path to map. */
     case PROXY_SC_utimensat:if(!a[1]){result=app_allowed(nr)?RAW(PROXY_SC_utimensat,a[0],0,a[2],a[3],0,0):-ENOSYS;break;}result=path_call(nr,a,1,-1);break;
-    case PROXY_SC_inotify_add_watch:case PROXY_SC_getxattrat:case PROXY_SC_listxattrat:case PROXY_SC_setxattrat:case PROXY_SC_removexattrat:case PROXY_SC_name_to_handle_at:case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:
-    case PROXY_SC_mknodat:case PROXY_SC_readlinkat:case PROXY_SC_mkdirat:case PROXY_SC_unlinkat:case PROXY_SC_fchmodat:case PROXY_SC_fchmodat2:case PROXY_SC_fchownat:
+    case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:
+        result=file_dispatch(nr,a);break;
+    case PROXY_SC_inotify_add_watch:case PROXY_SC_getxattrat:case PROXY_SC_listxattrat:case PROXY_SC_setxattrat:case PROXY_SC_removexattrat:case PROXY_SC_name_to_handle_at:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:
+    case PROXY_SC_mknodat:case PROXY_SC_mkdirat:case PROXY_SC_unlinkat:case PROXY_SC_fchmodat:case PROXY_SC_fchmodat2:case PROXY_SC_fchownat:
         result=path_call(nr,a,1,-1);break;
     case PROXY_SC_link:case PROXY_SC_rename:result=path_call(nr,a,0,1);break;
     case PROXY_SC_linkat:case PROXY_SC_renameat:case PROXY_SC_renameat2:result=path_call(nr,a,1,3);break;
@@ -1585,6 +1663,7 @@ clone_retry:
     default:break;
     }
 finish:
+    proxy_rewrite_after(nr,a,result);
     if(result>=0 && (nr==PROXY_SC_mmap || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap))android_pc_cache_invalidate();
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace){
@@ -1627,6 +1706,7 @@ clean_mask:
     (*arch_signal_mask(uc))&=~SIGSYS_BIT;
     RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
     vfs_trap_end();
+    vfs_direct_resume(paused_direct);
     arch_signal_stack_ready(uc);
     if(selector && dispatch_selector==selector) *selector=saved;
 }

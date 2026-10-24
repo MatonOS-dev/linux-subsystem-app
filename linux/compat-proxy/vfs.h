@@ -63,6 +63,11 @@ long pack_call(long,proxy_arg_t *,int *);
 char *pack_link(const char *,long *,int *);
 int pack_stat(const char *,struct proxy_stat *);
 int pack_mount_root(const char *);
+void *vfs_direct_begin(long,uintptr_t);
+void vfs_direct_end(void *);
+void vfs_direct_thread_exit(long);
+void *vfs_direct_pause(void);
+void vfs_direct_resume(void *);
 #endif
 
 long proxy_file_mmap(proxy_arg_t *);

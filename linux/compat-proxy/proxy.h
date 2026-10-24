@@ -39,6 +39,8 @@ struct image { uintptr_t entry, stack; };
 struct user_desc;
 void proxy_image_map(uintptr_t,uintptr_t,uintptr_t,const char *);
 int proxy_load(const char *, char *const *, char *const *, struct image *);
+int proxy_rewrite_init(const char *);
+void proxy_rewrite_mapping(int, uintptr_t, size_t, uint64_t);
 int proxy_install(int);
 void proxy_i386_tls_reservation(int);
 int proxy_i386_tls_prepare_payload(void);

@@ -12,12 +12,13 @@ dd if=/dev/zero of="$fixture/big" bs=1048576 count="$blocks" conv=fsync status=n
 
 printf 'same-filesystem native/proxied metadata benchmark (10,000 operations)\n'
 for mode in open stat statx; do
-    for route in native proxied; do
+    for route in native proxied rewrite; do
         if [[ $route == native ]]; then path="$fixture/file"; else path=/bench/file; fi
+        printf "route=%s " "$route"
         if [[ $route == native ]]; then
             build/trap-bench "$mode" 10000 "$path"
         else
-            build/linux-layer-v3 --android-filter --map "$fixture" /bench \
+            env MATON_PROXY_REWRITE=$([[ $route == rewrite ]] && echo 1 || echo 0) build/linux-layer-v3 --android-filter --map "$fixture" /bench \
                 build/trap-bench "$mode" 10000 "$path"
         fi
     done
@@ -25,12 +26,13 @@ done
 
 printf 'same-filesystem sequential I/O benchmark (%s bytes per operation)\n' "$bytes"
 for mode in read mmap; do
-    for route in native proxied; do
+    for route in native proxied rewrite; do
         if [[ $route == native ]]; then path="$fixture/big"; else path=/bench/big; fi
+        printf "route=%s " "$route"
         if [[ $route == native ]]; then
             build/trap-bench "$mode" "$bytes" "$path"
         else
-            build/linux-layer-v3 --android-filter --map "$fixture" /bench \
+            env MATON_PROXY_REWRITE=$([[ $route == rewrite ]] && echo 1 || echo 0) build/linux-layer-v3 --android-filter --map "$fixture" /bench \
                 build/trap-bench "$mode" "$bytes" "$path"
         fi
     done

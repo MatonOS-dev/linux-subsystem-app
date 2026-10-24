@@ -122,4 +122,62 @@ adopt_fork_child:
 .type dns_fork_result,@function
 dns_fork_result:
     ret
+
+/* Rewritten syscall sites call a per-number slot in the low table. RAX
+ * identifies the slot; syscall argument registers remain intact. */
+/* Standalone RAW-only tests do not link the loader/dispatcher. These
+ * references are unused there; full proxy links provide strong definitions. */
+.weak proxy_rewrite_table
+.weak proxy_direct_dispatch
+.hidden proxy_rewrite_table
+.hidden proxy_direct_dispatch
+.text
+.global proxy_rewrite_entry_common
+.type proxy_rewrite_entry_common,@function
+proxy_rewrite_entry_common:
+    pushfq
+    lea proxy_rewrite_table(%rip),%r11
+    mov (%r11),%r11
+    sub %r11,%rax
+    shr $5,%rax
+    push %r12
+    push %r9
+    push %r8
+    push %r10
+    push %rdx
+    push %rsi
+    push %rdi
+    mov %rsp,%r12
+    mov %rsp,%rsi
+    mov %eax,%edi
+    and $-16,%rsp
+    sub $512,%rsp
+    fxsave64 (%rsp)
+    call proxy_direct_dispatch
+    fxrstor64 (%rsp)
+    mov %r12,%rsp
+    pop %rdi
+    pop %rsi
+    pop %rdx
+    pop %r10
+    pop %r8
+    pop %r9
+    pop %r12
+    popfq
+    ret
+/* Deliberately outside .proxy_gateway: locking/unknown fcntl commands
+ * retain the original SIGSYS dispatch and restart behavior. */
+.global proxy_rewrite_trap
+.type proxy_rewrite_trap,@function
+proxy_rewrite_trap:
+    mov %rdi,%rax
+    mov %rsi,%r11
+    mov 0(%r11),%rdi
+    mov 8(%r11),%rsi
+    mov 16(%r11),%rdx
+    mov 24(%r11),%r10
+    mov 32(%r11),%r8
+    mov 40(%r11),%r9
+    syscall
+    ret
 .section .note.GNU-stack,"",@progbits
