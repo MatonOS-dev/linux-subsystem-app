@@ -754,7 +754,10 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(proxy_trace){emit("v3 path resolved ");emit(p);emit("\n");}
     int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
     int exclusive_create=nr==PROXY_SC_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL);
-    if(nr==PROXY_SC_mkdirat && path_exists(p)){e=-EEXIST;goto done;}
+    if(nr==PROXY_SC_mkdirat && path_exists(p)){
+        if(vfs_bwrap_shm_mkdir(original_path)){e=0;goto done;}
+        e=-EEXIST;goto done;
+    }
     if(exclusive_create && path_exists(p)){e=-EEXIST;goto done;}
     if(create_readonly_open && path_exists(p))a[2]&=~O_CREAT;
     int packed=0;e=pack_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
@@ -1584,6 +1587,10 @@ static struct arch_ip_range *resident_bionic_ranges(size_t *count, int *error) {
 int proxy_install(int android) {
     ipc_init(); /* IPC failure must never prevent payload startup. */
     int diagnostics=proxy_diagnostics_init();if(diagnostics)return diagnostics;
+    /* Android has no /dev/shm. Give this app proxy instance a private
+     * cache-backed POSIX shm directory before any payload or nested bwrap
+     * tries to create its own namespaces. Failure must not block launch. */
+    (void)vfs_shm_init();
     if(!thread_state()) return -ENOMEM;
     exec_signals();
     struct kernel_action action={(uintptr_t)handler,SA_SIGINFO|SA_RESTORER|SA_NODEFER|SA_ONSTACK,(uintptr_t)proxy_restore,0};

@@ -73,13 +73,17 @@ views needed by bwrap. This state is inherited across fork and transferred on
 cross-class exec. The host-only `--root`/`--map` scaffolding is not a production
 security mechanism.
 
-When Flatpak requests `--tmpfs /dev/shm`, the proxy backs it with a unique
-locked directory under the app-private `TMPDIR`; stale directories are removed
-on a later launch. This gives processes in one sandbox POSIX `shm_open()` files
-and `MAP_SHARED` mappings without relying on Android providing `/dev/shm`.
-It is session-private and distinct from `--share=ipc`, which controls the IPC
-namespace. `tests/posix-shm.c` checks exclusive creation, unlink, and
-cross-process shared mappings through bwrap and the proxy.
+The proxy initializes `/dev/shm` as a unique directory under the app-private
+`TMPDIR` before launching a payload, so Steam Runtime and nested bwrap can use
+it even when the Android host does not provide that path. bwrap's own `--dev`
+then creates its normal private `/dev/shm` inside each sandbox; the proxy treats
+the standard `mkdir /dev/shm` setup as successful when the mapped directory is
+already present. Stale backing directories are removed on a later launch.
+POSIX `shm_open()` files and `MAP_SHARED` mappings work between processes in
+one app session. This storage is session-private and distinct from
+`--share=ipc`, which controls the IPC namespace. `tests/posix-shm.c` checks
+exclusive creation, unlink, and cross-process shared mappings through bwrap
+and the proxy.
 
 `links.c` provides indexed hardlink behavior for marked OSTree-style stores;
 `pack-vfd.c` exposes immutable packed deployment files through virtual

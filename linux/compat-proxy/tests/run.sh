@@ -70,13 +70,15 @@ timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/legacy" "$PWD/build
 cat build/legacy.out
 timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/paths" "$PWD/build/fixture-dir" "$PWD/build/nested-fixture" >build/paths.out 2>build/paths.log
 cat build/paths.out
+cc -no-pie -O2 -Wall -Wextra -Werror tests/posix-shm.c -o build/posix-shm
+timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/posix-shm" >build/posix-shm-direct.out 2>build/posix-shm-direct.log
+cat build/posix-shm-direct.out
 if command -v bwrap >/dev/null; then
     timeout 20 build/linux-layer-v3 --android-filter "$(command -v bwrap)" --ro-bind / / --tmpfs /tmp --proc /proc --dev /dev /bin/true >build/bwrap.out 2>build/bwrap.log
     timeout 20 build/linux-layer-v3 --android-filter "$(command -v bwrap)" --ro-bind / / --tmpfs /tmp --bind "$PWD/build/fixture-dir" /tmp/fixture --proc /proc --dev /dev /bin/cat /tmp/fixture/fixture >build/bwrap-fixture.out 2>build/bwrap-fixture.log
     grep -qx mount-ok build/bwrap-fixture.out
-    cc -no-pie -O2 -Wall -Wextra -Werror tests/posix-shm.c -o build/posix-shm
     timeout 20 build/linux-layer-v3 --android-filter "$(command -v bwrap)" \
-        --ro-bind / / --proc /proc --dev /dev --tmpfs /dev/shm \
+        --ro-bind / / --proc /proc --dev /dev \
         "$PWD/build/posix-shm" >build/posix-shm.out 2>build/posix-shm.log
     cat build/posix-shm.out
     printf 'PASS host bwrap virtual root and fixture bind\n'

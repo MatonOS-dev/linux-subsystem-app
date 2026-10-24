@@ -274,6 +274,14 @@ void vfs_network_payload(int isolated){
 }
 void vfs_executable(const char *path){vfs_free(executable);executable=pdupstr(path);}
 char *vfs_exe(void){return executable?dupstr(executable):NULL;}
+int vfs_bwrap_shm_mkdir(const char *path){
+    if(!executable || !path)return 0;
+    const char *base=executable;for(const char *p=executable;*p;p++)if(*p=='/')base=p+1;
+    if(!p_equal(base,"bwrap") && !p_equal(base,"matonos-app-bwrap") &&
+       !p_equal(base,"libmatonos-app-bwrap.so"))return 0;
+    size_t n=p_len(path);return p_equal(path,"/dev/shm") ||
+        (n>8 && p_equal(path+n-8,"/dev/shm"));
+}
 /* Worker SIGSYS handlers resolve paths concurrently. A shared cache cannot
  * free/replace keys while another thread reads them, or publish a key before
  * its mount identity. Walk the small mount list instead; no per-call shared
@@ -715,6 +723,12 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
         }}
         vfs_free(virtual_source);
     }vfs_free(src);vfs_free(dest);return e;
+}
+long vfs_shm_init(void){
+    long e=0;char *directory=vfs_temp_create(&e);if(!directory)return e;
+    e=RAW(PROXY_SC_fchmodat,AT_FDCWD,directory,01777,0,0,0);
+    if(!e)e=proxy_mount(directory,"/dev/shm");
+    vfs_free(directory);return e;
 }
 long vfs_unmount(const char *target){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unmount ",11,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;char *oldroot_global=oldroot_view?(root?join(root,oldroot_view):dupstr(oldroot_view)):NULL;if(oldroot_global && p_equal(dest,oldroot_global)){vfs_free(oldroot_view);oldroot_view=NULL;}vfs_free(oldroot_global);struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_resolve_cache_invalidate();vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}
 long vfs_root(const char *target){long e=0;char *next=global_target(target,&e);if(!next)return e;char *host=physical(next);if(!host){vfs_free(next);return -ENOMEM;}long fd=RAW(PROXY_SC_openat,AT_FDCWD,host,O_DIRECTORY|O_PATH|O_CLOEXEC,0,0,0);vfs_free(host);if(fd<0){vfs_free(next);return fd;}RAW(PROXY_SC_close,fd,0,0,0,0,0);char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_resolve_cache_invalidate();vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;}

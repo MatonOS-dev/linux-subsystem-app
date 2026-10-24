@@ -2,10 +2,11 @@
 
 `fetch.sh` verifies `sources.lock` and applies the small tracked
 `patches/0001-run-create-private-dev-shm-when-host-lacks-it.patch` to Flatpak's
-general device setup. When the host has no `/dev/shm` entry, the runner adds a
-private `--tmpfs /dev/shm`; the compatibility proxy backs it with session
-storage under the app cache. This preserves Flatpak's normal per-sandbox POSIX
-shared-memory semantics on hosts without that directory.
+general device setup. The runner adds a private `--tmpfs /dev/shm` unless the
+caller explicitly requests host shared memory or Flatpak's per-app shared
+memory feature. The compatibility proxy backs it with session storage under
+the app cache. This supplies POSIX shared memory on Android hosts without
+`/dev/shm` while retaining Flatpak's explicit sharing choices.
 
 `build-musl.sh` runs the current
 `build.sh` recipe inside the offline Alpine 3.24.2 x86_64 root at
