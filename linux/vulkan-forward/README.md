@@ -69,12 +69,12 @@ There are **zero DT_NEEDED entries and zero undefined symbols**. Build flags are
 the linker also enforces `--no-undefined`. No libc code or TLS is linked/bundled.
 Our memcpy/memset/memcmp/strcmp and raw-syscall allocator are self-contained.
 
-The launcher publishes a read-only anonymous mapping named
+The adoption launcher publishes a read-only anonymous mapping named
 `maton-gpu-bootstrap`, with the version magic, bridge/adoption pointers, and the
 kernel AT_HWCAP2 FSGSBASE permission. `bootstrap.h` defines this small ABI.
 The ICD discovers it via `/proc/self/maps`, without `environ`, getenv, auxv
 libc helpers, fixed virtual addresses, or reserved descriptors. The launcher
-continues publishing environment variables for the older spike clients.
+continues publishing environment variables for older test clients.
 Missing publication/adoption fails with a diagnostic, not a wrong-TLS call.
 Read access to the process's maps is required; unavailable proc access fails
 closed. This discovery is process-local plumbing, not a security boundary.
@@ -119,8 +119,8 @@ helper/allocator behavior (8 threads × 1,000 iterations), and absent-bridge
 refusal. Test shaders are compiled to
 SPIR-V and embedded at build time; this run used glslang 15.1.0.
 
-Build `gpu-forward-spike/spike3/build-android.sh` from an external scratch copy of
-`gpu-forward-spike`, `compat-proxy`, and `packs`, preserving sibling layout.
+Build the retained adoption test launcher with `spike3/build-android.sh` from an external scratch copy of
+`gpu-forward-spike`, `compat-proxy`, and `packs`, preserving sibling layout. The GPU ABI headers and packaging templates used by production forwarders live in `gpu-bridge-common/`; the remaining spike directory is test tooling.
 It builds the NDK r30 `-DMATON_ADOPT` launcher. Push that launcher as `launcher-b`,
 our ICD/tests and the pinned `vulkaninfo` under `/data/local/tmp/vk/`. Supply glibc's
 `ld-linux-x86-64.so.2`, libc/libm/libstdc++/libgcc_s and the pinned

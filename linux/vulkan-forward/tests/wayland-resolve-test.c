@@ -6,7 +6,7 @@
 #include <link.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
-#include "../../gpu-forward-spike/bootstrap.h"
+#include "../../gpu-bridge-common/bootstrap.h"
 
 int main(void) {
     void *handle=dlopen("libwayland-client.so.0",RTLD_NOW|RTLD_LOCAL);

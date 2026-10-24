@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # Host per-call adoption cost for the ICD forwarder's switch_to_android /
-# switch_back. The provider keeps the FS-base lookup O(1) in the number of live
-# adopted threads, so the round trip must stay flat from 1 to 64 threads and
-# under the host budget. Runs the benchmark under the adoption launcher and
-# fails if any reported round trip exceeds the limit.
+# switch_back. Keep the legacy test launcher build in external output so it
+# cannot create generated files or binaries in the source worktree.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-spike=$here/../gpu-forward-spike
-proxy=$here/../compat-proxy
+root=$(cd "$here/../.." && pwd)
 out=${1:?external output directory}
 limit=${MATON_SWITCH_BENCH_NS:-40}
-mkdir -p "$out"
-# The adoption launcher reuses the proxy objects and the generated app policy.
+src="$out/launcher-src/linux"
+mkdir -p "$out" "$src"
+# Preserve sibling includes expected by the old launcher test harness. The
+# canonical production ABI now lives beside the compatibility include shims.
+for tree in gpu-forward-spike gpu-bridge-common compat-proxy packs; do
+  rm -rf "$src/$tree"
+  cp -a "$root/linux/$tree" "$src/$tree"
+done
+spike=$src/gpu-forward-spike
+proxy=$src/compat-proxy
 bash "$spike/build.sh" >/dev/null
 cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector -fno-builtin -Wl,-z,now -DMATON_ADOPT \
    "$spike/launcher.c" "$proxy/arch/x86_64/thread-adopt.c" "$proxy/adopt-map.c" \
@@ -38,10 +43,9 @@ for key in wanted:
 for key in wanted:
     if values[key] > limit:
         sys.exit('%s is %.1f ns/call, over the %.0f ns host budget' % (key, values[key], limit))
-# The lookup is keyed on the FS base; 64 live bindings must not slow a call.
 if values['ROUNDTRIP_1T_LOADED'] > values['ROUNDTRIP_1T'] * 1.5:
-    sys.exit('lookup grows with live threads: %.1f -> %.1f ns/call'
-             % (values['ROUNDTRIP_1T'], values['ROUNDTRIP_1T_LOADED']))
-print('PASS switch round trip under %.0f ns: 1T %.1f, 1T+64 live %.1f, 64T %.1f ns/call'
-      % (limit, values['ROUNDTRIP_1T'], values['ROUNDTRIP_1T_LOADED'], values['ROUNDTRIP_64T']))
+    sys.exit('lookup grows with live threads: %.1f -> %.1f ns/call' %
+             (values['ROUNDTRIP_1T'], values['ROUNDTRIP_1T_LOADED']))
+print('PASS switch round trip under %.0f ns: 1T %.1f, 1T+64 live %.1f, 64T %.1f ns/call' %
+      (limit, values['ROUNDTRIP_1T'], values['ROUNDTRIP_1T_LOADED'], values['ROUNDTRIP_64T']))
 PY

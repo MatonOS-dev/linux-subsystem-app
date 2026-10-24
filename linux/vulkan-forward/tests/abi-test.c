@@ -2,7 +2,7 @@
 #include <stddef.h>
 #define adopt_thread provider_thread
 #define adopt_api provider_api
-#include "../../gpu-forward-spike/spike3/adopt.h"
+#include "../../gpu-bridge-common/adopt.h"
 #undef adopt_thread
 #undef adopt_api
 #include "backend.h"

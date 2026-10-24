@@ -4,7 +4,7 @@
 #include <vulkan/vk_icd.h>
 #include "runtime.h"
 #include "backend.h"
-#include "../gpu-forward-spike/bridge.h"
+#include "../gpu-bridge-common/bridge.h"
 #include "dispatch.h"
 #include "wsi.h"
 #include "wayland_resolve.h"

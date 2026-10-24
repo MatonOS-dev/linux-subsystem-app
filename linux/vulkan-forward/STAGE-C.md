@@ -77,7 +77,7 @@ bash linux/vulkan-forward/tests/run.sh "$OUT/build" "$DEPS/src/Vulkan-Headers-1.
 bash linux/vulkan-forward/tests/build-profile-audit.sh "$OUT" "$DEPS"
 ```
 
-Build the adoption launcher through `spike3/build-android.sh` from an external
+Build the adoption launcher through `gpu-forward-spike/spike3/build-android.sh` from an external
 scratch copy of `linux/{gpu-forward-spike,compat-proxy,packs}`, preserving their
 sibling layout under `$OUT/launcher-src/linux/`. This run rebuilt it that way.
 Stage-B glibc runtime, vulkaninfo and JSON must already be installed under

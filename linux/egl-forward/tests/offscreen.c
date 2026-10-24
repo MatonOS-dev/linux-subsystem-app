@@ -12,8 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../gpu-forward-spike/bootstrap.h"
-#include "../../gpu-forward-spike/bridge.h"
+#include "../../gpu-bridge-common/bootstrap.h"
+#include "../../gpu-bridge-common/bridge.h"
 #include "../../vulkan-forward/arch/x86_64/backend.h"
 
 #ifndef PR_SET_VMA

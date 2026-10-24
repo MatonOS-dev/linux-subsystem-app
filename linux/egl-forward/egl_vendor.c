@@ -4,7 +4,7 @@
 #include <glvnd/libeglabi.h>
 #include "runtime.h"
 #include "backend.h"
-#include "../gpu-forward-spike/bridge.h"
+#include "../gpu-bridge-common/bridge.h"
 #include "../wayland-client/wayland_client.h"
 #include "../vulkan-forward/wayland_resolve.h"
 #include "../glx-forward/include/maton_egl_direct.h"
