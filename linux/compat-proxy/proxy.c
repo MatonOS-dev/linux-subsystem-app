@@ -177,13 +177,16 @@ static struct thread_state *thread_state(void) {
     long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     if(threads_pid && pid!=threads_pid) {
         unsigned short gs;__asm__ volatile("movw %%gs,%0":"=rm"(gs));
-        struct user_desc current={.entry_number=gs>>3};
-        if(gs && !(gs&4) && !RAW(PROXY_SC_get_thread_area,&current,0,0,0,0,0)) {
+        uintptr_t base=0;
+        if(gs && !(gs&4)) {
+            /* Both glibc and bionic x86 TLS use GS:0 as the self pointer.
+             * get_thread_area is excluded by Android's inherited filter. */
+            __asm__ volatile("movl %%gs:0,%0" : "=r"(base));
             for(struct thread_node *p=threads;p;p=p->next)
                 for(unsigned i=0;i<PROXY_TLS_ENTRIES;i++) {
                     struct tls_entry *entry=&p->state.tls[i];
-                    if(entry->valid && entry->real_entry==(int)current.entry_number &&
-                       entry->desc.base_addr==current.base_addr) {
+                    if(entry->valid && entry->real_entry==(int)(gs>>3) &&
+                       entry->desc.base_addr==base) {
                         /* Fork copied this thread's GDT, virtual slots and
                          * altstack. Retain the reservation rather than trying
                          * to allocate a fourth hardware TLS descriptor. */
@@ -309,6 +312,12 @@ static long tls_get(struct thread_state *thread, uintptr_t user) {
     desc.entry_number=thread->tls[slot].real_entry;
     return proxy_copy((void *)user,&desc,sizeof(desc))?-EFAULT:0;
 }
+#ifdef MATON_GPU_BRIDGE
+int proxy_i386_tls_current(struct user_desc *desc) {
+    struct thread_state *thread=thread_state();
+    return thread?(int)tls_get(thread,(uintptr_t)desc):-ENOMEM;
+}
+#endif
 static int ldt_grow(size_t need) {
     if(need>8192)return -EINVAL;
     if(need<=ldt_capacity)return 0;
@@ -451,7 +460,12 @@ static int ldt_cache_install(struct thread_state *thread,ucontext_t *uc,
 static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
     struct kernel_action action=chained_segv;
     if(action.handler==1 && info->si_code<=0)return;
-    if(action.handler<=1)RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);
+    if(action.handler<=1) {
+        proxy_log("fatal-segv",info->si_code,(long)info->si_addr);
+        proxy_log("fatal-segv-pc",0,(long)ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC));
+        RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);
+        return;
+    }
     if(action.flags&SA_RESETHAND)chained_segv.handler=0;
     proxy_sigmask_t old=0,mask=action.mask&~SIGSYS_BIT;
     RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
@@ -539,11 +553,10 @@ int proxy_i386_tls_enter(unsigned native_gs) {
     unsigned native_entry=native_gs>>3;
     for(unsigned entry=native_entry-2;entry<=native_entry+2;entry++) {
         if(entry==(unsigned)thread->reserved_real)continue;
-        struct user_desc probe={.entry_number=entry};
-        if(RAW(PROXY_SC_get_thread_area,&probe,0,0,0,0,0))continue;
         struct user_desc empty={.entry_number=entry,.read_exec_only=1,.seg_not_present=1};
         long result=RAW(PROXY_SC_set_thread_area,&empty,0,0,0,0,0);
-        if(result)return result;
+        /* Entries outside the kernel TLS GDT range are simply invalid. */
+        if(result && result!=-EINVAL)return result;
     }
     return 0;
 }

@@ -73,14 +73,15 @@ struct adopt_thread *adopt_current(void) {
 #ifdef MATON_GPU_BRIDGE
     int pid=(int)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     if(resident_pid && pid!=resident_pid) {
-        /* A process fork retains its caller's kernel TLS descriptor. Rebase
-         * by that opaque base, without reading a libc TCB or pthread layout. */
+        /* A libc fork retains its caller's TLS self pointer (GS:0 in both
+         * bionic and glibc). Rebase the copied registry without a kernel query. */
         unsigned gs=(unsigned)current_gs();
-        struct user_desc d={.entry_number=gs>>3};
-        if(gs && !(gs&4) && !RAW(PROXY_SC_get_thread_area,&d,0,0,0,0,0)) {
+        uintptr_t base=0;
+        if(gs && !(gs&4)) {
+            __asm__ volatile("movl %%gs:0,%0" : "=r"(base));
             struct adopt_record *self=NULL;
             for(struct adopt_record *r=atomic_load(&records);r;r=r->next)
-                if(r->app_base==d.base_addr || r->thread.android_tls==d.base_addr)self=r;
+                if(r->app_base==base || r->thread.android_tls==base)self=r;
             if(self) {
                 for(struct adopt_record *r=atomic_load(&records);r;r=r->next)
                     atomic_store(&r->thread.tid,r==self?tid:0);
@@ -148,24 +149,29 @@ static struct adopt_api api = {
 struct adopt_api *adopt_api_get(void) { return &api; }
 uintptr_t adopt_api_address(void) { return (uintptr_t)&api; }
 
-/* Startup runs with bionic's normal GS selector. get_thread_area exposes the
- * selector's kernel descriptor without depending on bionic's private TCB
- * layout; the resulting base is the Android TLS block forwarded to claim. */
+/* Bionic's x86 TLS ABI keeps the TLS block's own address in GS:0.
+ * Android permits set_thread_area but not get_thread_area. In particular a
+ * raw query from our gateway still traps in the inherited app filter. Read
+ * the bionic ABI while GS is native; payload descriptors remain virtual. */
+#ifdef MATON_GPU_BRIDGE
+static uintptr_t native_tls(void) {
+    uintptr_t base;
+    __asm__ volatile("movl %%gs:0,%0" : "=r"(base));
+    return base;
+}
+#endif
 int adopt_install(void) {
     unsigned short gs = (unsigned short)current_gs();
-    if (!gs || (gs & 4u)) return -ENOTSUP; /* null or LDT selector */
-    struct user_desc descriptor = { .entry_number = gs >> 3 };
+    if (!gs || (gs & 4u)) return -ENOTSUP;
 #ifdef MATON_GPU_BRIDGE
-    long status=RAW(PROXY_SC_get_thread_area,&descriptor,0,0,0,0,0);
-    if(status)return (int)status;
-#else
-    if (syscall(244, &descriptor) < 0) return -errno;
-#endif
-    int result=adopt_register_current(descriptor.base_addr);
-#ifdef MATON_GPU_BRIDGE
+    int result=adopt_register_current(native_tls());
     extern int adopt_i386_enabled;
     adopt_i386_enabled=!result;
     resident_pid=(int)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+#else
+    struct user_desc descriptor = { .entry_number = gs >> 3 };
+    if (syscall(244, &descriptor) < 0) return -errno;
+    int result=adopt_register_current(descriptor.base_addr);
 #endif
     return result;
 }
@@ -301,9 +307,7 @@ static void record_exit(struct adopt_record *r) {
 static void *thread_start(void *arg) {
     struct adopt_record *r=arg;
     unsigned gs=(unsigned)current_gs();
-    struct user_desc native={.entry_number=gs>>3};
-    if(RAW(PROXY_SC_get_thread_area,&native,0,0,0,0,0) ||
-       adopt_register_current(native.base_addr))
+    if(adopt_register_current(native_tls()))
         RAW(PROXY_SC_exit_group,193,0,0,0,0,0);
     /* Register uses its own published node. Copy the kernel-ABI launch data
      * into that node while all allocation and pthread calls still use bionic. */
@@ -393,7 +397,8 @@ int adopt_i386_syscall(long nr,proxy_arg_t *a,void *opaque,long *result) {
     struct adopt_record *r=record_current();
     if(!r)return 0;
     struct user_desc current={.entry_number=(unsigned)current_gs()>>3};
-    if(!RAW(PROXY_SC_get_thread_area,&current,0,0,0,0,0))r->app_base=current.base_addr;
+    extern int proxy_i386_tls_current(struct user_desc *);
+    if(!proxy_i386_tls_current(&current))r->app_base=current.base_addr;
     if(nr==PROXY_SC_clone && (a[0]&CLONE_THREAD)) {
         *result=thread_clone(uc,a);return 1;
     }

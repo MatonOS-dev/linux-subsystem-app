@@ -536,7 +536,8 @@ int main(int argc,char **argv,char **environ) {
 #if defined(__x86_64__)
         if(RAW(PROXY_SC_arch_prctl,0x1003,&bridge.tls,0,0,0,0)) return 3;
 #endif
-        if(adopt_install()) return 5;
+        int adopt_result=adopt_install();
+        if(adopt_result) {proxy_log("adopt-install-error",0,adopt_result);return 5;}
     }
 #endif
     proxy_host_snapshot(environ);

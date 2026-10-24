@@ -15,7 +15,7 @@ int main(int argc,char **argv,char **env) {
     proxy_i386_tls_reservation(1);
     struct image image;
     int r=proxy_load(argv[1],argv+1,env,&image);proxy_log("test-load",r,0);if(r)return 4;
-    r=proxy_install(0);proxy_log("test-install",r,0);if(r)return 5;
+    r=proxy_install(1);proxy_log("test-install",r,0);if(r)return 5;
     r=adopt_install();proxy_log("test-adopt",r,0);if(r)return 6;
     adopt_launch(image.entry,image.stack);
 }
