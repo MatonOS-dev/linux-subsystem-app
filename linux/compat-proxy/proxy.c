@@ -144,6 +144,15 @@ static int proxy_i386_tls_reservation_enabled;
 struct ldt_entry { struct user_desc desc; unsigned char valid; };
 static struct ldt_entry *ldt_entries;
 static size_t ldt_capacity;
+/* modify_ldt is process-wide. Serialize growth/writes with SIGSEGV readers. */
+static volatile int ldt_lock;
+static void ldt_lock_acquire(void) {
+    while(__atomic_exchange_n(&ldt_lock,1,__ATOMIC_ACQUIRE))
+        while(__atomic_load_n(&ldt_lock,__ATOMIC_RELAXED)) __asm__ volatile("pause");
+}
+static void ldt_lock_release(void) { __atomic_store_n(&ldt_lock,0,__ATOMIC_RELEASE); }
+#define PROXY_LDT_CACHE_ENTRIES 3
+struct ldt_cache_entry { unsigned selector; unsigned age; int real_entry; unsigned valid; };
 #endif
 struct thread_state {
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
@@ -152,6 +161,8 @@ struct thread_state {
     unsigned reserved;
     unsigned reserved_claimed;
     int reserved_real;
+    unsigned ldt_age;
+    struct ldt_cache_entry ldt_cache[PROXY_LDT_CACHE_ENTRIES];
 #endif
 };
 struct thread_node {struct thread_state state;struct thread_node *next;};
@@ -286,12 +297,15 @@ static int ldt_grow(size_t need) {
     if(ldt_entries)vfs_free(ldt_entries);
     ldt_entries=next;ldt_capacity=cap;return 0;
 }
-static long ldt_call(unsigned func, uintptr_t ptr, size_t bytes) {
+static long ldt_call_locked(unsigned func, uintptr_t ptr, size_t bytes) {
     if(func==2)return 0; /* read_default: no default LDT entries */
     if(func==1 || func==0x11) {
         struct user_desc d;
         if(!ptr || proxy_copy(&d,(void *)ptr,sizeof(d)))return -EFAULT;
-        if(!d.seg_32bit || d.contents!=0)return -EINVAL;
+        /* User TLS GDT entries can represent 32-bit data descriptors, both
+         * expand-up and expand-down, including read-only data. */
+        if(!d.seg_32bit || d.limit>0xfffffu || d.contents>1 || d.read_exec_only>1 ||
+           d.limit_in_pages>1 || d.seg_not_present>1 || d.useable>1)return -EINVAL;
         if(d.entry_number>=8192)return -EINVAL;
         int r=ldt_grow((size_t)d.entry_number+1);if(r)return r;
         ldt_entries[d.entry_number].desc=d;
@@ -319,7 +333,9 @@ static long ldt_call(unsigned func, uintptr_t ptr, size_t bytes) {
                 raw|=UINT64_C(1)<<47; /* present */
                 raw|=UINT64_C(1)<<44; /* code/data */
                 raw|=UINT64_C(3)<<45; /* user privilege */
-                raw|=UINT64_C(1)<<40; /* accessed, writable data */
+                raw|=UINT64_C(1)<<40; /* accessed */
+                raw|=(uint64_t)(d.contents&1u)<<42; /* expand-down data */
+                raw|=(uint64_t)(d.read_exec_only?0:1)<<41; /* writable data */
             }
             if(proxy_copy((void *)(ptr+copied),&raw,8))return copied?(long)copied:-EFAULT;
             copied+=8;
@@ -327,6 +343,9 @@ static long ldt_call(unsigned func, uintptr_t ptr, size_t bytes) {
         return (long)copied;
     }
     return -EINVAL;
+}
+static long ldt_call(unsigned func,uintptr_t ptr,size_t bytes) {
+    ldt_lock_acquire();long result=ldt_call_locked(func,ptr,bytes);ldt_lock_release();return result;
 }
 static uint32_t *i386_reg(ucontext_t *uc,unsigned r) {
     static const int indices[8]={REG_EAX,REG_ECX,REG_EDX,REG_EBX,REG_ESP,REG_EBP,REG_ESI,REG_EDI};
@@ -348,6 +367,63 @@ static int i386_ea(ucontext_t *uc,const unsigned char *insn,size_t *len,
     }
     *address=base+index;return 0;
 }
+static unsigned i386_segment_reg(ucontext_t *uc,int reg) {
+    static const int indices[6]={REG_ES,REG_CS,REG_SS,REG_DS,REG_FS,REG_GS};
+    return (unsigned)uc->uc_mcontext.gregs[indices[reg]]&0xffffu;
+}
+static int i386_cache_held(ucontext_t *uc,const struct ldt_cache_entry *cache) {
+    unsigned virtual_index=cache->selector;
+    unsigned real_index=(unsigned)cache->real_entry;
+    for(int r=0;r<6;r++) {
+        unsigned selector=i386_segment_reg(uc,r);
+        if((selector&4) && (selector>>3)==virtual_index)return 1;
+        if(!(selector&4) && (selector>>3)==real_index)return 1;
+    }
+    return 0;
+}
+static int ldt_cache_install(struct thread_state *thread,ucontext_t *uc,
+                             unsigned selector,const struct user_desc *source,
+                             int *real_entry) {
+    unsigned index=selector>>3;
+    for(int i=0;i<PROXY_LDT_CACHE_ENTRIES;i++) {
+        struct ldt_cache_entry *c=&thread->ldt_cache[i];
+        if(c->valid && c->selector==index) {
+            c->age=++thread->ldt_age;*real_entry=c->real_entry;return 0;
+        }
+    }
+    int slot=-1;
+    for(int i=0;i<PROXY_LDT_CACHE_ENTRIES;i++) if(!thread->ldt_cache[i].valid){slot=i;break;}
+    if(slot<0) {
+        unsigned oldest=UINT32_MAX;
+        for(int i=0;i<PROXY_LDT_CACHE_ENTRIES;i++) {
+            struct ldt_cache_entry *c=&thread->ldt_cache[i];
+            if(!i386_cache_held(uc,c) && c->age<oldest) {oldest=c->age;slot=i;}
+        }
+        if(slot<0)return -1;
+    }
+    struct ldt_cache_entry *c=&thread->ldt_cache[slot];
+    struct user_desc d=*source;
+    d.entry_number=c->valid?(unsigned)c->real_entry:UINT32_MAX;
+    long r=RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0);
+    if(r<0 && !c->valid) {
+        /* Other TLS users may already occupy the remaining GDT slots. Reuse
+         * an unheld cache entry before reporting descriptor exhaustion. */
+        unsigned oldest=UINT32_MAX;int victim=-1;
+        for(int i=0;i<PROXY_LDT_CACHE_ENTRIES;i++) {
+            struct ldt_cache_entry *candidate=&thread->ldt_cache[i];
+            if(candidate->valid && !i386_cache_held(uc,candidate) && candidate->age<oldest) {
+                oldest=candidate->age;victim=i;
+            }
+        }
+        if(victim<0)return -1;
+        slot=victim;c=&thread->ldt_cache[slot];d=*source;
+        d.entry_number=(unsigned)c->real_entry;
+        r=RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0);
+    }
+    if(r<0)return -1;
+    c->selector=index;c->real_entry=(int)d.entry_number;c->age=++thread->ldt_age;c->valid=1;
+    *real_entry=c->real_entry;return 0;
+}
 static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
     struct kernel_action action=chained_segv;
     if(action.handler==1 && info->si_code<=0)return;
@@ -361,45 +437,66 @@ static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
 }
 static void ldt_segv_handler(int sig,siginfo_t *info,void *opaque) {
     ucontext_t *uc=opaque;unsigned char op[16];size_t n=0,ilen=0;uint32_t selector=0,address=0;
+    int target=-1,load_offset=-1;uint32_t offset=0;int pop=0;
     uintptr_t pc=(uintptr_t)uc->uc_mcontext.gregs[REG_EIP];
     if(info->si_code==SI_KERNEL && pc && !proxy_copy(op,(void *)pc,sizeof(op))) {
-        /* Segment-load instructions have no address/operand-size prefixes in
-         * the common compat ABI sequences; reject prefixed forms safely. */
         if(op[0]==0x8e) {
-            unsigned m=op[1],seg=(m>>3)&7;ilen=2;n=2;
-            if(seg==0 || seg==3 || seg==4 || seg==5) {
-                if((m>>6)==3)selector=*i386_reg(uc,m&7)&0xffff;
+            unsigned m=op[1],seg=(m>>3)&7; n=2;
+            if(seg==0 || seg==2 || seg==3 || seg==4 || seg==5) {
+                if((m>>6)==3){selector=*i386_reg(uc,m&7)&0xffff;ilen=2;}
                 else if(!i386_ea(uc,op,&n,m,&address) && !proxy_copy(&selector,(void *)(uintptr_t)address,2))ilen=n;
                 else ilen=0;
-                if(ilen){int gi=seg==0?REG_ES:seg==3?REG_DS:seg==4?REG_FS:REG_GS;uc->uc_mcontext.gregs[gi]=selector;}
+                target=(int)seg;
             } else ilen=0;
+        } else if(op[0]==0x07 || op[0]==0x17 || op[0]==0x1f) {
+            uint32_t sp=(uint32_t)uc->uc_mcontext.gregs[REG_ESP];
+            if(!proxy_copy(&selector,(void *)(uintptr_t)sp,2)) {
+                target=op[0]==0x07?0:op[0]==0x17?2:3;pop=1;ilen=1;
+            }
+        } else if(op[0]==0xc4 || op[0]==0xc5) {
+            unsigned m=op[1],dest=(m>>3)&7;size_t elen=2;
+            if(!i386_ea(uc,op,&elen,m,&address) &&
+               !proxy_copy(&offset,(void *)(uintptr_t)address,4) &&
+               !proxy_copy(&selector,(void *)(uintptr_t)(address+4),2)) {
+                load_offset=(int)dest;target=op[0]==0xc4?0:3;ilen=elen;
+            }
         } else if(op[0]==0x0f && (op[1]==0xa1 || op[1]==0xa9)) {
             uint32_t sp=(uint32_t)uc->uc_mcontext.gregs[REG_ESP];
             if(!proxy_copy(&selector,(void *)(uintptr_t)sp,2)){
-                uc->uc_mcontext.gregs[op[1]==0xa1?REG_FS:REG_GS]=selector;
-                uc->uc_mcontext.gregs[REG_ESP]=sp+4;ilen=2;
+                target=op[1]==0xa1?4:5;pop=1;ilen=2;
             }
         } else if(op[0]==0x0f && (op[1]==0xb4 || op[1]==0xb5)) {
             unsigned m=op[2],dest=(m>>3)&7;size_t elen=3;uint32_t off;
             if(!i386_ea(uc,op,&elen,m,&address) && !proxy_copy(&off,(void *)(uintptr_t)address,4) &&
                !proxy_copy(&selector,(void *)(uintptr_t)(address+4),2)) {
-                *i386_reg(uc,dest)=off;uc->uc_mcontext.gregs[op[1]==0xb4?REG_FS:REG_GS]=selector;ilen=elen;
+                offset=off;load_offset=(int)dest;target=op[1]==0xb4?4:5;ilen=elen;
+            }
+        } else if(op[0]==0x0f && op[1]==0xb2) {
+            unsigned m=op[2];size_t elen=3;
+            if(!i386_ea(uc,op,&elen,m,&address) &&
+               !proxy_copy(&offset,(void *)(uintptr_t)address,4) &&
+               !proxy_copy(&selector,(void *)(uintptr_t)(address+4),2)) {
+                load_offset=(int)((m>>3)&7);target=2;ilen=elen;
             }
         }
     }
-    if(ilen && (selector&4) && (selector>>3)<ldt_capacity && ldt_entries[selector>>3].valid) {
+    struct user_desc ldt_desc;int ldt_valid=0;
+    if(ilen && (selector&4) && target>=0) {
+        unsigned index=selector>>3;
+        ldt_lock_acquire();
+        if(index<ldt_capacity && ldt_entries[index].valid) {ldt_desc=ldt_entries[index].desc;ldt_valid=1;}
+        ldt_lock_release();
+    }
+    if(ldt_valid) {
         struct thread_state *thread=thread_state();
-        if(thread && !thread->reserved)tls_reserve(thread);
-        if(thread && thread->reserved) {
-            struct user_desc d=ldt_entries[selector>>3].desc;d.entry_number=thread->reserved_real;
-            if(!RAW(PROXY_SC_set_thread_area,(long)&d,0,0,0,0,0)) {
-                unsigned real=((unsigned)thread->reserved_real<<3)|3u;
-                int gi=-1;
-                /* The target register was selected above; replace its saved selector. */
-                if(op[0]==0x8e){unsigned seg=(op[1]>>3)&7;gi=seg==0?REG_ES:seg==3?REG_DS:seg==4?REG_FS:REG_GS;}
-                else if(op[0]==0x0f)gi=op[1]==0xa1||op[1]==0xb4?REG_FS:REG_GS;
-                if(gi>=0){uc->uc_mcontext.gregs[gi]=real;uc->uc_mcontext.gregs[REG_EIP]+=ilen;return;}
-            }
+        int entry=-1;
+        if(thread && !ldt_cache_install(thread,uc,selector,&ldt_desc,&entry)) {
+            static const int indices[6]={REG_ES,REG_CS,REG_SS,REG_DS,REG_FS,REG_GS};
+            unsigned real=((unsigned)entry<<3)|3u;
+            if(load_offset>=0)*i386_reg(uc,(unsigned)load_offset)=offset;
+            uc->uc_mcontext.gregs[indices[target]]=real;
+            if(pop)uc->uc_mcontext.gregs[REG_ESP]+=4;
+            uc->uc_mcontext.gregs[REG_EIP]+=ilen;return;
         }
     }
     dispatch_segv_app(sig,info,opaque);

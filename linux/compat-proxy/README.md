@@ -1455,20 +1455,46 @@ index/name/flags/configuration, and the host ioctl path outside virtual
 NEWNET. The separate `TIOCGWINSZ` denial on a pipe is expected: Linux returns
 `ENOTTY`, so it needs no virtual handling. No VM test was run.
 
-### i386 TLS2 groundwork (2026-10-23)
+### i386 segmented-memory emulation (2026-10-24)
 
-The proxy has a reserved-GDT-slot claim entry point and virtual slot 2 can
-use that reserved entry; callers must restore their resident descriptor before
-resuming resident/bionic execution. `modify_ldt` function 0 reads the emulated
-table; functions 1 and 0x11 accept only 32-bit data descriptors, with code and
-16-bit descriptors rejected as `EINVAL`. The table grows with overflow checks,
-survives fork through private mappings, and is cleared on resident exec.
+`modify_ldt` keeps a dynamically grown per-process table of 32-bit data
+descriptors. Selector loads handled on the SIGSEGV path are installed into
+per-thread real GDT TLS entries and cached by LDT selector. When all real
+entries are occupied, the cache evicts the least recently loaded descriptor
+that is not present in that thread's saved DS/ES/FS/GS/SS registers. If every
+cached selector is held, or another TLS user leaves no usable GDT entry, the
+fault is delivered through the application's SIGSEGV disposition, matching
+the kernel's failed selector load rather than choosing an arbitrary victim.
+The reserved Android TLS entry is normally allocated when Android TLS is
+claimed; eager reservation remains available for callers that need it, but can
+consume a host GDT slot needed for LDT emulation. Concurrent `modify_ldt` updates and handler snapshots share a lock
+so table growth cannot invalidate another thread's lookup. The host GDT still
+bounds the number of simultaneously installed descriptors; the emulated LDT
+itself has no such cache-size limit.
 
-This work is partial. i386 host checks cover LDT write/read and code/16-bit
-rejection. Selector-load remapping on SIGSEGV is not complete: the attempted
-FS-load test failed, so payloads cannot yet use LDT descriptors. The required
-three-slot multi-thread/signal test also remains open because this host could
-not claim the extra physical GDT slot.
+Supported loads are `mov` to DS/ES/SS/FS/GS, `pop` to DS/ES/SS/FS/GS,
+`lds`/`les`, and `lfs`/`lgs`/`lss` in the 32-bit operand/address forms. The
+emulated descriptor's base, limit, page granularity, expand-up/down mode, and
+read/write permission are passed to `set_thread_area`, so the CPU enforces
+those properties. Only present 32-bit data descriptors are supported; code
+descriptors, 16-bit descriptors, and prefixed/operand-size-overridden segment
+loads are rejected or left to the application's signal handler.
+
+Far return/jump/call selector reloads, iret selector reloads, and other
+implicit CS reloads are out of scope. TLS GDT entries are data descriptors;
+loading one into CS cannot satisfy code-segment checks. Supporting LDT code
+segments would need a separate code-descriptor representation and careful
+emulation of privilege checks, far control-transfer stack effects, and signal
+return context. `set_thread_area` is a TLS interface and does not provide that
+CS mechanism, so this phase leaves code transfers unimplemented.
+
+The `struct user_desc` ABI definition lives in the i386 adoption header so
+both the adoption implementation and host fixture compile when multilib
+headers only forward-declare it. `tests/i386-p1.sh` exercises five selectors
+per worker across four workers, `lds`/`les`/`lss`, a nonzero-base ES write,
+an expand-down read, and a child-process segment-limit fault delivered to the
+app SIGSEGV disposition. `tests/run.sh` includes the six-thread adoption
+fixture and the full proxy suite.
 
 ### i386 thread-adoption backend (2026-10-23)
 
