@@ -11,6 +11,8 @@ const char *proxy_tmpdir;
 /* This VFS-only fixture has no in-flight IPC fork descriptors. */
 int ipc_private_fd(int fd){(void)fd;return 0;}
 int state_private_fd(int fd){(void)fd;return 0;}
+int proxy_trace;
+void proxy_log(const char *m,long a,long b){(void)m;(void)a;(void)b;}
 size_t p_len(const char *s){return strlen(s);}
 void p_copy(void *d,const void *s,size_t n){memcpy(d,s,n);}
 int p_equal(const char *a,const char *b){return !strcmp(a,b);}
