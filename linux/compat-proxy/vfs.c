@@ -183,6 +183,14 @@ static char *dupstr(const char *s){size_t n=p_len(s);char *p=vfs_alloc(n+1);if(p
 static char *pdupstr(const char *s){size_t n=p_len(s);char *p=vfs_palloc(n+1);if(p)p_copy(p,s,n+1);return p;}
 struct mount {struct mount *next;char *source,*target;unsigned long flags;/* Own backing filesystem hides an index even at its root. */int pack_shadow;};
 static struct mount *table;
+#ifdef MATON_TEST_DIRECT_PREFIX
+static char test_direct_prefix[PATH_MAX];
+int vfs_test_direct_prefix(const char *path){
+    if(!path || path[0]!='/' || p_len(path)>=sizeof(test_direct_prefix))return -EINVAL;
+    size_t n=p_len(path);while(n>1 && path[n-1]=='/')n--;
+    p_copy(test_direct_prefix,path,n);test_direct_prefix[n]=0;return 0;
+}
+#endif
 static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
 static char *oldroot_view;
@@ -439,6 +447,28 @@ if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(
 static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *error,void **identity,int *cacheable,int allow_fast){
     *error=0;if(!path){*error=-EFAULT;return NULL;}if(!*path){*error=-ENOENT;return NULL;}
     if(cacheable)*cacheable=1;
+#ifdef MATON_TEST_DIRECT_PREFIX
+    /* Test-only: let the kernel resolve paths rooted in a real mount. This
+     * switch is absent from production builds; it exists to compare the VFS
+     * proxy with mount-namespace lookup cost without changing the payload. */
+    size_t direct_len=p_len(test_direct_prefix);
+    if(direct_len && fd==AT_FDCWD && path[0]=='/' &&
+       p_equal(path,test_direct_prefix)){
+        if(cacheable)*cacheable=0;
+        if(identity)*identity=NULL;
+        char *direct=dupstr(path);if(!direct)*error=-ENOMEM;return direct;
+    }
+    int direct_match=direct_len && fd==AT_FDCWD && path[0]=='/' &&
+                     p_len(path)>direct_len && path[direct_len]=='/';
+    if(direct_match){
+        for(size_t n=0;n<direct_len;n++)if(path[n]!=test_direct_prefix[n]){direct_match=0;break;}
+    }
+    if(direct_match){
+        if(cacheable)*cacheable=0;
+        if(identity)*identity=NULL;
+        char *direct=dupstr(path);if(!direct)*error=-ENOMEM;return direct;
+    }
+#endif
     /* Polling roots are immutable generated directories. Re-check the current
      * mount source so an unmount/overmount cannot reuse a stale fast answer. */
     if(p_equal(path,"/sys/bus") || p_equal(path,"/sys/class")){

@@ -14,6 +14,9 @@ void vfs_raw_syscall_summary(uint64_t[PROXY_SC_count]);
 void vfs_raw_count_fork_child(void);
 void vfs_resolve_cache_invalidate(void);
 char *vfs_resolve(int, const char *, int, long *);
+#ifdef MATON_TEST_DIRECT_PREFIX
+int vfs_test_direct_prefix(const char *);
+#endif
 int vfs_openat2_path_fd(int,const char *,int,int *);
 /* Follow symlinks, but retain a final proc fd magic link for linkat. */
 #define VFS_FOLLOW_LINK_SOURCE 2

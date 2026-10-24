@@ -438,6 +438,12 @@ int main(int argc,char **argv,char **environ) {
     static void *gpu_egl, *gpu_gles;
 #endif
     while(i<argc && argv[i][0]=='-') {
+#ifdef MATON_TEST_DIRECT_PREFIX
+        if(p_equal(argv[i],"--test-direct-prefix") && i+1<argc) {
+            if(vfs_test_direct_prefix(argv[i+1]))return 2;
+            i+=2;
+        } else
+#endif
 #ifdef MATON_GPU_BRIDGE
         if(p_equal(argv[i],"--gpu-bridge")) {gpu_bridge_enabled=1;i++;}
         else
