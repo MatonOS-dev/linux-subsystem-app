@@ -578,3 +578,21 @@ signal fixtures remain in the suite. No thread parking is used in production.
 Validation: build.sh, tests/run.sh and tests/i386-p1.sh passed on the host
 (logs site-rewrite-2-resume-{build2,tests2,i3862}.log). Persistent decisions and
 new workload measurements are tracked in the subsequent work.
+
+### Persistent site decisions
+
+XDG_CACHE_HOME/maton-rewrite-v2 holds atomic per-site decision files shared
+across an app's processes and relaunches. The launcher already provides its
+per-stub XDG_CACHE_HOME. Missing/unwritable cache means ordinary lazy discovery.
+Keys contain GNU build-id when available, device/inode, size, nanosecond
+mtime/ctime, packed slice and syscall file offset. Plans and proof rejections
+retain their function extent and hardware SSE4.2 CRC32C. Lookups validate the
+live function checksum before reuse and original window bytes before publishing.
+Truncated, malformed or checksum-mismatched records are empty cache entries.
+Temporary writes rename atomically; simultaneous processes can safely replace
+the same decision. Rejections without a known function extent stay memory-only.
+
+The decoder normalizes earlier registered patches when proving a second site
+in the same function. Unrelated mremap operations preserve recovery records;
+only affected source/destination ranges are invalidated. Integration tests
+exercise first/second launch, checksum mismatch and truncated cache files.

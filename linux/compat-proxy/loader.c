@@ -424,6 +424,9 @@ int proxy_load(const char *path,char *const *argv,char *const *env,struct image 
     int rewrite_logging=0;
     for(size_t i=0;env && env[i];i++)if(p_equal(env[i],"MATON_PROXY_REWRITE_LOG=1"))rewrite_logging=1;
     proxy_rewrite_init(rewrite_option,rewrite_logging);
+    const char *rewrite_cache=NULL;
+    for(size_t i=0;env && env[i];i++){size_t j=0;const char *key="XDG_CACHE_HOME=";while(key[j] && env[i][j]==key[j])j++;if(!key[j])rewrite_cache=env[i]+j;}
+    proxy_rewrite_cache_init(rewrite_cache);
     int r=load_inner(path,argv,env,image,0);
     if(!r)r=proxy_i386_tls_prepare_payload();
     if(!r)vfs_executable(path);

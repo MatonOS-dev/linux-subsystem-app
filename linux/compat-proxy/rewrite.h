@@ -7,7 +7,7 @@ static uintptr_t rewrite_target;
 static unsigned rewrite_nr;
 struct rewrite_mapping {struct rewrite_mapping *next;uintptr_t begin;size_t size;uint64_t offset;int fd;char path[512];};
 static struct rewrite_mapping *rewrite_mappings;
-struct rewrite_record {struct rewrite_record *next;uintptr_t address,ret;uint64_t offset,sequence,time;unsigned nr,window,active;char path[512];};
+struct rewrite_record {struct rewrite_record *next;uintptr_t address,ret;uint64_t offset,sequence,time;unsigned nr,window,active;unsigned char original[128];char path[512];};
 static struct rewrite_record *rewrite_records;
 static struct rewrite_mapping *rewrite_current;
 static uint64_t rewrite_sequence;
@@ -15,7 +15,7 @@ struct rewrite_attempt {struct rewrite_attempt *next;uintptr_t pc;struct rewrite
 static struct rewrite_attempt *rewrite_attempts;
 
 struct rewrite_site {uint32_t offset;unsigned nr,window;unsigned char original[128];};
-struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice,target;size_t size,count,capacity;struct rewrite_site *sites;};
+struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice,target;size_t size,count,capacity,function_offset,function_size;uint32_t function_crc;struct rewrite_site *sites;};
 static struct rewrite_scan *rewrite_scans;
 static unsigned rewrite_busy;
 static int proxy_rewrite_traps(long nr){return rewrite_enabled && (nr==PROXY_SC_mprotect || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap);}
@@ -34,6 +34,7 @@ static unsigned rewrite_apply(uintptr_t addr,unsigned nr,unsigned w,const unsign
     if((unsigned long)page>=(unsigned long)-4095){vfs_free(record);return 0;}
     p_copy((void *)(uintptr_t)page,(void *)(addr&~(uintptr_t)4095),4096);
     arch_rewrite_patch((unsigned char *)(uintptr_t)page+(addr&4095),nr,w);
+    p_copy(record->original,original,w);
     record->address=addr;record->ret=addr+w;record->nr=nr;record->window=w;
     record->offset=rewrite_current->offset+addr-rewrite_current->begin;
     p_copy(record->path,rewrite_current->path,sizeof(record->path));
@@ -59,6 +60,7 @@ int proxy_rewrite_init(const char *s,int logging){
     proxy_rewrite_table=arch_rewrite_table;
     return rewrite_enabled;
 }
+#include "rewrite-cache.h"
 /* A complete ELF or FDE range is the unit of proof. Unsupported instructions,
  * unproven stack state, indirect flow or interior branch targets reject it. */
 static int rewrite_redzone_path_clean(const struct rewrite_insn *ins,const size_t *offsets,size_t count,size_t size,size_t start){
@@ -77,15 +79,19 @@ static int rewrite_redzone_path_clean(const struct rewrite_insn *ins,const size_
 }
 static unsigned rewrite_function(unsigned char *p,size_t size,struct rewrite_scan *scan,uintptr_t begin,const Elf64_Sym *symbol,const Elf64_Sym *all,size_t nsymbols){
     if(rewrite_target<(uintptr_t)p || rewrite_target-(uintptr_t)p>=size)return 0;
+    if(scan){scan->function_offset=(uintptr_t)p-begin;scan->function_size=size;scan->function_crc=rewrite_function_crc(p,size);}
     size_t pos=0,count=0,capacity=size;
     if(!size || capacity>SIZE_MAX/sizeof(struct rewrite_insn) || capacity>SIZE_MAX/sizeof(size_t))return 0;
     struct rewrite_insn *ins=vfs_alloc(capacity*sizeof(*ins));
     size_t *offsets=vfs_alloc(capacity*sizeof(*offsets));
     if(!ins || !offsets){vfs_free(ins);vfs_free(offsets);return 0;}
+    unsigned char *text=rewrite_function_bytes(p,size);
+    if(!text){vfs_free(ins);vfs_free(offsets);return 0;}
     while(pos<size){
-        if(count==capacity || !arch_rewrite_decode(p+pos,size-pos,&ins[count])){vfs_free(ins);vfs_free(offsets);return 0;}
+        if(count==capacity || !arch_rewrite_decode(text+pos,size-pos,&ins[count])){vfs_free(text);vfs_free(ins);vfs_free(offsets);return 0;}
         offsets[count]=pos;pos+=ins[count++].size;
     }
+    vfs_free(text);
     /* Walk backward over the forward-decoded stream, never raw byte patterns.
      * Unknown RAX use, control flow and stack changes keep the site trapped. */
     for(size_t k=0;k<count;k++)if(ins[k].syscall){
@@ -270,6 +276,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
            a->stx_mtime.tv_nsec==b->stx_mtime.tv_nsec && a->stx_ctime.tv_sec==b->stx_ctime.tv_sec &&
            a->stx_ctime.tv_nsec==b->stx_ctime.tv_nsec)break;
     }
+    if(scan && (!scan->function_size || scan->function_offset>size || scan->function_size>size-scan->function_offset || rewrite_function_crc((void *)(begin+scan->function_offset),scan->function_size)!=scan->function_crc))scan=NULL;
     if(scan){
         for(unsigned i=0;i<scan->count;i++){
             struct rewrite_site *site=&scan->sites[i];
@@ -280,7 +287,9 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     }
     if(identified){
         scan=vfs_palloc(sizeof(*scan));
-        if(scan){scan->target=rewrite_target-begin;scan->identity=identity;scan->offset=offset;scan->size=size;scan->slice=slice;}
+        if(scan){scan->target=rewrite_target-begin;scan->identity=identity;scan->offset=offset;scan->size=size;scan->slice=slice;
+            if(rewrite_cache_read(scan,begin)){vfs_free(scan);goto done;}
+        }
     }
     Elf64_Ehdr eh;Elf64_Shdr *sections=NULL;Elf64_Sym *symbols=NULL;
     if(pack_pread(fd,&eh,sizeof(eh),0)!=sizeof(eh) ||
@@ -344,7 +353,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     }
 cleanup:
     vfs_free(symbols);vfs_free(sections);
-    if(scan){scan->next=rewrite_scans;rewrite_scans=scan;}
+    if(scan){rewrite_cache_write(scan);scan->next=rewrite_scans;rewrite_scans=scan;}
 done:
     if(proxy_trace){proxy_log("rewrite-sites",patched,size);proxy_log("rewrite-scan-ns",rewrite_clock()-started,size);}
     __atomic_store_n(&rewrite_busy,0,__ATOMIC_RELEASE);
@@ -414,7 +423,8 @@ static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
        (nr!=PROXY_SC_mmap && nr!=PROXY_SC_munmap && nr!=PROXY_SC_mprotect && nr!=PROXY_SC_mremap))return;
     if(__atomic_exchange_n(&rewrite_pending_busy,1,__ATOMIC_ACQUIRE))return;
     if(nr==PROXY_SC_mremap){
-        rewrite_invalidate(0,UINTPTR_MAX);
+        rewrite_invalidate((uintptr_t)a[0],(size_t)a[1]);
+        if(result!=(long)a[0])rewrite_invalidate((uintptr_t)result,(size_t)a[2]);
         for(unsigned i=0;i<128;i++)rewrite_pending[i].size=0;
         goto done;
     }
@@ -451,6 +461,7 @@ done:
 }
 
 #else
+void proxy_rewrite_cache_init(const char *root){(void)root;}
 void proxy_rewrite_relocate(uintptr_t o,uintptr_t d,size_t n){(void)o;(void)d;(void)n;}
 static void proxy_rewrite_trap_site(uintptr_t pc,long nr){(void)pc;(void)nr;}
 static void proxy_rewrite_dump(void *ctx){(void)ctx;}

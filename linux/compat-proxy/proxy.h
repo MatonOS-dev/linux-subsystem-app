@@ -40,6 +40,7 @@ struct user_desc;
 void proxy_image_map(uintptr_t,uintptr_t,uintptr_t,const char *);
 int proxy_load(const char *, char *const *, char *const *, struct image *);
 int proxy_rewrite_init(const char *,int);
+void proxy_rewrite_cache_init(const char *);
 void proxy_rewrite_relocate(uintptr_t,uintptr_t,size_t);
 void proxy_rewrite_mapping(int, uintptr_t, size_t, uint64_t);
 int proxy_install(int);

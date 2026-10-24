@@ -27,3 +27,28 @@ for enabled in 0 1; do
 done
 grep -q 'rewrite-race-recovered' build/site-rewrite-lazy-1.log
 grep -q 'rewrite registry path=' build/site-rewrite-lazy-1.log
+cache=$(mktemp -d "$PWD/build/rewrite-cache.XXXXXX")
+trap 'rm -rf "$cache"' EXIT
+for run in first second; do
+    XDG_CACHE_HOME="$cache" MATON_PROXY_REWRITE=1 MATON_PROXY_REWRITE_LOG=1 timeout 60 \
+        build/linux-layer-v3 --android-filter "$PWD/build/site-rewrite-lazy" 1 \
+        >"build/rewrite-cache-$run.log" 2>&1
+done
+grep -q rewrite-persistent-hit build/rewrite-cache-second.log
+# Tampering only the function checksum forces a re-decode of every entry.
+python3 - "$cache" <<'PYCRC'
+import pathlib,sys
+for p in pathlib.Path(sys.argv[1]).rglob('*'):
+    if p.is_file():
+        data=bytearray(p.read_bytes());data[128]^=1;p.write_bytes(data)
+PYCRC
+XDG_CACHE_HOME="$cache" MATON_PROXY_REWRITE=1 MATON_PROXY_REWRITE_LOG=1 timeout 60 \
+    build/linux-layer-v3 --android-filter "$PWD/build/site-rewrite-lazy" 1 \
+    >build/rewrite-cache-checksum.log 2>&1
+if grep -q rewrite-persistent-hit build/rewrite-cache-checksum.log; then exit 1; fi
+# A corrupt/truncated entry must be treated as absent, never as a plan.
+find "$cache" -type f -exec truncate -s 7 {} +
+XDG_CACHE_HOME="$cache" MATON_PROXY_REWRITE=1 MATON_PROXY_REWRITE_LOG=1 timeout 60 \
+    build/linux-layer-v3 --android-filter "$PWD/build/site-rewrite-lazy" 1 \
+    >build/rewrite-cache-corrupt.log 2>&1
+if grep -q rewrite-persistent-hit build/rewrite-cache-corrupt.log; then exit 1; fi
