@@ -6,6 +6,9 @@ Shared by all agents (Claude, codex, opencode) working in this repository.
 
 When goals conflict: **Google-certifiable Android > performance > compatibility > simplicity.**
 
+Hand-written x86_64/i386 assembly is welcome on hot paths when it measurably beats the compiler. Keep it under
+`arch/<arch>/`, documented, with a C reference implementation and a test that compares both.
+
 ## The compatibility layer is loud, never hidden
 
 Do not disguise the compat proxy/layer as native Linux. Make it detectable and self-describing: say so in logs,
