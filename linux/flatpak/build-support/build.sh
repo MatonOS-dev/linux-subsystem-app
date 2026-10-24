@@ -63,6 +63,32 @@ chmod +x "$PKG_CONFIG_STATIC"
 export PKG_CONFIG="$PKG_CONFIG_STATIC"
 export PATH="$PREFIX/bin:$PATH"
 export PATH="$SRC/gperf-host-tool/usr/bin:$PATH"
+# Build a pinned musl with the MatonOS syscall entry before compiling any
+# consumers. The compiler wrappers prefer its crt, headers, and libc while
+# retaining Alpine's GCC/libgcc. Without the auxv pointer, this libc falls
+# back to the ordinary syscall instruction, so host tools remain usable.
+MUSL_SRC=$SRC/musl
+MUSL_STAGE=$BUILD/musl-stage
+rm -rf "$MUSL_STAGE"
+mkdir -p "$MUSL_STAGE"
+MUSL_BOOT_CC=$MUSL_PREFIX/bin/x86_64-alpine-linux-musl-gcc
+(cd "$MUSL_SRC" && CC="$MUSL_BOOT_CC" CFLAGS="$CFLAGS" \
+  ./configure --prefix=/usr --syslibdir=/usr/lib --disable-shared)
+make -C "$MUSL_SRC" -j"$JOBS"
+make -C "$MUSL_SRC" install DESTDIR="$MUSL_STAGE"
+cp -a "$MUSL_STAGE/usr/." "$PREFIX/"
+cat > "$BUILD/maton-gcc" <<EOF
+#!/bin/sh
+exec "$MUSL_BOOT_CC" -B"$PREFIX/lib/" -isystem "$PREFIX/include" -L"$PREFIX/lib" "\$@"
+EOF
+cat > "$BUILD/maton-g++" <<EOF
+#!/bin/sh
+exec "$MUSL_PREFIX/bin/x86_64-alpine-linux-musl-g++" -B"$PREFIX/lib/" -isystem "$PREFIX/include" -L"$PREFIX/lib" "\$@"
+EOF
+chmod +x "$BUILD/maton-gcc" "$BUILD/maton-g++"
+CC=$BUILD/maton-gcc
+CXX=$BUILD/maton-g++
+export CC CXX
 cat > "$BUILD/musl.ini" <<EOF
 [binaries]
 c = '$CC'

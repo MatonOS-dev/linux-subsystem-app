@@ -16,6 +16,17 @@ OSTree and bubblewrap CLI objects are relinked through `make-multicall.py`.
 The result is packaged as `libmatonos-flatpak.so`; `tools/build-flatpak-helpers.sh`
 builds the `libmatonos-app-flatpak.so` launcher with the same static musl
 
+The build also compiles the pinned musl 1.2.6 source with the small
+`0002-matonos-musl-syscall-entry.patch` and uses that libc for all four
+multicall tools. The proxy loader publishes `AT_MATONOS_SYSCALL` in the Linux
+payload auxv. Musl uses it for ordinary `__syscall0` through `__syscall6`
+calls, with the ordinary `syscall` instruction retained when the entry is
+absent (including host builds). The proxy gateway sends only the file syscall
+classes handled by its direct VFS dispatcher there; other syscalls retain the
+normal filter path. Musl's x86_64 cancellation-point assembly still executes
+the kernel syscall instruction so its `EINTR`, restart, and cancellation
+redirection rules remain intact. The i386 musl toolchain is not shipped.
+
 Use the repository root `build.sh --build-dependencies` entry point. The Alpine
 root and immutable download cache are shared, while each invocation's build,
 plan, helper, and generated output directories live under

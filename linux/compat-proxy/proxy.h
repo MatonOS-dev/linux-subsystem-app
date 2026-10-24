@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include "arch/arch.h"
 long proxy_raw(long, long, long, long, long, long, long);
+long proxy_musl_syscall_entry(long,long,long,long,long,long,long);
 void proxy_restore(void);
 _Noreturn void proxy_enter(uintptr_t, uintptr_t);
 #ifdef PROXY_RAW_COUNTER

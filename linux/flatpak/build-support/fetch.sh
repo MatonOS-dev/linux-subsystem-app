@@ -65,6 +65,8 @@ while IFS='|' read -r name kind location revision digest; do
   mkdir -p "$dest"
   dpkg-deb -x "$archive" "$dest"
 done < "$HERE/sources.lock"
+patch -s -p1 -d "$CACHE/src/musl" \
+  < "$HERE/patches/0002-matonos-musl-syscall-entry.patch"
 cp "$HERE/gpgme.m4" "$CACHE/src/DullPGP/gpgme.m4"
 mkdir -p "$CACHE/src/meson"
 tar -xf "$CACHE/tar/meson-1.12.1.tar.gz" -C "$CACHE/src/meson" --strip-components=1

@@ -1,5 +1,6 @@
 # name|kind|location|revision-or-version|sha256
 # Static-musl Flatpak inputs; Flatpak is MatonOS-dev/flatpak branch matonos/v26.10.
+musl|tar|https://musl.libc.org/releases/musl-1.2.6.tar.gz|1.2.6|d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a
 glib|git|https://github.com/GNOME/glib.git|6f873bc0e6265995cebd797b969dcd5f548f91f6|-
 glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08f2dcb400|-
 ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-

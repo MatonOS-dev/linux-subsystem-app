@@ -1036,6 +1036,30 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     PROFILE_END(8);
     return result;
 }
+
+/* Entry published to the pinned static musl tools via private auxv tag
+ * AT_MATONOS_SYSCALL. Only classes handled by the direct VFS dispatcher take
+ * that route; everything else keeps the normal raw syscall/filter path. */
+long proxy_musl_syscall_entry(long nr,long a0,long a1,long a2,long a3,long a4,long a5) {
+    proxy_arg_t args[6]={(proxy_arg_t)a0,(proxy_arg_t)a1,(proxy_arg_t)a2,
+                         (proxy_arg_t)a3,(proxy_arg_t)a4,(proxy_arg_t)a5};
+    long id=arch_decode_syscall(nr);
+    switch(id) {
+    case PROXY_SC_openat: case PROXY_SC_close: case PROXY_SC_fstat:
+    case PROXY_SC_newfstatat: case PROXY_SC_statx: case PROXY_SC_readlink:
+    case PROXY_SC_readlinkat: case PROXY_SC_getdents64: case PROXY_SC_lseek:
+        return proxy_direct_dispatch(nr,args);
+    case PROXY_SC_fcntl:
+        if(args[1]==F_GETFD || args[1]==F_SETFD || args[1]==F_GETFL ||
+           args[1]==F_SETFL || args[1]==F_DUPFD || args[1]==F_DUPFD_CLOEXEC)
+            return proxy_direct_dispatch(nr,args);
+        break;
+    default: break;
+    }
+    /* Ask musl's inline backend to issue the original syscall instruction.
+     * A proxy-internal RAW here would bypass the payload's VFS filter path. */
+    return -4096;
+}
 #include "rewrite.h"
 static void rewrite_segv_handler(int sig,siginfo_t *info,void *context){
 #ifdef ARCH_REWRITE_HEADER

@@ -389,6 +389,9 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     uintptr_t execfn=stack_string(&cur,path),platform=stack_string(&cur,ARCH_PLATFORM);
     cur-=16; uintptr_t random=cur;
     if(RAW(PROXY_SC_getrandom,random,16,0,0,0,0)!=16){r=-EIO;goto failed;}
+    int musl_syscall_fast=1;
+    for(size_t i=0;env && env[i];i++)
+        if(p_equal(env[i],"MATON_PROXY_REWRITE=0")){musl_syscall_fast=0;break;}
     arch_elf_auxv aux[]={
         {AT_PHDR,{main.phdr}},{AT_PHENT,{sizeof(arch_elf_phdr)}},{AT_PHNUM,{main.phnum}},
         {AT_PAGESZ,{PAGE}},{AT_BASE,{interp.base}},{AT_ENTRY,{main.entry}},
@@ -396,7 +399,11 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         {AT_GID,{RAW(PROXY_SC_getgid,0,0,0,0,0,0)}},{AT_EGID,{RAW(PROXY_SC_getegid,0,0,0,0,0,0)}},
         {AT_SECURE,{0}},{AT_RANDOM,{random}},{AT_EXECFN,{execfn}},{AT_PLATFORM,{platform}},
         {AT_HWCAP,{proxy_aux(AT_HWCAP)}},{AT_HWCAP2,{proxy_aux(AT_HWCAP2)}},
-        {ARCH_AUX_SYSINFO,{PROXY_SYSINFO_AUX(proxy_aux(ARCH_AUX_SYSINFO))}},{AT_SYSINFO_EHDR,{proxy_aux(AT_SYSINFO_EHDR)}},{AT_CLKTCK,{100}},{AT_NULL,{0}}};
+        {ARCH_AUX_SYSINFO,{PROXY_SYSINFO_AUX(proxy_aux(ARCH_AUX_SYSINFO))}},{AT_SYSINFO_EHDR,{proxy_aux(AT_SYSINFO_EHDR)}},
+        /* Private auxv contract for the pinned static musl build. The tools
+         * keep using ordinary syscalls when launched outside the proxy. */
+        {0x6fff0001,{musl_syscall_fast?(uintptr_t)proxy_musl_syscall_entry:0}},
+        {AT_CLKTCK,{100}},{AT_NULL,{0}}};
     size_t words=1+ac+1+ec+1+sizeof(aux)/(sizeof(uintptr_t));
     uintptr_t sp=(cur-words*sizeof(uintptr_t))&~15UL,*v=(uintptr_t *)sp;
     *v++=ac; for(unsigned i=0;i<ac;i++) *v++=av[i]; *v++=0;

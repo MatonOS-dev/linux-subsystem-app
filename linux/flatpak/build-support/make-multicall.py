@@ -74,4 +74,6 @@ with tempfile.TemporaryDirectory(prefix="matonos-multicall-") as td:
     dispatcher = os.path.join(td, "multicall.o")
     run([cc, "-O2", "-march=x86-64-v2", "-fPIC", "-c", source, "-o", dispatcher])
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
-    run([link[0], *args, dispatcher, "-o", output], cwd=flatpak)
+    # The Meson command records Alpine's stock compiler. Use the explicit
+    # compiler argument so the final multicall links the patched MatonOS musl.
+    run([cc, *args, dispatcher, "-o", output], cwd=flatpak)
