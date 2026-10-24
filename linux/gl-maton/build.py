@@ -97,13 +97,16 @@ def build_i386(out, vulkan, egl, glx, branch):
     out = pathlib.Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     files = out / "tree"
-    (files / "lib/i386-linux-gnu").mkdir(parents=True)
+    (files / "lib").mkdir(parents=True)
     (files / "glvnd/egl_vendor.d").mkdir(parents=True)
     (files / "vulkan/icd.d").mkdir(parents=True)
-    shutil.copy2(egl, files / "lib/i386-linux-gnu/libEGL_maton.so")
-    shutil.copy2(glx, files / "lib/i386-linux-gnu/libGLX_maton.so.0")
-    (files / "lib/i386-linux-gnu/libGLX_maton.so").write_bytes(
-        (files / "lib/i386-linux-gnu/libGLX_maton.so.0").read_bytes())
+    # GL32 is mounted at the i386-specific .../GL/maton extension directory,
+    # so its library directory is just lib/ (the multiarch path is already
+    # supplied by the mount point).
+    shutil.copy2(egl, files / "lib/libEGL_maton.so")
+    shutil.copy2(glx, files / "lib/libGLX_maton.so.0")
+    (files / "lib/libGLX_maton.so").write_bytes(
+        (files / "lib/libGLX_maton.so.0").read_bytes())
     shutil.copy2(vulkan, files / "lib/libmaton_vulkan_i386.so")
     (files / "vulkan/icd.d/maton_icd_i386.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
@@ -111,7 +114,7 @@ def build_i386(out, vulkan, egl, glx, branch):
         '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
     (files / "glvnd/egl_vendor.d/10_maton_i386.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
-        '    "library_path": "i386-linux-gnu/libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
+        '    "library_path": "libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
     (out / "metadata").write_text(
         f"[Runtime]\nname=org.freedesktop.Platform.GL32.maton\nruntime=org.freedesktop.Platform/x86_64/{branch}"
         f"\nsdk=org.freedesktop.Sdk/x86_64/{branch}\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/{branch}\n",

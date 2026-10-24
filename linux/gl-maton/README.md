@@ -1,4 +1,4 @@
-# Maton Flatpak GL extension
+# Maton Flatpak GL extensions
 
 The subsystem APK carries the x86_64 forwarders as the Flatpak extension
 `org.freedesktop.Platform.GL.maton`. The selected `26.08` branch matches the
@@ -9,6 +9,12 @@ assigned runtime. Its runtime metadata advertises
 launch; a mismatch fails with a clear error rather than silently selecting an
 incompatible extension.
 
+The APK also carries the i386 forwarders as a separate
+`org.freedesktop.Platform.GL32.maton` extension. Its extension point mounts at
+`/usr/lib/i386-linux-gnu/GL/maton`, so its payload uses the same relative
+`lib/` layout as the x86_64 extension; it must not add another
+`i386-linux-gnu/` level below that mount.
+
 GLVND loads `libGLX_maton.so.0` by the `__GLX_VENDOR_LIBRARY_NAME=maton`
 selection when the Maton GL extension is enabled. It renders through the EGL
 forwarder into a pbuffer and copies frames to the X window with XPutImage. The
@@ -17,6 +23,7 @@ Platform metadata lists `vulkan/icd.d;glvnd/egl_vendor.d;...` relative to the
 extension root; flatpak merges only those into `GL/vulkan/icd.d` etc.):
 
 ```text
+# x86_64 forwarders
 lib/libEGL_maton.so
 lib/libGLX_maton.so.0
 # libGLX_maton.so is a regular duplicate for OSTree compatibility
@@ -24,18 +31,34 @@ lib/libGLX_maton.so
 lib/libmaton_vulkan.so
 vulkan/icd.d/maton_icd.json
 glvnd/egl_vendor.d/10_maton.json
+
+# i386 ICD in the standard GL extension
+lib/libmaton_vulkan_i386.so
+vulkan/icd.d/maton_icd_i386.json
+glvnd/egl_vendor.d/10_maton_i386.json
+
+# nested i386 EGL/GLX for multiarch x86_64 runtimes
 lib/i386-linux-gnu/libEGL_maton.so
 lib/i386-linux-gnu/libGLX_maton.so.0
-# regular duplicate for GLVND basename lookup
 lib/i386-linux-gnu/libGLX_maton.so
+```
+
+The separate GL32 extension contains:
+
+```text
+lib/libEGL_maton.so
+lib/libGLX_maton.so.0
+lib/libGLX_maton.so
 lib/libmaton_vulkan_i386.so
 vulkan/icd.d/maton_icd_i386.json
 glvnd/egl_vendor.d/10_maton_i386.json
 ```
 
-The i386 EGL manifest selects the i386 DSO in the runtime's multiarch
-directory, which avoids replacing the x86_64 vendor names. Both architectures'
-forwarders remain freestanding and have no `DT_NEEDED` entries. Build task
+The GL32 EGL manifest selects `libEGL_maton.so` from the extension's `lib/`
+directory, which is mounted at `/usr/lib/i386-linux-gnu/GL/maton/lib`. The
+standard GL extension's i386 manifest selects its nested i386 DSO. Both
+architectures' forwarders remain freestanding and have no `DT_NEEDED` entries.
+Build task
 `buildGlMaton` commits the extension files to a local OSTree repo, then uses
 the existing `linux/packs/pack.py` format. `packageGlMaton` places the ref
 metadata, index, OSTree objects and immutable content packs in the signed

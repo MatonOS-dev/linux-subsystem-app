@@ -66,11 +66,12 @@ assert (gl32 / "ref.txt").read_text().splitlines()[0] == \
 gl32_rows = pack.read_index(gl32 / "objects.index")
 gl32_paths = {row["path"] for row in gl32_rows}
 assert {
-    "/lib/i386-linux-gnu/libEGL_maton.so",
-    "/lib/i386-linux-gnu/libGLX_maton.so.0",
+    "/lib/libEGL_maton.so",
+    "/lib/libGLX_maton.so.0",
+    "/lib/libGLX_maton.so",
     "/lib/libmaton_vulkan_i386.so",
     "/glvnd/egl_vendor.d/10_maton_i386.json",
     "/vulkan/icd.d/maton_icd_i386.json",
 } <= gl32_paths
-assert "/lib/libEGL_maton.so" not in gl32_paths
+assert "/lib/i386-linux-gnu/libEGL_maton.so" not in gl32_paths
 assert "/glvnd/egl_vendor.d/10_maton.json" not in gl32_paths
