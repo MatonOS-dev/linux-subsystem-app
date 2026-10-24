@@ -337,13 +337,15 @@ exhausted, the mapping overlaps an unsupported operation, or any proof fails,
 leave the code trapped. Noncongruent ELF segments and anonymous mappings are
 not rewrite candidates.
 
-The scanner reads both `.dynsym` and `.symtab`, accepts `STT_FUNC` ranges of
-1–4096 bytes, and linearly decodes the **entire** function before modifying any
-site. Differently bounded overlapping functions, unknown instructions, stack
-references/stack mutation, indirect control flow and incomplete symbols reject
-the function. The first decoder intentionally proves a strict subset of leaf
-wrappers; it does not yet decode FDE-only functions or perform stack/control-flow
-data-flow analysis. No raw byte-match scanner authorizes a patch.
+The scanner reads both `.dynsym` and `.symtab`, accepts complete `STT_FUNC`
+ranges, and linearly decodes the **entire** function before modifying any site.
+It also accepts function extents explicitly supplied by `.eh_frame` FDEs when
+no ELF function symbol overlaps the range. Differently bounded overlapping
+symbols, unknown instructions, indirect control flow and incomplete extents
+reject the function. Stack depth is propagated through direct branches; a site
+is eligible when every incoming path has allocated stack, or when the incoming
+path and every continuation to a return are proven not to use stack memory.
+FDE ranges are never inferred by scanning for syscall byte patterns.
 
 Every in-function direct branch must land on a decoded instruction boundary.
 No branch may land inside a replacement window except at its first byte.
@@ -361,11 +363,10 @@ thread parking, JIT rewriting or modification of already-running code.
 
 Scan plans are cached by device/inode, size, nanosecond mtime/ctime, packed
 carrier slice, file offset and mapping length. Cached windows retain the
-original bytes and are revalidated before publication. The process cache has
-64 mapping plans and 512 windows/plan; saturation falls back to rescanning or
-leaves extra sites trapped. Cache contention never waits in a signal frame;
-that mapping remains trapped. No persistent text-address registry is required
-for published pages.
+original bytes and are revalidated before publication. Mapping plans and their
+site arrays grow dynamically with overflow checks. Allocation failure and
+cache contention leave affected code trapped. No persistent text-address
+registry is required for published pages.
 
 ### One entry table, no per-site stubs
 
@@ -393,10 +394,11 @@ proxy's common ID, and shares path/descriptor dispatch and pack translation
 with SIGSYS. No synthetic ucontext is used. Internal raw syscalls still pass
 all installed filters through the existing gateway.
 
-**Red zone:** the replacement call writes below rsp. This initial proof rejects
-any function mentioning rsp or modifying the stack, rather than guessing
-whether a stack access is safe. This deliberately leaves real stack-framed
-wrappers trapped; supporting them needs control-flow-aware stack proofs.
+**Red zone:** the replacement call writes below rsp. The proof tracks `push`,
+`pop`, and immediate `sub/add rsp` adjustments through the function's direct
+control flow. An unallocated-stack site is accepted only when its incoming
+paths and all continuations to return avoid stack access. Unknown stack changes,
+indirect control flow and inconsistent stack depth still reject the function.
 
 The direct path has per-thread, reusable allocation scopes, including separate
 scopes for signal re-entry. A SIGSYS handler pauses interrupted scopes so its
@@ -414,9 +416,9 @@ SETFD, GETFL, SETFL, DUPFD and DUPFD_CLOEXEC dispatch directly; locking and all
 other commands execute a deliberately trapped syscall from the resident slow
 entry. Descriptor/pack tracking is shared with the ordinary handler.
 
-Everything unproven stays trapped: stack-framed/red-zone functions, unsupported
-decoder opcodes, indirect control flow, absent/ambiguous symbols, FDE-only
-ranges, secondary encodings (including musl cancellation), restartable syscall
+Everything unproven stays trapped: stack-framed/red-zone functions without a
+valid proof, unsupported decoder opcodes, indirect control flow, ambiguous
+extents, secondary encodings (including musl cancellation), restartable syscall
 classes, page boundaries, shared, execute-only or writable executable mappings, anonymous/JIT
 pages, unsupported architectures and failed W^X operations. This is a
 compatibility/performance layer inside the Android app sandbox, not an
@@ -426,8 +428,7 @@ additional security boundary.
 
 `tests/site-coverage.c` reports actual post-load bytes, rather than estimating
 coverage from syscall encodings. The host libc coverage table is recorded with
-the measurement results below. In particular, host openat, close and fcntl
-contain stack operations and remain trapped. The benchmark uses noinline,
+the measurement results below. The benchmark uses noinline,
 fixed-number assembly wrappers that pass exactly the same scanner; native,
 trap and rewrite run identical wrapper code. Generic libc `syscall()` uses a
 dynamic syscall number and would not measure the primary encoding at all.
@@ -444,6 +445,33 @@ the existing host suite; Android runtime behavior is not claimed here.
 The existing `--count` trap/raw summaries retain their SIGSYS meaning; they do
 not yet attribute direct-dispatch calls. Use byte coverage and counts-off
 benchmarks for this phase.
+
+### Phase 1b coverage results (2026-10-24)
+
+The x86_64 decoder now handles the instruction subset used by both host glibc
+2.39 and the Freedesktop 26.08 runtime libc, including `cmov` in `getdents64`.
+Direct conditional/unconditional branches are checked against instruction
+boundaries and stack-depth joins. FDE-only `.eh_frame` ranges are considered
+only when no `STT_FUNC` range overlaps them. The coverage harness can stop after
+the table with `SITE_COVERAGE_ONLY=1`, which permits testing a runtime root
+without unrelated host libraries.
+
+| Wrapper | Host glibc patched / trapped | Freedesktop 26.08 libc patched / trapped |
+|---|---:|---:|
+| openat | 2 / 0 | 1 / 0 |
+| close | 2 / 0 | 1 / 0 |
+| fstatat | 1 / 0 | 1 / 0 |
+| __fxstatat | 1 / 0 | 1 / 0 |
+| statx | 1 / 0 | 1 / 0 |
+| fstat | 1 / 0 | 1 / 0 |
+| readlink | 1 / 0 | 1 / 0 |
+| readlinkat | 1 / 0 | 1 / 0 |
+| getdents64 | 1 / 0 | 1 / 0 |
+| lseek | 1 / 0 | 1 / 0 |
+| fcntl | 2 / 0 | 1 / 0 |
+
+Host output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-host-step2.log`.
+Runtime output: `/mnt/data/aosp/out/pc-logs/agents/site-coverage-freedesktop-step2.log`.
 
 ### Next phases
 
