@@ -20,6 +20,23 @@ struct arena_block {struct arena_block *next;size_t size,used;};
 struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;uint64_t raw_by_nr[PROXY_SC_count],raw_sum_by_nr[PROXY_SC_count];struct arena_block *blocks;};
 static struct trap_arena *trap_arenas;
 static unsigned long fd_names_owner;
+#ifdef PROXY_PROFILE
+struct profile_site { uintptr_t site; long nr; uint64_t calls,cycles; };
+static struct profile_site profile_sites[1024];
+static volatile uint64_t profile_sections[16];
+static volatile uint64_t profile_section_calls[16];
+uint64_t proxy_profile_tsc(void){unsigned lo,hi;__asm__ volatile("lfence; rdtsc":"=a"(lo),"=d"(hi)::"memory");return ((uint64_t)hi<<32)|lo;}
+void proxy_profile_raw_site(long nr,uintptr_t site,uint64_t cycles){if(!cycles){
+#ifdef PROXY_RAW_COUNTER
+proxy_raw_count_one(nr);
+#endif
+}size_t i=((site>>4)^(site>>13))&1023;for(size_t n=0;n<1024;n++,i=(i+1)&1023){struct profile_site *p=&profile_sites[i];if(!p->site){p->site=site;p->nr=nr;}if(p->site==site){if(cycles)__atomic_fetch_add(&p->cycles,cycles,__ATOMIC_RELAXED);else __atomic_fetch_add(&p->calls,1,__ATOMIC_RELAXED);return;}}}
+void proxy_profile_section(unsigned section,uint64_t cycles){if(section<16){__atomic_fetch_add(&profile_sections[section],cycles,__ATOMIC_RELAXED);__atomic_fetch_add(&profile_section_calls[section],1,__ATOMIC_RELAXED);}}
+static size_t profile_num(char *b,size_t n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[n++]=d[--k];return n;}
+void vfs_profile_dump(void){char b[128];for(size_t i=0;i<1024;i++){struct profile_site *p=&profile_sites[i];if(!p->site)continue;size_t n=0;b[n++]='S';b[n++]='I';b[n++]='T';b[n++]='E';b[n++]=' ';n=profile_num(b,n,(uint64_t)p->nr);b[n++]=' ';n=profile_num(b,n,p->site);b[n++]=' ';n=profile_num(b,n,p->calls);b[n++]=' ';n=profile_num(b,n,p->cycles);b[n++]='\n';RAW(PROXY_SC_write,2,b,n,0,0,0);}for(unsigned i=0;i<16;i++)if(profile_section_calls[i]){size_t n=0;b[n++]='S';b[n++]='E';b[n++]='C';b[n++]=' ';n=profile_num(b,n,i);b[n++]=' ';n=profile_num(b,n,profile_section_calls[i]);b[n++]=' ';n=profile_num(b,n,profile_sections[i]);b[n++]='\n';RAW(PROXY_SC_write,2,b,n,0,0,0);}}
+#else
+void vfs_profile_dump(void){}
+#endif
 volatile int proxy_raw_counter_enabled;
 static struct trap_arena *arena_for_stack(uintptr_t sp){
     for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)
@@ -327,10 +344,11 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     vfs_free(global);return answer;
 }
 int vfs_openat2_path_fd(int fd,const char *path,int follow,int *outfd){
+    PROFILE_BEGIN();
     if(!outfd)return -EINVAL;
     *outfd=-1;char *marker=resolve_openat2_fast(fd,path,follow,NULL,outfd);
-    if(!marker)return -ENOSYS;
-    vfs_free(marker);return 0;
+    if(!marker){PROFILE_END(5);return -ENOSYS;}
+    vfs_free(marker);PROFILE_END(5);return 0;
 }
 char *vfs_reverse(const char *path){
     struct mount *best=NULL;size_t n=0;
@@ -377,16 +395,19 @@ static struct fd_name *fd_names;
  * block). Block signals during the short critical section so an app handler
  * cannot reenter it. Fork children reset the copied lock before payload runs. */
 static proxy_sigmask_t fd_names_lock(void){
+    PROFILE_BEGIN();
     proxy_sigmask_t all=~UINT64_C(0),mask=0;
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
     for(;;){unsigned long owner=__atomic_load_n(&fd_names_owner,__ATOMIC_RELAXED);
-        if(!owner){unsigned long unlocked=0;if(__atomic_compare_exchange_n(&fd_names_owner,&unlocked,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return mask;}
+        if(!owner){unsigned long unlocked=0;if(__atomic_compare_exchange_n(&fd_names_owner,&unlocked,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)){PROFILE_END(1);return mask;}}
         __asm__ volatile("pause");
     }
 }
 static void fd_names_unlock(proxy_sigmask_t mask){
+    PROFILE_BEGIN();
     __atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+    PROFILE_END(2);
 }
 static void fd_name_close(int fd){
     proxy_sigmask_t mask=fd_names_lock();
@@ -397,13 +418,14 @@ static void fd_name_close(int fd){
 void vfs_fd_close(int fd){pack_close(fd);fd_name_close(fd);}
 long vfs_fd_dup(int from,int to){if(from==to)return 0;long e=pack_dup(from,to);if(e)return e;char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}return 0;}
 char *vfs_fd_name(int fd){
+    PROFILE_BEGIN();
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
     for(struct fd_name *p=fd_names;p;p=p->next)if(p->fd==fd){
         if(!root)name=dupstr(p->path);
         else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
         break;
     }
-    fd_names_unlock(mask);return name;
+    fd_names_unlock(mask);PROFILE_END(3);return name;
 }
 static int self_proc(const char *path){
     if(prefix(path,"/proc/self") || prefix(path,"/proc/thread-self"))return 1;
@@ -611,6 +633,7 @@ static char *global_target(const char *target,long *error){
     for(size_t i=0;p[i];){while(p[i]=='/')i++;size_t start=i;while(p[i]&&p[i]!='/')i++;size_t len=i-start;if(!len)break;if(len==1&&p[start]=='.')continue;if(len==2&&p[start]=='.'&&p[start+1]=='.'){while(n>1&&out[n-1]!='/')n--;if(n>1)n--;out[n]=0;continue;}if(n>1)out[n++]='/';p_copy(out+n,p+start,len);n+=len;out[n]=0;}vfs_free(p);return out;
 }
 void vfs_fd_record(int fd,int dirfd,const char *path){
+    PROFILE_BEGIN();
     long e=0;char *global=global_target(path,&e);
     if(path[0]!='/'){
         char *base=basepath(dirfd,&e);vfs_free(global);
@@ -622,7 +645,7 @@ void vfs_fd_record(int fd,int dirfd,const char *path){
     proxy_sigmask_t mask=fd_names_lock();
     struct fd_name *p=fd_names;while(p && p->fd!=fd)p=p->next;
     if(!p){p=vfs_palloc(sizeof(*p));if(!p){fd_names_unlock(mask);vfs_free(logical);return;}p->fd=fd;p->path=NULL;p->next=fd_names;fd_names=p;}
-    vfs_free(p->path);p->path=logical;fd_names_unlock(mask);
+    vfs_free(p->path);p->path=logical;fd_names_unlock(mask);PROFILE_END(4);
 }
 char *vfs_temp_create(long *error){
     extern const char *proxy_tmpdir;

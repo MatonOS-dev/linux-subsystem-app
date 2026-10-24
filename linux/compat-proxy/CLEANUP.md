@@ -123,3 +123,50 @@ call-site table: the process includes setup, timer and arena activity. In
 particular, syscall IDs 213 (`openat`), 206 (`nanosleep`), 212
 (`open_tree_attr`), 267 (`rt_sigpending`) and 27 (`clone3`) occur in the
 instrumented run; only a subset belongs to the measured pathname handler.
+
+## Continuation attempt 2: profiler-first attribution (2026-10-24)
+
+`perf record -F 999 -g --call-graph dwarf ...` could not open the CPU cycles
+event: this host has `perf_event_paranoid=4` and no `CAP_PERFMON`. I added an
+opt-in `PROXY_PROFILE=1` build mode instead. It uses `lfence; rdtsc` around
+selected handler/VFS sections and records `(internal syscall ID, return PC)`
+raw-call counts and cycles. `-g -fno-inline` is used only in this diagnostic
+build so `addr2line` resolves call sites. Normal builds have no profiling
+overhead. The diagnostic `--count` path intentionally skips its own two
+`clock_gettime` calls per trap; otherwise those calls dominate the profile.
+
+The comparison used one-op and 20,000-op fresh payload processes against the
+same mapped regular file; subtracting the one-op process setup yields the
+following raw calls per measured operation. “Open” means the benchmark's
+`openat` plus `close`, so it spans two trapped payload syscalls. Counts are
+profile-site deltas, not inferred from a syscall-type aggregate.
+
+| Operation | Internal syscall | Raw call site | Calls / operation | Effect |
+|---|---|---|---:|---|
+| open + close | `openat` | `links.c:57`, `tree()` → `marked_device()` ancestor marker probes | 20 | Repeated `.v3-store-root` lookups on both link-store checks. |
+| open + close | `openat` | `proxy.c:1117`, `android_library_mapping_state()` | 6 | Handler setup / mapping checks. |
+| open + close | `mmap` | `vfs.c:646-647`, `vfs_fd_record()` / `pdupstr()` | 2 | Persistent path and record allocation. |
+| open + close | `munmap` | `vfs.c:413-417`, `fd_name_close()` | 2 | Frees old path and record. |
+| open + close | `rt_sigprocmask` | `vfs_fd_record()` and `fd_name_close()` | 3 | Signal masking around fd-table updates. |
+| open + close | `rt_sigprocmask` | handler and `dns_close()` | 3 | Signal routing / DNS lock bookkeeping. |
+| open + close | `faccessat`, `newfstatat` | `proxy.c:791`, `path_call()`; `links.c:71`, `links_target()` | 2 | Fixed path and link-store checks. |
+| open + close | `gettid`, `mmap` | handler / signal restore sites | 5 | Handler routing and signal-stack restore. |
+| open + close | `getpid` | `dns_lock()` | 1 | DNS lock owner check. |
+| **open + close total** |  |  | **44** | **22 raw calls per trapped syscall** (two payload traps). |
+| stat | `openat` | `links.c:57`, `tree()` → marker probes | 10 | One link-store tree walk for this stat trap. |
+| stat | `openat` | `proxy.c:1117`, `android_library_mapping_state()` | 3 | Handler setup / mapping checks. |
+| stat | `openat` | `vfs.c:349`, `vfs_openat2_path_fd()` | 3 | Fast resolver descriptor setup. |
+| stat | `newfstatat` | `proxy.c:1471`, handler result path | 2 | Metadata operations. |
+| stat | `readlinkat` | `links.c:302`, `links_payload_fd_stat()` | 1 | Link-count repair lookup. |
+| stat | `gettid`, `mmap` | handler / signal restore sites | 2 | Handler routing and signal-stack restore. |
+| **stat total** |  |  | **21** | One trapped payload syscall. |
+
+The assembly `proxy_restore` return PCs account for the reported `mmap`
+bucket there; this is the signal gateway / restorer path rather than a pathname
+allocation site. Section timers (TSC cycles, profile build; nested sections
+overlap) recorded about 34k cycles in `vfs_fd_record()` per open, 2.3k cycles
+per fd-name lock/unlock section, and handler totals of about 204k cycles/trap
+for open and 186k cycles/trap for stat. Measured profiled latency was 115.3
+µs/open and 55.8 µs/stat; compare with the uninstrumented baseline above.
+These measurements make ancestor marker lookup and fd-record allocation the
+first optimization targets.

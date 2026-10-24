@@ -607,7 +607,16 @@ int proxy_trace;
 static volatile uint64_t proxy_counts[PROXY_SC_count];
 static volatile uint64_t proxy_syscall_ns[PROXY_SC_count];
 static volatile uint64_t proxy_handler_ns,proxy_vfs_ns;
-uint64_t proxy_count_now(void){if(proxy_count_fd<0)return 0;struct {long sec,nsec;} ts={0};if(RAW(PROXY_SC_clock_gettime,1,&ts,0,0,0,0)<0)return 0;return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;}
+uint64_t proxy_count_now(void){
+#ifdef PROXY_PROFILE
+    return 0; /* Keep --count's two clock syscalls/trap out of TSC profiling. */
+#else
+    if(proxy_count_fd<0)return 0;
+    struct {long sec,nsec;} ts={0};
+    if(RAW(PROXY_SC_clock_gettime,1,&ts,0,0,0,0)<0)return 0;
+    return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;
+#endif
+}
 void proxy_count_init(const char *path){if(!path || !*path)return;long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0);if(fd>=0){proxy_count_fd=(int)fd;proxy_raw_count_enable();}}
 void proxy_count_resolution(uint64_t ns){__atomic_fetch_add(&proxy_vfs_ns,ns,__ATOMIC_RELAXED);}
 static void count_u64(char *b,size_t *n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[(*n)++]=d[--k];}
@@ -624,6 +633,7 @@ void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*64+
     for(int i=0;i<PROXY_SC_count;i++)if(raw_syscalls[i]){b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='S';b[n++]='C';b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,raw_syscalls[i]);b[n++]='\n';}
     for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';}}
     RAW(PROXY_SC_write,proxy_count_fd,b,n,0,0,0);
+    vfs_profile_dump();
 }
 static void emit(const char *s) { RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p_len(s),0,0,0); }
 static void trace_word(const char *label,uint64_t value) {
@@ -1163,6 +1173,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         return;
     }
     vfs_trap_resume();
+    PROFILE_BEGIN();
     thread=thread_state();
     if(thread)vfs_trap_begin(thread->signal_stack,thread->signal_stack_size);
     uint64_t raw_calls_at_entry=proxy_raw_count_now();
@@ -1496,6 +1507,7 @@ clean_mask:
         emit(" munmap=");crash_hex(proxy_raw_count_for(PROXY_SC_munmap));emit("\n");
     }
     if(count_started){uint64_t ended=proxy_count_now();if(ended>=count_started){uint64_t elapsed=ended-count_started;__atomic_fetch_add(&proxy_handler_ns,elapsed,__ATOMIC_RELAXED);if(count_id>=0 && count_id<PROXY_SC_count)__atomic_fetch_add(&proxy_syscall_ns[count_id],elapsed,__ATOMIC_RELAXED);}}
+    PROFILE_END(8);
     /* sigreturn must never restore a blocked SIGSYS, including pthread masks. */
     (*arch_signal_mask(uc))&=~SIGSYS_BIT;
     RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);

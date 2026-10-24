@@ -12,6 +12,7 @@ void vfs_raw_count_summary(uint64_t *,uint64_t *);
 void vfs_raw_category_summary(uint64_t[6]);
 void vfs_raw_syscall_summary(uint64_t[PROXY_SC_count]);
 void vfs_raw_count_fork_child(void);
+void vfs_profile_dump(void);
 void vfs_resolve_cache_invalidate(void);
 char *vfs_resolve(int, const char *, int, long *);
 int vfs_openat2_path_fd(int,const char *,int,int *);

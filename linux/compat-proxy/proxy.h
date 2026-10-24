@@ -20,6 +20,18 @@ static inline uint64_t proxy_raw_count_for(long nr) { (void)nr;return 0; }
 static inline void proxy_raw_count_enable(void) {}
 #define RAW(n,a,b,c,d,e,f) arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f))
 #endif
+#ifdef PROXY_PROFILE
+uint64_t proxy_profile_tsc(void);
+void proxy_profile_raw_site(long,uintptr_t,uint64_t);
+void proxy_profile_section(unsigned,uint64_t);
+#define PROFILE_BEGIN() uint64_t _profile_started=proxy_profile_tsc()
+#define PROFILE_END(section) proxy_profile_section((section),proxy_profile_tsc()-_profile_started)
+#undef RAW
+#define RAW(n,a,b,c,d,e,f) ({ uintptr_t _profile_site=(uintptr_t)__builtin_return_address(0); uint64_t _profile_t=proxy_profile_tsc(); proxy_profile_raw_site((long)(n),_profile_site,0); long _profile_result=arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f)); proxy_profile_raw_site((long)(n),_profile_site,proxy_profile_tsc()-_profile_t); _profile_result; })
+#else
+#define PROFILE_BEGIN() ((void)0)
+#define PROFILE_END(section) ((void)(section))
+#endif
 #include "arch/stat.h"
 #include "arch/statx.h"
 #include "arch/socket.h"
