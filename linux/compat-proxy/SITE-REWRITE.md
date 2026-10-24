@@ -1,9 +1,10 @@
 # Syscall-site rewrite proposal and proxy measurements
 
-Version 1 is designed for load-time rewriting, disabled unless
-`MATON_PROXY_REWRITE=1` is set. The implementation is not present yet: this
-branch currently records the trapped no-op baseline and retains the existing
-SIGSYS path. Anonymous and JIT mappings remain trapped in the planned v1.
+Version 1 is load-time rewriting, disabled unless
+`MATON_PROXY_REWRITE=1` is set. It scans eligible executable functions before
+their code runs and leaves every unproven site on the SIGSYS path. Anonymous
+and JIT mappings remain trapped. The current implementation status and
+measurements are recorded below.
 
 ### Trapped no-op baseline (2026-10-24)
 
@@ -16,25 +17,10 @@ timed output. Host results, median of five fresh-process runs:
 | Mode | Median | Range |
 |---|---:|---:|
 | Native unknown syscall | 314 ns/op | 280–328 ns/op |
-| Trapped no-op (`-ENOSYS`) | 4.82 µs/op | 4.77–5.35 µs/op |
+| Trapped no-op (`-ENOSYS`) | 4.86 µs/op | 4.77–5.35 µs/op |
 
 This is a host microbenchmark, not an Android device result. The proxied
 unknown syscall is intentionally unsupported and is not a rewrite candidate.
-
-### Metadata I/O baseline (2026-10-24)
-
-`tests/io-bench.sh` ran once on the same host (10,000 metadata operations):
-
-| Operation | Native | Trapped proxy |
-|---|---:|---:|
-| openat + close | 2.63 µs/op | 14.02 µs/op |
-| newfstatat | 1.42 µs/op | 7.86 µs/op |
-| statx | 1.36 µs/op | 7.93 µs/op |
-
-These are single-run baselines; the script's sequential 1 GiB read and mmap
-checks also passed, but do not provide a repeated timing distribution. No
-rewrite timings are available because the rewrite path has not been
-implemented.
 
 ## Host measurements
 
@@ -400,15 +386,14 @@ construction (only relevant if bionic payload code is ever trapped).
 
 ### Other architectures
 
-One mechanism on every supported architecture: the core scans eligible
-function ranges, records rewritten sites, dispatches emulation and preserves
-the trap fallback. A backend answers "is this a patchable site", "write the
-jump", "save/restore registers" and "flush the icache". The planned x86_64
-backend writes a 7-byte window (`mov $stub,%eax; jmp *%rax`); the planned
-arm64 backend writes one `b stub`. (`adrp x16,stub; br x16` was considered
-for arm64, but it needs a two-instruction window, page-aligned stubs or a
-third `add`, an `x16` liveness check and non-atomic patching; `b` avoids all
-of that.)
+One mechanism on every architecture: the core (first-trap discovery, stub
+record, emulation entry, thread parking, signal/restart handling, SUD
+coexistence, trap fallback) is shared; a backend only answers "is this a
+patchable site", "write the jump", "save/restore registers" and "flush the
+icache". x86_64 writes a 7-byte window (`mov $stub,%eax; jmp *%rax`); arm64
+writes one `b stub`. (`adrp x16,stub; br x16` was considered for arm64 to mirror
+x86_64, but it needs a two-instruction window, page-aligned stubs or a third
+`add`, an `x16` liveness check and non-atomic patching; `b` avoids all of that.)
 
 - **arm64 (decided):** plain branch replacement only. `svc #0` (4 B) becomes
   `b stub` (4 B, ±128 MiB) one for one; no instruction relocation, no other
@@ -417,9 +402,9 @@ of that.)
   Concurrent modification of `SVC`→`B` is architecturally permitted; publish
   with `dc cvau`/`ic ivau`/`isb`. BTI does not apply to direct branches. Sites
   whose stub cannot be placed within ±128 MiB stay on the trap.
-The supported architecture set is x86_64, i386 and arm64. Version 1 targets
+The supported architecture set is x86_64, i386 and arm64. Version 1 implements
 only the x86_64 primary encoding. i386 and arm64 remain on the SIGSYS path for
-later phases.
+later phases; there is no riscv64 backend slot.
 
 ### Later-version concurrency and process semantics
 
