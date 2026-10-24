@@ -2,6 +2,10 @@
 
 Shared by all agents (Claude, codex, opencode) working in this repository.
 
+## Priorities (project owner)
+
+When goals conflict: **Google-certifiable Android > performance > compatibility > simplicity.**
+
 ## Do not add xdg-desktop-portal
 
 `xdg-desktop-portal` (the `org.freedesktop.portal.*` frontend, and `xdg-permission-store` with it) is explicitly
