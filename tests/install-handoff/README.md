@@ -9,6 +9,13 @@ APK manifest through `StubGenerator`, and parses it with AOSP `aapt2 dump
 badging`. Only Android Keystore signing is replaced with a byte-copy backend;
 no test backend is active by default.
 
+It also builds a fake Flatpak `runtime/.../<commit>-en/` deployment with a
+deploy record listing `/en`, passes it through the same completed-node row
+builder used by `InstallTransaction`, and verifies that the subpath reaches
+`InstallHandoff` and resolves to that exact deployment directory. This guards
+against dropping locale subsets between pull verification, plan rows, and pack
+staging.
+
 Package-name validation mirrors
 `/mnt/data/aosp/frameworks/base/core/java/android/content/pm/parsing/FrameworkParsingPackageUtils.java`,
 `validateName(name, true, true)` (lines 72–103 in this checkout). In

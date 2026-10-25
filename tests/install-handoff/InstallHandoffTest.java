@@ -5,15 +5,20 @@ import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import org.matonos.linuxhost.stubgen.PlanExecutor;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.matonos.linux.stub.DeployManifest;
 import org.matonos.linux.stub.InstallHandoff;
+import org.matonos.linux.stub.DeployRecord;
+import org.matonos.linuxhost.stubgen.DependencyPlan;
+import java.nio.charset.StandardCharsets;
 
 /** Host regression for the untyped transaction-row to package-manifest boundary. */
 public final class InstallHandoffTest {
     private static final String APP="app/org.example.Editor/x86_64/stable";
     private static final String RUNTIME="runtime/org.example.Platform/x86_64/25.08";
+    private static final String LOCALE="runtime/org.freedesktop.Platform.Locale/x86_64/25.08";
     private static final String COMMIT="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     public static void main(String[] args) throws Exception {
@@ -45,6 +50,39 @@ public final class InstallHandoffTest {
         runtimePackage.getJSONArray("dependencies"); runtimePackage.getString("mount");
         packageManifest.getJSONArray("deployments").getJSONObject(0).getBoolean("reused");
         System.out.println("PASS transaction and StagedPacks consumer JSON fields");
+
+        // Reproduce a real Flatpak subpath deploy: completion must produce a row
+        // that carries /en through package handoff to the <commit>-en directory.
+        File localeInstallation=new File(out,"locale/installation");
+        File localeDeployment=new File(localeInstallation,LOCALE+"/"+COMMIT+"-en");
+        Files.createDirectories(localeDeployment.toPath());
+        byte[] localeMetadata="[Runtime]\nname=Locale\n".getBytes(StandardCharsets.UTF_8);
+        Files.write(new File(localeDeployment,"metadata").toPath(),localeMetadata);
+        Files.write(new File(localeDeployment,"deploy").toPath(),
+                DeployRecord.subpaths("fixture",COMMIT,Collections.singletonList("/en")));
+        JSONObject deployed=DeployManifest.build(localeInstallation,LOCALE,"fixture","fixture-op");
+        DependencyPlan.Info info=new DependencyPlan.Info(COMMIT,localeMetadata,"",Collections.emptyList());
+        DependencyPlan.Node localeNode=new DependencyPlan.Node(LOCALE,"fixture",info,false);
+        localeNode.subpaths.add("/en");
+        PlanExecutor.Outcome<Boolean> pull=PlanExecutor.execute(Collections.singletonList(localeNode),1,node->{
+            DeployManifest.verifyPlanned(localeInstallation,deployed,node.ref,node.info.commit,node.info.metadata,node.subpaths);
+            return true;
+        });
+        if(!pull.completed.containsKey(LOCALE)||!pull.failed.isEmpty())
+            throw new AssertionError("valid subpath deployment did not complete its pull node");
+        JSONObject localeRowPlan=new JSONObject().put("version",1).put("appRef",LOCALE).put("appCommit",COMMIT)
+                .put("origin","fixture").put("deployments",InstallHandoff.completedRows(
+                        Collections.singletonList(localeNode),pull.completed.keySet(),
+                        Collections.singletonMap(LOCALE,"[Runtime]"),Collections.singletonMap(LOCALE,"/usr"),LOCALE));
+        JSONObject localePackage=InstallHandoff.packageManifest(localeRowPlan,LOCALE);
+        if(!localePackage.getJSONArray("subpaths").getString(0).equals("/en"))
+            throw new AssertionError("subpath was lost at package handoff");
+        File resolved=DeployManifest.stagedDeployment(localeInstallation,localePackage);
+        JSONObject localeIdentity=InstallHandoff.deploymentManifest(localeRowPlan,LOCALE);
+        if(!resolved.equals(localeDeployment)||!resolved.equals(DeployManifest.stagedDeployment(localeInstallation,deployed))
+                ||!resolved.equals(DeployManifest.stagedDeployment(localeInstallation,localeIdentity)))
+            throw new AssertionError("subpath deploy resolved to the wrong directory");
+        System.out.println("PASS subpath pull completion, transaction row, package handoff, and deployedir resolution");
 
         String appName=DeployManifest.packageForPublic(APP), runtimeName=DeployManifest.packageForPublic(RUNTIME);
         if(!frameworkName(appName)||!frameworkName(runtimeName)) throw new AssertionError("invalid framework package name");
@@ -102,7 +140,7 @@ public final class InstallHandoffTest {
     private static JSONObject row(String ref,String mount) throws Exception {
         return new JSONObject().put("ref",ref).put("commit",COMMIT).put("origin","fixture")
                 .put("metadata","[Application]\\nname=Fixture\\n").put("mount",mount).put("location","")
-                .put("reused",false).put("dependencies",new JSONArray());
+                .put("reused",false).put("dependencies",new JSONArray()).put("subpaths",new JSONArray());
     }
     private static void require(JSONObject object,String... keys) throws Exception {
         for(String key:keys) if(!object.has(key)) throw new AssertionError("missing consumer field "+key);

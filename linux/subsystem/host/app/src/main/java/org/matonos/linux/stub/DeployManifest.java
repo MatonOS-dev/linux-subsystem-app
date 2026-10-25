@@ -31,7 +31,7 @@ public final class DeployManifest {
      * the app deployment is missing, if an unexpected app deployment exists, or
      * if any deployment directory disagrees with its own signed metadata.
      */
-    static JSONObject build(File installation, String appRef, String remote, String operationId) throws Exception {
+    public static JSONObject build(File installation, String appRef, String remote, String operationId) throws Exception {
         if (!validRef(appRef))
             throw new IOException("Invalid authorized application reference");
         List<Deployment> deployments = new ArrayList<>();
@@ -104,10 +104,49 @@ public final class DeployManifest {
         String ref=manifest.getString("appRef"), commit=manifest.getString("appCommit");
         if(!validRef(ref) || !commit.matches("[0-9a-f]{64}"))
             throw new IOException("Invalid staged app identity");
-        File deployment=new File(installation,ref+"/"+commit);
+        StringBuilder version=new StringBuilder(commit);
+        JSONArray subpaths=manifest.optJSONArray("subpaths");
+        if(subpaths==null) {
+            JSONArray deployments=manifest.optJSONArray("deployments");
+            if(deployments!=null)for(int i=0;i<deployments.length();i++) {
+                JSONObject entry=deployments.getJSONObject(i);
+                if(ref.equals(entry.optString("ref"))&&commit.equals(entry.optString("commit"))) {
+                    subpaths=entry.optJSONArray("subpaths");break;
+                }
+            }
+        }
+        if(subpaths!=null)for(int i=0;i<subpaths.length();i++) {
+            String subpath=subpaths.getString(i);
+            if(!validSubpath(subpath))throw new IOException("Invalid staged deployment subpath");
+            version.append('-');
+            for(int j=0;j<subpath.length();j++)if(subpath.charAt(j)!='/')version.append(subpath.charAt(j));
+        }
+        File deployment=new File(installation,ref+"/"+version);
         if(!deployment.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)
                 || Files.isSymbolicLink(deployment.toPath()) || !deployment.isDirectory())
             throw new IOException("Invalid staged app deployment");
+        return deployment;
+    }
+
+    /** Validates that a pulled ref's deployed directory and subpaths match its inspected plan. */
+    public static File verifyPlanned(File installation, JSONObject manifest, String ref, String commit,
+            byte[] plannedMetadata, List<String> plannedSubpaths) throws Exception {
+        if(!ref.equals(manifest.getString("appRef"))||!commit.equals(manifest.getString("appCommit")))
+            throw new IOException("Pulled deployment differs from planned Flatpak commit");
+        JSONArray deployments=manifest.getJSONArray("deployments");JSONObject selected=null;
+        for(int i=0;i<deployments.length();i++) {
+            JSONObject row=deployments.getJSONObject(i);
+            if(ref.equals(row.getString("ref"))&&commit.equals(row.getString("commit"))) {selected=row;break;}
+        }
+        if(selected==null)throw new IOException("Pulled deployment is missing from its manifest");
+        JSONArray actual=selected.getJSONArray("subpaths");
+        if(actual.length()!=plannedSubpaths.size())throw new IOException("Pulled deployment subpaths differ from plan");
+        for(int i=0;i<actual.length();i++)if(!plannedSubpaths.get(i).equals(actual.getString(i)))
+            throw new IOException("Pulled deployment subpaths differ from plan");
+        File deployment=stagedDeployment(installation,
+                new JSONObject().put("appRef",ref).put("appCommit",commit).put("subpaths",actual));
+        if(!java.util.Arrays.equals(plannedMetadata,PlaceholderFiles.readAllBytes(new File(deployment,"metadata"))))
+            throw new IOException("Pulled deployment differs from planned Flatpak commit");
         return deployment;
     }
 

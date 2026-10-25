@@ -4,7 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 /** Writes the Flatpak deploy record (ssasta{sv}) for a runtime extension, matching gl-maton/build.py. */
-final class DeployRecord {
+public final class DeployRecord {
     private DeployRecord() {}
 
     static byte[] extension(String origin,String commit,String runtimeBranch) {
@@ -17,10 +17,20 @@ final class DeployRecord {
         Buffer dict=new Buffer();long[] ends=new long[entries.length];
         for(int i=0;i<entries.length;i++){dict.align(8);dict.put(entries[i]);ends[i]=dict.size();}
         byte[] metadata=dict.frame(ends);
+        return record(origin,commit,java.util.Collections.emptyList(),metadata);
+    }
+    /** Test/fixture writer for a Flatpak subpath deploy record, with an empty metadata dictionary. */
+    public static byte[] subpaths(String origin,String commit,java.util.List<String> subpaths) {
+        Buffer dictionary=new Buffer();
+        return record(origin,commit,subpaths,dictionary.out.toByteArray());
+    }
+    private static byte[] record(String origin,String commit,java.util.List<String> subpaths,byte[] metadata) {
         Buffer tuple=new Buffer();
         tuple.put(cstring(origin));long originEnd=tuple.size();
         tuple.put(cstring(commit));long commitEnd=tuple.size();
-        long subpathsEnd=tuple.size(); // empty as
+        Buffer paths=new Buffer();long[] ends=new long[subpaths.size()];
+        for(int i=0;i<subpaths.size();i++) {paths.put(cstring(subpaths.get(i)));ends[i]=paths.size();}
+        byte[] array=paths.frame(ends);tuple.put(array);long subpathsEnd=tuple.size();
         tuple.align(8);tuple.put(le(0,8));
         tuple.align(8);tuple.put(metadata);
         // Tuple framing offsets are stored last member first.

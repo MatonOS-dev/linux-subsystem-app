@@ -31,6 +31,7 @@ AAPT2=${MATON_AAPT2:-/mnt/data/aosp/out/host/linux-x86/bin/aapt2}
 javac -cp "$ANDROID_JAR:$JSON_JAR:$ROOT/linux/stubgen/prebuilt/apksig.jar" -d "$OUT/install-handoff/classes" \
   "$ROOT"/linux/stubgen/src/org/matonos/linuxhost/stubgen/*.java \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployManifest.java" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployRecord.java" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/InstallHandoff.java" \
   "$ROOT/tests/install-handoff/InstallHandoffTest.java"
 bash "$ROOT/linux/stubgen/tests/build-loader-dex.sh" "$ANDROID_JAR" "${MATON_D8:-$(dirname "$AAPT2")/d8}" "$OUT/install-handoff/classes"

@@ -161,7 +161,7 @@ public final class InstallTransaction {
                 } else mount=PackageMounts.mountPoint(node.ref,metadata.get(node.ref),metadata);
                 mounts.put(node.ref,mount);
             }
-            org.json.JSONArray rows=new org.json.JSONArray();String appCommit=null;
+            String appCommit=null;
             plannedBytes=0;plannedBytesKnown=true;
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)if(!node.reused) {
                 synchronized(progressLock){refProgress.put(node.ref,0);downloadRefCount++;}
@@ -191,17 +191,9 @@ public final class InstallTransaction {
                 if(error instanceof Exception)throw (Exception)error;
                 throw new java.io.IOException("Requested ref could not be staged because a dependency failed",error);
             }
-            for(int i=0;i<plan.size();i++) {
-                org.matonos.linuxhost.stubgen.DependencyPlan.Node node=plan.get(i);
-                if(!pulled.completed.containsKey(node.ref))continue;
-                String location=node.ref.equals(appRef)?"":"package-"+i;
-                org.json.JSONArray dependencies=new org.json.JSONArray();for(String ref:node.dependencies)dependencies.put(ref);
-                org.json.JSONArray stageDependencies=new org.json.JSONArray();for(String ref:node.stageDependencies)stageDependencies.put(ref);
-                rows.put(new JSONObject().put("ref",node.ref).put("commit",node.info.commit).put("origin",node.origin)
-                        .put("metadata",metadata.get(node.ref)).put("mount",mounts.get(node.ref)).put("location",location)
-                        .put("reused",node.reused).put("dependencies",dependencies).put("stageDependencies",stageDependencies));
-                if(node.ref.equals(appRef))appCommit=node.info.commit;
-            }
+            org.json.JSONArray rows=InstallHandoff.completedRows(plan,pulled.completed.keySet(),metadata,mounts,appRef);
+            for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)
+                if(node.ref.equals(appRef)&&pulled.completed.containsKey(node.ref))appCommit=node.info.commit;
             if(appCommit==null)throw new java.io.IOException("Plan has no requested ref");
             long verified=plannedPayloadBytesKnown?verifiedPayloadBytes.get():-1;
             long verifyTotal=plannedPayloadBytesKnown?plannedPayloadBytes:-1;
@@ -371,9 +363,7 @@ public final class InstallTransaction {
             }
             Log.i(TAG,"phase=pull ref="+node.ref+" ms="+
                     java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pullStarted)+" bytes="+size);
-            if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,
-                    org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(DeployManifest.stagedDeployment(installation,manifest),"metadata"))))
-                throw new java.io.IOException("Pulled deployment differs from planned Flatpak commit");
+            DeployManifest.verifyPlanned(installation,manifest,node.ref,node.info.commit,node.info.metadata,node.subpaths);
             StagedPacks.verify(context,installation,()->cancelled.get());
             long payload=metadataSize(node.info.metadata,"xa.installed-size");if(payload>0)verifiedPayloadBytes.addAndGet(payload);
         }

@@ -507,11 +507,6 @@ public final class LinuxAppStoreService extends Service {
         for(FinalizePackage finish:op.finalizers)finish.run();
         finishStubInstall(op,success());
     }
-    private static String commitFor(Operation op,String ref) throws Exception {
-        org.json.JSONArray rows=op.stagedManifest.getJSONArray("deployments");
-        for(int i=0;i<rows.length();i++)if(ref.equals(rows.getJSONObject(i).getString("ref")))return rows.getJSONObject(i).getString("commit");
-        throw new java.io.IOException("Missing declared deployment: "+ref);
-    }
     /** A ref's mount and launcher are parameters; every package uses this path. */
     private void installStubPackage(Operation op,String packageRef,File artifacts,PackageInfo installed,
             boolean launchable,String mountPoint) throws Exception {
@@ -560,12 +555,12 @@ public final class LinuxAppStoreService extends Service {
         // deployment export wins; apply_extra may override it below; otherwise
         // the remote's appstream is read by this subsystem app, then app id.
         String appId=appId(packageRef);
-        File deployment=org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,new JSONObject().put("appRef",packageRef).put("appCommit",commitFor(op,packageRef)));
+        File deployment=org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef));
         org.matonos.linux.stub.LauncherData launcher=org.matonos.linux.stub.LauncherData.resolve(
                 deployment,appId,null,launchable&&"flathub".equals(remote)?new org.matonos.linux.stub.LauncherData.Flathub():null);
         byte[] baseIcon=launcher.icon!=null?launcher.icon:fallbackIcon();
         org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(work,packageRef,org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote).name,launcher.label,baseIcon,
-                StubGenerator.permissionsForMetadata(org.matonos.linux.stub.DeployManifest.stagedMetadata(installation,new JSONObject().put("appRef",packageRef).put("appCommit",commitFor(op,packageRef)))),pkg,base,objects,requiredPackages,dependencyPackages,launchable,mountPoint);
+                StubGenerator.permissionsForMetadata(org.matonos.linux.stub.DeployManifest.stagedMetadata(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef))),pkg,base,objects,requiredPackages,dependencyPackages,launchable,mountPoint);
         boolean full=installed==null || installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE ||
                 !org.matonos.linuxhost.stubgen.PackSessionPlan.sameBase(base,new File(installed.applicationInfo.sourceDir));
         java.util.List<String> prior=installed==null || installed.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(installed.splitNames);
