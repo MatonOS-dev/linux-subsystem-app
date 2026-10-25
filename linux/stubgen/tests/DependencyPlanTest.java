@@ -28,6 +28,7 @@ public final class DependencyPlanTest {
         // Related refs with subpaths (Locale with a language subset) plan by ref only.
         DependencyPlan.Info subset=new DependencyPlan.Info("a".repeat(64),new byte[]{1},"",List.of("runtime/org.test.Platform.Locale/x86_64/stable\n/en\n/de"),true);
         check(subset.related.equals(List.of("runtime/org.test.Platform.Locale/x86_64/stable")));
+        check(DependencyPlan.refsOnly(List.of("runtime/a/x86_64/1\n/en","runtime/b/x86_64/1")).equals(List.of("runtime/a/x86_64/1","runtime/b/x86_64/1")));
         Fake reuse=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable"));
         reuse.installed.put(RUNTIME,record(RUNTIME,OTHER));
         List<DependencyPlan.Node> plan=reuse.plan(false);

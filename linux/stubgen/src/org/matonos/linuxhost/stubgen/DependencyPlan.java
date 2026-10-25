@@ -22,10 +22,7 @@ public final class DependencyPlan {
             if(commit==null||!commit.matches("[0-9a-f]{64}")||metadata==null||metadata.length==0||metadata.length>128*1024)
                 throw new IOException("Invalid Flatpak inspection result");
             this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.parent=parent;
-            // The plan helper appends a related ref's subpaths ("ref\n/en\n…", e.g. Locale with a language
-            // subset). Planning needs the ref only; Flatpak applies the subpaths itself at deploy.
-            List<String> refs=new ArrayList<>();for(String r:related){int nl=r.indexOf('\n');refs.add(nl<0?r:r.substring(0,nl));}
-            this.related=List.copyOf(refs);
+            this.related=List.copyOf(refsOnly(related));
         }
     }
     public interface Backend {
@@ -61,6 +58,9 @@ public final class DependencyPlan {
         visit(root,origin,true,repair);
         return List.copyOf(order);
     }
+    /** The plan helper appends subpaths to related refs ("ref\n/en", Locale with a language subset);
+     *  planning uses the ref, Flatpak applies the subpaths at deploy. */
+    public static List<String> refsOnly(List<String> related){List<String> refs=new ArrayList<>();for(String r:related){int nl=r.indexOf('\n');refs.add(nl<0?r:r.substring(0,nl));}return refs;}
     private Node visit(String ref,String requested,boolean root,boolean repair)throws Exception {
         if(!validRef(ref))throw new IOException("Invalid dependency ref: "+ref);
         Node existing=nodes.get(ref);if(existing!=null)return existing;
@@ -99,7 +99,7 @@ public final class DependencyPlan {
                 if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,true);}
             }
             order.add(node);
-            if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:backend.related(ref,origin,info))if(!node.dependencies.contains(related)) {
+            if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:refsOnly(backend.related(ref,origin,info)))if(!node.dependencies.contains(related)) {
                 node.dependencies.add(related);visit(related,null,false,true);
             }
         } else {
@@ -110,7 +110,7 @@ public final class DependencyPlan {
                 node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,repair);
             }
             order.add(node);
-            for(String related:backend.related(ref,origin,info))if(!node.dependencies.contains(related)) {
+            for(String related:refsOnly(backend.related(ref,origin,info)))if(!node.dependencies.contains(related)) {
                 node.dependencies.add(related);visit(related,null,false,repair);
             }
         }
