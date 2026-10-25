@@ -43,8 +43,7 @@ final class DeclaredPackages {
         List<String> args=new ArrayList<>();
         for(int i=0;i<packages.size();i++) {
             Entry entry=packages.get(i);PackageInfo pkg=entry.pkg;
-            if(i==0&&!rootExtra)args.addAll(PackLaunch.arguments(new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,entry.mount));
-            else args.addAll(PackLaunch.argumentsWithExtra(new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,entry.mount,entry.mount+"/extra"));
+            args.addAll(ErofsLaunch.arguments(new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,entry.mount));
             if(deployment!=null) {
                 File installation=i==0?deployment:new File(deployment,"system");
                 File files=new File(installation,entry.record.ref+"/"+entry.record.commit+"/files");

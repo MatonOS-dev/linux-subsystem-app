@@ -15,7 +15,7 @@ public final class PackLaunch {
     public static List<String> backingArguments(String mountPoint,File files) throws IOException {
         if(mountPoint==null||!mountPoint.matches("/(?:[A-Za-z0-9_.+-]+/?)*")
                 ||files==null||!files.isAbsolute())throw new IOException("Invalid pack backing");
-        return Arrays.asList("--pack-backing",mountPoint,files.toPath().normalize().toString());
+        return Arrays.asList("--erofs-backing",mountPoint,files.toPath().normalize().toString());
     }
     public static List<String> arguments(File base, String[] names, String[] paths, File cache) throws Exception {
         return arguments(base,names,paths,cache,"/app");

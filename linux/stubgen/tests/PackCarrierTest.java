@@ -156,7 +156,7 @@ public final class PackCarrierTest {
   List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
   File deploymentFiles=new File(dir,"app/org.example.App/x86_64/stable/commit/files").getAbsoluteFile();
   List<String> backing=PackLaunch.backingArguments("/app",deploymentFiles);
-  if(!backing.equals(Arrays.asList("--pack-backing","/app",deploymentFiles.toString())))throw new AssertionError(backing);
+  if(!backing.equals(Arrays.asList("--erofs-backing","/app",deploymentFiles.toString())))throw new AssertionError(backing);
   if(!PackLaunch.backingArguments(deploymentFiles.toString(),deploymentFiles).get(2).equals(deploymentFiles.toString()))throw new AssertionError("Identity backing");
   try {PackLaunch.backingArguments("/app",new File("relative/files"));throw new AssertionError("Relative backing accepted");}
   catch(IOException expected){}

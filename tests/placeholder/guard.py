@@ -96,7 +96,9 @@ ALLOW = {
     ("PackLaunch.java", "zipfile"): (
         3, "reads installed index_/extra_ splits and the signed subsystem GL pack archive (app-owned), not staging"),
     ("PackageDeployment.java", "zipfile"): (
-        1, "reads ref metadata and the commit object from the signed subsystem GL extension archive, not staging"),
+        2, "reads ref/commit metadata and materializes the signed subsystem GL extension tree from an app-owned APK, not staging"),
+    ("ErofsLaunch.java", "zipfile"): (
+        1, "reads layers.index from an installed PackageManager APK before mounting its signed EROFS splits, not staging"),
     ("V3Launcher.java", "files-readAllBytes"): (
         1, "reads the adb-written <cache>/v3-command debug file in the stub's own cache, not staging"),
     ("PackSeed.java", "randomaccessfile"): (

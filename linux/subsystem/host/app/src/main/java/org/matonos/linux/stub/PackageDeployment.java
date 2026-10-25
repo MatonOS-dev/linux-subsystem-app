@@ -71,11 +71,29 @@ final class PackageDeployment {
         Path version=branchRoot.resolve(identity[1]);Files.createDirectories(version);
         Files.write(version.resolve("metadata"),extensionMetadata.getBytes(StandardCharsets.UTF_8));
         Files.write(version.resolve("deploy"),DeployRecord.extension("flathub",identity[1],branch));
-        Files.write(version.resolve(".ref"),new byte[0]);Files.createDirectory(version.resolve("files"));
+        Files.write(version.resolve(".ref"),new byte[0]);Path files=version.resolve("files");Files.createDirectory(files);
+        materializeBundleTree(archive,assetPrefix,files);
         link(branchRoot.resolve("active"),Path.of(identity[1]));
         link(root.resolve("runtime/"+extensionName+"/current"),Path.of("x86_64",branch));
         writeCommitObject(root,identity[1],commitObject);
         return version.resolve("files").toFile();
+    }
+    private static void materializeBundleTree(File archive,String prefix,Path destination) throws IOException {
+        String root=prefix+"/tree/";int copied=0;
+        try(ZipFile zip=new ZipFile(archive)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries=zip.entries();
+            while(entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry=entries.nextElement();String name=entry.getName();if(!name.startsWith(root))continue;
+                String relative=name.substring(root.length());if(relative.isEmpty())continue;
+                Path target=destination.resolve(relative).normalize();
+                if(!target.startsWith(destination))throw new IOException("Invalid bundled extension path");
+                if(entry.isDirectory()){Files.createDirectories(target);continue;}
+                Files.createDirectories(target.getParent());
+                try(java.io.InputStream in=zip.getInputStream(entry);java.io.OutputStream out=Files.newOutputStream(target)){in.transferTo(out);}
+                copied++;
+            }
+        }
+        if(copied==0)throw new IOException("Bundled extension lacks its file tree: "+prefix);
     }
     static CompatI386 prepareCompatI386(Context context,File systemRoot,File cache,String branch) throws Exception {
         String ref="runtime/org.freedesktop.Platform.Compat.i386/x86_64/"+branch;
@@ -106,7 +124,7 @@ final class PackageDeployment {
         Files.write(version.resolve("metadata"),compatMetadata(branch).getBytes(StandardCharsets.UTF_8));
         Files.write(version.resolve("deploy"),DeployRecord.extension(record.remote,record.commit,branch));
         File apk=new File(pkg.applicationInfo.sourceDir);
-        java.util.List<String> args=new java.util.ArrayList<>(org.matonos.linuxhost.stubgen.PackLaunch.arguments(
+        java.util.List<String> args=new java.util.ArrayList<>(ErofsLaunch.arguments(
                 apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount));
         args.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(mount,files.toFile()));
         return new CompatI386(files.toFile(),args);

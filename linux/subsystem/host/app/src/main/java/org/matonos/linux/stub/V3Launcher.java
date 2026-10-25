@@ -105,11 +105,8 @@ final class V3Launcher {
             File systemRoot=new File(deployment,"system");
             File extensionFiles=PackageDeployment.prepareGlExtension(systemRoot,
                     new File(host.getApplicationInfo().sourceDir),glBranch);
-            command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(
-                    new File(host.getApplicationInfo().sourceDir), "assets/gl-maton", launchWork,
-                    extensionFiles.getAbsolutePath()));
-            command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(
-                    extensionFiles.getAbsolutePath(),extensionFiles));
+            command.add("--map-ro");command.add(extensionFiles.getAbsolutePath());
+            command.add("/usr/lib/x86_64-linux-gnu/GL/maton");
             PackageDeployment.CompatI386 compat=PackageDeployment.prepareCompatI386(
                     context,systemRoot,launchWork,runtimeBranch);
             if(compat!=null) {
@@ -118,11 +115,8 @@ final class V3Launcher {
                 command.addAll(compat.arguments);
                 File gl32=PackageDeployment.prepareGl32Extension(systemRoot,
                         new File(host.getApplicationInfo().sourceDir),runtimeBranch);
-                command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.argumentsFromArchive(
-                        new File(host.getApplicationInfo().sourceDir),"assets/gl-maton-i386",launchWork,
-                        gl32.getAbsolutePath()));
-                command.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(
-                        gl32.getAbsolutePath(),gl32));
+                command.add("--map-ro");command.add(gl32.getAbsolutePath());
+                command.add("/usr/lib/i386-linux-gnu/GL/maton");
             }
         }
         command.addAll(DeclaredPackages.arguments(packages,launchWork,true,deployment));
