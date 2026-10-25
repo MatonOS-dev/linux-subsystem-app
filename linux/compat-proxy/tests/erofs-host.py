@@ -62,7 +62,22 @@ int main(int argc,char **argv){
  closedir(d);assert(saw_sample&&saw_sub&&saw_probe);
  int fd=open("/usr/sample",O_RDONLY);assert(fd>=0);memset(b,0,sizeof(b));assert(read(fd,b,12)==12&&!strcmp(b,"hello erofs\n"));
  void *p=mmap(NULL,12,PROT_READ,MAP_PRIVATE,fd,0);assert(p!=MAP_FAILED&&!memcmp(p,"hello erofs\n",12));munmap(p,12);
- assert(!fstat(fd,&st)&&st.st_size==12);close(fd);
+ struct stat path_st,fd_st;assert(!stat("/usr/sample",&path_st));
+ assert(!fstat(fd,&fd_st)&&fd_st.st_size==12);
+ assert(path_st.st_dev==fd_st.st_dev&&path_st.st_ino==fd_st.st_ino&&path_st.st_mode==fd_st.st_mode&&
+        path_st.st_uid==fd_st.st_uid&&path_st.st_gid==fd_st.st_gid&&path_st.st_size==fd_st.st_size);
+ struct statx path_sx,fd_sx;
+ assert(!statx(AT_FDCWD,"/usr/sample",0,STATX_BASIC_STATS,&path_sx));
+ assert(!statx(fd,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&fd_sx));
+ assert(path_sx.stx_dev_major==fd_sx.stx_dev_major&&path_sx.stx_dev_minor==fd_sx.stx_dev_minor&&
+        path_sx.stx_ino==fd_sx.stx_ino&&path_sx.stx_mode==fd_sx.stx_mode&&path_sx.stx_size==fd_sx.stx_size);
+ close(fd);
+ assert(!lstat("/usr/link",&path_st));
+ fd=open("/usr/link",O_PATH|O_NOFOLLOW|O_CLOEXEC);assert(fd>=0);
+ assert(!fstat(fd,&fd_st)&&S_ISLNK(fd_st.st_mode)&&fd_st.st_ino==path_st.st_ino&&fd_st.st_dev==path_st.st_dev);
+ assert(!statx(fd,"",AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW,STATX_BASIC_STATS,&fd_sx));
+ assert(fd_sx.stx_ino==path_st.st_ino&&fd_sx.stx_mode==path_st.st_mode);
+ close(fd);
  puts("EROFS INDEX/OPEN/MMAP PASS");return 0;
 }''')
 probe=root/'probe';subprocess.run(['cc','-static','-O2','-Wall','-Wextra','-Werror',src,'-o',probe],check=True)

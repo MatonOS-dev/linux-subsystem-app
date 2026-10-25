@@ -30,7 +30,7 @@ static void erofs_free(void *c,void *p){(void)c;vfs_free(p);}
 static char *erofs_pdup(const char *s){size_t n=p_len(s);char *p=vfs_palloc(n+1);if(p)p_copy(p,s,n+1);return p;}
 static struct erofs_dirfd *erofs_dir_find(int fd){for(struct erofs_dirfd *f=erofs_dirs;f;f=f->next)if(f->fd==fd)return f;return NULL;}
 int erofs_tracked(int fd){return erofs_dir_find(fd)!=NULL;}
-int erofs_is_directory(int fd){return erofs_dir_find(fd)?1:-1;}
+int erofs_is_directory(int fd){struct erofs_dirfd *f=erofs_dir_find(fd);return f?(p_equal(f->object.kind,"dir")?1:0):-1;}
 int erofs_private(int fd){for(struct erofs_mount *m=erofs_mounts;m;m=m->next)if(m->io_fd==fd)return 1;return 0;}
 /* Path operations arrive here after vfs_resolve_mount has translated their
  * virtual name to the backing path. Pack indexes describe the virtual tree,
@@ -174,7 +174,7 @@ long erofs_open(const char *path,int flags){
   long opened=RAW(PROXY_SC_openat,AT_FDCWD,native,flags,0,0,0);
   if(native!=root)vfs_free(native);
   vfs_free(root);
-  if(opened<0||!dir)return opened;
+  if(opened<0)return opened;
   struct erofs_dirfd *f=vfs_palloc(sizeof(*f));if(!f){RAW(PROXY_SC_close,opened,0,0,0,0,0);return -ENOMEM;}
   uint64_t root_dev,root_ino;int root_identity;erofs_root_identity(m,&o,path,&root_dev,&root_ino,&root_identity);
   *f=(struct erofs_dirfd){.next=erofs_dirs,.fd=(int)opened,.mount=m,.object=o,.root_dev=root_dev,.root_ino=root_ino,.root_identity=root_identity};erofs_dirs=f;
@@ -251,7 +251,7 @@ static long erofs_call_unlocked(long nr,proxy_arg_t *a,int *handled){
 long erofs_call(long nr,proxy_arg_t *a,int *handled){
  struct erofs_dirfd *f=erofs_dir_find(a[0]);
  int position=nr==PROXY_SC_read||nr==PROXY_SC_readv||nr==PROXY_SC_preadv2||nr==PROXY_SC_lseek||nr==PROXY_SC_getdents64;
- if(!f||!position)return erofs_call_unlocked(nr,a,handled);
+ if(!f||!position||!p_equal(f->object.kind,"dir"))return erofs_call_unlocked(nr,a,handled);
  proxy_sigmask_t all=~UINT64_C(0),mask=0;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
  uint64_t owner=((uint64_t)(uint32_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)<<32)|(uint32_t)RAW(PROXY_SC_gettid,0,0,0,0,0,0);
  erofs_lock_word *word=f->mount->io_owner;
