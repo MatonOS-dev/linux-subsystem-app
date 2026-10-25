@@ -1,6 +1,6 @@
 # OSTree APK packs (format v1)
 
-## EROFS deployment carriers (v1 prototype)
+## EROFS deployment carriers
 
 ### Layered format (MTPKIDX2)
 
@@ -25,11 +25,19 @@ Host writer usage: `python3 linux/packs/erofs_layers.py --repo REPO --commit
 CHECKSUM --out OUT --mkfs /path/to/mkfs.erofs`; add `--old-index` and
 `--old-layers` for an update. The old layer directory contains
 `pack-<sha256>.erofs` files. EROFS payloads in APK splits must be STORED and
-4096-byte aligned. `tests/erofs-layers-host.py` exercises A→B pack reuse,
-deletions and file-to-symlink replacement. The Java v2 writer and APK carrier
-helpers are present, but `StagedPacks` and `LinuxAppStoreService` still use the
-legacy single-image path; they need to be switched before this format is used
-for installs. Extraction via `fsck.erofs` remains an additional host check.
+4096-byte aligned. `StagedPacks` writes the same deterministic PAX tar stream
+from OSTree entry metadata, reuses unchanged installed layer images, and
+rewrites layers whose dead-byte ratio reaches 0.5. `LinuxAppStoreService`
+signs one `pack_<sha256>` APK split per image. The merged `layers.index` is in
+the base APK. The separate `objects.index` split remains for OSTree metadata
+and update seeding; it does not describe the deployed filesystem view.
+
+`tests/erofs-layers-host.py` exercises A→B reuse, additions, deletions,
+file-to-symlink replacement and the C reader. Set `FSCK_EROFS` to make it
+extract only the images named by each index, reconstruct A and B, and compare
+paths, bytes, types, modes, ownership, symlinks and xattrs with OSTree
+checkouts. `tests/erofs-layers-java.py` runs the Android Java layer writer
+against the same pinned `mkfs.erofs` and checks its A→B output with fsck.
 
 `erofs_pack.py` builds one read-only EROFS image from an already deployed app
 or runtime tree. The default is LZ4HC level 12; `--compression lzma` selects
@@ -58,13 +66,13 @@ entry's ZIP local header (`header offset + 30 + filename length + extra-field
 length`), then checks the exact image size and SHA-256 before mounting. It
 must not infer an offset by scanning for the EROFS magic bytes.
 
-The on-device `StagedPacks` path now invokes the packaged static-musl
-`mkfs.erofs` as a separate executable for each app and runtime deployment.
-It uses LZ4HC level 12, preserves deployment mtimes, sets root ownership,
-uses a ref/commit-derived UUID and a fixed mkfs timestamp, and holds the
-worker count at four. The store signs one EROFS split per deployment and
-hands that split to the existing `PackageInstaller` session planner. An
-identical image reuses its existing content-addressed split on update.
+The single-image `generateErofsPack` helper above remains for compatibility
+tests. The install path uses `generateErofsLayerPack`: every complete image is
+stored as `assets/matonos/pack.erofs` in its own signed `pack_<sha256>` split,
+with the payload uncompressed and 4096-byte aligned. The merged `layers.index`
+is embedded in the signed base APK. `PackageInstaller` inherits unchanged
+content-addressed layer splits and removes layers no longer referenced by the
+new index.
 
 The tool is pinned to erofs-utils v1.9.4 and built as an x86_64 static-musl
 PIE; see `prebuilt/README.md`, `build-mkfs-erofs.sh` and `licenses/` for the
