@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build complete EROFS pack layers and a merged-view MTPKIDX2 index."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -11,9 +12,11 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import urllib.parse
 
 from ostree_source import walk_commit, open_repo
 from gi.repository import OSTree
+from gi.repository import GLib
 
 TARGET = 64 * 1024 * 1024
 MAGIC = b'MTPKIDX2'
@@ -78,8 +81,10 @@ def commit_epoch(repo_path, commit):
     repo = open_repo(repo_path)
     ok, variant = repo.load_variant(OSTree.ObjectType.COMMIT, commit)
     if not ok: raise ValueError(f'commit not found: {commit}')
-    # OSTree stores commit time as nanoseconds since the epoch.
-    return int(variant.unpack()[5]) // 1_000_000_000
+    # The timestamp field in OSTree's commit tuple is big-endian u32 seconds;
+    # GI exposes its eight-byte variant storage as a host-order u64.
+    raw = int(variant.unpack()[5]).to_bytes(8, 'little')
+    return int.from_bytes(raw, 'big')
 
 
 def tar_info(tar, rec, path, epoch):
@@ -87,12 +92,12 @@ def tar_info(tar, rec, path, epoch):
     info.uid, info.gid, info.mode = rec['uid'], rec['gid'], stat.S_IMODE(rec['mode'])
     info.mtime = rec.get('mtime') or epoch
     info.uname = info.gname = ''
-    try:
-        for key in os.listxattr(path, follow_symlinks=False):
-            value = os.getxattr(path, key, follow_symlinks=False)
-            info.pax_headers['SCHILY.xattr.' + key] = value.decode('latin1')
-    except (OSError, AttributeError):
-        pass
+    raw=bytes.fromhex(rec.get('xattrs',''))
+    if raw:
+        attrs=GLib.Variant.new_from_bytes(GLib.VariantType.new('a(ayay)'),GLib.Bytes.new(raw),False)
+        for key,value in attrs.unpack():
+            key=bytes(key).rstrip(b'\0').decode('utf-8')
+            info.pax_headers['LIBARCHIVE.xattr.'+urllib.parse.quote(key,safe='')]=base64.b64encode(bytes(value)).decode('ascii')
     if rec['kind'] == 'dir': info.type = tarfile.DIRTYPE; tar.addfile(info)
     elif rec['kind'] == 'symlink':
         info.type = tarfile.SYMTYPE; info.linkname = rec['target']; tar.addfile(info)
@@ -138,6 +143,7 @@ def main():
     ap.add_argument('--old-index',type=pathlib.Path); ap.add_argument('--old-layers',type=pathlib.Path)
     ap.add_argument('--dead-ratio',type=float,default=.5)
     a=ap.parse_args()
+    if not 0 <= a.dead_ratio <= 1: ap.error('--dead-ratio must be between 0 and 1')
     if (a.old_index is None) != (a.old_layers is None): ap.error('--old-index and --old-layers must be supplied together')
     a.out.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='matonos-erofs-layers-') as td:
@@ -155,13 +161,29 @@ def main():
             p=root if r['path']=='/' else root/r['path'].lstrip('/')
             r['size']=p.stat().st_size if r['kind']=='file' else 0
         current_files={r['path']:r for r in records if r['kind']=='file'}
+        layer_members={}
+        for old in old_records:
+            if old['kind']=='file': layer_members.setdefault(old['layer'],[]).append(old)
+        rewrite_layers=set()
+        if a.old_index:
+            for layer_id,members in layer_members.items():
+                total=sum(r['size'] for r in members); live=0
+                for old in members:
+                    now=current_files.get(old['path'])
+                    if now and now['checksum']==old['checksum'] and now['mode']==old['mode'] and now['uid']==old['uid'] and now['gid']==old['gid']:
+                        live+=old['size']
+                dead=max(0,total-live)
+                if dead and total and dead/total >= a.dead_ratio: rewrite_layers.add(layer_id)
         reused_by_sha={}; changed=[]
         for r in current_files.values():
             old=old_by_path.get(r['path'])
             if old and old['kind']=='file' and old['checksum']==r['checksum'] and old['mode']==r['mode'] and old['uid']==r['uid'] and old['gid']==r['gid']:
                 layer=old_layer_by_id[old['layer']]; reused_by_sha[layer['sha256']]=layer
-                r['layer_sha256']=layer['sha256']
+                if old['layer'] in rewrite_layers: changed.append(r)
+                else: r['layer_sha256']=layer['sha256']
             else: changed.append(r)
+        for layer_id in rewrite_layers:
+            layer=old_layer_by_id[layer_id];reused_by_sha.pop(layer['sha256'],None)
         new_batches=batches(records) if not a.old_index else ([changed] if changed else [])
         layers=[]; emitted={}
         for old in reused_by_sha.values():
@@ -174,7 +196,13 @@ def main():
         for batch in new_batches:
             if not batch: continue
             image=a.out/'.pack.tmp.erofs'
-            make_image(a.mkfs,image,batch,root,epoch)
+            file_paths={r['path'] for r in batch}
+            dirs=[r for r in records if r['kind']=='dir' and any(
+                p.startswith(r['path'].rstrip('/') + '/') for p in file_paths)]
+            # Complete directory metadata is repeated in each pack. This keeps
+            # every EROFS image independently traversable while layers.index
+            # remains authoritative for the merged view.
+            make_image(a.mkfs,image,dirs+batch,root,epoch)
             sha=digest(image); name='pack-'+sha+'.erofs'; dst=a.out/name
             if dst.exists(): image.unlink()
             else: image.replace(dst); written+=1
@@ -185,7 +213,7 @@ def main():
         for r in records:
             r.setdefault('size',0)
             if r['kind']=='file': r.setdefault('layer_sha256',None)
-            r.setdefault('mtime',epoch)
+            if not r.get('mtime'): r['mtime']=epoch
         ordered=sorted(layers,key=lambda x:x['sha256']); save_index(a.out/'layers.index',ordered,records)
         print(json.dumps({'layers':len(ordered),'index_bytes':(a.out/'layers.index').stat().st_size,
                           'pack_bytes':sum(x['image_size'] for x in ordered),'new_packs':written,

@@ -60,12 +60,13 @@ def walk_commit(repo_path, commit, destination):
         values = variant.unpack()
         swap = lambda value: int.from_bytes(value.to_bytes(4, 'little'), 'big')
         uid, gid, mode, attrs = values
-        return swap(mode), swap(uid), swap(gid), attrs
+        attr_bytes = GLib.Variant('a(ayay)', attrs).get_data_as_bytes().get_data() if attrs else b''
+        return swap(mode), swap(uid), swap(gid), attr_bytes
 
     def visit(tree_sum, meta_sum, prefix):
-        mode, uid, gid, _ = metadata(meta_sum)
+        mode, uid, gid, root_attrs = metadata(meta_sum)
         if not prefix:
-            records.append(dict(path='/', checksum=tree_sum, kind='dir', target='', uid=uid, gid=gid, mode=mode, xattrs=''))
+            records.append(dict(path='/', checksum=tree_sum, kind='dir', target='', uid=uid, gid=gid, mode=mode, xattrs=root_attrs.hex()))
         objects[tree_sum] = _raw(repo, OSTree.ObjectType.DIR_TREE, tree_sum)
         ok, tree = repo.load_variant(OSTree.ObjectType.DIR_TREE, tree_sum)
         if not ok:
@@ -74,9 +75,9 @@ def walk_commit(repo_path, commit, destination):
         for name, tree_bytes, meta_bytes in dirs:
             child_tree, child_meta = _checksum(tree_bytes), _checksum(meta_bytes)
             path = f'{prefix}/{name}' if prefix else '/' + name
-            child_mode, child_uid, child_gid, _ = metadata(child_meta)
+            child_mode, child_uid, child_gid, child_attrs = metadata(child_meta)
             records.append(dict(path=path, checksum=child_tree, kind='dir', target='',
-                                uid=child_uid, gid=child_gid, mode=child_mode, xattrs=''))
+                                uid=child_uid, gid=child_gid, mode=child_mode, xattrs=child_attrs.hex()))
             visit(child_tree, child_meta, path)
         for name, checksum in files:
             file_sum = _checksum(checksum)
