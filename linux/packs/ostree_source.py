@@ -86,6 +86,7 @@ def walk_commit(repo_path, commit, destination):
             mode = info.get_attribute_uint32('unix::mode')
             uid = info.get_attribute_uint32('unix::uid')
             gid = info.get_attribute_uint32('unix::gid')
+            mtime = info.get_attribute_uint64('time::modified') if info.has_attribute('time::modified') else 0
             chunks = []
             if stream is not None:
                 while True:
@@ -103,6 +104,7 @@ def walk_commit(repo_path, commit, destination):
             records.append(dict(path=f'{prefix}/{name}' if prefix else '/' + name,
                                 checksum=file_sum, kind='symlink' if target else 'file',
                                 target=target, source=source, uid=uid, gid=gid, mode=mode,
+                                mtime=mtime,
                                 xattrs=xattrs.get_data_as_bytes().get_data().hex() if xattrs else ''))
     visit(root_tree, root_meta, '')
     return records, objects

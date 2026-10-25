@@ -84,7 +84,8 @@ def commit_epoch(repo_path, commit):
 
 def tar_info(tar, rec, path, epoch):
     info = tarfile.TarInfo('.' if rec['path'] == '/' else './' + rec['path'].lstrip('/'))
-    info.uid, info.gid, info.mode, info.mtime = rec['uid'], rec['gid'], stat.S_IMODE(rec['mode']), epoch
+    info.uid, info.gid, info.mode = rec['uid'], rec['gid'], stat.S_IMODE(rec['mode'])
+    info.mtime = rec.get('mtime') or epoch
     info.uname = info.gname = ''
     try:
         for key in os.listxattr(path, follow_symlinks=False):
@@ -184,7 +185,7 @@ def main():
         for r in records:
             r.setdefault('size',0)
             if r['kind']=='file': r.setdefault('layer_sha256',None)
-            r['mtime']=epoch
+            r.setdefault('mtime',epoch)
         ordered=sorted(layers,key=lambda x:x['sha256']); save_index(a.out/'layers.index',ordered,records)
         print(json.dumps({'layers':len(ordered),'index_bytes':(a.out/'layers.index').stat().st_size,
                           'pack_bytes':sum(x['image_size'] for x in ordered),'new_packs':written,
