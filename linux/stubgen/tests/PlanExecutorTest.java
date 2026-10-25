@@ -20,6 +20,25 @@ public final class PlanExecutorTest {
         });
         check(result.completed.size()==4&&order.indexOf("runtime")<order.indexOf("app")&&order.indexOf("gl")<order.indexOf("app"),"dependency order");
 
+        DependencyPlan.Node base=node("base"),localeCommit=node("locale","base"),codecs=node("codecs"),glCommit=node("gl-independent");
+        CountDownLatch rootsStarted=new CountDownLatch(3),releaseRoots=new CountDownLatch(1);
+        AtomicBoolean baseFinished=new AtomicBoolean();AtomicInteger active=new AtomicInteger(),peak=new AtomicInteger();
+        ExecutorService commitJobs=Executors.newSingleThreadExecutor();
+        Future<PlanExecutor.Outcome<Void>> commitPlan=commitJobs.submit(()->PlanExecutor.execute(List.of(base,codecs,glCommit,localeCommit),3,n->{
+            if(n.ref.equals("locale"))check(baseFinished.get(),"Locale commit ran before its runtime");
+            int now=active.incrementAndGet();peak.accumulateAndGet(now,Math::max);
+            if(!n.ref.equals("locale")) {
+                rootsStarted.countDown();releaseRoots.await();
+            }
+            if(n.ref.equals("base"))baseFinished.set(true);
+            active.decrementAndGet();return null;
+        }));
+        check(rootsStarted.await(2,TimeUnit.SECONDS),"independent commits started concurrently");
+        releaseRoots.countDown();
+        PlanExecutor.Outcome<Void> commitResult=commitPlan.get();commitJobs.shutdownNow();
+        check(commitResult.completed.size()==4&&peak.get()>=2,"independent package commits overlap");
+        check(baseFinished.get(),"runtime package commit completed");
+
         PlanExecutor.InFlight<String,String> shared=new PlanExecutor.InFlight<>();AtomicInteger pulls=new AtomicInteger();
         CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);ExecutorService jobs=Executors.newFixedThreadPool(2);
         Future<String> first=jobs.submit(()->shared.run("runtime@commit",()->{pulls.incrementAndGet();entered.countDown();release.await();return "deployment";}));
@@ -48,6 +67,6 @@ public final class PlanExecutorTest {
             peerStarted.countDown();Thread.sleep(50);return "B";}));
         peerStarted.await();PlanExecutor.Outcome<String> cancelled=cancelledJob.get(),peer=peerJob.get();concurrentJobs.shutdownNow();
         check(cancelled.failed.containsKey("a")&&peer.completed.get("b").equals("B"),"cancellation is isolated between jobs");
-        System.out.println("PASS parallel plan order, cross-job in-flight dedup, cancellation isolation, dependant failure isolation");
+        System.out.println("PASS dependency-ordered parallel commits, parallel plan order, cross-job in-flight dedup, cancellation isolation, dependant failure isolation");
     }
 }

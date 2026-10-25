@@ -196,9 +196,10 @@ public final class InstallTransaction {
                 if(!pulled.completed.containsKey(node.ref))continue;
                 String location=node.ref.equals(appRef)?"":"package-"+i;
                 org.json.JSONArray dependencies=new org.json.JSONArray();for(String ref:node.dependencies)dependencies.put(ref);
+                org.json.JSONArray stageDependencies=new org.json.JSONArray();for(String ref:node.stageDependencies)stageDependencies.put(ref);
                 rows.put(new JSONObject().put("ref",node.ref).put("commit",node.info.commit).put("origin",node.origin)
                         .put("metadata",metadata.get(node.ref)).put("mount",mounts.get(node.ref)).put("location",location)
-                        .put("reused",node.reused).put("dependencies",dependencies));
+                        .put("reused",node.reused).put("dependencies",dependencies).put("stageDependencies",stageDependencies));
                 if(node.ref.equals(appRef))appCommit=node.info.commit;
             }
             if(appCommit==null)throw new java.io.IOException("Plan has no requested ref");

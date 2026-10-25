@@ -584,7 +584,7 @@ public final class LinuxAppStoreService extends Service {
         runPackSession(op,pkg,artifacts,plan(installed!=null,
                 installed==null?0:installed.getLongVersionCode(),prior,desired,available,full));
         final boolean applyExtra=hasExtra;
-        op.finalizers.add(()->{
+        synchronized(op.finalizers) { op.finalizers.add(()->{
             try {
                 File applied=applyExtra?org.matonos.linux.stub.ExtraInstall.apply(this,pkg,new File(artifacts,"extra-output")):null;
                 PackageInfo after=getPackageManager().getPackageInfo(pkg,0);
@@ -596,7 +596,7 @@ public final class LinuxAppStoreService extends Service {
                 if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
                 runPackSession(op,pkg,artifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
             }catch(Exception failure){if(installed==null)removePackage(pkg);throw failure;}
-        });
+        }); }
     }
 
     /** Adds each signed EROFS pack layer, reusing unchanged installed carriers. */
@@ -699,28 +699,46 @@ public final class LinuxAppStoreService extends Service {
 
     private void installDeclaredPackages(Operation op) throws Exception {
         org.json.JSONArray deployments=op.stagedManifest.getJSONArray("deployments");
+        java.util.List<org.matonos.linuxhost.stubgen.DependencyPlan.Node> nodes=new java.util.ArrayList<>();
+        java.util.Map<String,Integer> positions=new java.util.HashMap<>();
         for(int i=0;i<deployments.length();i++) {
             JSONObject deployment=deployments.getJSONObject(i);String ref=deployment.getString("ref");
             if(ref.equals(op.ref))continue;
-            String pkg=packageFor(ref);PackageInfo prior=null;
+            org.matonos.linuxhost.stubgen.DependencyPlan.Node node=new org.matonos.linuxhost.stubgen.DependencyPlan.Node(
+                    ref,deployment.getString("origin"),null,deployment.getBoolean("reused"));
+            org.json.JSONArray dependencies=deployment.getJSONArray("stageDependencies");
+            for(int d=0;d<dependencies.length();d++)node.stageDependencies.add(dependencies.getString(d));
+            nodes.add(node);positions.put(ref,i);
+        }
+        org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> outcome=
+                org.matonos.linuxhost.stubgen.PlanExecutor.execute(nodes,Math.max(1,Runtime.getRuntime().availableProcessors()),node->{
+            JSONObject deployment=deployments.getJSONObject(positions.get(node.ref));
+            String ref=node.ref,pkg=packageFor(ref);PackageInfo prior=null;
             try{prior=getPackageManager().getPackageInfo(pkg,PackageManager.GET_SIGNING_CERTIFICATES);}catch(PackageManager.NameNotFoundException missing){}
-            if(deployment.getBoolean("reused")) {
+            if(node.reused) {
                 if(prior==null||!packageSignerMatches(prior))throw new SecurityException("Declared package disappeared or changed signer; retry");
                 org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(prior.splitNames,prior.applicationInfo.splitSourceDirs);
                 if(!record.ref.equals(ref)||!record.commit.equals(deployment.getString("commit"))||!record.remote.equals(deployment.getString("origin")))
                     throw new SecurityException("Declared package changed during planning; retry");
-                continue;
+                return null;
             }
             if(prior!=null) {
                 org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(prior.splitNames,prior.applicationInfo.splitSourceDirs);
                 if(packageSignerMatches(prior)&&record.ref.equals(ref)&&record.commit.equals(deployment.getString("commit"))
-                        &&record.remote.equals(deployment.getString("origin")))continue;
+                        &&record.remote.equals(deployment.getString("origin")))return null;
                 throw new SecurityException("Declared package was installed during planning with different content; retry");
             }
-            File artifacts=new File(op.packArtifacts,"dependency-"+i);
+            File artifacts=new File(op.packArtifacts,"dependency-"+positions.get(ref));
             if(!artifacts.isDirectory())throw new java.io.IOException("Missing prepared dependency packs for "+ref);
             installStubPackage(op,ref,artifacts,null,false,deployment.getString("mount"));
+            return null;
+        });
+        if(!outcome.failed.isEmpty()) {
+            Throwable failure=outcome.failed.values().iterator().next();
+            if(failure instanceof Exception)throw (Exception)failure;
+            throw new java.io.IOException("A declared package install failed",failure);
         }
+        if(!outcome.skipped.isEmpty())throw new java.io.IOException("A declared package was skipped after a dependency failed: "+outcome.skipped);
     }
 
     /** Pack independent refs in parallel; package commits remain dependency ordered below. */
