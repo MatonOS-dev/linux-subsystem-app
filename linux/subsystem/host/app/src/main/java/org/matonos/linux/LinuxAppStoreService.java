@@ -722,6 +722,7 @@ public final class LinuxAppStoreService extends Service {
             for(int d=0;d<dependencies.length();d++)node.stageDependencies.add(dependencies.getString(d));
             nodes.add(node);positions.put(ref,i);
         }
+        java.util.List<String> newlyInstalled=java.util.Collections.synchronizedList(new java.util.ArrayList<>());
         org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> outcome=
                 org.matonos.linuxhost.stubgen.PlanExecutor.execute(nodes,Math.max(1,Runtime.getRuntime().availableProcessors()),node->{
             JSONObject deployment=deployments.getJSONObject(positions.get(node.ref));
@@ -743,14 +744,19 @@ public final class LinuxAppStoreService extends Service {
             File artifacts=new File(op.packArtifacts,"dependency-"+positions.get(ref));
             if(!artifacts.isDirectory())throw new java.io.IOException("Missing prepared dependency packs for "+ref);
             installStubPackage(op,ref,artifacts,null,false,deployment.getString("mount"));
+            newlyInstalled.add(pkg);
             return null;
         });
         if(!outcome.failed.isEmpty()) {
+            synchronized(newlyInstalled) { for(String pkg:newlyInstalled)removePackage(pkg); }
             Throwable failure=outcome.failed.values().iterator().next();
             if(failure instanceof Exception)throw (Exception)failure;
             throw new java.io.IOException("A declared package install failed",failure);
         }
-        if(!outcome.skipped.isEmpty())throw new java.io.IOException("A declared package was skipped after a dependency failed: "+outcome.skipped);
+        if(!outcome.skipped.isEmpty()) {
+            synchronized(newlyInstalled) { for(String pkg:newlyInstalled)removePackage(pkg); }
+            throw new java.io.IOException("A declared package was skipped after a dependency failed: "+outcome.skipped);
+        }
     }
 
     /** Pack independent refs in parallel; package commits remain dependency ordered below. */
