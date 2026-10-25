@@ -3,7 +3,7 @@
 .type site_fde_target,@function
 site_fde_target:
 .cfi_startproc
-    mov $3,%eax
+    mov $8,%eax
     syscall
     ret
 .cfi_endproc

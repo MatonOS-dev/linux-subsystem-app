@@ -12,6 +12,7 @@
 #include <linux/msg.h>
 #include <linux/sem.h>
 #include <linux/shm.h>
+#include <linux/memfd.h>
 #include <stdint.h>
 #include <sys/file.h>
 #include <sys/mman.h>
@@ -67,6 +68,7 @@ struct ctx {
 };
 static struct head *shared;
 static char arena_path[4096], journal_path[4096];
+static int arena_fd=-1;
 static int recover(void);
 static long init_error;
 struct local_attach {
@@ -187,15 +189,14 @@ int ipc_init(void) {
     vfs_free(directory);
     return (int)(init_error = -ENAMETOOLONG);
   }
-  p_copy(arena_path, directory, n);
-  p_copy(arena_path + n, "/sysvipc", 9);
+  p_copy(arena_path, directory, n + 1);
   p_copy(journal_path, directory, n);
   p_copy(journal_path + n, "/journal", 9);
   vfs_free(directory);
-  long fd = R(openat, AT_FDCWD, arena_path,
-              O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600, 0, 0);
+  long fd = proxy_private_fd(R(memfd_create,"matonos-sysvipc",0,0,0,0,0));
   if (fd < 0)
     return (int)(init_error = fd);
+  arena_fd=(int)fd;
   long r = R(ftruncate, fd, PAGE, 0, 0, 0, 0);
   if (!r) {
     r = R(mmap, 0, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -208,7 +209,6 @@ int ipc_init(void) {
       r = 0;
     }
   }
-  R(close, fd, 0, 0, 0, 0, 0);
   if (r < 0)
     init_error = r;
   return r < 0 ? (int)r : 0;
@@ -340,8 +340,7 @@ static int recover(void) {
                  O_RDONLY | O_CLOEXEC | O_NOFOLLOW, 0, 0, 0);
   if (j < 0)
     return j;
-  int fd = (int)R(openat, AT_FDCWD, arena_path, O_RDWR | O_CLOEXEC | O_NOFOLLOW,
-                  0, 0, 0);
+  int fd = arena_fd;
   long r = fd < 0 ? fd : 0;
   struct proxy_stat st;
   if (!r)
@@ -375,8 +374,6 @@ static int recover(void) {
   }
   if ((unsigned long)mapped < (unsigned long)-4095)
     R(munmap, mapped, st.st_size, 0, 0, 0, 0);
-  if (fd >= 0)
-    R(close, fd, 0, 0, 0, 0, 0);
   R(close, j, 0, 0, 0, 0, 0);
   if (!r) {
     commit();
@@ -496,16 +493,8 @@ static int owner(struct obj *p) {
   unsigned uid = (unsigned)R(geteuid, 0, 0, 0, 0, 0, 0);
   return uid == p->perm.uid || uid == p->perm.cuid ? 0 : -EPERM;
 }
-static void segment_path(char *path, int id) {
-  size_t n = p_len(arena_path) - 8;
-  p_copy(path, arena_path, n);
-  p_copy(path + n, "/shm-", 5);
-  n += 5;
-  n += decimal(path + n, (unsigned)id);
-  path[n] = 0;
-}
 static void ticket_path(char *path, off ticket) {
-  size_t n = p_len(arena_path) - 8;
+  size_t n = p_len(arena_path);
   p_copy(path, arena_path, n);
   p_copy(path + n, "/fork-", 6);
   n += 6;
@@ -526,15 +515,7 @@ static int ticket_alive(off ticket) {
   return r != 0;
 }
 static void cleanup_segments(struct ctx *c) {
-  for (off o = shared->objects; o;) {
-    struct obj *p = ptr(c, o);
-    o = p->next;
-    if (p->kind == 2 && p->removed == 2) {
-      char path[4096];
-      segment_path(path, p->id);
-      R(unlinkat, AT_FDCWD, path, 0, 0, 0, 0);
-    }
-  }
+  (void)c;
 }
 static long get(struct ctx *c, int kind, int key, unsigned long size,
                 int flags) {
@@ -545,7 +526,7 @@ static long get(struct ctx *c, int kind, int key, unsigned long size,
   size_t reused_capacity = 0;
   for (off o = shared->objects; o;) {
     struct obj *p = ptr(c, o);
-    if (p->kind == kind && p->removed == 2 && (kind != 1 || p->size >= size)) {
+    if (kind==1 && p->kind == kind && p->removed == 2 && p->size >= size) {
       reusable = o;
       reused_data = p->data;
       reused_capacity = p->size;
@@ -606,19 +587,8 @@ static long get(struct ctx *c, int kind, int key, unsigned long size,
   p->size = kind == 1 && reusable ? reused_capacity : size;
   p->qbytes = 16384;
   if (kind == 2) {
-    if ((uint64_t)size + 4095 > (uint64_t)INT64_MAX)
-      return -ENOMEM;
-    char path[4096];
-    segment_path(path, p->id);
-    int fd =
-        (int)R(openat, AT_FDCWD, path,
-               O_RDWR | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600, 0, 0);
-    if (fd < 0)
-      return fd;
-    long r = R(ftruncate, fd, (size + 4095) & ~4095UL, 0, 0, 0, 0);
-    R(close, fd, 0, 0, 0, 0, 0);
-    if (r)
-      return r;
+    if ((uint64_t)size + 4095 > (uint64_t)INT64_MAX)return -ENOMEM;
+    off data=alloc(c,(size+4095)&~4095UL);if(!data)return -ENOMEM;p->data=data;
   }
   if (kind == 1) {
     off data = reusable ? reused_data : alloc(c, size * sizeof(struct cell));
@@ -1026,14 +996,6 @@ static long dispatch(struct ctx *c, long nr, proxy_arg_t *a, off *wr) {
             ((unsigned long)addr > la->addr ||
              (unsigned long)addr + len < la->addr + la->len))
           return -EOPNOTSUPP;
-    char path[4096];
-    segment_path(path, id);
-    long segment =
-        R(openat, AT_FDCWD, path,
-          ((flags & SHM_RDONLY) ? O_RDONLY : O_RDWR) | O_NOFOLLOW | O_CLOEXEC,
-          0, 0, 0);
-    if (segment < 0)
-      return segment;
     long mapped =
         R(mmap, addr, len,
           PROT_READ | ((flags & SHM_RDONLY) ? 0 : PROT_WRITE) |
@@ -1041,8 +1003,7 @@ static long dispatch(struct ctx *c, long nr, proxy_arg_t *a, off *wr) {
           MAP_SHARED |
               (addr ? ((flags & SHM_REMAP) ? MAP_FIXED : MAP_FIXED_NOREPLACE)
                     : 0),
-          segment, 0);
-    R(close, segment, 0, 0, 0, 0, 0);
+          arena_fd, p->data);
     if ((unsigned long)mapped >= (unsigned long)-4095)
       return mapped;
     if (flags & SHM_REMAP) {
@@ -1277,8 +1238,7 @@ long ipc_call(long nr, proxy_arg_t *input) {
   int waited = 0;
   for (;;) {
     lock();
-    struct ctx c = {.fd = (int)R(openat, AT_FDCWD, arena_path,
-                                 O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0, 0, 0)};
+    struct ctx c = {.fd = arena_fd};
     long result = c.fd < 0 ? c.fd : remap(&c);
     off wr = 0;
     unsigned seq = shared->seq;
@@ -1297,8 +1257,6 @@ long ipc_call(long nr, proxy_arg_t *input) {
     }
     if (c.base)
       R(munmap, c.base, c.size, 0, 0, 0, 0);
-    if (c.fd >= 0)
-      R(close, c.fd, 0, 0, 0, 0, 0);
     unlock();
     if (result != AGAIN)
       return result;
@@ -1313,8 +1271,7 @@ long ipc_call(long nr, proxy_arg_t *input) {
     }
     if (wr) {
       lock();
-      struct ctx d = {.fd = (int)R(openat, AT_FDCWD, arena_path,
-                                   O_RDWR | O_CLOEXEC, 0, 0, 0)};
+      struct ctx d = {.fd = arena_fd};
       if (d.fd >= 0 && remap(&d) >= 0 && begin(&d) >= 0) {
         struct rec *q = ptr(&d, wr);
         struct obj *p = find(&d, q->id);
@@ -1330,8 +1287,6 @@ long ipc_call(long nr, proxy_arg_t *input) {
       }
       if (d.base)
         R(munmap, d.base, d.size, 0, 0, 0, 0);
-      if (d.fd >= 0)
-        R(close, d.fd, 0, 0, 0, 0, 0);
       unlock();
     }
     if (waitresult == -EINTR)
@@ -1345,16 +1300,13 @@ void ipc_exit(void) {
   if (!shared)
     return;
   lock();
-  struct ctx c = {
-      .fd = (int)R(openat, AT_FDCWD, arena_path, O_RDWR | O_CLOEXEC, 0, 0, 0)};
+  struct ctx c = {.fd = arena_fd};
   if (c.fd >= 0 && remap(&c) >= 0 && begin(&c) >= 0) {
     reap(&c, 1);
     commit();
   }
   if (c.base)
     R(munmap, c.base, c.size, 0, 0, 0, 0);
-  if (c.fd >= 0)
-    R(close, c.fd, 0, 0, 0, 0, 0);
   unlock();
 }
 /* Fork/exec lifecycle integration is intentionally separate from dispatch. */
@@ -1368,8 +1320,7 @@ void ipc_fork(void) {
     return;
   local_pid = pid;
   lock();
-  struct ctx c = {
-      .fd = (int)R(openat, AT_FDCWD, arena_path, O_RDWR | O_CLOEXEC, 0, 0, 0)};
+  struct ctx c = {.fd = arena_fd};
   if (c.fd >= 0 && remap(&c) >= 0 && begin(&c) >= 0) {
     for (struct local_attach *a = attached; a; a = a->next) {
       off o = new_record(&c);
@@ -1390,8 +1341,6 @@ void ipc_fork(void) {
   }
   if (c.base)
     R(munmap, c.base, c.size, 0, 0, 0, 0);
-  if (c.fd >= 0)
-    R(close, c.fd, 0, 0, 0, 0, 0);
   unlock();
 }
 void ipc_exec(void) {
@@ -1421,8 +1370,7 @@ int ipc_fork_prepare(void) {
     unlock();
     return 0;
   }
-  struct ctx c = {
-      .fd = (int)R(openat, AT_FDCWD, arena_path, O_RDWR | O_CLOEXEC, 0, 0, 0)};
+  struct ctx c = {.fd = arena_fd};
   long r = c.fd < 0 ? c.fd : remap(&c);
   int ticketfd = -1;
   off ticket = 0;
@@ -1480,8 +1428,6 @@ int ipc_fork_prepare(void) {
   }
   if (c.base)
     R(munmap, c.base, c.size, 0, 0, 0, 0);
-  if (c.fd >= 0)
-    R(close, c.fd, 0, 0, 0, 0, 0);
   unlock();
   return (int)r;
 }
@@ -1531,23 +1477,22 @@ void ipc_fork_result(long result) {
   R(unlinkat, AT_FDCWD, path, 0, 0, 0, 0);
   if (c.base)
     R(munmap, c.base, c.size, 0, 0, 0, 0);
-  if (c.fd >= 0)
-    R(close, c.fd, 0, 0, 0, 0, 0);
   unlock();
 }
 int ipc_private_fd(int fd) {
-  return pending.owner && (fd == pending.ticket_fd || fd == pending.context.fd);
+  return fd==arena_fd || (pending.owner && fd == pending.ticket_fd);
 }
+void ipc_private_fd_relocated(int oldfd,int newfd){if(arena_fd==oldfd)arena_fd=newfd;if(pending.context.fd==oldfd)pending.context.fd=newfd;if(pending.ticket_fd==oldfd)pending.ticket_fd=newfd;}
 
 #include "state.h"
 void ipc_state(struct state *s){
  uint64_t present=state_word(s,shared!=NULL);if(!present)return;
  state_bytes(s,arena_path,sizeof(arena_path));state_bytes(s,journal_path,sizeof(journal_path));
  if(arena_path[sizeof(arena_path)-1]||journal_path[sizeof(journal_path)-1]){s->error=-EINVAL;return;}
+ arena_fd=(int)state_word(s,arena_fd);
  if(!s->reading)return;
- long fd=R(openat,AT_FDCWD,arena_path,O_RDWR|O_NOFOLLOW|O_CLOEXEC,0,0,0);
- if(fd<0){s->error=fd;return;}
- long m=R(mmap,0,PAGE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);R(close,fd,0,0,0,0,0);
+ if(arena_fd<0 || R(fcntl,arena_fd,F_GETFD,0,0,0,0)<0){s->error=-EBADF;return;}
+ long m=R(mmap,0,PAGE,PROT_READ|PROT_WRITE,MAP_SHARED,arena_fd,0);
  if((unsigned long)m>=(unsigned long)-4095){s->error=m;return;}
  shared=(void *)m;if(shared->format!=2){s->error=-EPROTO;return;}
  /* The kernel PID/birth identity retains SEM_UNDO records. Kernel exec
@@ -1556,7 +1501,7 @@ void ipc_state(struct state *s){
  /* Kernel exec already unmapped attachments. Remove accounting records without
   * munmap of old addresses (which could now belong to the new loader). */
  lock();
- struct ctx c={.fd=(int)R(openat,AT_FDCWD,arena_path,O_RDWR|O_CLOEXEC|O_NOFOLLOW,0,0,0)};
+ struct ctx c={.fd=arena_fd};
  long result=c.fd<0?c.fd:remap(&c);
  if(result>=0 && (result=begin(&c))>=0){
   uint64_t token=identity(local_pid,1);
@@ -1570,6 +1515,5 @@ void ipc_state(struct state *s){
   commit();cleanup_segments(&c);
  }
  if(c.base)R(munmap,c.base,c.size,0,0,0,0);
- if(c.fd>=0)R(close,c.fd,0,0,0,0,0);
  unlock();if(result<0)s->error=result;
 }

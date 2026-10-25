@@ -243,7 +243,24 @@ The `getdents64` and `fstat` traps remain for generic proxy behavior: directory
 reads pass through the symlink/link metadata shim, and `fstat` applies payload
 metadata adjustments and rejects proxy-private descriptors. Neither trap
 checks or tracks EROFS descriptors. `fchdir` uses the ordinary resolved path
-and native syscall; the former tracked-fd-specific branch is removed. The
-generic fd reserve remains for proxy-owned IPC and shared temporary-lock
-descriptors. `tests/erofs-host.py` exercises native open/stat/readlink/getdents,
-mmap and negative lookups through a prefix swap.
+and native syscall. `tests/erofs-host.py` exercises native open/stat/readlink/
+getdents, mmap and negative lookups through a prefix swap.
+
+## Fixed private fd reserve (2026-10-25)
+
+The proxy reserves exactly 18 occupied fd numbers at the top of the real soft
+`RLIMIT_NOFILE`; it does not raise the limit. The private users are the
+state-transfer memfd, diagnostic fd, GPU bridge/DNS helper channels, SysV IPC
+arena, and VFS temporary descriptors. Lowering the soft limit relocates these
+fds below the new limit before the kernel call. App descriptor allocation is
+not capped or skipped. Close and dup guards protect only private descriptors;
+there are no payload data-call fd checks.
+
+## SysV IPC arena (2026-10-25)
+
+SysV IPC keeps semaphore/message metadata and every shared-memory segment in
+one private memfd arena. Segment records store page-aligned offsets; the arena
+allocator grows it with `ftruncate`, while established `MAP_SHARED` segment
+mappings remain valid. Fork inherits the single arena fd; cross-class exec
+state carries its number and verifies the inherited fd. The metadata recovery
+journal and fork tickets remain short-lived sidecar files.

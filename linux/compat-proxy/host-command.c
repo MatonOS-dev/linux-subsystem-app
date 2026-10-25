@@ -14,7 +14,14 @@ static long host_command_dir = -1;
 static int host_command_started;
 static volatile int hc_stopping;
 #ifdef HOST_COMMAND_TEST
-int proxy_host_test(int fd){hc_test_fd=fd;return 0;}
+int proxy_host_test(int fd){
+    /* Keep the worker endpoint across bwrap's fd sweeps while leaving the
+     * caller's control fd number untouched for bwrap itself. */
+    long copy=RAW(PROXY_SC_fcntl,fd,F_DUPFD_CLOEXEC,3,0,0,0);
+    long reserved=proxy_private_fd(copy);
+    if(reserved<0)return (int)reserved;
+    hc_test_fd=(int)reserved;return 0;
+}
 #endif
 static int hc_set_short_path(void) {
     size_t at=0;const char *prefix="/proc/self/fd/";while(*prefix)host_command_short[at++]=*prefix++;

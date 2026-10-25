@@ -17,6 +17,7 @@ void vfs_free(void *p){free(p);}
 char *vfs_temp_create(long *e){*e=0;return strdup(proxy_tmpdir);}
 size_t p_len(const char *p){return strlen(p);}
 void p_copy(void *d,const void *s,size_t n){memcpy(d,s,n);}
+long proxy_private_fd(long fd){return fd;}
 /* raw.S's unused clone continuation. */
 uintptr_t proxy_clone_resume;
 static long call(long nr,long x,long y,long z,long w){long a[6]={x,y,z,w,0,0};return ipc_call(nr,a);}
@@ -26,7 +27,7 @@ int main(void){
   unsigned short initial[2]={7,11};assert(!call(PROXY_SC_semctl,id,0,SETALL,(long)initial));
   for(int append=0;append<2;append++){
     int pipefd[2];assert(!pipe(pipefd));pid_t child=fork();assert(child>=0);
-    if(!child){close(pipefd[0]);lock();struct ctx c={.fd=(int)R(openat,AT_FDCWD,arena_path,O_RDWR,0,0,0)};assert(c.fd>=0);assert(!remap(&c));assert(!begin(&c));
+    if(!child){close(pipefd[0]);lock();struct ctx c={.fd=arena_fd};assert(c.fd>=0);assert(!remap(&c));assert(!begin(&c));
       struct obj *p=find(&c,id);cells(&c,p)[0].value=999; /* partial multi-cell commit */
       if(append){assert(get(&c,1,0x7722,3,IPC_CREAT|0600)>=0);assert(record(&c,1,id,0));}
       assert(write(pipefd[1],"x",1)==1);for(;;)pause();

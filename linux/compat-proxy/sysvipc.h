@@ -12,4 +12,5 @@ void ipc_fork(void);
 int ipc_fork_prepare(void);
 void ipc_fork_result(long);
 int ipc_private_fd(int);
+void ipc_private_fd_relocated(int,int);
 #endif

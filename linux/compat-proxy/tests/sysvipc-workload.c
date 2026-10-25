@@ -56,7 +56,7 @@ static void shared_memory(void) {
     char *p=shmat(id,NULL,0);CHECK(p!=(void *)-1);strcpy(p,"shared-by-memfd");
     CHECK(!shmctl(id,IPC_STAT,&ds));CHECK(ds.shm_nattch==1);
     int fd[2];CHECK(!pipe(fd));pid_t child=fork();CHECK(child>=0);
-    if(!child){close(fd[0]);CHECK(!strcmp(p,"shared-by-memfd"));char *q=shmat(id,NULL,SHM_RDONLY);CHECK(q!=(void *)-1);CHECK(!strcmp(q,p));CHECK(!shmdt(q));strcpy(p,"child-write");CHECK(write(fd[1],"x",1)==1);CHECK(!shmdt(p));_exit(0);}
+    if(!child){close(fd[0]);CHECK(!strcmp(p,"shared-by-memfd"));int growth=shmget(IPC_PRIVATE,8*1024*1024,0600);CHECK(growth>=0);CHECK(!strcmp(p,"shared-by-memfd"));char *q=shmat(id,NULL,SHM_RDONLY);CHECK(q!=(void *)-1);CHECK(!strcmp(q,p));CHECK(!shmdt(q));strcpy(p,"child-write");CHECK(!shmctl(growth,IPC_RMID,NULL));CHECK(write(fd[1],"x",1)==1);CHECK(!shmdt(p));_exit(0);}
     close(fd[1]);char c;CHECK(read(fd[0],&c,1)==1);close(fd[0]);done(child);CHECK(!strcmp(p,"child-write"));
     CHECK(!shmctl(id,IPC_STAT,&ds));CHECK(ds.shm_nattch==1);
     CHECK(!shmctl(id,IPC_RMID,NULL));CHECK(!shmctl(id,IPC_STAT,&ds));CHECK(ds.shm_perm.mode&SHM_DEST);

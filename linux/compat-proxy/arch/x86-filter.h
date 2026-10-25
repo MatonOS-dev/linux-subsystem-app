@@ -37,6 +37,49 @@ static int arch_app_install(void) {
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         }
         bpf[ioctl_jump].k=n-ioctl_jump-1;
+        uint64_t raw_gateway=branch?UINT64_C(0x70300000):UINT64_C(0x600000300000);
+        for(unsigned g=0;g<(branch?2u:3u);g++){
+            /* seccomp reports the return PC after syscall, not its opcode. */
+            uint64_t raw_ip=branch?raw_gateway+(g==0?0x42:0x102):arch_gateway_pc(g);
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(raw_ip>>32));
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)raw_ip);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
+        /* The inherited app filter must also guard these operations: its
+         * constant-ALLOW cache would otherwise bypass the proxy filter. */
+        {
+            const struct {long id;unsigned arg;} guards[]={
+                {PROXY_SC_close,0},{PROXY_SC_dup2,1},{PROXY_SC_dup3,1}
+            };
+            for(unsigned i=0;i<sizeof(guards)/sizeof(guards[0]);i++){
+                long nr=encode_ioctl(guards[i].id);if(nr<0)continue;
+                unsigned off=offsetof(struct seccomp_data,args[guards[i].arg]);
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+                ADD(BPF_JMP|BPF_JEQ|BPF_K,0,8,nr);
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,off+4);
+                ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,0);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,off);
+                ADD(BPF_JMP|BPF_JGE|BPF_K,0,2,(uint32_t)proxy_fd_reserve);
+                ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,(uint32_t)proxy_fd_reserve_end);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+            }
+            long nr=encode_ioctl(PROXY_SC_close_range);if(nr>=0){
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+                ADD(BPF_JMP|BPF_JEQ|BPF_K,0,8,nr);
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+                ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve_end);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+                ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+                ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+            }
+        }
         if(!branch) {
             /* The DNS helper clone trampoline needs its kernel-selected child
              * stack. Do not route this one clone through clone_retry. */
@@ -86,6 +129,49 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
     ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,0x40000000);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    /* Proxy-internal syscalls must bypass the payload descriptor guards. */
+    for(unsigned g=0;g<3;g++) {
+        uint64_t raw_ip=g==0?gateway+0x42:g==1?gateway+0x102:gateway+0x202;
+        if(g==2 && peer)continue;
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(raw_ip>>32));
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)raw_ip);
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+    }
+    /* Descriptor guards run only when a close/dup target intersects the
+     * fixed private-fd pool. Ordinary closes and dup targets go straight to
+     * the kernel's inherited app filter. */
+    if(!resident_fds_enabled){
+        const struct {long id;unsigned arg;} guards[]={
+            {PROXY_SC_close,0},{PROXY_SC_dup2,1},{PROXY_SC_dup3,1}
+        };
+        for(unsigned i=0;i<sizeof(guards)/sizeof(guards[0]);i++){
+            long nr=encode(guards[i].id);if(nr<0)continue;
+            unsigned off=offsetof(struct seccomp_data,args[guards[i].arg]);
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,8,nr);
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,off+4);
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,0);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,off);
+            ADD(BPF_JMP|BPF_JGE|BPF_K,0,2,(uint32_t)proxy_fd_reserve);
+            ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve_end);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
+        long nr=encode(PROXY_SC_close_range);
+        if(nr>=0){
+            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,8,nr);
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+            ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve_end);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
+            ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        }
+    }
     /* Number-only fast path. Every syscall the checks below would not trap
      * is allowed here before any instruction-pointer or argument load, so
      * the kernel's seccomp action cache marks it constant-allow and skips
@@ -128,34 +214,6 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         for(unsigned i=0;i<count;i++)ADD(BPF_JMP|BPF_JEQ|BPF_K,(uint8_t)(count-i),0,rewritten[i]);
         ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-    }
-    /* Payload reads and writes on descriptors outside the proxy window reach
-     * Linux directly. Proxy-owned state descriptors live in the window.
-     * EROFS file descriptors are ordinary kernel descriptors and need no
-     * descriptor-specific seccomp filters. Known exception: SysV IPC arena descriptors stay where
-     * openat put them (moving them hangs tests/site-rewrite-exec, cause not
-     * yet found); they are private only during an in-flight IPC handoff.
-     * The descriptor is an int: the high word must be zero. */
-    {
-        const long writes[]={PROXY_SC_write,PROXY_SC_writev,PROXY_SC_pwrite64,PROXY_SC_pwritev,
-            PROXY_SC_pwritev2,PROXY_SC_fallocate,
-            PROXY_SC_read,PROXY_SC_readv,PROXY_SC_pread64,PROXY_SC_preadv,PROXY_SC_preadv2,PROXY_SC_lseek};
-        unsigned pending[sizeof(writes)/sizeof(writes[0])],waiting=0;
-        for(unsigned i=0;i<sizeof(writes)/sizeof(writes[0]);i++){
-            long native_nr=encode(writes[i]);if(native_nr<0)continue;
-            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,native_nr);
-            pending[waiting++]=n;ADD(BPF_JMP|BPF_JA,0,0,0);
-        }
-        unsigned skip=n;ADD(BPF_JMP|BPF_JA,0,0,0);
-        for(unsigned i=0;i<waiting;i++)bpf[pending[i]].k=n-pending[i]-1;
-        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0])+4);
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,4,0);
-        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
-        ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve);
-        ADD(BPF_JMP|BPF_JGE|BPF_K,0,1,(uint32_t)proxy_fd_reserve_end);
-        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-        bpf[skip].k=n-skip-1;
     }
     {
         unsigned pending[512],waiting=0;

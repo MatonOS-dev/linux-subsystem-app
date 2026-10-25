@@ -89,9 +89,11 @@ and the proxy.
 `erofs-index.c` keeps only package-target-to-mounted-directory prefix swaps.
 After the swap, `stat`, `readlink`, `getdents`, `open`, `mmap`, and descriptor
 operations use native syscalls against the kernel EROFS mount. It keeps no
-deployment file index, layer table, EROFS fd table, or synthesized EROFS
-metadata. The generic fd reserve remains for proxy-owned IPC and
-shared temporary-lock descriptors.
+deployment file index, layer table, tracked EROFS fds, or synthesized EROFS
+metadata. The generic fd reserve protects proxy-owned descriptors with an
+exact 18-slot reserve at the top of the soft limit, close-skip and move-on-dup
+guards, and no payload data-call fd checks. SysV IPC metadata and segments
+share one private memfd arena.
 
 ### Network and DNS
 
@@ -110,8 +112,10 @@ sockets retain kernel behavior. The helper restarts lazily after fork.
 ### SysV IPC and state
 
 `sysvipc.c` implements SysV semaphores, shared memory and message queues using
-shared proxy state and futex coordination because the Android kernel is built
-without SysV IPC. The implementation follows Linux ABI layouts and supports
+one shared memfd arena, offsets and futex coordination because the Android
+kernel is built without SysV IPC. Segment pages and semaphore/message metadata
+share the arena; growing its memfd leaves existing shared mappings valid. The
+implementation follows Linux ABI layouts and supports
 selected lifecycle, blocking, timeout and `SEM_UNDO` behavior; unsupported
 operations are reported by the tests and source comments.
 
@@ -120,9 +124,25 @@ width words, bounded lengths, validation, a random handoff token and kernel
 memfd seals. `net.c`, `vfs.c`, `sysvipc.c` and proxy-owned state each serialize
 their own records through this common interface.
 
+The proxy reserves 18 descriptor numbers at the top of the real soft
+`RLIMIT_NOFILE` at startup. They stay occupied by proxy-owned descriptors or
+placeholders; the limit is never raised. Current users include the state
+handoff memfd, diagnostics, GPU bridge and DNS helper channels, the SysV IPC
+arena, and VFS temporary descriptors. If the app lowers its soft limit, the
+proxy moves reserved descriptors below it before applying the requested
+limit. BPF checks trap only closes/dup targets in the reserved set and
+`close_range` sweeps that overlap it. Sweeps preserve reserved descriptors;
+direct close of one returns `EBADF`, and dup onto one first moves the proxy
+descriptor and then performs the app operation. The old fd-window tiers and
+general data-call fd checks are gone. EROFS descriptors use the kernel's
+native behavior after the package prefix swap.
+
 ## Current limitations and device validation
 
 - Host checks do not replace a fresh-image boot or app-UID testing.
+- Fixed-fd verification passes the close-range/setrlimit test, placeholder
+guards, host-command-pair integration, and the captured FUSE EROFS ldconfig
+replay. No fresh image or VM validation was performed for this merge.
 - The enforcing v46 VM fixes v45's 32-bit graphics labels and vendor
   `libhardware.so` dependency. Under the installed Flatpak stub UID, ELF32
   EGL pbuffer and GLX core-profile pixel readback, GLX alpha checks and Vulkan

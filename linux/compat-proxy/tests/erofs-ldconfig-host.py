@@ -226,6 +226,9 @@ def main():
         # Flatpak's ldconfig phase runs in the sandbox root, with this same
         # command shape and no host ld.so.cache bind.
         command = args + ["/usr/bin/ldconfig", "-X", "-C", "/run/ld-so-cache-dir/cache"]
+        count_path = os.environ.get("COMPAT_EROFS_LDCONFIG_COUNT")
+        if count_path:
+            command[1:1] = ["--count", count_path]
         trace = scratch / "strace.log"
         debugger = os.environ.get("COMPAT_EROFS_LDCONFIG_GDB")
         if debugger:

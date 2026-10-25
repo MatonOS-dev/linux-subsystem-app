@@ -141,10 +141,12 @@ int main(int argc,char **argv){
     assert(rw_readlinkat(AT_FDCWD,"/proc/self/exe",buffer,sizeof(buffer))>0);
     check=rw_open(AT_FDCWD,"/tmp",O_RDONLY|O_DIRECTORY,0);assert(check>=0);
     assert(rw_getdents(check,buffer,sizeof(buffer))>=0);assert(!rw_close(check));
-    assert(rewritten(rw_close)==enabled && rewritten(rw_fstat)==enabled);
-    /* lseek outside the proxy fd window reaches Linux natively: no trap, so
-     * its site never needs rewriting. */
-    assert(!rewritten(rw_lseek));
+    /* Close is intercepted by an fd-argument guard only for private fds, so
+     * ordinary close sites no longer need syscall-site rewriting. */
+    assert(!rewritten(rw_close) && rewritten(rw_fstat)==enabled);
+    /* lseek remains routed so tracked EROFS directory descriptions can keep
+     * their merged-view position; ordinary descriptors pass through native. */
+    assert(rewritten(rw_lseek)==enabled);
     assert(rewritten(rw_readlink)==enabled && rewritten(rw_readlinkat)==enabled && rewritten(rw_getdents)==enabled);
     assert(rewritten(rw_fcntl)==enabled);
     assert(rewritten(rw_open)==enabled && rewritten(rw_open9)==enabled);
