@@ -16,6 +16,7 @@ src.write_text(r'''#define _GNU_SOURCE
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 int main(int argc,char **argv){
  if(argc>1&&!strcmp(argv[1],"exec")){puts("EROFS EXEC PASS");return 0;}
@@ -36,6 +37,24 @@ int main(int argc,char **argv){
  char b[13]={0};assert(read(relative,b,12)==12&&!strcmp(b,"hello erofs\n"));close(relative);close(pathfiles);
  int files=openat(commit,"files",O_RDONLY|O_DIRECTORY|O_CLOEXEC);assert(files>=0);
  assert(!fstat(files,&st)&&S_ISDIR(st.st_mode));
+ /* Red zones adjacent to syscall output buffers catch ABI-size and record
+  * length overruns in the EROFS emulation. */
+ struct { unsigned char before[16]; struct stat value; unsigned char after[16]; } stat_guard;
+ memset(&stat_guard,0xa5,sizeof(stat_guard));memset(stat_guard.before,0x5a,sizeof(stat_guard.before));memset(stat_guard.after,0x5a,sizeof(stat_guard.after));
+ assert(!stat("/usr/sample",&stat_guard.value));
+ for(size_t i=0;i<sizeof(stat_guard.before);i++)assert(stat_guard.before[i]==0x5a&&stat_guard.after[i]==0x5a);
+ struct { unsigned char before[16]; struct statx value; unsigned char after[16]; } statx_guard;
+ memset(&statx_guard,0xa5,sizeof(statx_guard));memset(statx_guard.before,0x5a,sizeof(statx_guard.before));memset(statx_guard.after,0x5a,sizeof(statx_guard.after));
+ assert(!statx(AT_FDCWD,"/usr/sample",0,STATX_BASIC_STATS,&statx_guard.value));
+ for(size_t i=0;i<sizeof(statx_guard.before);i++)assert(statx_guard.before[i]==0x5a&&statx_guard.after[i]==0x5a);
+ struct { unsigned char before[16]; unsigned char data[64]; unsigned char after[16]; } dents_guard;
+ memset(&dents_guard,0xa5,sizeof(dents_guard));memset(dents_guard.before,0x5a,sizeof(dents_guard.before));memset(dents_guard.after,0x5a,sizeof(dents_guard.after));
+ long dents=syscall(SYS_getdents64,files,dents_guard.data,sizeof(dents_guard.data));assert(dents>0&&dents<=(long)sizeof(dents_guard.data));
+ for(size_t i=0;i<sizeof(dents_guard.before);i++)assert(dents_guard.before[i]==0x5a&&dents_guard.after[i]==0x5a);
+ struct { unsigned char before[16]; unsigned char data[3]; unsigned char after[16]; } link_guard;
+ memset(&link_guard,0xa5,sizeof(link_guard));memset(link_guard.before,0x5a,sizeof(link_guard.before));memset(link_guard.after,0x5a,sizeof(link_guard.after));
+ assert(readlink("/usr/link",(char *)link_guard.data,sizeof(link_guard.data))==3);
+ for(size_t i=0;i<sizeof(link_guard.before);i++)assert(link_guard.before[i]==0x5a&&link_guard.after[i]==0x5a);
  int saw_indexed=0;DIR *rootdir=fdopendir(dup(files));assert(rootdir);struct dirent *entry;
  while((entry=readdir(rootdir)))saw_indexed|=!strcmp(entry->d_name,"sample");
  closedir(rootdir);assert(saw_indexed);
@@ -62,6 +81,14 @@ int main(int argc,char **argv){
  while((de=readdir(d))) {saw_sample|=!strcmp(de->d_name,"sample");saw_sub|=!strcmp(de->d_name,"sub");saw_probe|=!strcmp(de->d_name,"probe");}
  closedir(d);assert(saw_sample&&saw_sub&&saw_probe);
  int fd=open("/usr/sample",O_RDONLY);assert(fd>=0);memset(b,0,sizeof(b));assert(read(fd,b,12)==12&&!strcmp(b,"hello erofs\n"));
+ struct { unsigned char before[16]; struct stat value; unsigned char after[16]; } fstat_guard;
+ memset(&fstat_guard,0xa5,sizeof(fstat_guard));memset(fstat_guard.before,0x5a,sizeof(fstat_guard.before));memset(fstat_guard.after,0x5a,sizeof(fstat_guard.after));
+ assert(!fstat(fd,&fstat_guard.value));
+ for(size_t i=0;i<sizeof(fstat_guard.before);i++)assert(fstat_guard.before[i]==0x5a&&fstat_guard.after[i]==0x5a);
+ struct { unsigned char before[16]; struct statx value; unsigned char after[16]; } empty_statx_guard;
+ memset(&empty_statx_guard,0xa5,sizeof(empty_statx_guard));memset(empty_statx_guard.before,0x5a,sizeof(empty_statx_guard.before));memset(empty_statx_guard.after,0x5a,sizeof(empty_statx_guard.after));
+ assert(!statx(fd,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&empty_statx_guard.value));
+ for(size_t i=0;i<sizeof(empty_statx_guard.before);i++)assert(empty_statx_guard.before[i]==0x5a&&empty_statx_guard.after[i]==0x5a);
  void *p=mmap(NULL,12,PROT_READ,MAP_PRIVATE,fd,0);assert(p!=MAP_FAILED&&!memcmp(p,"hello erofs\n",12));munmap(p,12);
  struct stat path_st,fd_st;assert(!stat("/usr/sample",&path_st));
  assert(!fstat(fd,&fd_st)&&fd_st.st_size==12);
@@ -130,11 +157,12 @@ assert 'EROFS BACKING ASSOCIATION CONTROL PASS' in run.stdout,run.stdout+run.std
 run=subprocess.run(list(map(str,cmd+[root])),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
 assert run.returncode==0,run.stdout+run.stderr
 assert 'EROFS INDEX/OPEN/MMAP PASS' in run.stdout,run.stdout+run.stderr
-assert 'v3 erofs fstat-native file' in run.stderr and 'v3 erofs fstat-native symlink' in run.stderr,run.stderr
-assert 'v3 erofs empty-statx-native symlink' in run.stderr,run.stderr
+assert 'v3 erofs fstat-synth file' in run.stderr and 'v3 erofs fstat-synth symlink' in run.stderr,run.stderr
+assert 'v3 erofs empty-statx-synth file' in run.stderr,run.stderr
+assert 'fstat-native' not in run.stderr and 'empty-statx-native' not in run.stderr,run.stderr
 run=subprocess.run(list(map(str,cmd+['exec'])),check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
 assert 'EROFS EXEC PASS' in run.stdout,run.stdout+run.stderr
 legacy=root/'legacy.index';legacy.write_bytes(b'MTPKIDX1'+struct.pack('<I',0))
 rejected=subprocess.run(list(map(str,[base/'build/linux-layer-v3','--android-filter','--erofs-mount','/usr',legacy,root,probe])),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
 assert rejected.returncode!=0,'proxy accepted removed MTPKIDX1 format'
-print('PASS MTPKIDX3 index stat/readdir/readlink/open/mmap/exec/miss; native file and symlink fstat identities across two layers')
+print('PASS MTPKIDX3 index stat/statx/fstat/readdir/readlink/open/mmap/exec/miss; guarded output buffers and native file identities across two layers')

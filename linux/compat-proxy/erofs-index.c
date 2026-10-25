@@ -230,10 +230,14 @@ static long erofs_call_unlocked(long nr,proxy_arg_t *a,int *handled){
   }
   long r=RAW(PROXY_SC_lseek,fd,cursor,SEEK_SET,0,0,0);return r<0?r:(long)used;
  }
- case PROXY_SC_fstat:if(!p_equal(f->object.kind,"dir")){erofs_trace("fstat-native",f->object.kind,NULL);break;}erofs_metadata(f->mount,&f->object,(void *)(uintptr_t)a[1],0,f->root_dev,f->root_ino,f->root_identity);return 0;
+ /* Keep indexed descriptor stats on the same architecture-specific writer
+  * as path stats. Falling through for file/symlink fds lets the native layer
+  * syscall write directly to the caller's ABI buffer and bypasses the proxy's
+  * stat layout; that pass-through corrupted static ldconfig's heap. */
+ case PROXY_SC_fstat:erofs_trace("fstat-synth",f->object.kind,NULL);erofs_metadata(f->mount,&f->object,(void *)(uintptr_t)a[1],0,f->root_dev,f->root_ino,f->root_identity);return 0;
  case PROXY_SC_newfstatat:case PROXY_SC_statx:
   if(a[1]&&!*(char *)(uintptr_t)a[1]&&(a[nr==PROXY_SC_statx?2:3]&AT_EMPTY_PATH)){
-   if(!p_equal(f->object.kind,"dir")){erofs_trace("empty-statx-native",f->object.kind,NULL);break;}
+   erofs_trace(nr==PROXY_SC_statx?"empty-statx-synth":"empty-stat-synth",f->object.kind,NULL);
    erofs_metadata(f->mount,&f->object,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx,f->root_dev,f->root_ino,f->root_identity);return 0;
   }
   break;
