@@ -33,6 +33,8 @@ public final class LinuxAppStoreService extends Service {
     private static final String TAG = "LinuxAppStore";
     private static final String INSTALL = "org.matonos.permission.INSTALL_LINUX_APPS";
     private static final String QUERY = "org.matonos.permission.QUERY_LINUX_APPS";
+    private static final String UPDATE_LOCALES = "org.matonos.linux.UPDATE_LOCALE_EXTENSIONS";
+    private static final String LOCALE_PREFS = "flatpak-languages";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
     private final java.util.Set<InstallTransaction> activeInstalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private android.os.PowerManager.WakeLock installWakeLock;
@@ -139,6 +141,16 @@ public final class LinuxAppStoreService extends Service {
         worker.execute(this::sweepWork); }
 
     @Override public int onStartCommand(Intent intent,int flags,int startId){
+        if(intent!=null&&UPDATE_LOCALES.equals(intent.getAction())) {
+            android.app.NotificationManager manager=getSystemService(android.app.NotificationManager.class);
+            manager.createNotificationChannel(new android.app.NotificationChannel("linux-install",
+                    "Linux application downloads",android.app.NotificationManager.IMPORTANCE_LOW));
+            startForeground(3,new android.app.Notification.Builder(this,"linux-install")
+                    .setContentTitle("Linux application download").setSmallIcon(android.R.drawable.stat_sys_download)
+                    .setOngoing(true).build(),android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            worker.execute(()->queueLocaleUpdates(startId));
+            return START_NOT_STICKY;
+        }
         if(intent!=null&&"org.matonos.linux.CLEAN_UNUSED_PACKAGES".equals(intent.getAction())){
             worker.execute(()->{sweepWork();cleanupUnusedPackages();stopSelf(startId);});return START_NOT_STICKY;
         }
@@ -317,8 +329,18 @@ public final class LinuxAppStoreService extends Service {
 
     /** System-scheduled cleanup avoids starting a background service from BOOT_COMPLETED. */
     public static final class CleanupJobService extends android.app.job.JobService {
+        private static final int LOCALE_UPDATE_JOB_ID=0x4d415451;
         private Thread cleanupThread;
         @Override public boolean onStartJob(android.app.job.JobParameters params) {
+            if(params.getJobId()==LOCALE_UPDATE_JOB_ID) {
+                cleanupThread=new Thread(()->{
+                    boolean retry=false;
+                    try { startForegroundService(new Intent(this,LinuxAppStoreService.class).setAction(UPDATE_LOCALES)); }
+                    catch(RuntimeException error) { Log.w(TAG,"Cannot start locale extension update",error);retry=true; }
+                    finally { jobFinished(params,retry);cleanupThread=null; }
+                },"matonos-locale-update-queue");
+                cleanupThread.start();return true;
+            }
             cleanupThread=new Thread(()->{
                 try { sweepWork(this); cleanupUnusedPackages(this); }
                 finally { jobFinished(params,false); cleanupThread=null; }
@@ -335,6 +357,14 @@ public final class LinuxAppStoreService extends Service {
     public static final class BootReceiver extends android.content.BroadcastReceiver {
         private static final int CLEANUP_JOB_ID=0x4d41544f;
         @Override public void onReceive(Context context,Intent intent) {
+            if(Intent.ACTION_LOCALE_CHANGED.equals(intent.getAction())) {
+                android.app.job.JobInfo job=new android.app.job.JobInfo.Builder(CleanupJobService.LOCALE_UPDATE_JOB_ID,
+                        new ComponentName(context,CleanupJobService.class))
+                        .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY).setPersisted(true).build();
+                android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
+                if(scheduler!=null)scheduler.schedule(job);
+                return;
+            }
             if(!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()))return;
             PendingResult pending=goAsync();
             new Thread(()->{ErofsPin.ensure();pending.finish();}).start();
@@ -342,6 +372,52 @@ public final class LinuxAppStoreService extends Service {
                     new ComponentName(context,CleanupJobService.class)).setPersisted(true).build();
             android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
             if(scheduler!=null)scheduler.schedule(job);
+        }
+    }
+
+    /** Queue one normal store update for each installed Locale extension after a real set change. */
+    private void finishLocaleQueue(int startId) {
+        synchronized(this) {
+            if(activeInstalls.isEmpty()) { stopForeground(STOP_FOREGROUND_REMOVE);stopSelf(startId); }
+        }
+    }
+
+    private void queueLocaleUpdates(int startId) {
+        String tags=android.os.LocaleList.getDefault().toLanguageTags();
+        java.util.List<String> localeTags=new java.util.ArrayList<>();
+        if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));
+        String languages=org.matonos.linux.stub.FlatpakLanguages.configuration(localeTags);
+        android.content.SharedPreferences preferences=getSharedPreferences(LOCALE_PREFS,MODE_PRIVATE);
+        String previous=preferences.getString("languages",null);
+        if(!org.matonos.linux.stub.FlatpakLanguages.changed(previous,languages)) {
+            finishLocaleQueue(startId);return;
+        }
+        java.util.List<String> installedRefs=new java.util.ArrayList<>();
+        try {
+            for(PackageInfo info:getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
+                if(info.packageName==null||!info.packageName.startsWith("flatpak.")||!packageSignerMatches(info))continue;
+                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
+                        info.splitNames,info.applicationInfo.splitSourceDirs);
+                installedRefs.add(record.ref);
+            }
+        } catch(Exception error) {
+            Log.w(TAG,"Cannot enumerate installed Locale extensions",error);
+            finishLocaleQueue(startId);return;
+        }
+        java.util.List<String> refs=org.matonos.linux.stub.FlatpakLanguages.refsToUpdate(previous,languages,installedRefs);
+        preferences.edit().putString("languages",languages).apply();
+        if(refs.isEmpty()) { finishLocaleQueue(startId);return; }
+        ILinuxAppStoreCallback callback=new ILinuxAppStoreCallback.Stub() {
+            @Override public void onProgress(String id,String phase,int percent,long done,long total) {}
+            @Override public void onResult(String id,boolean ok,String error) {
+                if(!ok)Log.w(TAG,"Locale extension update failed: "+error);
+            }
+        };
+        for(String ref:refs) {
+            String id="locale-"+java.util.UUID.randomUUID().toString().replace("-","");
+            Operation op=new Operation(android.os.Process.myUid(),id,"update",ref,null,null,null,callback);
+            operations.put(operationKey(op.uid,id),op);
+            worker.execute(()->execute(id,op));
         }
     }
 
@@ -520,7 +596,7 @@ public final class LinuxAppStoreService extends Service {
         runPackSession(op,pkg,artifacts,plan(installed!=null,
                 installed==null?0:installed.getLongVersionCode(),prior,desired,available,full));
         final boolean applyExtra=hasExtra;
-        op.finalizers.add(()->{
+        synchronized(op.finalizers) { op.finalizers.add(()->{
             try {
                 File applied=applyExtra?org.matonos.linux.stub.ExtraInstall.apply(this,pkg,new File(artifacts,"extra-output")):null;
                 PackageInfo after=getPackageManager().getPackageInfo(pkg,0);
@@ -532,7 +608,7 @@ public final class LinuxAppStoreService extends Service {
                 if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
                 runPackSession(op,pkg,artifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
             }catch(Exception failure){if(installed==null)removePackage(pkg);throw failure;}
-        });
+        }); }
     }
 
     /** Adds each signed EROFS pack layer, reusing unchanged installed carriers. */
@@ -635,27 +711,51 @@ public final class LinuxAppStoreService extends Service {
 
     private void installDeclaredPackages(Operation op) throws Exception {
         org.json.JSONArray deployments=op.stagedManifest.getJSONArray("deployments");
+        java.util.List<org.matonos.linuxhost.stubgen.DependencyPlan.Node> nodes=new java.util.ArrayList<>();
+        java.util.Map<String,Integer> positions=new java.util.HashMap<>();
         for(int i=0;i<deployments.length();i++) {
             JSONObject deployment=deployments.getJSONObject(i);String ref=deployment.getString("ref");
             if(ref.equals(op.ref))continue;
-            String pkg=packageFor(ref);PackageInfo prior=null;
+            org.matonos.linuxhost.stubgen.DependencyPlan.Node node=new org.matonos.linuxhost.stubgen.DependencyPlan.Node(
+                    ref,deployment.getString("origin"),null,deployment.getBoolean("reused"));
+            org.json.JSONArray dependencies=deployment.getJSONArray("stageDependencies");
+            for(int d=0;d<dependencies.length();d++)node.stageDependencies.add(dependencies.getString(d));
+            nodes.add(node);positions.put(ref,i);
+        }
+        java.util.List<String> newlyInstalled=java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> outcome=
+                org.matonos.linuxhost.stubgen.PlanExecutor.execute(nodes,Math.max(1,Runtime.getRuntime().availableProcessors()),node->{
+            JSONObject deployment=deployments.getJSONObject(positions.get(node.ref));
+            String ref=node.ref,pkg=packageFor(ref);PackageInfo prior=null;
             try{prior=getPackageManager().getPackageInfo(pkg,PackageManager.GET_SIGNING_CERTIFICATES);}catch(PackageManager.NameNotFoundException missing){}
-            if(deployment.getBoolean("reused")) {
+            if(node.reused) {
                 if(prior==null||!packageSignerMatches(prior))throw new SecurityException("Declared package disappeared or changed signer; retry");
                 org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(prior.splitNames,prior.applicationInfo.splitSourceDirs);
                 if(!record.ref.equals(ref)||!record.commit.equals(deployment.getString("commit"))||!record.remote.equals(deployment.getString("origin")))
                     throw new SecurityException("Declared package changed during planning; retry");
-                continue;
+                return null;
             }
             if(prior!=null) {
                 org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(prior.splitNames,prior.applicationInfo.splitSourceDirs);
                 if(packageSignerMatches(prior)&&record.ref.equals(ref)&&record.commit.equals(deployment.getString("commit"))
-                        &&record.remote.equals(deployment.getString("origin")))continue;
+                        &&record.remote.equals(deployment.getString("origin")))return null;
                 throw new SecurityException("Declared package was installed during planning with different content; retry");
             }
-            File artifacts=new File(op.packArtifacts,"dependency-"+i);
+            File artifacts=new File(op.packArtifacts,"dependency-"+positions.get(ref));
             if(!artifacts.isDirectory())throw new java.io.IOException("Missing prepared dependency packs for "+ref);
             installStubPackage(op,ref,artifacts,null,false,deployment.getString("mount"));
+            newlyInstalled.add(pkg);
+            return null;
+        });
+        if(!outcome.failed.isEmpty()) {
+            synchronized(newlyInstalled) { for(String pkg:newlyInstalled)removePackage(pkg); }
+            Throwable failure=outcome.failed.values().iterator().next();
+            if(failure instanceof Exception)throw (Exception)failure;
+            throw new java.io.IOException("A declared package install failed",failure);
+        }
+        if(!outcome.skipped.isEmpty()) {
+            synchronized(newlyInstalled) { for(String pkg:newlyInstalled)removePackage(pkg); }
+            throw new java.io.IOException("A declared package was skipped after a dependency failed: "+outcome.skipped);
         }
     }
 

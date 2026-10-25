@@ -196,9 +196,10 @@ public final class InstallTransaction {
                 if(!pulled.completed.containsKey(node.ref))continue;
                 String location=node.ref.equals(appRef)?"":"package-"+i;
                 org.json.JSONArray dependencies=new org.json.JSONArray();for(String ref:node.dependencies)dependencies.put(ref);
+                org.json.JSONArray stageDependencies=new org.json.JSONArray();for(String ref:node.stageDependencies)stageDependencies.put(ref);
                 rows.put(new JSONObject().put("ref",node.ref).put("commit",node.info.commit).put("origin",node.origin)
                         .put("metadata",metadata.get(node.ref)).put("mount",mounts.get(node.ref)).put("location",location)
-                        .put("reused",node.reused).put("dependencies",dependencies));
+                        .put("reused",node.reused).put("dependencies",dependencies).put("stageDependencies",stageDependencies));
                 if(node.ref.equals(appRef))appCommit=node.info.commit;
             }
             if(appCommit==null)throw new java.io.IOException("Plan has no requested ref");
@@ -246,6 +247,10 @@ public final class InstallTransaction {
                 }
                 cli("remote-add","--system",origin.name,descriptor.getAbsolutePath());
             }
+            String tags=android.os.LocaleList.getDefault().toLanguageTags();
+            java.util.List<String> localeTags=new ArrayList<>();
+            if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));
+            cli("config","--system","--set","languages",FlatpakLanguages.configuration(localeTags));
         }
         byte[] command(java.util.List<String> tail,boolean absentAllowed)throws Exception {
             checkCancelled();java.util.List<String> command=new ArrayList<>(prefix);command.addAll(tail);
@@ -350,6 +355,7 @@ public final class InstallTransaction {
             long size=downloadSize(node.info.metadata), total=plannedBytes;
             if(total<=0||!plannedBytesKnown)total=-1;
             report("download",5,-1,-1,"Downloading "+node.ref+" from "+origin.display());
+            long pullStarted=System.nanoTime();
             InstallProgress parser=new InstallProgress();
                 cliProgress(node.ref,parser,total,size,"install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas",origin.name,node.ref);
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
@@ -359,6 +365,8 @@ public final class InstallTransaction {
                 cliProgress(node.ref,parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
                 manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             }
+            Log.i(TAG,"phase=pull ref="+node.ref+" ms="+
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pullStarted)+" bytes="+size);
             if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,
                     org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(DeployManifest.stagedDeployment(installation,manifest),"metadata"))))
                 throw new java.io.IOException("Pulled deployment differs from planned Flatpak commit");
