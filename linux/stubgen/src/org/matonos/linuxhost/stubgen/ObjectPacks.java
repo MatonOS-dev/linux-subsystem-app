@@ -15,6 +15,7 @@ public final class ObjectPacks {
         public byte[] xattrs = new byte[0];
         public long offset, length;
         public int uid, gid, mode;
+        public long mtime;
         public File source;
         public Entry(String path, String checksum, String kind, int mode) {
             this.path=path; this.checksum=checksum; this.kind=kind; this.mode=mode;

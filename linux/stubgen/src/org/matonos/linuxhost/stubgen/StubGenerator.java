@@ -44,7 +44,7 @@ public final class StubGenerator {
     // v19 moves the launcher entry into a code-free launcher split, applies
     // Flatpak extra data in a per-package service, and carries the result in a
     // self-contained extra split mounted over the package's extra directory.
-    public static final int STUB_VERSION_CODE = 20;
+    public static final int STUB_VERSION_CODE = 21;
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
     /** Per-package service that applies this package's Flatpak extra data. */

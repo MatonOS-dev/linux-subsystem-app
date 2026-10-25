@@ -5,6 +5,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
+import java.util.zip.ZipFile;
 import java.util.function.BooleanSupplier;
 import org.json.JSONObject;
 import org.matonos.linuxhost.stubgen.OstreePacks;
@@ -15,7 +16,6 @@ public final class StagedPacks {
             File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed) throws Exception {
         org.matonos.linux.WorkDirs.require(installation);
         File deployment=DeployManifest.stagedDeployment(installation,manifest);
-        buildErofs(context,new File(deployment,"files"),manifest,output,cancelled);
         File operation=installation.getParentFile();
         File sourceRepo=new File(installation,"repo");
         OstreePacks.Command source=command(context,operation,sourceRepo,cancelled);
@@ -39,9 +39,22 @@ public final class StagedPacks {
         local.run("init","--mode=bare-user");
         String commit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
         OstreePacks fresh=OstreePacks.read(localRepo,commit,local,objectXattrs);
+        File deployedFiles=new File(deployment,"files");
+        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry:fresh.entries) {
+            if(entry.kind.equals("file")||entry.kind.equals("symlink"))try {
+                File deployedPath=entry.path.equals("/")?deployedFiles:new File(deployedFiles,entry.path.substring(1));
+                entry.mtime=java.nio.file.Files.getLastModifiedTime(deployedPath.toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis()/1000L;
+            } catch(Exception ignored) {}
+        }
         List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> payloads=new ArrayList<>(fresh.entries);
         payloads.addAll(original.entries);
         output.mkdirs();
+        byte[] oldLayersIndex=null;Map<String,File> oldLayerImages=new HashMap<>();
+        if(installed!=null&&installed.getLongVersionCode()==org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE)
+            oldLayersIndex=readPreviousLayers(installed,output,oldLayerImages);
+        long layerEpoch=original.commitTime>0?original.commitTime:fresh.commitTime;
+        File erofsTool=LoaderCommand.tool(context,"libmatonos-mkfs-erofs.so");
+        org.matonos.linuxhost.stubgen.ErofsLayers.build(fresh.entries,output,erofsTool,layerEpoch,oldLayersIndex,oldLayerImages,cancelled);
         if(installed==null || installed.getLongVersionCode()!=org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE) {
             org.matonos.linuxhost.stubgen.ObjectPacks.initial(payloads,output,org.matonos.linuxhost.stubgen.ObjectPacks.DEFAULT_PACK_SIZE);
         } else {
@@ -68,33 +81,22 @@ public final class StagedPacks {
         }
     }
 
-    /** Build one deterministic EROFS filesystem for this Flatpak deployment. */
-    private static void buildErofs(Context context,File tree,JSONObject manifest,File output,
-            BooleanSupplier cancelled) throws Exception {
-        if(!tree.isDirectory()||Files.isSymbolicLink(tree.toPath()))throw new IOException("Missing deployment files tree");
-        if(cancelled.getAsBoolean())throw new IOException("EROFS build cancelled");
-        if(!output.isDirectory()&&!output.mkdirs())throw new IOException("Cannot create EROFS output directory");
-        File image=new File(output,"deployment.erofs"),log=new File(output,"mkfs-erofs.log");
-        String identity=manifest.getString("appRef")+"\n"+manifest.getString("appCommit");
-        byte[] digest=java.security.MessageDigest.getInstance("SHA-256").digest(identity.getBytes(StandardCharsets.UTF_8));
-        StringBuilder uuid=new StringBuilder();
-        for(int i=0;i<16;i++) {if(i==4||i==6||i==8||i==10)uuid.append('-');uuid.append(String.format(java.util.Locale.ROOT,"%02x",digest[i]&255));}
-        // Set UUID version/variant bits while retaining a stable ref/commit identity.
-        uuid.setCharAt(14,'5');
-        int variant=Character.digit(uuid.charAt(19),16);uuid.setCharAt(19,Character.forDigit((variant&3)|8,16));
-        File executable=LoaderCommand.tool(context,"libmatonos-mkfs-erofs.so");
-        Process process=new ProcessBuilder(executable.getAbsolutePath(),"-zlz4hc,12","--preserve-mtime",
-                "--all-root","--mkfs-time","-T","0","--workers=4",
-                "-U",uuid.toString(),image.getAbsolutePath(),tree.getAbsolutePath())
-                .redirectErrorStream(true).redirectOutput(log).start();
-        try {
-            while(!process.waitFor(250,java.util.concurrent.TimeUnit.MILLISECONDS)) {
-                if(cancelled.getAsBoolean()) {process.destroyForcibly();throw new IOException("EROFS build cancelled");}
+    private static byte[] readPreviousLayers(android.content.pm.PackageInfo installed,File output,Map<String,File> images) throws Exception {
+        File base=new File(installed.applicationInfo.sourceDir);
+        try(ZipFile zip=new ZipFile(base)) {
+            java.util.zip.ZipEntry entry=zip.getEntry("assets/matonos/layers.index");if(entry==null)return null;
+            byte[] index;try(InputStream in=zip.getInputStream(entry)){index=in.readAllBytes();}
+            org.matonos.linuxhost.stubgen.ErofsLayers.Index decoded=org.matonos.linuxhost.stubgen.ErofsLayers.read(index);
+            File old=new File(output,"old-layers");if(!old.mkdirs()&&!old.isDirectory())throw new IOException("Cannot create old EROFS layer cache");
+            String[] names=installed.splitNames;String[] paths=installed.applicationInfo.splitSourceDirs;
+            if(names==null||paths==null)return index;
+            for(org.matonos.linuxhost.stubgen.ErofsLayers.Layer layer:decoded.layers)for(int i=0;i<Math.min(names.length,paths.length);i++)if(names[i].equals(layer.split)) {
+                File image=new File(old,"pack-"+layer.sha256+".erofs");
+                try(ZipFile split=new ZipFile(paths[i])) {java.util.zip.ZipEntry payload=split.getEntry(layer.entry);if(payload==null)throw new IOException("Missing installed EROFS layer payload");try(InputStream in=split.getInputStream(payload);OutputStream out=new FileOutputStream(image)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)out.write(b,0,n);}}
+                images.put(layer.sha256,image);break;
             }
-            if(process.exitValue()!=0)throw new IOException("mkfs.erofs failed: "+new String(Files.readAllBytes(log.toPath()),StandardCharsets.UTF_8));
-        } finally {if(process.isAlive())process.destroyForcibly();}
-        if(!image.isFile()||image.length()==0)throw new IOException("mkfs.erofs produced no image");
-        org.matonos.linux.WorkDirs.require(output);
+            return index;
+        }
     }
 
     private static void record(File sourceRepo,File deployment,JSONObject manifest,File output) throws Exception {

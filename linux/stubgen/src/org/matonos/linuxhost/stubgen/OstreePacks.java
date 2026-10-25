@@ -18,6 +18,7 @@ public final class OstreePacks {
     private final Command cli;
     private final Xattrs xattrs;
     private String commit;
+    public long commitTime;
     private OstreePacks(File repo, Command cli, Xattrs xattrs) { this.repo=repo; this.cli=cli; this.xattrs=xattrs; }
 
     public static OstreePacks read(File repo, String revision, Command cli, Xattrs xattrs) throws Exception {
@@ -26,6 +27,7 @@ public final class OstreePacks {
         checksum(result.commit);
         byte[][] c=tuple(result.object(result.commit,"commit"),
                 new int[]{8,1,1,1,1,8,1,1},new int[]{-1,-1,-1,-1,-1,8,-1,-1});
+        long timestamp=0;for(byte b:c[5])timestamp=(timestamp<<8)|(b&255L);result.commitTime=timestamp;
         result.visit(hex(c[6]),hex(c[7]),"/",new HashSet<>(),0);
         return result;
     }
@@ -90,7 +92,7 @@ public final class OstreePacks {
         if(depth>256 || !ancestors.add(tree))throw new IOException("Recursive OSTree tree");
         byte[][] m=tuple(object(meta,"dirmeta"),new int[]{4,4,4,1},new int[]{4,4,4,-1});
         ObjectPacks.Entry dir=new ObjectPacks.Entry(prefix,tree,"dir",be(m[2]));
-        dir.uid=be(m[0]);dir.gid=be(m[1]);entries.add(dir);
+        dir.uid=be(m[0]);dir.gid=be(m[1]);dir.xattrs=m[3];entries.add(dir);
         byte[][] t=tuple(object(tree,"dirtree"),new int[]{1,1},new int[]{-1,-1});
         for(byte[] raw:array(t[1])) {
             byte[][] d=tuple(raw,new int[]{1,1,1},new int[]{-1,-1,-1});
@@ -124,6 +126,7 @@ public final class OstreePacks {
             if(kind==null)throw new IOException("Unsupported OSTree file mode for "+sum);
             ObjectPacks.Entry e=new ObjectPacks.Entry(name,sum,kind,mode);
             e.uid=uid;e.gid=gid;e.xattrs=packedXattrs;
+            try {e.mtime=Files.getLastModifiedTime(payload.toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis()/1000L;} catch(Exception ignored) {}
             if(e.kind.equals("file"))e.source=payload;
             else if(Files.isSymbolicLink(payload.toPath())) {
                 e.target=Files.readSymbolicLink(payload.toPath()).toString();
@@ -176,6 +179,16 @@ public final class OstreePacks {
         int w=width(b.length),end=offset(b,b.length-w,w);
         if(end>b.length-w || (b.length-end)%w!=0)throw new IOException("Invalid array framing");
         int start=0;for(int p=end;p<b.length;p+=w){int next=offset(b,p,w);if(next>end)throw new IOException("Invalid array element");out.add(slice(b,start,next));start=next;}
+        return out;
+    }
+    /** Decode OSTree's serialized a(ayay) xattr vector shared with Python's writer. */
+    public static Map<String,byte[]> decodeXattrs(byte[] bytes) throws IOException {
+        Map<String,byte[]> out=new TreeMap<>();if(bytes==null||bytes.length==0)return out;
+        for(byte[] raw:array(bytes)) {
+            byte[][] pair=tuple(raw,new int[]{1,1},new int[]{-1,-1});byte[] name=pair[0];
+            if(name.length==0||name[name.length-1]!=0)throw new IOException("Invalid OSTree xattr name");
+            out.put(new String(name,0,name.length-1,StandardCharsets.UTF_8),pair[1]);
+        }
         return out;
     }
     private static byte[] framed(List<byte[]> elements) throws IOException {

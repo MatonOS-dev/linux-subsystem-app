@@ -504,7 +504,7 @@ public final class LinuxAppStoreService extends Service {
         if(full || !prior.contains(index)) {
             StubGenerator.generateIndex(work,pkg,objects,new File(artifacts,index+".apk"),revision);available.add(index);
         }
-        addErofsSplit(op,pkg,work,objects,artifacts,installed,prior,full,revision,desired,available);
+        addErofsLayerSplits(op,pkg,work,objects,artifacts,installed,prior,full,revision,desired,available);
         if(launchable)for(String split:prior)if(split.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX))desired.add(split);
         // Everything needed after this point is now in the pack artifacts,
         // generated APKs, or the captured launcher values. Drop this package's
@@ -527,7 +527,7 @@ public final class LinuxAppStoreService extends Service {
                 java.util.List<String> installedNow=after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames);
                 java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
                 desired2.add(index);
-                desired2.add(StubGenerator.erofsSplitName(new File(objects,"deployment.erofs")));
+                addLayerSplitNames(objects,desired2);
                 if(applied!=null){String split=applied.getName().replace(".apk","");desired2.add(split);available2.add(split);}
                 if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
                 runPackSession(op,pkg,artifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
@@ -535,24 +535,30 @@ public final class LinuxAppStoreService extends Service {
         });
     }
 
-    /** Adds the signed EROFS deployment split, reusing an identical image. */
-    private void addErofsSplit(Operation op,String pkg,File work,File objects,File artifacts,PackageInfo installed,java.util.List<String> prior,
+    /** Adds each signed EROFS pack layer, reusing unchanged installed carriers. */
+    private void addErofsLayerSplits(Operation op,String pkg,File work,File objects,File artifacts,PackageInfo installed,java.util.List<String> prior,
             boolean full,int revision,java.util.List<String> desired,java.util.List<String> available) throws Exception {
         if(op.cancelled)throw new java.io.IOException("Install cancelled");
-        File image=new File(objects,"deployment.erofs");
-        String split=StubGenerator.erofsSplitName(image);
-        desired.add(split);
-        File destination=new File(artifacts,split+".apk");
-        if(installed!=null && prior.contains(split) && installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
-            if(full) {
-                int position=prior.indexOf(split);
-                java.nio.file.Files.copy(java.nio.file.Path.of(installed.applicationInfo.splitSourceDirs[position]),destination.toPath());
-                available.add(split);
+        org.matonos.linuxhost.stubgen.ErofsLayers.Index index=org.matonos.linuxhost.stubgen.ErofsLayers.read(
+                java.nio.file.Files.readAllBytes(new File(objects,"layers.index").toPath()));
+        for(org.matonos.linuxhost.stubgen.ErofsLayers.Layer layer:index.layers) {
+            String split=layer.split;desired.add(split);File destination=new File(artifacts,split+".apk");
+            if(installed!=null&&prior.contains(split)&&installed.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE) {
+                if(full) {
+                    int position=prior.indexOf(split);
+                    java.nio.file.Files.copy(java.nio.file.Path.of(installed.applicationInfo.splitSourceDirs[position]),destination.toPath());available.add(split);
+                }
+            } else {
+                File image=new File(objects,"pack-"+layer.sha256+".erofs");
+                StubGenerator.generateErofsLayerPack(work,pkg,image,destination,revision);available.add(split);
             }
-        } else {
-            StubGenerator.generateErofsPack(work,pkg,image,destination,revision);
-            available.add(split);
         }
+    }
+
+    private static void addLayerSplitNames(File objects,java.util.List<String> desired) throws Exception {
+        org.matonos.linuxhost.stubgen.ErofsLayers.Index index=org.matonos.linuxhost.stubgen.ErofsLayers.read(
+                java.nio.file.Files.readAllBytes(new File(objects,"layers.index").toPath()));
+        for(org.matonos.linuxhost.stubgen.ErofsLayers.Layer layer:index.layers)if(!desired.contains(layer.split))desired.add(layer.split);
     }
 
     /** Adds the code-free launcher split unless the same one is installed. */
