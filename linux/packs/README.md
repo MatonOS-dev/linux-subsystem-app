@@ -385,3 +385,23 @@ and its updated APK slices, and exercises missing/partial-base rejection and
 per-object fallback. `OriginalMetadataSizeTest REPO REF OUTPUT` optionally
 measures added index assets on a locally available real app without modifying
 its source repo. ZIP growth excludes APK signing/alignment overhead.
+
+## Planned: one package per runtime ID
+
+Today every runtime branch is its own Android package, so branches that share most of
+their files (for example `org.freedesktop.Platform.GL.default` 25.08 and 25.08-extra,
+213 MB each) store those files twice. Planned (user decision 2026-10-25, after the
+current EROFS work):
+
+- One package per runtime ID holds every installed branch of that runtime. The base APK
+  carries one `layers.index` per branch; pack layer splits belong to the package and are
+  shared by any branch whose index names them.
+- The packer builds a branch against the layers already in that package, reusing layers
+  the same way updates do today, so files common to several branches land in shared
+  layers.
+- The package lives while any branch is installed; removing a branch removes its index
+  and any layer no remaining index references. No reference counting across packages.
+- Stubs keep mounting exactly the layers their branch's index names.
+
+Compression alone already stores the Platform runtime in 56% of its native size
+(LZ4HC 9: 376 MB vs 667 MB); this targets the remaining duplication between branches.
