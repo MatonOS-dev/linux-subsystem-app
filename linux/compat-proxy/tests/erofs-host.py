@@ -10,12 +10,16 @@ src.write_text(r'''#define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <unistd.h>
+struct scan { int fd; long entries; };
+static void *scan_directory(void *arg){struct scan *s=arg;char buf[4096];for(;;){long n=syscall(SYS_getdents64,s->fd,buf,sizeof(buf));if(n<0)return (void *)1;if(!n)break;for(long at=0;at<n;){unsigned short len=*(unsigned short *)(buf+at+16);if(len<20||at+len>n)return (void *)1;s->entries++;at+=len;}}return 0;}
 int main(int argc,char **argv){
  if(argc>1&&!strcmp(argv[1],"exec")){puts("EROFS EXEC PASS");return 0;}
  struct stat st;
@@ -60,6 +64,11 @@ int main(int argc,char **argv){
  DIR *d=opendir("/usr");assert(d);int saw_sample=0,saw_sub=0,saw_probe=0;struct dirent *de;
  while((de=readdir(d))) {saw_sample|=!strcmp(de->d_name,"sample");saw_sub|=!strcmp(de->d_name,"sub");saw_probe|=!strcmp(de->d_name,"probe");}
  closedir(d);assert(saw_sample&&saw_sub&&saw_probe);
+ int shared_dir=open("/usr",O_RDONLY|O_DIRECTORY|O_CLOEXEC);assert(shared_dir>=0);
+ struct scan scans[2]={{.fd=shared_dir},{.fd=shared_dir}};pthread_t readers[2];
+ assert(!pthread_create(&readers[0],0,scan_directory,&scans[0]));assert(!pthread_create(&readers[1],0,scan_directory,&scans[1]));
+ void *thread_result;assert(!pthread_join(readers[0],&thread_result)&&!thread_result);assert(!pthread_join(readers[1],&thread_result)&&!thread_result);
+ assert(scans[0].entries+scans[1].entries==8);close(shared_dir);
  int fd=open("/usr/sample",O_RDONLY);assert(fd>=0);memset(b,0,sizeof(b));assert(read(fd,b,12)==12&&!strcmp(b,"hello erofs\n"));
  void *p=mmap(NULL,12,PROT_READ,MAP_PRIVATE,fd,0);assert(p!=MAP_FAILED&&!memcmp(p,"hello erofs\n",12));munmap(p,12);
  struct stat path_st,fd_st;assert(!stat("/usr/sample",&path_st));

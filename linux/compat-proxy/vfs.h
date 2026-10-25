@@ -58,6 +58,7 @@ void erofs_close(int);
 long erofs_dup(int,int);
 int erofs_tracked(int);
 int erofs_private(int);
+void erofs_fork_child(void);
 int erofs_is_directory(int);
 long erofs_path(long,proxy_arg_t *,const char *,int *);
 long erofs_call(long,proxy_arg_t *,int *);

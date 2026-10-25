@@ -93,8 +93,10 @@ daemon-mounted EROFS layer and returns the ordinary kernel fd; reads, mmap,
 exec and fstat then use the native descriptor. Only directory descriptors
 retain index state, so `getdents64` can enumerate the merged view across layers.
 The proxy rejects MTPKIDX1 and has no ZIP slice offsets, file-fd table, copy
-fallback, or per-descriptor seccomp filters. The generic fd reserve remains for
-proxy-owned IPC and shared temporary-lock descriptors.
+fallback, or per-descriptor seccomp filters. EROFS iteration uses an
+in-process thread mutex per mount and no private lock descriptor. Concurrent
+iteration of one shared directory description from separate processes may
+race; that behavior is accepted.
 
 ### Network and DNS
 

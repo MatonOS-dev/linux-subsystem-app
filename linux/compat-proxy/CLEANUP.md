@@ -236,13 +236,16 @@ The launcher pins the stub certificate before mounting package layers.
 `erofs-index.c` reads only MTPKIDX2. Metadata operations and misses use its
 merged view; regular file opens resolve to `<layer mount>/<path>` and return
 ordinary fds. Directory descriptors retain only the index cursor metadata
-needed for merged `getdents64`; there is no ZIP carrier fd state.
+needed for merged `getdents64`; there is no ZIP carrier fd state. Per-mount
+iteration now uses an in-process mutex and no private lock descriptor;
+cross-process concurrent iteration on one shared directory description may
+race. The host harness covers concurrent threads on one tracked dirfd.
 
 Removed from the proxy: file slice offsets and `pack_slice_start`, packed-file
 fd tracking, carrier pinning, memfd payload copies, per-fd seccomp filters,
-MTPKIDX1 mounting, and pack-specific use of the high fd reserve. The reserve
-remains for proxy-owned IPC and shared temporary-lock descriptors. The removed
+MTPKIDX1 mounting, and pack-specific use of the high fd reserve. The removed
 ZIP-only tests were `tests/pack-host.py`, `tests/pack-vfd.c`, and the packed
-loader-mapping matrix in `tests/loader-maps.py`; `tests/erofs-host.py` now tests
-index stat/readdir/readlink, native open/fstat/mmap, exec and negative lookup.
+loader-mapping matrix in `tests/loader-maps.py`; `tests/erofs-host.py` tests
+index stat/readdir/readlink, native open/fstat/mmap, exec, negative lookup and
+thread-concurrent getdents on one tracked dirfd.
 `tests/icd-dup-host.py` now builds MTPKIDX2 directory fixtures.
