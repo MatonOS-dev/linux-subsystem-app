@@ -25,10 +25,14 @@ public final class DependencyPlanTest {
     static DependencyPlan.Node node(List<DependencyPlan.Node> nodes,String ref){return nodes.stream().filter(n->n.ref.equals(ref)).findFirst().orElseThrow();}
     static void check(boolean condition){if(!condition)throw new AssertionError();}
     public static void main(String[] args)throws Exception {
-        // Related refs with subpaths (Locale with a language subset) plan by ref only.
-        DependencyPlan.Info subset=new DependencyPlan.Info("a".repeat(64),new byte[]{1},"",List.of("runtime/org.test.Platform.Locale/x86_64/stable\n/en\n/de"),true);
-        check(subset.related.equals(List.of("runtime/org.test.Platform.Locale/x86_64/stable")));
+        // Related refs with subpaths (Locale with a language subset): plan by ref, install only those subpaths.
         check(DependencyPlan.refsOnly(List.of("runtime/a/x86_64/1\n/en","runtime/b/x86_64/1")).equals(List.of("runtime/a/x86_64/1","runtime/b/x86_64/1")));
+        String locale="runtime/org.test.Platform.Locale/x86_64/stable";
+        Fake languages=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable"))
+                .add(RUNTIME,FIRST,info("",locale+"\n/en\n/de")).add(locale,FIRST,info(""));
+        List<DependencyPlan.Node> languagePlan=languages.plan(false);
+        check(node(languagePlan,locale).subpaths.equals(List.of("/en","/de")));
+        check(node(languagePlan,RUNTIME).subpaths.isEmpty());
         Fake reuse=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable"));
         reuse.installed.put(RUNTIME,record(RUNTIME,OTHER));
         List<DependencyPlan.Node> plan=reuse.plan(false);

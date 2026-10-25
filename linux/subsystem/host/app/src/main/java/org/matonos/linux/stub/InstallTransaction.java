@@ -357,7 +357,11 @@ public final class InstallTransaction {
             report("download",5,-1,-1,"Downloading "+node.ref+" from "+origin.display());
             long pullStarted=System.nanoTime();
             InstallProgress parser=new InstallProgress();
-                cliProgress(node.ref,parser,total,size,"install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas",origin.name,node.ref);
+                java.util.List<String> install=new ArrayList<>(java.util.Arrays.asList("install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas"));
+                // Explicit installs get every subpath; pass the ones Flatpak chose (Locale: device languages).
+                for(String subpath:node.subpaths)install.add("--subpath="+subpath);
+                install.add(origin.name);install.add(node.ref);
+                cliProgress(node.ref,parser,total,size,install.toArray(new String[0]));
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             if(!node.info.commit.equals(manifest.getString("appCommit"))) {
                 // install has no --commit option; update can bind the downloaded

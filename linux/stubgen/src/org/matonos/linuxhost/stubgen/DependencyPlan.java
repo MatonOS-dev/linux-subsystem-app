@@ -22,7 +22,7 @@ public final class DependencyPlan {
             if(commit==null||!commit.matches("[0-9a-f]{64}")||metadata==null||metadata.length==0||metadata.length>128*1024)
                 throw new IOException("Invalid Flatpak inspection result");
             this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.parent=parent;
-            this.related=List.copyOf(refsOnly(related));
+            this.related=List.copyOf(related);
         }
     }
     public interface Backend {
@@ -41,6 +41,8 @@ public final class DependencyPlan {
         public final List<String> dependencies=new ArrayList<>();
         /** Required inputs to fetch before this ref; related refs are only staged alongside it. */
         public final List<String> stageDependencies=new ArrayList<>();
+        /** Flatpak subpaths to install (e.g. a Locale's languages); empty = the whole ref. */
+        public final List<String> subpaths=new ArrayList<>();
         public Node(String ref,String origin,Info info,boolean reused){this.ref=ref;this.origin=origin;this.info=info;this.reused=reused;}
     }
     private final Backend backend;
@@ -61,6 +63,13 @@ public final class DependencyPlan {
     /** The plan helper appends subpaths to related refs ("ref\n/en", Locale with a language subset);
      *  planning uses the ref, Flatpak applies the subpaths at deploy. */
     public static List<String> refsOnly(List<String> related){List<String> refs=new ArrayList<>();for(String r:related){int nl=r.indexOf('\n');refs.add(nl<0?r:r.substring(0,nl));}return refs;}
+    /** Remembers each related ref's subpaths so its node installs only those (explicit installs get none otherwise). */
+    private final Map<String,List<String>> subpaths=new HashMap<>();
+    private List<String> related(String ref,String origin,Info info)throws Exception{
+        List<String> raw=backend.related(ref,origin,info);
+        for(String r:raw){String[] parts=r.split("\n");if(parts.length>1)subpaths.put(parts[0],List.of(Arrays.copyOfRange(parts,1,parts.length)));}
+        return refsOnly(raw);
+    }
     private Node visit(String ref,String requested,boolean root,boolean repair)throws Exception {
         if(!validRef(ref))throw new IOException("Invalid dependency ref: "+ref);
         Node existing=nodes.get(ref);if(existing!=null)return existing;
@@ -84,7 +93,7 @@ public final class DependencyPlan {
                 info=providers.get(origin);if(info==null)throw new IOException("Dependency origin selection cancelled");
             }
         }
-        Node node=new Node(ref,origin,info,!root&&installed!=null);nodes.put(ref,node);
+        Node node=new Node(ref,origin,info,!root&&installed!=null);node.subpaths.addAll(subpaths.getOrDefault(ref,List.of()));nodes.put(ref,node);
         // Related Flatpak extensions can belong to a second runtime. Pull that
         // parent too so apply_extra has its authenticated metadata available.
         if(info.parent!=null&&!info.parent.isEmpty()) {
@@ -99,7 +108,7 @@ public final class DependencyPlan {
                 if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,true);}
             }
             order.add(node);
-            if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:refsOnly(backend.related(ref,origin,info)))if(!node.dependencies.contains(related)) {
+            if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:related(ref,origin,info))if(!node.dependencies.contains(related)) {
                 node.dependencies.add(related);visit(related,null,false,true);
             }
         } else {
@@ -110,7 +119,7 @@ public final class DependencyPlan {
                 node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,repair);
             }
             order.add(node);
-            for(String related:refsOnly(backend.related(ref,origin,info)))if(!node.dependencies.contains(related)) {
+            for(String related:related(ref,origin,info))if(!node.dependencies.contains(related)) {
                 node.dependencies.add(related);visit(related,null,false,repair);
             }
         }
