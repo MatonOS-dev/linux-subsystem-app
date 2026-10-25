@@ -125,6 +125,12 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-layers-test-') as td:
     a=commit('A'); first=t/'A'
     run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',a,'--out',str(first),'--mkfs',MKFS)
     layer_a,rows_a=read_index(first/'layers.index')
+    repeat=t/'A-repeat'
+    run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',a,'--out',str(repeat),'--mkfs',MKFS)
+    assert (first/'layers.index').read_bytes()==(repeat/'layers.index').read_bytes()
+    for layer in layer_a:
+        name='pack-'+layer['sha256']+'.erofs'
+        assert (first/name).read_bytes()==(repeat/name).read_bytes(), name
     assert '/usr/bin/tool' in {r['path'] for r in rows_a}
     old_hashes={x['sha256'] for x in layer_a}
     expected_a=t/'expected-A'; run('ostree','checkout','--force-copy','--repo='+str(repo),a,str(expected_a))

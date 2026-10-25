@@ -4,7 +4,9 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
+import java.security.DigestOutputStream;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.function.BooleanSupplier;
 
 /** Deterministic MTPKIDX2 writer for complete EROFS pack layers. */
@@ -82,6 +84,12 @@ public final class ErofsLayers {
     }
     public static Index build(List<ObjectPacks.Entry> entries,File output,File mkfs,long epoch,
             byte[] previousIndex,Map<String,File> previousImages,BooleanSupplier cancelled) throws Exception {
+        ForkJoinPool pool=new ForkJoinPool(Math.max(1,Runtime.getRuntime().availableProcessors()));
+        try { return build(entries,output,mkfs,epoch,previousIndex,previousImages,cancelled,pool); }
+        finally { pool.shutdownNow(); }
+    }
+    public static Index build(List<ObjectPacks.Entry> entries,File output,File mkfs,long epoch,
+            byte[] previousIndex,Map<String,File> previousImages,BooleanSupplier cancelled,ForkJoinPool pool) throws Exception {
         if(!output.isDirectory()&&!output.mkdirs())throw new IOException("Cannot create EROFS layers directory");
         Index old=previousIndex==null?new Index():read(previousIndex),result=new Index();
         Map<String,Record> oldRecords=new HashMap<>();for(Record r:old.records)oldRecords.put(r.path,r);
@@ -113,30 +121,70 @@ public final class ErofsLayers {
             changed.add(r);
         }
         Map<String,Integer> newLayerIds=new HashMap<>();
-        for(Layer l:retained.values()) {File src=previousImages.get(l.sha256),dst=new File(output,"pack-"+l.sha256+".erofs");if(!src.getCanonicalFile().equals(dst.getCanonicalFile()))Files.copy(src.toPath(),dst.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);result.layers.add(l);newLayerIds.put(l.sha256,result.layers.size()-1);}
+        for(Layer l:retained.values()) {File src=previousImages.get(l.sha256),dst=new File(output,"pack-"+l.sha256+".erofs");if(!src.getCanonicalFile().equals(dst.getCanonicalFile())){try{Files.createLink(dst.toPath(),src.toPath());}catch(IOException|UnsupportedOperationException linkFailure){Files.copy(src.toPath(),dst.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);}}result.layers.add(l);newLayerIds.put(l.sha256,result.layers.size()-1);}
         for(Record r:records)if(r.layer!=NONE){Layer oldLayer=oldLayerByIndex.get(r.layer);r.layer=newLayerIds.get(oldLayer.sha256);r.layerSha=oldLayer.sha256;}
-        for(List<Record> batch:batches(changed)) {
+        List<List<Record>> newBatches=batches(changed);List<ForkJoinTask<LayerBuild>> jobs=new ArrayList<>();
+        for(List<Record> batch:newBatches) {
             if(cancelled.getAsBoolean())throw new IOException("EROFS layer build cancelled");
-            if(batch.isEmpty())continue;
-            List<Record> imageRecords=new ArrayList<>();Set<String> needed=new HashSet<>();for(Record r:batch){String p=r.path;while(!p.equals("/")){int slash=p.lastIndexOf('/');p=slash<=0?"/":p.substring(0,slash);needed.add(p);}}
-            for(Record r:records)if(r.kind.equals("dir")&&needed.contains(r.path))imageRecords.add(r);imageRecords.addAll(batch);
-            File image=File.createTempFile("matonos-layer-",".erofs",output);File tar=File.createTempFile("matonos-layer-",".tar",output);
-            File log=File.createTempFile("matonos-layer-",".log",output);
-            try {writeTar(tar,imageRecords,epoch);String identity=sha(tar);String uuid=uuid(identity);Process p=new ProcessBuilder(mkfs.getAbsolutePath(),"-zlz4hc,12","--tar=f","--mkfs-time","-T",Long.toString(epoch),"--workers=4","-U",uuid,image.getAbsolutePath(),tar.getAbsolutePath()).redirectErrorStream(true).redirectOutput(log).start();
-                while(!p.waitFor(250,java.util.concurrent.TimeUnit.MILLISECONDS))if(cancelled.getAsBoolean()){p.destroyForcibly();throw new IOException("EROFS layer build cancelled");}
-                if(cancelled.getAsBoolean())throw new IOException("EROFS layer build cancelled");if(p.exitValue()!=0)throw new IOException("mkfs.erofs failed: "+new String(Files.readAllBytes(log.toPath()),StandardCharsets.UTF_8));
-                String digest=sha(image);File dest=new File(output,"pack-"+digest+".erofs");if(dest.exists())image.delete();else Files.move(image.toPath(),dest.toPath());
-                Layer l=new Layer();l.sha256=digest;l.imageSize=dest.length();l.split="pack_"+digest;l.entry="assets/matonos/pack.erofs";int id=result.layers.size();result.layers.add(l);for(Record r:batch){r.layer=id;r.layerSha=digest;}
-            } finally {image.delete();tar.delete();log.delete();}
+            int mkfsWorkers=Math.max(1,Runtime.getRuntime().availableProcessors()/Math.max(1,pool.getParallelism()));
+            jobs.add(pool.submit(()->buildLayer(batch,records,output,mkfs,epoch,cancelled,mkfsWorkers)));
+        }
+        try {
+            for(int i=0;i<newBatches.size();i++) {
+                LayerBuild built;
+                try { built=jobs.get(i).get(); }
+                catch(ExecutionException failure) { Throwable cause=failure.getCause();if(cause instanceof Exception)throw (Exception)cause;throw new IOException("EROFS layer build failed",cause); }
+                int id=result.layers.size();result.layers.add(built.layer);
+                for(Record r:newBatches.get(i)){r.layer=id;r.layerSha=built.layer.sha256;}
+            }
+        } finally {
+            for(ForkJoinTask<?> job:jobs)if(!job.isDone())job.cancel(true);
         }
         result.records.addAll(records);write(new File(output,"layers.index"),result);return result;
+    }
+    private static final class LayerBuild { final Layer layer;LayerBuild(Layer layer){this.layer=layer;} }
+    private static LayerBuild buildLayer(List<Record> batch,List<Record> records,File output,File mkfs,long epoch,
+            BooleanSupplier cancelled,int mkfsWorkers)throws Exception {
+        List<Record> imageRecords=new ArrayList<>();Set<String> needed=new HashSet<>();
+        for(Record r:batch){String p=r.path;while(!p.equals("/")){int slash=p.lastIndexOf('/');p=slash<=0?"/":p.substring(0,slash);needed.add(p);}}
+        for(Record r:records)if(r.kind.equals("dir")&&needed.contains(r.path))imageRecords.add(r);imageRecords.addAll(batch);
+        imageRecords.sort((a,b)->utf8Compare(a.path,b.path));
+        File image=File.createTempFile("matonos-layer-",".erofs",output);File tarPipe=File.createTempFile("matonos-layer-",".tar.fifo",output);
+        File log=File.createTempFile("matonos-layer-",".log",output);
+        try {
+            if(!tarPipe.delete())throw new IOException("Cannot prepare EROFS tar pipe");
+            Process fifo=new ProcessBuilder("mkfifo",tarPipe.getAbsolutePath()).redirectErrorStream(true).start();
+            if(fifo.waitFor()!=0)throw new IOException("Cannot create EROFS tar pipe: "+new String(fifo.getInputStream().readAllBytes(),StandardCharsets.UTF_8));
+            String mkfsUuid=layerUuid(imageRecords);Process p=new ProcessBuilder(mkfs.getAbsolutePath(),"-zlz4hc,9","--tar=f","--mkfs-time","-T",Long.toString(epoch),"--workers="+mkfsWorkers,"-U",mkfsUuid,image.getAbsolutePath(),tarPipe.getAbsolutePath()).redirectErrorStream(true).redirectOutput(log).start();
+            MessageDigest tarIdentity=MessageDigest.getInstance("SHA-256");try(OutputStream tarOut=new DigestOutputStream(new FileOutputStream(tarPipe),tarIdentity)){writeTar(tarOut,imageRecords,epoch);}
+            while(!p.waitFor(250,TimeUnit.MILLISECONDS))if(cancelled.getAsBoolean()){p.destroyForcibly();throw new IOException("EROFS layer build cancelled");}
+            if(cancelled.getAsBoolean())throw new IOException("EROFS layer build cancelled");
+            if(p.exitValue()!=0)throw new IOException("mkfs.erofs failed: "+new String(Files.readAllBytes(log.toPath()),StandardCharsets.UTF_8));
+            String digest=sha(image);File dest=new File(output,"pack-"+digest+".erofs");if(dest.exists())image.delete();else Files.move(image.toPath(),dest.toPath());
+            Layer l=new Layer();l.sha256=digest;l.imageSize=dest.length();l.split="pack_"+digest;l.entry="assets/matonos/pack.erofs";
+            return new LayerBuild(l);
+        } finally {image.delete();tarPipe.delete();log.delete();}
     }
     private static List<List<Record>> batches(List<Record> files){Map<String,List<Record>> dirs=new TreeMap<>();for(Record r:files)dirs.computeIfAbsent(new File(r.path).getParent(),k->new ArrayList<>()).add(r);List<List<Record>> out=new ArrayList<>();List<Record> batch=new ArrayList<>();long size=0;for(List<Record> group:dirs.values()){group.sort((a,b)->utf8Compare(a.path,b.path));for(Record r:group){if(!batch.isEmpty()&&size+r.size>TARGET){out.add(batch);batch=new ArrayList<>();size=0;}batch.add(r);size+=r.size;}}if(!batch.isEmpty())out.add(batch);return out;}
     private static String sha(File file)throws Exception{MessageDigest d=MessageDigest.getInstance("SHA-256");try(InputStream in=new BufferedInputStream(new FileInputStream(file))){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)d.update(b,0,n);}return ObjectPacks.hex(d.digest());}
     private static String uuid(String hash){char[] c=hash.substring(0,32).toCharArray();c[12]='5';c[16]="89ab".charAt(Character.digit(c[16],16)&3);return new String(c,0,8)+"-"+new String(c,8,4)+"-"+new String(c,12,4)+"-"+new String(c,16,4)+"-"+new String(c,20,12);}
+    private static String layerUuid(List<Record> records)throws Exception {
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");
+        for(Record r:records) {
+            for(String value:new String[]{r.path,r.checksum,r.kind,r.target}) {
+                byte[] bytes=value.getBytes(StandardCharsets.UTF_8);updateLe(digest,bytes.length,4);digest.update(bytes);
+            }
+            updateLe(digest,r.xattrs.length,4);digest.update(r.xattrs);
+            updateLe(digest,r.size,8);updateLe(digest,r.mtime,8);updateLe(digest,r.uid,4);updateLe(digest,r.gid,4);updateLe(digest,r.mode,4);
+        }
+        return uuid(ObjectPacks.hex(digest.digest()));
+    }
+    private static void updateLe(MessageDigest digest,long value,int bytes) {
+        for(int i=0;i<bytes;i++){digest.update((byte)value);value>>>=8;}
+    }
 
-    private static void writeTar(File output,List<Record> records,long epoch)throws Exception {
-        records.sort((a,b)->utf8Compare(a.path,b.path));try(OutputStream out=new BufferedOutputStream(new FileOutputStream(output))) {int seq=0;for(Record r:records){String name=r.path.equals("/")?".":r.path.substring(1);Map<String,String> pax=new TreeMap<>();if(name.getBytes(StandardCharsets.UTF_8).length>100)pax.put("path",name);if(r.kind.equals("symlink")&&r.target.getBytes(StandardCharsets.UTF_8).length>100)pax.put("linkpath",r.target);if(r.mtime>0)pax.put("mtime",Long.toString(r.mtime));
+    private static void writeTar(OutputStream output,List<Record> records,long epoch)throws Exception {
+        records.sort((a,b)->utf8Compare(a.path,b.path));try(OutputStream out=new BufferedOutputStream(output)) {int seq=0;for(Record r:records){String name=r.path.equals("/")?".":r.path.substring(1);Map<String,String> pax=new TreeMap<>();if(name.getBytes(StandardCharsets.UTF_8).length>100)pax.put("path",name);if(r.kind.equals("symlink")&&r.target.getBytes(StandardCharsets.UTF_8).length>100)pax.put("linkpath",r.target);if(r.mtime>0)pax.put("mtime",Long.toString(r.mtime));
                 Map<String,byte[]> attrs=decodeXattrs(r.xattrs);for(Map.Entry<String,byte[]> x:attrs.entrySet())pax.put("LIBARCHIVE.xattr."+url(x.getKey()),Base64.getEncoder().encodeToString(x.getValue()));
                 if(!pax.isEmpty()){String pn="PaxHeaders/"+(seq++);byte[] data=pax(pax);header(out,pn,data.length,0644,0,0,epoch,'x',"");out.write(data);pad(out,data.length);}
                 long size=r.kind.equals("file")?r.size:0;char type=r.kind.equals("dir")?'5':r.kind.equals("symlink")?'2':'0';String target=r.kind.equals("symlink")?r.target:"";header(out,name,size,r.mode&07777,r.uid,r.gid,r.mtime>0?r.mtime:epoch,type,target);

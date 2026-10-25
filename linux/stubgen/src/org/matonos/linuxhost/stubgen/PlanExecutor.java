@@ -21,11 +21,16 @@ public final class PlanExecutor {
 
     /** Nodes with failed dependencies are skipped; unrelated branches still run. */
     public static <T> Outcome<T> execute(List<DependencyPlan.Node> plan,int workers,Task<T> task)throws InterruptedException {
-        ExecutorService pool=Executors.newFixedThreadPool(Math.max(1,workers));
+        ForkJoinPool pool=new ForkJoinPool(Math.max(1,workers));
+        try { return execute(plan,pool,task); }
+        finally { pool.shutdownNow(); }
+    }
+
+    /** Uses one shared bounded pool for ref tasks and their nested layer builds. */
+    public static <T> Outcome<T> execute(List<DependencyPlan.Node> plan,ForkJoinPool pool,Task<T> task)throws InterruptedException {
         Map<String,Future<T>> futures=new LinkedHashMap<>();
         Map<String,T> completed=new LinkedHashMap<>();Map<String,Throwable> failed=new LinkedHashMap<>();Set<String> skipped=new LinkedHashSet<>();
-        try {
-            for(DependencyPlan.Node node:plan) {
+        for(DependencyPlan.Node node:plan) {
                 List<Future<T>> dependencies=new ArrayList<>();boolean missing=false;
                 for(String ref:node.stageDependencies) {
                     Future<T> dependency=futures.get(ref);
@@ -39,15 +44,16 @@ public final class PlanExecutor {
                     return task.run(node);
                 }));
             }
-            for(Map.Entry<String,Future<T>> entry:futures.entrySet())try { completed.put(entry.getKey(),entry.getValue().get()); }
+        for(Map.Entry<String,Future<T>> entry:futures.entrySet())try { completed.put(entry.getKey(),entry.getValue().get()); }
             catch(ExecutionException error) {
                 Throwable cause=error.getCause();
-                if(cause instanceof DependencyFailed)skipped.add(entry.getKey());else failed.put(entry.getKey(),cause);
+                boolean dependencyFailed=false;
+                for(Throwable nested=cause;nested!=null;nested=nested.getCause())if(nested instanceof DependencyFailed){dependencyFailed=true;break;}
+                if(dependencyFailed)skipped.add(entry.getKey());else failed.put(entry.getKey(),cause);
                 // A dependent Future.get() wraps the original error. Keep the ref-level cause useful.
             }
-            for(DependencyPlan.Node node:plan)if(futures.containsKey(node.ref)&&!completed.containsKey(node.ref)&&!failed.containsKey(node.ref))skipped.add(node.ref);
-            return new Outcome<>(completed,failed,skipped);
-        } finally { pool.shutdownNow(); }
+        for(DependencyPlan.Node node:plan)if(futures.containsKey(node.ref)&&!completed.containsKey(node.ref)&&!failed.containsKey(node.ref))skipped.add(node.ref);
+        return new Outcome<>(completed,failed,skipped);
     }
 
     /** Shared in-flight work is removed on completion; failures are never cached. */

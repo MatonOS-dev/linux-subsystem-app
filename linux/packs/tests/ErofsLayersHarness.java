@@ -38,9 +38,19 @@ public final class ErofsLayersHarness {
         rows.add(link("/usr/share/doc/link","../bin/changed"));rows.add(link("/usr/share/doc/added-link","../bin/keep"));
         ErofsLayers.build(rows,out,mkfs,1700000000L,Files.readAllBytes(new File(old,"layers.index").toPath()),images);
     }
+    private static void checkDeterministic(File first,File second)throws Exception {
+        if(!Arrays.equals(Files.readAllBytes(new File(first,"layers.index").toPath()),Files.readAllBytes(new File(second,"layers.index").toPath())))
+            throw new AssertionError("identical Java layer input changed layers.index bytes");
+        ErofsLayers.Index index=ErofsLayers.read(Files.readAllBytes(new File(first,"layers.index").toPath()));
+        for(ErofsLayers.Layer layer:index.layers) {
+            String name="pack-"+layer.sha256+".erofs";
+            if(!Arrays.equals(Files.readAllBytes(new File(first,name).toPath()),Files.readAllBytes(new File(second,name).toPath())))
+                throw new AssertionError("identical Java layer input changed image bytes: "+name);
+        }
+    }
     public static void main(String[] args)throws Exception {
-        File root=new File(args[0]),mkfs=new File(args[1]);File srcA=new File(root,"src"),a=new File(root,"A"),b=new File(root,"B");
-        makeA(srcA,a,mkfs);makeB(srcA,a,b,mkfs);
+        File root=new File(args[0]),mkfs=new File(args[1]);File srcA=new File(root,"src"),a=new File(root,"A"),repeat=new File(root,"A-repeat"),b=new File(root,"B");
+        makeA(srcA,a,mkfs);makeA(new File(root,"src-repeat"),repeat,mkfs);checkDeterministic(a,repeat);makeB(srcA,a,b,mkfs);
         ErofsLayers.Index one=ErofsLayers.read(Files.readAllBytes(new File(a,"layers.index").toPath()));
         ErofsLayers.Index two=ErofsLayers.read(Files.readAllBytes(new File(b,"layers.index").toPath()));
         Set<String> old=new HashSet<>(),next=new HashSet<>();for(ErofsLayers.Layer l:one.layers)old.add(l.sha256);for(ErofsLayers.Layer l:two.layers)next.add(l.sha256);

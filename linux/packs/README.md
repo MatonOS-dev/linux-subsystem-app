@@ -9,9 +9,13 @@ file for the already-merged deployment view. There is no index image, overlay,
 or whiteout: removed paths are absent from the index. Initial packs use the
 same parent-directory grouping, lexical order, and 64 MiB target policy as
 `pack.py`; updates put changed/new regular files in one new pack and reuse
-unchanged layer images byte-for-byte. Images are built from deterministic tar
-streams with LZ4HC 12, the OSTree commit timestamp, and commit uid/gid/mode
-metadata (never host ownership).
+unchanged layer images byte-for-byte. Images stream deterministic tar data
+through a FIFO into `mkfs.erofs` without a temporary tar file, using LZ4HC 9,
+the OSTree commit timestamp, and commit uid/gid/mode metadata (never host
+ownership). Java layer builds share one `availableProcessors()`-sized pool
+across independent refs and each ref's layers; mkfs worker counts are divided
+across concurrent layers so nested builds stay bounded. The Python host writer
+uses the same level and applies the same per-layer worker division.
 
 `layers.index` begins with `MTPKIDX2`, a layer table (split name, ZIP entry,
 image size, SHA-256), then path-sorted records. Each record carries path,

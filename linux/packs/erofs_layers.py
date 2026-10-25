@@ -2,7 +2,9 @@
 """Build complete EROFS pack layers and a merged-view MTPKIDX2 index."""
 import argparse
 import base64
+import concurrent.futures
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -20,6 +22,7 @@ from gi.repository import GLib
 
 TARGET = 64 * 1024 * 1024
 MAGIC = b'MTPKIDX2'
+COMPRESSION_LEVEL = 9
 
 
 def digest(path):
@@ -107,20 +110,66 @@ def tar_info(tar, rec, path, epoch):
     else: raise ValueError(f"unsupported kind {rec['kind']}")
 
 
-def make_image(mkfs, image, records, root, epoch):
-    with tempfile.NamedTemporaryFile(suffix='.tar', dir=image.parent, delete=False) as f: tarname = pathlib.Path(f.name)
+class HashingWriter:
+    """Hash the deterministic tar bytes as tarfile streams them to mkfs."""
+    def __init__(self, stream):
+        self.stream = stream
+        self.digest = hashlib.sha256()
+
+    def write(self, data):
+        self.digest.update(data)
+        return self.stream.write(data)
+
+    def tell(self):
+        return self.stream.tell()
+
+    def flush(self):
+        return self.stream.flush()
+
+
+def deterministic_uuid(records):
+    """Derive mkfs UUID from stable layer metadata before opening its pipe."""
+    h = hashlib.sha256()
+    for rec in sorted(records, key=lambda x:x['path'].encode('utf-8')):
+        for key in ('path', 'checksum', 'kind', 'target', 'xattrs'):
+            h.update(str(rec.get(key, '')).encode('utf-8') + b'\0')
+        h.update(struct.pack('<QQIIII', rec.get('size', 0), rec.get('mtime', 0),
+                             rec['uid'], rec['gid'], rec['mode'], 0))
+    raw = h.hexdigest()[:32]
+    raw = raw[:12] + '5' + raw[13:16] + '8' + raw[17:]
+    return f'{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}'
+
+
+def make_image(mkfs, image, records, root, epoch, workers):
+    image.unlink(missing_ok=True)
+    fd, fifo_name = tempfile.mkstemp(prefix='matonos-layer-', suffix='.tar.fifo', dir=image.parent)
+    os.close(fd)
+    os.unlink(fifo_name)
+    os.mkfifo(fifo_name)
+    command = [mkfs, f'-zlz4hc,{COMPRESSION_LEVEL}', '--tar=f', '--mkfs-time', '-T', str(epoch),
+               f'--workers={workers}', '-U', deterministic_uuid(records), str(image), fifo_name]
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL)
     try:
-        with tarfile.open(tarname, 'w', format=tarfile.PAX_FORMAT) as tar:
-            for rec in sorted(records, key=lambda x:x['path'].encode('utf-8')):
-                p = root if rec['path'] == '/' else root / rec['path'].lstrip('/')
-                tar_info(tar, rec, p, epoch)
+        with open(fifo_name, 'wb', buffering=0) as pipe:
+            hashed = HashingWriter(pipe)
+            with tarfile.open(fileobj=hashed, mode='w|', format=tarfile.PAX_FORMAT) as tar:
+                for rec in sorted(records, key=lambda x:x['path'].encode('utf-8')):
+                    p = root if rec['path'] == '/' else root / rec['path'].lstrip('/')
+                    tar_info(tar, rec, p, epoch)
+        status = process.wait()
+        if status:
+            raise subprocess.CalledProcessError(status, command)
+        # Keep the streamed identity available for diagnostics without writing
+        # a temporary tar or rereading its bytes from disk.
+        return hashed.digest.hexdigest()
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
         image.unlink(missing_ok=True)
-        raw = hashlib.sha256(tarname.read_bytes()).hexdigest()[:32]
-        raw = raw[:12] + '5' + raw[13:16] + '8' + raw[17:]
-        uuid = f'{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}'
-        subprocess.run([mkfs, '-zlz4hc,12', '--tar=f', '--mkfs-time', '-T', str(epoch),
-                        '--workers=4', '-U', uuid, str(image), str(tarname)], check=True)
-    finally: tarname.unlink(missing_ok=True)
+        raise
+    finally:
+        pathlib.Path(fifo_name).unlink(missing_ok=True)
 
 
 def batches(records):
@@ -192,24 +241,36 @@ def main():
             src=a.old_layers / ('pack-'+old['sha256']+'.erofs')
             if not src.is_file() or digest(src)!=old['sha256']: raise ValueError(f'missing/corrupt prior layer: {src}')
             dst=a.out/src.name
-            if src.resolve()!=dst.resolve(): shutil.copyfile(src,dst)
+            if src.resolve()!=dst.resolve():
+                try: os.link(src,dst)
+                except OSError: shutil.copyfile(src,dst)
             layers.append(dict(old)); emitted[old['sha256']]=old
-        written=0
-        for batch in new_batches:
-            if not batch: continue
-            image=a.out/'.pack.tmp.erofs'
+        worker_count=max(1,os.cpu_count() or 1)
+        layer_workers=max(1,min(worker_count,sum(bool(batch) for batch in new_batches)))
+        mkfs_workers=max(1,worker_count//layer_workers)
+        def build_batch(number,batch):
+            if not batch: return None
             file_paths={r['path'] for r in batch}
             dirs=[r for r in records if r['kind']=='dir' and any(
                 p.startswith(r['path'].rstrip('/') + '/') for p in file_paths)]
             # Complete directory metadata is repeated in each pack. This keeps
             # every EROFS image independently traversable while layers.index
             # remains authoritative for the merged view.
-            make_image(a.mkfs,image,dirs+batch,root,epoch)
+            image=a.out/f'.pack-{number}.tmp.erofs'
+            make_image(a.mkfs,image,dirs+batch,root,epoch,mkfs_workers)
             sha=digest(image); name='pack-'+sha+'.erofs'; dst=a.out/name
             if dst.exists(): image.unlink()
-            else: image.replace(dst); written+=1
+            else: image.replace(dst)
             layer={'split':'pack_'+sha,'entry':'assets/matonos/pack.erofs','image_size':dst.stat().st_size,'sha256':sha}
-            layers.append(layer); emitted[sha]=layer
+            return layer,sha,batch
+        with concurrent.futures.ThreadPoolExecutor(max_workers=layer_workers) as pool:
+            built=list(pool.map(lambda item:build_batch(*item),enumerate(batch for batch in new_batches if batch)))
+        written=0
+        for item in built:
+            if item is None:continue
+            layer,sha,batch=item
+            if sha not in emitted:written+=1
+            layers.append(layer);emitted[sha]=layer
             for r in batch:r['layer_sha256']=sha
         # The index is a merged path table. Deleted entries simply do not occur.
         for r in records:
