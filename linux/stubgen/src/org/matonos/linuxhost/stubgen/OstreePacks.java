@@ -22,14 +22,45 @@ public final class OstreePacks {
     private OstreePacks(File repo, Command cli, Xattrs xattrs) { this.repo=repo; this.cli=cli; this.xattrs=xattrs; }
 
     public static OstreePacks read(File repo, String revision, Command cli, Xattrs xattrs) throws Exception {
+        return read(repo,revision,cli,xattrs,Collections.emptyList());
+    }
+    /** Read only the subpath deployment's tree. Directory entries on the path
+     * from the commit root to each selected subpath are retained for metadata;
+     * unrelated subtrees and their payloads are never opened. */
+    public static OstreePacks read(File repo, String revision, Command cli, Xattrs xattrs,
+            List<String> subpaths) throws Exception {
+        List<String> scope=normalizeSubpaths(subpaths);
         OstreePacks result=new OstreePacks(repo,cli,xattrs);
         result.commit=cli.run("rev-parse",revision).trim();
         checksum(result.commit);
         byte[][] c=tuple(result.object(result.commit,"commit"),
                 new int[]{8,1,1,1,1,8,1,1},new int[]{-1,-1,-1,-1,-1,8,-1,-1});
         long timestamp=0;for(byte b:c[5])timestamp=(timestamp<<8)|(b&255L);result.commitTime=timestamp;
-        result.visit(hex(c[6]),hex(c[7]),"/",new HashSet<>(),0);
+        result.visit(hex(c[6]),hex(c[7]),"/",new HashSet<>(),0,scope);
         return result;
+    }
+    private static List<String> normalizeSubpaths(List<String> subpaths) throws IOException {
+        if(subpaths==null||subpaths.isEmpty())return Collections.emptyList();
+        TreeSet<String> result=new TreeSet<>();boolean root=false;
+        for(String value:subpaths) {
+            if(value==null||!value.startsWith("/")||value.endsWith("/")
+                    ||value.contains("//"))throw new IOException("Invalid OSTree subpath");
+            if(value.equals("/")){root=true;continue;}
+            for(String part:value.substring(1).split("/"))
+                if(part.isEmpty()||part.equals(".")||part.equals("..")||part.indexOf(0)>=0)
+                    throw new IOException("Invalid OSTree subpath");
+            result.add(value);
+        }
+        if(root)return Collections.emptyList();
+        return new ArrayList<>(result);
+    }
+    private static boolean selected(String path,List<String> subpaths) {
+        if(subpaths.isEmpty())return true;
+        for(String subpath:subpaths) {
+            if(path.equals(subpath)||path.equals("/")||subpath.startsWith(path.equals("/")?"/":path+"/")
+                    ||path.startsWith(subpath+"/"))return true;
+        }
+        return false;
     }
     /** Private ref is local-only, scoped to the operation's own staging repo. */
     public static String commitDeployed(File files, Command cli) throws Exception {
@@ -88,7 +119,9 @@ public final class OstreePacks {
         if(!type.equals("commit"))original.put(sum+"."+type,raw);
         return raw;
     }
-    private void visit(String tree,String meta,String prefix,Set<String> ancestors,int depth) throws Exception {
+    private void visit(String tree,String meta,String prefix,Set<String> ancestors,int depth,
+            List<String> subpaths) throws Exception {
+        if(!selected(prefix,subpaths))return;
         if(depth>256 || !ancestors.add(tree))throw new IOException("Recursive OSTree tree");
         byte[][] m=tuple(object(meta,"dirmeta"),new int[]{4,4,4,1},new int[]{4,4,4,-1});
         ObjectPacks.Entry dir=new ObjectPacks.Entry(prefix,tree,"dir",be(m[2]));
@@ -96,11 +129,13 @@ public final class OstreePacks {
         byte[][] t=tuple(object(tree,"dirtree"),new int[]{1,1},new int[]{-1,-1});
         for(byte[] raw:array(t[1])) {
             byte[][] d=tuple(raw,new int[]{1,1,1},new int[]{-1,-1,-1});
-            visit(hex(d[1]),hex(d[2]),child(prefix,d[0]),ancestors,depth+1);
+            String path=child(prefix,d[0]);
+            if(selected(path,subpaths))visit(hex(d[1]),hex(d[2]),path,ancestors,depth+1,subpaths);
         }
         for(byte[] raw:array(t[0])) {
             byte[][] f=tuple(raw,new int[]{1,1},new int[]{-1,-1});
             String name=child(prefix,f[0]),sum=hex(f[1]);
+            if(!selected(name,subpaths))continue;
             File payload=path(sum,"file");
             byte[] rawMeta=xattrs.get(payload,"user.ostreemeta");
             int uid,gid,mode;byte[] packedXattrs;

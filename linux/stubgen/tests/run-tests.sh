@@ -24,3 +24,4 @@ java -cp "$TEST_OUT/classes:$ANDROID_JAR" ForegroundManifestTest "$AAPT2" "$TEST
 
 java -cp "$TEST_OUT/classes:$STUB_DIR/prebuilt/apksig.jar:$ANDROID_JAR" PackCarrierTest "$TEST_OUT" "$AAPT2"
 java -Xmx256m -cp "$TEST_OUT/classes" PackSeedTest "$(mktemp -d "$TEST_OUT/seed.XXXXXX")"
+java -Xmx256m -cp "$TEST_OUT/classes" SubpathPackTest "$(mktemp -d "$TEST_OUT/subpath.XXXXXX")"

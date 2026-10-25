@@ -30,7 +30,9 @@ public final class StagedPacks {
                 throw new IOException("Cannot read OSTree object xattr " + name,error);
             }
         };
-        OstreePacks original=OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source,objectXattrs);
+        List<String> subpaths=new ArrayList<>();org.json.JSONArray requested=manifest.optJSONArray("subpaths");
+        if(requested!=null)for(int i=0;i<requested.length();i++)subpaths.add(requested.getString(i));
+        OstreePacks original=OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source,objectXattrs,subpaths);
         // The committed tree is the deployment's files/ exactly as deployed,
         // including the raw extra downloads apply_extra has not consumed (the
         // installer defers those to the stub). A separate bare-user repo keeps
