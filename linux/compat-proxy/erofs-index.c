@@ -20,18 +20,19 @@ static const char *erofs_files_suffix(const char *path){for(size_t i=0;path[i];i
 #undef strcmp
 #undef memcmp
 #undef strchr
-typedef uint64_t erofs_lock_word __attribute__((aligned(8)));
-struct erofs_mount {struct erofs_mount *next;int io_fd;erofs_lock_word *io_owner;char *target;char *backing;char *layer_directory;mtp_index *index;void *blob;size_t size;uint64_t root_dev,root_ino;int root_identity;};
+struct erofs_mount {struct erofs_mount *next;char *target;char *backing;char *layer_directory;mtp_index *index;void *blob;size_t size;uint64_t root_dev,root_ino;int root_identity;};
 struct erofs_dirfd {struct erofs_dirfd *next;int fd;struct erofs_mount *mount;mtp_object object;uint64_t root_dev,root_ino;int root_identity;};
 static struct erofs_mount *erofs_mounts;
 static struct erofs_dirfd *erofs_dirs;
+static uint32_t erofs_iteration_lock;
 static void *erofs_alloc(void *c,size_t n){(void)c;return vfs_palloc(n);}
 static void erofs_free(void *c,void *p){(void)c;vfs_free(p);}
 static char *erofs_pdup(const char *s){size_t n=p_len(s);char *p=vfs_palloc(n+1);if(p)p_copy(p,s,n+1);return p;}
 static struct erofs_dirfd *erofs_dir_find(int fd){for(struct erofs_dirfd *f=erofs_dirs;f;f=f->next)if(f->fd==fd)return f;return NULL;}
 int erofs_tracked(int fd){return erofs_dir_find(fd)!=NULL;}
 int erofs_is_directory(int fd){struct erofs_dirfd *f=erofs_dir_find(fd);return f?(p_equal(f->object.kind,"dir")?1:0):-1;}
-int erofs_private(int fd){for(struct erofs_mount *m=erofs_mounts;m;m=m->next)if(m->io_fd==fd)return 1;return 0;}
+int erofs_private(int fd){(void)fd;return 0;}
+void erofs_fork_child(void){__atomic_store_n(&erofs_iteration_lock,0,__ATOMIC_RELAXED);}
 /* Path operations arrive here after vfs_resolve_mount has translated their
  * virtual name to the backing path. Pack indexes describe the virtual tree,
  * so reverse that translation before looking up an object. This matters for
@@ -117,19 +118,13 @@ long erofs_mount(const char *target,const char *index,const char *directory){
  if(!target||target[0]!='/')return -EINVAL;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,index,O_RDONLY|O_CLOEXEC,0,0,0);if(fd<0)return fd;
  struct proxy_stat st;long e=arch_stat_fd(fd,&st);if(e||st.st_size<12||(uint64_t)st.st_size>SIZE_MAX){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -EINVAL;}
- struct erofs_mount *m=vfs_palloc(sizeof(*m));if(!m){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*m=(struct erofs_mount){.io_fd=-1};m->size=st.st_size;m->blob=vfs_palloc(m->size);char *temp_target=global_target(target,&e);m->target=temp_target?erofs_pdup(temp_target):NULL;vfs_free(temp_target);m->layer_directory=erofs_pdup(directory);
+ struct erofs_mount *m=vfs_palloc(sizeof(*m));if(!m){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*m=(struct erofs_mount){0};m->size=st.st_size;m->blob=vfs_palloc(m->size);char *temp_target=global_target(target,&e);m->target=temp_target?erofs_pdup(temp_target):NULL;vfs_free(temp_target);m->layer_directory=erofs_pdup(directory);
  if(!m->blob||!m->target)e=-ENOMEM;
  if(!e && RAW(PROXY_SC_pread64,fd,m->blob,m->size,0,0,0)!=(long)m->size)e=-EIO;
  RAW(PROXY_SC_close,fd,0,0,0,0,0);
  if(!e && (m->size<8||erofs_cmp(m->blob,"MTPKIDX2",8)))e=-EINVAL;
  if(!e && mtp_index_open_buffer(m->blob,m->size,&m->index,erofs_alloc,erofs_free,NULL))e=-EINVAL;
  if(!e && (!m->layer_directory || !mtp_layer_count(m->index)))e=-EINVAL;
- if(!e){
-  m->io_fd=proxy_private_fd(RAW(PROXY_SC_memfd_create,"erofs-dir-lock",0,0,0,0,0));
-  if(m->io_fd<0)e=m->io_fd;
-  if(!e)e=RAW(PROXY_SC_ftruncate,m->io_fd,4096,0,0,0,0);
-  if(!e){long area=RAW(PROXY_SC_mmap,0,4096,PROT_READ|PROT_WRITE,MAP_SHARED,m->io_fd,0);if((unsigned long)area>=(unsigned long)-4095)e=area;else m->io_owner=(void *)area;}
- }
  if(!e){
   /* The indexed root overlays the real files/ directory. Keep its kernel
    * identity so a directory fd passed to bwrap --bind-fd matches the path
@@ -140,10 +135,15 @@ long erofs_mount(const char *target,const char *index,const char *directory){
   if(!e)e=proxy_mount(m->target,m->target);
   if(!e)table->flags=MS_RDONLY;
  }
- if(e){if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m->backing);vfs_free(m->layer_directory);vfs_free(m);return e;}
+ if(e){mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m->backing);vfs_free(m->layer_directory);vfs_free(m);return e;}
  m->next=erofs_mounts;erofs_mounts=m;return 0;
 }
-void erofs_close(int fd){struct erofs_dirfd **p=&erofs_dirs;while(*p&&(*p)->fd!=fd)p=&(*p)->next;if(*p){struct erofs_dirfd *old=*p;*p=old->next;vfs_free(old);}}
+/* Ordinary payload closes run natively. Retire every old association when
+ * the kernel reuses a number, including duplicates inherited from an exec. */
+void erofs_close(int fd){
+ struct erofs_dirfd **p=&erofs_dirs;
+ while(*p){struct erofs_dirfd *old=*p;if(old->fd==fd){*p=old->next;vfs_free(old);}else p=&old->next;}
+}
 long erofs_dup(int from,int to){if(from==to)return 0;struct erofs_dirfd *f=erofs_dir_find(from);struct erofs_dirfd copy;if(f)copy=*f;erofs_close(to);if(f){f=vfs_palloc(sizeof(*f));if(!f)return -ENOMEM;*f=copy;f->fd=to;f->next=erofs_dirs;erofs_dirs=f;}return 0;}
 long erofs_open(const char *path,int flags){
  struct erofs_mount *m=erofs_lookup(path);if(!m)return -ENOSYS;
@@ -175,6 +175,8 @@ long erofs_open(const char *path,int flags){
   if(native!=root)vfs_free(native);
   vfs_free(root);
   if(opened<0)return opened;
+  /* A new indexed open replaces the previous lifetime of this fd too. */
+  erofs_close((int)opened);
   struct erofs_dirfd *f=vfs_palloc(sizeof(*f));if(!f){RAW(PROXY_SC_close,opened,0,0,0,0,0);return -ENOMEM;}
   uint64_t root_dev,root_ino;int root_identity;erofs_root_identity(m,&o,path,&root_dev,&root_ino,&root_identity);
   *f=(struct erofs_dirfd){.next=erofs_dirs,.fd=(int)opened,.mount=m,.object=o,.root_dev=root_dev,.root_ino=root_ino,.root_identity=root_identity};erofs_dirs=f;
@@ -244,25 +246,17 @@ static long erofs_call_unlocked(long nr,proxy_arg_t *a,int *handled){
  }
  *handled=0;return 0;
 }
-/* Serialize the position snapshot plus clamped kernel read. The small shared
- * record is per mount (not a substitute open-file description); the kernel
- * still owns every fd position. Fork and peer exec retain the same record.
- * Block app signals while held, and recover a dead process/thread owner. */
+/* Serialize the position snapshot plus clamped kernel read among threads in
+ * this process. A fork gets a private copy of this mutex; concurrent iteration
+ * of one shared directory description across processes is an accepted race. */
 long erofs_call(long nr,proxy_arg_t *a,int *handled){
  struct erofs_dirfd *f=erofs_dir_find(a[0]);
  int position=nr==PROXY_SC_read||nr==PROXY_SC_readv||nr==PROXY_SC_preadv2||nr==PROXY_SC_lseek||nr==PROXY_SC_getdents64;
  if(!f||!position||!p_equal(f->object.kind,"dir"))return erofs_call_unlocked(nr,a,handled);
  proxy_sigmask_t all=~UINT64_C(0),mask=0;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
- uint64_t owner=((uint64_t)(uint32_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)<<32)|(uint32_t)RAW(PROXY_SC_gettid,0,0,0,0,0,0);
- erofs_lock_word *word=f->mount->io_owner;
- for(;;){
-  uint64_t expected=0;if(__atomic_compare_exchange_n(word,&expected,owner,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))break;
-  long live=RAW(PROXY_SC_tgkill,expected>>32,(uint32_t)expected,0,0,0,0);
-  if(live==-ESRCH)__atomic_compare_exchange_n(word,&expected,0,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED);
-  else RAW(PROXY_SC_sched_yield,0,0,0,0,0,0);
- }
+ while(__atomic_exchange_n(&erofs_iteration_lock,1,__ATOMIC_ACQUIRE))RAW(PROXY_SC_sched_yield,0,0,0,0,0,0);
  long r=erofs_call_unlocked(nr,a,handled);
- __atomic_store_n(word,0,__ATOMIC_RELEASE);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);return r;
+ __atomic_store_n(&erofs_iteration_lock,0,__ATOMIC_RELEASE);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);return r;
 }
 /* Real directory descriptors provide fork/dup position sharing. Transfer the
  * immutable index and directory metadata needed by peer-loader exec. */
@@ -276,8 +270,6 @@ static void erofs_state(struct state *s){
   if(s->reading){if(m->size>s->size-s->pos){s->error=-EINVAL;return;}m->blob=vfs_palloc(m->size);if(!m->blob){s->error=-ENOMEM;return;}}
   state_bytes(s,m->blob,m->size);
   if(s->reading&&mtp_index_open_buffer(m->blob,m->size,&m->index,erofs_alloc,erofs_free,NULL)){s->error=-EINVAL;return;}
-  m->io_fd=state_word(s,m->io_fd);if(!state_live(m->io_fd)){s->error=-EBADF;return;}
-  if(s->reading){long area=RAW(PROXY_SC_mmap,0,4096,PROT_READ|PROT_WRITE,MAP_SHARED,m->io_fd,0);if((unsigned long)area>=(unsigned long)-4095){s->error=area;return;}m->io_owner=(void *)area;}
   tail=&m->next;
  }
  n=0;for(struct erofs_dirfd *f=erofs_dirs;f;f=f->next)if(state_live(f->fd))n++;n=state_word(s,n);

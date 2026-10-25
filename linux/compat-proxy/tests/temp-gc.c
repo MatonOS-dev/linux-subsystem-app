@@ -11,6 +11,9 @@ const char *proxy_tmpdir;
 /* This VFS-only fixture has no in-flight IPC fork descriptors. */
 int ipc_private_fd(int fd){(void)fd;return 0;}
 int state_private_fd(int fd){(void)fd;return 0;}
+int proxy_fd_is_private(long fd){(void)fd;return 0;}
+long proxy_private_fd(long fd){return fd;}
+void proxy_private_fd_release(int fd){(void)fd;}
 int proxy_trace;
 long proxy_fd_reserve=512,proxy_fd_reserve_end=0x7fffffff;
 void proxy_log(const char *m,long a,long b){(void)m;(void)a;(void)b;}
@@ -27,7 +30,7 @@ int main(int argc,char **argv){
   snprintf(outside,sizeof(outside),"%s/keep",argv[1]);
   assert(!mkdir(live,0700)&&!mkdir(stale,0700)&&!mkdir(legacy,0700)&&!mkdir(outside,0700));
   assert(!temp_own(live)&&!temp_own(stale));
-  assert(temp_locks->fd>=512&&temp_locks->next->fd>=512);
+  assert(temp_locks->fd>2&&temp_locks->fd!=temp_locks->next->fd);
   /* An unlocked marker is stale even when the PID in the name exists. */
   close(temp_locks->fd);temp_locks=temp_locks->next;
   snprintf(link,sizeof(link),"%s/link",stale);assert(!symlink(outside,link));

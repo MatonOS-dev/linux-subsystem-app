@@ -57,10 +57,12 @@ prop=u:object_r:vendor_maton_graphics_prop:s0
 cp "$fixture/hardware" "$fixture/props/$prop"
 TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter "${gpu_profile_args[@]}" --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$PWD/build/gpu-sysfs" >build/gpu-sysfs.out 2>build/gpu-sysfs.log
 cat build/gpu-sysfs.out
-if command -v bwrap >/dev/null; then
+if command -v bwrap >/dev/null && [[ ${COMPAT_GPU_SKIP_BWRAP:-0} != 1 ]]; then
     TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$(command -v bwrap)" --ro-bind / / --proc /proc --dev /dev "$PWD/build/gpu-sysfs" >build/gpu-bwrap.out 2>build/gpu-bwrap.log
     cat build/gpu-bwrap.out
     printf 'PASS generated GPU tree survives bwrap recursive root bind/pivot\n'
+elif command -v bwrap >/dev/null; then
+    printf 'SKIP GPU bwrap recursive root bind/pivot (COMPAT_GPU_SKIP_BWRAP=1)\n'
 fi
 for mode in software malformed corrupt dirty missing-device missing; do
     args=()

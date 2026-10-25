@@ -38,10 +38,13 @@ void proxy_profile_section(unsigned,uint64_t);
  * payload I/O reach Linux directly. */
 extern long proxy_fd_reserve,proxy_fd_reserve_end;
 extern int proxy_fd_reserve_ready;
-long proxy_fd_relocate(long);
-#define PROXY_PRIVATE_FD_FLOOR proxy_fd_reserve
 void proxy_fd_reserve_init(void);
+int proxy_fd_is_private(long);
 long proxy_private_fd(long);
+void proxy_private_fd_release(int);
+long proxy_private_fd_move(long);
+void state_private_fd_relocated(int,int);
+void proxy_fd_number_moved(int,int);
 #include "arch/statx.h"
 #include "arch/socket.h"
 struct image { uintptr_t entry, stack; };

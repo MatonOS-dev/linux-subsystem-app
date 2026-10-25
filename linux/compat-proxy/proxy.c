@@ -55,23 +55,30 @@
 static int hc_test_fd=-1;
 #endif
 static int proxy_count_fd=-1;
+static long payload_close_range(unsigned,unsigned,unsigned);
 #include "resident-fds.h"
 static int private_close_fd(int fd){
 #ifdef HOST_COMMAND_TEST
     if(fd==hc_test_fd)return 1;
 #endif
     /* --count spans resident execs even if payloads set CLOEXEC on it. */
-    return fd==proxy_count_fd || vfs_private_fd(fd) || resident_fd_owned(fd);
+    return fd==proxy_count_fd || proxy_fd_is_private(fd) || vfs_private_fd(fd) || resident_fd_owned(fd);
+}
+void proxy_fd_number_moved(int oldfd,int newfd){
+    vfs_private_fd_relocated(oldfd,newfd);ipc_private_fd_relocated(oldfd,newfd);state_private_fd_relocated(oldfd,newfd);
+    if(proxy_count_fd==oldfd)proxy_count_fd=newfd;
+    if(proxy_diagnostic_fd==oldfd)proxy_diagnostic_fd=newfd;
 }
 static struct kernel_action chained;
 static struct kernel_action chained_segv;
 static void rewrite_segv_handler(int,siginfo_t *,void *);
 int proxy_diagnostics_init(void) {
     proxy_fd_reserve_init();
+    if(!proxy_fd_reserve_ready)return -EMFILE;
     if(proxy_diagnostic_fd!=2)return 0;
     /* F_DUPFD keeps the original sink through resident exec, without CLOEXEC.
      * The VFS private-fd guard protects it from the payload's fd sweeps. */
-    long fd=RAW(PROXY_SC_fcntl,2,F_DUPFD,PROXY_PRIVATE_FD_FLOOR,0,0,0);
+    long fd=proxy_private_fd(RAW(PROXY_SC_fcntl,2,F_DUPFD,3,0,0,0));
     if(fd<0)return (int)fd;
     proxy_diagnostic_fd=(int)fd;return 0;
 }
@@ -947,7 +954,10 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     else e=links_path_call(nr,a,p);
     if(e>=0 && q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2))vfs_fd_rename(p,q);
     if(e>=0 && ((nr==PROXY_SC_openat && (a[2]&O_CREAT)) || nr==PROXY_SC_linkat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))links_cache_invalidate();
-    if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record((int)e,fd,original_path);
+    /* Native close need not trap for metadata cleanup: a successful native
+     * open starts a new fd lifetime, with no indexed object attached. Keep
+     * the indexed-open branch above separate so its new record survives. */
+    if(e>=0 && nr==PROXY_SC_openat){erofs_close((int)e);vfs_fd_record((int)e,fd,original_path);}
     if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */
@@ -988,7 +998,15 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     long result;
     /* dup3 may replace a sysctl descriptor; apply its written limit first. */
     if(nr==PROXY_SC_dup3 && sysctl_fds)sysctl_sync();
-    if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&private_close_fd((int)a[1])))return -EBADF;
+    if(vfs_private_fd((int)a[0]))return -EBADF;
+    long target=-1;
+    if(nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3)target=a[1];
+    else if(nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))target=a[2];
+    if(target>=0 && !proxy_fd_is_private(target) && private_close_fd((int)target))return -EBADF;
+    if(target>=0 && proxy_fd_is_private(target)){
+        long moved=proxy_private_fd_move(target);if(moved<0)return moved;
+        proxy_fd_number_moved((int)target,(int)moved);
+    }
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
     return result;
@@ -1000,7 +1018,7 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
         return path_call(nr,a,1,-1);
     case PROXY_SC_readlink:return path_call(nr,a,0,-1);
     case PROXY_SC_close:{
-        if(private_close_fd((int)a[0]))return 0;
+        if(private_close_fd((int)a[0]))return proxy_fd_is_private(a[0])?-EBADF:0;
         /* A written limit must apply before its last descriptor goes away. */
         if(sysctl_fds)sysctl_sync();
         long r=RAW(PROXY_SC_close,a[0],0,0,0,0,0);
@@ -1008,24 +1026,18 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
         return r;
     }
     case PROXY_SC_fstat:{
-        if(vfs_private_fd((int)a[0]))return -EBADF;
         long r=RAW(nr,a[0],a[1],0,0,0,0);
         if(!r)links_payload_fd_stat((int)a[0],(void *)(uintptr_t)a[1]);
         return r;
     }
     case PROXY_SC_getdents64:
-        if(vfs_private_fd((int)a[0]))return -EBADF;
         return links_dents(a[0],(void *)(uintptr_t)a[1],a[2]);
     case PROXY_SC_lseek:
-        if(vfs_private_fd((int)a[0]))return -EBADF;
         return RAW(nr,a[0],a[1],a[2],0,0,0);
     default:return -ENOSYS;
     }
 }
 /* Both entries use the same VFS dispatch; no ucontext is fabricated. */
-/* Calls that hand the payload new lowest-free descriptors. The kernel may put
- * one inside the proxy window; it is moved above the window on return.
- * Descriptors received over SCM_RIGHTS are not moved (correct; they trap). */
 static int fd_creator(long n) {
     switch(n) {
     case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_creat:
@@ -1041,37 +1053,17 @@ static int fd_creator(long n) {
     default:return 0;
     }
 }
-static long window_leave(long fd){
-    if(fd<proxy_fd_reserve || fd>=proxy_fd_reserve_end || vfs_private_fd((int)fd))return fd;
-    long moved=proxy_fd_relocate(fd);
-    if(moved==fd){
-        /* Payload descriptor count exhausted: the native kernel says EMFILE. */
-        RAW(PROXY_SC_close,fd,0,0,0,0,0);dns_close((int)fd);vfs_fd_close((int)fd);net_close((int)fd);sysctl_close((int)fd);
-        return -EMFILE;
-    }
-    {
-        vfs_fd_dup((int)fd,(int)moved);dns_dup((int)fd,(int)moved);net_dup((int)fd,(int)moved);sysctl_dup((int)fd,(int)moved);
-        dns_close((int)fd);vfs_fd_close((int)fd);net_close((int)fd);sysctl_close((int)fd);
-    }
-    return moved;
-}
-/* Keep proxy-owned descriptors in the reserve for IPC and shared locks. */
 static long creator_finish(long nr,proxy_arg_t *a,long result){
-    if(result<0 || !(fd_creator(nr) || (nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))))return result;
-    if(nr==PROXY_SC_pipe2 || nr==PROXY_SC_socketpair){
-        int pair[2];void *where=(void *)(uintptr_t)(nr==PROXY_SC_pipe2?a[0]:a[3]);
-        if(!proxy_copy(pair,where,sizeof(pair))){
-            long first=window_leave(pair[0]),second=window_leave(pair[1]);
-            if(first<0 || second<0){
-                if(first>=0)RAW(PROXY_SC_close,first,0,0,0,0,0);
-                if(second>=0)RAW(PROXY_SC_close,second,0,0,0,0,0);
-                return -EMFILE;
-            }
-            pair[0]=(int)first;pair[1]=(int)second;proxy_copy(where,pair,sizeof(pair));
-        }
-        return result;
-    }
-    return window_leave(result);
+    (void)a;
+    if(result>=0 && fd_creator(nr) && nr!=PROXY_SC_open && nr!=PROXY_SC_openat &&
+       nr!=PROXY_SC_openat2 && nr!=PROXY_SC_creat && nr!=PROXY_SC_dup &&
+       nr!=PROXY_SC_pipe && nr!=PROXY_SC_pipe2 && nr!=PROXY_SC_socketpair)
+        sysctl_close((int)result);
+    if(result>=0 && fd_creator(nr) && nr!=PROXY_SC_open && nr!=PROXY_SC_openat &&
+       nr!=PROXY_SC_openat2 && nr!=PROXY_SC_creat && nr!=PROXY_SC_dup &&
+       nr!=PROXY_SC_pipe && nr!=PROXY_SC_pipe2 && nr!=PROXY_SC_socketpair)
+        vfs_fd_close((int)result);
+    return result;
 }
 long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     PROFILE_BEGIN();
@@ -1098,11 +1090,7 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     {PROFILE_BEGIN();arena=thread?vfs_direct_begin(thread->tid,ceiling):NULL;PROFILE_END(10);}
     int packed=0;
     long result;
-    if(nr!=PROXY_SC_close && nr!=PROXY_SC_openat && nr!=PROXY_SC_newfstatat &&
-       nr!=PROXY_SC_statx && nr!=PROXY_SC_readlink && nr!=PROXY_SC_readlinkat && vfs_private_fd((int)a[0]))result=-EBADF;
-    else {
-        {PROFILE_BEGIN();result=erofs_call(nr,a,&packed);if(!packed)result=file_dispatch(nr,a);PROFILE_END(11);}
-    }
+    {PROFILE_BEGIN();result=erofs_call(nr,a,&packed);if(!packed)result=file_dispatch(nr,a);PROFILE_END(11);}
     result=creator_finish(nr,a,result);
     vfs_direct_end(arena);
     if(thread)thread->direct_depth--;
@@ -1292,13 +1280,15 @@ static int termios2_call(proxy_arg_t *a,long *result) {
     *result=RAW(PROXY_SC_ioctl,a[0],cmd==V3_TCSETS2?0x5402:cmd==V3_TCSETSW2?0x5403:0x5404,(long)&copy,0,0,0);
     return 1;
 }
-/* close_range is present in the app filter: intercept it as well as close.
- * Enumerating proc avoids a UINT_MAX loop and preserves private descriptors. */
+/* Keep proxy-owned descriptors while letting the kernel do the sweep. A
+ * CLOSE_RANGE_UNSHARE operation must not fall back to libc's O(soft-limit)
+ * close loop, so split the range around the small set of live protected fds. */
 static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
     if(first>last || (flags&~6u))return -EINVAL;
-    if(flags&2u)return -ENOSYS; /* let libc retry without CLOSE_RANGE_UNSHARE */
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/fd",O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
     if(fd<0)return fd;
+    unsigned protected[256],count=0;
+    protected[count++]=(unsigned)fd;
     char buf[4096];long n;
     while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(buf),0,0,0))>0){
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);
@@ -1306,17 +1296,38 @@ static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
             const char *p=buf+off+19;off+=len;unsigned value=0;
             if(*p<'0'||*p>'9')continue;
             while(*p>='0'&&*p<='9'){value=value*10+(*p++-'0');}
-            if(*p || value<first || value>last || value==(unsigned)fd || private_close_fd((int)value))continue;
-            if(flags&4u)RAW(PROXY_SC_fcntl,value,F_SETFD,FD_CLOEXEC,0,0,0);
-            else {RAW(PROXY_SC_close,value,0,0,0,0,0);dns_close(value);vfs_fd_close(value);net_close(value);sysctl_close(value);}
+            if(*p)continue;
+            if(private_close_fd((int)value)){
+                if(count==sizeof(protected)/sizeof(protected[0])){n=-E2BIG;goto done;}
+                protected[count++]=value;
+            } else if(!(flags&4u) && value>=first && value<=last){
+                dns_close((int)value);vfs_fd_close((int)value);net_close((int)value);sysctl_close((int)value);
+            }
         }
     }
+    if(n<0)goto done;
+    for(unsigned i=1;i<count;i++){unsigned value=protected[i],j=i;while(j && protected[j-1]>value){protected[j]=protected[j-1];j--;}protected[j]=value;}
+    unsigned cursor=first;int unshared=0;long result=0;
+    for(unsigned i=0;i<count;i++){
+        unsigned value=protected[i];
+        if(value<cursor || value>last)continue;
+        if(cursor<value){result=RAW(PROXY_SC_close_range,cursor,value-1,flags&~(unshared?2u:0u),0,0,0);if(result<0)goto done;unshared=1;}
+        cursor=value+1;
+        if(cursor==0)break;
+    }
+    if(!unshared && (flags&2u)){
+        result=RAW(PROXY_SC_unshare,CLONE_FILES,0,0,0,0,0);if(result<0)goto done;
+        unshared=1;
+    }
+    if(cursor<=last){result=RAW(PROXY_SC_close_range,cursor,last,flags&~(unshared?2u:0u),0,0,0);if(result<0)goto done;}
 done:
-    RAW(PROXY_SC_close,fd,0,0,0,0,0);return n<0?n:0;
+    RAW(PROXY_SC_close,fd,0,0,0,0,0);return n<0?n:result;
 }
 static int ours(long n) {
     if(proxy_rewrite_traps(n))return 1;
     if(ipc_ours(n))return 1;
+    if(resident_fds_enabled && (n==PROXY_SC_close || n==PROXY_SC_close_range ||
+       n==PROXY_SC_dup2 || n==PROXY_SC_dup3))return 1;
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
     if(n==PROXY_SC_set_tid_address || n==PROXY_SC_set_robust_list || n==PROXY_SC_get_robust_list)return 1;
 #endif
@@ -1326,13 +1337,13 @@ static int ours(long n) {
     case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_sendfile:case PROXY_SC_copy_file_range:case PROXY_SC_splice:
     case PROXY_SC_getxattr:case PROXY_SC_lgetxattr:case PROXY_SC_listxattr:case PROXY_SC_llistxattr:case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:
     case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
-    case PROXY_SC_close_range:case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_close:case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
+    case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_dup:case PROXY_SC_fcntl:
     case PROXY_SC_capget:case PROXY_SC_capset:case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:case PROXY_SC_modify_ldt:
 #endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
-    case PROXY_SC_prctl:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
+    case PROXY_SC_prctl:case PROXY_SC_prlimit64:case PROXY_SC_setrlimit:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
     case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:
@@ -1543,8 +1554,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         trace_word(" a2=",a[2]);trace_word(" a3=",a[3]);
         trace_word(" a4=",a[4]);trace_word(" a5=",a[5]);emit("\n");
     }
-    if(syscall_mapping) {
-        result=resident_fd_native(nr,a);
+    if(syscall_mapping && nr!=PROXY_SC_prlimit64 && nr!=PROXY_SC_setrlimit) {
+        if(nr==PROXY_SC_close && proxy_fd_is_private(a[0]))result=-EBADF;
+        else if((nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) && proxy_fd_is_private(a[1]))result=descriptor_dup_dispatch(nr,a);
+        else if(nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC) && proxy_fd_is_private(a[2]))result=descriptor_dup_dispatch(nr,a);
+        else if(nr==PROXY_SC_close && resident_fd_owned((int)a[0]))result=0;
+        else if((nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) && resident_fd_owned((int)a[1]))result=-EBADF;
+        else if(nr==PROXY_SC_close_range)result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);
+        else result=resident_fd_native(nr,a);
         if(proxy_trace && (nr==PROXY_SC_mmap || nr==PROXY_SC_ioctl)) {
             emit("v3 graphics-result nr=");crash_hex((uint64_t)nr);
             trace_word(" result=",result);emit("\n");
@@ -1566,18 +1583,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(proxy_trace)proxy_log("android-poll-retry",nr,0);
         goto clean_mask;
     }
-    /* Metadata/ownership descriptors are capabilities, never payload I/O. */
-    switch(nr){
-    case PROXY_SC_mmap:if(a[4]>=0 && vfs_private_fd(a[4])){result=-EBADF;goto finish;}break;
-    case PROXY_SC_read:case PROXY_SC_write:case PROXY_SC_pread64:case PROXY_SC_pwrite64:
-    case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_ftruncate:case PROXY_SC_lseek:
-    case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
-    case PROXY_SC_fstat:case PROXY_SC_getdents64:
-        if(vfs_private_fd(a[0])){result=-EBADF;goto finish;}break;
-    default:break;
-    }
-    if((nr==PROXY_SC_sendfile && (vfs_private_fd(a[0])||vfs_private_fd(a[1]))) ||
-       ((nr==PROXY_SC_copy_file_range||nr==PROXY_SC_splice) && (vfs_private_fd(a[0])||vfs_private_fd(a[2])))){result=-EBADF;goto finish;}
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
     if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
@@ -1586,7 +1591,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
     if(net_handled)goto finish;
     result=-ENOSYS;
-    if(!ours(nr)) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
+    if(!ours(nr) && nr!=PROXY_SC_close && nr!=PROXY_SC_close_range &&
+       nr!=PROXY_SC_dup2 && nr!=PROXY_SC_dup3) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     if(nr==PROXY_SC_fchmod){struct proxy_stat mode;if(!arch_stat_fd((int)a[0],&mode) && S_ISREG(mode.st_mode))a[1]=(a[1]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}
     switch(nr) {
     case PROXY_SC_mprotect:case PROXY_SC_munmap:case PROXY_SC_mremap:
@@ -1605,10 +1611,10 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
     case PROXY_SC_exit:proxy_rewrite_exit();vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_write:result=RAW(nr,a[0],a[1],a[2],0,0,0);break;
+    case PROXY_SC_write:result=RAW(nr,a[0],a[1],a[2],0,0,0);if(result>0 && sysctl_fds)sysctl_sync();break;
     case PROXY_SC_close_range:if(sysctl_fds)sysctl_sync();result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:result=file_dispatch(nr,a);break;
-    case PROXY_SC_dup:case PROXY_SC_dup3:case PROXY_SC_fcntl:
+    case PROXY_SC_dup:case PROXY_SC_dup2:case PROXY_SC_dup3:case PROXY_SC_fcntl:
         result=descriptor_dup_dispatch(nr,a);break;
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
@@ -1725,6 +1731,26 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_chroot:result=vfs_root((char *)(uintptr_t)a[0]);break;
     case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:result=0;break;
     case PROXY_SC_capset:result=0;break;
+    case PROXY_SC_prlimit64:{
+        if((int)a[0]==0 && (int)a[1]==RLIMIT_NOFILE && a[2]){
+            struct {uint64_t cur,max;} *next=(void *)(uintptr_t)a[2];
+            long moved=proxy_private_fd_limit(next->cur);if(moved<0){result=moved;break;}
+        }
+        result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);break;
+    }
+    case PROXY_SC_setrlimit:{
+        if((int)a[0]==RLIMIT_NOFILE && a[1]){
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+            uint32_t cur=*(uint32_t *)(uintptr_t)a[1];
+            long moved=proxy_private_fd_limit(cur==UINT32_MAX?UINT64_MAX:cur);
+#else
+            uint64_t cur=*(uint64_t *)(uintptr_t)a[1];
+            long moved=proxy_private_fd_limit(cur);
+#endif
+            if(moved<0){result=moved;break;}
+        }
+        result=RAW(nr,a[0],a[1],0,0,0,0);break;
+    }
     case PROXY_SC_capget:{struct __user_cap_header_struct *h=(void *)(uintptr_t)a[0];if(!h){result=-EFAULT;break;}
         unsigned count=h->version==_LINUX_CAPABILITY_VERSION_1?1:2;
         if(h->version!=_LINUX_CAPABILITY_VERSION_1 && h->version!=_LINUX_CAPABILITY_VERSION_2 && h->version!=_LINUX_CAPABILITY_VERSION_3){h->version=_LINUX_CAPABILITY_VERSION_3;result=-EINVAL;break;}
@@ -1734,7 +1760,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();}break;
+        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();erofs_fork_child();ipc_fork();}break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -1749,7 +1775,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
             dns_fork_result(result);ipc_fork_result(result);
 
-            if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+            if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();erofs_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
@@ -1950,7 +1976,7 @@ void proxy_state(struct state *s){
  chained.handler=state_word(s,chained.handler==1?1:0);
  proxy_trace=state_word(s,proxy_trace);proxy_diagnostic_fd=state_word(s,proxy_diagnostic_fd);
  namespaces=state_word(s,namespaces);userns_remaining=state_word(s,userns_remaining);
- proxy_fd_reserve=state_word(s,proxy_fd_reserve);proxy_fd_reserve_end=state_word(s,proxy_fd_reserve_end);if(s->reading)proxy_fd_reserve_ready=1;
+ proxy_fd_state(s);if(s->error)return;
  state_string(s,(char **)&proxy_tmpdir);
  state_string(s,(char **)&host_command_socket);host_command_started=state_word(s,host_command_started);
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;
