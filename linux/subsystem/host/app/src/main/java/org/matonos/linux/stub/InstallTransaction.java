@@ -354,6 +354,7 @@ public final class InstallTransaction {
             long size=downloadSize(node.info.metadata), total=plannedBytes;
             if(total<=0||!plannedBytesKnown)total=-1;
             report("download",5,-1,-1,"Downloading "+node.ref+" from "+origin.display());
+            long pullStarted=System.nanoTime();
             InstallProgress parser=new InstallProgress();
                 cliProgress(node.ref,parser,total,size,"install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas",origin.name,node.ref);
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
@@ -363,6 +364,8 @@ public final class InstallTransaction {
                 cliProgress(node.ref,parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
                 manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             }
+            Log.i(TAG,"phase=pull ref="+node.ref+" ms="+
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pullStarted)+" bytes="+size);
             if(!node.info.commit.equals(manifest.getString("appCommit"))||!java.util.Arrays.equals(node.info.metadata,
                     org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(DeployManifest.stagedDeployment(installation,manifest),"metadata"))))
                 throw new java.io.IOException("Pulled deployment differs from planned Flatpak commit");
