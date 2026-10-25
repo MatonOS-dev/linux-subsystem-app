@@ -40,7 +40,7 @@ static int arch_app_install(void) {
         uint64_t raw_gateway=branch?UINT64_C(0x70300000):UINT64_C(0x600000300000);
         for(unsigned g=0;g<(branch?2u:3u);g++){
             /* seccomp reports the return PC after syscall, not its opcode. */
-            uint64_t raw_ip=branch?raw_gateway+(g==0?0x44:0x102):arch_gateway_pc(g);
+            uint64_t raw_ip=branch?raw_gateway+(g==0?0x42:0x102):arch_gateway_pc(g);
             ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
             ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(raw_ip>>32));
             ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));

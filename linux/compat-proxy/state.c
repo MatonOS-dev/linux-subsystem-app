@@ -72,14 +72,21 @@ void proxy_private_fd_release(int fd){
 void state_private_fd_relocated(int oldfd,int newfd){if(private_fd==oldfd)private_fd=newfd;}
 long proxy_private_fd_move(long fd){
  if(!proxy_fd_is_private(fd))return 0;
+ unsigned source_slot=PROXY_PRIVATE_FD_COUNT;
  for(unsigned i=1;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd && !private_slot_used[i]){
   private_slots[i]=-1;private_slot_used[i]=2;RAW(PROXY_SC_close,fd,0,0,0,0,0);return fd;
  }
+ for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd){source_slot=i;break;}
+ unsigned target_slot=PROXY_PRIVATE_FD_COUNT;
+ for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)
+  if(i!=source_slot && private_slots[i]>=0 && !private_slot_used[i]){target_slot=i;break;}
+ if(target_slot==PROXY_PRIVATE_FD_COUNT)return -EMFILE;
  long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);if(flags<0)return flags;
- long moved=RAW(PROXY_SC_fcntl,fd,(flags&FD_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,3,0,0,0);if(moved<0)return moved;
- for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd){private_slots[i]=-1;private_slot_used[i]=2;break;}
- for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd){private_moved[i]=(int)moved;RAW(PROXY_SC_close,fd,0,0,0,0,0);return moved;}
- if(private_moved_count<PROXY_PRIVATE_FD_COUNT)private_moved[private_moved_count++]=(int)moved;
+ long moved=RAW(PROXY_SC_dup3,fd,private_slots[target_slot],(flags&FD_CLOEXEC)?O_CLOEXEC:0,0,0,0);
+ if(moved<0)return moved;
+ private_slot_used[target_slot]=1;
+ if(source_slot<PROXY_PRIVATE_FD_COUNT){private_slots[source_slot]=-1;private_slot_used[source_slot]=2;}
+ else for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd){private_moved[i]=private_moved[--private_moved_count];break;}
  RAW(PROXY_SC_close,fd,0,0,0,0,0);return moved;
 }
 long proxy_private_fd_limit(uint64_t soft){
