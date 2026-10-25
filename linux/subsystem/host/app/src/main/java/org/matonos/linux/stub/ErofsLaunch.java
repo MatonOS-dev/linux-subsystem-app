@@ -29,7 +29,7 @@ final class ErofsLaunch {
         }
         ByteBuffer b=ByteBuffer.wrap(index).order(ByteOrder.LITTLE_ENDIAN);
         if(b.remaining()<12||!Arrays.equals(read(b,8),"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))throw new IOException("Invalid MTPKIDX2 layer index");
-        long count=Integer.toUnsignedLong(b.getInt());if(count>100000)throw new IOException("Invalid EROFS layer count");
+        long count=Integer.toUnsignedLong(b.getInt());
         Map<String,String> splitPaths=new HashMap<>();for(int i=0;i<names.length;i++)splitPaths.put(names[i],paths[i]);
         Map<String,String> mounted=new LinkedHashMap<>();
         IErofsMounter service=mounter();
@@ -43,10 +43,10 @@ final class ErofsLaunch {
             if(mounted.put(split,path)!=null)throw new IOException("Duplicate EROFS layer split: "+split);
         }
         if(b.remaining()<4)throw new IOException("Truncated layer records");
-        long records=Integer.toUnsignedLong(b.getInt());if(records>10000000)throw new IOException("Invalid layer record count");
+        long records=Integer.toUnsignedLong(b.getInt());
         for(long i=0;i<records;i++) {
             string(b);string(b);string(b);string(b);blob(b);if(b.remaining()<36)throw new IOException("Truncated layer metadata");
-            long layer=Integer.toUnsignedLong(b.getInt());b.position(b.position()+32);int reserved=b.getInt();
+            long layer=Integer.toUnsignedLong(b.getInt());b.position(b.position()+28);int reserved=b.getInt(); // size, mtime, uid, gid, mode
             if(reserved!=0||(layer!=0xffffffffL&&layer>=count))throw new IOException("Invalid layer reference");
         }
         if(b.hasRemaining())throw new IOException("Trailing layer index data");

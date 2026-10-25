@@ -198,10 +198,8 @@ public final class StubGenerator {
         manifest.dependencyPackages=encodeDependencies(dependencies);
         File unsigned=File.createTempFile("matonos-stub-meta-",".apk",workDir);
         try {
-            if(launchable)writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages);
-            else try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
-                put(zip,"AndroidManifest.xml",manifest.encode());put(zip,"classes.dex",loaderDex());
-            }
+            // Runtimes are ordinary stub packages without a launcher activity.
+            writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages,!launchable);
             sign(unsigned,output);return output;
         } finally {unsigned.delete();}
     }
@@ -697,6 +695,9 @@ public final class StubGenerator {
         writeUnsigned(file,pkg,label,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,packs,null);
     }
     private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String dependencyPackages) throws IOException {
+        writeUnsigned(file,pkg,label,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,packs,dependencyPackages,false);
+    }
+    private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String dependencyPackages,boolean noActivities) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
             if (cleanPermissions.size() >= 128 || (p != null && p.length() > 255)) throw new IllegalArgumentException("Too many or oversized Android permissions");
@@ -718,6 +719,7 @@ public final class StubGenerator {
         encoder.minInterfaceVersion = minInterfaceVersion;
         encoder.packs = packs;
         encoder.dependencyPackages=dependencyPackages;
+        encoder.noActivities=noActivities;
         byte[] manifest = encoder.encode();
         try (AlignedZipOutputStream zip = new AlignedZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);

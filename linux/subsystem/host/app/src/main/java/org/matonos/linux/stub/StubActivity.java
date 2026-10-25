@@ -204,7 +204,8 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         try {
             V3Launcher.addLaunchStatusListener(launchStatusChanged);
             startForegroundService(new Intent(this, StubService.class).putExtra(HostContract.EXTRA_FLATPAK_REF, ref));
-            startActivityForResult(new Intent(this,org.matonos.linux.ErofsPinActivity.class),EROFS_PIN_REQUEST);
+            // The pin activity lives in the subsystem app, not in this stub package.
+            startActivityForResult(new Intent().setClassName("org.matonos.linux","org.matonos.linux.ErofsPinActivity"),EROFS_PIN_REQUEST);
         } catch(Exception error) { failure("Cannot start the app runtime",error); }
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
