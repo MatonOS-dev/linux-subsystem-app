@@ -954,7 +954,10 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     else e=links_path_call(nr,a,p);
     if(e>=0 && q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2))vfs_fd_rename(p,q);
     if(e>=0 && ((nr==PROXY_SC_openat && (a[2]&O_CREAT)) || nr==PROXY_SC_linkat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))links_cache_invalidate();
-    if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record((int)e,fd,original_path);
+    /* Native close need not trap for metadata cleanup: a successful native
+     * open starts a new fd lifetime, with no indexed object attached. Keep
+     * the indexed-open branch above separate so its new record survives. */
+    if(e>=0 && nr==PROXY_SC_openat){erofs_close((int)e);vfs_fd_record((int)e,fd,original_path);}
     if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */

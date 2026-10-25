@@ -138,7 +138,12 @@ long erofs_mount(const char *target,const char *index,const char *directory){
  if(e){mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m->backing);vfs_free(m->layer_directory);vfs_free(m);return e;}
  m->next=erofs_mounts;erofs_mounts=m;return 0;
 }
-void erofs_close(int fd){struct erofs_dirfd **p=&erofs_dirs;while(*p&&(*p)->fd!=fd)p=&(*p)->next;if(*p){struct erofs_dirfd *old=*p;*p=old->next;vfs_free(old);}}
+/* Ordinary payload closes run natively. Retire every old association when
+ * the kernel reuses a number, including duplicates inherited from an exec. */
+void erofs_close(int fd){
+ struct erofs_dirfd **p=&erofs_dirs;
+ while(*p){struct erofs_dirfd *old=*p;if(old->fd==fd){*p=old->next;vfs_free(old);}else p=&old->next;}
+}
 long erofs_dup(int from,int to){if(from==to)return 0;struct erofs_dirfd *f=erofs_dir_find(from);struct erofs_dirfd copy;if(f)copy=*f;erofs_close(to);if(f){f=vfs_palloc(sizeof(*f));if(!f)return -ENOMEM;*f=copy;f->fd=to;f->next=erofs_dirs;erofs_dirs=f;}return 0;}
 long erofs_open(const char *path,int flags){
  struct erofs_mount *m=erofs_lookup(path);if(!m)return -ENOSYS;
@@ -170,6 +175,8 @@ long erofs_open(const char *path,int flags){
   if(native!=root)vfs_free(native);
   vfs_free(root);
   if(opened<0)return opened;
+  /* A new indexed open replaces the previous lifetime of this fd too. */
+  erofs_close((int)opened);
   struct erofs_dirfd *f=vfs_palloc(sizeof(*f));if(!f){RAW(PROXY_SC_close,opened,0,0,0,0,0);return -ENOMEM;}
   uint64_t root_dev,root_ino;int root_identity;erofs_root_identity(m,&o,path,&root_dev,&root_ino,&root_identity);
   *f=(struct erofs_dirfd){.next=erofs_dirs,.fd=(int)opened,.mount=m,.object=o,.root_dev=root_dev,.root_ino=root_ino,.root_identity=root_identity};erofs_dirs=f;

@@ -1,38 +1,68 @@
-# ICD duplicate host regression — pass 3
+# ICD duplicate host regression — fixed in pass 4
 
-Branch `fd-cleanup`, tested at `25ae7a5` on 2026-10-25.
+Branch `fd-cleanup`, diagnosed on 2026-10-26. The first bad commit is
+`3534867` (`Reserve fixed proxy descriptor slots`); the pass-3 bisect remains
+valid. The pass-2 claim that the failure was independent was incorrect.
 
-## Finding
+## Exact mechanism
 
-`tests/icd-dup-host.py` passes at `4200f8d`, `f8847cc`, and `3250830`, then
-fails at `3534867` and `25ae7a5`. The first failing change is therefore
-`3534867` (`Reserve fixed proxy descriptor slots`). This disproves the pass-2
-claim that the failure was independent of the fd-cleanup work. The EROFS
-mutex and SysV arena commits are not implicated by this bisect.
+The fixed-reserve commit changes the close filter: closes outside the exact
+reserve bypass the dispatcher and run natively, whereas the previous filter
+routed ordinary closes through metadata cleanup. After bwrap's virtual pivot
+and descriptor cleanup, fd **3** is available to the probe. The inherited
+`--ro-bind-fd` sources (3, 4, 5, 6 during setup) are not the failing objects:
+binding and resolving the runtime, app and GL extension all succeed. The
+causal change is the close fast path, not a diagnostic-fd number collision.
 
-The failure occurs after the bwrap pivot while opening/enumerating
-`/usr/share/vulkan/icd.d`; the probe reports `ENOTDIR`. The exact descriptor
-state transition that causes it is still unproven. Pass-3 experiments with
-native-close metadata cleanup, stale VFS identity clearing on open, and routing
-`fstat`/`newfstatat`/`getdents64` through the VFS path did not fix it and were
-reverted. Do not treat those experiments as a solution.
+The probe opens each of its three ICD aliases with O_PATH and closes it.
+These opens reuse fd 3 and attach indexed EROFS metadata for
+`/vulkan/icd.d/maton_icd.json` to that number. Ordinary close now runs
+natively, leaving the metadata association behind. `erofs_open()` previously
+prepended another association rather than replacing the previous lifetime;
+several records for fd 3 therefore accumulated.
+
+The subsequent `opendir("/usr/share/vulkan/icd.d")` resolves through the
+runtime symlink to the generated GL merge directory. The raw kernel open
+succeeds, returning fd 3 for
+`/tmp/compat-proxy-<pid>-<nonce>/vulkan/icd.d`. That native open did not clear
+indexed metadata. Its following fstat was intercepted by `erofs_call()` and
+returned the old manifest's **regular-file** metadata, without issuing a
+kernel fstat of the directory. libc's opendir then reported ENOTDIR. Temporary
+instrumentation confirmed the indexed object path at that fstat was
+`/vulkan/icd.d/maton_icd.json`.
+
+The failing strace is saved outside the repository at
+`/mnt/data/aosp/out/pc-logs/agents/fd-cleanup-pass4.strace` (pid 2554833,
+near lines 33067–33070). No bind source was relocated incorrectly, no proc-fd
+link changed its target incorrectly, and no mount-table entry was corrupted.
+It was stale fd-number-keyed metadata after descriptor reuse.
+
+## Fix
+
+A successful native path open clears the reused number's indexed metadata
+before recording its new pathname. An indexed open likewise clears the old
+lifetime before installing its new indexed record. `erofs_close()` removes
+**all** matching records, including duplicates inherited from older state;
+removing only the first record can expose an older stale record, explaining
+why the earlier cleanup experiments were insufficient.
+
+The indexed-open branch remains separate from the native-open branch so its
+newly installed metadata survives. The exact 18-slot top reserve, native
+ordinary closes, close-skip guards and move-on-dup guards are unchanged. No
+new fd-access checks, allocation skipping or fd relocation rules are added.
 
 ## Verification
 
-- `bash linux/compat-proxy/build.sh`: passes at `25ae7a5`.
-- `python3 linux/compat-proxy/tests/icd-dup-host.py`: fails in the bwrap
-  pivot case with `opendir /usr/share/vulkan/icd.d: Not a directory`.
-- `bash linux/compat-proxy/tests/run.sh`: stops at the same final ICD test.
-- `python3 linux/compat-proxy/tests/host-command-pair.py`: passes.
-- `bash linux/compat-proxy/tests/placeholder-raw.sh` and
-  `python3 linux/compat-proxy/tests/placeholder-crash.py`: pass.
-- The captured FUSE ldconfig replay previously passed at this same source
-  revision; see the pass-2 log/count under
-  `/mnt/data/aosp/out/pc-logs/agents/fd-cleanup-pass2-fuse/` and
-  `/mnt/data/aosp/out/pc-logs/agents/fd-cleanup-pass2.count`.
+- `bash linux/compat-proxy/build.sh`: PASS.
+- `bash linux/compat-proxy/tests/run.sh`: PASS end to end, exit 0, with no
+  GPU/bwrap skip override. This includes host-command-pair, both placeholder
+  guards, x86_64/i386 and cross-exec, Android packaging, indexed EROFS, the
+  ICD pivot regression, loader maps and site rewriting.
+- Standalone host-command-pair and both placeholder guards: PASS.
+- Captured ldconfig replay: PASS, exit 0; cache written. It reused the
+  previously extracted capture layers through a scratch symlink, with fresh
+  root/table scaffolding and a new execution trace.
 
-Next investigation should trace each open/close/dup/close-range descriptor
-number through bwrap's `--bind-fd` setup and pivot, comparing the first bad
-state at `3534867` with `3250830`. In particular, determine whether an fd
-number reused after a native-range operation retains EROFS/VFS directory
-identity or whether a pivot source fd is replaced or swept.
+Logs and the final report live under `/mnt/data/aosp/out/pc-logs/agents/`,
+with prefix `fd-cleanup-pass4` and report `fd-cleanup.final.md`.
+No VM, AOSP build, shared-device-tree edit or kernel change is needed.
