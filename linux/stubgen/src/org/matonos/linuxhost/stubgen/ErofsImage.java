@@ -59,7 +59,7 @@ public final class ErofsImage {
             MessageDigest tarIdentity=MessageDigest.getInstance("SHA-256");try(OutputStream tarOut=new DigestOutputStream(new FileOutputStream(tarPipe),tarIdentity)){writeTar(tarOut,imageRecords,epoch);}
             while(!p.waitFor(250,TimeUnit.MILLISECONDS))if(cancelled.getAsBoolean()){p.destroyForcibly();throw new IOException("EROFS image build cancelled");}
             if(cancelled.getAsBoolean())throw new IOException("EROFS image build cancelled");
-            if(p.exitValue()!=0)throw new IOException("mkfs.erofs failed: "+new String(Files.readAllBytes(log.toPath()),StandardCharsets.UTF_8));
+            if(p.exitValue()!=0)throw new IOException("mkfs.erofs failed: "+new String(PlaceholderFiles.readAllBytes(log),StandardCharsets.UTF_8));
             String digest=sha(image);File dest=new File(output,"deployment.erofs");Files.move(image.toPath(),dest.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             Image l=new Image();l.sha256=digest;l.imageSize=dest.length();l.split="erofs_"+digest;l.entry="assets/matonos/deployment.erofs";
             return l;

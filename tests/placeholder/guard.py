@@ -49,20 +49,12 @@ SCAN_FILES = [
 # (file, pattern) -> (allowed occurrences, reason). Every raw read must be
 # either routed through PlaceholderFiles on the same line or justified here.
 ALLOW = {
-    ("ErofsLayers.java", "fileinputstream"): (
-        1, "sha() hashes a pack image mkfs.erofs just wrote to an app-owned output directory"),
-    ("ErofsLayers.java", "files-copy"): (
-        1, "copies a retained previous layer image (extracted from an installed split), not staging"),
-    ("ErofsLayers.java", "files-readAllBytes"): (
-        1, "reads a mkfs.erofs error log in an app-owned output directory, not staging"),
+    ("ErofsImage.java", "fileinputstream"): (
+        1, "sha() hashes the finished EROFS image in the app-owned output directory, not staged deployment files"),
     ("StagedPacks.java", "zipfile"): (
-        2, "reads layers.index and pack payloads from installed PackageManager APKs (app-owned), not staging"),
+        1, "reads objects.index from the installed PackageManager APK to seed unchanged files from its mounted image"),
     ("StubGenerator.java", "fileinputstream"): (
         3, "hashes and streams the freshly built EROFS image (mkfs output in a temp dir) into its STORED split entry, not a .v3-store-root tree"),
-    ("LinuxAppStoreService.java", "files-readAllBytes"): (
-        2, "reads the objects.index and layers.index writer artifacts under flatpak-pack-artifacts, not a .v3-store-root tree"),
-    ("LinuxAppStoreService.java", "files-copy"): (
-        1, "copies an installed PackageManager split APK (app-owned), not staging"),
     ("XwaylandFiles.java", "files-copy"): (
         1, "extracts a host-APK asset into the runtime directory, not staging"),
     ("PackInstaller.java", "fileinputstream"): (
@@ -97,8 +89,6 @@ ALLOW = {
         3, "reads installed index_/extra_ splits and the signed subsystem GL pack archive (app-owned), not staging"),
     ("PackageDeployment.java", "zipfile"): (
         2, "reads ref/commit metadata and materializes the signed subsystem GL extension tree from an app-owned APK, not staging"),
-    ("ErofsLaunch.java", "zipfile"): (
-        1, "reads layers.index from an installed PackageManager APK before mounting its signed EROFS splits, not staging"),
     ("V3Launcher.java", "files-readAllBytes"): (
         1, "reads the adb-written <cache>/v3-command debug file in the stub's own cache, not staging"),
     ("PackSeed.java", "randomaccessfile"): (
@@ -106,7 +96,7 @@ ALLOW = {
     ("PackSessionPlan.java", "zipfile"): (
         1, "compares two installed base APKs in sameBase(), not staging"),
     ("StubGenerator.java", "files-readAllBytes"): (
-        7, "reads objects/index and layers.index writer artifacts under the app-owned pack directory"),
+        5, "reads objects/index writer artifacts under the app-owned pack directory"),
     ("StubGenerator.java", "zipfile"): (
         1, "reads a generated/installed split APK, not staging"),
 }
