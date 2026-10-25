@@ -2,6 +2,26 @@
 
 ## EROFS deployment carriers (v1 prototype)
 
+### Layered format prototype
+
+`erofs_layers.py` is the host-side layer image writer. It checks out a selected
+OSTree commit, uses the existing parent-directory/lexical 64 MiB target policy
+for initial packs, and writes an index EROFS containing directory and symlink
+metadata without regular-file data. Its `layers.json` orders the index first,
+then packs, and records split, ZIP entry, image size, SHA-256, and file identity
+metadata. An update accepts the previous manifest, reuses unchanged pack image
+bytes, emits all changed/new regular files in one pack, and represents paths
+removed from older packs as tar-stream character-device whiteouts in the index.
+The tar input allows char devices and overlay xattrs to be encoded without
+privileged `mknod`; EROFS images use LZ4HC 12 and deterministic tar ordering,
+timestamps, and UUIDs.
+
+This host writer is not yet the production install path. The Java
+`StagedPacks`/PackageInstaller pipeline, signed per-layer APK carriers, full
+overlay-semantic A→B extraction test, and metadata-faithful OSTree ownership
+handling remain open. The old one-image install path remains active until
+those pieces land together.
+
 `erofs_pack.py` builds one read-only EROFS image from an already deployed app
 or runtime tree. The default is LZ4HC level 12; `--compression lzma` selects
 LZMA level 9 when image size matters more than mount/read cost. The image
