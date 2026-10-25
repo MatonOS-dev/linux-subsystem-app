@@ -353,16 +353,16 @@ public final class StubGenerator {
             throw new IllegalArgumentException("Invalid package name");
         if(!image.isFile()||image.length()==0||!image.getName().matches("pack-[0-9a-f]{64}\\.erofs"))
             throw new IOException("Invalid EROFS layer image");
-        String digest=fileSha256(image),identity=image.getName().substring(5,69);
-        if(!digest.equals(identity))throw new IOException("EROFS layer filename hash mismatch");
-        String split="pack_"+digest,entry="assets/matonos/pack.erofs";
+        String identity=image.getName().substring(5,69);
+        if(!identity.matches("[0-9a-f]{64}"))throw new IOException("EROFS layer filename hash mismatch");
+        String split="pack_"+identity,entry="assets/matonos/pack.erofs";
         BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
         encoder.revisionCode=revision;
         File unsigned=File.createTempFile("matonos-layer-",".apk",workDir);
         try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
-            put(zip,"AndroidManifest.xml",encoder.packManifest(split));putStoredAligned(zip,entry,image,4096);
+            put(zip,"AndroidManifest.xml",encoder.packManifest(split));String digest=putStoredAligned(zip,entry,image,4096);
+            if(!identity.equals(digest))throw new IOException("EROFS layer image hash mismatch while writing split");
         } catch(Exception error){unsigned.delete();throw error;}
-        if(!digest.equals(fileSha256(image))){unsigned.delete();throw new IOException("EROFS layer changed while creating split");}
         return unsigned;
     }
 
@@ -393,7 +393,7 @@ public final class StubGenerator {
         return ObjectPacks.hex(digest.digest());
     }
 
-    private static void putStoredAligned(ZipOutputStream zip,String name,File file,int alignment) throws Exception {
+    private static String putStoredAligned(ZipOutputStream zip,String name,File file,int alignment) throws Exception {
         if(!(zip instanceof AlignedZipOutputStream))throw new IOException("ZIP stream cannot report offsets");
         long start=((AlignedZipOutputStream)zip).bytesWritten();
         int nameLength=name.getBytes(StandardCharsets.UTF_8).length;
@@ -406,12 +406,15 @@ public final class StubGenerator {
         ZipEntry entry=new ZipEntry(name);entry.setMethod(ZipEntry.STORED);
         entry.setSize(file.length());entry.setCompressedSize(file.length());entry.setCrc(crc.getValue());
         entry.setExtra(extra);zip.putNextEntry(entry);
+        CRC32 copiedCrc=new CRC32();java.security.MessageDigest copiedDigest=java.security.MessageDigest.getInstance("SHA-256");
         try(InputStream input=new BufferedInputStream(new FileInputStream(file))) {
-            byte[] buffer=new byte[65536];int count;while((count=input.read(buffer))!=-1)zip.write(buffer,0,count);
+            byte[] buffer=new byte[65536];int count;while((count=input.read(buffer))!=-1){zip.write(buffer,0,count);copiedCrc.update(buffer,0,count);copiedDigest.update(buffer,0,count);}
         }
         zip.closeEntry();
         long payload=start+30+nameLength+extra.length;
         if(payload%alignment!=0)throw new IOException("EROFS ZIP payload is not aligned");
+        if(copiedCrc.getValue()!=crc.getValue())throw new IOException("ZIP input changed while writing stored entry");
+        return ObjectPacks.hex(copiedDigest.digest());
     }
 
     /** Identity of the launcher components: the label, MIME types and icon. */

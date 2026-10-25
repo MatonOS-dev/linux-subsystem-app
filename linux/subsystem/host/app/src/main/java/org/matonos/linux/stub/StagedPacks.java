@@ -1,6 +1,7 @@
 package org.matonos.linux.stub;
 
 import android.content.Context;
+import android.util.Log;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,7 +14,8 @@ import org.matonos.linuxhost.stubgen.OstreePacks;
 /** Pack production from a private, signature-verified Flatpak installation. */
 public final class StagedPacks {
     public static void build(Context context, File installation, JSONObject manifest,
-            File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed) throws Exception {
+            File output, BooleanSupplier cancelled, android.content.pm.PackageInfo installed,
+            java.util.concurrent.ForkJoinPool workPool) throws Exception {
         org.matonos.linux.WorkDirs.require(installation);
         File deployment=DeployManifest.stagedDeployment(installation,manifest);
         File operation=installation.getParentFile();
@@ -37,9 +39,11 @@ public final class StagedPacks {
         File localRepo=new File(operation,"pack-repo");
         OstreePacks.Command local=command(context,operation,localRepo,cancelled);
         local.run("init","--mode=bare-user");
-        String commit=OstreePacks.commitDeployed(new File(deployment,"files"),local);
+        long deployStarted=System.nanoTime();File deployedFiles=new File(deployment,"files");
+        String commit=OstreePacks.commitDeployed(deployedFiles,local);
+        Log.i("MatonInstall","phase=deploy ref="+manifest.optString("ref","unknown")+" ms="+
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-deployStarted)+" bytes="+InstallTransaction.treeBytes(deployedFiles));
         OstreePacks fresh=OstreePacks.read(localRepo,commit,local,objectXattrs);
-        File deployedFiles=new File(deployment,"files");
         for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry:fresh.entries) {
             if(entry.kind.equals("file")||entry.kind.equals("symlink"))try {
                 File deployedPath=entry.path.equals("/")?deployedFiles:new File(deployedFiles,entry.path.substring(1));
@@ -54,7 +58,11 @@ public final class StagedPacks {
             oldLayersIndex=readPreviousLayers(installed,output,oldLayerImages);
         long layerEpoch=original.commitTime>0?original.commitTime:fresh.commitTime;
         File erofsTool=LoaderCommand.tool(context,"libmatonos-mkfs-erofs.so");
-        org.matonos.linuxhost.stubgen.ErofsLayers.build(fresh.entries,output,erofsTool,layerEpoch,oldLayersIndex,oldLayerImages,cancelled);
+        long mkfsStarted=System.nanoTime();org.matonos.linuxhost.stubgen.ErofsLayers.Index layerIndex=
+                org.matonos.linuxhost.stubgen.ErofsLayers.build(fresh.entries,output,erofsTool,layerEpoch,oldLayersIndex,oldLayerImages,cancelled,workPool);
+        long layerBytes=0;for(org.matonos.linuxhost.stubgen.ErofsLayers.Layer layer:layerIndex.layers)layerBytes+=layer.imageSize;
+        Log.i("MatonInstall","phase=mkfs_total ref="+manifest.optString("ref","unknown")+" ms="+
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-mkfsStarted)+" bytes="+layerBytes);
         if(installed==null || installed.getLongVersionCode()!=org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE) {
             org.matonos.linuxhost.stubgen.ObjectPacks.initial(payloads,output,org.matonos.linuxhost.stubgen.ObjectPacks.DEFAULT_PACK_SIZE);
         } else {

@@ -539,6 +539,7 @@ public final class LinuxAppStoreService extends Service {
     private void addErofsLayerSplits(Operation op,String pkg,File work,File objects,File artifacts,PackageInfo installed,java.util.List<String> prior,
             boolean full,int revision,java.util.List<String> desired,java.util.List<String> available) throws Exception {
         if(op.cancelled)throw new java.io.IOException("Install cancelled");
+        long signingStarted=System.nanoTime(),signedBytes=0;
         org.matonos.linuxhost.stubgen.ErofsLayers.Index index=org.matonos.linuxhost.stubgen.ErofsLayers.read(
                 java.nio.file.Files.readAllBytes(new File(objects,"layers.index").toPath()));
         for(org.matonos.linuxhost.stubgen.ErofsLayers.Layer layer:index.layers) {
@@ -550,9 +551,11 @@ public final class LinuxAppStoreService extends Service {
                 }
             } else {
                 File image=new File(objects,"pack-"+layer.sha256+".erofs");
-                StubGenerator.generateErofsLayerPack(work,pkg,image,destination,revision);available.add(split);
+                StubGenerator.generateErofsLayerPack(work,pkg,image,destination,revision);available.add(split);signedBytes+=destination.length();
             }
         }
+        Log.i(TAG,"phase=signing ref="+pkg+" ms="+
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-signingStarted)+" bytes="+signedBytes);
     }
 
     private static void addLayerSplitNames(File objects,java.util.List<String> desired) throws Exception {
@@ -585,6 +588,8 @@ public final class LinuxAppStoreService extends Service {
     private Intent runPackSession(Operation op,String pkg,File artifacts,
             org.matonos.linuxhost.stubgen.PackSessionPlan plan) throws Exception {
         if(plan.write.isEmpty() && plan.remove.isEmpty()) return success();
+        long commitStarted=System.nanoTime(),commitBytes=0;
+        for(String name:plan.write){File artifact=new File(artifacts,name);if(artifact.isFile())commitBytes+=artifact.length();}
         java.util.concurrent.CountDownLatch done=new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.atomic.AtomicReference<Intent> result=new java.util.concurrent.atomic.AtomicReference<>();
         org.matonos.linux.stub.PackInstaller installer=new org.matonos.linux.stub.PackInstaller(this,pkg,artifacts,
@@ -596,6 +601,8 @@ public final class LinuxAppStoreService extends Service {
         if(completed==null)throw new IllegalStateException("Package installer returned no result");
         if(completed.getIntExtra(PackageInstaller.EXTRA_STATUS,PackageInstaller.STATUS_FAILURE)!=PackageInstaller.STATUS_SUCCESS)
             throw new IllegalStateException(completed.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
+        Log.i(TAG,"phase=packageinstaller_commit ref="+pkg+" ms="+
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-commitStarted)+" bytes="+commitBytes);
         return completed;
     }
 
@@ -655,6 +662,7 @@ public final class LinuxAppStoreService extends Service {
     /** Pack independent refs in parallel; package commits remain dependency ordered below. */
     private void buildAllPacks(Operation op,File root,JSONObject manifest) throws Exception {
         org.json.JSONArray rows=manifest.getJSONArray("deployments");
+        java.util.concurrent.ForkJoinPool workPool=new java.util.concurrent.ForkJoinPool(Math.max(1,Runtime.getRuntime().availableProcessors()));
         java.util.List<org.matonos.linuxhost.stubgen.DependencyPlan.Node> nodes=new java.util.ArrayList<>();
         java.util.Map<String,Integer> positions=new java.util.HashMap<>();
         for(int i=0;i<rows.length();i++) {
@@ -665,8 +673,8 @@ public final class LinuxAppStoreService extends Service {
             for(int d=0;d<dependencies.length();d++)node.dependencies.add(dependencies.getString(d));
             nodes.add(node);
         }
-        org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> outcome=org.matonos.linuxhost.stubgen.PlanExecutor.execute(nodes,
-                Runtime.getRuntime().availableProcessors(),node->{
+        org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> outcome;
+        try { outcome=org.matonos.linuxhost.stubgen.PlanExecutor.execute(nodes,workPool,node->{
             if(op.cancelled)throw new java.io.IOException("Install cancelled");
             if(node.reused)return null;
             int index=positions.get(node.ref);JSONObject row=rows.getJSONObject(index);
@@ -674,10 +682,14 @@ public final class LinuxAppStoreService extends Service {
             if(!node.ref.equals(op.ref)&&!artifacts.mkdirs())throw new java.io.IOException("Cannot create package artifacts");
             File installation=InstallTransaction.installationFor(this,op.stagingId,row);
             PackageInfo installed=node.ref.equals(op.ref)?op.installed:null;
+            long layerStarted=System.nanoTime();File objectOutput=new File(artifacts,"objects");
             org.matonos.linux.stub.StagedPacks.build(this,installation,InstallTransaction.packageManifest(manifest,node.ref),
-                    new File(artifacts,"objects"),()->op.cancelled,installed);
+                    objectOutput,()->op.cancelled,installed,workPool);
+            Log.i(TAG,"phase=layer_build ref="+node.ref+" ms="+
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-layerStarted)+" bytes="+
+                    InstallTransaction.allocatedBytes(objectOutput));
             return null;
-        });
+        }); } finally { workPool.shutdownNow(); }
         if(!outcome.completed.containsKey(op.ref)) {
             Throwable error=outcome.failed.get(op.ref);
             if(error instanceof Exception)throw (Exception)error;
