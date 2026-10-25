@@ -80,7 +80,10 @@ def reconstruct(bundle, index, expected, scratch):
         dest=actual if row['path']=='/' else actual/row['path'].lstrip('/')
         if row['kind']=='dir': dest.mkdir(parents=True,exist_ok=True); continue
         dest.parent.mkdir(parents=True,exist_ok=True)
-        if row['kind']=='symlink': dest.symlink_to(row['target'])
+        if row['kind']=='symlink':
+            source=extracted[row['layer']]/row['path'].lstrip('/')
+            assert source.is_symlink() and os.readlink(source)==row['target'], (row['path'],row['layer'])
+            dest.symlink_to(row['target'])
         else:
             source=extracted[row['layer']]/row['path'].lstrip('/')
             shutil.copyfile(source,dest)
@@ -108,6 +111,7 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-layers-test-') as td:
     (src/'usr/share/doc/change').write_bytes(b'old payload')
     (src/'usr/share/doc/delete').write_bytes(b'delete me')
     (src/'usr/share/doc/file-link').write_bytes(b'old link file')
+    (src/'usr/share/doc/remove-link').symlink_to('../bin/tool')
     (src/'usr/share/doc/deleted-dir').mkdir(); (src/'usr/share/doc/deleted-dir/child').write_text('gone')
     (src/'usr/share/doc/link').symlink_to('../bin/tool')
     try:
@@ -130,12 +134,19 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-layers-test-') as td:
     (src/'usr/share/doc/delete').unlink()
     (src/'usr/share/doc/deleted-dir/child').unlink(); (src/'usr/share/doc/deleted-dir').rmdir()
     (src/'usr/share/doc/file-link').unlink(); (src/'usr/share/doc/file-link').symlink_to('../bin/tool')
+    (src/'usr/share/doc/link').unlink(); (src/'usr/share/doc/link').symlink_to('../bin/new-target')
+    (src/'usr/share/doc/remove-link').unlink()
+    (src/'usr/share/doc/added-link').symlink_to('../bin/tool')
     b=commit('B'); second=t/'B'
     run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',b,'--out',str(second),
         '--mkfs',MKFS,'--old-index',str(first/'layers.index'),'--old-layers',str(first))
     layer_b,rows_b=read_index(second/'layers.index'); paths={r['path']:r for r in rows_b}
     assert '/usr/share/doc/delete' not in paths and '/usr/share/doc/deleted-dir/child' not in paths
+    assert '/usr/share/doc/remove-link' not in paths
     assert paths['/usr/share/doc/file-link']['kind']=='symlink'
+    assert paths['/usr/share/doc/link']['target']=='../bin/new-target'
+    assert paths['/usr/share/doc/added-link']['target']=='../bin/tool'
+    assert all(paths[p]['layer']!=0xffffffff for p in ('/usr/share/doc/file-link','/usr/share/doc/link','/usr/share/doc/added-link'))
     assert paths['/usr/share/doc/change']['kind']=='file' and paths['/usr/share/doc/new']['kind']=='file'
     assert old_hashes.intersection(x['sha256'] for x in layer_b)
     newly_written=[x for x in layer_b if x['sha256'] not in old_hashes]

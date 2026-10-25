@@ -102,9 +102,9 @@ public final class ErofsLayers {
         for(Map.Entry<Integer,long[]> e:layerBytes.entrySet())if(e.getValue()[0]>e.getValue()[1]
                 &&e.getValue()[0]>0&&(double)(e.getValue()[0]-e.getValue()[1])/e.getValue()[0]>=0.5)rewrite.add(e.getKey());
         Map<String,Layer> retained=new HashMap<>();List<Record> changed=new ArrayList<>();
-        for(Record r:records)if(r.kind.equals("file")) {
+        for(Record r:records)if(r.kind.equals("file")||r.kind.equals("symlink")) {
             Record before=oldRecords.get(r.path);
-            if(before!=null&&before.kind.equals("file")&&before.checksum.equals(r.checksum)&&before.mode==r.mode&&before.uid==r.uid&&before.gid==r.gid&&Arrays.equals(before.xattrs,r.xattrs)) {
+            if(before!=null&&before.kind.equals(r.kind)&&before.checksum.equals(r.checksum)&&before.target.equals(r.target)&&before.mode==r.mode&&before.uid==r.uid&&before.gid==r.gid&&Arrays.equals(before.xattrs,r.xattrs)) {
                 Layer layer=oldLayerByIndex.get(before.layer);File image=previousImages.get(layer==null?"":layer.sha256);
                 if(layer!=null&&image!=null&&image.isFile()&&image.length()==layer.imageSize&&sha(image).equals(layer.sha256)) {
                     if(!rewrite.contains(before.layer)) {r.layer=before.layer;r.layerSha=layer.sha256;retained.put(layer.sha256,layer);continue;}
@@ -136,10 +136,10 @@ public final class ErofsLayers {
     private static String uuid(String hash){char[] c=hash.substring(0,32).toCharArray();c[12]='5';c[16]="89ab".charAt(Character.digit(c[16],16)&3);return new String(c,0,8)+"-"+new String(c,8,4)+"-"+new String(c,12,4)+"-"+new String(c,16,4)+"-"+new String(c,20,12);}
 
     private static void writeTar(File output,List<Record> records,long epoch)throws Exception {
-        records.sort((a,b)->utf8Compare(a.path,b.path));try(OutputStream out=new BufferedOutputStream(new FileOutputStream(output))) {int seq=0;for(Record r:records){String name=r.path.equals("/")?".":r.path.substring(1);Map<String,String> pax=new TreeMap<>();if(name.getBytes(StandardCharsets.UTF_8).length>100)pax.put("path",name);if(r.mtime>0)pax.put("mtime",Long.toString(r.mtime));
+        records.sort((a,b)->utf8Compare(a.path,b.path));try(OutputStream out=new BufferedOutputStream(new FileOutputStream(output))) {int seq=0;for(Record r:records){String name=r.path.equals("/")?".":r.path.substring(1);Map<String,String> pax=new TreeMap<>();if(name.getBytes(StandardCharsets.UTF_8).length>100)pax.put("path",name);if(r.kind.equals("symlink")&&r.target.getBytes(StandardCharsets.UTF_8).length>100)pax.put("linkpath",r.target);if(r.mtime>0)pax.put("mtime",Long.toString(r.mtime));
                 Map<String,byte[]> attrs=decodeXattrs(r.xattrs);for(Map.Entry<String,byte[]> x:attrs.entrySet())pax.put("LIBARCHIVE.xattr."+url(x.getKey()),Base64.getEncoder().encodeToString(x.getValue()));
                 if(!pax.isEmpty()){String pn="PaxHeaders/"+(seq++);byte[] data=pax(pax);header(out,pn,data.length,0644,0,0,epoch,'x',"");out.write(data);pad(out,data.length);}
-                long size=r.kind.equals("file")?r.size:0;char type=r.kind.equals("dir")?'5':'0';String target="";header(out,name,size,r.mode&07777,r.uid,r.gid,r.mtime>0?r.mtime:epoch,type,target);
+                long size=r.kind.equals("file")?r.size:0;char type=r.kind.equals("dir")?'5':r.kind.equals("symlink")?'2':'0';String target=r.kind.equals("symlink")?r.target:"";header(out,name,size,r.mode&07777,r.uid,r.gid,r.mtime>0?r.mtime:epoch,type,target);
                 if(r.kind.equals("file")){if(PlaceholderFiles.copy(findSource(r),out)!=size)throw new IOException("layer file changed size: "+r.path);pad(out,size);}
             }out.write(new byte[1024]);}}
     private static File findSource(Record r)throws IOException{if(r.source==null||!r.source.isFile())throw new IOException("missing layer file source: "+r.path);return r.source;}

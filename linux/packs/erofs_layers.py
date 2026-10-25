@@ -126,12 +126,12 @@ def make_image(mkfs, image, records, root, epoch):
 def batches(records):
     groups = {}
     for r in records:
-        if r['kind'] == 'file': groups.setdefault(str(pathlib.PurePosixPath(r['path']).parent), []).append(r)
+        if r['kind'] in ('file', 'symlink'): groups.setdefault(str(pathlib.PurePosixPath(r['path']).parent), []).append(r)
     result, batch, size = [], [], 0
     for parent in sorted(groups):
         for r in sorted(groups[parent], key=lambda x:x['path'].encode()):
-            if batch and size + r['size'] > TARGET: result.append(batch); batch=[]; size=0
-            batch.append(r); size += r['size']
+            if batch and size + r.get('size', 0) > TARGET: result.append(batch); batch=[]; size=0
+            batch.append(r); size += r.get('size', 0)
     if batch: result.append(batch)
     return result
 
@@ -163,21 +163,23 @@ def main():
         current_files={r['path']:r for r in records if r['kind']=='file'}
         layer_members={}
         for old in old_records:
-            if old['kind']=='file': layer_members.setdefault(old['layer'],[]).append(old)
+            if old['kind'] in ('file', 'symlink') and old['layer'] != 0xffffffff:
+                layer_members.setdefault(old['layer'],[]).append(old)
         rewrite_layers=set()
         if a.old_index:
             for layer_id,members in layer_members.items():
                 total=sum(r['size'] for r in members); live=0
                 for old in members:
                     now=current_files.get(old['path'])
-                    if now and now['checksum']==old['checksum'] and now['mode']==old['mode'] and now['uid']==old['uid'] and now['gid']==old['gid']:
+                    if old['kind']=='file' and now and now['checksum']==old['checksum'] and now['mode']==old['mode'] and now['uid']==old['uid'] and now['gid']==old['gid']:
                         live+=old['size']
                 dead=max(0,total-live)
                 if dead and total and dead/total >= a.dead_ratio: rewrite_layers.add(layer_id)
         reused_by_sha={}; changed=[]
-        for r in current_files.values():
+        layer_entries=[r for r in records if r['kind'] in ('file', 'symlink')]
+        for r in layer_entries:
             old=old_by_path.get(r['path'])
-            if old and old['kind']=='file' and old['checksum']==r['checksum'] and old['mode']==r['mode'] and old['uid']==r['uid'] and old['gid']==r['gid']:
+            if old and old['layer'] != 0xffffffff and old['kind']==r['kind'] and old['checksum']==r['checksum'] and old['target']==r['target'] and old['mode']==r['mode'] and old['uid']==r['uid'] and old['gid']==r['gid'] and old.get('xattrs','')==r.get('xattrs',''):
                 layer=old_layer_by_id[old['layer']]; reused_by_sha[layer['sha256']]=layer
                 if old['layer'] in rewrite_layers: changed.append(r)
                 else: r['layer_sha256']=layer['sha256']
@@ -212,7 +214,7 @@ def main():
         # The index is a merged path table. Deleted entries simply do not occur.
         for r in records:
             r.setdefault('size',0)
-            if r['kind']=='file': r.setdefault('layer_sha256',None)
+            if r['kind'] in ('file', 'symlink'): r.setdefault('layer_sha256',None)
             if not r.get('mtime'): r['mtime']=epoch
         ordered=sorted(layers,key=lambda x:x['sha256']); save_index(a.out/'layers.index',ordered,records)
         print(json.dumps({'layers':len(ordered),'index_bytes':(a.out/'layers.index').stat().st_size,

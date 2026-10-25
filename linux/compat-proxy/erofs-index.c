@@ -166,6 +166,8 @@ long erofs_open(const char *path,int flags){
    if(o.layer==UINT32_MAX)return -EIO;
    mtp_layer layer;if(mtp_get_layer(m->index,o.layer,&layer))return -EIO;
    root=join(m->layer_directory,layer.split);
+   /* Layered symlinks are real entries in their owning EROFS image. Keep
+    * O_PATH|O_NOFOLLOW so readlinkat(fd, "") uses the kernel symlink inode. */
    if(root){const char *relative=o.path;while(*relative=='/')relative++;native=join(root,relative);}
   }
   if(!native){vfs_free(root);return -ENOMEM;}

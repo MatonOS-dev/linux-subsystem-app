@@ -17,10 +17,13 @@ public final class ErofsLayersHarness {
         Files.createDirectories(new File(src,"usr/bin").toPath());Files.createDirectories(new File(src,"usr/share/doc/deleted-dir").toPath());
         Files.writeString(new File(src,"usr/bin/keep").toPath(),"k".repeat(1024));Files.writeString(new File(src,"usr/share/doc/change").toPath(),"old");
         Files.writeString(new File(src,"usr/share/doc/gone").toPath(),"delete");Files.writeString(new File(src,"usr/share/doc/file-link").toPath(),"file");
+        Files.createSymbolicLink(new File(src,"usr/share/doc/link").toPath(),Path.of("../bin/keep"));
+        Files.createSymbolicLink(new File(src,"usr/share/doc/remove-link").toPath(),Path.of("../bin/keep"));
         Files.writeString(new File(src,"usr/share/doc/deleted-dir/child").toPath(),"gone");
         List<ObjectPacks.Entry> rows=new ArrayList<>(Arrays.asList(dir("/"),dir("/usr"),dir("/usr/bin"),dir("/usr/share"),dir("/usr/share/doc"),dir("/usr/share/doc/deleted-dir")));
         rows.add(file("/usr/bin/keep",new File(src,"usr/bin/keep"),"1"));rows.add(file("/usr/share/doc/change",new File(src,"usr/share/doc/change"),"2"));
         rows.add(file("/usr/share/doc/gone",new File(src,"usr/share/doc/gone"),"3"));rows.add(file("/usr/share/doc/file-link",new File(src,"usr/share/doc/file-link"),"4"));
+        rows.add(link("/usr/share/doc/link","../bin/keep"));rows.add(link("/usr/share/doc/remove-link","../bin/keep"));
         rows.add(file("/usr/share/doc/deleted-dir/child",new File(src,"usr/share/doc/deleted-dir/child"),"5"));
         ErofsLayers.build(rows,out,mkfs,1700000000L,null,Collections.emptyMap());
     }
@@ -28,9 +31,11 @@ public final class ErofsLayersHarness {
         ErofsLayers.Index prior=ErofsLayers.read(Files.readAllBytes(new File(old,"layers.index").toPath()));
         Map<String,File> images=new HashMap<>();for(ErofsLayers.Layer l:prior.layers)images.put(l.sha256,new File(old,"pack-"+l.sha256+".erofs"));
         Files.writeString(new File(src,"usr/share/doc/change").toPath(),"new");Files.writeString(new File(src,"usr/share/doc/new").toPath(),"added");
+        Files.createSymbolicLink(new File(src,"usr/share/doc/added-link").toPath(),Path.of("../bin/keep"));
         List<ObjectPacks.Entry> rows=new ArrayList<>(Arrays.asList(dir("/"),dir("/usr"),dir("/usr/bin"),dir("/usr/share"),dir("/usr/share/doc")));
         rows.add(file("/usr/bin/keep",new File(src,"usr/bin/keep"),"1"));rows.add(file("/usr/share/doc/change",new File(src,"usr/share/doc/change"),"6"));
         rows.add(file("/usr/share/doc/new",new File(src,"usr/share/doc/new"),"7"));rows.add(link("/usr/share/doc/file-link","../bin/keep"));
+        rows.add(link("/usr/share/doc/link","../bin/changed"));rows.add(link("/usr/share/doc/added-link","../bin/keep"));
         ErofsLayers.build(rows,out,mkfs,1700000000L,Files.readAllBytes(new File(old,"layers.index").toPath()),images);
     }
     public static void main(String[] args)throws Exception {
@@ -42,6 +47,12 @@ public final class ErofsLayersHarness {
         System.out.println("layers A="+one.layers.size()+" B="+two.layers.size()+" hashes="+old+" -> "+next);
         Set<String> added=new HashSet<>(next);added.removeAll(old);if(added.size()!=1)throw new AssertionError("expected one new Java EROFS layer: "+added);
         if(Collections.disjoint(old,next))throw new AssertionError("unchanged Java layer was not reused: old="+old+" next="+next);
+        Map<String,ErofsLayers.Record> paths=new HashMap<>();for(ErofsLayers.Record r:two.records)paths.put(r.path,r);
+        if(paths.containsKey("/usr/share/doc/remove-link"))throw new AssertionError("removed symlink remains indexed");
+        if(!"../bin/changed".equals(paths.get("/usr/share/doc/link").target))throw new AssertionError("changed symlink target missing");
+        if(!paths.containsKey("/usr/share/doc/added-link"))throw new AssertionError("added symlink missing");
+        for(String path:Arrays.asList("/usr/share/doc/file-link","/usr/share/doc/link","/usr/share/doc/added-link"))
+            if(paths.get(path).layer==0xffffffff)throw new AssertionError("symlink has no layer: "+path);
         System.out.println("PASS Java EROFS layer writer A->B; A="+one.layers.size()+" layers, B="+two.layers.size()+" layers, new="+added.size());
     }
 }

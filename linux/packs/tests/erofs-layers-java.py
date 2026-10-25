@@ -31,11 +31,16 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-java-') as td:
     paths={r['path']:r for r in rows}
     for row in rows:
         if row['kind']=='dir':continue
+        if row['kind']=='symlink':
+            source=images[row['layer']]/row['path'].lstrip('/')
+            assert source.is_symlink() and os.readlink(source)==row['target'], (row['path'],row['layer'])
+            continue
         target=dest/row['path'].lstrip('/');target.parent.mkdir(parents=True,exist_ok=True)
-        if row['kind']=='symlink':target.symlink_to(row['target'])
-        else:
-            source=images[row['layer']]/row['path'].lstrip('/');target.write_bytes(source.read_bytes())
-            assert target.read_bytes()==source.read_bytes()
+        source=images[row['layer']]/row['path'].lstrip('/');target.write_bytes(source.read_bytes())
+        assert target.read_bytes()==source.read_bytes()
     assert paths['/usr/share/doc/file-link']['kind']=='symlink'
+    assert paths['/usr/share/doc/link']['target']=='../bin/changed'
+    assert paths['/usr/share/doc/added-link']['target']=='../bin/keep'
+    assert '/usr/share/doc/remove-link' not in paths
     assert '/usr/share/doc/gone' not in paths and '/usr/share/doc/deleted-dir/child' not in paths
     print('PASS Java layers.index extraction: '+str(sum(x['image_size'] for x in layers))+' image bytes')

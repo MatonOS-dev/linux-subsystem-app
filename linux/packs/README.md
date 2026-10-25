@@ -16,8 +16,11 @@ metadata (never host ownership).
 `layers.index` begins with `MTPKIDX2`, a layer table (split name, ZIP entry,
 image size, SHA-256), then path-sorted records. Each record carries path,
 OSTree checksum, kind, symlink target, serialized xattrs, layer-table index,
-file size, mtime, uid, gid and mode. A file's layer index identifies the
-complete EROFS image containing it; directories and symlinks use `0xffffffff`.
+file size, mtime, uid, gid and mode. A file or symlink's layer index identifies
+the complete EROFS image containing it; directories use `0xffffffff`. Symlink
+targets remain in the index for metadata-only `readlink` and `stat` operations,
+while the layer copy lets `O_PATH|O_NOFOLLOW` opens return native symlink
+descriptors that support `readlinkat(fd, "")`.
 The hosted `reader.c` accepts both this deployment view and the separate
 `MTPKIDX1` object-seed index. The compat proxy builds the reader in
 MTPKIDX2-only mode: MTPKIDX1 is no longer a runtime mount format.

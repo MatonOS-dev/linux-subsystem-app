@@ -8,6 +8,7 @@ src=root/'fixture.c'
 src.write_text(r'''#define _GNU_SOURCE
 #include <assert.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,11 @@ int main(int argc,char **argv){
  int pathroot=openat(commit,"files",O_PATH|O_DIRECTORY|O_CLOEXEC);assert(pathroot>=0);
  /* flatpak's open_tree fallback: O_NOFOLLOW must not stop at the layer-table symlink. */
  int nofollow=openat(commit,"files",O_PATH|O_NOFOLLOW|O_DIRECTORY|O_CLOEXEC);assert(nofollow>=0);close(nofollow);
+ int tree=openat(pathroot,"a",O_PATH|O_DIRECTORY|O_CLOEXEC);assert(tree>=0);
+ int linkfd=openat(tree,"link",O_PATH|O_NOFOLLOW|O_CLOEXEC);assert(linkfd>=0);
+ char target[64]={0};assert(readlinkat(linkfd,"",target,sizeof(target))==6&&!memcmp(target,"../lib",6));
+ close(linkfd);int followed=openat(tree,"link/x",O_RDONLY|O_CLOEXEC);assert(followed>=0);
+ memset(target,0,sizeof(target));assert(read(followed,target,5)==5&&!memcmp(target,"index",5));close(followed);close(tree);
  assert(!fstatat(pathroot,"",&st,AT_EMPTY_PATH)&&S_ISDIR(st.st_mode));
  assert(!fstatat(pathroot,"",&st,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)&&S_ISDIR(st.st_mode));
  relative=openat(pathroot,"lib/x",O_RDONLY|O_CLOEXEC);assert(relative>=0);
@@ -62,15 +68,18 @@ int main(int argc,char **argv){
 probe=root/'probe';subprocess.run(['cc','-static','-O2','-Wall','-Wextra','-Werror',src,'-o',probe],check=True)
 split='pack_'+'1'*64
 # As on the device: the layer table entry is a symlink to the daemon's mount.
-layer=root/'mnt'/'1'; (layer/'sub').mkdir(parents=True,exist_ok=True); (root/split).symlink_to(layer)
+layer=root/'mnt'/'1'; (layer/'sub').mkdir(parents=True,exist_ok=True); (layer/'a').mkdir(); (root/split).symlink_to(layer)
 (layer/'sample').write_bytes(b'hello erofs\n');(layer/'probe').write_bytes(probe.read_bytes());(layer/'probe').chmod(0o755)
 (layer/'sub'/'nested').write_text('nested\n');(layer/'link').symlink_to('sample')
+(layer/'a'/'link').symlink_to('../lib')
 (root/'flatpak-launch'/'system'/'runtime'/'org.freedesktop.Platform'/'x86_64'/'25.08'/'commit'/'files').mkdir(parents=True)
 (layer/'lib').mkdir(exist_ok=True);(layer/'lib'/'x').write_text('index')
 records=[
+ ('/a','0'*64,'dir','',0xffffffff,0,1,0o040755),
+ ('/a/link','a'*64,'symlink','../lib',0,6,1,0o120777),
  ('/lib','f'*64,'dir','',0xffffffff,0,1,0o040755),
  ('/lib/x','1'*64,'file','',0,5,1,0o100644),
- ('/link','a'*64,'symlink','sample',0xffffffff,6,1,0o120777),
+ ('/link','a'*64,'symlink','sample',0,6,1,0o120777),
  ('/probe','b'*64,'file','',0,probe.stat().st_size,1,0o100755),
  ('/sample','c'*64,'file','',0,12,1,0o100644),
  ('/sub','d'*64,'dir','',0xffffffff,0,1,0o040755),
