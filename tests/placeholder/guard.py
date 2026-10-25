@@ -49,10 +49,18 @@ SCAN_FILES = [
 # (file, pattern) -> (allowed occurrences, reason). Every raw read must be
 # either routed through PlaceholderFiles on the same line or justified here.
 ALLOW = {
+    ("ErofsLayers.java", "fileinputstream"): (
+        1, "sha() hashes a pack image mkfs.erofs just wrote to an app-owned output directory"),
+    ("ErofsLayers.java", "files-copy"): (
+        1, "copies a retained previous layer image (extracted from an installed split), not staging"),
+    ("ErofsLayers.java", "files-readAllBytes"): (
+        1, "reads a mkfs.erofs error log in an app-owned output directory, not staging"),
+    ("StagedPacks.java", "zipfile"): (
+        2, "reads layers.index and pack payloads from installed PackageManager APKs (app-owned), not staging"),
     ("StubGenerator.java", "fileinputstream"): (
         3, "hashes and streams the freshly built EROFS image (mkfs output in a temp dir) into its STORED split entry, not a .v3-store-root tree"),
     ("LinuxAppStoreService.java", "files-readAllBytes"): (
-        1, "reads the objects.index writer artifact under flatpak-pack-artifacts, not a .v3-store-root tree"),
+        2, "reads the objects.index and layers.index writer artifacts under flatpak-pack-artifacts, not a .v3-store-root tree"),
     ("LinuxAppStoreService.java", "files-copy"): (
         1, "copies an installed PackageManager split APK (app-owned), not staging"),
     ("XwaylandFiles.java", "files-copy"): (
@@ -96,7 +104,7 @@ ALLOW = {
     ("PackSessionPlan.java", "zipfile"): (
         1, "compares two installed base APKs in sameBase(), not staging"),
     ("StubGenerator.java", "files-readAllBytes"): (
-        5, "reads objects/index writer artifacts under the app-owned pack directory"),
+        7, "reads objects/index and layers.index writer artifacts under the app-owned pack directory"),
     ("StubGenerator.java", "zipfile"): (
         1, "reads a generated/installed split APK, not staging"),
 }

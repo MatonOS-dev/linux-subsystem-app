@@ -88,7 +88,7 @@ public final class ErofsLayers {
         Map<Integer,Layer> oldLayerByIndex=new HashMap<>();for(int i=0;i<old.layers.size();i++)oldLayerByIndex.put(i,old.layers.get(i));
         Map<String,Record> current=new HashMap<>();List<Record> records=new ArrayList<>();
         for(ObjectPacks.Entry e:entries){Record r=new Record();r.path=e.path;r.checksum=e.checksum;r.kind=e.kind;r.target=e.target;r.xattrs=e.xattrs==null?new byte[0]:e.xattrs.clone();r.uid=e.uid;r.gid=e.gid;r.mode=e.mode;
-            if(e.source!=null){r.size=e.source.length();r.mtime=e.mtime>0?e.mtime:epoch;r.source=e.source;}
+            if(e.source!=null){r.size=PlaceholderFiles.size(e.source);r.mtime=e.mtime>0?e.mtime:epoch;r.source=e.source;}
             else r.mtime=epoch;
             current.put(r.path,r);records.add(r);
         }
@@ -140,7 +140,7 @@ public final class ErofsLayers {
                 Map<String,byte[]> attrs=decodeXattrs(r.xattrs);for(Map.Entry<String,byte[]> x:attrs.entrySet())pax.put("LIBARCHIVE.xattr."+url(x.getKey()),Base64.getEncoder().encodeToString(x.getValue()));
                 if(!pax.isEmpty()){String pn="PaxHeaders/"+(seq++);byte[] data=pax(pax);header(out,pn,data.length,0644,0,0,epoch,'x',"");out.write(data);pad(out,data.length);}
                 long size=r.kind.equals("file")?r.size:0;char type=r.kind.equals("dir")?'5':'0';String target="";header(out,name,size,r.mode&07777,r.uid,r.gid,r.mtime>0?r.mtime:epoch,type,target);
-                if(r.kind.equals("file")){try(InputStream in=new BufferedInputStream(new FileInputStream(findSource(r)))){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)out.write(b,0,n);}pad(out,size);}
+                if(r.kind.equals("file")){if(PlaceholderFiles.copy(findSource(r),out)!=size)throw new IOException("layer file changed size: "+r.path);pad(out,size);}
             }out.write(new byte[1024]);}}
     private static File findSource(Record r)throws IOException{if(r.source==null||!r.source.isFile())throw new IOException("missing layer file source: "+r.path);return r.source;}
     private static Map<String,byte[]> decodeXattrs(byte[] raw)throws Exception{return OstreePacks.decodeXattrs(raw);}
