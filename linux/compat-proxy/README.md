@@ -86,12 +86,15 @@ exclusive creation, unlink, and cross-process shared mappings through bwrap
 and the proxy.
 
 `links.c` provides indexed hardlink behavior for marked OSTree-style stores.
-`erofs-index.c` reads the deployment's MTPKIDX2 merged-view index. It supplies
+`erofs-index.c` reads the deployment's MTPKIDX3 merged-view index. It supplies
 stat/lstat/statx metadata, directory entries, symlink targets and negative
 lookups from the index. A file record opens its path under the corresponding
 daemon-mounted EROFS layer and returns the ordinary kernel fd; reads, mmap,
-exec and fstat then use the native descriptor. Only directory descriptors
-retain index state, so `getdents64` can enumerate the merged view across layers.
+exec and fstat then use the native descriptor. Index stats use the image's
+recorded NID and the device number read once from that layer's mounted root,
+so path stat matches native fstat. File and symlink fstat/empty-path statx use
+the native descriptor path; directory descriptors retain index state for
+merged `getdents64` and directory identity.
 The proxy rejects MTPKIDX1 and has no ZIP slice offsets, file-fd table, copy
 fallback, or per-descriptor seccomp filters. The generic fd reserve remains for
 proxy-owned IPC and shared temporary-lock descriptors.

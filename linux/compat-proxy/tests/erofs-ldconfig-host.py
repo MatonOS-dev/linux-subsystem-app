@@ -43,8 +43,8 @@ def string(data, offset):
 
 
 def layer_splits(index):
-    if index[:8] != b"MTPKIDX2":
-        raise ValueError("expected MTPKIDX2 index")
+    if index[:8] not in (b"MTPKIDX2", b"MTPKIDX3"):
+        raise ValueError("expected captured MTPKIDX2 or MTPKIDX3 index")
     count = struct.unpack_from("<I", index, 8)[0]
     offset = 12
     rows = []
@@ -60,6 +60,67 @@ def layer_splits(index):
             raise ValueError(f"invalid layer descriptor {split}")
         rows.append(split)
     return rows
+
+
+def upgrade_capture(index, extracted_trees):
+    """Use extracted host inodes for this host replay; runtime stays v3-only."""
+    if index[:8] not in (b"MTPKIDX2", b"MTPKIDX3"):
+        raise ValueError("expected captured MTPKIDX2 or MTPKIDX3 index")
+    has_inode = index[:8] == b"MTPKIDX3"
+    offset = 12
+    layers = []
+    count = struct.unpack_from("<I", index, 8)[0]
+    for _ in range(count):
+        split, offset = string(index, offset)
+        entry, offset = string(index, offset)
+        descriptor = index[offset:offset + 40]
+        if len(descriptor) != 40:
+            raise ValueError("truncated layer descriptor")
+        offset += 40
+        layers.append((split, entry, descriptor))
+    row_count = struct.unpack_from("<I", index, offset)[0]
+    offset += 4
+    rows = []
+    for _ in range(row_count):
+        fields = []
+        for _ in range(4):
+            value, offset = string(index, offset)
+            fields.append(value.encode("utf-8"))
+        xattr_size = struct.unpack_from("<I", index, offset)[0]
+        xattr = index[offset:offset + 4 + xattr_size]
+        offset += 4 + xattr_size
+        if has_inode:
+            layer, size, mtime, uid, gid, mode, reserved, _old_inode = struct.unpack_from("<IQQIIIIQ", index, offset)
+            offset += 44
+        else:
+            layer, size, mtime, uid, gid, mode, reserved = struct.unpack_from("<IQQIIII", index, offset)
+            offset += 36
+        if reserved:
+            raise ValueError("invalid captured layer record")
+        inode = 0
+        if fields[2] in (b"file", b"symlink"):
+            split = layers[layer][0]
+            path = fields[0].decode("utf-8")
+            native = extracted_trees[split] / path.lstrip("/")
+            native_stat = native.lstat() if fields[2] == b"symlink" else native.stat()
+            inode = native_stat.st_ino
+            size = native_stat.st_size
+            mtime = int(native_stat.st_mtime)
+            uid, gid, mode = native_stat.st_uid, native_stat.st_gid, native_stat.st_mode
+        rows.append((fields, xattr, layer, size, mtime, uid, gid, mode, inode))
+    if offset != len(index):
+        raise ValueError("trailing captured index bytes")
+    out = bytearray(b"MTPKIDX3" + struct.pack("<I", len(layers)))
+    for split, entry, descriptor in layers:
+        for value in (split.encode(), entry.encode()):
+            out += struct.pack("<I", len(value)) + value
+        out += descriptor
+    out += struct.pack("<I", len(rows))
+    for fields, xattr, layer, size, mtime, uid, gid, mode, inode in rows:
+        for value in fields:
+            out += struct.pack("<I", len(value)) + value
+        out += xattr + struct.pack("<IQQIIIIQ", layer, size, mtime, uid, gid, mode, 0, inode)
+    return bytes(out)
 
 
 def find_package(prefix):
@@ -138,6 +199,8 @@ def main():
                 if prior != target:
                     raise RuntimeError(f"conflicting declared mounts for {ref}: {prior} / {target}")
         args = [str(PROXY), "--android-filter", "--root", str(root)]
+        if os.environ.get("COMPAT_EROFS_LDCONFIG_TRACE"):
+            args.insert(2, "--trace")
         ldconfig = None
         runtime_layers = []
         for package_no, package in enumerate(packages):
@@ -150,7 +213,7 @@ def main():
                 index = apk.read(INDEX)
             table = scratch / f"table-{package_no}"
             table.mkdir(exist_ok=True)
-            (table / "layers.index").write_bytes(index)
+            extracted_trees = {}
             with zipfile.ZipFile(base_apk) as apk:
                 split_names = layer_splits(index)
                 for split in split_names:
@@ -159,18 +222,21 @@ def main():
                         raise RuntimeError(f"missing captured split {carrier.name} in {package}")
                     with zipfile.ZipFile(carrier) as split_apk:
                         image = split_apk.read(PACK)
+                    image_path = scratch / f"{package_no}-{split}.erofs"
+                    image_path.write_bytes(image)
                     layer = scratch / "layers" / f"{package_no}-{split[5:]}"
+                    extracted_trees[split] = layer
                     if not layer.exists():
                         layer.mkdir(parents=True)
-                        image_path = scratch / f"{package_no}-{split}.erofs"
-                        image_path.write_bytes(image)
                         subprocess.run([str(FSCK), f"--extract={layer}", str(image_path)],
                                        check=True, stdout=subprocess.DEVNULL)
-                        image_path.unlink()
+                    image_path.unlink()
                     if not (table / split).exists():
                         (table / split).symlink_to(layer)
                     if package_no == 1:
                         runtime_layers.append(layer)
+            index = upgrade_capture(index, extracted_trees)
+            (table / "layers.index").write_bytes(index)
             args += ["--erofs-mount", target, str(table / "layers.index"), str(table)]
             backing = root / "flatpak-launch" / ("app" if package_no == 0 else "system")
             backing = backing / ref / commit / "files"
@@ -197,6 +263,7 @@ def main():
         debugger = os.environ.get("COMPAT_EROFS_LDCONFIG_GDB")
         if debugger:
             command = [debugger, "--batch", "--quiet", "-ex", "set pagination off",
+                       "-ex", "handle SIGSYS nostop noprint pass",
                        "-ex", "handle SIGABRT stop print pass", "-ex", "run", "-ex", "bt",
                        "--args"] + command
         elif shutil.which("strace"):

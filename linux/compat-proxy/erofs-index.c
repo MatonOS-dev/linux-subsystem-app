@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0
- * Included by vfs.c: MTPKIDX2 metadata over daemon-mounted EROFS layers.
+ * Included by vfs.c: MTPKIDX3 metadata over daemon-mounted EROFS layers.
  * Layer paths and index files are trusted launcher input. */
 #include <sys/uio.h>
 #include <limits.h>
@@ -10,7 +10,7 @@ static int erofs_strcmp(const char *a,const char *b){while(*a && *a==*b){a++;b++
 static char *erofs_chr(const char *s,int c){do{if(*s==c)return (char *)s;}while(*s++);return NULL;}
 static const char *erofs_files_suffix(const char *path){for(size_t i=0;path[i];i++)if(path[i]=='/'&&path[i+1]=='f'&&path[i+2]=='i'&&path[i+3]=='l'&&path[i+4]=='e'&&path[i+5]=='s'&&(path[i+6]=='/'||!path[i+6]))return path[i+6]?path+i+7:path+i+6;return NULL;}
 #define MTP_FREESTANDING
-#define MTPK_V2_ONLY
+#define MTPK_V3_ONLY
 #define strlen p_len
 #define strcmp erofs_strcmp
 #define memcmp erofs_cmp
@@ -21,7 +21,7 @@ static const char *erofs_files_suffix(const char *path){for(size_t i=0;path[i];i
 #undef memcmp
 #undef strchr
 typedef uint64_t erofs_lock_word __attribute__((aligned(8)));
-struct erofs_mount {struct erofs_mount *next;int io_fd;erofs_lock_word *io_owner;char *target;char *backing;char *layer_directory;mtp_index *index;void *blob;size_t size;uint64_t root_dev,root_ino;int root_identity;};
+struct erofs_mount {struct erofs_mount *next;int io_fd;erofs_lock_word *io_owner;char *target;char *backing;char *layer_directory;mtp_index *index;uint64_t *layer_devs;void *blob;size_t size;uint64_t root_dev,root_ino;int root_identity;};
 struct erofs_dirfd {struct erofs_dirfd *next;int fd;struct erofs_mount *mount;mtp_object object;uint64_t root_dev,root_ino;int root_identity;};
 static struct erofs_mount *erofs_mounts;
 static struct erofs_dirfd *erofs_dirs;
@@ -88,8 +88,8 @@ static int erofs_object(struct erofs_mount *m,const char *path,mtp_object *o){
  vfs_free(virtual);return r;
 }
 static uint64_t erofs_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;for(const char *p=o->checksum;*p;p++)v=(v^(unsigned char)*p)*1099511628211ULL;return v;}
-static uint64_t erofs_object_ino(const struct erofs_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_ino:erofs_ino(o);}
-static uint64_t erofs_object_dev(const struct erofs_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_dev:0;}
+static uint64_t erofs_object_ino(const struct erofs_mount *m,const mtp_object *o){if(!p_equal(o->kind,"dir"))return o->inode;return m->root_identity&&p_equal(o->path,"/")?m->root_ino:erofs_ino(o);}
+static uint64_t erofs_object_dev(const struct erofs_mount *m,const mtp_object *o){if(!p_equal(o->kind,"dir")&&o->layer<mtp_layer_count(m->index))return m->layer_devs[o->layer];return m->root_identity&&p_equal(o->path,"/")?m->root_dev:0;}
 static void erofs_root_identity(const struct erofs_mount *m,const mtp_object *o,const char *path,uint64_t *dev,uint64_t *ino,int *valid){
  int root=p_equal(o->kind,"dir")&&p_equal(o->path,"/");
  *dev=erofs_object_dev(m,o);*ino=erofs_object_ino(m,o);*valid=root&&m->root_identity;
@@ -121,9 +121,10 @@ long erofs_mount(const char *target,const char *index,const char *directory){
  if(!m->blob||!m->target)e=-ENOMEM;
  if(!e && RAW(PROXY_SC_pread64,fd,m->blob,m->size,0,0,0)!=(long)m->size)e=-EIO;
  RAW(PROXY_SC_close,fd,0,0,0,0,0);
- if(!e && (m->size<8||erofs_cmp(m->blob,"MTPKIDX2",8)))e=-EINVAL;
+ if(!e && (m->size<8||erofs_cmp(m->blob,"MTPKIDX3",8)))e=-EINVAL;
  if(!e && mtp_index_open_buffer(m->blob,m->size,&m->index,erofs_alloc,erofs_free,NULL))e=-EINVAL;
  if(!e && (!m->layer_directory || !mtp_layer_count(m->index)))e=-EINVAL;
+ if(!e){size_t count=mtp_layer_count(m->index);m->layer_devs=vfs_palloc(count*sizeof(*m->layer_devs));if(!m->layer_devs)e=-ENOMEM;else for(size_t i=0;i<count;i++){mtp_layer layer;struct proxy_stat layer_stat;if(mtp_get_layer(m->index,i,&layer)){e=-EINVAL;break;}char *layer_path=join(m->layer_directory,layer.split);if(!layer_path){e=-ENOMEM;break;}long stat_result=arch_stat_at(AT_FDCWD,layer_path,&layer_stat,0);vfs_free(layer_path);if(stat_result||!S_ISDIR(layer_stat.st_mode)){e=-ENOENT;break;}m->layer_devs[i]=layer_stat.st_dev;}}
  if(!e){
   m->io_fd=proxy_private_fd(RAW(PROXY_SC_memfd_create,"erofs-dir-lock",0,0,0,0,0));
   if(m->io_fd<0)e=m->io_fd;
@@ -140,7 +141,7 @@ long erofs_mount(const char *target,const char *index,const char *directory){
   if(!e)e=proxy_mount(m->target,m->target);
   if(!e)table->flags=MS_RDONLY;
  }
- if(e){if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->blob);vfs_free(m->target);vfs_free(m->backing);vfs_free(m->layer_directory);vfs_free(m);return e;}
+ if(e){if(m->io_owner)RAW(PROXY_SC_munmap,m->io_owner,4096,0,0,0,0);if(m->io_fd>=0)RAW(PROXY_SC_close,m->io_fd,0,0,0,0,0);mtp_index_close(m->index);vfs_free(m->layer_devs);vfs_free(m->blob);vfs_free(m->target);vfs_free(m->backing);vfs_free(m->layer_directory);vfs_free(m);return e;}
  m->next=erofs_mounts;erofs_mounts=m;return 0;
 }
 void erofs_close(int fd){struct erofs_dirfd **p=&erofs_dirs;while(*p&&(*p)->fd!=fd)p=&(*p)->next;if(*p){struct erofs_dirfd *old=*p;*p=old->next;vfs_free(old);}}
@@ -229,9 +230,10 @@ static long erofs_call_unlocked(long nr,proxy_arg_t *a,int *handled){
   }
   long r=RAW(PROXY_SC_lseek,fd,cursor,SEEK_SET,0,0,0);return r<0?r:(long)used;
  }
- case PROXY_SC_fstat:erofs_metadata(f->mount,&f->object,(void *)(uintptr_t)a[1],0,f->root_dev,f->root_ino,f->root_identity);return 0;
+ case PROXY_SC_fstat:if(!p_equal(f->object.kind,"dir")){erofs_trace("fstat-native",f->object.kind,NULL);break;}erofs_metadata(f->mount,&f->object,(void *)(uintptr_t)a[1],0,f->root_dev,f->root_ino,f->root_identity);return 0;
  case PROXY_SC_newfstatat:case PROXY_SC_statx:
   if(a[1]&&!*(char *)(uintptr_t)a[1]&&(a[nr==PROXY_SC_statx?2:3]&AT_EMPTY_PATH)){
+   if(!p_equal(f->object.kind,"dir")){erofs_trace("empty-statx-native",f->object.kind,NULL);break;}
    erofs_metadata(f->mount,&f->object,(void *)(uintptr_t)a[nr==PROXY_SC_statx?4:2],nr==PROXY_SC_statx,f->root_dev,f->root_ino,f->root_identity);return 0;
   }
   break;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise MTPKIDX2 metadata with ordinary directories standing in for mounts."""
+"""Exercise MTPKIDX3 metadata with ordinary directories standing in for mounts."""
 import hashlib, pathlib, shutil, struct, subprocess
 
 base=pathlib.Path(__file__).resolve().parents[1]
@@ -12,6 +12,7 @@ src.write_text(r'''#define _GNU_SOURCE
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -53,7 +54,7 @@ int main(int argc,char **argv){
  assert(!fstatat(pathroot,"",&st,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)&&S_ISDIR(st.st_mode));
  relative=openat(pathroot,"lib/x",O_RDONLY|O_CLOEXEC);assert(relative>=0);
  assert(!fstat(relative,&st)&&st.st_size==5);close(relative);close(pathroot);close(commit);
- assert(!stat("/usr/sample",&st));assert(st.st_size==12&&(st.st_mode&0777)==0644);
+ assert(!stat("/usr/sample",&st));assert(st.st_size==12&&S_ISREG(st.st_mode));
  assert(lstat("/usr/link",&st)==0&&S_ISLNK(st.st_mode));
  char link[64];assert(readlink("/usr/link",link,sizeof(link))==6&&!memcmp(link,"sample",6));
  assert(stat("/usr/missing",&st)<0);
@@ -75,17 +76,20 @@ int main(int argc,char **argv){
  assert(!lstat("/usr/link",&path_st));
  fd=open("/usr/link",O_PATH|O_NOFOLLOW|O_CLOEXEC);assert(fd>=0);
  assert(!fstat(fd,&fd_st)&&S_ISLNK(fd_st.st_mode)&&fd_st.st_ino==path_st.st_ino&&fd_st.st_dev==path_st.st_dev);
+ assert(fd_st.st_size==path_st.st_size&&fd_st.st_mode==path_st.st_mode);
  assert(!statx(fd,"",AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW,STATX_BASIC_STATS,&fd_sx));
- assert(fd_sx.stx_ino==path_st.st_ino&&fd_sx.stx_mode==path_st.st_mode);
+ assert(fd_sx.stx_ino==path_st.st_ino&&fd_sx.stx_mode==path_st.st_mode&&fd_sx.stx_size==(uint64_t)path_st.st_size&&
+        fd_sx.stx_dev_major==path_sx.stx_dev_major&&fd_sx.stx_dev_minor==path_sx.stx_dev_minor);
  close(fd);
  puts("EROFS INDEX/OPEN/MMAP PASS");return 0;
 }''')
 probe=root/'probe';subprocess.run(['cc','-static','-O2','-Wall','-Wextra','-Werror',src,'-o',probe],check=True)
 split='pack_'+'1'*64
 # As on the device: the layer table entry is a symlink to the daemon's mount.
-layer=root/'mnt'/'1'; (layer/'sub').mkdir(parents=True,exist_ok=True); (layer/'a').mkdir(); (root/split).symlink_to(layer)
+layer=root/'mnt'/'1'; layer2=root/'mnt'/'2'; (layer/'sub').mkdir(parents=True,exist_ok=True); (layer/'a').mkdir(); layer2.mkdir(parents=True)
+(root/split).symlink_to(layer); split2='pack_'+'2'*64; (root/split2).symlink_to(layer2)
 (layer/'sample').write_bytes(b'hello erofs\n');(layer/'probe').write_bytes(probe.read_bytes());(layer/'probe').chmod(0o755)
-(layer/'sub'/'nested').write_text('nested\n');(layer/'link').symlink_to('sample')
+(layer/'sub').mkdir(exist_ok=True);(layer2/'sub').mkdir();(layer2/'sub'/'nested').write_text('nested\n');(layer2/'link').symlink_to('sample')
 (layer/'a'/'link').symlink_to('../lib')
 (root/'flatpak-launch'/'system'/'runtime'/'org.freedesktop.Platform'/'x86_64'/'25.08'/'commit'/'files').mkdir(parents=True)
 (layer/'lib').mkdir(exist_ok=True);(layer/'lib'/'x').write_text('index')
@@ -94,24 +98,27 @@ records=[
  ('/a/link','a'*64,'symlink','../lib',0,6,1,0o120777),
  ('/lib','f'*64,'dir','',0xffffffff,0,1,0o040755),
  ('/lib/x','1'*64,'file','',0,5,1,0o100644),
- ('/link','a'*64,'symlink','sample',0,6,1,0o120777),
+ ('/link','a'*64,'symlink','sample',1,6,1,0o120777),
  ('/probe','b'*64,'file','',0,probe.stat().st_size,1,0o100755),
  ('/sample','c'*64,'file','',0,12,1,0o100644),
  ('/sub','d'*64,'dir','',0xffffffff,0,1,0o040755),
- ('/sub/nested','e'*64,'file','',0,7,1,0o100644),
+ ('/sub/nested','e'*64,'file','',1,7,1,0o100644),
 ]
-idx=bytearray(b'MTPKIDX2'+struct.pack('<I',1))
+records=[(p,c,k,t,l,s,mt,m,(layer2 if l==1 else layer)/p.lstrip('/')) for p,c,k,t,l,s,mt,m in records]
+idx=bytearray(b'MTPKIDX3'+struct.pack('<I',2))
 def string(s):
  b=s.encode();return struct.pack('<I',len(b))+b
 idx+=string(split)+string('assets/matonos/pack.erofs')+struct.pack('<Q',1)+bytes.fromhex('1'*64)
+idx+=string(split2)+string('assets/matonos/pack.erofs')+struct.pack('<Q',1)+bytes.fromhex('2'*64)
 idx+=struct.pack('<I',len(records))
-for path,checksum,kind,target,layer_id,size,mtime,mode in records:
+for path,checksum,kind,target,layer_id,size,mtime,mode,native in records:
  for s in (path,checksum,kind,target):idx+=string(s)
- idx+=struct.pack('<I',0)+struct.pack('<IQQIIII',layer_id,size,mtime,1000,1000,mode,0)
+ native_stat=native.lstat() if kind=='symlink' else native.stat()
+ idx+=struct.pack('<I',0)+struct.pack('<IQQIIIIQ',layer_id,size,mtime,native_stat.st_uid,native_stat.st_gid,native_stat.st_mode,0,native_stat.st_ino)
 index=root/'layers.index';index.write_bytes(idx)
 empty_index=root/'empty.index'
-empty_index.write_bytes(b'MTPKIDX2'+struct.pack('<I',1)+string(split)+string('assets/matonos/pack.erofs')+struct.pack('<Q',1)+bytes.fromhex('1'*64)+struct.pack('<I',0))
-cmd=[base/'build/linux-layer-v3','--android-filter','--erofs-mount','/usr',index,root,'--erofs-backing','/usr',root/'flatpak-launch'/'system'/'runtime'/'org.freedesktop.Platform'/'x86_64'/'25.08'/'commit'/'files',probe]
+empty_index.write_bytes(b'MTPKIDX3'+struct.pack('<I',1)+string(split)+string('assets/matonos/pack.erofs')+struct.pack('<Q',1)+bytes.fromhex('1'*64)+struct.pack('<I',0))
+cmd=[base/'build/linux-layer-v3','--android-filter','--trace','--erofs-mount','/usr',index,root,'--erofs-backing','/usr',root/'flatpak-launch'/'system'/'runtime'/'org.freedesktop.Platform'/'x86_64'/'25.08'/'commit'/'files',probe]
 targets=['/app','/usr/lib/x86_64-linux-gnu/GL','/usr/lib/x86_64-linux-gnu/GL','/usr/share/runtime/locale','/usr/lib/x86_64-linux-gnu/codecs-extra']
 for n,target in enumerate(targets):
     files=root/'flatpak-launch'/f'package-{n}'/'commit'/'files';files.mkdir(parents=True,exist_ok=True)
@@ -123,9 +130,11 @@ assert 'EROFS BACKING ASSOCIATION CONTROL PASS' in run.stdout,run.stdout+run.std
 run=subprocess.run(list(map(str,cmd+[root])),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
 assert run.returncode==0,run.stdout+run.stderr
 assert 'EROFS INDEX/OPEN/MMAP PASS' in run.stdout,run.stdout+run.stderr
+assert 'v3 erofs fstat-native file' in run.stderr and 'v3 erofs fstat-native symlink' in run.stderr,run.stderr
+assert 'v3 erofs empty-statx-native symlink' in run.stderr,run.stderr
 run=subprocess.run(list(map(str,cmd+['exec'])),check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
 assert 'EROFS EXEC PASS' in run.stdout,run.stdout+run.stderr
 legacy=root/'legacy.index';legacy.write_bytes(b'MTPKIDX1'+struct.pack('<I',0))
 rejected=subprocess.run(list(map(str,[base/'build/linux-layer-v3','--android-filter','--erofs-mount','/usr',legacy,root,probe])),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
 assert rejected.returncode!=0,'proxy accepted removed MTPKIDX1 format'
-print('PASS MTPKIDX2 index stat/readdir/readlink/open/mmap/exec/miss')
+print('PASS MTPKIDX3 index stat/readdir/readlink/open/mmap/exec/miss; native file and symlink fstat identities across two layers')

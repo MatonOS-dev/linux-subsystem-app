@@ -42,14 +42,14 @@ def bundle(name, files):
         elif stat.S_ISLNK(st.st_mode):kind,target,layer,size="symlink",os.readlink(path),0xffffffff,len(os.readlink(path).encode())
         else:kind,target,layer,size="file","",0,st.st_size
         checksum=hashlib.sha256((rel+kind+target).encode()).hexdigest()
-        rows.append((rel,checksum,kind,target,layer,size,int(st.st_mtime),st.st_uid,st.st_gid,st.st_mode))
-    rows.insert(0,("/",hashlib.sha256(b"root").hexdigest(),"dir","",0xffffffff,0,0,0,0,stat.S_IFDIR|0o755))
+        rows.append((rel,checksum,kind,target,layer,size,int(st.st_mtime),st.st_uid,st.st_gid,st.st_mode,st.st_ino))
+    rows.insert(0,("/",hashlib.sha256(b"root").hexdigest(),"dir","",0xffffffff,0,0,0,0,stat.S_IFDIR|0o755,0))
     def string(value):
         data=value.encode();return struct.pack("<I",len(data))+data
-    index=bytearray(b"MTPKIDX2"+struct.pack("<I",1)+string(split)+string("assets/matonos/pack.erofs")+struct.pack("<Q",1)+bytes.fromhex(digest)+struct.pack("<I",len(rows)))
-    for path,checksum,kind,target,layer,size,mtime,uid,gid,mode in rows:
+    index=bytearray(b"MTPKIDX3"+struct.pack("<I",1)+string(split)+string("assets/matonos/pack.erofs")+struct.pack("<Q",1)+bytes.fromhex(digest)+struct.pack("<I",len(rows)))
+    for path,checksum,kind,target,layer,size,mtime,uid,gid,mode,inode in rows:
         for value in (path,checksum,kind,target):index+=string(value)
-        index+=struct.pack("<I",0)+struct.pack("<IQQIIII",layer,size,mtime,uid,gid,mode,0)
+        index+=struct.pack("<I",0)+struct.pack("<IQQIIIIQ",layer,size,mtime,uid,gid,mode,0,inode)
     (packed/"layers.index").write_bytes(index)
     return source, packed
 
