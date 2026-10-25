@@ -25,9 +25,11 @@ Host writer usage: `python3 linux/packs/erofs_layers.py --repo REPO --commit
 CHECKSUM --out OUT --mkfs /path/to/mkfs.erofs`; add `--old-index` and
 `--old-layers` for an update. The old layer directory contains
 `pack-<sha256>.erofs` files. EROFS payloads in APK splits must be STORED and
-4096-byte aligned. The Java staging/install path still uses the legacy single
-image and needs integration with this format; there is no `StagedPacks` source
-in this repository revision.
+4096-byte aligned. `tests/erofs-layers-host.py` exercises A→B pack reuse,
+deletions and file-to-symlink replacement. The Java v2 writer and APK carrier
+helpers are present, but `StagedPacks` and `LinuxAppStoreService` still use the
+legacy single-image path; they need to be switched before this format is used
+for installs. Extraction via `fsck.erofs` remains an additional host check.
 
 `erofs_pack.py` builds one read-only EROFS image from an already deployed app
 or runtime tree. The default is LZ4HC level 12; `--compression lzma` selects
