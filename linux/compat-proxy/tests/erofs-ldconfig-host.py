@@ -12,13 +12,15 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 BASE = pathlib.Path(__file__).resolve().parents[1]
 DATA_VALUE = os.environ.get("COMPAT_EROFS_LDCONFIG_DATA")
 DATA = pathlib.Path(DATA_VALUE) if DATA_VALUE else None
 FSCK = pathlib.Path(os.environ.get("FSCK_EROFS", "fsck.erofs"))
-PROXY = BASE / "build/linux-layer-v3"
+EROFSFUSE = pathlib.Path(os.environ.get("EROFSFUSE", "erofsfuse"))
+PROXY = pathlib.Path(os.environ.get("COMPAT_PROXY", BASE / "build/linux-layer-v3"))
 PACK = "assets/matonos/pack.erofs"
 INDEX = "assets/matonos/layers.index"
 
@@ -110,7 +112,8 @@ def upgrade_capture(index, extracted_trees):
         rows.append((fields, xattr, layer, size, mtime, uid, gid, mode, inode))
     if offset != len(index):
         raise ValueError("trailing captured index bytes")
-    out = bytearray(b"MTPKIDX3" + struct.pack("<I", len(layers)))
+    index_v2 = os.environ.get("COMPAT_EROFS_INDEX_V2") == "1"
+    out = bytearray((b"MTPKIDX2" if index_v2 else b"MTPKIDX3") + struct.pack("<I", len(layers)))
     for split, entry, descriptor in layers:
         for value in (split.encode(), entry.encode()):
             out += struct.pack("<I", len(value)) + value
@@ -119,7 +122,11 @@ def upgrade_capture(index, extracted_trees):
     for fields, xattr, layer, size, mtime, uid, gid, mode, inode in rows:
         for value in fields:
             out += struct.pack("<I", len(value)) + value
-        out += xattr + struct.pack("<IQQIIIIQ", layer, size, mtime, uid, gid, mode, 0, inode)
+        out += xattr
+        if index_v2:
+            out += struct.pack("<IQQIIII", layer, size, mtime, uid, gid, mode, 0)
+        else:
+            out += struct.pack("<IQQIIIIQ", layer, size, mtime, uid, gid, mode, 0, inode)
     return bytes(out)
 
 
@@ -185,8 +192,10 @@ def main():
 
     # Scratch is optional for inspection after a failing reproduction.
     keep = os.environ.get("COMPAT_EROFS_LDCONFIG_KEEP")
+    use_fuse = os.environ.get("COMPAT_EROFS_LDCONFIG_FUSE") == "1"
     scratch = pathlib.Path(keep) if keep else pathlib.Path(tempfile.mkdtemp(prefix="erofs-ldconfig-"))
     scratch.mkdir(parents=True, exist_ok=True)
+    fuse_mounts = []
     try:
         root = scratch / "root"
         root.mkdir(exist_ok=True)
@@ -226,11 +235,29 @@ def main():
                     image_path.write_bytes(image)
                     layer = scratch / "layers" / f"{package_no}-{split[5:]}"
                     extracted_trees[split] = layer
-                    if not layer.exists():
-                        layer.mkdir(parents=True)
-                        subprocess.run([str(FSCK), f"--extract={layer}", str(image_path)],
-                                       check=True, stdout=subprocess.DEVNULL)
-                    image_path.unlink()
+                    if use_fuse:
+                        layer.mkdir(parents=True, exist_ok=True)
+                        log = open(scratch / f"fuse-{package_no}-{split}.log", "wb")
+                        process = subprocess.Popen([str(EROFSFUSE), "-f", str(image_path), str(layer)],
+                                                   stdout=log, stderr=subprocess.STDOUT)
+                        fuse_mounts.append((layer, process, log))
+                        for _ in range(100):
+                            if process.poll() is not None:
+                                raise RuntimeError(f"erofsfuse exited for {split}; see {log.name}")
+                            try:
+                                if os.stat(layer).st_dev != os.stat(layer.parent).st_dev:
+                                    break
+                            except OSError:
+                                pass
+                            time.sleep(0.05)
+                        else:
+                            raise RuntimeError(f"erofsfuse did not mount {split}; see {log.name}")
+                    else:
+                        if not layer.exists():
+                            layer.mkdir(parents=True)
+                            subprocess.run([str(FSCK), f"--extract={layer}", str(image_path)],
+                                           check=True, stdout=subprocess.DEVNULL)
+                        image_path.unlink()
                     if not (table / split).exists():
                         (table / split).symlink_to(layer)
                     if package_no == 1:
@@ -262,10 +289,15 @@ def main():
         trace = scratch / "strace.log"
         debugger = os.environ.get("COMPAT_EROFS_LDCONFIG_GDB")
         if debugger:
+            target_command = command
             command = [debugger, "--batch", "--quiet", "-ex", "set pagination off",
                        "-ex", "handle SIGSYS nostop noprint pass",
-                       "-ex", "handle SIGABRT stop print pass", "-ex", "run", "-ex", "bt",
-                       "--args"] + command
+                       "-ex", "handle SIGABRT stop print pass", "-ex", "run"]
+            symbol_file = os.environ.get("COMPAT_EROFS_LDCONFIG_GDB_SYMBOLS")
+            if symbol_file:
+                pc_offset = os.environ.get("COMPAT_EROFS_LDCONFIG_GDB_PC_OFFSET", "0x22eac")
+                command += ["-ex", f"add-symbol-file {symbol_file} $pc-{pc_offset}"]
+            command += ["-ex", "bt full", "--args"] + target_command
         elif shutil.which("strace"):
             command = ["strace", "-f", "-o", str(trace), "-e", "trace=%file,%memory,signal"] + command
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
@@ -286,6 +318,15 @@ def main():
         print("PASS captured Flatpak EROFS ldconfig")
         return 0
     finally:
+        for mount, process, log in reversed(fuse_mounts):
+            subprocess.run(["fusermount3", "-u", str(mount)], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=5)
+            log.close()
         if not keep:
             shutil.rmtree(scratch, ignore_errors=True)
 
