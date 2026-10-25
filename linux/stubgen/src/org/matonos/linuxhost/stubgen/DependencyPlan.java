@@ -21,7 +21,11 @@ public final class DependencyPlan {
             this.mayHaveRelated=mayHaveRelated;
             if(commit==null||!commit.matches("[0-9a-f]{64}")||metadata==null||metadata.length==0||metadata.length>128*1024)
                 throw new IOException("Invalid Flatpak inspection result");
-            this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.parent=parent;this.related=List.copyOf(related);
+            this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.parent=parent;
+            // The plan helper appends a related ref's subpaths ("ref\n/en\n…", e.g. Locale with a language
+            // subset). Planning needs the ref only; Flatpak applies the subpaths itself at deploy.
+            List<String> refs=new ArrayList<>();for(String r:related){int nl=r.indexOf('\n');refs.add(nl<0?r:r.substring(0,nl));}
+            this.related=List.copyOf(refs);
         }
     }
     public interface Backend {
