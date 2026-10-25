@@ -197,7 +197,6 @@ struct temp_lock { int fd; struct temp_lock *next; };
 static struct temp_lock *temp_locks;
 int proxy_diagnostic_fd=2;
 int vfs_private_fd(int fd){
-    if(erofs_private(fd)){if(proxy_trace&&fd>=128)proxy_log("private-pack",fd,0);return 1;}
     if(state_private_fd(fd)){if(proxy_trace&&fd>=128)proxy_log("private-state",fd,0);return 1;}
     if(ipc_private_fd(fd)){if(proxy_trace&&fd>=128)proxy_log("private-ipc",fd,0);return 1;}
     if(proxy_diagnostic_fd!=2 && fd==proxy_diagnostic_fd){if(proxy_trace&&fd>=128)proxy_log("private-diagnostic",fd,0);return 1;}
@@ -357,7 +356,7 @@ static struct mount *lookup(const char *path){
     for(struct mount *m=table;m;m=m->next){size_t k=p_len(m->target);if(prefix(path,m->target)&&k>n){n=k;best=m;}}
     return best;
 }
-static char *physical(const char *path){struct mount *m=lookup(path);if(!m)return dupstr(path);return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));}
+static char *physical(const char *path){char *erofs=erofs_physical(path);if(erofs)return erofs;struct mount *m=lookup(path);if(!m)return dupstr(path);return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));}
 struct proxy_open_how {uint64_t flags,mode,resolve;};
 #define PROXY_RESOLVE_NO_XDEV       0x01
 #define PROXY_RESOLVE_NO_MAGICLINKS 0x02
@@ -383,8 +382,6 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
             p_equal(path,"/run/host/monitor/resolv.conf")))){vfs_free(global);return NULL;}
     for(size_t i=0;global[i];){while(global[i]=='/')i++;size_t start=i;while(global[i]&&global[i]!='/')i++;
         if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
-    struct proxy_stat packed;
-    if(erofs_stat(global,&packed)!=-ENOSYS){vfs_free(global);return NULL;}
     struct mount *m=lookup(global);char *host_path=physical(global);
     if(!host_path){vfs_free(global);return NULL;}
     links_recover_path(host_path);
@@ -422,6 +419,7 @@ int vfs_openat2_path_fd(int fd,const char *path,int follow,int *outfd,char **out
     vfs_free(marker);PROFILE_END(5);return 0;
 }
 char *vfs_reverse(const char *path){
+    char *erofs=erofs_reverse(path);if(erofs)return erofs;
     struct mount *best=NULL;size_t n=0;
     /* Prefer names reachable in this process's current root. Detached old
      * roots may still have the same backing objects via inherited fds. */
@@ -434,13 +432,7 @@ char *vfs_reverse(const char *path){
     if(p && root && prefix(p,root)){char *q=dupstr(p+p_len(root));vfs_free(p);p=q;if(p && !*p){vfs_free(p);p=dupstr("/");}}
     return p;
 }
-char *vfs_reverse_erofs(const char *path){
-    char *p=vfs_reverse(path);if(!p || !oldroot_view || !prefix(p,oldroot_view))return p;
-    const char *relative=p+p_len(oldroot_view);char *q=dupstr(*relative?relative:"/");vfs_free(p);return q;
-}
 static char *readlink_dynamic(const char *path,long *error){
-    int handled=0;long pe=0;char *packed=erofs_link(path,&pe,&handled);
-    if(handled){*error=pe;return packed;}
     /* Pin the final component without following it. Path lookup needs search
      * permission on ancestors; O_PATH does not request getattr on them.
      * Empty-path readlink then distinguishes a symlink from an ordinary
@@ -459,7 +451,6 @@ static char *readlink_dynamic(const char *path,long *error){
         n*=2;
     }
 }
-static int proc_erofs_fd(const char *path);
 struct fd_name {char *path;size_t capacity,length;};
 static struct fd_name *fd_names;
 static size_t fd_names_capacity;
@@ -504,8 +495,8 @@ static int fd_name_set_locked(int fd,const char *path){
         char *next=vfs_palloc(capacity);if(!next)return -ENOMEM;vfs_free(entry->path);entry->path=next;entry->capacity=capacity;}
     p_copy(entry->path,path,n);entry->length=n;return 0;
 }
-void vfs_fd_close(int fd){erofs_close(fd);fd_name_close(fd);}
-long vfs_fd_dup(int from,int to){if(from==to)return 0;long e=erofs_dup(from,to);if(e)return e;char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}return 0;}
+void vfs_fd_close(int fd){fd_name_close(fd);}
+long vfs_fd_dup(int from,int to){if(from==to)return 0;char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}return 0;}
 char *vfs_fd_name(int fd){
     PROFILE_BEGIN();
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
@@ -539,8 +530,7 @@ char *vfs_proc_fd_name(const char *path){
 return NULL;
 }
 static char *basepath(int fd,long *error){if(fd==AT_FDCWD){
-if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct proxy_stat named,actual;if(host && !erofs_stat(host,&named) && S_ISDIR(named.st_mode)){vfs_free(global);vfs_free(host);return dupstr(cwd);}int valid=host && !arch_stat_at(AT_FDCWD,host,&named,0) && !arch_stat_at(AT_FDCWD,".",&actual,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
-    if(erofs_is_directory(fd)==0){*error=-ENOTDIR;return NULL;}
+if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct proxy_stat named,actual;int valid=host && !arch_stat_at(AT_FDCWD,host,&named,0) && !arch_stat_at(AT_FDCWD,".",&actual,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
     char *tracked=vfs_fd_name(fd);if(tracked)return tracked;
     struct proxy_stat st;long status=arch_stat_fd(fd,&st);if(status<0){*error=status;return NULL;}if(!S_ISDIR(st.st_mode)){*error=-ENOTDIR;return NULL;}
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
@@ -596,8 +586,8 @@ restart:;
         long e=0;char *target=readlink_dynamic(host,&e);
         if(target && cacheable)*cacheable=0;
         if(!target && input[i]=='/'){
-            struct proxy_stat st;long status=erofs_stat(host,&st);
-            if(status==-ENOSYS){
+            struct proxy_stat st;long status=arch_stat_at(AT_FDCWD,host,&st,AT_SYMLINK_NOFOLLOW);
+            if(status<0){
                 /* Path lookup needs search permission on ancestors, not
                  * getattr. An O_PATH|O_DIRECTORY open has the kernel's
                  * path-walk permissions and also rejects non-directory
@@ -608,31 +598,17 @@ restart:;
             }else if(status>=0 && !S_ISDIR(st.st_mode))status=-ENOTDIR;
             if(status<0){vfs_free(host);*error=status;goto fail;}
         }
-        /* proc fd magic links point to backing objects, outside a pivoted
-         * pathname root. They are not ordinary payload absolute symlinks. */
-        if(target && prefix(host,"/proc") && !p_equal(out+ (used>=4?used-4:0),"/exe")){
-            int magic=0;for(size_t j=0;host[j];j++)if(host[j]=='/' && host[j+1]=='f' && host[j+2]=='d' && host[j+3]=='/')magic=1;
-            int packed_fd=magic?proc_erofs_fd(out):-1;
-            if(packed_fd>=0 && erofs_tracked(packed_fd)){
-                /* Packed fds point at harmless kernel carriers (the empty
-                 * directory for O_PATH opens, or the archive for files),
-                 * not at the indexed object. Follow the recorded VFS name
-                 * so bind-fd resolves to the source object, including files. */
-                char *name=vfs_fd_name(packed_fd);
-                if(name){char *replacement=join(name,input+i);vfs_free(name);vfs_free(target);vfs_free(host);
-                    if(!replacement){*error=-ENOMEM;goto fail;}
-                    if(++links>40){vfs_free(replacement);*error=-ELOOP;goto fail;}
-                    vfs_free(input);vfs_free(out);input=replacement;goto restart;
-                }
+        /* Native proc fd magic links name the kernel's backing object. Keep
+         * that native path (and any suffix) out of the virtual-root rewrite.
+         * EROFS fds are ordinary native fds now, so this needs no tracking. */
+        if(target && prefix(host,"/proc") && !p_equal(out+(used>=4?used-4:0),"/exe")){
+            int magic=0;
+            for(size_t j=0;host[j];j++)if(host[j]=='/'&&host[j+1]=='f'&&host[j+2]=='d'&&host[j+3]=='/')magic=1;
+            if(magic){
+                char *answer=join(target,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);
+                if(!answer)*error=-ENOMEM;
+                return answer;
             }
-            if(magic && !input[i] && follow==VFS_FOLLOW_LINK_SOURCE){
-                /* Keep the proc magic link itself. readlink text for O_TMPFILE
-                 * is a nonexistent "#inode (deleted)" name, not the inode. */
-                if(identity){char *name=vfs_proc_fd_name(out);if(!name)name=vfs_reverse(target);char *global=name?(root?join(root,name):dupstr(name)):NULL;
-                    *identity=global?lookup(global):NULL;vfs_free(global);vfs_free(name);}
-                vfs_free(target);vfs_free(input);vfs_free(out);return host;
-            }
-            if(magic){char *answer=join(target,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);if(!answer)*error=-ENOMEM;return answer;}
         }
         vfs_free(host);
         if(target && self_proc(out) && used>=4 && p_equal(out+used-4,"/exe") && executable){vfs_free(target);target=dupstr(executable);}
@@ -706,7 +682,7 @@ int vfs_has_nested_mount(const char *path,const char *ancestor,int staging){
     for(struct mount *m=table;m;m=m->next){
         const char *target=m->target;
         if(root&&prefix(target,root)){target+=p_len(root);if(!*target)target="/";}
-        /* Match vfs_reverse_erofs's detached-root view as well. */
+        /* Match the detached-root view as well. */
         if(oldroot_view && prefix(target,oldroot_view)){
             target+=p_len(oldroot_view);if(!*target)target="/";
         }
@@ -797,7 +773,7 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     if(!e){
         struct mount *prior=table;char *virtual_source=(flags&MS_BIND)?global_target(source,&e):NULL;
         if(!e)e=proxy_mount(src,dest);
-        if(!e){table->flags=flags;struct proxy_stat st;table->pack_shadow=!(flags&MS_BIND) || erofs_stat(src,&st)==-ENOSYS;}
+        if(!e){table->flags=flags;table->pack_shadow=!(flags&MS_BIND);}
         if(!e && virtual_source && (flags&MS_REC))for(struct mount *m=prior;m;m=m->next){if(prefix(m->target,virtual_source) && !p_equal(m->target,virtual_source)){
             char *child=join(dest,m->target+p_len(virtual_source));if(!child){e=-ENOMEM;break;}e=proxy_mount(m->source,child);vfs_free(child);if(e)break;table->flags=m->flags;table->pack_shadow=m->pack_shadow;
         }}
@@ -846,8 +822,7 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
         vfs_free(next_cwd);vfs_free(next);vfs_free(root);root=saved_next;vfs_free(oldroot_view);oldroot_view=next_oldroot;if(saved_cwd){vfs_free(cwd);cwd=saved_cwd;}return 0;}
     char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;
 }
-static int proc_erofs_fd(const char *path){if(!self_proc(path))return -1;for(size_t i=0;path[i];i++)if(path[i]=='/'&&path[i+1]=='f'&&path[i+2]=='d'&&path[i+3]=='/'){const char *p=path+i+4;if(!*p)return -1;unsigned fd=0;for(;*p;p++){if(*p<'0'||*p>'9'||fd>(2147483647U-(unsigned)(*p-'0'))/10)return -1;fd=fd*10+(unsigned)(*p-'0');}return (int)fd;}return -1;}
-long vfs_proc_open(const char *path,int flags){int source=proc_erofs_fd(path);if(source>=0&&erofs_tracked(source)){char *name=vfs_fd_name(source);if(name){long fd=erofs_open(name,flags);if(fd!=-ENOSYS){if(fd>=0)vfs_fd_record((int)fd,AT_FDCWD,name);vfs_free(name);return fd;}vfs_free(name);}}size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
+long vfs_proc_open(const char *path,int flags){(void)flags;size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
     long fd=RAW(PROXY_SC_memfd_create,"v3-mountinfo",1,0,0,0,0);if(fd<0)return fd;
     const char *header="1 0 0:1 / ",*middle=" rw,nosuid - tmpfs compat-proxy rw\n";
     /* Virtual view required by bwrap's post-bind verification. Stable IDs are
@@ -864,9 +839,7 @@ long vfs_chdir(int fd,const char *path){long e=0;void *identity=NULL;char *host;
     if(path)host=vfs_resolve_mount(fd,path,1,&e,&identity);
     else {char proc[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)proc[k++]=digits[--d];proc[k]=0;host=readlink_dynamic(proc,&e);}
     if(!host)return e;
-    long packed=path?erofs_open(host,O_RDONLY|O_DIRECTORY|O_CLOEXEC):-ENOSYS;
-    if(path && packed!=-ENOSYS){e=packed<0?packed:RAW(PROXY_SC_fchdir,packed,0,0,0,0,0);if(packed>=0){erofs_close(packed);RAW(PROXY_SC_close,packed,0,0,0,0,0);}}
-    else e=path?RAW(PROXY_SC_chdir,host,0,0,0,0,0):RAW(PROXY_SC_fchdir,fd,0,0,0,0,0);
+    e=path?RAW(PROXY_SC_chdir,host,0,0,0,0,0):RAW(PROXY_SC_fchdir,fd,0,0,0,0,0);
     if(!e){struct mount *m=identity;char *logical=!path?vfs_fd_name(fd):NULL;if(!logical)logical=m?join(m->target,host+(p_len(m->source)==1?0:p_len(m->source))):vfs_reverse(host);
         if(logical && m && root && prefix(logical,root)){char *q=dupstr(logical+p_len(root));vfs_free(logical);logical=q;if(logical && !*logical){vfs_free(logical);logical=dupstr("/");}}
         if(!logical)e=-ENOMEM;else {char *saved=pdupstr(logical);vfs_free(logical);if(!saved)e=-ENOMEM;else {vfs_free(cwd);cwd=saved;}}}
@@ -1031,6 +1004,9 @@ void vfs_gpu_init(void){
 }
 
 #include "state.h"
+long proxy_pread_fd(int fd,void *buffer,size_t size,int64_t offset){
+    return RAW(PROXY_SC_pread64,fd,buffer,size,offset,0,0);
+}
 static void erofs_state(struct state *);
 void vfs_state(struct state *s){
  erofs_state(s);state_string(s,&oldroot_view);

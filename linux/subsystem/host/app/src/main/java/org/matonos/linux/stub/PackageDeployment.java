@@ -125,8 +125,7 @@ final class PackageDeployment {
         Files.write(version.resolve("deploy"),DeployRecord.extension(record.remote,record.commit,branch));
         File apk=new File(pkg.applicationInfo.sourceDir);
         java.util.List<String> args=new java.util.ArrayList<>(ErofsLaunch.arguments(
-                apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount));
-        args.addAll(org.matonos.linuxhost.stubgen.PackLaunch.backingArguments(mount,files.toFile()));
+                apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount,branch));
         return new CompatI386(files.toFile(),args);
     }
     static String withI386ExtensionPoints(String metadata,String branch) {

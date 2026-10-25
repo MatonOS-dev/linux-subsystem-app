@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -30,10 +31,11 @@ def main():
         parser.error("--tree must be a real directory")
     args.image.parent.mkdir(parents=True, exist_ok=True)
     args.metadata.parent.mkdir(parents=True, exist_ok=True)
-    level = "12" if args.compression == "lz4hc" else "9"
+    level = "9"
     args.image.unlink(missing_ok=True)
     started = time.perf_counter()
-    subprocess.run([args.mkfs, "-z" + args.compression + "," + level,
+    subprocess.run([args.mkfs, "-z" + args.compression + "," + level, "-Ededupe",
+                    "--workers=" + str(max(1, os.cpu_count() or 1)),
                     "--preserve-mtime", str(args.image), str(tree)], check=True)
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
     size = args.image.stat().st_size

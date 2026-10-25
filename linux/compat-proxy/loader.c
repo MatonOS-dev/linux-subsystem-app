@@ -68,8 +68,8 @@ static int resident_collision(uintptr_t low,uintptr_t high) {
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
-static long loader_open(const char *path){long fd=erofs_open(path,O_RDONLY|O_CLOEXEC);return fd==-ENOSYS?RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0):fd;}
-static void loader_close(int fd){erofs_close(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
+static long loader_open(const char *path){return RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);}
+static void loader_close(int fd){RAW(PROXY_SC_close,fd,0,0,0,0,0);}
 /* File mappings use ordinary kernel descriptors and retain page-cache sharing.
  * Only permission refusals permit the private copy fallback. */
 long proxy_file_mmap(proxy_arg_t *a) {
@@ -130,24 +130,6 @@ static void loader_trace_resolve(const char *path,const char *stage){
     proxy_log(stage,resolved?1:error,mount!=NULL);
     if(resolved){
         loader_trace_path("v3 exec resolved ",resolved);
-        char *packed=vfs_reverse_erofs(resolved);
-        loader_trace_path("v3 exec pack-object ",packed?packed:"(no reverse pack path)");
-        if(packed)vfs_free(packed);
-        struct proxy_stat st;long ps=erofs_stat(resolved,&st);
-        proxy_log("exec-pack-stat",ps,ps?0:st.st_mode);
-        long fd=erofs_open(resolved,O_RDONLY|O_CLOEXEC);
-        proxy_log("exec-pack-open",fd,0);
-        if(fd>=0)erofs_close((int)fd);
-        /* Match path_call's newfstatat path: resolve the original virtual
-         * name first, then pass that translated name to the pack handler. */
-        long stat_error=0;void *stat_mount=NULL;
-        char *stat_path=vfs_resolve_mount(AT_FDCWD,path,1,&stat_error,&stat_mount);
-        /* erofs_path synthesizes the architecture's native stat wire layout. */
-        struct stat wire_stat;
-        proxy_arg_t a[6]={(long)AT_FDCWD,(long)stat_path,(long)&wire_stat,0,0,0};int handled=0;
-        long sr=stat_path?erofs_path(PROXY_SC_newfstatat,a,stat_path,&handled):stat_error;
-        proxy_log("exec-openat-stat-compare",handled?sr:-ENOSYS,handled);
-        if(stat_path)vfs_free(stat_path);
         vfs_free(resolved);
     } else loader_trace_path("v3 exec unresolved ",path);
 }
@@ -159,18 +141,15 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
     char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);
     if(proxy_trace){
         proxy_log("exec-validate-resolve",resolved?1:error,depth);
-        if(resolved){loader_trace_path("v3 exec validate resolved ",resolved);
-            char *object=vfs_reverse_erofs(resolved);loader_trace_path("v3 exec validate pack-object ",object?object:"(none)");if(object)vfs_free(object);}
+        if(resolved)loader_trace_path("v3 exec validate resolved ",resolved);
     }
     if(!resolved)return error;
     long fd=loader_open(resolved);
     if(proxy_trace)proxy_log("exec-validate-open",fd,depth);
     if(fd<0){vfs_free(resolved);return fd;}
-    struct proxy_stat st;
-    error=erofs_stat(resolved,&st);
-    if(error==-ENOSYS)error=arch_stat_fd(fd,&st);
+    struct proxy_stat st;error=arch_stat_fd(fd,&st);
     if(!error && (!S_ISREG(st.st_mode) || !(st.st_mode&0111)))error=-EACCES;
-    if(!error && erofs_stat(resolved,&st)==-ENOSYS)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
+    if(!error)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
     vfs_free(resolved);
     Elf64_Ehdr h={0};Elf32_Ehdr h32;
     if(error)goto done;
@@ -328,12 +307,9 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     char *resolved=vfs_resolve(AT_FDCWD,path,1,&path_error);
     if(!resolved)return (int)path_error;
     long fd=loader_open(resolved);
-    struct proxy_stat packed;int packed_status=erofs_stat(resolved,&packed);
     vfs_free(resolved);
     if(bad(fd)) return (int)fd;
-    struct proxy_stat executable;
-    int permission=packed_status==-ENOSYS?arch_stat_fd(fd,&executable):packed_status;
-    if(!packed_status)executable=packed;
+    struct proxy_stat executable;int permission=arch_stat_fd(fd,&executable);
     if(!permission && (!S_ISREG(executable.st_mode) || !(executable.st_mode&0111)))permission=-EACCES;
     if(permission){loader_close(fd);return permission;}
     long got=proxy_pread_fd(fd,header,sizeof(header)-1,0);
@@ -482,8 +458,7 @@ int main(int argc,char **argv,char **environ) {
         else if(p_equal(argv[i],"--i386-tls-reserve")) {proxy_i386_tls_reservation(1);i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}
         else if(p_equal(argv[i],"--count") && i+1<argc) {proxy_count_init(argv[i+1]);i+=2;}
-        else if(p_equal(argv[i],"--erofs-backing") && i+2<argc) {if(erofs_backing(argv[i+1],argv[i+2]))return 2;i+=3;}
-        else if(p_equal(argv[i],"--erofs-mount") && i+3<argc) {if(erofs_mount(argv[i+1],argv[i+2],argv[i+3]))return 2;i+=4;}
+        else if(p_equal(argv[i],"--erofs-mount") && i+2<argc) {if(erofs_mount(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--map-ro") && i+2<argc) {if(vfs_mount_readonly_map(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--map") && i+2<argc) {if(proxy_mount(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--root") && i+1<argc) {if(vfs_bootstrap_root(argv[i+1])) return 2;i+=2;}

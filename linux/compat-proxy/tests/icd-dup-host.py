@@ -5,9 +5,6 @@ import pathlib
 import re
 import shutil
 import subprocess
-import hashlib
-import stat
-import struct
 
 base = pathlib.Path(__file__).resolve().parents[1]
 root = base / "build/icd-dup-host"
@@ -31,27 +28,7 @@ def bundle(name, files):
             dest.write_text("{}\n")
         else:
             dest.symlink_to(target)
-    packed = root / (name + "-bundle")
-    packed.mkdir()
-    digest=hashlib.sha256(name.encode()).hexdigest(); split="pack_"+digest
-    image=packed/split;shutil.copytree(source,image,symlinks=True)
-    rows=[]
-    for path in sorted(image.rglob("*"),key=lambda p:p.relative_to(image).as_posix().encode()):
-        rel="/"+path.relative_to(image).as_posix();st=path.lstat()
-        if stat.S_ISDIR(st.st_mode):kind,target,layer,size="dir","",0xffffffff,0
-        elif stat.S_ISLNK(st.st_mode):kind,target,layer,size="symlink",os.readlink(path),0xffffffff,len(os.readlink(path).encode())
-        else:kind,target,layer,size="file","",0,st.st_size
-        checksum=hashlib.sha256((rel+kind+target).encode()).hexdigest()
-        rows.append((rel,checksum,kind,target,layer,size,int(st.st_mtime),st.st_uid,st.st_gid,st.st_mode))
-    rows.insert(0,("/",hashlib.sha256(b"root").hexdigest(),"dir","",0xffffffff,0,0,0,0,stat.S_IFDIR|0o755))
-    def string(value):
-        data=value.encode();return struct.pack("<I",len(data))+data
-    index=bytearray(b"MTPKIDX2"+struct.pack("<I",1)+string(split)+string("assets/matonos/pack.erofs")+struct.pack("<Q",1)+bytes.fromhex(digest)+struct.pack("<I",len(rows)))
-    for path,checksum,kind,target,layer,size,mtime,uid,gid,mode in rows:
-        for value in (path,checksum,kind,target):index+=string(value)
-        index+=struct.pack("<I",0)+struct.pack("<IQQIIII",layer,size,mtime,uid,gid,mode,0)
-    (packed/"layers.index").write_bytes(index)
-    return source, packed
+    return source, source
 
 
 gl = "/usr/lib/x86_64-linux-gnu/GL"
@@ -183,7 +160,7 @@ run("cc", "-static", "-O2", "-Wall", "-Wextra", "-Werror", probe_src, "-o", prob
 # Each share path is a symlink alias, as in a Flatpak runtime. The extension
 # itself is mounted at GL/maton and the GL merge-dir links to its contents.
 gl_dir = gl
-def args(target,bundle):return ["--erofs-mount",target,bundle/"layers.index",bundle]
+def args(target,mount):return ["--erofs-mount",target,mount]
 proxy = [base / "build/linux-layer-v3", "--android-filter",
          *args("/usr",runtime),*args("/app",app),*args(gl_dir+"/default",default),*args(gl_dir+"/maton",extension)]
 # Exercise absolute runtime symlinks and the GL merge-dir after bwrap pivots
@@ -200,9 +177,8 @@ if bwrap_path:
     argv = [base / "build/linux-layer-v3", "--android-filter",
             "--map", pathlib.Path("/lib").resolve(), "/lib",
             "--map", pathlib.Path("/lib64").resolve(), "/lib64",
-            *args("/usr",runtime),*args("/app",app),*args(glroot+"/default",default),*args(glroot+"/maton",extension),
             bwrap, "--ro-bind-fd", str(runtime_fd), "/usr",
-            "--ro-bind-fd", str(app_fd), "/app", "--tmpfs", glroot,
+            "--dir", "/app", "--ro-bind-fd", str(app_fd), "/app", "--tmpfs", glroot,
             "--ro-bind-fd", str(default_fd), glroot + "/default",
             "--ro-bind-fd", str(extension_fd), glroot + "/maton",
             "--dir", glroot + "/vulkan/icd.d",

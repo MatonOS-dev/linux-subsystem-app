@@ -337,52 +337,6 @@ public final class StubGenerator {
         return unsigned;
     }
 
-    /** Signs one complete per-pack EROFS image for an MTPKIDX2 layer table. */
-    public static File generateErofsLayerPack(File workDir,String packageName,File image,
-            File output,int revision)throws Exception {
-        File unsigned=generateErofsLayerPackUnsigned(workDir,packageName,image,revision);
-        try{sign(unsigned,output);return output;}finally{unsigned.delete();}
-    }
-
-    /** Unsigned MTPKIDX2 carrier; layers.index names this split and asset. */
-    public static File generateErofsLayerPackUnsigned(File workDir,String packageName,File image,
-            int revision)throws Exception {
-        if(revision<0)throw new IllegalArgumentException("Negative split revision");
-        if(!packageName.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"))
-            throw new IllegalArgumentException("Invalid package name");
-        if(!image.isFile()||image.length()==0||!image.getName().matches("pack-[0-9a-f]{64}\\.erofs"))
-            throw new IOException("Invalid EROFS layer image");
-        String identity=image.getName().substring(5,69);
-        if(!identity.matches("[0-9a-f]{64}"))throw new IOException("EROFS layer filename hash mismatch");
-        String split="pack_"+identity,entry="assets/matonos/pack.erofs";
-        BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
-        encoder.revisionCode=revision;
-        File unsigned=File.createTempFile("matonos-layer-",".apk",workDir);
-        try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
-            put(zip,"AndroidManifest.xml",encoder.packManifest(split));String digest=putStoredAligned(zip,entry,image,4096);
-            if(!identity.equals(digest))throw new IOException("EROFS layer image hash mismatch while writing split");
-        } catch(Exception error){unsigned.delete();throw error;}
-        return unsigned;
-    }
-
-    /** Writes/signs a code-free base split containing the merged-view layers.index. */
-    public static File generateLayersIndex(File workDir,String packageName,File index,File output,
-            int revision)throws Exception {
-        if(revision<0)throw new IllegalArgumentException("Negative split revision");
-        if(!index.isFile()||index.length()<12)throw new IOException("Missing layers.index");
-        byte[] bytes=java.nio.file.Files.readAllBytes(index.toPath());
-        if(!Arrays.equals(Arrays.copyOf(bytes,8),"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))
-            throw new IOException("Invalid layers.index format");
-        String split="index_"+fileSha256(index);
-        BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
-        encoder.revisionCode=revision;
-        File unsigned=File.createTempFile("matonos-layers-index-",".apk",workDir);
-        try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
-            put(zip,"AndroidManifest.xml",encoder.packManifest(split));put(zip,"assets/matonos/layers.index",bytes);
-        } catch(Exception error){unsigned.delete();throw error;}
-        try{sign(unsigned,output);return output;}finally{unsigned.delete();}
-    }
-
     private static String fileSha256(File file) throws Exception {
         java.security.MessageDigest digest=java.security.MessageDigest.getInstance("SHA-256");
         try(InputStream input=new BufferedInputStream(new FileInputStream(file))) {
@@ -724,13 +678,6 @@ public final class StubGenerator {
             put(zip, "classes.dex", loaderDex());
             put(zip, "res/drawable/foreground.png", icon);
             put(zip, "res/drawable/icon.xml", new BinaryManifest("", "", "", "flathub", Collections.emptyList()).adaptiveIcon());
-            File layersIndex=packDirectory==null?null:new File(packDirectory,"layers.index");
-            if(layersIndex!=null&&layersIndex.isFile()) {
-                byte[] index=java.nio.file.Files.readAllBytes(layersIndex.toPath());
-                if(index.length<12||!Arrays.equals(Arrays.copyOf(index,8),"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))
-                    throw new IOException("Invalid MTPKIDX2 layers.index");
-                put(zip,"assets/matonos/layers.index",index);
-            }
         }
     }
 

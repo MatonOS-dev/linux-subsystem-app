@@ -1,61 +1,63 @@
 # OSTree APK packs (format v1)
 
-## EROFS deployment carriers
+## One EROFS image per package
 
-### Layered format (MTPKIDX2)
+Each app package carries one complete EROFS image of its deployment at the
+real paths under `files/`. A runtime package carries one image rooted at
+`/<branch>/…`, leaving room for more than one branch of a runtime ID in a
+future package. Subpath deployments, including Locale, are walked with the
+selected subpaths only. Each image is stored as one signed `erofs_<sha256>` APK
+split at `assets/matonos/deployment.erofs`, uncompressed and 4096-byte aligned.
+There is no deployment path index, layer table, overlay or whiteout list.
 
-`erofs_layers.py` writes one complete EROFS image per pack and a `layers.index`
-file for the already-merged deployment view. There is no index image, overlay,
-or whiteout: removed paths are absent from the index. Initial packs use the
-same parent-directory grouping, lexical order, and 64 MiB target policy as
-`pack.py`; updates put changed/new regular files in one new pack and reuse
-unchanged layer images byte-for-byte. Images stream deterministic tar data
-through a FIFO into `mkfs.erofs` without a temporary tar file, using LZ4HC 9,
-the OSTree commit timestamp, and commit uid/gid/mode metadata (never host
-ownership). Java layer builds share one `availableProcessors()`-sized pool
-across independent refs and each ref's layers; mkfs worker counts are divided
-across concurrent layers so nested builds stay bounded. The Python host writer
-uses the same level and applies the same per-layer worker division.
+At launch, the stub asks `matonos-erofsd` to mount that one image, then passes
+the package target and mounted directory to the proxy. Runtime targets point
+at the image's branch directory. The proxy swaps the package target prefix for
+that directory; the kernel's EROFS implementation handles normal `openat`,
+`stat`, `readlink`, `getdents`, `mmap`, and descriptor operations. Package
+metadata is not synthesized and the proxy does not track EROFS file or
+directory descriptors.
 
-`layers.index` begins with `MTPKIDX2`, a layer table (split name, ZIP entry,
-image size, SHA-256), then path-sorted records. Each record carries path,
-OSTree checksum, kind, symlink target, serialized xattrs, layer-table index,
-file size, mtime, uid, gid and mode. A file or symlink's layer index identifies
-the complete EROFS image containing it; directories use `0xffffffff`. Symlink
-targets remain in the index for metadata-only `readlink` and `stat` operations,
-while the layer copy lets `O_PATH|O_NOFOLLOW` opens return native symlink
-descriptors that support `readlinkat(fd, "")`.
-The hosted `reader.c` accepts both this deployment view and the separate
-`MTPKIDX1` object-seed index. The compat proxy builds the reader in
-MTPKIDX2-only mode: MTPKIDX1 is no longer a runtime mount format.
+`StagedPacks` streams a deterministic PAX tar from OSTree deployment metadata
+through a FIFO to `mkfs.erofs`, using LZ4HC 9, the commit timestamp, recorded
+ownership/mode/xattrs, `-Ededupe`, and all available workers. Repeated file
+objects with the same OSTree checksum become tar hardlinks, so object bytes
+are written once. Updates rebuild one complete image from the staged
+deployment, using matching-checksum files from the currently mounted image as
+the read source when available; changed and unavailable files come from the
+staging deployment. OSTree remains responsible for delta downloads. The
+separate `objects.index` and `objects.ostree` assets remain for OSTree update
+seeding and are not filesystem-view metadata.
 
-Host writer usage: `python3 linux/packs/erofs_layers.py --repo REPO --commit
-CHECKSUM --out OUT --mkfs /path/to/mkfs.erofs`; add `--old-index` and
-`--old-layers` for an update. The old layer directory contains
-`pack-<sha256>.erofs` files. EROFS payloads in APK splits must be STORED and
-4096-byte aligned. `StagedPacks` writes the same deterministic PAX tar stream
-from OSTree entry metadata, reuses unchanged installed layer images, and
-rewrites layers whose dead-byte ratio reaches 0.5. `LinuxAppStoreService`
-signs one `pack_<sha256>` APK split per image. The merged `layers.index` is in
-the base APK. The separate `objects.index` split remains for OSTree metadata
-and update seeding; it does not describe the deployed filesystem view.
+Host tree usage: `python3 linux/packs/erofs_pack.py --tree DEPLOYMENT/files
+--image OUT/deployment.erofs --metadata OUT/erofs-pack.json --mkfs
+/path/to/mkfs.erofs`. The metadata records image size, SHA-256, compressor and
+the `zip-local-header-v1` offset rule. The EROFS payload in its APK split must
+be STORED and 4096-byte aligned. `linux/stubgen/tests/SubpathPackTest.java`
+checks that selected Locale paths remain scoped and that the Java packer emits
+one image without a layer index.
 
-`tests/erofs-layers-host.py` exercises A→B reuse, additions, deletions,
-file-to-symlink replacement and the C reader. Set `FSCK_EROFS` to make it
-extract only the images named by each index, reconstruct A and B, and compare
-paths, bytes, types, modes, ownership, symlinks and xattrs with OSTree
-checkouts. `tests/erofs-layers-java.py` runs the Android Java layer writer
-against the same pinned `mkfs.erofs` and checks its A→B output with fsck.
+## Single-image validation
+
+The host `tests/run.sh` suite passed, including the compat-proxy x86_64 and
+i386 tests. The real captured-package ldconfig replay also passed with each
+captured EROFS layer mounted by `erofsfuse` and each package exposed through one
+prefix swap. On 20,000 native `stat` misses, mapped lookups took 93.6 ms and
+direct lookups took 98.5 ms (0.95 ratio); native lookup needs no negative cache.
+
+For GL.default 25.08 and 25.08-extra, the old indexes contain 418 unique file
+objects each, with 411 shared checksums (368,782,890 raw bytes). Rebuilding the
+captured trees with LZ4HC 9 and `-Ededupe` produced 190.73 MiB and 190.74 MiB
+separate images in 35.9 seconds each; both branches in one image produced
+227.51 MiB in 46.3 seconds. The combined image saves 153.9 MiB (40.4%) against
+those rebuilt separate images. These are host measurements from the captured
+GL trees, not install-time measurements on a device.
 
 `erofs_pack.py` builds one read-only EROFS image from an already deployed app
-or runtime tree. The default is LZ4HC level 12; `--compression lzma` selects
-LZMA level 9 when image size matters more than mount/read cost. The image
-keeps source ownership, modes, symlinks, modification times and xattrs. The
-filesystem assigns inode numbers in its stable source-tree traversal order;
-the host test checks this by building the same tree twice. Build with the
-newest stable `erofs-utils` available for the target release. The utility is
-GPL-2+, not GPL-3; keep it a pack-time tool and publish its source/license
-notices when distributing the binary.
+or runtime tree. The image keeps source ownership, modes, symlinks, modification
+times and xattrs. Build with the newest stable `erofs-utils` available for the
+target release. The utility is GPL-2+, not GPL-3; keep it as a pack-time tool
+and publish its source/license notices when distributing the binary.
 
 Example:
 
@@ -64,64 +66,9 @@ python3 linux/packs/erofs_pack.py --tree DEPLOYMENT/files \
   --image OUT/deployment.erofs --metadata OUT/erofs-pack.json
 ```
 
-The metadata records image size, SHA-256, compressor and the
-`zip-local-header-v1` offset rule. `StubGenerator.generateErofsPack` creates a
-code-free `erofs_<image-sha256>` APK split. It stores the image as
-`assets/matonos/deployment.erofs`, uncompressed, with its payload aligned to
-4096 bytes, and embeds `assets/matonos/erofs-pack.json` beside it. The JSON is
-covered by APK signing. The reader obtains the data offset from the named
-entry's ZIP local header (`header offset + 30 + filename length + extra-field
-length`), then checks the exact image size and SHA-256 before mounting. It
-must not infer an offset by scanning for the EROFS magic bytes.
-
-The single-image `generateErofsPack` helper above remains for compatibility
-tests. The install path uses `generateErofsLayerPack`: every complete image is
-stored as `assets/matonos/pack.erofs` in its own signed `pack_<sha256>` split,
-with the payload uncompressed and 4096-byte aligned. The merged `layers.index`
-is embedded in the signed base APK. `PackageInstaller` inherits unchanged
-content-addressed layer splits and removes layers no longer referenced by the
-new index.
-
-The tool is pinned to erofs-utils v1.9.4 and built as an x86_64 static-musl
-PIE; see `prebuilt/README.md`, `build-mkfs-erofs.sh` and `licenses/` for the
-source, rebuild, and GPL-2.0-or-later notice. It is packaged as an executable
-JNI library and invoked by path; MatonOS does not link it.
-
-Host check (does not require mount privilege):
-
-```sh
-python3 linux/packs/tests/erofs-host.py
-FSCK_EROFS=/path/to/fsck.erofs python3 linux/packs/tests/android-pipeline-host.py
-```
-
-It creates an app/runtime-shaped fixture, runs `fsck.erofs`, compares the
-extracted tree's paths, bytes, ownership and modes, checks symlink and xattr
-metadata plus stable inode assignment, and builds an aligned ZIP carrier to
-verify the local-header offset and SHA-256 rule. If `unshare -rm` and EROFS
-loop mounting are permitted, it mounts directly from the APK payload and
-benchmarks stat/open against the extracted tree; otherwise it reports the
-mount benchmark as skipped. `MKFS_EROFS`, `FSCK_EROFS` and `DUMP_EROFS` can
-select explicit erofs-utils binaries. mkfs time and extracted/image sizes are
-reported for each fixture. For mount performance, use the same deployment and
-cache state on a host that permits loop mounts; the small synthetic fixture
-is an integrity check, not a representative size benchmark.
-
-`android-pipeline-host.py` executes the packaged static tool with the same
-deterministic options as the Android staging path, runs fsck, and checks that
-two builds of the same tree are byte-identical. `linux/stubgen/tests/run-tests.sh`
-checks the signed EROFS split, embedded metadata, image hash/size, and ZIP
-payload alignment. No QEMU VM is needed for these host checks.
-
-Real Tux Racer and GNOME Calculator deployment size/time measurements remain
-open: there are no local Flatpak deployment trees in the host cache, and the
-pinned static Flatpak client cannot validate Flathub TLS on this host
-(`remote-add` reports curl error 60). The synthetic integrity fixture result
-must not be treated as either application's measurement.
-
-`pack.py` is a Python 3 host tool using PyGObject/libostree 2024.5. It reads
-real OSTree repositories in `bare-user` mode. `reader.c` is the C99 lookup
-library intended for the compat proxy. Run `./tests/run.sh` to generate a
-three-commit repo and verify checkout reconstruction and update replay.
+The single-image `generateErofsPack` helper writes the complete package image
+to one signed split. `PackageInstaller` keeps an unchanged image split by its
+content hash and removes the prior image split when an update changes it.
 
 ## Base artifact
 
@@ -212,15 +159,12 @@ it is deliberately not the signed APK hash. Base and split version codes
 must match. Signing preserves alignment, covered by a real host signing test
 and AOSP aapt2 manifest parsing in `linux/stubgen/tests/run-tests.sh`.
 
-At stub launch, `ErofsLaunch` resolves every indexed split through
-PackageManager's parallel `splitNames`/`splitSourceDirs` arrays, pins the stub
-certificate before the first mount, and asks `matonos-erofsd` to mount each
-image with a process-lifetime Binder token. The stub writes the signed base
-index and a split-to-mount-path table into its cache, then passes those to the
-proxy. MTPKIDX2 metadata serves stat, readdir, readlink and misses; file opens
-go directly to the selected EROFS mount and return ordinary kernel fds. The
-proxy does not open ZIP carriers or support the former MTPKIDX1 launch path.
-The object-seed `PackLaunch` helpers remain for update staging only.
+At stub launch, `ErofsLaunch` resolves the one image split through
+PackageManager's parallel `splitNames`/`splitSourceDirs` arrays and asks
+`matonos-erofsd` to mount it with a process-lifetime Binder token. The proxy
+receives only target-to-mount mappings. Native EROFS metadata and file
+operations go through ordinary kernel syscalls. The object-seed `PackLaunch`
+helpers remain for update staging only.
 
 Task 4b adds `OstreePacks` and `StagedPacks`. The reader resolves a revision
 with stock `ostree rev-parse`, walks checksum-verified binary commit/dirtree/
@@ -386,22 +330,10 @@ per-object fallback. `OriginalMetadataSizeTest REPO REF OUTPUT` optionally
 measures added index assets on a locally available real app without modifying
 its source repo. ZIP growth excludes APK signing/alignment overhead.
 
-## Planned: one package per runtime ID
+## Runtime branch sharing
 
-Today every runtime branch is its own Android package, so branches that share most of
-their files (for example `org.freedesktop.Platform.GL.default` 25.08 and 25.08-extra,
-213 MB each) store those files twice. Planned (user decision 2026-10-25, after the
-current EROFS work):
-
-- One package per runtime ID holds every installed branch of that runtime. The base APK
-  carries one `layers.index` per branch; pack layer splits belong to the package and are
-  shared by any branch whose index names them.
-- The packer builds a branch against the layers already in that package, reusing layers
-  the same way updates do today, so files common to several branches land in shared
-  layers.
-- The package lives while any branch is installed; removing a branch removes its index
-  and any layer no remaining index references. No reference counting across packages.
-- Stubs keep mounting exactly the layers their branch's index names.
-
-Compression alone already stores the Platform runtime in 56% of its native size
-(LZ4HC 9: 376 MB vs 667 MB); this targets the remaining duplication between branches.
+The package layout reserves a branch directory inside runtime images. The
+installer currently produces one image for the branch it installs; the image
+format leaves room for a future package to contain more than one branch of a
+runtime ID. No cross-package file index or reference-counted image layers are
+used.

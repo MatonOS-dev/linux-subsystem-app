@@ -79,14 +79,23 @@ public final class SubpathPackTest {
         String deployed=OstreePacks.commitDeployed(checkout,local);
         OstreePacks packed=OstreePacks.read(localRepo,deployed,local,xattrs());
         File layerOut=new File(root,"layers");layerOut.mkdirs();File fakeMkfs=new File(root,"fake-mkfs-erofs");
-        Files.writeString(fakeMkfs.toPath(),"#!/bin/sh\ncat \"${10}\" > \"$9\"\n");check(fakeMkfs.setExecutable(true),"Cannot make fake mkfs executable");
-        ErofsLayers.Index index=ErofsLayers.build(packed.entries,layerOut,fakeMkfs,0,null,Collections.emptyMap());
-        check(!index.layers.isEmpty(),"No layers produced");
-        ErofsLayers.Index decoded=ErofsLayers.read(Files.readAllBytes(new File(layerOut,"layers.index").toPath()));
-        check(decoded.records.size()==packed.entries.size(),"Layer index lost deployment entries");
+        Files.writeString(fakeMkfs.toPath(),"#!/bin/sh\ncat \"${11}\" > \"${10}\"\n");check(fakeMkfs.setExecutable(true),"Cannot make fake mkfs executable");
+        ErofsImage.BuildResult index=ErofsImage.build(packed.entries,layerOut,fakeMkfs,0);
+        check(index.image!=null,"Package must produce one EROFS image");
+        check(new File(layerOut,"deployment.erofs").isFile()&&!new File(layerOut,"layers.index").exists(),"Single image output must not carry a layer index");
         Path extracted=new File(root,"extracted").toPath();Files.createDirectories(extracted);
-        for(ErofsLayers.Layer layer:decoded.layers)run("tar","-xf",new File(layerOut,"pack-"+layer.sha256+".erofs").toString(),"-C",extracted.toString());
+        run("tar","-xf",new File(layerOut,"deployment.erofs").toString(),"-C",extracted.toString());
         compareTree(checkout.toPath(),extracted);
-        System.out.println("PASS /en-only OSTree pull, scoped indexes and layer extraction match Flatpak-style checkout; /de objects were absent");
+        List<ObjectPacks.Entry> duplicateEntries=new ArrayList<>(packed.entries);ObjectPacks.Entry fileEntry=null;
+        for(ObjectPacks.Entry e:packed.entries)if(e.kind.equals("file")){fileEntry=e;break;}
+        check(fileEntry!=null,"Subpath fixture must contain a regular file");
+        ObjectPacks.Entry duplicate=new ObjectPacks.Entry("/zz-checksum-hardlink",fileEntry.checksum,"file",fileEntry.mode);
+        duplicate.source=fileEntry.source;duplicate.length=fileEntry.length;duplicate.mtime=fileEntry.mtime;
+        duplicate.uid=fileEntry.uid;duplicate.gid=fileEntry.gid;duplicate.xattrs=fileEntry.xattrs;duplicateEntries.add(duplicate);
+        File dedupeOut=new File(root,"dedupe-image");dedupeOut.mkdirs();
+        ErofsImage.build(duplicateEntries,dedupeOut,fakeMkfs,0);
+        String listing=run("tar","-tvf",new File(dedupeOut,"deployment.erofs").toString());
+        check(listing.contains("zz-checksum-hardlink link to "),"Identical OSTree checksum must be emitted as a tar hardlink");
+        System.out.println("PASS /en-only OSTree pull, scoped indexes, one-image tar, checksum hardlinks and extraction match Flatpak-style checkout; /de objects were absent");
     }
 }

@@ -6,13 +6,10 @@ typedef struct mtp_index mtp_index;
 typedef struct {
     const char *path, *checksum, *pack, *kind, *target;
     uint64_t offset, length;
-    uint64_t size, mtime;
-    uint32_t layer;
     uint32_t uid, gid, mode;
     const unsigned char *xattrs;
     uint32_t xattrs_length;
 } mtp_object;
-typedef struct { const char *split, *entry; uint64_t image_size; unsigned char sha256[32]; } mtp_layer;
 int mtp_index_open(const char *filename, mtp_index **out);
 /* Freestanding loader entry point. Input bytes remain caller-owned for the
  * lifetime of the index. All metadata allocations use the supplied arena. */
@@ -23,8 +20,6 @@ int mtp_index_open_buffer(const void *bytes, size_t length, mtp_index **out,
                           void *context);
 void mtp_index_close(mtp_index *index);
 size_t mtp_index_count(const mtp_index *index);
-size_t mtp_layer_count(const mtp_index *index);
-int mtp_get_layer(const mtp_index *index, size_t layer, mtp_layer *out);
 int mtp_lookup(const mtp_index *index, const char *path, mtp_object *out);
 /* Stat-style path lookup; fills kind, mode, uid, gid and payload/link fields. */
 int mtp_stat(const mtp_index *index, const char *path, mtp_object *out);

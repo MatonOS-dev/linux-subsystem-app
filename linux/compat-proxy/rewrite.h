@@ -369,7 +369,7 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
     struct rewrite_mapping *m=vfs_palloc(sizeof(*m));if(!m)return;
     long copy=RAW(PROXY_SC_fcntl,fd,F_DUPFD_CLOEXEC,256,0,0,0);
     if(copy<0){vfs_free(m);return;}
-    if(erofs_dup(fd,(int)copy)<0 || resident_fd_set((int)copy,2)<0){RAW(PROXY_SC_close,copy,0,0,0,0,0);vfs_free(m);return;}
+    if(resident_fd_set((int)copy,2)<0){RAW(PROXY_SC_close,copy,0,0,0,0,0);vfs_free(m);return;}
     m->begin=begin;m->size=size;m->offset=offset;m->fd=(int)copy;
     char name[64]="/proc/self/fd/";size_t n=p_len(name);char digits[16];size_t k=0;unsigned v=(unsigned)fd;
     do{digits[k++]=(char)('0'+v%10);v/=10;}while(v);
@@ -400,7 +400,7 @@ static void proxy_rewrite_trap_site(uintptr_t continuation,long nr){
 }
 static void rewrite_invalidate(uintptr_t begin,size_t size){
     for(struct rewrite_mapping *m=rewrite_mappings;m;m=m->next)if(m->size && begin<m->begin+m->size && begin+size>m->begin){
-        m->size=0;resident_fd_set(m->fd,0);erofs_close(m->fd);RAW(PROXY_SC_close,m->fd,0,0,0,0,0);
+        m->size=0;resident_fd_set(m->fd,0);RAW(PROXY_SC_close,m->fd,0,0,0,0,0);
     }
     for(struct rewrite_record *r=rewrite_records;r;r=r->next)if(begin<r->address+r->window && begin+size>r->address)r->active=0;
 }

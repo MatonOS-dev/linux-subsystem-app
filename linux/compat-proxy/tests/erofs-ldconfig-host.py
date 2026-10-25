@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Replay Flatpak's EROFS ldconfig phase from captured APK splits.
+"""Replay Flatpak's ldconfig phase from captured package EROFS layer APKs.
 
 Set COMPAT_EROFS_LDCONFIG_DATA to the directory containing the captured
-package directories and FSCK_EROFS to an erofs-utils fsck.erofs binary. The
-device capture is optional, so the regular host suite skips when it is absent.
+package directories and EROFS_FUSE to an erofs-utils erofsfuse binary. The
+legacy capture is mounted with FUSE, merged to its package tree, and replayed
+through the new one-prefix-mount-per-package proxy path.
 """
 import os
 import pathlib
@@ -12,12 +13,13 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 BASE = pathlib.Path(__file__).resolve().parents[1]
 DATA_VALUE = os.environ.get("COMPAT_EROFS_LDCONFIG_DATA")
 DATA = pathlib.Path(DATA_VALUE) if DATA_VALUE else None
-FSCK = pathlib.Path(os.environ.get("FSCK_EROFS", "fsck.erofs"))
+FUSE = pathlib.Path(os.environ.get("EROFS_FUSE", "erofsfuse"))
 PROXY = BASE / "build/linux-layer-v3"
 PACK = "assets/matonos/pack.erofs"
 INDEX = "assets/matonos/layers.index"
@@ -42,12 +44,12 @@ def string(data, offset):
     return data[offset:offset + size].decode("utf-8"), offset + size
 
 
-def layer_splits(index):
+def deployment_rows(index):
     if index[:8] != b"MTPKIDX2":
         raise ValueError("expected MTPKIDX2 index")
     count = struct.unpack_from("<I", index, 8)[0]
     offset = 12
-    rows = []
+    layers = []
     for _ in range(count):
         split, offset = string(index, offset)
         entry, offset = string(index, offset)
@@ -58,8 +60,33 @@ def layer_splits(index):
         offset += 40
         if split != "pack_" + digest or entry != PACK or not size:
             raise ValueError(f"invalid layer descriptor {split}")
-        rows.append(split)
-    return rows
+        layers.append(split)
+    if offset+4>len(index):raise ValueError("truncated deployment records")
+    count=struct.unpack_from("<I",index,offset)[0];offset+=4;rows=[]
+    for _ in range(count):
+        path,offset=string(index,offset);checksum,offset=string(index,offset)
+        kind,offset=string(index,offset);target,offset=string(index,offset)
+        if offset+4>len(index):raise ValueError("truncated xattrs")
+        size=struct.unpack_from("<I",index,offset)[0];offset+=4+size
+        if offset+36>len(index):raise ValueError("truncated deployment metadata")
+        layer,file_size,mtime,uid,gid,mode,reserved=struct.unpack_from("<IQQIIII",index,offset);offset+=36
+        if reserved or (layer!=0xffffffff and layer>=len(layers)):raise ValueError("invalid deployment layer reference")
+        rows.append((path,kind,target,layer,file_size,mode))
+    if offset!=len(index):raise ValueError("trailing deployment index bytes")
+    return layers,rows
+
+
+def materialize(rows,layers,dest):
+    for path,kind,target,layer,size,mode in sorted(rows,key=lambda row:(row[0].count("/"),row[0])):
+        output=dest/path.lstrip("/")
+        if kind=="dir":output.mkdir(parents=True,exist_ok=True);continue
+        source=layers[layer]/path.lstrip("/")
+        output.parent.mkdir(parents=True,exist_ok=True)
+        if output.exists() or output.is_symlink():output.unlink()
+        if kind=="symlink":output.symlink_to(os.readlink(source))
+        else:shutil.copyfile(source,output);output.chmod(mode&0o7777)
+    for path,kind,_,_,_,mode in sorted(rows,key=lambda row:len(row[0]),reverse=True):
+        if kind=="dir":(dest/path.lstrip("/")).chmod(mode&0o7777)
 
 
 def find_package(prefix):
@@ -119,13 +146,14 @@ def main():
         return 0
     if not PROXY.is_file():
         raise RuntimeError("build the compat proxy first")
-    if isinstance(FSCK, pathlib.Path) and "/" in str(FSCK) and not FSCK.is_file():
-        raise RuntimeError(f"fsck.erofs not found: {FSCK}")
+    if "/" in str(FUSE) and not FUSE.is_file():
+        raise RuntimeError(f"erofsfuse not found: {FUSE}")
 
     # Scratch is optional for inspection after a failing reproduction.
     keep = os.environ.get("COMPAT_EROFS_LDCONFIG_KEEP")
     scratch = pathlib.Path(keep) if keep else pathlib.Path(tempfile.mkdtemp(prefix="erofs-ldconfig-"))
     scratch.mkdir(parents=True, exist_ok=True)
+    mounted=[]
     try:
         root = scratch / "root"
         root.mkdir(exist_ok=True)
@@ -145,37 +173,42 @@ def main():
             target = mounts.get(ref)
             if target is None:
                 raise RuntimeError(f"no declared mount found for {ref}")
+            branch=ref.rsplit("/",1)[-1] if ref.startswith("runtime/") else ""
+            if target.endswith("/GL") and ".Platform.GL." in ref:
+                target += "/maton" if branch.endswith("-extra") else "/default"
             base_apk = package / "base.apk"
             with zipfile.ZipFile(base_apk) as apk:
                 index = apk.read(INDEX)
-            table = scratch / f"table-{package_no}"
-            table.mkdir(exist_ok=True)
-            (table / "layers.index").write_bytes(index)
-            with zipfile.ZipFile(base_apk) as apk:
-                split_names = layer_splits(index)
-                for split in split_names:
-                    carrier = package / f"split_{split}.apk"
-                    if not carrier.is_file():
-                        raise RuntimeError(f"missing captured split {carrier.name} in {package}")
-                    with zipfile.ZipFile(carrier) as split_apk:
-                        image = split_apk.read(PACK)
-                    layer = scratch / "layers" / f"{package_no}-{split[5:]}"
-                    if not layer.exists():
-                        layer.mkdir(parents=True)
-                        image_path = scratch / f"{package_no}-{split}.erofs"
-                        image_path.write_bytes(image)
-                        subprocess.run([str(FSCK), f"--extract={layer}", str(image_path)],
-                                       check=True, stdout=subprocess.DEVNULL)
-                        image_path.unlink()
-                    if not (table / split).exists():
-                        (table / split).symlink_to(layer)
-                    if package_no == 1:
-                        runtime_layers.append(layer)
-            args += ["--erofs-mount", target, str(table / "layers.index"), str(table)]
-            backing = root / "flatpak-launch" / ("app" if package_no == 0 else "system")
-            backing = backing / ref / commit / "files"
-            backing.mkdir(parents=True, exist_ok=True)
-            args += ["--erofs-backing", target, "/" + str(backing.relative_to(root))]
+            split_names,rows=deployment_rows(index)
+            package_layers=[]
+            for layer_no,split in enumerate(split_names):
+                carrier=package/f"split_{split}.apk"
+                if not carrier.is_file():raise RuntimeError(f"missing captured split {carrier.name} in {package}")
+                with zipfile.ZipFile(carrier) as split_apk:image=split_apk.read(PACK)
+                layer=scratch/"layers"/f"{package_no}-{layer_no}";layer.mkdir(parents=True,exist_ok=True)
+                image_path=scratch/f"{package_no}-{split}.erofs";image_path.write_bytes(image)
+                fuse=subprocess.Popen([str(FUSE),"-f",str(image_path),str(layer)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True)
+                deadline=time.monotonic()+10
+                while not os.path.ismount(layer) and fuse.poll() is None and time.monotonic()<deadline:time.sleep(.05)
+                if not os.path.ismount(layer):
+                    fuse.terminate();detail=fuse.communicate(timeout=5)[1]
+                    raise RuntimeError(f"erofsfuse failed to mount {image_path}: {detail}")
+                mounted.append((fuse,layer));package_layers.append(layer)
+                image_path.unlink()
+            package_tree=scratch/f"package-{package_no}";package_tree.mkdir(exist_ok=True)
+            materialize(rows,package_layers,package_tree)
+            for fuse,layer in reversed(mounted):
+                subprocess.run(["fusermount3","-u",str(layer)],check=True)
+                fuse.wait(timeout=10)
+            mounted.clear()
+            mount_dir=package_tree
+            if branch:
+                mount_dir=package_tree/branch;mount_dir.mkdir()
+                for child in list(package_tree.iterdir()):
+                    if child==mount_dir:continue
+                    shutil.move(str(child),mount_dir/child.name)
+            args += ["--erofs-mount",target,str(mount_dir)]
+            if package_no==1:runtime_layers.append(mount_dir)
         ldconfig_candidates = [layer / "usr/bin/ldconfig" for layer in runtime_layers]
         ldconfig_candidates += [layer / "bin/ldconfig" for layer in runtime_layers]
         ldconfig = next((path for path in ldconfig_candidates if path.is_file()), None)
@@ -219,6 +252,10 @@ def main():
         print("PASS captured Flatpak EROFS ldconfig")
         return 0
     finally:
+        for fuse,layer in reversed(mounted):
+            subprocess.run(["fusermount3","-u",str(layer)],check=False)
+            try:fuse.wait(timeout=5)
+            except subprocess.TimeoutExpired:fuse.terminate()
         if not keep:
             shutil.rmtree(scratch, ignore_errors=True)
 

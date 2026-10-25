@@ -825,12 +825,8 @@ static void sysctl_sync(void){
 
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
 static int self_cwd(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/cwd",5);return p_equal(path,name) || p_equal(path,"/proc/self/cwd") || p_equal(path,"/proc/thread-self/cwd");}
-/* filename_create() checks the dentry before the mount's read-only flag.
- * Do the same for indexed EROFS entries as well as host-backed paths. */
 static int path_exists(const char *path) {
     struct proxy_stat st;
-    long r=erofs_stat(path,&st);
-    if(r!=-ENOSYS)return r==0;
     return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0;
 }
 static long path_call(long nr,proxy_arg_t *a,int one,int two) {
@@ -846,10 +842,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_getxattrat || nr==PROXY_SC_listxattrat || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
-    /* Empty-path metadata on indexed directory descriptors describes the
-     * merged object, not the layer-root descriptor used for enumeration. */
     if(a[one] && !*(char *)(uintptr_t)a[one] && at){
-        if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx){int handled=0;long packed=erofs_call(nr,a,&handled);if(handled)return packed;}
         if(nr==PROXY_SC_fchmodat2){struct proxy_stat mode;if(!arch_stat_fd(fd,&mode) && S_ISREG(mode.st_mode))a[2]=(a[2]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
     if(proxy_trace && original_path){
@@ -893,12 +886,11 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     }
     if(exclusive_create && path_exists(p)){e=-EEXIST;goto done;}
     if(create_readonly_open && path_exists(p))a[2]&=~O_CREAT;
-    int packed=0;e=erofs_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
-    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;erofs_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
+    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p,(int)a[2]);if(e!=-ENOSYS)goto done;}
     if(writing)vfs_resolve_cache_invalidate();
     if((writing || nr==PROXY_SC_truncate) && (links_marker(p) || (q && links_marker(q)))){e=-EPERM;goto done;}
-    if(writing){e=vfs_mount_readonly(pm);int create_pack_root=erofs_mount_root(p)&&(nr==PROXY_SC_mkdirat||(nr==PROXY_SC_openat&&(a[2]&O_CREAT)));if(e && create_pack_root)e=0;if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
+    if(writing){e=vfs_mount_readonly(pm);if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
     /* bwrap reads the overflow IDs for its uid maps; Android's policy denies
      * apps the generic proc_sysctl file. Serve the kernel default (65534). */
@@ -1096,12 +1088,11 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     uintptr_t ceiling=(uintptr_t)&ceiling;
     void *arena;
     {PROFILE_BEGIN();arena=thread?vfs_direct_begin(thread->tid,ceiling):NULL;PROFILE_END(10);}
-    int packed=0;
     long result;
     if(nr!=PROXY_SC_close && nr!=PROXY_SC_openat && nr!=PROXY_SC_newfstatat &&
        nr!=PROXY_SC_statx && nr!=PROXY_SC_readlink && nr!=PROXY_SC_readlinkat && vfs_private_fd((int)a[0]))result=-EBADF;
     else {
-        {PROFILE_BEGIN();result=erofs_call(nr,a,&packed);if(!packed)result=file_dispatch(nr,a);PROFILE_END(11);}
+        {PROFILE_BEGIN();result=file_dispatch(nr,a);PROFILE_END(11);}
     }
     result=creator_finish(nr,a,result);
     vfs_direct_end(arena);
@@ -1581,7 +1572,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
     if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
-    int packed=0;result=erofs_call(nr,a,&packed);if(packed)goto finish;
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
     if(net_handled)goto finish;

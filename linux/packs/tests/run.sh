@@ -77,18 +77,4 @@ for ratio in ('.5','.75','0'):
 PY
 cc -std=c99 -Wall -Wextra -Werror -I. reader.c tests/reader_test.c -o "$tmp/reader-test"
 "$tmp/reader-test" "$tmp/b1/objects.index"
-python3 - "$tmp/layers.index" <<'PY'
-import struct,sys
-def s(x):
- b=x.encode();return struct.pack('<I',len(b))+b
-with open(sys.argv[1],'wb') as f:
- f.write(b'MTPKIDX2'+struct.pack('<I',1));f.write(s('pack_test')+s('assets/matonos/pack.erofs'))
- f.write(struct.pack('<Q',4096)+bytes.fromhex('ab'*32));f.write(struct.pack('<I',4))
- f.write(s('/')+s('')+s('dir')+s('')+struct.pack('<I',0)+struct.pack('<IQQIIII',0xffffffff,0,123,0,0,0o40755,0))
- f.write(s('/usr')+s('')+s('dir')+s('')+struct.pack('<I',0)+struct.pack('<IQQIIII',0xffffffff,0,123,0,0,0o40755,0))
- f.write(s('/usr/bin')+s('')+s('dir')+s('')+struct.pack('<I',0)+struct.pack('<IQQIIII',0xffffffff,0,123,0,0,0o40755,0))
- f.write(s('/usr/bin/tool')+s('00'*32)+s('file')+s('')+struct.pack('<I',0)+struct.pack('<IQQIIII',0,3,123,0,0,0o100755,0))
-PY
-cc -std=c99 -Wall -Wextra -Werror -I. reader.c tests/layers_reader_test.c -o "$tmp/layers-reader-test"
-"$tmp/layers-reader-test" "$tmp/layers.index"
-echo 'OSTree pack tests passed (three real bare-user commits, checkout reconstruction and update-policy replay)'
+echo 'OSTree object-pack tests passed (three real bare-user commits, checkout reconstruction and update-policy replay)'

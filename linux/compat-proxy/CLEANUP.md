@@ -230,19 +230,20 @@ took 90.0/135.0 ms and mmap took 10.0/11.9 ms, native/proxied. These numbers
 measure fd passthrough and memory bandwidth, not cold physical-disk throughput.
 Read and mmap are not handled by the pathname index once the fd is open.
 
-## EROFS layer mounts (2026-10-25)
+## EROFS package prefix swaps (2026-10-26)
 
-The launcher pins the stub certificate before mounting package layers.
-`erofs-index.c` reads only MTPKIDX2. Metadata operations and misses use its
-merged view; regular file opens resolve to `<layer mount>/<path>` and return
-ordinary fds. Directory descriptors retain only the index cursor metadata
-needed for merged `getdents64`; there is no ZIP carrier fd state.
+The stub mounts one complete image per package and passes the virtual package
+target plus its mounted directory. `erofs-index.c` keeps those mappings across
+resident exec state and swaps the longest matching target prefix in the VFS
+path resolver. All operations after the swap use native kernel EROFS behavior.
+There are no deployment path indexes, layer tables, tracked EROFS fds or
+metadata synthesis.
 
-Removed from the proxy: file slice offsets and `pack_slice_start`, packed-file
-fd tracking, carrier pinning, memfd payload copies, per-fd seccomp filters,
-MTPKIDX1 mounting, and pack-specific use of the high fd reserve. The reserve
-remains for proxy-owned IPC and shared temporary-lock descriptors. The removed
-ZIP-only tests were `tests/pack-host.py`, `tests/pack-vfd.c`, and the packed
-loader-mapping matrix in `tests/loader-maps.py`; `tests/erofs-host.py` now tests
-index stat/readdir/readlink, native open/fstat/mmap, exec and negative lookup.
-`tests/icd-dup-host.py` now builds MTPKIDX2 directory fixtures.
+The `getdents64` and `fstat` traps remain for generic proxy behavior: directory
+reads pass through the symlink/link metadata shim, and `fstat` applies payload
+metadata adjustments and rejects proxy-private descriptors. Neither trap
+checks or tracks EROFS descriptors. `fchdir` uses the ordinary resolved path
+and native syscall; the former tracked-fd-specific branch is removed. The
+generic fd reserve remains for proxy-owned IPC and shared temporary-lock
+descriptors. `tests/erofs-host.py` exercises native open/stat/readlink/getdents,
+mmap and negative lookups through a prefix swap.

@@ -212,7 +212,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         super.onActivityResult(requestCode,resultCode,data);
         if(requestCode==EROFS_PIN_REQUEST) {
             if(resultCode==RESULT_OK)launchLocally();
-            else failure("Cannot mount application layers",new IllegalStateException("matonos-erofsd did not pin the stub certificate"));
+            else failure("Cannot mount application image",new IllegalStateException("matonos-erofsd did not pin the stub certificate"));
         }
     }
     // Runs on the activity thread, in the generated stub package's UID.

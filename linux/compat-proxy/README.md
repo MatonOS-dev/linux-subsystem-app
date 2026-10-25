@@ -26,7 +26,7 @@ The host build uses the system C compiler and strict warnings. Android
 production loaders are built with `build-android.sh`; the standalone i386
 loader is built with `build-i386.sh`. Build outputs stay under `build/` here.
 Host tests cover syscall translation, ABI crossings, VFS and links, networking,
-DNS, SysV IPC, EROFS layer views, threads/signals and loader lifecycle. They
+DNS, SysV IPC, EROFS package prefix swaps, threads/signals and loader lifecycle. They
 do not establish compatibility with Android's installed app policy, graphics
 labels or device rendering.
 
@@ -86,15 +86,12 @@ exclusive creation, unlink, and cross-process shared mappings through bwrap
 and the proxy.
 
 `links.c` provides indexed hardlink behavior for marked OSTree-style stores.
-`erofs-index.c` reads the deployment's MTPKIDX2 merged-view index. It supplies
-stat/lstat/statx metadata, directory entries, symlink targets and negative
-lookups from the index. A file record opens its path under the corresponding
-daemon-mounted EROFS layer and returns the ordinary kernel fd; reads, mmap,
-exec and fstat then use the native descriptor. Only directory descriptors
-retain index state, so `getdents64` can enumerate the merged view across layers.
-The proxy rejects MTPKIDX1 and has no ZIP slice offsets, file-fd table, copy
-fallback, or per-descriptor seccomp filters. The generic fd reserve remains for
-proxy-owned IPC and shared temporary-lock descriptors.
+`erofs-index.c` keeps only package-target-to-mounted-directory prefix swaps.
+After the swap, `stat`, `readlink`, `getdents`, `open`, `mmap`, and descriptor
+operations use native syscalls against the kernel EROFS mount. It keeps no
+deployment file index, layer table, EROFS fd table, or synthesized EROFS
+metadata. The generic fd reserve remains for proxy-owned IPC and
+shared temporary-lock descriptors.
 
 ### Network and DNS
 
@@ -181,9 +178,9 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
   alternate-stack startup; added fd-lifetime coverage.
 - **2026-10-19:** Added packed deployment file support and simplified
   hardlink-store ownership/indexing.
-- **2026-10-25:** Replaced proxy ZIP-slice deployment access with MTPKIDX2
-  metadata lookup over daemon-mounted EROFS layers. Files now open as native
-  descriptors; directory descriptors are tracked only for merged enumeration.
+- **2026-10-26:** Replaced EROFS layer-index lookup with one mounted image per
+  package and target-to-mount prefix swaps. EROFS path metadata and descriptors
+  now stay entirely in the kernel.
 - **2026-10-17:** Added indexed hardlink emulation and killed-operation
   recovery coverage.
 - **2026-10:** Replaced the separate DNS forwarder with an in-proxy helper

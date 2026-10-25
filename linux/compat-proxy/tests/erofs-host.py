@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Exercise MTPKIDX2 metadata with ordinary directories standing in for mounts."""
-import hashlib, pathlib, shutil, struct, subprocess
+"""Exercise native filesystem calls through a package-to-EROFS prefix swap."""
+import pathlib
+import shutil
+import subprocess
 
 base=pathlib.Path(__file__).resolve().parents[1]
-root=base/'build/erofs-host';shutil.rmtree(root,ignore_errors=True);root.mkdir(parents=True)
+root=base/'build/erofs-host'
+shutil.rmtree(root,ignore_errors=True)
+root.mkdir(parents=True)
 src=root/'fixture.c'
 src.write_text(r'''#define _GNU_SOURCE
-#include <assert.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -15,117 +18,38 @@ src.write_text(r'''#define _GNU_SOURCE
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 int main(int argc,char **argv){
- if(argc>1&&!strcmp(argv[1],"exec")){puts("EROFS EXEC PASS");return 0;}
- struct stat st;
- /* A Flatpak deployment keeps an empty files/ directory beside the index
-  * and layer mounts. It must act as the indexed root, for both ordinary and
-  * O_PATH descriptors, including the open_tree fallback's empty-path stat. */
- char deployment[4096];assert(snprintf(deployment,sizeof(deployment),"%s/flatpak-launch/system/runtime/org.freedesktop.Platform/x86_64/25.08/commit",argv[1])>0);
- int commit=open(deployment,O_RDONLY|O_DIRECTORY|O_CLOEXEC);assert(commit>=0);
- if(argc>2&&!strcmp(argv[2],"unassociated")) {
-  int empty=openat(commit,"files",O_PATH|O_DIRECTORY|O_CLOEXEC);assert(empty>=0);
-  int absent=openat(empty,"sample",O_RDONLY|O_CLOEXEC);assert(absent<0);
-  close(empty);close(commit);puts("EROFS BACKING ASSOCIATION CONTROL PASS");return 0;
- }
- int pathfiles=openat(commit,"files",O_PATH|O_DIRECTORY|O_CLOEXEC);assert(pathfiles>=0);
- assert(!fstatat(pathfiles,"",&st,AT_EMPTY_PATH)&&S_ISDIR(st.st_mode));
- int relative=openat(pathfiles,"sample",O_RDONLY|O_CLOEXEC);assert(relative>=0);
- char b[13]={0};assert(read(relative,b,12)==12&&!strcmp(b,"hello erofs\n"));close(relative);close(pathfiles);
- int files=openat(commit,"files",O_RDONLY|O_DIRECTORY|O_CLOEXEC);assert(files>=0);
- assert(!fstat(files,&st)&&S_ISDIR(st.st_mode));
- int saw_indexed=0;DIR *rootdir=fdopendir(dup(files));assert(rootdir);struct dirent *entry;
- while((entry=readdir(rootdir)))saw_indexed|=!strcmp(entry->d_name,"sample");
- closedir(rootdir);assert(saw_indexed);
- relative=openat(files,"sample",O_RDONLY|O_CLOEXEC);assert(relative>=0);
- memset(b,0,sizeof(b));assert(read(relative,b,12)==12&&!strcmp(b,"hello erofs\n"));close(relative);
- close(files);
- int pathroot=openat(commit,"files",O_PATH|O_DIRECTORY|O_CLOEXEC);assert(pathroot>=0);
- /* flatpak's open_tree fallback: O_NOFOLLOW must not stop at the layer-table symlink. */
- int nofollow=openat(commit,"files",O_PATH|O_NOFOLLOW|O_DIRECTORY|O_CLOEXEC);assert(nofollow>=0);close(nofollow);
- int tree=openat(pathroot,"a",O_PATH|O_DIRECTORY|O_CLOEXEC);assert(tree>=0);
- int linkfd=openat(tree,"link",O_PATH|O_NOFOLLOW|O_CLOEXEC);assert(linkfd>=0);
- char target[64]={0};assert(readlinkat(linkfd,"",target,sizeof(target))==6&&!memcmp(target,"../lib",6));
- close(linkfd);int followed=openat(tree,"link/x",O_RDONLY|O_CLOEXEC);assert(followed>=0);
- memset(target,0,sizeof(target));assert(read(followed,target,5)==5&&!memcmp(target,"index",5));close(followed);close(tree);
- assert(!fstatat(pathroot,"",&st,AT_EMPTY_PATH)&&S_ISDIR(st.st_mode));
- assert(!fstatat(pathroot,"",&st,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)&&S_ISDIR(st.st_mode));
- relative=openat(pathroot,"lib/x",O_RDONLY|O_CLOEXEC);assert(relative>=0);
- assert(!fstat(relative,&st)&&st.st_size==5);close(relative);close(pathroot);close(commit);
- assert(!stat("/usr/sample",&st));assert(st.st_size==12&&(st.st_mode&0777)==0644);
- assert(lstat("/usr/link",&st)==0&&S_ISLNK(st.st_mode));
- char link[64];assert(readlink("/usr/link",link,sizeof(link))==6&&!memcmp(link,"sample",6));
- assert(stat("/usr/missing",&st)<0);
- DIR *d=opendir("/usr");assert(d);int saw_sample=0,saw_sub=0,saw_probe=0;struct dirent *de;
- while((de=readdir(d))) {saw_sample|=!strcmp(de->d_name,"sample");saw_sub|=!strcmp(de->d_name,"sub");saw_probe|=!strcmp(de->d_name,"probe");}
- closedir(d);assert(saw_sample&&saw_sub&&saw_probe);
- int fd=open("/usr/sample",O_RDONLY);assert(fd>=0);memset(b,0,sizeof(b));assert(read(fd,b,12)==12&&!strcmp(b,"hello erofs\n"));
- void *p=mmap(NULL,12,PROT_READ,MAP_PRIVATE,fd,0);assert(p!=MAP_FAILED&&!memcmp(p,"hello erofs\n",12));munmap(p,12);
- struct stat path_st,fd_st;assert(!stat("/usr/sample",&path_st));
- assert(!fstat(fd,&fd_st)&&fd_st.st_size==12);
- assert(path_st.st_dev==fd_st.st_dev&&path_st.st_ino==fd_st.st_ino&&path_st.st_mode==fd_st.st_mode&&
-        path_st.st_uid==fd_st.st_uid&&path_st.st_gid==fd_st.st_gid&&path_st.st_size==fd_st.st_size);
- struct statx path_sx,fd_sx;
- assert(!statx(AT_FDCWD,"/usr/sample",0,STATX_BASIC_STATS,&path_sx));
- assert(!statx(fd,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&fd_sx));
- assert(path_sx.stx_dev_major==fd_sx.stx_dev_major&&path_sx.stx_dev_minor==fd_sx.stx_dev_minor&&
-        path_sx.stx_ino==fd_sx.stx_ino&&path_sx.stx_mode==fd_sx.stx_mode&&path_sx.stx_size==fd_sx.stx_size);
- close(fd);
- assert(!lstat("/usr/link",&path_st));
- fd=open("/usr/link",O_PATH|O_NOFOLLOW|O_CLOEXEC);assert(fd>=0);
- assert(!fstat(fd,&fd_st)&&S_ISLNK(fd_st.st_mode)&&fd_st.st_ino==path_st.st_ino&&fd_st.st_dev==path_st.st_dev);
- assert(!statx(fd,"",AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW,STATX_BASIC_STATS,&fd_sx));
- assert(fd_sx.stx_ino==path_st.st_ino&&fd_sx.stx_mode==path_st.st_mode);
- close(fd);
- puts("EROFS INDEX/OPEN/MMAP PASS");return 0;
+ if(argc!=2)return 11;
+ struct stat st,fdst,sample_st;char b[32]={0},target[64]={0};
+ if(stat("/usr/sample",&st)||st.st_size!=12||(st.st_mode&0777)!=0644)return 1;
+ sample_st=st;
+ if(lstat("/usr/link",&st)||!S_ISLNK(st.st_mode))return 2;
+ if(readlink("/usr/link",target,sizeof(target))!=6||memcmp(target,"sample",6))return 3;
+ DIR *d=opendir("/usr");if(!d)return 4;int found=0;struct dirent *de;
+ while((de=readdir(d)))found|=!strcmp(de->d_name,"sample");
+ closedir(d);if(!found)return 5;
+ int fd=open("/usr/sample",O_RDONLY|O_CLOEXEC);if(fd<0)return 6;
+ if(read(fd,b,12)!=12||memcmp(b,"hello erofs\n",12)||fstat(fd,&fdst)||fdst.st_size!=sample_st.st_size)return 7;
+ void *map=mmap(NULL,12,PROT_READ,MAP_PRIVATE,fd,0);if(map==MAP_FAILED||memcmp(map,"hello erofs\n",12))return 8;
+ munmap(map,12);close(fd);if(stat("/usr/missing",&st)==0||errno!=ENOENT)return 9;
+ /* Compare negative lookup latency in the same process and cache state. */
+ const int iterations=20000;struct timespec a,z;volatile int failures=0;
+ clock_gettime(CLOCK_MONOTONIC,&a);for(int i=0;i<iterations;i++)failures+=stat("/usr/missing",&st)==0;clock_gettime(CLOCK_MONOTONIC,&z);
+ long mapped=(z.tv_sec-a.tv_sec)*1000000000L+z.tv_nsec-a.tv_nsec;
+ clock_gettime(CLOCK_MONOTONIC,&a);for(int i=0;i<iterations;i++)failures+=stat(argv[1],&st)==0;clock_gettime(CLOCK_MONOTONIC,&z);
+ long direct=(z.tv_sec-a.tv_sec)*1000000000L+z.tv_nsec-a.tv_nsec;
+ printf("PASS prefix swap native open/stat/readlink/getdents/mmap; negative lookups mapped=%ldns direct=%ldns ratio=%.3f\n",mapped,direct,direct?(double)mapped/direct:0.0);
+ return failures?10:0;
 }''')
-probe=root/'probe';subprocess.run(['cc','-static','-O2','-Wall','-Wextra','-Werror',src,'-o',probe],check=True)
-split='pack_'+'1'*64
-# As on the device: the layer table entry is a symlink to the daemon's mount.
-layer=root/'mnt'/'1'; (layer/'sub').mkdir(parents=True,exist_ok=True); (layer/'a').mkdir(); (root/split).symlink_to(layer)
-(layer/'sample').write_bytes(b'hello erofs\n');(layer/'probe').write_bytes(probe.read_bytes());(layer/'probe').chmod(0o755)
-(layer/'sub'/'nested').write_text('nested\n');(layer/'link').symlink_to('sample')
-(layer/'a'/'link').symlink_to('../lib')
-(root/'flatpak-launch'/'system'/'runtime'/'org.freedesktop.Platform'/'x86_64'/'25.08'/'commit'/'files').mkdir(parents=True)
-(layer/'lib').mkdir(exist_ok=True);(layer/'lib'/'x').write_text('index')
-records=[
- ('/a','0'*64,'dir','',0xffffffff,0,1,0o040755),
- ('/a/link','a'*64,'symlink','../lib',0,6,1,0o120777),
- ('/lib','f'*64,'dir','',0xffffffff,0,1,0o040755),
- ('/lib/x','1'*64,'file','',0,5,1,0o100644),
- ('/link','a'*64,'symlink','sample',0,6,1,0o120777),
- ('/probe','b'*64,'file','',0,probe.stat().st_size,1,0o100755),
- ('/sample','c'*64,'file','',0,12,1,0o100644),
- ('/sub','d'*64,'dir','',0xffffffff,0,1,0o040755),
- ('/sub/nested','e'*64,'file','',0,7,1,0o100644),
-]
-idx=bytearray(b'MTPKIDX2'+struct.pack('<I',1))
-def string(s):
- b=s.encode();return struct.pack('<I',len(b))+b
-idx+=string(split)+string('assets/matonos/pack.erofs')+struct.pack('<Q',1)+bytes.fromhex('1'*64)
-idx+=struct.pack('<I',len(records))
-for path,checksum,kind,target,layer_id,size,mtime,mode in records:
- for s in (path,checksum,kind,target):idx+=string(s)
- idx+=struct.pack('<I',0)+struct.pack('<IQQIIII',layer_id,size,mtime,1000,1000,mode,0)
-index=root/'layers.index';index.write_bytes(idx)
-empty_index=root/'empty.index'
-empty_index.write_bytes(b'MTPKIDX2'+struct.pack('<I',1)+string(split)+string('assets/matonos/pack.erofs')+struct.pack('<Q',1)+bytes.fromhex('1'*64)+struct.pack('<I',0))
-cmd=[base/'build/linux-layer-v3','--android-filter','--erofs-mount','/usr',index,root,'--erofs-backing','/usr',root/'flatpak-launch'/'system'/'runtime'/'org.freedesktop.Platform'/'x86_64'/'25.08'/'commit'/'files',probe]
-targets=['/app','/usr/lib/x86_64-linux-gnu/GL','/usr/lib/x86_64-linux-gnu/GL','/usr/share/runtime/locale','/usr/lib/x86_64-linux-gnu/codecs-extra']
-for n,target in enumerate(targets):
-    files=root/'flatpak-launch'/f'package-{n}'/'commit'/'files';files.mkdir(parents=True,exist_ok=True)
-    package_index=empty_index if target=='/usr/share/runtime/locale' else index
-    cmd[-1:-1]=['--erofs-mount',target,package_index,root,'--erofs-backing',target,files]
-unassociated=[base/'build/linux-layer-v3','--android-filter','--erofs-mount','/usr',index,root,probe,root,'unassociated']
-run=subprocess.run(list(map(str,unassociated)),check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
-assert 'EROFS BACKING ASSOCIATION CONTROL PASS' in run.stdout,run.stdout+run.stderr
-run=subprocess.run(list(map(str,cmd+[root])),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
-assert run.returncode==0,run.stdout+run.stderr
-assert 'EROFS INDEX/OPEN/MMAP PASS' in run.stdout,run.stdout+run.stderr
-run=subprocess.run(list(map(str,cmd+['exec'])),check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
-assert 'EROFS EXEC PASS' in run.stdout,run.stdout+run.stderr
-legacy=root/'legacy.index';legacy.write_bytes(b'MTPKIDX1'+struct.pack('<I',0))
-rejected=subprocess.run(list(map(str,[base/'build/linux-layer-v3','--android-filter','--erofs-mount','/usr',legacy,root,probe])),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
-assert rejected.returncode!=0,'proxy accepted removed MTPKIDX1 format'
-print('PASS MTPKIDX2 index stat/readdir/readlink/open/mmap/exec/miss')
+probe=root/'probe'
+subprocess.run(['cc','-static','-O2','-Wall','-Wextra','-Werror',str(src),'-o',str(probe)],check=True)
+mount=root/'mnt'/'erofs';mount.mkdir(parents=True)
+(mount/'sample').write_bytes(b'hello erofs\n');(mount/'sample').chmod(0o644)
+(mount/'link').symlink_to('sample')
+cmd=[str(base/'build/linux-layer-v3'),'--android-filter','--erofs-mount','/usr',str(mount),str(probe),str(mount/'missing')]
+result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+if result.returncode:
+ raise RuntimeError(result.stdout+'\n'+result.stderr)
+print(result.stdout.strip())

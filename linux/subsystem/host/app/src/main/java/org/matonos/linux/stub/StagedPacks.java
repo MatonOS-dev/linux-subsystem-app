@@ -1,15 +1,18 @@
 package org.matonos.linux.stub;
 
 import android.content.Context;
+import android.os.Binder;
+import android.os.IBinder;
 import android.util.Log;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
-import java.util.zip.ZipFile;
 import java.util.function.BooleanSupplier;
 import org.json.JSONObject;
 import org.matonos.linuxhost.stubgen.OstreePacks;
+import org.matonos.linuxhost.stubgen.ObjectPacks;
+import org.matonos.erofs.IErofsMounter;
 
 /** Pack production from a private, signature-verified Flatpak installation. */
 public final class StagedPacks {
@@ -55,16 +58,26 @@ public final class StagedPacks {
         List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> payloads=new ArrayList<>(fresh.entries);
         payloads.addAll(original.entries);
         output.mkdirs();
-        byte[] oldLayersIndex=null;Map<String,File> oldLayerImages=new HashMap<>();
-        if(installed!=null&&installed.getLongVersionCode()==org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE)
-            oldLayersIndex=readPreviousLayers(installed,output,oldLayerImages);
-        long layerEpoch=original.commitTime>0?original.commitTime:fresh.commitTime;
+        long imageEpoch=original.commitTime>0?original.commitTime:fresh.commitTime;
         File erofsTool=LoaderCommand.tool(context,"libmatonos-mkfs-erofs.so");
-        long mkfsStarted=System.nanoTime();org.matonos.linuxhost.stubgen.ErofsLayers.Index layerIndex=
-                org.matonos.linuxhost.stubgen.ErofsLayers.build(fresh.entries,output,erofsTool,layerEpoch,oldLayersIndex,oldLayerImages,cancelled,workPool);
-        long layerBytes=0;for(org.matonos.linuxhost.stubgen.ErofsLayers.Layer layer:layerIndex.layers)layerBytes+=layer.imageSize;
+        List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> imageEntries=fresh.entries;
+        if(manifest.getString("appRef").startsWith("runtime/")) {
+            String branch=manifest.getString("appRef").substring(manifest.getString("appRef").lastIndexOf('/')+1);
+            imageEntries=new ArrayList<>(fresh.entries.size());
+            for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry sourceEntry:fresh.entries) {
+                org.matonos.linuxhost.stubgen.ObjectPacks.Entry e=new org.matonos.linuxhost.stubgen.ObjectPacks.Entry(
+                        "/"+branch+(sourceEntry.path.equals("/")?"":sourceEntry.path),sourceEntry.checksum,sourceEntry.kind,sourceEntry.mode);
+                e.target=sourceEntry.target;e.xattrs=sourceEntry.xattrs;e.uid=sourceEntry.uid;e.gid=sourceEntry.gid;
+                e.mtime=sourceEntry.mtime;e.length=sourceEntry.length;e.source=sourceEntry.source;imageEntries.add(e);
+            }
+        }
+        IBinder seedToken=seedUnchangedFromMounted(installed,operation,imageEntries,manifest.getString("appRef"));
+        long mkfsStarted=System.nanoTime();org.matonos.linuxhost.stubgen.ErofsImage.BuildResult imageResult=
+                org.matonos.linuxhost.stubgen.ErofsImage.build(imageEntries,output,erofsTool,imageEpoch,cancelled,workPool);
+        if(seedToken!=null)seedToken.pingBinder(); // Keep the mounted-image lease alive through the full write.
+        long imageBytes=imageResult.image.imageSize;
         Log.i("MatonInstall","phase=mkfs_total ref="+manifest.optString("ref","unknown")+" ms="+
-                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-mkfsStarted)+" bytes="+layerBytes);
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-mkfsStarted)+" bytes="+imageBytes);
         if(installed==null || installed.getLongVersionCode()!=org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE) {
             org.matonos.linuxhost.stubgen.ObjectPacks.initial(payloads,output,org.matonos.linuxhost.stubgen.ObjectPacks.DEFAULT_PACK_SIZE);
         } else {
@@ -91,21 +104,45 @@ public final class StagedPacks {
         }
     }
 
-    private static byte[] readPreviousLayers(android.content.pm.PackageInfo installed,File output,Map<String,File> images) throws Exception {
-        File base=new File(installed.applicationInfo.sourceDir);
-        try(ZipFile zip=new ZipFile(base)) {
-            java.util.zip.ZipEntry entry=zip.getEntry("assets/matonos/layers.index");if(entry==null)return null;
-            byte[] index;try(InputStream in=zip.getInputStream(entry)){index=in.readAllBytes();}
-            org.matonos.linuxhost.stubgen.ErofsLayers.Index decoded=org.matonos.linuxhost.stubgen.ErofsLayers.read(index);
-            File old=new File(output,"old-layers");if(!old.mkdirs()&&!old.isDirectory())throw new IOException("Cannot create old EROFS layer cache");
-            String[] names=installed.splitNames;String[] paths=installed.applicationInfo.splitSourceDirs;
-            if(names==null||paths==null)return index;
-            for(org.matonos.linuxhost.stubgen.ErofsLayers.Layer layer:decoded.layers)for(int i=0;i<Math.min(names.length,paths.length);i++)if(names[i].equals(layer.split)) {
-                File image=new File(old,"pack-"+layer.sha256+".erofs");
-                try(ZipFile split=new ZipFile(paths[i])) {java.util.zip.ZipEntry payload=split.getEntry(layer.entry);if(payload==null)throw new IOException("Missing installed EROFS layer payload");try(InputStream in=split.getInputStream(payload);OutputStream out=new FileOutputStream(image)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)out.write(b,0,n);}}
-                images.put(layer.sha256,image);break;
+    /** Reuse bytes from the installed image where the OSTree object checksum is unchanged. */
+    private static IBinder seedUnchangedFromMounted(android.content.pm.PackageInfo installed,File operation,
+            List<ObjectPacks.Entry> entries,String ref) {
+        if(installed==null||installed.applicationInfo==null||installed.splitNames==null||installed.applicationInfo.splitSourceDirs==null)return null;
+        try {
+            String imageApk=null;
+            for(int i=0;i<installed.splitNames.length&&i<installed.applicationInfo.splitSourceDirs.length;i++)
+                if(installed.splitNames[i].matches("erofs_[0-9a-f]{64}")){imageApk=installed.applicationInfo.splitSourceDirs[i];break;}
+            if(imageApk==null)return null;
+            Map<String,ObjectPacks.Entry> old=new HashMap<>();
+            File index=File.createTempFile("old-image-",".index",new File(operation,"tmp"));
+            try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(installed.applicationInfo.sourceDir)) {
+                java.util.zip.ZipEntry item=zip.getEntry("assets/matonos/objects.index");if(item==null)return null;
+                try(InputStream in=zip.getInputStream(item);OutputStream out=new FileOutputStream(index)){
+                    byte[] buffer=new byte[8192];int n;while((n=in.read(buffer))!=-1)out.write(buffer,0,n);
+                }
+                for(ObjectPacks.Entry e:ObjectPacks.readIndex(index))old.put(e.path,e);
+            } finally {index.delete();}
+            IBinder token=new Binder();IBinder binder=(IBinder)Class.forName("android.os.ServiceManager")
+                    .getMethod("getService",String.class).invoke(null,"matonos.erofs");
+            IErofsMounter service=IErofsMounter.Stub.asInterface(binder);if(service==null)return null;
+            String mounted=service.mountSplit(imageApk,"assets/matonos/deployment.erofs",token);
+            if(mounted==null||!mounted.startsWith("/mnt/matonos/"))return null;
+            String branch=ref.startsWith("runtime/")?ref.substring(ref.lastIndexOf('/')+1):null;
+            File root=new File(mounted).getCanonicalFile();int reused=0;
+            for(ObjectPacks.Entry e:entries) {
+                String objectPath=e.path;
+                if(branch!=null&&objectPath.startsWith("/"+branch+"/"))objectPath=objectPath.substring(branch.length()+1);
+                ObjectPacks.Entry prior=old.get(objectPath);if(prior==null||!prior.checksum.equals(e.checksum)||!"file".equals(e.kind))continue;
+                File candidate=new File(root,e.path.startsWith("/")?e.path.substring(1):e.path).getCanonicalFile();
+                if(!candidate.getPath().startsWith(root.getPath()+File.separator)||!candidate.isFile()||candidate.length()!=e.length)continue;
+                e.source=candidate;reused++;
             }
-            return index;
+            Log.i("MatonInstall","phase=erofs_seed ref="+ref+" reused_files="+reused);
+            return token;
+        } catch(Exception error) {
+            // A missing old mount only costs copy time; staged deployment remains complete.
+            Log.w("MatonInstall","Cannot seed unchanged objects from installed EROFS image",error);
+            return null;
         }
     }
 
