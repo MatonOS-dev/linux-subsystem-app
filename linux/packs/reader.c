@@ -90,7 +90,13 @@ int mtp_index_open_buffer(const void *bytes,size_t length,mtp_index **out,mtp_al
         ((char *)root.pack)[0]=0;memcpy((char *)root.kind,"dir",4);
         ((char *)root.target)[0]=0;
         root.mode=0040000|0755;
-        idx->items[n]=root;
+        /* Lookup and readdir use the writer's path-sorted order. Keep the
+         * synthesized root in that order too; appending it makes binary
+         * lookup of "/" fail for indexes that omit an explicit root record. */
+        uint32_t at=0;
+        while(at<n && strcmp(idx->items[at].path,"/")<0)at++;
+        for(uint32_t j=n;j>at;j--)idx->items[j]=idx->items[j-1];
+        idx->items[at]=root;
         idx->count=(size_t)n+1;
     }
     *out=idx;return 0;
