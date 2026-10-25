@@ -45,8 +45,9 @@ final class ErofsLaunch {
         if(b.remaining()<4)throw new IOException("Truncated layer records");
         long records=Integer.toUnsignedLong(b.getInt());
         for(long i=0;i<records;i++) {
-            string(b);string(b);string(b);string(b);blob(b);if(b.remaining()<36)throw new IOException("Truncated layer metadata");
+            string(b);string(b);string(b);string(b);blob(b);if(b.remaining()<44)throw new IOException("Truncated layer metadata");
             long layer=Integer.toUnsignedLong(b.getInt());b.position(b.position()+28);int reserved=b.getInt(); // size, mtime, uid, gid, mode
+            b.getLong(); // MTPKIDX3: inode in the layer image
             if(reserved!=0||(layer!=0xffffffffL&&layer>=count))throw new IOException("Invalid layer reference");
         }
         if(b.hasRemaining())throw new IOException("Trailing layer index data");
