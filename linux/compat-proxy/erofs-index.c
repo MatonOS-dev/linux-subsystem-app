@@ -50,6 +50,7 @@ static const char *erofs_backing_suffix(const struct erofs_mount *m,const char *
  size_t length=(size_t)(suffix-path);if(length&&path[length-1]=='/')length--;
  return p_len(m->backing)==length&&!erofs_cmp(path,m->backing,length)?suffix:NULL;
 }
+static void erofs_trace(const char *what,const char *a,const char *b){if(!proxy_trace)return;const char *parts[]={"v3 erofs ",what," ",a?a:"-"," ",b?b:"-","\n"};for(size_t i=0;i<7;i++)RAW(PROXY_SC_write,proxy_diagnostic_fd,parts[i],p_len(parts[i]),0,0,0);}
 static struct erofs_mount *erofs_lookup(const char *path){
  int staging=0;char *virtual=erofs_virtual_path(path,&staging);if(!virtual)return NULL;
  struct erofs_mount *backing_best=NULL;size_t backing_length=0;
@@ -110,7 +111,7 @@ long erofs_backing(const char *target,const char *directory){
  vfs_free(name);if(!m)return -ENOENT;
  char *normalized=global_target(directory,&e);if(!normalized)return e;
  char *saved=erofs_pdup(normalized);vfs_free(normalized);if(!saved)return -ENOMEM;
- vfs_free(m->backing);m->backing=saved;return 0;
+ vfs_free(m->backing);m->backing=saved;erofs_trace("backing",m->target,m->backing);return 0;
 }
 long erofs_mount(const char *target,const char *index,const char *directory){
  if(!target||target[0]!='/')return -EINVAL;
@@ -147,7 +148,7 @@ long erofs_dup(int from,int to){if(from==to)return 0;struct erofs_dirfd *f=erofs
 long erofs_open(const char *path,int flags){
  struct erofs_mount *m=erofs_lookup(path);if(!m)return -ENOSYS;
  if(flags&(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC) || (flags&O_TMPFILE)==O_TMPFILE)return -EROFS;
- mtp_object o;long e=erofs_object(m,path,&o);if(e)return e;
+ mtp_object o;long e=erofs_object(m,path,&o);erofs_trace("open-target",m->target,m->backing);erofs_trace("open-object",path,e?"(missing)":o.kind);if(e)return e;
  int path_only=(flags&O_PATH)!=0;
  if(p_equal(o.kind,"symlink")&&!(path_only&&(flags&O_NOFOLLOW)))return -ELOOP;
  int dir=p_equal(o.kind,"dir");if((flags&O_DIRECTORY)&&!dir)return -ENOTDIR;
@@ -155,7 +156,11 @@ long erofs_open(const char *path,int flags){
   char *root=NULL,*native=NULL;
   if(dir){
    mtp_layer layer;if(mtp_get_layer(m->index,0,&layer))return -EIO;
-   root=join(m->layer_directory,layer.split);native=root;
+   /* Layer-table entries are symlinks to the daemon's mounts. Open the
+    * mount through "/." so a caller's O_NOFOLLOW (flatpak's open_tree
+    * fallback uses O_PATH|O_NOFOLLOW) applies to the indexed directory,
+    * not to our own table link (that would be ENOTDIR). */
+   root=join(m->layer_directory,layer.split);native=root?join(root,"."):NULL;
    flags=(flags&~(O_CREAT|O_TRUNC|O_EXCL))|O_DIRECTORY;
   }else{
    if(o.layer==UINT32_MAX)return -EIO;

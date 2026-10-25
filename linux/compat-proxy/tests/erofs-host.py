@@ -41,6 +41,8 @@ int main(int argc,char **argv){
  memset(b,0,sizeof(b));assert(read(relative,b,12)==12&&!strcmp(b,"hello erofs\n"));close(relative);
  close(files);
  int pathroot=openat(commit,"files",O_PATH|O_DIRECTORY|O_CLOEXEC);assert(pathroot>=0);
+ /* flatpak's open_tree fallback: O_NOFOLLOW must not stop at the layer-table symlink. */
+ int nofollow=openat(commit,"files",O_PATH|O_NOFOLLOW|O_DIRECTORY|O_CLOEXEC);assert(nofollow>=0);close(nofollow);
  assert(!fstatat(pathroot,"",&st,AT_EMPTY_PATH)&&S_ISDIR(st.st_mode));
  assert(!fstatat(pathroot,"",&st,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)&&S_ISDIR(st.st_mode));
  relative=openat(pathroot,"lib/x",O_RDONLY|O_CLOEXEC);assert(relative>=0);
@@ -59,7 +61,8 @@ int main(int argc,char **argv){
 }''')
 probe=root/'probe';subprocess.run(['cc','-static','-O2','-Wall','-Wextra','-Werror',src,'-o',probe],check=True)
 split='pack_'+'1'*64
-layer=root/split; (layer/'sub').mkdir(parents=True,exist_ok=True)
+# As on the device: the layer table entry is a symlink to the daemon's mount.
+layer=root/'mnt'/'1'; (layer/'sub').mkdir(parents=True,exist_ok=True); (root/split).symlink_to(layer)
 (layer/'sample').write_bytes(b'hello erofs\n');(layer/'probe').write_bytes(probe.read_bytes());(layer/'probe').chmod(0o755)
 (layer/'sub'/'nested').write_text('nested\n');(layer/'link').symlink_to('sample')
 (root/'flatpak-launch'/'system'/'runtime'/'org.freedesktop.Platform'/'x86_64'/'25.08'/'commit'/'files').mkdir(parents=True)
