@@ -329,8 +329,18 @@ public final class LinuxAppStoreService extends Service {
 
     /** System-scheduled cleanup avoids starting a background service from BOOT_COMPLETED. */
     public static final class CleanupJobService extends android.app.job.JobService {
+        private static final int LOCALE_UPDATE_JOB_ID=0x4d415451;
         private Thread cleanupThread;
         @Override public boolean onStartJob(android.app.job.JobParameters params) {
+            if(params.getJobId()==LOCALE_UPDATE_JOB_ID) {
+                cleanupThread=new Thread(()->{
+                    boolean retry=false;
+                    try { startForegroundService(new Intent(this,LinuxAppStoreService.class).setAction(UPDATE_LOCALES)); }
+                    catch(RuntimeException error) { Log.w(TAG,"Cannot start locale extension update",error);retry=true; }
+                    finally { jobFinished(params,retry);cleanupThread=null; }
+                },"matonos-locale-update-queue");
+                cleanupThread.start();return true;
+            }
             cleanupThread=new Thread(()->{
                 try { sweepWork(this); cleanupUnusedPackages(this); }
                 finally { jobFinished(params,false); cleanupThread=null; }
@@ -348,9 +358,11 @@ public final class LinuxAppStoreService extends Service {
         private static final int CLEANUP_JOB_ID=0x4d41544f;
         @Override public void onReceive(Context context,Intent intent) {
             if(Intent.ACTION_LOCALE_CHANGED.equals(intent.getAction())) {
-                Intent update=new Intent(context,LinuxAppStoreService.class).setAction(UPDATE_LOCALES);
-                try { context.startForegroundService(update); }
-                catch(RuntimeException error) { Log.w(TAG,"Cannot queue locale extension update",error); }
+                android.app.job.JobInfo job=new android.app.job.JobInfo.Builder(CleanupJobService.LOCALE_UPDATE_JOB_ID,
+                        new ComponentName(context,CleanupJobService.class))
+                        .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY).setPersisted(true).build();
+                android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
+                if(scheduler!=null)scheduler.schedule(job);
                 return;
             }
             if(!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()))return;
@@ -380,7 +392,6 @@ public final class LinuxAppStoreService extends Service {
         if(!org.matonos.linux.stub.FlatpakLanguages.changed(previous,languages)) {
             finishLocaleQueue(startId);return;
         }
-        preferences.edit().putString("languages",languages).apply();
         java.util.List<String> installedRefs=new java.util.ArrayList<>();
         try {
             for(PackageInfo info:getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
@@ -394,6 +405,7 @@ public final class LinuxAppStoreService extends Service {
             finishLocaleQueue(startId);return;
         }
         java.util.List<String> refs=org.matonos.linux.stub.FlatpakLanguages.refsToUpdate(previous,languages,installedRefs);
+        preferences.edit().putString("languages",languages).apply();
         if(refs.isEmpty()) { finishLocaleQueue(startId);return; }
         ILinuxAppStoreCallback callback=new ILinuxAppStoreCallback.Stub() {
             @Override public void onProgress(String id,String phase,int percent,long done,long total) {}
