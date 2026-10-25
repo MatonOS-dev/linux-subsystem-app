@@ -1482,6 +1482,7 @@ void ipc_fork_result(long result) {
 int ipc_private_fd(int fd) {
   return fd==arena_fd || (pending.owner && fd == pending.ticket_fd);
 }
+void ipc_private_fd_relocated(int oldfd,int newfd){if(arena_fd==oldfd)arena_fd=newfd;if(pending.context.fd==oldfd)pending.context.fd=newfd;if(pending.ticket_fd==oldfd)pending.ticket_fd=newfd;}
 
 #include "state.h"
 void ipc_state(struct state *s){

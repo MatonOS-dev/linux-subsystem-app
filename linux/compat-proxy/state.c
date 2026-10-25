@@ -13,51 +13,100 @@
 #include <linux/memfd.h>
 int state_android, state_gpu_bridge;
 static int private_fd=-1;
-long proxy_fd_reserve=512,proxy_fd_reserve_end=LONG_MAX;
+enum { PROXY_PRIVATE_FD_COUNT=18 };
+long proxy_fd_reserve=LONG_MAX,proxy_fd_reserve_end=LONG_MAX;
 int proxy_fd_reserve_ready;
-/* The proxy owns a window [reserve, reserve_end) at the top of the payload's
- * soft NOFILE limit at first launch: 1/2 of it up to 60Ki, 1/3 up to 120Ki,
- * else 1/4 (Android 32Ki -> 16Ki..32Ki). The real soft limit is raised by the
- * window size, so the payload keeps its full descriptor count: its
- * descriptors skip the window (proxy_fd_relocate) and continue above it. The
- * window crosses exec in the state handoff; it is never recomputed. */
+static int private_slots[PROXY_PRIVATE_FD_COUNT];
+static unsigned char private_slot_used[PROXY_PRIVATE_FD_COUNT];
+static int private_moved[PROXY_PRIVATE_FD_COUNT];
+static unsigned private_moved_count;
+/* Eighteen descriptors occupy the top of the actual soft limit. The first is
+ * kept as a permanent /dev/null placeholder; the other slots can hold private
+ * state fds as they are created. */
 void proxy_fd_reserve_init(void){
  if(proxy_fd_reserve_ready)return;
- proxy_fd_reserve_ready=1;
  struct {uint64_t cur,max;} real={0,0};
  if(RAW(PROXY_SC_prlimit64,0,RLIMIT_NOFILE,0,&real,0,0))return;
- uint64_t soft=real.cur==~UINT64_C(0)?UINT64_C(1048576):real.cur;
- if(soft<16)return;
- uint64_t share=soft<=UINT64_C(60)*1024?2:soft<=UINT64_C(120)*1024?3:4,size=soft/share;
- proxy_fd_reserve=(long)(soft-size);proxy_fd_reserve_end=(long)soft;
- /* Hard limit too low to grow: the payload simply has the window less. */
- uint64_t raised=soft+size;if(real.max!=~UINT64_C(0) && raised>real.max)raised=real.max;
- struct {uint64_t cur,max;} next={raised,real.max};
- if(raised>soft)RAW(PROXY_SC_prlimit64,0,RLIMIT_NOFILE,&next,0,0,0);
+ uint64_t soft=real.cur;
+ if(soft<PROXY_PRIVATE_FD_COUNT+8 || soft>INT_MAX)return;
+ long base=(long)(soft-PROXY_PRIVATE_FD_COUNT);
+ long master=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/null",O_RDONLY,0,0,0);
+ if(master<0)return;
+ for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++){
+  long target=base+i;
+  long r=RAW(PROXY_SC_dup3,master,target,0,0,0,0);
+  if(r<0){RAW(PROXY_SC_close,master,0,0,0,0,0);return;}
+  private_slots[i]=(int)target;
+ }
+ RAW(PROXY_SC_close,master,0,0,0,0,0);
+ proxy_fd_reserve=base;proxy_fd_reserve_end=(long)soft;proxy_fd_reserve_ready=1;
 }
-/* A payload descriptor the kernel placed inside the window moves to the first
- * free number above it, keeping close-on-exec. Consumes fd. Returns the fd
- * unchanged when nothing above is free; the caller then refuses it, since the
- * payload has used its full descriptor count and the window stays ours. */
-long proxy_fd_relocate(long fd){
- if(fd<proxy_fd_reserve || fd>=proxy_fd_reserve_end)return fd;
- long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);
- long moved=RAW(PROXY_SC_fcntl,fd,(flags>0 && (flags&FD_CLOEXEC))?F_DUPFD_CLOEXEC:F_DUPFD,proxy_fd_reserve_end,0,0,0);
- if(moved<0)return fd;
- RAW(PROXY_SC_close,fd,0,0,0,0,0);
- return moved;
+int proxy_fd_is_private(long fd){
+ if(!proxy_fd_reserve_ready)return 0;
+ for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd)return 1;
+ for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd)return 1;
+ return 0;
 }
-/* Move a fresh private descriptor to the private range, keeping its
- * close-on-exec state. Consumes fd; returns the new fd or an error. */
+/* Move a fresh private descriptor into one of the fixed, occupied slots. */
 long proxy_private_fd(long fd){
  proxy_fd_reserve_init();
- if(fd<0 || fd>=PROXY_PRIVATE_FD_FLOOR)return fd;
+ if(fd<0 || !proxy_fd_reserve_ready || proxy_fd_is_private(fd))return fd;
+ unsigned slot=PROXY_PRIVATE_FD_COUNT;
+ for(unsigned i=1;i<PROXY_PRIVATE_FD_COUNT;i++)if(!private_slot_used[i]){slot=i;break;}
+ if(slot==PROXY_PRIVATE_FD_COUNT){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -EMFILE;}
  long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);
- long moved=RAW(PROXY_SC_fcntl,fd,(flags>0 && (flags&FD_CLOEXEC))?F_DUPFD_CLOEXEC:F_DUPFD,PROXY_PRIVATE_FD_FLOOR,0,0,0);
+ long target=private_slots[slot];
+ long moved=RAW(PROXY_SC_dup3,fd,target,(flags>=0 && (flags&FD_CLOEXEC))?O_CLOEXEC:0,0,0,0);
  RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ if(moved>=0)private_slot_used[slot]=1;
  return moved;
 }
+void proxy_private_fd_release(int fd){
+ for(unsigned i=1;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd && private_slot_used[i]){
+  long spare=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/null",O_RDONLY,0,0,0);
+  if(spare>=0){RAW(PROXY_SC_dup3,spare,fd,0,0,0,0);RAW(PROXY_SC_close,spare,0,0,0,0,0);private_slot_used[i]=0;}
+  return;
+ }
+ for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd){private_moved[i]=private_moved[--private_moved_count];return;}
+}
+void state_private_fd_relocated(int oldfd,int newfd){if(private_fd==oldfd)private_fd=newfd;}
+long proxy_private_fd_move(long fd){
+ if(!proxy_fd_is_private(fd))return 0;
+ for(unsigned i=1;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd && !private_slot_used[i]){
+  private_slots[i]=-1;private_slot_used[i]=2;RAW(PROXY_SC_close,fd,0,0,0,0,0);return fd;
+ }
+ long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);if(flags<0)return flags;
+ long moved=RAW(PROXY_SC_fcntl,fd,(flags&FD_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,3,0,0,0);if(moved<0)return moved;
+ for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd){private_slots[i]=-1;private_slot_used[i]=2;break;}
+ for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd){private_moved[i]=(int)moved;RAW(PROXY_SC_close,fd,0,0,0,0,0);return moved;}
+ if(private_moved_count<PROXY_PRIVATE_FD_COUNT)private_moved[private_moved_count++]=(int)moved;
+ RAW(PROXY_SC_close,fd,0,0,0,0,0);return moved;
+}
+long proxy_private_fd_limit(uint64_t soft){
+ for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]>=0&&(uint64_t)private_slots[i]>=soft){
+  int old=private_slots[i];long flags=RAW(PROXY_SC_fcntl,old,F_GETFD,0,0,0,0);if(flags<0)return flags;
+  long moved=RAW(PROXY_SC_fcntl,old,(flags&FD_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,3,0,0,0);
+  if(moved<0)return moved;
+  if((uint64_t)moved>=soft){RAW(PROXY_SC_close,moved,0,0,0,0,0);return -EMFILE;}
+  private_slots[i]=(int)moved;RAW(PROXY_SC_close,old,0,0,0,0,0);proxy_fd_number_moved(old,(int)moved);
+ }
+ for(unsigned i=0;i<private_moved_count;i++)if((uint64_t)private_moved[i]>=soft){
+  int old=private_moved[i];long flags=RAW(PROXY_SC_fcntl,old,F_GETFD,0,0,0,0);if(flags<0)return flags;
+  long moved=RAW(PROXY_SC_fcntl,old,(flags&FD_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,3,0,0,0);
+  if(moved<0)return moved;
+  if((uint64_t)moved>=soft){RAW(PROXY_SC_close,moved,0,0,0,0,0);return -EMFILE;}
+  private_moved[i]=(int)moved;RAW(PROXY_SC_close,old,0,0,0,0,0);proxy_fd_number_moved(old,(int)moved);
+ }
+ return 0;
+}
 int state_private_fd(int fd){return private_fd>=0 && fd==private_fd;}
+void proxy_fd_state(struct state *s){
+ if(!s->reading){state_word(s,proxy_fd_reserve);state_word(s,proxy_fd_reserve_end);state_word(s,proxy_fd_reserve_ready);for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++){state_word(s,private_slots[i]);state_word(s,private_slot_used[i]);}state_word(s,private_moved_count);for(unsigned i=0;i<private_moved_count;i++)state_word(s,private_moved[i]);return;}
+ proxy_fd_reserve=state_word(s,0);proxy_fd_reserve_end=state_word(s,0);proxy_fd_reserve_ready=state_word(s,0);
+ for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++){private_slots[i]=(int)state_word(s,0);private_slot_used[i]=(unsigned char)state_word(s,0);if(private_slots[i]>=0&&RAW(PROXY_SC_fcntl,private_slots[i],F_GETFD,0,0,0,0)<0)s->error=-EBADF;}
+ uint64_t count=state_word(s,0);if(count>PROXY_PRIVATE_FD_COUNT){s->error=-EINVAL;return;}private_moved_count=(unsigned)count;
+ for(unsigned i=0;i<private_moved_count;i++){private_moved[i]=(int)state_word(s,0);if(RAW(PROXY_SC_fcntl,private_moved[i],F_GETFD,0,0,0,0)<0)s->error=-EBADF;}
+}
 int state_live(int fd){long f=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);return f>=0 && !(f&FD_CLOEXEC);}
 void state_bytes(struct state *s,void *p,size_t n){
  if(s->error)return;
@@ -99,10 +148,10 @@ int state_import(const char *number,const char *token){
  if((unsigned long)data>=(unsigned long)-4095)return data;
  struct state s={.fd=fd,.reading=1,.size=st.st_size,.data=(void *)data};
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
- if(magic!=UINT64_C(0x335854454e4f544d)||version!=7||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
+ if(magic!=UINT64_C(0x335854454e4f544d)||version!=8||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
  if(!s.error)transfer(&s);
  if(s.pos!=s.size)s.error=-EINVAL;
- RAW(PROXY_SC_munmap,data,st.st_size,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);private_fd=-1;
+ RAW(PROXY_SC_munmap,data,st.st_size,0,0,0,0);proxy_private_fd_release((int)fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);private_fd=-1;
  return s.error;
 }
 /* Return zero for this loader's class; otherwise kernel-exec only the verified
@@ -135,7 +184,7 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};
- state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,7);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
+ state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,8);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
  transfer(&s);error=s.error;
  if(!error)error=RAW(PROXY_SC_fcntl,private_fd,F_ADD_SEALS,F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE,0,0,0);
  char num[24],key[24];decimal(num,private_fd);decimal(key,nonce);
@@ -154,5 +203,5 @@ int state_exec(const char *path,char *const *args,char *const *env){
   /* A failed exec leaves the caller alive; restore its private descriptor's
    * original kernel flag along with the rest of its state. */
   if(error<0 && (handoff_flags&FD_CLOEXEC))RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags,0,0,0);}}
- vfs_free(av);RAW(PROXY_SC_close,private_fd,0,0,0,0,0);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
+ vfs_free(av);proxy_private_fd_release(private_fd);RAW(PROXY_SC_close,private_fd,0,0,0,0,0);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
 }

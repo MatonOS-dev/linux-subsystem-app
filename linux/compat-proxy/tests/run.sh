@@ -33,6 +33,9 @@ timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/fcntl-native" >buil
 cat build/fcntl-native.out
 grep -q 'v3 trap ours-exec' build/fcntl-native.log
 printf 'PASS proxy-private diagnostic fd remains usable after resident exec\n'
+cc -no-pie -O2 -Wall -Wextra -Werror tests/fd-reserve.c -o build/fd-reserve
+timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/fd-reserve" >build/fd-reserve.out 2>build/fd-reserve.log
+grep -q 'PASS private fd pool survives' build/fd-reserve.out
 timeout 15 build/linux-layer-v3 --android-filter /bin/bash -c 'ls /; cat /etc/os-release' >build/stage1-host.out 2>build/stage1-host.log
 cc -no-pie -O2 -Wall -Wextra -Werror tests/mounts.c -o build/mounts
 mkdir -p build/fixture-dir

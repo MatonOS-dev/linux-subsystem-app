@@ -250,6 +250,25 @@ index stat/readdir/readlink, native open/fstat/mmap, exec, negative lookup and
 thread-concurrent getdents on one tracked dirfd.
 `tests/icd-dup-host.py` now builds MTPKIDX2 directory fixtures.
 
+## Fixed private fd reserve (2026-10-25)
+
+The proxy reserves 18 occupied fd numbers at the top of the real soft
+`RLIMIT_NOFILE`; it does not raise the limit. The private users are the
+state-transfer memfd, diagnostic fd, GPU bridge/DNS helper channels, SysV IPC
+arena, and VFS temporary descriptors. Lowering the soft limit relocates these
+fds below the new limit before the kernel call. The old 1/2, 1/3 and 1/4
+window tiers, soft-limit raising, app-fd allocation skipping and window-edge
+`EMFILE` guards are removed.
+
+The remaining private-fd BPF checks cover only exact close/dup targets and
+`close_range` sweeps overlapping the occupied set. A sweep skips private fds;
+direct close of a private number returns `EBADF`, and dup onto one moves the
+proxy fd first. General data-call checks for read/write/vector I/O, seek,
+truncate/allocation, sendfile/splice/copy, mmap, fd xattrs and fd chmod/chown
+are removed. Tracked EROFS directory fds retain only getdents, stat, chdir and
+seek routing. The initial app filter carries the argument checks too, because
+its constant-allow cache would otherwise skip the later proxy filter.
+
 ## SysV IPC arena (2026-10-25)
 
 SysV IPC now keeps semaphore/message metadata and every shared-memory segment

@@ -127,9 +127,26 @@ width words, bounded lengths, validation, a random handoff token and kernel
 memfd seals. `net.c`, `vfs.c`, `sysvipc.c` and proxy-owned state each serialize
 their own records through this common interface.
 
+The proxy reserves 18 descriptor numbers at the top of the real soft
+`RLIMIT_NOFILE` at startup. They stay occupied by proxy-owned descriptors or
+placeholders; the limit is never raised. Current users include the state
+handoff memfd, diagnostics, GPU bridge and DNS helper channels, the SysV IPC
+arena, and VFS temporary descriptors. If the app lowers its soft limit, the
+proxy moves reserved descriptors below it before applying the requested
+limit. BPF checks trap only closes/dup targets in the reserved set and
+`close_range` sweeps that overlap it. Sweeps preserve reserved descriptors;
+direct close of one returns `EBADF`, and dup onto one first moves the proxy
+descriptor and then performs the app operation. The old fd-window tiers and
+general data-call fd checks are gone. EROFS directory descriptors retain
+only the `getdents64`, `fstat`, `fchdir` and `lseek` handling they need.
+
 ## Current limitations and device validation
 
 - Host checks do not replace a fresh-image boot or app-UID testing.
+- Fixed-fd verification passes the close-range/setrlimit test, placeholder
+  guards, and FUSE EROFS ldconfig replay. The broad host suite still has one
+  unresolved integration failure: `tests/host-command-pair.py` times out
+  waiting for its first spawn response with the fixed reserve enabled.
 - The enforcing v46 VM fixes v45's 32-bit graphics labels and vendor
   `libhardware.so` dependency. Under the installed Flatpak stub UID, ELF32
   EGL pbuffer and GLX core-profile pixel readback, GLX alpha checks and Vulkan

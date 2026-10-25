@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -35,10 +36,10 @@ int main(void){
   int tty=open("/dev/tty",O_RDWR);assert(tty>=0);close(tty);
   assert(dup2(s,0)==0&&dup2(s,1)==1&&dup2(s,2)==2);close(s);
   /* Try all payload fd mutation paths; diagnostics must survive them. */
-  close(256);errno=0;assert(dup2(0,256)==-1&&errno==EBADF);
-  /* The native CLOEXEC fast path exposes the real kernel flag even for a
-   * proxy-private descriptor; resident exec must preserve that descriptor. */
-  assert(!fcntl(256,F_SETFD,FD_CLOEXEC));
+  struct rlimit limit;assert(!getrlimit(RLIMIT_NOFILE,&limit));int reserved=(int)limit.rlim_cur-18+1;
+  errno=0;assert(close(reserved)==-1&&errno==EBADF);
+  assert(dup2(0,reserved)==reserved);
+  assert(!fcntl(reserved,F_SETFD,FD_CLOEXEC));
   assert(!syscall(SYS_close_range,3,~0U,4));
   long r=syscall(SYS_close_range,3,~0U,0);assert(r==0||(r==-1&&errno==ENOSYS));
   execl("/bin/sh","sh","-c","echo ok",NULL);_exit(127);

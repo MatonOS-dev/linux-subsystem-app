@@ -19,10 +19,12 @@ int main(int argc,char **argv){
     if(argc!=1)return 2;
     struct rlimit lim;
     if(getrlimit(RLIMIT_NOFILE,&lim))return 3;
+    rlim_t private_start=lim.rlim_cur>18?lim.rlim_cur-18:lim.rlim_cur;
     int clo=open("/dev/null",O_RDONLY|O_CLOEXEC);
     int inherited=open("/dev/null",O_RDONLY);
     if(clo<0 || inherited<0 || clo==inherited)return 4;
     for(rlim_t fd=0;fd<lim.rlim_cur;fd++){
+        if(fd>=private_start)continue;
         int flags=fcntl((int)fd,F_GETFD);
         if(flags<0){if(errno==EBADF)continue;perror("F_GETFD");return 5;}
         int wanted=(fd==1 || fd==(rlim_t)inherited)?0:FD_CLOEXEC;

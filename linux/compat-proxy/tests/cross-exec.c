@@ -55,18 +55,13 @@ int main(int argc,char **argv,char **env){
  char inode[5];CHECK(pread(tmpalias,inode,5,0)==5&&!memcmp(inode,"inode",5));
  CHECK(fcntl(dead,F_GETFD)==-1&&errno==EBADF);
  char text[32]={0};CHECK(read(fd,text,5)==5&&!memcmp(text,"cross",5));CHECK(lseek(alias,0,SEEK_CUR)==5);CHECK(lseek(fd,0,SEEK_SET)==0);
- /* The diagnostic sink is the first descriptor of the proxy reserve at the
-  * top of the soft NOFILE limit (1/2 up to 60Ki, 1/3 up to 120Ki, else 1/4).
-  * Payload probes and close cannot steal it; the second exec must still emit
-  * its trace. */
- struct rlimit limit;CHECK(!getrlimit(RLIMIT_NOFILE,&limit));unsigned long soft=limit.rlim_cur==RLIM_INFINITY?1048576UL:(unsigned long)limit.rlim_cur;
- unsigned long share=soft<=60UL*1024?2:soft<=120UL*1024?3:4;int reserved=(int)(soft-soft/share);
- int private_flags=fcntl(reserved,F_GETFD);
- /* Native F_GETFD may expose the private descriptor's kernel state. */
- CHECK(private_flags>=0 || errno==EBADF);
- if(private_flags>=0)CHECK(!fcntl(reserved,F_SETFD,FD_CLOEXEC));
- CHECK(close(reserved)==0);
- CHECK(read(reserved,text,1)==-1&&errno==EBADF);
+ /* Proxy-owned descriptors occupy a fixed pool at the top of the real soft
+  * limit. Replace the diagnostic slot through dup2; its record moves and the
+  * next resident exec must still emit its trace. */
+ struct rlimit limit;CHECK(!getrlimit(RLIMIT_NOFILE,&limit));unsigned long soft=(unsigned long)limit.rlim_cur;
+ int reserved=(int)(soft-18+1);
+ errno=0;CHECK(close(reserved)==-1&&errno==EBADF);
+ CHECK(dup2(fd,reserved)==reserved);CHECK(close(reserved)==0);
  struct stat st;CHECK(!syscall(sizeof(long)==4?195:4,"/v3-cross-file",&st)&&st.st_size==6);
  int *memory=shmat_(shm);CHECK(memory!=(void *)-1);
  if(!strcmp(argv[3],"one")){
