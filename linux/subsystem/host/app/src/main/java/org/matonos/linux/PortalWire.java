@@ -16,7 +16,10 @@ import java.util.Map;
  * here; framing and descriptor passing live in the transport.
  */
 final class PortalWire {
-    static final int MAX_MESSAGE = 1024 * 1024, MAX_FDS = 16;
+    /** Java arrays are int-indexed; the wire length itself is unsigned 32-bit. */
+    static final int MAX_MESSAGE = Integer.MAX_VALUE;
+    /** Linux SCM_RIGHTS accepts at most SCM_MAX_FD descriptors per message. */
+    static final int MAX_FDS = 253;
 
     /** One (signature, value) pair; the value model is documented on DBusWriter. */
     static final class Variant {
@@ -61,7 +64,7 @@ final class PortalWire {
         if (version != 1 || type < 1 || type > 4 || serial == 0)
             throw new IllegalArgumentException("Invalid D-Bus header fields");
         long headerLength = reader.u32();
-        if (bodyLength > MAX_MESSAGE || headerLength > MAX_MESSAGE)
+        if (bodyLength > MAX_MESSAGE || headerLength > bytes.length - 16L)
             throw new IllegalArgumentException("Invalid D-Bus message length");
         long paddedHeader = (headerLength + 7) & ~7L;
         if (16L + paddedHeader + bodyLength != bytes.length)
@@ -156,7 +159,7 @@ final class PortalWire {
         header.align(8);
 
         byte[] headerBytes = header.toBytes();
-        if (headerBytes.length + bodyBytes.length > MAX_MESSAGE)
+        if ((long) headerBytes.length + bodyBytes.length > MAX_MESSAGE)
             throw new IllegalArgumentException("D-Bus message too large");
         byte[] out = new byte[headerBytes.length + bodyBytes.length];
         System.arraycopy(headerBytes, 0, out, 0, headerBytes.length);

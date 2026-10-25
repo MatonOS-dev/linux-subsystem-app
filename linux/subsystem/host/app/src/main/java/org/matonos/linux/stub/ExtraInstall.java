@@ -149,7 +149,7 @@ public final class ExtraInstall {
 
     private static String readString(InputStream in) throws IOException {
         int length = readInt(in);
-        if (length < 1 || length > 512) throw new IOException("Invalid extra identity field");
+        if (length <= 0) throw new IOException("Invalid extra identity field length");
         byte[] bytes = new byte[length]; int offset = 0;
         while (offset < length) { int count = in.read(bytes, offset, length-offset); if (count < 0) throw new IOException("Truncated identity"); offset += count; }
         return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
@@ -179,7 +179,7 @@ public final class ExtraInstall {
         }
         int length = ((header[0] & 255) << 24) | ((header[1] & 255) << 16)
                 | ((header[2] & 255) << 8) | (header[3] & 255);
-        if (length < 0 || length > ExtraProtocol.MAX_MESSAGE_BYTES)
+        if (length < 0)
             throw new IOException("Invalid extra service error length");
         byte[] text = new byte[length];
         int read = 0;

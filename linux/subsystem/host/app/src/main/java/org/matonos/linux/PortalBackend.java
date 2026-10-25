@@ -46,7 +46,6 @@ final class PortalBackend {
         if(token==null || !token.matches("[A-Za-z0-9_]+"))throw invalid("Invalid handle token");
         String path=DESKTOP+"/"+kind+"/"+call.sender.substring(1).replace('.','_')+"/"+token;
         if(handles.containsKey(path))throw invalid("Handle token already in use");
-        if(handles.size()>=256)throw new Failure("org.freedesktop.DBus.Error.LimitsExceeded","Too many portal objects");
         return path;
     }
     private void updateHold() throws Exception {platform.hold(handles.values().stream().anyMatch(h->h.hold));}
@@ -109,7 +108,6 @@ final class PortalBackend {
             if(monitor||"Inhibit".equals(c.member)) {
                 signature(c,monitor?"sa{sv}":"sua{sv}");int flags=monitor?0:(Integer)c.body.get(1);
                 if(!monitor && (flags==0 || (flags&~12)!=0))throw new Failure("org.freedesktop.DBus.Error.NotSupported","Only suspend and idle inhibition are supported");
-                if(monitor&&handles.size()>254)throw new Failure("org.freedesktop.DBus.Error.LimitsExceeded","Too many portal objects");
                 Map<String,Variant> opts=dictionary(c.body.get(monitor?1:2));
                 String request=handle(c,"request",opts,"handle_token");
                 String session=monitor?handle(c,"session",opts,"session_handle_token"):null;

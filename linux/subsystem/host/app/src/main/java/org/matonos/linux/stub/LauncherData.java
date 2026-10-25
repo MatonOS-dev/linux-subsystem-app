@@ -39,9 +39,6 @@ import java.util.List;
  * decision logic is unit-testable on the JVM.
  */
 public final class LauncherData {
-    /** Largest launcher icon accepted (upstream's own limit). */
-    public static final int MAX_ICON_BYTES = 1024 * 1024;
-
     public final String label;
     public final List<String> mimeTypes;
     /** PNG bytes, or null meaning "use the caller's generic icon". */
@@ -74,21 +71,21 @@ public final class LauncherData {
 
         @Override public Entry lookup(String appId) {
             try {
-                byte[] body = download(API + appId, "application/json", 256 * 1024);
+                byte[] body = download(API + appId, "application/json");
                 if (body == null) return null;
                 JSONObject json = new JSONObject(new String(body, StandardCharsets.UTF_8));
                 String name = json.optString("name", "").trim();
                 if (name.isEmpty()) return null;
                 String icon = json.optString("icon", "");
                 byte[] png = null;
-                if (looksLikeUrl(icon)) png = download(icon, "image/png,image/*", MAX_ICON_BYTES);
+                if (looksLikeUrl(icon)) png = download(icon, "image/png,image/*");
                 return new Entry(name, png);
             } catch (Exception unavailable) {
                 return null;
             }
         }
 
-        private static byte[] download(String url, String accept, int limit) throws IOException {
+        private static byte[] download(String url, String accept) throws IOException {
             HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
             connection.setConnectTimeout(10_000);
             connection.setReadTimeout(20_000);
@@ -99,10 +96,10 @@ public final class LauncherData {
                 try (InputStream in = connection.getInputStream()) {
                     ByteArrayOutputStream out = new ByteArrayOutputStream();
                     byte[] buffer = new byte[8192];
-                    int total = 0, read;
+                    int read;
                     while ((read = in.read(buffer)) != -1) {
-                        total += read;
-                        if (total > limit) return null;
+                        if (out.size() > Integer.MAX_VALUE - read)
+                            throw new IOException("Appstream response is too large for an in-memory result");
                         out.write(buffer, 0, read);
                     }
                     return out.toByteArray();
@@ -113,7 +110,7 @@ public final class LauncherData {
         }
 
         private static boolean looksLikeUrl(String value) {
-            return value != null && value.startsWith("https://") && value.length() <= 2048;
+            return value != null && value.startsWith("https://");
         }
     }
 
@@ -153,7 +150,7 @@ public final class LauncherData {
         File desktop = desktopFile(new File(root, "export/share/applications"), appId);
         if (desktop == null) return null;
         byte[] content = PlaceholderFiles.readAllBytes(desktop);
-        if (content.length == 0 || content.length > 1024 * 1024) throw new IOException("Desktop entry is too large");
+        if (content.length == 0) throw new IOException("Desktop entry is empty");
         StubGenerator.DesktopEntry entry = StubGenerator.parseDesktop(new String(content, StandardCharsets.UTF_8));
         byte[] icon = exportIcon(root, appId, entry.iconName);
         return new LauncherData(entry.name, entry.mimeTypes, icon, fromExtra);
@@ -204,7 +201,7 @@ public final class LauncherData {
     private static byte[] readPng(File file) throws IOException {
         if (!regular(file)) return null;
         long length = PlaceholderFiles.size(file);
-        if (length <= 0 || length > MAX_ICON_BYTES) return null;
+        if (length <= 0 || length > Integer.MAX_VALUE) return null;
         byte[] bytes = new byte[(int) length];
         try (InputStream in = PlaceholderFiles.open(file)) {
             int read = 0;
@@ -217,9 +214,9 @@ public final class LauncherData {
         return validIcon(bytes);
     }
 
-    /** PNG bytes within the limit, or null. */
+    /** PNG bytes, or null when absent or malformed. */
     public static byte[] validIcon(byte[] bytes) {
-        if (bytes == null || bytes.length < 8 || bytes.length > MAX_ICON_BYTES) return null;
+        if (bytes == null || bytes.length < 8) return null;
         byte[] magic = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
         for (int i = 0; i < magic.length; i++) if (bytes[i] != magic[i]) return null;
         return bytes;

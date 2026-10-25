@@ -37,19 +37,19 @@ public final class ErofsLayers {
         byte[] b=value.getBytes(StandardCharsets.UTF_8);le(out,b.length,4);out.write(b);
     }
     private static String string(DataInputStream in)throws IOException {
-        long n=readLe(in,4);if(n>16*1024*1024)throw new IOException("Oversized layers.index string");
+        long n=readLe(in,4);if(n>Integer.MAX_VALUE)throw new IOException("layers.index string exceeds JVM array size");
         byte[] b=new byte[(int)n];in.readFully(b);return new String(b,StandardCharsets.UTF_8);
     }
     public static Index read(byte[] bytes)throws IOException {
         Index index=new Index();try(DataInputStream in=new DataInputStream(new ByteArrayInputStream(bytes))) {
             byte[] magic=new byte[8];in.readFully(magic);if(!Arrays.equals(magic,"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))throw new IOException("Invalid MTPKIDX2 magic");
-            long count=readLe(in,4);if(count>100000)throw new IOException("Too many EROFS layers");
-            for(int i=0;i<count;i++){Layer l=new Layer();l.split=string(in);l.entry=string(in);l.imageSize=readLe(in,8);byte[] h=new byte[32];in.readFully(h);l.sha256=ObjectPacks.hex(h);index.layers.add(l);}
-            count=readLe(in,4);if(count>2_000_000)throw new IOException("Too many layer records");
+            long count=readLe(in,4);if(count>Integer.MAX_VALUE)throw new IOException("Layer count exceeds JVM collection size");
+            for(long i=0;i<count;i++){Layer l=new Layer();l.split=string(in);l.entry=string(in);l.imageSize=readLe(in,8);byte[] h=new byte[32];in.readFully(h);l.sha256=ObjectPacks.hex(h);index.layers.add(l);}
+            count=readLe(in,4);if(count>Integer.MAX_VALUE)throw new IOException("Record count exceeds JVM collection size");
             String previous=null;
-            for(int i=0;i<count;i++) {
+            for(long i=0;i<count;i++) {
                 Record r=new Record();r.path=string(in);r.checksum=string(in);r.kind=string(in);r.target=string(in);
-                long n=readLe(in,4);if(n>16*1024*1024)throw new IOException("Oversized xattrs");r.xattrs=new byte[(int)n];in.readFully(r.xattrs);
+                long n=readLe(in,4);if(n>Integer.MAX_VALUE)throw new IOException("xattrs exceed JVM array size");r.xattrs=new byte[(int)n];in.readFully(r.xattrs);
                 r.layer=(int)readLe(in,4);r.size=readLe(in,8);r.mtime=readLe(in,8);r.uid=(int)readLe(in,4);r.gid=(int)readLe(in,4);r.mode=(int)readLe(in,4);
                 if(readLe(in,4)!=0)throw new IOException("Invalid layer record reserved field");
                 if(r.layer!=NONE){if(r.layer<0||r.layer>=index.layers.size())throw new IOException("Invalid layer record reference");r.layerSha=index.layers.get(r.layer).sha256;}

@@ -5,7 +5,7 @@
 #include <string.h>
 
 static void number(uint32_t n) { unsigned char b[]={n>>24,n>>16,n>>8,n};if(fwrite(b,1,4,stdout)!=4)_Exit(2); }
-static void string(const char *s) { size_t n=strlen(s);if(n>128*1024)_Exit(2);number(n);if(fwrite(s,1,n,stdout)!=n)_Exit(2); }
+static void string(const char *s) { size_t n=strlen(s);if(n>UINT32_MAX)_Exit(2);number((uint32_t)n);if(fwrite(s,1,n,stdout)!=n)_Exit(2); }
 static void related_string(FlatpakRelatedRef *item) {
     g_autofree char *ref=flatpak_ref_format_ref((FlatpakRef*)item);
     const char * const *subpaths=flatpak_related_ref_get_subpaths(item);
@@ -70,7 +70,7 @@ int main(int argc,char **argv) {
         g_autoptr(GBytes) bytes=flatpak_installation_fetch_remote_metadata_sync(installation,argv[2],ref,NULL,&error);
         if(!remote_ref||!bytes)goto failed;
         gsize length=0;const char *data=g_bytes_get_data(bytes,&length);
-        if(length>128*1024||!g_key_file_load_from_data(metadata,data,length,G_KEY_FILE_NONE,&error))goto failed;
+        if(!g_key_file_load_from_data(metadata,data,length,G_KEY_FILE_NONE,&error))goto failed;
         text=g_strndup(data,length);runtime=runtime_for_metadata(ref,metadata);parent=parent_for_metadata(ref,metadata);
         commit=g_strdup(flatpak_ref_get_commit((FlatpakRef*)remote_ref));
     }
@@ -87,8 +87,10 @@ int main(int argc,char **argv) {
     if(!flatpak_installation_update_remote_sync(installation,argv[2],NULL,&error))goto failed;
     related=flatpak_installation_list_remote_related_refs_sync(installation,argv[2],argv[3],NULL,&error);
     if(!related)goto failed;
-    uint32_t count=0;for(guint i=0;i<related->len;i++)if(flatpak_related_ref_should_download(g_ptr_array_index(related,i)))count++;
-    if(count>128)goto failed;
+    uint32_t count=0;for(guint i=0;i<related->len;i++)if(flatpak_related_ref_should_download(g_ptr_array_index(related,i))) {
+        if(count==UINT32_MAX)goto failed;
+        count++;
+    }
     number(count);
     for(guint i=0;i<related->len;i++) {
         FlatpakRelatedRef *item=g_ptr_array_index(related,i);
@@ -96,6 +98,6 @@ int main(int argc,char **argv) {
     }
     return fflush(stdout)?2:0;
 failed:
-    fprintf(stderr,"%s\n",error?error->message:"Invalid or oversized Flatpak metadata");
+    fprintf(stderr,"%s\n",error?error->message:"Invalid Flatpak metadata");
     return error&&g_error_matches(error,FLATPAK_ERROR,FLATPAK_ERROR_REF_NOT_FOUND)?3:1;
 }

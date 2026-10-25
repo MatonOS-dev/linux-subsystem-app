@@ -73,12 +73,17 @@ public final class PortalBackendTest {
         catch(IllegalArgumentException expected){}
         byte[] frameHeader=java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(16).putInt(1).array();
         check(Arrays.equals(PortalWire.validateFrameHeader(frameHeader),new int[]{16,1}));
-        frameHeader[0]=(byte)15;try{PortalWire.validateFrameHeader(frameHeader);throw new AssertionError();}catch(IllegalArgumentException expected){}
+        frameHeader=java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(2*1024*1024).putInt(0).array();
+        check(PortalWire.validateFrameHeader(frameHeader)[0]==2*1024*1024);
+        frameHeader=java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(15).putInt(0).array();
+        try{PortalWire.validateFrameHeader(frameHeader);throw new AssertionError();}catch(IllegalArgumentException expected){}
+        frameHeader=java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(16).putInt(254).array();
+        try{PortalWire.validateFrameHeader(frameHeader);throw new AssertionError();}catch(IllegalArgumentException expected){}
         frameHeader=java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(16).putInt(-1).array();
         try{PortalWire.validateFrameHeader(frameHeader);throw new AssertionError();}catch(IllegalArgumentException expected){}
         b.close();check(!platform.held);
-        for(int i=0;i<255;i++)check(b.dispatch(call(":1.3","Inhibit","Inhibit","sua{sv}","",8,opts("limit_"+i))).get(0).type==2);
-        check(b.dispatch(call(":1.3","Inhibit","CreateMonitor","sa{sv}","",opts("limit_monitor"))).get(0).error.endsWith("LimitsExceeded"));
+        for(int i=0;i<300;i++)check(b.dispatch(call(":1.3","Inhibit","Inhibit","sua{sv}","",8,opts("many_"+i))).get(0).type==2);
+        check(b.dispatch(call(":1.3","Inhibit","CreateMonitor","sa{sv}","",opts("many_monitor"))).get(0).type==2);
         b.close();check(!platform.held);
         System.out.println("PASS: Java settings, variants/arrays, caller ownership, inhibition lifetime, monitors, OpenURI responses, SCM_RIGHTS count mismatch and malformed frame/message lengths");
     }

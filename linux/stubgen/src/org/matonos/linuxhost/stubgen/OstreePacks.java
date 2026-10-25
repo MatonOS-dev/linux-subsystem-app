@@ -36,7 +36,7 @@ public final class OstreePacks {
         byte[][] c=tuple(result.object(result.commit,"commit"),
                 new int[]{8,1,1,1,1,8,1,1},new int[]{-1,-1,-1,-1,-1,8,-1,-1});
         long timestamp=0;for(byte b:c[5])timestamp=(timestamp<<8)|(b&255L);result.commitTime=timestamp;
-        result.visit(hex(c[6]),hex(c[7]),"/",new HashSet<>(),0,scope);
+        result.visit(hex(c[6]),hex(c[7]),"/",new HashSet<>(),scope);
         return result;
     }
     private static List<String> normalizeSubpaths(List<String> subpaths) throws IOException {
@@ -119,10 +119,10 @@ public final class OstreePacks {
         if(!type.equals("commit"))original.put(sum+"."+type,raw);
         return raw;
     }
-    private void visit(String tree,String meta,String prefix,Set<String> ancestors,int depth,
+    private void visit(String tree,String meta,String prefix,Set<String> ancestors,
             List<String> subpaths) throws Exception {
         if(!selected(prefix,subpaths))return;
-        if(depth>256 || !ancestors.add(tree))throw new IOException("Recursive OSTree tree");
+        if(!ancestors.add(tree))throw new IOException("Recursive OSTree tree");
         byte[][] m=tuple(object(meta,"dirmeta"),new int[]{4,4,4,1},new int[]{4,4,4,-1});
         ObjectPacks.Entry dir=new ObjectPacks.Entry(prefix,tree,"dir",be(m[2]));
         dir.uid=be(m[0]);dir.gid=be(m[1]);dir.xattrs=m[3];entries.add(dir);
@@ -130,7 +130,7 @@ public final class OstreePacks {
         for(byte[] raw:array(t[1])) {
             byte[][] d=tuple(raw,new int[]{1,1,1},new int[]{-1,-1,-1});
             String path=child(prefix,d[0]);
-            if(selected(path,subpaths))visit(hex(d[1]),hex(d[2]),path,ancestors,depth+1,subpaths);
+            if(selected(path,subpaths))visit(hex(d[1]),hex(d[2]),path,ancestors,subpaths);
         }
         for(byte[] raw:array(t[0])) {
             byte[][] f=tuple(raw,new int[]{1,1},new int[]{-1,-1});

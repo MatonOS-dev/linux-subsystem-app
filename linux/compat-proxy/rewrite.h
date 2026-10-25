@@ -296,7 +296,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=sizeof(eh) ||
        eh.e_ident[0]!=127 || eh.e_ident[1]!='E' || eh.e_ident[2]!='L' || eh.e_ident[3]!='F' ||
        eh.e_ident[EI_CLASS]!=ELFCLASS64 || eh.e_machine!=ARCH_ELF_MACHINE ||
-       eh.e_shentsize!=sizeof(Elf64_Shdr) || !eh.e_shnum || eh.e_shnum>4096)goto cleanup;
+       eh.e_shentsize!=sizeof(Elf64_Shdr) || !eh.e_shnum)goto cleanup;
     size_t section_bytes=(size_t)eh.e_shnum*sizeof(*sections);
     if(eh.e_shoff>UINT64_MAX-section_bytes)goto cleanup;
     sections=vfs_alloc(section_bytes);
@@ -305,7 +305,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     for(unsigned i=0;i<eh.e_shnum;i++){
         Elf64_Shdr *sh=&sections[i];
         if((sh->sh_type==SHT_SYMTAB || sh->sh_type==SHT_DYNSYM) && sh->sh_entsize==sizeof(Elf64_Sym)){
-            if(sh->sh_size>16*1024*1024-symbol_bytes || sh->sh_offset>UINT64_MAX-sh->sh_size)goto cleanup;
+            if(sh->sh_size>SIZE_MAX-symbol_bytes || sh->sh_offset>UINT64_MAX-sh->sh_size)goto cleanup;
             symbol_bytes+=sh->sh_size;
         }
     }
@@ -425,9 +425,10 @@ static void proxy_rewrite_exit(void){
 /* Track only unpublished, readable, private file mappings. Keep no duplicate
  * descriptor: if the loader closes/reuses it before mprotect, identity failure
  * leaves the range trapped. Records contain no persistent pointer into text. */
-struct rewrite_pending {uintptr_t begin;size_t size;uint64_t offset;int fd,prot;struct proxy_stat identity;};
-static struct rewrite_pending rewrite_pending[128];
+struct rewrite_pending {struct rewrite_pending *next;uintptr_t begin;size_t size;uint64_t offset;int fd,prot;struct proxy_stat identity;};
+static struct rewrite_pending *rewrite_pending;
 static unsigned rewrite_pending_busy;
+static void rewrite_pending_clear(void){while(rewrite_pending){struct rewrite_pending *next=rewrite_pending->next;vfs_free(rewrite_pending);rewrite_pending=next;}}
 static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
     if(!rewrite_enabled || result<0 ||
        (nr!=PROXY_SC_mmap && nr!=PROXY_SC_munmap && nr!=PROXY_SC_mprotect && nr!=PROXY_SC_mremap))return;
@@ -435,7 +436,7 @@ static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
     if(nr==PROXY_SC_mremap){
         rewrite_invalidate((uintptr_t)a[0],(size_t)a[1]);
         if(result!=(long)a[0])rewrite_invalidate((uintptr_t)result,(size_t)a[2]);
-        for(unsigned i=0;i<128;i++)rewrite_pending[i].size=0;
+        rewrite_pending_clear();
         goto done;
     }
     uintptr_t begin=nr==PROXY_SC_mmap?(uintptr_t)result:(uintptr_t)a[0];
@@ -445,9 +446,10 @@ static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
     int registered=nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) &&
         (a[3]&MAP_PRIVATE) && (a[2]&(PROT_READ|PROT_WRITE|PROT_EXEC))==(PROT_READ|PROT_EXEC);
     if(!registered && (nr!=PROXY_SC_mprotect || (a[2]&(PROT_WRITE|PROT_EXEC))!=PROT_EXEC))rewrite_invalidate(begin,size);
-    for(unsigned i=0;i<128;i++){
-        struct rewrite_pending *p=&rewrite_pending[i];
-        if(!p->size || begin>=p->begin+p->size || begin+size<=p->begin)continue;
+    struct rewrite_pending **link=&rewrite_pending;
+    while(*link){
+        struct rewrite_pending *p=*link;
+        if(!p->size || begin>=p->begin+p->size || begin+size<=p->begin){link=&p->next;continue;}
         if(nr==PROXY_SC_mprotect && begin>=p->begin && begin+size<=p->begin+p->size){
             struct proxy_stat now;
             if(!(p->prot&PROT_EXEC) && (p->prot&PROT_READ) &&
@@ -456,14 +458,14 @@ static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
                 proxy_rewrite_mapping(p->fd,begin,size,p->offset+begin-p->begin);
         }
         /* Partial overlaps invalidate the record conservatively. */
-        p->size=0;
+        *link=p->next;vfs_free(p);
     }
     if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[3]&MAP_PRIVATE) &&
        !(a[2]&PROT_EXEC) && (a[2]&PROT_READ)){
-        for(unsigned i=0;i<128;i++)if(!rewrite_pending[i].size){
-            struct proxy_stat st;
-            if(!arch_stat_fd((int)a[4],&st))rewrite_pending[i]=(struct rewrite_pending){begin,size,(uint64_t)a[5],(int)a[4],(int)a[2],st};
-            break;
+        struct proxy_stat st;
+        if(!arch_stat_fd((int)a[4],&st)){
+            struct rewrite_pending *p=vfs_alloc(sizeof(*p));
+            if(p){*p=(struct rewrite_pending){.next=rewrite_pending,.begin=begin,.size=size,.offset=(uint64_t)a[5],.fd=(int)a[4],.prot=(int)a[2],.identity=st};rewrite_pending=p;}
         }
     }
 done:

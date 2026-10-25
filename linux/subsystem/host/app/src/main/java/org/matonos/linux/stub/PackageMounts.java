@@ -111,7 +111,7 @@ public final class PackageMounts {
         }
     }
     private static void validateDirectory(String value) throws IOException {
-        if(value.isEmpty()||value.startsWith("/")||value.length()>1024||value.indexOf('\\')>=0)throw new IOException("Invalid Flatpak extension directory");
+        if(value.isEmpty()||value.startsWith("/")||value.indexOf('\\')>=0)throw new IOException("Invalid Flatpak extension directory");
         for(String part:value.split("/",-1))if(part.isEmpty()||part.equals(".")||part.equals(".."))throw new IOException("Invalid Flatpak extension directory");
     }
     private static String value(String text,String section,String key) throws IOException {

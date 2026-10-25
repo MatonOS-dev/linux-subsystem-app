@@ -109,6 +109,16 @@ public final class DependencyPlanTest {
         Fake invalid=new Fake().add(APP,FIRST,info("../x86_64/stable"));rejects(()->invalid.plan(false));
         Fake cycle=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable")).add(RUNTIME,FIRST,info("",GL)).add(GL,FIRST,info("org.test.Platform/x86_64/stable"));
         check(cycle.plan(false).size()==3);
+        Fake large=new Fake();List<String> manyRelated=new ArrayList<>();
+        for(int i=0;i<200;i++) {
+            String ref="runtime/org.test.Extension"+i+"/x86_64/stable";
+            manyRelated.add(ref);large.add(ref,FIRST,info(""));
+        }
+        large.add(APP,FIRST,info("",manyRelated.toArray(new String[0])));
+        check(large.plan(false).size()==201);
+        byte[] largeMetadata=new byte[200*1024];Arrays.fill(largeMetadata,(byte)'x');
+        check(new DependencyPlan.Info(COMMIT,largeMetadata,"",List.of()).metadata.length==largeMetadata.length);
         System.out.println("PASS dependency reuse before pulls, provider ordering/choice, nested repair origins, missing providers, cancellation, errors and cycles");
+        System.out.println("PASS planning 200 related dependencies");
     }
 }

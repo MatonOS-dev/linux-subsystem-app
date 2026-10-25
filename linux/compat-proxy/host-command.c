@@ -5,8 +5,7 @@
 #include <termios.h>
 #include <limits.h>
 #include <sys/wait.h>
-#define HC_MAX (1024*1024)
-#define HC_FDS 16
+#define HC_FDS 253 /* Linux SCM_MAX_FD */
 static const char *host_command_socket;
 static char host_command_short[sizeof(((struct sockaddr_un *)0)->sun_path)];
 static char host_command_name[NAME_MAX+1];
@@ -126,7 +125,8 @@ static void hc_worker(int socket,char *const *original,long server) {
     /* Private runtime shutdown, authenticated by the listener UID check. */
     if(header[0]==0x314d4348&&!header[1]&&!header[2]&&!header[3]&&!header[4]&&header[5]==4&&!nfds){RAW(PROXY_SC_kill,server,SIGTERM,0,0,0,0);RAW(PROXY_SC_exit_group,0,0,0,0,0,0);}
     /* HCM1, body size, argc, envc, fd count, flags. */
-    if(header[0]!=0x314d4348||header[1]>HC_MAX||!header[2]||header[2]>4096||header[3]>4096||header[4]!=(unsigned)nfds||header[5]&~3u||msg.msg_flags&MSG_CTRUNC)goto fail;
+    if(header[0]!=0x314d4348||!header[2]||(uint64_t)header[2]+header[3]>header[1]||
+       header[4]!=(unsigned)nfds||header[5]&~3u||msg.msg_flags&MSG_CTRUNC)goto fail;
     error=(int)RAW(PROXY_SC_prctl,PR_SET_CHILD_SUBREAPER,1,0,0,0,0);if(error)goto fail;
     error=hc_children(0);if(error<0)goto fail;
     char *body=vfs_alloc(header[1]);if(!body){error=-ENOMEM;goto fail;}
@@ -134,13 +134,15 @@ static void hc_worker(int socket,char *const *original,long server) {
     char *p=body,*end=body+header[1];
     unsigned targets[HC_FDS];for(int i=0;i<nfds;i++){if(end-p<4)goto fail;p_copy(&targets[i],p,4);p+=4;if(targets[i]>INT_MAX||vfs_private_fd((int)targets[i]))goto fail;for(int j=0;j<i;j++)if(targets[i]==targets[j])goto fail;}
     char *cwd=hc_next(&p,end);if(!cwd)goto fail;
-    char **argv=vfs_alloc((header[2]+1)*sizeof(char *));if(!argv){error=-ENOMEM;goto fail;}
+    if((uint64_t)header[2]+1>SIZE_MAX/sizeof(char *)) {error=-EOVERFLOW;goto fail;}
+    char **argv=vfs_alloc(((size_t)header[2]+1)*sizeof(char *));if(!argv){error=-ENOMEM;goto fail;}
     for(unsigned i=0;i<header[2];i++){argv[i]=hc_next(&p,end);if(!argv[i])goto fail;}argv[header[2]]=NULL;
-    unsigned old=0;if(!(header[5]&1))while(original[old])old++;
-    char **env=vfs_alloc((old+header[3]+1)*sizeof(char *));if(!env){error=-ENOMEM;goto fail;}
-    unsigned ec=old;for(unsigned i=0;i<old;i++)env[i]=original[i];
-    for(unsigned i=0;i<header[3];i++){char *entry=hc_next(&p,end);if(!entry||!entry[0]||entry[0]=='=')goto fail;int equals=0;for(char *s=entry;*s;s++)if(*s=='=')equals=1;if(!equals)goto fail;
-        unsigned j=0;for(;j<ec;j++)if(hc_key(env[j],entry))break;env[j]=entry;if(j==ec)ec++;
+    size_t old=0;if(!(header[5]&1))while(original[old])old++;
+    if((uint64_t)old+header[3]+1>SIZE_MAX/sizeof(char *)) {error=-EOVERFLOW;goto fail;}
+    char **env=vfs_alloc(((size_t)old+header[3]+1)*sizeof(char *));if(!env){error=-ENOMEM;goto fail;}
+    size_t ec=old;for(size_t i=0;i<old;i++)env[i]=original[i];
+    for(uint32_t i=0;i<header[3];i++){char *entry=hc_next(&p,end);if(!entry||!entry[0]||entry[0]=='=')goto fail;int equals=0;for(char *s=entry;*s;s++)if(*s=='=')equals=1;if(!equals)goto fail;
+        size_t j=0;for(;j<ec;j++)if(hc_key(env[j],entry))break;env[j]=entry;if(j==ec)ec++;
     }env[ec]=NULL;if(p!=end)goto fail;
     /* Duplicate above every destination before remapping (cycles and repeats). */
     unsigned high=3;for(int i=0;i<nfds;i++)if(targets[i]>=high)high=targets[i]+1;
@@ -199,26 +201,32 @@ fail:
     if(error>=0)error=-EINVAL;
     hc_io(socket,&error,4,1);RAW(PROXY_SC_exit_group,1,0,0,0,0,0);
 }
+struct hc_worker_record {struct hc_worker_record *next;long pid;};
 static void hc_server(int listener,char *const *env,long parent) {
     hc_parent(parent);int keep[]={listener,(int)host_command_dir};hc_close_except(keep,2);
-    long workers[128]={0};
+    struct hc_worker_record *workers=NULL;
     while(!hc_stopping){
-        for(int i=0;i<128;i++)if(workers[i]&&RAW(PROXY_SC_wait4,workers[i],0,WNOHANG,0,0,0)!=0)workers[i]=0;
+        struct hc_worker_record **link=&workers;
+        while(*link){struct hc_worker_record *worker=*link;
+            if(RAW(PROXY_SC_wait4,worker->pid,0,WNOHANG,0,0,0)!=0){*link=worker->next;vfs_free(worker);}
+            else link=&worker->next;
+        }
         struct pollfd poll={listener,POLLIN,0};RAW(PROXY_SC_poll,&poll,1,100,0,0,0);
         if(!(poll.revents&POLLIN))continue;
         long socket=RAW(PROXY_SC_accept4,listener,0,0,SOCK_CLOEXEC,0,0);if(socket<0)continue;
         struct ucred cred;unsigned size=sizeof(cred);
         if(RAW(PROXY_SC_getsockopt,socket,SOL_SOCKET,SO_PEERCRED,&cred,&size,0)<0||cred.uid!=(unsigned)RAW(PROXY_SC_getuid,0,0,0,0,0,0)){RAW(PROXY_SC_close,socket,0,0,0,0,0);continue;}
-        int slot=0;while(slot<128&&workers[slot])slot++;
-        if(slot==128){int err=-EAGAIN;hc_io((int)socket,&err,4,1);RAW(PROXY_SC_close,socket,0,0,0,0,0);continue;}
+        struct hc_worker_record *worker=vfs_alloc(sizeof(*worker));
+        if(!worker){int err=-ENOMEM;hc_io((int)socket,&err,4,1);RAW(PROXY_SC_close,socket,0,0,0,0,0);continue;}
         long server=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
         long pid=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
         if(!pid){RAW(PROXY_SC_close,listener,0,0,0,0,0);hc_worker((int)socket,env,server);}
-        if(pid>0)workers[slot]=pid;
+        if(pid>0){worker->pid=pid;worker->next=workers;workers=worker;}
+        else vfs_free(worker);
         RAW(PROXY_SC_close,socket,0,0,0,0,0);
     }
-    for(int i=0;i<128;i++)if(workers[i])RAW(PROXY_SC_kill,workers[i],SIGTERM,0,0,0,0);
-    for(int i=0;i<128;i++)if(workers[i])RAW(PROXY_SC_wait4,workers[i],0,0,0,0,0);
+    for(struct hc_worker_record *worker=workers;worker;worker=worker->next)RAW(PROXY_SC_kill,worker->pid,SIGTERM,0,0,0,0);
+    while(workers){struct hc_worker_record *next=workers->next;RAW(PROXY_SC_wait4,workers->pid,0,0,0,0,0);vfs_free(workers);workers=next;}
     RAW(PROXY_SC_unlinkat,host_command_dir,host_command_name,0,0,0,0);RAW(PROXY_SC_exit_group,0,0,0,0,0,0);
 }
 int proxy_host_command(const char *path) {

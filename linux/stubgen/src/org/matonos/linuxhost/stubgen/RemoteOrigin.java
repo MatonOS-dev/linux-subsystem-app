@@ -9,8 +9,8 @@ import java.util.Base64;
 public final class RemoteOrigin {
     public final String name,url,key;
     public RemoteOrigin(String name,String url,String key) throws IOException {
-        if(name==null||!name.matches("[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"))throw new IOException("Invalid remote name");
-        if(url==null||key==null||url.length()>8192||key.length()>1024*1024)throw new IOException("Invalid remote descriptor");
+        if(name==null||!name.matches("[A-Za-z0-9_][A-Za-z0-9_.-]*"))throw new IOException("Invalid remote name");
+        if(url==null||key==null)throw new IOException("Invalid remote descriptor");
         if(name.equals("flathub")&&url.isEmpty()&&key.isEmpty()) {this.name=name;this.url=url;this.key=key;return;}
         if(name.equalsIgnoreCase("flathub"))throw new IOException("flathub is reserved for the image remote");
         try {URI parsed=new URI(url);if(!"https".equals(parsed.getScheme())||parsed.getHost()==null||parsed.getUserInfo()!=null||parsed.getFragment()!=null)throw new Exception();}
@@ -20,7 +20,7 @@ public final class RemoteOrigin {
     }
     /** Parse descriptor contents, never a caller path or an unauthenticated URL fetch. */
     public static RemoteOrigin flatpakrepo(String name,String text) throws IOException {
-        if(text==null||text.length()>2*1024*1024)throw new IOException("Invalid flatpakrepo");
+        if(text==null)throw new IOException("Invalid flatpakrepo");
         java.util.Map<String,String> fields=new java.util.HashMap<>();boolean inside=false;
         for(String line:text.split("\\r?\\n")) {
             line=line.trim();if(line.isEmpty()||line.startsWith("#"))continue;

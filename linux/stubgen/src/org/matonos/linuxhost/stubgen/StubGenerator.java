@@ -80,7 +80,6 @@ public final class StubGenerator {
     public static final String DEPENDENCIES_META = "org.matonos.linuxhost.DEPENDENCIES";
     public static final String APP_REF_META = "org.matonos.linuxhost.APP_REF";
     private static final String KEY_ALIAS = "org.matonos.linux.flatpak_stub_v1";
-    private static final int MAX_ICON_BYTES = 1024 * 1024;
 
     public static final String GAME_CONTROLLERS = "org.matonos.permission.GAME_CONTROLLERS";
 
@@ -214,10 +213,10 @@ public final class StubGenerator {
             throw new IOException("Missing pack index or metadata");
         if (workDir == null)
             throw new IllegalArgumentException("Private work directory is required");
-        if (iconPng == null || iconPng.length == 0 || iconPng.length > MAX_ICON_BYTES) throw new IllegalArgumentException("PNG icon size is invalid");
+        if (iconPng == null || iconPng.length == 0) throw new IllegalArgumentException("PNG icon size is invalid");
         if (!validRef(ref))
             throw new IllegalArgumentException("Invalid Flatpak ref");
-        if (remote == null || remote.length() > 128 || !remote.matches("[A-Za-z0-9._-]+"))
+        if (remote == null || !remote.matches("[A-Za-z0-9._-]+"))
             throw new IllegalArgumentException("Invalid Flatpak remote");
         if (packageName == null || packageName.length() > 255 || !packageName.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"))
             throw new IllegalArgumentException("Invalid stub package name");
@@ -456,7 +455,7 @@ public final class StubGenerator {
             List<String> mimeTypes,byte[] iconPng,File output,int revision) throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
         if(!packageName(pkg))throw new IllegalArgumentException("Invalid package name");
-        if(iconPng==null||iconPng.length==0||iconPng.length>MAX_ICON_BYTES)throw new IllegalArgumentException("PNG icon size is invalid");
+        if(iconPng==null||iconPng.length==0)throw new IllegalArgumentException("PNG icon size is invalid");
         String clean=cleanLabel(label);List<String> mimes=cleanMimeTypes(mimeTypes);
         String split=launcherSplitName(clean,mimes,iconPng);
         BinaryManifest manifest=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
@@ -492,7 +491,6 @@ public final class StubGenerator {
         if(!new File(objects,"objects.index").isFile()||!new File(objects,"objects.ostree").isFile())
             throw new IOException("Missing pack index or metadata");
         boolean launcher=launcherLabel!=null&&launcherIcon!=null&&launcherIcon.length>0;
-        if(launcher&&launcherIcon.length>MAX_ICON_BYTES)throw new IllegalArgumentException("PNG icon size is invalid");
         List<ObjectPacks.Entry> entries=ObjectPacks.readIndex(new File(objects,"objects.index"));
         String pack=null;
         for(ObjectPacks.Entry entry:entries)if(entry.kind.equals("file")) {
@@ -579,7 +577,6 @@ public final class StubGenerator {
         if (label == null) return "Linux application";
         String name = label.trim();
         if (name.isEmpty()) return "Linux application";
-        if (name.getBytes(StandardCharsets.UTF_8).length > 4096) return "Linux application";
         return name;
     }
 
@@ -620,8 +617,7 @@ public final class StubGenerator {
             else if (key.equals("MimeType"))
                 for (String item : value.split(";")) {
                     String mime = item.trim();
-                    if (mime.length() <= 255
-                            && mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
+                    if (mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
                             && !mimes.contains(mime)) mimes.add(mime);
                 }
         }
@@ -637,23 +633,21 @@ public final class StubGenerator {
     }
 
 
-    /** Bounded, de-duplicated, syntactically valid MIME type list. */
+    /** De-duplicated, syntactically valid MIME type list. */
     public static List<String> cleanMimeTypes(List<String> mimeTypes) {
         List<String> clean = new ArrayList<>();
         if (mimeTypes == null) return clean;
         for (String item : mimeTypes) {
             if (item == null) continue;
             String mime = item.trim();
-            if (mime.length() <= 255
-                    && mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
+            if (mime.matches("[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+")
                     && !clean.contains(mime)) clean.add(mime);
-            if (clean.size() >= 128) break;
         }
         return clean;
     }
 
     private static boolean validRef(String ref) {
-        if (ref == null || ref.length() < 12 || ref.length() > 512) return false;
+        if (ref == null) return false;
         String[] parts = ref.split("/", -1);
         if (parts.length != 4 || !(parts[0].equals("app") || parts[0].equals("runtime")) ||
                 !validAppId(parts[1]) || !validRefPart(parts[2]) || !validRefPart(parts[3])) return false;
@@ -662,7 +656,7 @@ public final class StubGenerator {
     }
 
     private static boolean validRefPart(String value) {
-        return value.length() > 0 && value.length() <= 96 && value.matches("[A-Za-z0-9_.-]+") &&
+        return value.length() > 0 && value.matches("[A-Za-z0-9_.-]+") &&
                 !value.equals(".") && !value.equals("..");
     }
 
@@ -703,7 +697,6 @@ public final class StubGenerator {
     private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String dependencyPackages,boolean noActivities) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
-            if (cleanPermissions.size() >= 128 || (p != null && p.length() > 255)) throw new IllegalArgumentException("Too many or oversized Android permissions");
             if (p == null || !p.matches("[A-Za-z0-9_.]+")) throw new IllegalArgumentException("Invalid Android permission: " + p);
             if (!cleanPermissions.contains(p)) cleanPermissions.add(p);
         }

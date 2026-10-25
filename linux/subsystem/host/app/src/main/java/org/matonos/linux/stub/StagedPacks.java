@@ -156,7 +156,7 @@ public final class StagedPacks {
                         byte[] buffer=new byte[8192];int n;
                         while((n=in.read(buffer))!=-1) {
                             if(cancelled.getAsBoolean())throw new IOException("Pack production cancelled");
-                            if(out.size()>16*1024*1024-n)throw new IOException("OSTree output too large");
+                            if(out.size()>Integer.MAX_VALUE-n)throw new IOException("OSTree output exceeds JVM array size");
                             out.write(buffer,0,n);
                         }
                     }

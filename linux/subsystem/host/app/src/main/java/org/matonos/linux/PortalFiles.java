@@ -32,7 +32,6 @@ public final class PortalFiles extends ContentProvider {
     }
     static Uri publish(android.content.Context context,ParcelFileDescriptor fd,boolean directory,boolean writable,Object owner) throws Exception {
         String token=java.util.UUID.randomUUID().toString();
-        if(files.size()>=256)throw new IllegalStateException("Too many portal files");
         String filename=name(fd);int dot=filename.lastIndexOf('.');
         String mime=dot<0?null:android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(filename.substring(dot+1).toLowerCase(java.util.Locale.ROOT));
         files.put(token,new Entry(ParcelFileDescriptor.dup(fd.getFileDescriptor()),directory?"vnd.android.document/directory":mime==null?"application/octet-stream":mime,writable,owner));

@@ -20,17 +20,20 @@ extern long proxy_raw_clone_thread(unsigned long,void *,void (*)(void *),void *)
 #endif
 static const char dns_netd_path[]=DNS_PROXY_PATH;
 static const char dns_b64[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-#define DNS_MAX_CMD_SIZE 4096
 static int dns_netd_send(const unsigned char *query,size_t size){
-    char cmd[DNS_MAX_CMD_SIZE];static const char prefix[]="resnsend 0 0 ";size_t p=sizeof(prefix)-1;
-    if(size>(DNS_MAX_CMD_SIZE-p-2)/4*3)return -EMSGSIZE;
+    static const char prefix[]="resnsend 0 0 ";size_t p=sizeof(prefix)-1;
+    size_t groups=size/3+(size%3!=0);
+    if(groups>(SIZE_MAX-p-1)/4)return -EOVERFLOW;
+    size_t command_size=p+groups*4+1;
+    char *cmd=vfs_alloc(command_size);if(!cmd)return -ENOMEM;
     p_copy(cmd,prefix,p);
     for(size_t i=0;i<size;i+=3){unsigned a=query[i],b=i+1<size?query[i+1]:0,c=i+2<size?query[i+2]:0;cmd[p++]=dns_b64[a>>2];cmd[p++]=dns_b64[((a&3)<<4)|(b>>4)];cmd[p++]=i+1<size?dns_b64[((b&15)<<2)|(c>>6)]:'=';cmd[p++]=i+2<size?dns_b64[c&63]:'=';}
-    cmd[p++]=0;if(p>DNS_MAX_CMD_SIZE)return -EMSGSIZE;
-    int fd=(int)RAW(PROXY_SC_socket,AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,0,0,0);if(fd<0)return (int)fd;
+    cmd[p++]=0;
+    int fd=(int)RAW(PROXY_SC_socket,AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,0,0,0);if(fd<0){vfs_free(cmd);return fd;}
     struct sockaddr_un addr={.sun_family=AF_UNIX};p_copy(addr.sun_path,dns_netd_path,sizeof(dns_netd_path));
-    long r=RAW(PROXY_SC_connect,fd,&addr,sizeof(addr),0,0,0);if(r<0){RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)r;}
-    size_t off=0;while(off<p){r=RAW(PROXY_SC_write,fd,cmd+off,p-off,0,0,0);if(r<=0){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r<0?(int)r:-EIO;}off+=(size_t)r;}
+    long r=RAW(PROXY_SC_connect,fd,&addr,sizeof(addr),0,0,0);if(r<0){RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(cmd);return (int)r;}
+    size_t off=0;while(off<p){r=RAW(PROXY_SC_write,fd,cmd+off,p-off,0,0,0);if(r<=0){RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(cmd);return r<0?(int)r:-EIO;}off+=(size_t)r;}
+    vfs_free(cmd);
     RAW(PROXY_SC_shutdown,fd,SHUT_WR,0,0,0,0);return fd;
 }
 static int dns_read_exact(int fd,void *buf,size_t size){size_t off=0;while(off<size){long n=RAW(PROXY_SC_read,fd,(char *)buf+off,size-off,0,0,0);if(n<=0)return n<0?(int)n:-EIO;off+=(size_t)n;}return 0;}

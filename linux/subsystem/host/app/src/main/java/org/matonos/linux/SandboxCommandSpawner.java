@@ -13,12 +13,21 @@ final class SandboxCommandSpawner implements HostCommandBackend.Spawner {
     private final org.matonos.linux.ShortSocketPath shortPath;
     SandboxCommandSpawner(File directory) throws Exception {shortPath=org.matonos.linux.ShortSocketPath.open(directory);}
     static byte[] request(byte[] cwd,List<byte[]> argv,Map<Integer,FileDescriptor> fds,Map<String,String> env,int flags) throws IOException {
+        if(fds.size()>PortalWire.MAX_FDS)throw new IOException("Too many descriptors for Linux SCM_RIGHTS");
+        long size=(long)cwd.length+4L*fds.size();
+        for(byte[] arg:argv)size=addSize(size,arg.length);
+        for(Map.Entry<String,String> e:env.entrySet())size=addSize(size,
+                (e.getKey()+"="+e.getValue()).getBytes(StandardCharsets.UTF_8).length+1L);
+        if(size>Integer.MAX_VALUE-24L)throw new IOException("Command body exceeds JVM array size");
         ByteArrayOutputStream body=new ByteArrayOutputStream();
         for(int target:fds.keySet())body.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(target).array());
         body.write(cwd);for(byte[] arg:argv)body.write(arg);
         for(Map.Entry<String,String> e:env.entrySet()){body.write((e.getKey()+"="+e.getValue()).getBytes(StandardCharsets.UTF_8));body.write(0);}
-        if(body.size()>1024*1024||argv.size()>4096||env.size()>4096||fds.size()>16)throw new IOException("Command is too large");
         return ByteBuffer.allocate(24+body.size()).order(ByteOrder.LITTLE_ENDIAN).putInt(0x314d4348).putInt(body.size()).putInt(argv.size()).putInt(env.size()).putInt(fds.size()).putInt(flags).put(body.toByteArray()).array();
+    }
+    private static long addSize(long current,long addition) throws IOException {
+        if(addition<0||current>Long.MAX_VALUE-addition)throw new IOException("Command body length overflow");
+        return current+addition;
     }
     static int readInt(InputStream in) throws IOException {
         byte[] b=new byte[4];int at=0;while(at<4){int n=in.read(b,at,4-at);if(n<0)throw new EOFException("Sandbox supervisor disconnected");at+=n;}

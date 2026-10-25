@@ -35,7 +35,6 @@ public final class LinuxAppStoreService extends Service {
     private static final String QUERY = "org.matonos.permission.QUERY_LINUX_APPS";
     private static final String UPDATE_LOCALES = "org.matonos.linux.UPDATE_LOCALE_EXTENSIONS";
     private static final String LOCALE_PREFS = "flatpak-languages";
-    private static final int MAX_ICON_BYTES = 1024 * 1024;
     private final java.util.Set<InstallTransaction> activeInstalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private android.os.PowerManager.WakeLock installWakeLock;
 

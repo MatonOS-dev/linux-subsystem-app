@@ -70,7 +70,6 @@ final class HostCommandBackend implements AutoCloseable {
                     if(target<0||index<0||index>=c.fds.size()||fds.containsKey(target))throw new IllegalArgumentException("Invalid fd mapping");fds.put(target,c.fds.get(index));}
                 Map<String,String> env=new LinkedHashMap<>();for(Object pair:(List<?>)c.body.get(3)){List<?> p=(List<?>)pair;String key=(String)p.get(0),value=(String)p.get(1);
                     if(key.isEmpty()||key.indexOf('=')>=0||key.indexOf(0)>=0||value.indexOf(0)>=0)throw new IllegalArgumentException("Invalid environment");env.put(key,value);}
-                if(children.size()>=128) return error(c,"org.freedesktop.DBus.Error.LimitsExceeded","Too many commands");
                 Child child=spawner.spawn(cwd,argv,fds,env,flags);
                 if(child.pid()<=0||children.containsKey(child.pid())){child.close();throw new IllegalStateException("Invalid child PID");}
                 children.put(child.pid(),new Entry(c.sender,child,(flags&2)!=0));

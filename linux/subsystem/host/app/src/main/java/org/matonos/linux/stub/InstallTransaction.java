@@ -22,7 +22,6 @@ public final class InstallTransaction {
             java.util.regex.Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final java.util.regex.Pattern INDEX_SPLIT =
             java.util.regex.Pattern.compile("index_[0-9a-f]{64}");
-    private static final int MAX_LINE = 2048;
     // Flatpak/OSTree content is addressed by digest. A shared cache plus a
     // per-snapshot monitor lets the next job reuse completed object downloads.
     private static final Map<String,SnapshotLock> PULL_LOCKS=new java.util.HashMap<>();
@@ -259,7 +258,7 @@ public final class InstallTransaction {
             Process child=builder.start();processes.add(child);if(cancelled.get())child.destroyForcibly();
             try {
                 byte[] output;
-                try(java.io.InputStream in=child.getInputStream()){output=in.readNBytes(4*1024*1024+1);if(output.length>4*1024*1024)throw new java.io.IOException("Flatpak output exceeds limit");}
+                try(java.io.InputStream in=child.getInputStream()){output=FlatpakOutput.readAll(in);}
                 int status=child.waitFor();checkCancelled();
                 if(status==3&&absentAllowed)return null;
                 if(status!=0)throw new java.io.IOException("Flatpak operation failed: "+new String(Files.readAllBytes(error.toPath()),StandardCharsets.UTF_8));
@@ -275,10 +274,10 @@ public final class InstallTransaction {
             byte[] output=command(java.util.Arrays.asList(helper,installation.getAbsolutePath(),origin.name,ref),true);
             if(output==null)return null;
             try(java.io.DataInputStream in=new java.io.DataInputStream(new java.io.ByteArrayInputStream(output))) {
-                String commit=field(in,64);byte[] metadata=blob(in,128*1024);String runtime=field(in,1024),parent=field(in,1024);
+                String commit=field(in);byte[] metadata=blob(in);String runtime=field(in),parent=field(in);
                 int extensions=in.readInt();if(extensions<0||extensions>1)throw new java.io.IOException("Invalid extension flag");
-                int count=in.readInt();if(count<0||count>128)throw new java.io.IOException("Invalid related-ref count");
-                java.util.List<String> related=new ArrayList<>();for(int i=0;i<count;i++)related.add(field(in,1024));
+                int count=in.readInt();if(count<0)throw new java.io.IOException("Invalid related-ref count");
+                java.util.List<String> related=new ArrayList<>();for(int i=0;i<count;i++)related.add(field(in));
                 if(in.read()!=-1)throw new java.io.IOException("Trailing Flatpak plan bytes");
                 return new org.matonos.linuxhost.stubgen.DependencyPlan.Info(commit,metadata,runtime,parent,related,extensions==1);
             }
@@ -289,7 +288,7 @@ public final class InstallTransaction {
                 String helper=new File(context.getApplicationInfo().nativeLibraryDir,"libmatonos-flatpak-plan.so").getAbsolutePath();
                 byte[] bytes=command(java.util.Arrays.asList(helper,"--requirements",file.getAbsolutePath(),record.ref),false);
                 try(java.io.DataInputStream in=new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes))) {
-                    String runtime=field(in,1024),parent=field(in,1024);int related=in.readInt();if(related<0||related>1||in.read()!=-1)throw new java.io.IOException("Invalid Flatpak requirements");
+                    String runtime=field(in),parent=field(in);int related=in.readInt();if(related<0||related>1||in.read()!=-1)throw new java.io.IOException("Invalid Flatpak requirements");
                     return new org.matonos.linuxhost.stubgen.DependencyPlan.Info(record.commit,record.metadata,runtime,parent,java.util.Collections.emptyList(),related==1);
                 }
             }finally{file.delete();}
@@ -300,8 +299,8 @@ public final class InstallTransaction {
                 String helper=new File(context.getApplicationInfo().nativeLibraryDir,"libmatonos-flatpak-plan.so").getAbsolutePath();
                 byte[] bytes=command(java.util.Arrays.asList(helper,installation.getAbsolutePath(),origin.name,ref,file.getAbsolutePath()),false);
                 try(java.io.DataInputStream in=new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes))) {
-                    int count=in.readInt();if(count<0||count>128)throw new java.io.IOException("Invalid related-ref count");
-                    java.util.List<String> refs=new ArrayList<>();for(int i=0;i<count;i++)refs.add(field(in,1024));
+                    int count=in.readInt();if(count<0)throw new java.io.IOException("Invalid related-ref count");
+                    java.util.List<String> refs=new ArrayList<>();for(int i=0;i<count;i++)refs.add(field(in));
                     if(in.read()!=-1)throw new java.io.IOException("Trailing related-ref data");return refs;
                 }
             }finally{file.delete();}
@@ -433,11 +432,11 @@ public final class InstallTransaction {
         }
         return bytes[0];
     }
-    private static byte[] blob(java.io.DataInputStream in,int limit)throws Exception {
-        int count=in.readInt();if(count<0||count>limit)throw new java.io.IOException("Invalid Flatpak field length");
+    private static byte[] blob(java.io.DataInputStream in)throws Exception {
+        int count=in.readInt();if(count<0)throw new java.io.IOException("Invalid Flatpak field length");
         byte[] bytes=new byte[count];in.readFully(bytes);return bytes;
     }
-    private static String field(java.io.DataInputStream in,int limit)throws Exception{return new String(blob(in,limit),StandardCharsets.UTF_8);}
+    private static String field(java.io.DataInputStream in)throws Exception{return new String(blob(in),StandardCharsets.UTF_8);}
 
     public static JSONObject row(JSONObject manifest,String ref)throws Exception {
         org.json.JSONArray rows=manifest.getJSONArray("deployments");
@@ -518,7 +517,6 @@ public final class InstallTransaction {
 
     private static String readErrorLog(File file) throws Exception {
         byte[] bytes=org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(file);
-        if(bytes.length>4*1024*1024)throw new java.io.IOException("Flatpak error output too large");
         return new String(bytes,StandardCharsets.UTF_8);
     }
 
@@ -528,7 +526,7 @@ public final class InstallTransaction {
             if(percent>=0) {percent=Math.max(lastReportedPercent,Math.min(100,percent));if(percent==lastReportedPercent&&now-lastReportedAt<250)return;lastReportedPercent=percent;lastReportedAt=now;}
             String text = line == null ? "" : line;
             callback.onProgress(operationId, phase, percent,bytesDone,bytesTotal,
-                    text.length() > MAX_LINE ? text.substring(0, MAX_LINE) : text);
+                    text);
         } catch (Exception error) { Log.w(TAG, "Cannot report install progress", error); }
     }
 

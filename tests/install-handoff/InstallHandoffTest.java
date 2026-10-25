@@ -5,6 +5,7 @@ import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import org.matonos.linuxhost.stubgen.PlanExecutor;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -95,7 +96,9 @@ public final class InstallHandoffTest {
         StubGenerator.setSigningBackendForTest((input,output)->Files.copy(input.toPath(),output.toPath(),
                 java.nio.file.StandardCopyOption.REPLACE_EXISTING));
         File apk=new File(out,"handoff.apk");
-        StubGenerator.generatePackage(out,APP,"fixture","Editor",new byte[]{1},Collections.emptyList(),
+        List<String> manyPermissions=new java.util.ArrayList<>();
+        for(int i=0;i<300;i++)manyPermissions.add("org.example.permission.P"+i);
+        StubGenerator.generatePackage(out,APP,"fixture","Editor",new byte[]{1},manyPermissions,
                 appName,apk,null,Collections.emptyList(),new LinkedHashMap<>(),true,"/app");
         assertResourcesTableAligned(apk);
         File payload=new File(out,"carrier-payload");Files.write(payload.toPath(),new byte[]{1,2,3});

@@ -22,8 +22,5 @@ public final class ExtraProtocol {
     public static final int STATUS_OK = 0;
     public static final int STATUS_NONE = 1;
     public static final int STATUS_ERROR = 2;
-    /** Longest diagnostic message a failing service sends back. */
-    public static final int MAX_MESSAGE_BYTES = 4096;
-
     private ExtraProtocol() { }
 }

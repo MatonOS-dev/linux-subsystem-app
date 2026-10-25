@@ -94,8 +94,8 @@ public final class DeployManifest {
                 || Files.isSymbolicLink(metadataFile.toPath()) || !metadataFile.isFile())
             throw new IOException("Staged app metadata escapes the private installation");
         byte[] metadata = PlaceholderFiles.readAllBytes(metadataFile);
-        if (metadata.length == 0 || metadata.length > 128 * 1024)
-            throw new IOException("Staged app metadata is empty or too large");
+        if (metadata.length == 0)
+            throw new IOException("Staged app metadata is empty");
         return new String(metadata, StandardCharsets.UTF_8);
     }
 
@@ -325,7 +325,7 @@ public final class DeployManifest {
     /* Ref and subpath validation. */
 
     static boolean validRef(String ref) {
-        if (ref == null || ref.length() >= 512) return false;
+        if (ref == null) return false;
         int parts = 0, length = 0;
         for (int i = 0; i < ref.length(); i++) {
             char c = ref.charAt(i);
@@ -347,7 +347,7 @@ public final class DeployManifest {
     }
 
     private static boolean validSubpath(String path) {
-        if (path == null || path.isEmpty() || path.length() >= 256) return false;
+        if (path == null || path.isEmpty()) return false;
         int start = path.charAt(0) == '/' ? 1 : 0;
         if (start == path.length()) return false;
         for (int i = start; i < path.length(); ) {

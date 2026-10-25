@@ -71,7 +71,9 @@ public final class LauncherDataTest {
         assertNotNull(LauncherData.validIcon(png()));
         assertNull(LauncherData.validIcon(null));
         assertNull(LauncherData.validIcon(new byte[]{1, 2, 3, 4, 5, 6, 7, 8}));
-        assertNull(LauncherData.validIcon(new byte[LauncherData.MAX_ICON_BYTES + 1]));
+        byte[] large = new byte[1024 * 1024 + 1];
+        System.arraycopy(png(), 0, large, 0, png().length);
+        assertNotNull(LauncherData.validIcon(large));
     }
 
     @Test public void picksTheLargestExportedIcon() throws Exception {

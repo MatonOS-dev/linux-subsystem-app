@@ -220,14 +220,13 @@ static int temp_own(const char *path){
     if(marker<0){vfs_free(l);RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)marker;}
     RAW(PROXY_SC_close,marker,0,0,0,0,0);l->fd=fd;l->next=temp_locks;temp_locks=l;return 0;
 }
-static int temp_remove_contents(int fd,unsigned depth){
-    if(depth>64)return 0;
+static int temp_remove_contents(int fd){
     char buf[4096];long n;
     while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(buf),0,0,0))>0){
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20||off+len>n)return 0;
             char *name=buf+off+19;off+=len;if(p_equal(name,".")||p_equal(name,".."))continue;
             long child=RAW(PROXY_SC_openat,fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
-            if(child>=0){int ok=temp_remove_contents((int)child,depth+1);RAW(PROXY_SC_close,child,0,0,0,0,0);if(!ok)return 0;RAW(PROXY_SC_unlinkat,fd,name,AT_REMOVEDIR,0,0,0);}
+            if(child>=0){int ok=temp_remove_contents((int)child);RAW(PROXY_SC_close,child,0,0,0,0,0);if(!ok)return 0;RAW(PROXY_SC_unlinkat,fd,name,AT_REMOVEDIR,0,0,0);}
             else RAW(PROXY_SC_unlinkat,fd,name,0,0,0,0);
         }
     }return n==0;
@@ -255,7 +254,7 @@ void vfs_temp_gc(void){
                 long live=RAW(PROXY_SC_openat,AT_FDCWD,proc,O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
                 stale=live==-ENOENT;if(live>=0)RAW(PROXY_SC_close,live,0,0,0,0,0);
             }
-            if(stale&&temp_remove_contents(dir,0))RAW(PROXY_SC_unlinkat,parent,name,AT_REMOVEDIR,0,0,0);
+            if(stale&&temp_remove_contents(dir))RAW(PROXY_SC_unlinkat,parent,name,AT_REMOVEDIR,0,0,0);
             RAW(PROXY_SC_close,dir,0,0,0,0,0);
         }
     }

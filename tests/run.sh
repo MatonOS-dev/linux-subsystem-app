@@ -12,6 +12,11 @@ javac -d "$OUT/install-progress" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/InstallProgress.java" \
   "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/InstallProgressTest.java"
 java -cp "$OUT/install-progress" org.matonos.linux.stub.InstallProgressTest
+mkdir -p "$OUT/flatpak-output"
+javac -d "$OUT/flatpak-output" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/FlatpakOutput.java" \
+  "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/FlatpakOutputTest.java"
+java -cp "$OUT/flatpak-output" org.matonos.linux.stub.FlatpakOutputTest
 bash "$ROOT/tests/workdirs/run.sh" "$OUT/workdirs"
 bash "$ROOT/linux/stubgen/tests/run-tests.sh" "${MATON_AOSP_ROOT:-/}" "$OUT/stubgen"
 bash "$ROOT/tests/placeholder/run.sh" "$OUT/placeholder"

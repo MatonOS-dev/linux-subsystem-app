@@ -51,7 +51,6 @@ public final class ExtraService extends Service {
     /** A stuck vendor script must not pin the package forever; the subsystem
      * app waits slightly longer and reports the timeout. */
     private static final long TIMEOUT_MS = 14 * 60 * 1000;
-    private static final int MAX_DIAGNOSTIC = 4096;
 
     private final IExtraExec.Stub binder = new IExtraExec.Stub() {
         @Override public void applyExtra(ParcelFileDescriptor output) {
@@ -304,7 +303,7 @@ public final class ExtraService extends Service {
                 new InputStreamReader(child.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = lines.readLine()) != null) {
-                if (output.length() < MAX_DIAGNOSTIC) output.append(line).append('\n');
+                output.append(line).append('\n');
                 Log.i(TAG, line);
             }
         }
@@ -318,8 +317,6 @@ public final class ExtraService extends Service {
     private static byte[] message(Throwable failure) {
         String text = failure.getMessage() == null ? failure.toString() : failure.getMessage();
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
-        if (bytes.length > ExtraProtocol.MAX_MESSAGE_BYTES)
-            bytes = java.util.Arrays.copyOf(bytes, ExtraProtocol.MAX_MESSAGE_BYTES);
         return bytes;
     }
 }

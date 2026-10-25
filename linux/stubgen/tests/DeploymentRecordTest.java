@@ -32,6 +32,16 @@ public final class DeploymentRecordTest {
         rejects(()->new DeploymentRecord.Dependency("runtime/org.test.Platform/x86_64/stable",custom.encode(),"/usr/../escape"));
         rejects(()->new DeploymentRecord(record.ref,commit,custom.encode(),record.metadata,record.deploy,object,
                 List.of(new DeploymentRecord.Dependency(record.ref,custom.encode(),"/app"))));
+        List<DeploymentRecord.Dependency> many=new ArrayList<>();Map<String,DeploymentRecord> installed=new HashMap<>();
+        for(int i=0;i<200;i++) {
+            String ref="runtime/org.test.Extension"+i+"/x86_64/stable";
+            many.add(new DeploymentRecord.Dependency(ref,"flathub","/usr"));
+            installed.put(ref,new DeploymentRecord(ref,commit,"flathub",record.metadata,record.deploy,object));
+        }
+        DeploymentRecord large=new DeploymentRecord(record.ref,commit,"flathub",record.metadata,record.deploy,object,many);
+        if(DeploymentRecord.decode(large.encode()).dependencies.size()!=200
+                ||PackageGraph.resolve(large,installed::get).size()!=201)
+            throw new AssertionError("large dependency record/graph was truncated");
         for(String old:List.of("MTDEP1","MTDEP2")) {
             ByteArrayOutputStream legacy=new ByteArrayOutputStream();new DataOutputStream(legacy).writeUTF(old);
             rejects(()->DeploymentRecord.decode(legacy.toByteArray()));
@@ -57,5 +67,6 @@ public final class DeploymentRecordTest {
         String after=StubGenerator.indexSplitName(objects.toFile());
         if(before.equals(after))throw new AssertionError("Deployment excluded from index identity");
         System.out.println("PASS deployment record round-trip, disposable Flatpak lookup tree, malformed input rejection and index identity");
+        System.out.println("PASS 200 signed dependencies round-trip and resolve");
     }
 }

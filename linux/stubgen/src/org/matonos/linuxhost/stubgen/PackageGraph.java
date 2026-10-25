@@ -21,7 +21,6 @@ public final class PackageGraph {
             DeploymentRecord.Dependency dependency=pending.removeFirst();
             String previous=seen.putIfAbsent(dependency.ref,dependency.mount);
             if(previous!=null){if(!previous.equals(dependency.mount))throw new IOException("Conflicting package mounts");continue;}
-            if(result.size()>=128)throw new IOException("Too many declared packages");
             DeploymentRecord record=installed.read(dependency.ref);
             if(record==null||!record.ref.equals(dependency.ref))throw new IOException("Declared package ref mismatch");
             result.add(new Entry(record,dependency.mount));pending.addAll(record.dependencies);

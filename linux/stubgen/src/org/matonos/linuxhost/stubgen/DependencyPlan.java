@@ -19,7 +19,7 @@ public final class DependencyPlan {
         }
         public Info(String commit,byte[] metadata,String runtime,String parent,List<String> related,boolean mayHaveRelated)throws IOException {
             this.mayHaveRelated=mayHaveRelated;
-            if(commit==null||!commit.matches("[0-9a-f]{64}")||metadata==null||metadata.length==0||metadata.length>128*1024)
+            if(commit==null||!commit.matches("[0-9a-f]{64}")||metadata==null||metadata.length==0)
                 throw new IOException("Invalid Flatpak inspection result");
             this.commit=commit;this.metadata=metadata.clone();this.runtime=runtime;this.parent=parent;
             this.related=List.copyOf(related);
@@ -73,7 +73,6 @@ public final class DependencyPlan {
     private Node visit(String ref,String requested,boolean root,boolean repair)throws Exception {
         if(!validRef(ref))throw new IOException("Invalid dependency ref: "+ref);
         Node existing=nodes.get(ref);if(existing!=null)return existing;
-        if(nodes.size()>=128)throw new IOException("Too many dependency packages");
         DeploymentRecord installed=backend.installed(ref);
         DeploymentRecord recorded=(!root||repair)?installed:null;
         String origin;Info info;
@@ -126,7 +125,7 @@ public final class DependencyPlan {
         return node;
     }
     public static boolean validRef(String ref) {
-        if(ref==null||ref.length()>1024||!ref.matches("(?:app|runtime)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))return false;
+        if(ref==null||!ref.matches("(?:app|runtime)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))return false;
         for(String part:ref.split("/"))if(part.equals(".")||part.equals(".."))return false;
         return true;
     }

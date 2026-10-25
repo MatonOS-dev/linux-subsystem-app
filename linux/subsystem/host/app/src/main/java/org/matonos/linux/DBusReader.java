@@ -12,7 +12,8 @@ import java.util.List;
  * per-type switch, no reflection.
  */
 final class DBusReader {
-    private static final int MAX_DEPTH = 64;
+    // D-Bus limits nested containers to 32 levels.
+    private static final int MAX_DEPTH = 32;
 
     private final byte[] data;
     private int pos;
