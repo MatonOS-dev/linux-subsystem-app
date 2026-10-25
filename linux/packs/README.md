@@ -2,25 +2,32 @@
 
 ## EROFS deployment carriers (v1 prototype)
 
-### Layered format prototype
+### Layered format (MTPKIDX2)
 
-`erofs_layers.py` is the host-side layer image writer. It checks out a selected
-OSTree commit, uses the existing parent-directory/lexical 64 MiB target policy
-for initial packs, and writes an index EROFS containing directory and symlink
-metadata without regular-file data. Its `layers.json` orders the index first,
-then packs, and records split, ZIP entry, image size, SHA-256, and file identity
-metadata. An update accepts the previous manifest, reuses unchanged pack image
-bytes, emits all changed/new regular files in one pack, and represents paths
-removed from older packs as tar-stream character-device whiteouts in the index.
-The tar input allows char devices and overlay xattrs to be encoded without
-privileged `mknod`; EROFS images use LZ4HC 12 and deterministic tar ordering,
-timestamps, and UUIDs.
+`erofs_layers.py` writes one complete EROFS image per pack and a `layers.index`
+file for the already-merged deployment view. There is no index image, overlay,
+or whiteout: removed paths are absent from the index. Initial packs use the
+same parent-directory grouping, lexical order, and 64 MiB target policy as
+`pack.py`; updates put changed/new regular files in one new pack and reuse
+unchanged layer images byte-for-byte. Images are built from deterministic tar
+streams with LZ4HC 12, the OSTree commit timestamp, and commit uid/gid/mode
+metadata (never host ownership).
 
-This host writer is not yet the production install path. The Java
-`StagedPacks`/PackageInstaller pipeline, signed per-layer APK carriers, full
-overlay-semantic A→B extraction test, and metadata-faithful OSTree ownership
-handling remain open. The old one-image install path remains active until
-those pieces land together.
+`layers.index` begins with `MTPKIDX2`, a layer table (split name, ZIP entry,
+image size, SHA-256), then path-sorted records. Each record carries path,
+OSTree checksum, kind, symlink target, serialized xattrs, layer-table index,
+file size, mtime, uid, gid and mode. A file's layer index identifies the
+complete EROFS image containing it; directories and symlinks use `0xffffffff`.
+`reader.c` reads both this format and `MTPKIDX1`, which remains needed by the
+current compat-proxy mount path.
+
+Host writer usage: `python3 linux/packs/erofs_layers.py --repo REPO --commit
+CHECKSUM --out OUT --mkfs /path/to/mkfs.erofs`; add `--old-index` and
+`--old-layers` for an update. The old layer directory contains
+`pack-<sha256>.erofs` files. EROFS payloads in APK splits must be STORED and
+4096-byte aligned. The Java staging/install path still uses the legacy single
+image and needs integration with this format; there is no `StagedPacks` source
+in this repository revision.
 
 `erofs_pack.py` builds one read-only EROFS image from an already deployed app
 or runtime tree. The default is LZ4HC level 12; `--compression lzma` selects
