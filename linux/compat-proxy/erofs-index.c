@@ -50,8 +50,42 @@ static const char *erofs_backing_suffix(const struct erofs_mount *m,const char *
  size_t length=(size_t)(suffix-path);if(length&&path[length-1]=='/')length--;
  return p_len(m->backing)==length&&!erofs_cmp(path,m->backing,length)?suffix:NULL;
 }
-static struct erofs_mount *erofs_lookup(const char *path){int staging=0;char *virtual=erofs_virtual_path(path,&staging);if(!virtual)return NULL;struct erofs_mount *best=NULL,*fallback=NULL;size_t best_length=0,fallback_length=0;int mount_root=0;for(struct erofs_mount *m=erofs_mounts;m;m=m->next){size_t length=p_len(m->target);char *mapped=NULL;const char *candidate=virtual;if(!prefix(virtual,m->target)){const char *suffix=erofs_backing_suffix(m,path);if(!suffix)continue;mapped=join(m->target,*suffix?suffix:"/");if(!mapped)continue;candidate=mapped;}if(!prefix(candidate,m->target)){vfs_free(mapped);continue;}if(!fallback||length>fallback_length){fallback=m;fallback_length=length;mount_root=p_equal(candidate,m->target);}if(best&&length<best_length){vfs_free(mapped);continue;}const char *key=candidate+length;mtp_object object;if(mtp_lookup(m->index,*key?key:"/",&object)){vfs_free(mapped);continue;}if(!best||length>best_length){best=m;best_length=length;}vfs_free(mapped);}if(best&&!prefix(path,best->target)&&vfs_has_nested_mount(virtual,best->target,staging))best=NULL;if(!best&&fallback&&!vfs_has_nested_mount(virtual,fallback->target,staging)&&!staging&&!mount_root)best=fallback;vfs_free(virtual);return best;}
-static int erofs_object(struct erofs_mount *m,const char *path,mtp_object *o){char *virtual=erofs_virtual_path(path,NULL);if(!virtual)return -ENOMEM;if(!prefix(virtual,m->target)){const char *suffix=erofs_backing_suffix(m,path);if(!suffix){vfs_free(virtual);return -ENOENT;}char *mapped=join(m->target,*suffix?suffix:"/");vfs_free(virtual);virtual=mapped;if(!virtual)return -ENOMEM;}const char *key=virtual+p_len(m->target);int r=mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;vfs_free(virtual);return r;}
+static struct erofs_mount *erofs_lookup(const char *path){
+ int staging=0;char *virtual=erofs_virtual_path(path,&staging);if(!virtual)return NULL;
+ struct erofs_mount *backing_best=NULL;size_t backing_length=0;
+ for(struct erofs_mount *m=erofs_mounts;m;m=m->next){
+  const char *suffix=erofs_backing_suffix(m,path);if(!suffix)continue;
+  char *mapped=join(m->target,*suffix?suffix:"/");if(!mapped)continue;
+  const char *key=mapped+p_len(m->target);mtp_object object;
+  if(!mtp_lookup(m->index,*key?key:"/",&object)&&(!backing_best||p_len(m->target)>backing_length)){
+   backing_best=m;backing_length=p_len(m->target);
+  }
+  vfs_free(mapped);
+ }
+ if(backing_best){vfs_free(virtual);return backing_best;}
+ struct erofs_mount *best=NULL,*fallback=NULL;size_t best_length=0,fallback_length=0;int mount_root=0;
+ for(struct erofs_mount *m=erofs_mounts;m;m=m->next){
+  size_t length=p_len(m->target);const char *candidate=virtual;
+  if(!prefix(virtual,m->target))continue;
+  if(!prefix(candidate,m->target))continue;
+  if(!fallback||length>fallback_length){fallback=m;fallback_length=length;mount_root=p_equal(candidate,m->target);}
+  if(best&&length<best_length)continue;
+  const char *key=candidate+length;mtp_object object;
+  if(mtp_lookup(m->index,*key?key:"/",&object))continue;
+  if(!best||length>best_length){best=m;best_length=length;}
+ }
+ if(best&&!prefix(path,best->target)&&vfs_has_nested_mount(virtual,best->target,staging))best=NULL;
+ if(!best&&fallback&&!vfs_has_nested_mount(virtual,fallback->target,staging)&&!staging&&!mount_root)best=fallback;
+ vfs_free(virtual);return best;
+}
+static int erofs_object(struct erofs_mount *m,const char *path,mtp_object *o){
+ char *virtual=NULL;const char *suffix=erofs_backing_suffix(m,path);
+ if(suffix)virtual=join(m->target,*suffix?suffix:"/");
+ else {virtual=erofs_virtual_path(path,NULL);if(virtual&&!prefix(virtual,m->target)){vfs_free(virtual);virtual=NULL;}}
+ if(!virtual)return -ENOENT;
+ const char *key=virtual+p_len(m->target);int r=mtp_lookup(m->index,*key?key:"/",o)?-ENOENT:0;
+ vfs_free(virtual);return r;
+}
 static uint64_t erofs_ino(const mtp_object *o){uint64_t v=1469598103934665603ULL;for(const char *p=o->checksum;*p;p++)v=(v^(unsigned char)*p)*1099511628211ULL;return v;}
 static uint64_t erofs_object_ino(const struct erofs_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_ino:erofs_ino(o);}
 static uint64_t erofs_object_dev(const struct erofs_mount *m,const mtp_object *o){return m->root_identity&&p_equal(o->kind,"dir")&&p_equal(o->path,"/")?m->root_dev:0;}
