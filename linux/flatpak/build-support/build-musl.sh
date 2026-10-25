@@ -22,7 +22,7 @@ work_inner_path() { printf '/scratch/work/%s' "${1#"$(realpath -m "$WORK")"/}"; 
 SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$HOST_CACHE" GPGME_LITE_SRC="$HOST_CACHE/src/DullPGP" \
   CACHE_DIR="$(cache_inner_path "$HOST_CACHE")" \
   BUILD_DIR="$(work_inner_path "$HOST_BUILD")" OUT_DIR="$(work_inner_path "$HOST_OUT")" \
-  JOBS=${JOBS:-4} START_AT=${START_AT:-all} \
+  JOBS=${JOBS:-$(nproc)} START_AT=${START_AT:-all} \
   "$HERE/alpine-enter.sh" /work/build.sh
 install -m755 "$HOST_OUT/matonos-flatpak" "$HERE/../prebuilt/static/x86_64/matonos-flatpak"
 bash "$HERE/../../../tools/build-flatpak-helpers.sh"

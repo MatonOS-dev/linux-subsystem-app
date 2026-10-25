@@ -8,7 +8,7 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 export MATON_SIGNING_KEY_ALIAS=${MATON_SIGNING_KEY_ALIAS:-matonos-dev}
 export MATON_SIGNING_STORE_PASSWORD=$(cat "$MATON_SIGNING_PASSWORD_FILE")
 export MATON_SIGNING_KEY_PASSWORD=$MATON_SIGNING_STORE_PASSWORD
-export MATON_BUILD_JOBS=${MATON_BUILD_JOBS:-4}
+export MATON_BUILD_JOBS=${MATON_BUILD_JOBS:-$(nproc)}
 [[ $MATON_BUILD_JOBS =~ ^[1-9][0-9]*$ ]] || { echo "jobs must be a positive integer" >&2; exit 2; }
 # Install JDK 21+ or set JAVA_HOME explicitly.
 if [[ -n ${JAVA_HOME:-} ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi

@@ -7,7 +7,7 @@ AOSP=${MATON_AOSP_ROOT:?set MATON_AOSP_ROOT to the AOSP SDK/header checkout}
 NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 API=35
-JOBS=${MATON_BUILD_JOBS:-4}
+JOBS=${MATON_BUILD_JOBS:-$(nproc)}
 [[ $JOBS =~ ^[1-4]$ ]] || die 'MATON_BUILD_JOBS must be 1..4'
 [[ -x $TOOLCHAIN/bin/x86_64-linux-android${API}-clang ]] || die "missing NDK at $NDK"
 

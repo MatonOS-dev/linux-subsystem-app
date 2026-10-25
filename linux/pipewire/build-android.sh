@@ -8,7 +8,7 @@ NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
 BUILD=${MATON_PIPEWIRE_BUILD:-$AOSP/out/matonos/pipewire}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 REV=8fa27cabdc6c0c1350c69c026af5850ef0af1e26 # PipeWire 1.6.9
-JOBS=${MATON_BUILD_JOBS:-4}
+JOBS=${MATON_BUILD_JOBS:-$(nproc)}
 [[ $JOBS =~ ^[1-9][0-9]*$ ]] || { echo 'MATON_BUILD_JOBS must be a positive integer' >&2; exit 1; }
 mkdir -p "$BUILD"
 if [[ ! -f $BUILD/src/meson.build ]]; then

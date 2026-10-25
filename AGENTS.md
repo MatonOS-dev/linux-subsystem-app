@@ -9,13 +9,20 @@ When goals conflict: **Google-certifiable Android > performance > compatibility 
 Hand-written x86_64/i386 assembly is welcome on hot paths when it measurably beats the compiler. Keep it under
 `arch/<arch>/`, documented, with a C reference implementation and a test that compares both.
 
-## File access: real mounts via the mountd APEX only (user, 2026-10-24)
+## File access: one EROFS image per package, mounted by matonos-erofsd (user, 2026-10-25)
 
-Linux apps get their filesystem view from real mounts made by the MatonOS mount daemon (an updatable APEX that this
-app bundles and updates). Packs are EROFS images loop-mounted from the APK splits. The translation path (proxy VFS
-translation speed-ups, syscall-site rewriting) is frozen and archived under `archive/translation/*` tags — do not
-extend it. If the mount APEX is missing or cannot be brought to the matching version, fail loudly; there is no
-translation fallback.
+Each app package carries ONE EROFS image; each runtime ID carries one image holding all its installed branches,
+deduplicated by OSTree checksum. Stubs ask the image's system daemon `matonos-erofsd` (MatonOS image, frozen API) to
+mount it; init performs the mount at `/mnt/matonos/<owner uid>/<n>` (only init may mount — domain.te neverallow).
+The proxy maps package targets (`/app`, `/usr`, extension dirs) to the mount by prefix swap; everything after the swap
+is native. Per-app mount namespaces / mountd APEX are a dead end (DEAD-ENDS.md). Future fallback when the daemon is
+missing: extract the images into the stub's own data dir (not built yet).
+
+## No job or thread caps (user, 2026-10-25)
+
+Builds and tools use the whole CPU: default to `$(nproc)`, validate only that a job count is a positive integer.
+Any job/thread/worker cap you find (fixed defaults like 4, "between 1 and N" checks, hard-coded `--workers=N`) is to be
+removed when you touch that code, not worked around.
 
 ## The compatibility layer is loud, never hidden
 
