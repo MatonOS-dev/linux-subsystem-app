@@ -246,6 +246,10 @@ public final class InstallTransaction {
                 }
                 cli("remote-add","--system",origin.name,descriptor.getAbsolutePath());
             }
+            String tags=android.os.LocaleList.getDefault().toLanguageTags();
+            java.util.List<String> localeTags=new ArrayList<>();
+            if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));
+            cli("config","--system","--set","languages",FlatpakLanguages.configuration(localeTags));
         }
         byte[] command(java.util.List<String> tail,boolean absentAllowed)throws Exception {
             checkCancelled();java.util.List<String> command=new ArrayList<>(prefix);command.addAll(tail);

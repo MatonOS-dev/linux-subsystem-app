@@ -33,6 +33,8 @@ public final class LinuxAppStoreService extends Service {
     private static final String TAG = "LinuxAppStore";
     private static final String INSTALL = "org.matonos.permission.INSTALL_LINUX_APPS";
     private static final String QUERY = "org.matonos.permission.QUERY_LINUX_APPS";
+    private static final String UPDATE_LOCALES = "org.matonos.linux.UPDATE_LOCALE_EXTENSIONS";
+    private static final String LOCALE_PREFS = "flatpak-languages";
     private static final int MAX_ICON_BYTES = 1024 * 1024;
     private final java.util.Set<InstallTransaction> activeInstalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private android.os.PowerManager.WakeLock installWakeLock;
@@ -139,6 +141,16 @@ public final class LinuxAppStoreService extends Service {
         worker.execute(this::sweepWork); }
 
     @Override public int onStartCommand(Intent intent,int flags,int startId){
+        if(intent!=null&&UPDATE_LOCALES.equals(intent.getAction())) {
+            android.app.NotificationManager manager=getSystemService(android.app.NotificationManager.class);
+            manager.createNotificationChannel(new android.app.NotificationChannel("linux-install",
+                    "Linux application downloads",android.app.NotificationManager.IMPORTANCE_LOW));
+            startForeground(3,new android.app.Notification.Builder(this,"linux-install")
+                    .setContentTitle("Linux application download").setSmallIcon(android.R.drawable.stat_sys_download)
+                    .setOngoing(true).build(),android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            worker.execute(()->queueLocaleUpdates(startId));
+            return START_NOT_STICKY;
+        }
         if(intent!=null&&"org.matonos.linux.CLEAN_UNUSED_PACKAGES".equals(intent.getAction())){
             worker.execute(()->{sweepWork();cleanupUnusedPackages();stopSelf(startId);});return START_NOT_STICKY;
         }
@@ -335,6 +347,12 @@ public final class LinuxAppStoreService extends Service {
     public static final class BootReceiver extends android.content.BroadcastReceiver {
         private static final int CLEANUP_JOB_ID=0x4d41544f;
         @Override public void onReceive(Context context,Intent intent) {
+            if(Intent.ACTION_LOCALE_CHANGED.equals(intent.getAction())) {
+                Intent update=new Intent(context,LinuxAppStoreService.class).setAction(UPDATE_LOCALES);
+                try { context.startForegroundService(update); }
+                catch(RuntimeException error) { Log.w(TAG,"Cannot queue locale extension update",error); }
+                return;
+            }
             if(!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()))return;
             PendingResult pending=goAsync();
             new Thread(()->{ErofsPin.ensure();pending.finish();}).start();
@@ -342,6 +360,52 @@ public final class LinuxAppStoreService extends Service {
                     new ComponentName(context,CleanupJobService.class)).setPersisted(true).build();
             android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
             if(scheduler!=null)scheduler.schedule(job);
+        }
+    }
+
+    /** Queue one normal store update for each installed Locale extension after a real set change. */
+    private void finishLocaleQueue(int startId) {
+        synchronized(this) {
+            if(activeInstalls.isEmpty()) { stopForeground(STOP_FOREGROUND_REMOVE);stopSelf(startId); }
+        }
+    }
+
+    private void queueLocaleUpdates(int startId) {
+        String tags=android.os.LocaleList.getDefault().toLanguageTags();
+        java.util.List<String> localeTags=new java.util.ArrayList<>();
+        if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));
+        String languages=org.matonos.linux.stub.FlatpakLanguages.configuration(localeTags);
+        android.content.SharedPreferences preferences=getSharedPreferences(LOCALE_PREFS,MODE_PRIVATE);
+        String previous=preferences.getString("languages",null);
+        if(!org.matonos.linux.stub.FlatpakLanguages.changed(previous,languages)) {
+            finishLocaleQueue(startId);return;
+        }
+        preferences.edit().putString("languages",languages).apply();
+        java.util.List<String> installedRefs=new java.util.ArrayList<>();
+        try {
+            for(PackageInfo info:getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
+                if(info.packageName==null||!info.packageName.startsWith("flatpak.")||!packageSignerMatches(info))continue;
+                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
+                        info.splitNames,info.applicationInfo.splitSourceDirs);
+                installedRefs.add(record.ref);
+            }
+        } catch(Exception error) {
+            Log.w(TAG,"Cannot enumerate installed Locale extensions",error);
+            finishLocaleQueue(startId);return;
+        }
+        java.util.List<String> refs=org.matonos.linux.stub.FlatpakLanguages.refsToUpdate(previous,languages,installedRefs);
+        if(refs.isEmpty()) { finishLocaleQueue(startId);return; }
+        ILinuxAppStoreCallback callback=new ILinuxAppStoreCallback.Stub() {
+            @Override public void onProgress(String id,String phase,int percent,long done,long total) {}
+            @Override public void onResult(String id,boolean ok,String error) {
+                if(!ok)Log.w(TAG,"Locale extension update failed: "+error);
+            }
+        };
+        for(String ref:refs) {
+            String id="locale-"+java.util.UUID.randomUUID().toString().replace("-","");
+            Operation op=new Operation(android.os.Process.myUid(),id,"update",ref,null,null,null,callback);
+            operations.put(operationKey(op.uid,id),op);
+            worker.execute(()->execute(id,op));
         }
     }
 
