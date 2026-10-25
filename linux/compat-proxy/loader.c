@@ -68,14 +68,12 @@ static int resident_collision(uintptr_t low,uintptr_t high) {
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
-static long loader_open(const char *path){long fd=pack_open(path,O_RDONLY|O_CLOEXEC);return fd==-ENOSYS?RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0):fd;}
-static void loader_close(int fd){pack_close(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
-/* File mappings retain page-cache sharing. Only permission refusals permit the
- * private copy fallback; pack_call translates carrier offsets before mmap. */
+static long loader_open(const char *path){long fd=erofs_open(path,O_RDONLY|O_CLOEXEC);return fd==-ENOSYS?RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0):fd;}
+static void loader_close(int fd){erofs_close(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
+/* File mappings use ordinary kernel descriptors and retain page-cache sharing.
+ * Only permission refusals permit the private copy fallback. */
 long proxy_file_mmap(proxy_arg_t *a) {
-    int handled=0;
-    long r=pack_call(PROXY_SC_mmap,a,&handled);
-    if(!handled)r=RAW(PROXY_SC_mmap,a[0],a[1],a[2],a[3],a[4],a[5]);
+    long r=RAW(PROXY_SC_mmap,a[0],a[1],a[2],a[3],a[4],a[5]);
     if(r!=-EACCES && r!=-EPERM){
         if(r>=0 && (a[2]&(PROT_READ|PROT_EXEC))==(PROT_READ|PROT_EXEC) && !(a[2]&PROT_WRITE) && (a[3]&MAP_PRIVATE))
             proxy_rewrite_mapping((int)a[4],(uintptr_t)r,(size_t)a[1],(uint64_t)a[5]);
@@ -88,7 +86,7 @@ long proxy_file_mmap(proxy_arg_t *a) {
     if((unsigned long)area>=(unsigned long)-4095)return area;
     size_t done=0;
     while(done<(size_t)a[1]){
-        long n=pack_pread(a[4],(void *)((uintptr_t)area+done),a[1]-done,(uint64_t)a[5]+done);
+        long n=proxy_pread_fd(a[4],(void *)((uintptr_t)area+done),a[1]-done,(uint64_t)a[5]+done);
         if(n==-EINTR)continue;
         if(n<0){r=n;goto failed;}
         if(!n)break;
@@ -97,15 +95,14 @@ long proxy_file_mmap(proxy_arg_t *a) {
     r=RAW(PROXY_SC_mprotect,area,a[1],a[2],0,0,0);
     if(r<0)goto failed;
     struct proxy_stat st;
-    struct copy_log {struct copy_log *next;uint64_t dev,ino,slice;};
+    struct copy_log {struct copy_log *next;uint64_t dev,ino;};
     static struct copy_log *logs;
     if(!arch_stat_fd(a[4],&st)){
-        uint64_t slice=pack_slice_start(a[4]);
         struct copy_log *l=logs;
-        while(l && (l->dev!=st.st_dev || l->ino!=st.st_ino || l->slice!=slice))l=l->next;
+        while(l && (l->dev!=st.st_dev || l->ino!=st.st_ino))l=l->next;
         if(!l){
             l=vfs_palloc(sizeof(*l));
-            if(l){*l=(struct copy_log){logs,st.st_dev,st.st_ino,slice};logs=l;}
+            if(l){*l=(struct copy_log){logs,st.st_dev,st.st_ino};logs=l;}
             proxy_log("exec-mmap-copy",a[4],0);
         }
     }
@@ -133,22 +130,22 @@ static void loader_trace_resolve(const char *path,const char *stage){
     proxy_log(stage,resolved?1:error,mount!=NULL);
     if(resolved){
         loader_trace_path("v3 exec resolved ",resolved);
-        char *packed=vfs_reverse_pack(resolved);
+        char *packed=vfs_reverse_erofs(resolved);
         loader_trace_path("v3 exec pack-object ",packed?packed:"(no reverse pack path)");
         if(packed)vfs_free(packed);
-        struct proxy_stat st;long ps=pack_stat(resolved,&st);
+        struct proxy_stat st;long ps=erofs_stat(resolved,&st);
         proxy_log("exec-pack-stat",ps,ps?0:st.st_mode);
-        long fd=pack_open(resolved,O_RDONLY|O_CLOEXEC);
+        long fd=erofs_open(resolved,O_RDONLY|O_CLOEXEC);
         proxy_log("exec-pack-open",fd,0);
-        if(fd>=0)pack_close((int)fd);
+        if(fd>=0)erofs_close((int)fd);
         /* Match path_call's newfstatat path: resolve the original virtual
          * name first, then pass that translated name to the pack handler. */
         long stat_error=0;void *stat_mount=NULL;
         char *stat_path=vfs_resolve_mount(AT_FDCWD,path,1,&stat_error,&stat_mount);
-        /* pack_path synthesizes the architecture's native stat wire layout. */
+        /* erofs_path synthesizes the architecture's native stat wire layout. */
         struct stat wire_stat;
         proxy_arg_t a[6]={(long)AT_FDCWD,(long)stat_path,(long)&wire_stat,0,0,0};int handled=0;
-        long sr=stat_path?pack_path(PROXY_SC_newfstatat,a,stat_path,&handled):stat_error;
+        long sr=stat_path?erofs_path(PROXY_SC_newfstatat,a,stat_path,&handled):stat_error;
         proxy_log("exec-openat-stat-compare",handled?sr:-ENOSYS,handled);
         if(stat_path)vfs_free(stat_path);
         vfs_free(resolved);
@@ -163,34 +160,34 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
     if(proxy_trace){
         proxy_log("exec-validate-resolve",resolved?1:error,depth);
         if(resolved){loader_trace_path("v3 exec validate resolved ",resolved);
-            char *object=vfs_reverse_pack(resolved);loader_trace_path("v3 exec validate pack-object ",object?object:"(none)");if(object)vfs_free(object);}
+            char *object=vfs_reverse_erofs(resolved);loader_trace_path("v3 exec validate pack-object ",object?object:"(none)");if(object)vfs_free(object);}
     }
     if(!resolved)return error;
     long fd=loader_open(resolved);
     if(proxy_trace)proxy_log("exec-validate-open",fd,depth);
     if(fd<0){vfs_free(resolved);return fd;}
     struct proxy_stat st;
-    error=pack_stat(resolved,&st);
+    error=erofs_stat(resolved,&st);
     if(error==-ENOSYS)error=arch_stat_fd(fd,&st);
     if(!error && (!S_ISREG(st.st_mode) || !(st.st_mode&0111)))error=-EACCES;
-    if(!error && pack_stat(resolved,&st)==-ENOSYS)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
+    if(!error && erofs_stat(resolved,&st)==-ENOSYS)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
     vfs_free(resolved);
     Elf64_Ehdr h={0};Elf32_Ehdr h32;
     if(error)goto done;
     error=interpreter?-ELIBBAD:-ENOEXEC;
     unsigned char ident[EI_NIDENT];
-    if(pack_pread(fd,ident,sizeof(ident),0)!=sizeof(ident))goto done;
+    if(proxy_pread_fd(fd,ident,sizeof(ident),0)!=sizeof(ident))goto done;
     if(ident[0]!=127 || ident[1]!='E' || ident[2]!='L' || ident[3]!='F' ||
        ident[EI_DATA]!=ELFDATA2LSB || ident[EI_VERSION]!=EV_CURRENT)goto done;
     int bits=ident[EI_CLASS];
     if(interpreter && bits!=interpreter)goto done;
     if(bits==ELFCLASS32){
-        if(pack_pread(fd,&h32,sizeof(h32),0)!=sizeof(h32))goto done;
+        if(proxy_pread_fd(fd,&h32,sizeof(h32),0)!=sizeof(h32))goto done;
         h.e_type=h32.e_type;h.e_machine=h32.e_machine;h.e_phoff=h32.e_phoff;
         h.e_phnum=h32.e_phnum;h.e_phentsize=h32.e_phentsize;
         if(h.e_phentsize!=sizeof(Elf32_Phdr))goto done;
     }else if(bits==ELFCLASS64){
-        if(pack_pread(fd,&h,sizeof(h),0)!=sizeof(h))goto done;
+        if(proxy_pread_fd(fd,&h,sizeof(h),0)!=sizeof(h))goto done;
         if(h.e_phentsize!=sizeof(Elf64_Phdr))goto done;
     }else goto done;
     if(arch_exec_class(bits,h.e_machine)<0)goto done;
@@ -202,10 +199,10 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
         Elf64_Phdr p={0};uint64_t offset=h.e_phoff+(uint64_t)i*h.e_phentsize;
         if(bits==ELFCLASS32){
             Elf32_Phdr q;
-            if(pack_pread(fd,&q,sizeof(q),offset)!=sizeof(q))goto done;
+            if(proxy_pread_fd(fd,&q,sizeof(q),offset)!=sizeof(q))goto done;
             p.p_type=q.p_type;p.p_offset=q.p_offset;p.p_filesz=q.p_filesz;
             p.p_memsz=q.p_memsz;p.p_vaddr=q.p_vaddr;p.p_align=q.p_align;
-        }else if(pack_pread(fd,&p,sizeof(p),offset)!=sizeof(p))goto done;
+        }else if(proxy_pread_fd(fd,&p,sizeof(p),offset)!=sizeof(p))goto done;
         if(p.p_type==PT_PHDR)has_phdr=1;
         if(p.p_type!=PT_LOAD && p.p_type!=PT_INTERP)continue;
         if(p.p_offset>(uint64_t)st.st_size || p.p_filesz>(uint64_t)st.st_size-p.p_offset)goto done;
@@ -216,7 +213,7 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
             if(h.e_phoff>=p.p_offset && h.e_phoff-p.p_offset+(uint64_t)h.e_phnum*h.e_phentsize<=p.p_filesz)has_phdr=1;
         }else{
             if(interpreter || interp[0] || p.p_filesz<2 || p.p_filesz>sizeof(interp))goto done;
-            if(pack_pread(fd,interp,p.p_filesz,p.p_offset)!=(long)p.p_filesz || interp[p.p_filesz-1])goto done;
+            if(proxy_pread_fd(fd,interp,p.p_filesz,p.p_offset)!=(long)p.p_filesz || interp[p.p_filesz-1])goto done;
         }
     }
     if(!loads || !has_phdr)goto done;
@@ -234,14 +231,14 @@ static int map_elf(const char *path,struct mapped *out) {
     long fd=loader_open(path);
     if(bad(fd)) return (int)fd;
     int error=-ENOEXEC;
-    if(pack_pread(fd,&eh,sizeof(eh),0)!=(long)sizeof(eh)) goto done;
+    if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=(long)sizeof(eh)) goto done;
     if(eh.e_ident[0]!=127 || eh.e_ident[1]!='E' || eh.e_ident[2]!='L' || eh.e_ident[3]!='F' ||
        eh.e_ident[EI_CLASS]!=ARCH_ELF_CLASS || eh.e_machine!=ARCH_ELF_MACHINE ||
        (eh.e_type!=ET_DYN && eh.e_type!=ET_EXEC) || !eh.e_phnum ||
        eh.e_phentsize!=sizeof(arch_elf_phdr)) goto done;
     size_t bytes=eh.e_phnum*sizeof(arch_elf_phdr);
     ph=vfs_alloc(bytes);if(!ph){error=-ENOMEM;goto done;}
-    if(pack_pread(fd,ph,bytes,eh.e_phoff)!=(long)bytes) goto done;
+    if(proxy_pread_fd(fd,ph,bytes,eh.e_phoff)!=(long)bytes) goto done;
     uintptr_t low=UINTPTR_MAX,high=0;
     for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD) {
         if(ph[i].p_filesz>ph[i].p_memsz ||
@@ -264,7 +261,7 @@ static int map_elf(const char *path,struct mapped *out) {
         arch_elf_phdr *p=&ph[i];
         if(p->p_type==PT_INTERP) {
             if(p->p_filesz>sizeof(out->interp) || !p->p_filesz) goto done;
-            if(pack_pread(fd,out->interp,p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
+            if(proxy_pread_fd(fd,out->interp,p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
             if(out->interp[p->p_filesz-1])goto done;
         }
         if(p->p_type==PT_PHDR) out->phdr=bias+p->p_vaddr;
@@ -295,7 +292,7 @@ static int map_elf(const char *path,struct mapped *out) {
         }else{
             r=RAW(PROXY_SC_mmap,start,end-start,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
             if(bad(r)){error=(int)r;goto done;}
-            if(p->p_filesz && pack_pread(fd,(void *)(bias+p->p_vaddr),p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
+            if(p->p_filesz && proxy_pread_fd(fd,(void *)(bias+p->p_vaddr),p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
             r=RAW(PROXY_SC_mprotect,start,end-start,prot,0,0,0);
             if(bad(r)){error=(int)r;goto done;}
         }
@@ -331,7 +328,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     char *resolved=vfs_resolve(AT_FDCWD,path,1,&path_error);
     if(!resolved)return (int)path_error;
     long fd=loader_open(resolved);
-    struct proxy_stat packed;int packed_status=pack_stat(resolved,&packed);
+    struct proxy_stat packed;int packed_status=erofs_stat(resolved,&packed);
     vfs_free(resolved);
     if(bad(fd)) return (int)fd;
     struct proxy_stat executable;
@@ -339,7 +336,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     if(!packed_status)executable=packed;
     if(!permission && (!S_ISREG(executable.st_mode) || !(executable.st_mode&0111)))permission=-EACCES;
     if(permission){loader_close(fd);return permission;}
-    long got=pack_pread(fd,header,sizeof(header)-1,0);
+    long got=proxy_pread_fd(fd,header,sizeof(header)-1,0);
     loader_close(fd);
     if(got<0) return (int)got;
     header[got]=0;
@@ -485,8 +482,9 @@ int main(int argc,char **argv,char **environ) {
         else if(p_equal(argv[i],"--i386-tls-reserve")) {proxy_i386_tls_reservation(1);i++;}
         else if(p_equal(argv[i],"--trace")) {extern int proxy_trace;proxy_trace=1;i++;}
         else if(p_equal(argv[i],"--count") && i+1<argc) {proxy_count_init(argv[i+1]);i+=2;}
-        else if(p_equal(argv[i],"--pack-backing") && i+2<argc) {if(pack_backing(argv[i+1],argv[i+2]))return 2;i+=3;}
-        else if(p_equal(argv[i],"--pack-mount") && i+3<argc) {if(pack_mount(argv[i+1],argv[i+2],argv[i+3]))return 2;i+=4;}
+        else if(p_equal(argv[i],"--erofs-backing") && i+2<argc) {if(erofs_backing(argv[i+1],argv[i+2]))return 2;i+=3;}
+        else if(p_equal(argv[i],"--erofs-mount") && i+3<argc) {if(erofs_mount(argv[i+1],argv[i+2],argv[i+3]))return 2;i+=4;}
+        else if(p_equal(argv[i],"--map-ro") && i+2<argc) {if(vfs_mount_readonly_map(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--map") && i+2<argc) {if(proxy_mount(argv[i+1],argv[i+2]))return 2;i+=3;}
         else if(p_equal(argv[i],"--root") && i+1<argc) {if(vfs_bootstrap_root(argv[i+1])) return 2;i+=2;}
         else {proxy_log("usage",0,-EINVAL);return 2;}

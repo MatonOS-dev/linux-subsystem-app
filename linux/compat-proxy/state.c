@@ -109,8 +109,8 @@ int state_import(const char *number,const char *token){
  * sibling. Open it once and use execveat(AT_EMPTY_PATH), closing rename races. */
 int state_exec(const char *path,char *const *args,char *const *env){
  long error=0;char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);if(!resolved)return error;
- long fd=pack_open(resolved,O_RDONLY|O_CLOEXEC);if(fd==-ENOSYS)fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(resolved);if(fd<0)return fd;
- unsigned char elf[20];long got=pack_pread(fd,elf,sizeof(elf),0);pack_close(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ long fd=erofs_open(resolved,O_RDONLY|O_CLOEXEC);if(fd==-ENOSYS)fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(resolved);if(fd<0)return fd;
+ unsigned char elf[20];long got=proxy_pread_fd(fd,elf,sizeof(elf),0);erofs_close(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);
  if(got!=sizeof(elf)||elf[0]!=127||elf[1]!='E'||elf[2]!='L'||elf[3]!='F')return 0;
  int target=arch_handoff_class(elf);if(!target)return 0;
  if(target<0)return -ENOEXEC;

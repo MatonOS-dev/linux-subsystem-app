@@ -27,8 +27,13 @@ static int string(const unsigned char **p,const unsigned char *end,const char **
 int mtp_index_open_buffer(const void *bytes,size_t length,mtp_index **out,mtp_alloc_fn alloc,mtp_free_fn dealloc,void *context) {
     if(!bytes||!out||!alloc||!dealloc||length<12)return -1;
     const unsigned char *b=bytes;size_t z=length;
+#ifdef MTPK_V2_ONLY
+    int v2=1;
+    if(memcmp(b,"MTPKIDX2",8))return -1;
+#else
     int v2=!memcmp(b,"MTPKIDX2",8);
     if(!v2&&memcmp(b,"MTPKIDX1",8))return -1;
+#endif
     mtp_index *idx=alloc(context,sizeof(*idx));if(!idx)return -1;
     memset(idx,0,sizeof(*idx));idx->alloc=alloc;idx->dealloc=dealloc;idx->context=context;
     const unsigned char *p=b+8,*end=b+z,*q;

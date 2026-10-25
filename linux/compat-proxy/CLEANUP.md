@@ -15,7 +15,7 @@ because much of this code uses compact one-line C definitions.
 | `net.c` | 196 | virtual NEWNET fd aliases, route request validation/ACK queue, loopback ioctl results and state transfer | Active, intentionally narrow implementation. |
 | `dns-unix.h` → `dns-netd.h` | 133 | DNS endpoint parsing; socket alias and port tracking; helper clone/epoll loop; netd request/reply framing; app socket rewrite and fork reset | Active behavior. The old app-facing Unix-socket forwarder is gone; this module's Unix socket is specifically the current netd `dnsproxyd` transport. Renamed to prevent confusing the two. |
 | `state.c` | 112 | fixed-width stream helpers, state validation/import, sealed memfd creation, trusted cross-ABI exec handoff | Active v3 state protocol; despite the header comment's “spike” wording, this is required runtime state, not retired v2 containment code. |
-| `pack-vfd.c` | 295 | packed immutable file descriptor operations and serialization | Active APK/deployment packaging path. |
+| `erofs-index.c` | 245 | MTPKIDX2 metadata lookup, native layer opens, directory enumeration and exec-state transfer | Replaced the ZIP-slice file descriptor path on 2026-10-25. |
 | `links.c` | 312 | marked-store hardlink/index operations and recovery | Active OSTree deployment path. |
 | `sysvipc.c` | 1,575 | shared IPC object/record model, sem/shm/msg operations, waits/wakes, fork/exec lifecycle and state | Active compatibility subsystem. Its `v2` shared-record version is a wire-format revision, not v2 security design. |
 | `host-command.c` | 255 | resident host worker launch, environment/fd transfer and worker lifecycle | Active host integration. `HOST_COMMAND_TEST` branches are compiled only in dedicated host harnesses. |
@@ -229,3 +229,20 @@ and 1.50/7.62 µs (statx), native/proxied. The page-cache-warmed 1 GiB read
 took 90.0/135.0 ms and mmap took 10.0/11.9 ms, native/proxied. These numbers
 measure fd passthrough and memory bandwidth, not cold physical-disk throughput.
 Read and mmap are not handled by the pathname index once the fd is open.
+
+## EROFS layer mounts (2026-10-25)
+
+The launcher pins the stub certificate before mounting package layers.
+`erofs-index.c` reads only MTPKIDX2. Metadata operations and misses use its
+merged view; regular file opens resolve to `<layer mount>/<path>` and return
+ordinary fds. Directory descriptors retain only the index cursor metadata
+needed for merged `getdents64`; there is no ZIP carrier fd state.
+
+Removed from the proxy: file slice offsets and `pack_slice_start`, packed-file
+fd tracking, carrier pinning, memfd payload copies, per-fd seccomp filters,
+MTPKIDX1 mounting, and pack-specific use of the high fd reserve. The reserve
+remains for proxy-owned IPC and shared temporary-lock descriptors. The removed
+ZIP-only tests were `tests/pack-host.py`, `tests/pack-vfd.c`, and the packed
+loader-mapping matrix in `tests/loader-maps.py`; `tests/erofs-host.py` now tests
+index stat/readdir/readlink, native open/fstat/mmap, exec and negative lookup.
+`tests/icd-dup-host.py` now builds MTPKIDX2 directory fixtures.

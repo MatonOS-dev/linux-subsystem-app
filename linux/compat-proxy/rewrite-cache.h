@@ -1,7 +1,7 @@
 /* One atomic decision file per object/site in the stub's cache directory.
  * Cache I/O is raw: virtual mounts and the proxy's own traps must not recurse. */
 static char rewrite_cache_dir[1024];
-struct rewrite_key {uint64_t ino,size,mtime,ctime,slice,site;uint32_t major,minor,mns,cns,build_length;unsigned char build_id[32];};
+struct rewrite_key {uint64_t ino,size,mtime,ctime,site;uint32_t major,minor,mns,cns,build_length;unsigned char build_id[32];};
 struct rewrite_disk {uint64_t magic;struct rewrite_key key;uint64_t function,length;uint32_t crc,reason,count;struct rewrite_site site;};
 static uint32_t rewrite_crc(const unsigned char *p,size_t n){
     uint32_t crc=~0U;
@@ -25,16 +25,16 @@ static uint32_t rewrite_function_crc(const unsigned char *p,size_t n){
     unsigned char *copy=rewrite_function_bytes(p,n);if(!copy)return 0;
     uint32_t crc=rewrite_crc(copy,n);vfs_free(copy);return crc;
 }
-static void rewrite_key_fill(struct rewrite_key *k,const struct statx *s,uint64_t slice,uint64_t site){
-    *k=(struct rewrite_key){.ino=s->stx_ino,.size=s->stx_size,.mtime=s->stx_mtime.tv_sec,.ctime=s->stx_ctime.tv_sec,.slice=slice,.site=site,.major=s->stx_dev_major,.minor=s->stx_dev_minor,.mns=s->stx_mtime.tv_nsec,.cns=s->stx_ctime.tv_nsec};
+static void rewrite_key_fill(struct rewrite_key *k,const struct statx *s,uint64_t site){
+    *k=(struct rewrite_key){.ino=s->stx_ino,.size=s->stx_size,.mtime=s->stx_mtime.tv_sec,.ctime=s->stx_ctime.tv_sec,.site=site,.major=s->stx_dev_major,.minor=s->stx_dev_minor,.mns=s->stx_mtime.tv_nsec,.cns=s->stx_ctime.tv_nsec};
     Elf64_Ehdr eh;int fd=rewrite_current->fd;
-    if(pack_pread(fd,&eh,sizeof(eh),0)!=sizeof(eh) || eh.e_phentsize!=sizeof(Elf64_Phdr) || eh.e_phnum>256)return;
+    if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=sizeof(eh) || eh.e_phentsize!=sizeof(Elf64_Phdr) || eh.e_phnum>256)return;
     for(unsigned i=0;i<eh.e_phnum;i++){
         Elf64_Phdr ph;
-        if(pack_pread(fd,&ph,sizeof(ph),eh.e_phoff+i*sizeof(ph))!=sizeof(ph))return;
+        if(proxy_pread_fd(fd,&ph,sizeof(ph),eh.e_phoff+i*sizeof(ph))!=sizeof(ph))return;
         if(ph.p_type!=PT_NOTE || ph.p_filesz>4096)continue;
         unsigned char notes[4096];
-        if(pack_pread(fd,notes,ph.p_filesz,ph.p_offset)!=(long)ph.p_filesz)continue;
+        if(proxy_pread_fd(fd,notes,ph.p_filesz,ph.p_offset)!=(long)ph.p_filesz)continue;
         for(size_t at=0;at+12<=ph.p_filesz;){
             uint32_t name,length,type;p_copy(&name,notes+at,4);p_copy(&length,notes+at+4,4);p_copy(&type,notes+at+8,4);at+=12;
             if(name>ph.p_filesz-at || (((uint64_t)name+3)&~3ULL)>ph.p_filesz-at)break;
@@ -64,12 +64,12 @@ void proxy_rewrite_cache_init(const char *root){
     if(rewrite_cache_dir[0])return;
     if(!root || root[0]!='/' || p_len(root)>sizeof(rewrite_cache_dir)-32)return;
     size_t n=p_len(root);p_copy(rewrite_cache_dir,root,n);
-    p_copy(rewrite_cache_dir+n,"/maton-rewrite-v2",sizeof("/maton-rewrite-v2"));
+    p_copy(rewrite_cache_dir+n,"/maton-rewrite-v3",sizeof("/maton-rewrite-v3"));
     RAW(PROXY_SC_mkdirat,AT_FDCWD,rewrite_cache_dir,0700,0,0,0);
 }
 static int rewrite_cache_read(struct rewrite_scan *scan,uintptr_t begin){
     struct rewrite_disk disk;struct rewrite_key key;char path[1100];
-    rewrite_key_fill(&key,&scan->identity,scan->slice,scan->offset+scan->target);
+    rewrite_key_fill(&key,&scan->identity,scan->offset+scan->target);
     if(!rewrite_cache_name(path,&key,0))return 0;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);if(fd<0)return 0;
     long got=RAW(PROXY_SC_read,fd,&disk,sizeof(disk),0,0,0);char tail;
@@ -93,7 +93,7 @@ static void rewrite_cache_write(struct rewrite_scan *scan){
     if(!scan->function_size || scan->count>1 || scan->offset>UINT32_MAX)return;
     struct rewrite_disk disk={0};char path[1100],temp[1100];
     disk.magic=0x32574445524e544dULL;
-    rewrite_key_fill(&disk.key,&scan->identity,scan->slice,scan->offset+scan->target);
+    rewrite_key_fill(&disk.key,&scan->identity,scan->offset+scan->target);
     if(!rewrite_cache_name(path,&disk.key,0) || !rewrite_cache_name(temp,&disk.key,1))return;
     disk.function=scan->function_offset+scan->offset;disk.length=scan->function_size;disk.crc=scan->function_crc;
     disk.count=scan->count;disk.reason=!scan->count;

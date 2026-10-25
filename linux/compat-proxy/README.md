@@ -7,7 +7,7 @@ in effect. The proxy translates Linux ABI calls and emulates selected kernel
 objects; it is a compatibility layer, not a security boundary.
 
 The x86_64 and i386 loaders share canonical syscall IDs and core VFS, network,
-SysV IPC, exec-state and packed-file code. Per-architecture backends own raw
+SysV IPC, exec-state and EROFS-index code. Per-architecture backends own raw
 syscalls, BPF filters, register contexts, syscall number maps, user-buffer
 layouts, ELF details and thread/GPU adoption. Cross-class exec is handled by a
 verified sibling loader and a sealed, versioned state stream.
@@ -26,7 +26,7 @@ The host build uses the system C compiler and strict warnings. Android
 production loaders are built with `build-android.sh`; the standalone i386
 loader is built with `build-i386.sh`. Build outputs stay under `build/` here.
 Host tests cover syscall translation, ABI crossings, VFS and links, networking,
-DNS, SysV IPC, packed deployments, threads/signals and loader lifecycle. They
+DNS, SysV IPC, EROFS layer views, threads/signals and loader lifecycle. They
 do not establish compatibility with Android's installed app policy, graphics
 labels or device rendering.
 
@@ -38,8 +38,8 @@ Optional diagnostics:
   syscall totals. Compile with `PROXY_RAW_COUNTER=1` to enable per-trap raw
   syscall counts.
 - `--parent-pid <pid>` applies parent-death handling and validates the parent.
-- Host-only harness options (`--root`, `--map`, `--android-filter`, pack
-  options) are used by tests and host development, not normal app launch.
+- Host-only harness options (`--root`, `--map`, `--map-ro`,
+  `--erofs-mount`, `--android-filter`) are used by tests and host development.
 
 ## Runtime responsibilities
 
@@ -85,11 +85,16 @@ one app session. This storage is session-private and distinct from
 exclusive creation, unlink, and cross-process shared mappings through bwrap
 and the proxy.
 
-`links.c` provides indexed hardlink behavior for marked OSTree-style stores;
-`pack-vfd.c` exposes immutable packed deployment files through virtual
-file descriptors. Both integrate with proxy fd lifetime, VFS path resolution
-and serialized exec state. Unsupported or unsafe cases fall back to kernel
-behavior or documented errors.
+`links.c` provides indexed hardlink behavior for marked OSTree-style stores.
+`erofs-index.c` reads the deployment's MTPKIDX2 merged-view index. It supplies
+stat/lstat/statx metadata, directory entries, symlink targets and negative
+lookups from the index. A file record opens its path under the corresponding
+daemon-mounted EROFS layer and returns the ordinary kernel fd; reads, mmap,
+exec and fstat then use the native descriptor. Only directory descriptors
+retain index state, so `getdents64` can enumerate the merged view across layers.
+The proxy rejects MTPKIDX1 and has no ZIP slice offsets, file-fd table, copy
+fallback, or per-descriptor seccomp filters. The generic fd reserve remains for
+proxy-owned IPC and shared temporary-lock descriptors.
 
 ### Network and DNS
 
@@ -176,6 +181,9 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
   alternate-stack startup; added fd-lifetime coverage.
 - **2026-10-19:** Added packed deployment file support and simplified
   hardlink-store ownership/indexing.
+- **2026-10-25:** Replaced proxy ZIP-slice deployment access with MTPKIDX2
+  metadata lookup over daemon-mounted EROFS layers. Files now open as native
+  descriptors; directory descriptors are tracked only for merged enumeration.
 - **2026-10-17:** Added indexed hardlink emulation and killed-operation
   recovery coverage.
 - **2026-10:** Replaced the separate DNS forwarder with an in-proxy helper

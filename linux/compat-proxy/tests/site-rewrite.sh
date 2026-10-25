@@ -40,7 +40,9 @@ python3 - "$cache" <<'PYCRC'
 import pathlib,sys
 for p in pathlib.Path(sys.argv[1]).rglob('*'):
     if p.is_file():
-        data=bytearray(p.read_bytes());data[128]^=1;p.write_bytes(data)
+        # MTPKIDX2 native fds removed the ZIP slice field from rewrite_key;
+        # the checksum moved from byte 128 to byte 120 in the v3 cache record.
+        data=bytearray(p.read_bytes());data[120]^=1;p.write_bytes(data)
 PYCRC
 XDG_CACHE_HOME="$cache" MATON_PROXY_REWRITE=1 MATON_PROXY_REWRITE_LOG=1 timeout 60 \
     build/linux-layer-v3 --android-filter "$PWD/build/site-rewrite-lazy" 1 \

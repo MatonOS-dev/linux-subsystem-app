@@ -48,11 +48,6 @@ for kind in ('static','dynamic'):
   inspect([root/kind],str(root/kind),refused)
   inspect(['/bin/sh','-c','exec '+str(root/kind)],str(root/kind),refused)
   print(kind,'resident load/exec', str(refused)+' copy fallback' if refused else 'file-backed clean text','PASS',flush=True)
-bundle=base/'build/pack-host/bundle'
-for refused in (False,'EACCES','EPERM'):
- inspect(['--pack-mount','/packed',bundle/'objects.index',bundle,'/packed/maps'],'.zip',refused)
- print('pack main + dynamic linker', str(refused)+' copy fallback' if refused else 'file-backed clean text','PASS',flush=True)
-
 for refused in (False,'EACCES','EPERM'):
  for loader in ('linux-layer-v3','linux-layer-v3-i386'):
   proxy=base/'build'/loader

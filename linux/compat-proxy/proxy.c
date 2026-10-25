@@ -826,10 +826,10 @@ static void sysctl_sync(void){
 static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
 static int self_cwd(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/cwd",5);return p_equal(path,name) || p_equal(path,"/proc/self/cwd") || p_equal(path,"/proc/thread-self/cwd");}
 /* filename_create() checks the dentry before the mount's read-only flag.
- * Do the same for virtual packed entries as well as host-backed paths. */
+ * Do the same for indexed EROFS entries as well as host-backed paths. */
 static int path_exists(const char *path) {
     struct proxy_stat st;
-    long r=pack_stat(path,&st);
+    long r=erofs_stat(path,&st);
     if(r!=-ENOSYS)return r==0;
     return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0;
 }
@@ -846,10 +846,10 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_getxattrat || nr==PROXY_SC_listxattrat || nr==PROXY_SC_setxattrat || nr==PROXY_SC_removexattrat)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
-    /* Empty-path metadata on packed descriptors describes the indexed object,
-     * not the harmless kernel carrier used to keep a real fd/dirfd. */
+    /* Empty-path metadata on indexed directory descriptors describes the
+     * merged object, not the layer-root descriptor used for enumeration. */
     if(a[one] && !*(char *)(uintptr_t)a[one] && at){
-        if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx){int handled=0;long packed=pack_call(nr,a,&handled);if(handled)return packed;}
+        if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx){int handled=0;long packed=erofs_call(nr,a,&handled);if(handled)return packed;}
         if(nr==PROXY_SC_fchmodat2){struct proxy_stat mode;if(!arch_stat_fd(fd,&mode) && S_ISREG(mode.st_mode))a[2]=(a[2]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
     if(proxy_trace && original_path){
@@ -893,12 +893,12 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     }
     if(exclusive_create && path_exists(p)){e=-EEXIST;goto done;}
     if(create_readonly_open && path_exists(p))a[2]&=~O_CREAT;
-    int packed=0;e=pack_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
-    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;pack_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
+    int packed=0;e=erofs_path(nr,a,p,&packed);if(packed){if(e>=0 && nr==PROXY_SC_openat)vfs_fd_record(e,fd,original_path);goto done;}
+    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;int packed_dest=0;erofs_path(PROXY_SC_unlinkat,a,q,&packed_dest);if(packed_dest){e=-EROFS;goto done;}if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p,(int)a[2]);if(e!=-ENOSYS)goto done;}
     if(writing)vfs_resolve_cache_invalidate();
     if((writing || nr==PROXY_SC_truncate) && (links_marker(p) || (q && links_marker(q)))){e=-EPERM;goto done;}
-    if(writing){e=vfs_mount_readonly(pm);int create_pack_root=pack_mount_root(p)&&(nr==PROXY_SC_mkdirat||(nr==PROXY_SC_openat&&(a[2]&O_CREAT)));if(e && create_pack_root)e=0;if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
+    if(writing){e=vfs_mount_readonly(pm);int create_pack_root=erofs_mount_root(p)&&(nr==PROXY_SC_mkdirat||(nr==PROXY_SC_openat&&(a[2]&O_CREAT)));if(e && create_pack_root)e=0;if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
     /* bwrap reads the overflow IDs for its uid maps; Android's policy denies
      * apps the generic proc_sysctl file. Serve the kernel default (65534). */
@@ -989,30 +989,7 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     /* dup3 may replace a sysctl descriptor; apply its written limit first. */
     if(nr==PROXY_SC_dup3 && sysctl_fds)sysctl_sync();
     if(vfs_private_fd((int)a[0])||(nr==PROXY_SC_dup3&&private_close_fd((int)a[1])))return -EBADF;
-    /* Reserved packed files stay in the reserve unless the caller names a
-     * lower descriptor (dup2/dup3), which keeps exact shared-offset dup
-     * semantics; reads stay trapped there. A full reserve gets a copy. */
-    if(pack_readable((int)a[0])){
-        int dupfd=nr==PROXY_SC_dup || (nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC));
-        if(dupfd){
-            long cmd=nr==PROXY_SC_fcntl?a[1]:F_DUPFD;long floor=nr==PROXY_SC_fcntl?a[2]:0;
-            if(floor<proxy_fd_reserve)floor=proxy_fd_reserve;
-            result=RAW(PROXY_SC_fcntl,a[0],cmd,floor,0,0,0);
-            if(result==-EMFILE || result==-EINVAL)result=pack_copy_of((int)a[0],cmd==F_DUPFD_CLOEXEC);
-            else if(result>=0){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);vfs_fd_close((int)result);return tracked;}}
-            return result;
-        }
-    }
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-    /* An explicit lower target for a readable packed file: trap that one
-     * number so its reads still reach the proxy, or replace it with a copy. */
-    if(result>=0 && nr==PROXY_SC_dup3 && pack_readable((int)a[0]) && result<proxy_fd_reserve && proxy_fd_trap((int)result)){
-        long copy=pack_copy_of((int)a[0],(a[2]&O_CLOEXEC)!=0);
-        if(copy<0){RAW(PROXY_SC_close,result,0,0,0,0,0);return copy;}
-        long placed=RAW(PROXY_SC_dup3,copy,result,a[2],0,0,0);RAW(PROXY_SC_close,copy,0,0,0,0,0);
-        if(placed>=0){pack_close((int)placed);vfs_fd_close((int)placed);}
-        return placed;
-    }
         if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
     return result;
 }
@@ -1065,7 +1042,7 @@ static int fd_creator(long n) {
     }
 }
 static long window_leave(long fd){
-    if(fd<proxy_fd_reserve || fd>=proxy_fd_reserve_end || pack_reserved((int)fd) || vfs_private_fd((int)fd))return fd;
+    if(fd<proxy_fd_reserve || fd>=proxy_fd_reserve_end || vfs_private_fd((int)fd))return fd;
     long moved=proxy_fd_relocate(fd);
     if(moved==fd){
         /* Payload descriptor count exhausted: the native kernel says EMFILE. */
@@ -1078,8 +1055,7 @@ static long window_leave(long fd){
     }
     return moved;
 }
-/* Keep the proxy window free of payload descriptors (packed files and
- * proxy-private descriptors belong there; nothing else). */
+/* Keep proxy-owned descriptors in the reserve for IPC and shared locks. */
 static long creator_finish(long nr,proxy_arg_t *a,long result){
     if(result<0 || !(fd_creator(nr) || (nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))))return result;
     if(nr==PROXY_SC_pipe2 || nr==PROXY_SC_socketpair){
@@ -1125,7 +1101,7 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     if(nr!=PROXY_SC_close && nr!=PROXY_SC_openat && nr!=PROXY_SC_newfstatat &&
        nr!=PROXY_SC_statx && nr!=PROXY_SC_readlink && nr!=PROXY_SC_readlinkat && vfs_private_fd((int)a[0]))result=-EBADF;
     else {
-        {PROFILE_BEGIN();result=pack_call(nr,a,&packed);if(!packed)result=file_dispatch(nr,a);PROFILE_END(11);}
+        {PROFILE_BEGIN();result=erofs_call(nr,a,&packed);if(!packed)result=file_dispatch(nr,a);PROFILE_END(11);}
     }
     result=creator_finish(nr,a,result);
     vfs_direct_end(arena);
@@ -1605,7 +1581,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
     if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
-    int packed=0;result=pack_call(nr,a,&packed);if(packed)goto finish;
+    int packed=0;result=erofs_call(nr,a,&packed);if(packed)goto finish;
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
     if(net_handled)goto finish;
@@ -1907,17 +1883,6 @@ clean_mask:
 /* Resident entry deliberately shares syscall translation, not installation.
  * Its caller owns thread routing and must intercept process-global operations. */
 #include ARCH_FILTER_HEADER
-/* Per-descriptor read traps for packed files below the window. Each one is a
- * small filter that can never be removed; the kernel caps a process's total
- * filter size, so a caller that gets an error replaces the descriptor with a
- * standalone copy instead. Already-trapped numbers are not trapped twice. */
-static int fd_traps[256];static unsigned fd_trap_count;
-int proxy_fd_trap(int fd){
-    for(unsigned i=0;i<fd_trap_count;i++)if(fd_traps[i]==fd)return 0;
-    if(fd_trap_count>=sizeof(fd_traps)/sizeof(fd_traps[0]))return -ENOSPC;
-    int r=arch_fd_trap_install(fd);if(r)return r;
-    fd_traps[fd_trap_count++]=fd;proxy_log("pack-fd-trap",fd,0);return 0;
-}
 static struct arch_ip_range *resident_bionic_ranges(size_t *count, int *error) {
     *count=0; *error=0;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);

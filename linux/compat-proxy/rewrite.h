@@ -15,7 +15,7 @@ struct rewrite_attempt {struct rewrite_attempt *next;uintptr_t pc;struct rewrite
 static struct rewrite_attempt *rewrite_attempts;
 
 struct rewrite_site {uint32_t offset;unsigned nr,window;unsigned char original[128];};
-struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,slice,target;size_t size,count,capacity,function_offset,function_size;uint32_t function_crc;struct rewrite_site *sites;};
+struct rewrite_scan {struct rewrite_scan *next;struct statx identity;uint64_t offset,target;size_t size,count,capacity,function_offset,function_size;uint32_t function_crc;struct rewrite_site *sites;};
 static struct rewrite_scan *rewrite_scans;
 static unsigned rewrite_busy;
 static int proxy_rewrite_internal_site(uintptr_t pc){return arch_rewrite_internal_site(pc);}
@@ -261,8 +261,7 @@ static void rewrite_fde_ranges(const unsigned char *ehdata,size_t ehn,uint64_t e
         at=end;
     }
 }
-/* File offsets rather than load biases also cover independently mapped PT_LOADs.
- * pack_pread uses logical file offsets for packed ELF carriers. */
+/* File offsets rather than load biases also cover independently mapped PT_LOADs. */
 static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset){
     if(!rewrite_enabled || !size || begin>UINTPTR_MAX-size)return;
     /* Try-lock, never wait in a signal frame (or after a concurrent fork).
@@ -270,10 +269,9 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     uint64_t started=rewrite_clock();unsigned patched=0;
     struct statx identity={0};struct rewrite_scan *scan=NULL;
     int identified=RAW(PROXY_SC_statx,fd,"",AT_EMPTY_PATH,STATX_BASIC_STATS,&identity,0)==0;
-    uint64_t slice=pack_slice_start(fd);
     if(identified)for(scan=rewrite_scans;scan;scan=scan->next){
         struct statx *a=&scan->identity,*b=&identity;
-        if(scan->target==rewrite_target-begin && scan->offset==offset && scan->size==size && scan->slice==slice &&
+        if(scan->target==rewrite_target-begin && scan->offset==offset && scan->size==size &&
            a->stx_ino==b->stx_ino && a->stx_dev_major==b->stx_dev_major && a->stx_dev_minor==b->stx_dev_minor &&
            a->stx_size==b->stx_size && a->stx_mtime.tv_sec==b->stx_mtime.tv_sec &&
            a->stx_mtime.tv_nsec==b->stx_mtime.tv_nsec && a->stx_ctime.tv_sec==b->stx_ctime.tv_sec &&
@@ -290,19 +288,19 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     }
     if(identified){
         scan=vfs_palloc(sizeof(*scan));
-        if(scan){scan->target=rewrite_target-begin;scan->identity=identity;scan->offset=offset;scan->size=size;scan->slice=slice;
+        if(scan){scan->target=rewrite_target-begin;scan->identity=identity;scan->offset=offset;scan->size=size;
             if(rewrite_cache_read(scan,begin)){vfs_free(scan);goto done;}
         }
     }
     Elf64_Ehdr eh;Elf64_Shdr *sections=NULL;Elf64_Sym *symbols=NULL;
-    if(pack_pread(fd,&eh,sizeof(eh),0)!=sizeof(eh) ||
+    if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=sizeof(eh) ||
        eh.e_ident[0]!=127 || eh.e_ident[1]!='E' || eh.e_ident[2]!='L' || eh.e_ident[3]!='F' ||
        eh.e_ident[EI_CLASS]!=ELFCLASS64 || eh.e_machine!=ARCH_ELF_MACHINE ||
        eh.e_shentsize!=sizeof(Elf64_Shdr) || !eh.e_shnum || eh.e_shnum>4096)goto cleanup;
     size_t section_bytes=(size_t)eh.e_shnum*sizeof(*sections);
     if(eh.e_shoff>UINT64_MAX-section_bytes)goto cleanup;
     sections=vfs_alloc(section_bytes);
-    if(!sections || pack_pread(fd,sections,section_bytes,eh.e_shoff)!=(long)section_bytes)goto cleanup;
+    if(!sections || proxy_pread_fd(fd,sections,section_bytes,eh.e_shoff)!=(long)section_bytes)goto cleanup;
     size_t symbol_bytes=0;
     for(unsigned i=0;i<eh.e_shnum;i++){
         Elf64_Shdr *sh=&sections[i];
@@ -316,7 +314,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
     for(unsigned i=0;i<eh.e_shnum;i++){
         Elf64_Shdr *sh=&sections[i];
         if((sh->sh_type!=SHT_SYMTAB && sh->sh_type!=SHT_DYNSYM) || sh->sh_entsize!=sizeof(Elf64_Sym))continue;
-        if(sh->sh_size%sizeof(Elf64_Sym) || pack_pread(fd,(unsigned char *)symbols+used,sh->sh_size,sh->sh_offset)!=(long)sh->sh_size)goto cleanup;
+        if(sh->sh_size%sizeof(Elf64_Sym) || proxy_pread_fd(fd,(unsigned char *)symbols+used,sh->sh_size,sh->sh_offset)!=(long)sh->sh_size)goto cleanup;
         used+=sh->sh_size;
     }
     for(size_t j=0;j<used/sizeof(*symbols);j++){
@@ -338,7 +336,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
         Elf64_Shdr *names=&sections[eh.e_shstrndx];
         if(names->sh_size<=SIZE_MAX && names->sh_offset<=UINT64_MAX-names->sh_size){
             unsigned char *strings=vfs_alloc((size_t)names->sh_size);
-            if(strings && pack_pread(fd,strings,(size_t)names->sh_size,names->sh_offset)==(long)names->sh_size){
+            if(strings && proxy_pread_fd(fd,strings,(size_t)names->sh_size,names->sh_offset)==(long)names->sh_size){
                 for(unsigned i=0;i<eh.e_shnum;i++)if(sections[i].sh_name<names->sh_size){
                     size_t q=sections[i].sh_name;const char *want=".eh_frame";size_t k=0;
                     while(q<names->sh_size && strings[q] && want[k] && strings[q]==want[k]){q++;k++;}
@@ -346,7 +344,7 @@ static void rewrite_discover(int fd,uintptr_t begin,size_t size,uint64_t offset)
                     Elf64_Shdr *frame=&sections[i];
                     if(frame->sh_size<=SIZE_MAX && frame->sh_offset<=UINT64_MAX-frame->sh_size){
                         unsigned char *data=vfs_alloc((size_t)frame->sh_size);
-                        if(data && pack_pread(fd,data,(size_t)frame->sh_size,frame->sh_offset)==(long)frame->sh_size)
+                        if(data && proxy_pread_fd(fd,data,(size_t)frame->sh_size,frame->sh_offset)==(long)frame->sh_size)
                             rewrite_fde_ranges(data,(size_t)frame->sh_size,frame->sh_addr,sections,eh.e_shnum,scan,begin,size,offset,symbols,used/sizeof(*symbols));
                         vfs_free(data);
                     }
@@ -371,7 +369,7 @@ void proxy_rewrite_mapping(int fd,uintptr_t begin,size_t size,uint64_t offset){
     struct rewrite_mapping *m=vfs_palloc(sizeof(*m));if(!m)return;
     long copy=RAW(PROXY_SC_fcntl,fd,F_DUPFD_CLOEXEC,256,0,0,0);
     if(copy<0){vfs_free(m);return;}
-    if(pack_dup(fd,(int)copy)<0 || resident_fd_set((int)copy,2)<0){RAW(PROXY_SC_close,copy,0,0,0,0,0);vfs_free(m);return;}
+    if(erofs_dup(fd,(int)copy)<0 || resident_fd_set((int)copy,2)<0){RAW(PROXY_SC_close,copy,0,0,0,0,0);vfs_free(m);return;}
     m->begin=begin;m->size=size;m->offset=offset;m->fd=(int)copy;
     char name[64]="/proc/self/fd/";size_t n=p_len(name);char digits[16];size_t k=0;unsigned v=(unsigned)fd;
     do{digits[k++]=(char)('0'+v%10);v/=10;}while(v);
@@ -402,7 +400,7 @@ static void proxy_rewrite_trap_site(uintptr_t continuation,long nr){
 }
 static void rewrite_invalidate(uintptr_t begin,size_t size){
     for(struct rewrite_mapping *m=rewrite_mappings;m;m=m->next)if(m->size && begin<m->begin+m->size && begin+size>m->begin){
-        m->size=0;resident_fd_set(m->fd,0);pack_close(m->fd);RAW(PROXY_SC_close,m->fd,0,0,0,0,0);
+        m->size=0;resident_fd_set(m->fd,0);erofs_close(m->fd);RAW(PROXY_SC_close,m->fd,0,0,0,0,0);
     }
     for(struct rewrite_record *r=rewrite_records;r;r=r->next)if(begin<r->address+r->window && begin+size>r->address)r->active=0;
 }

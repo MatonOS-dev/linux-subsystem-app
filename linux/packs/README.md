@@ -18,8 +18,9 @@ image size, SHA-256), then path-sorted records. Each record carries path,
 OSTree checksum, kind, symlink target, serialized xattrs, layer-table index,
 file size, mtime, uid, gid and mode. A file's layer index identifies the
 complete EROFS image containing it; directories and symlinks use `0xffffffff`.
-`reader.c` reads both this format and `MTPKIDX1`, which remains needed by the
-current compat-proxy mount path.
+The hosted `reader.c` accepts both this deployment view and the separate
+`MTPKIDX1` object-seed index. The compat proxy builds the reader in
+MTPKIDX2-only mode: MTPKIDX1 is no longer a runtime mount format.
 
 Host writer usage: `python3 linux/packs/erofs_layers.py --repo REPO --commit
 CHECKSUM --out OUT --mkfs /path/to/mkfs.erofs`; add `--old-index` and
@@ -204,12 +205,15 @@ it is deliberately not the signed APK hash. Base and split version codes
 must match. Signing preserves alignment, covered by a real host signing test
 and AOSP aapt2 manifest parsing in `linux/stubgen/tests/run-tests.sh`.
 
-`PackLaunch.arguments` resolves those names using PackageManager's parallel
-`splitNames`/`splitSourceDirs` arrays. It writes only the base index and tiny
-symlinks into the stub cache; the existing `--pack-mount /app INDEX DIRECTORY`
-interface then opens and pins real APK carriers. No content is extracted.
-V3Launcher adds these arguments when the base contains the pack index; legacy
-bases retain their current launch path. The shared runtime setup is unchanged.
+At stub launch, `ErofsLaunch` resolves every indexed split through
+PackageManager's parallel `splitNames`/`splitSourceDirs` arrays, pins the stub
+certificate before the first mount, and asks `matonos-erofsd` to mount each
+image with a process-lifetime Binder token. The stub writes the signed base
+index and a split-to-mount-path table into its cache, then passes those to the
+proxy. MTPKIDX2 metadata serves stat, readdir, readlink and misses; file opens
+go directly to the selected EROFS mount and return ordinary kernel fds. The
+proxy does not open ZIP carriers or support the former MTPKIDX1 launch path.
+The object-seed `PackLaunch` helpers remain for update staging only.
 
 Task 4b adds `OstreePacks` and `StagedPacks`. The reader resolves a revision
 with stock `ostree rev-parse`, walks checksum-verified binary commit/dirtree/
