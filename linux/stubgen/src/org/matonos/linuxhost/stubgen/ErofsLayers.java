@@ -9,7 +9,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BooleanSupplier;
 
-/** Deterministic MTPKIDX2 writer for complete EROFS pack layers. */
+/** Deterministic MTPKIDX3 writer for complete EROFS pack layers. */
 public final class ErofsLayers {
     private static final long TARGET=64L*1024*1024;
     private static final int NONE=0xffffffff;
@@ -20,7 +20,7 @@ public final class ErofsLayers {
     }
     public static final class Record {
         public String path,checksum,kind,target=""; public byte[] xattrs=new byte[0];
-        public String layerSha; public File source; public int layer=NONE,uid,gid,mode; public long size,mtime;
+        public String layerSha; public File source; public int layer=NONE,uid,gid,mode; public long size,mtime,inode;
     }
     public static final class Index {
         public final List<Layer> layers=new ArrayList<>();
@@ -42,7 +42,7 @@ public final class ErofsLayers {
     }
     public static Index read(byte[] bytes)throws IOException {
         Index index=new Index();try(DataInputStream in=new DataInputStream(new ByteArrayInputStream(bytes))) {
-            byte[] magic=new byte[8];in.readFully(magic);if(!Arrays.equals(magic,"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))throw new IOException("Invalid MTPKIDX2 magic");
+            byte[] magic=new byte[8];in.readFully(magic);if(!Arrays.equals(magic,"MTPKIDX3".getBytes(StandardCharsets.US_ASCII)))throw new IOException("Invalid MTPKIDX3 magic");
             long count=readLe(in,4);if(count>100000)throw new IOException("Too many EROFS layers");
             for(int i=0;i<count;i++){Layer l=new Layer();l.split=string(in);l.entry=string(in);l.imageSize=readLe(in,8);byte[] h=new byte[32];in.readFully(h);l.sha256=ObjectPacks.hex(h);index.layers.add(l);}
             count=readLe(in,4);if(count>2_000_000)throw new IOException("Too many layer records");
@@ -51,7 +51,7 @@ public final class ErofsLayers {
                 Record r=new Record();r.path=string(in);r.checksum=string(in);r.kind=string(in);r.target=string(in);
                 long n=readLe(in,4);if(n>16*1024*1024)throw new IOException("Oversized xattrs");r.xattrs=new byte[(int)n];in.readFully(r.xattrs);
                 r.layer=(int)readLe(in,4);r.size=readLe(in,8);r.mtime=readLe(in,8);r.uid=(int)readLe(in,4);r.gid=(int)readLe(in,4);r.mode=(int)readLe(in,4);
-                if(readLe(in,4)!=0)throw new IOException("Invalid layer record reserved field");
+                if(readLe(in,4)!=0)throw new IOException("Invalid layer record reserved field");r.inode=readLe(in,8);
                 if(r.layer!=NONE){if(r.layer<0||r.layer>=index.layers.size())throw new IOException("Invalid layer record reference");r.layerSha=index.layers.get(r.layer).sha256;}
                 if(previous!=null&&previous.compareTo(r.path)>=0)throw new IOException("Unsorted layers.index records");previous=r.path;
                 index.records.add(r);
@@ -64,13 +64,13 @@ public final class ErofsLayers {
         Map<String,Integer> ids=new HashMap<>();for(int i=0;i<layers.size();i++)ids.put(layers.get(i).sha256,i);
         List<Record> records=new ArrayList<>(index.records);records.sort((a,b)->utf8Compare(a.path,b.path));
         try(OutputStream out=new BufferedOutputStream(new FileOutputStream(output))) {
-            out.write("MTPKIDX2".getBytes(StandardCharsets.US_ASCII));le(out,layers.size(),4);
+            out.write("MTPKIDX3".getBytes(StandardCharsets.US_ASCII));le(out,layers.size(),4);
             for(Layer l:layers){string(out,l.split);string(out,l.entry);le(out,l.imageSize,8);out.write(hex(l.sha256));}
             le(out,records.size(),4);String previous=null;
             for(Record r:records){if(previous!=null&&previous.equals(r.path))throw new IOException("Duplicate layer path");previous=r.path;
                 string(out,r.path);string(out,r.checksum);string(out,r.kind);string(out,r.target);le(out,r.xattrs.length,4);out.write(r.xattrs);
                 le(out,r.layer==NONE?NONE:Objects.requireNonNull(ids.get(r.layerSha),"missing layer reference"),4);
-                le(out,r.size,8);le(out,r.mtime,8);le(out,r.uid,4);le(out,r.gid,4);le(out,r.mode,4);le(out,0,4);
+                le(out,r.size,8);le(out,r.mtime,8);le(out,r.uid,4);le(out,r.gid,4);le(out,r.mode,4);le(out,0,4);le(out,r.inode,8);
             }
         }
     }
@@ -115,7 +115,7 @@ public final class ErofsLayers {
             if(before!=null&&before.kind.equals(r.kind)&&before.checksum.equals(r.checksum)&&before.target.equals(r.target)&&before.mode==r.mode&&before.uid==r.uid&&before.gid==r.gid&&Arrays.equals(before.xattrs,r.xattrs)) {
                 Layer layer=oldLayerByIndex.get(before.layer);File image=previousImages.get(layer==null?"":layer.sha256);
                 if(layer!=null&&image!=null&&image.isFile()&&image.length()==layer.imageSize&&sha(image).equals(layer.sha256)) {
-                    if(!rewrite.contains(before.layer)) {r.layer=before.layer;r.layerSha=layer.sha256;retained.put(layer.sha256,layer);continue;}
+                    if(!rewrite.contains(before.layer)) {r.layer=before.layer;r.layerSha=layer.sha256;r.inode=before.inode;retained.put(layer.sha256,layer);continue;}
                 }
             }
             changed.add(r);
@@ -161,12 +161,32 @@ public final class ErofsLayers {
             if(cancelled.getAsBoolean())throw new IOException("EROFS layer build cancelled");
             if(p.exitValue()!=0)throw new IOException("mkfs.erofs failed: "+new String(Files.readAllBytes(log.toPath()),StandardCharsets.UTF_8));
             String digest=sha(image);File dest=new File(output,"pack-"+digest+".erofs");if(dest.exists())image.delete();else Files.move(image.toPath(),dest.toPath());
+            dumpLayerInodes(System.getenv().getOrDefault("DUMP_EROFS","dump.erofs"),dest,imageRecords,batch);
             Layer l=new Layer();l.sha256=digest;l.imageSize=dest.length();l.split="pack_"+digest;l.entry="assets/matonos/pack.erofs";
             return new LayerBuild(l);
         } finally {image.delete();tarPipe.delete();log.delete();}
     }
     private static List<List<Record>> batches(List<Record> files){Map<String,List<Record>> dirs=new TreeMap<>();for(Record r:files)dirs.computeIfAbsent(new File(r.path).getParent(),k->new ArrayList<>()).add(r);List<List<Record>> out=new ArrayList<>();List<Record> batch=new ArrayList<>();long size=0;for(List<Record> group:dirs.values()){group.sort((a,b)->utf8Compare(a.path,b.path));for(Record r:group){if(!batch.isEmpty()&&size+r.size>TARGET){out.add(batch);batch=new ArrayList<>();size=0;}batch.add(r);size+=r.size;}}if(!batch.isEmpty())out.add(batch);return out;}
     private static String sha(File file)throws Exception{MessageDigest d=MessageDigest.getInstance("SHA-256");try(InputStream in=new BufferedInputStream(new FileInputStream(file))){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)d.update(b,0,n);}return ObjectPacks.hex(d.digest());}
+    private static void dumpLayerInodes(String dump,File image,List<Record> imageRecords,List<Record> entries)throws Exception {
+        Map<String,Record> byPath=new HashMap<>();for(Record r:entries)byPath.put(r.path,r);
+        List<String> directories=new ArrayList<>();directories.add("/");for(Record r:imageRecords)if(r.kind.equals("dir"))directories.add(r.path);
+        java.util.regex.Pattern row=java.util.regex.Pattern.compile("^\\s*(\\d+)\\s+\\d+\\s+(.+)$");
+        for(String directory:directories) {
+            Process query=new ProcessBuilder(dump,"--path="+directory,"--ls",image.getAbsolutePath()).redirectErrorStream(true).start();
+            String output=new String(query.getInputStream().readAllBytes(),StandardCharsets.UTF_8);
+            if(query.waitFor()!=0)throw new IOException("dump.erofs failed for "+directory+": "+output);
+            String base=directory.equals("/")?"":directory;
+            for(String line:output.split("\\R")) {
+                java.util.regex.Matcher match=row.matcher(line);if(!match.matches())continue;
+                String name=match.group(2);if(name.equals(".")||name.equals(".."))continue;
+                Record record=byPath.get(base+"/"+name);
+                if(record!=null&&(record.kind.equals("file")||record.kind.equals("symlink")))record.inode=Long.parseLong(match.group(1));
+            }
+        }
+        for(Record r:entries)if((r.kind.equals("file")||r.kind.equals("symlink"))&&r.inode==0)
+            throw new IOException("dump.erofs returned no NID for "+r.path);
+    }
     private static String uuid(String hash){char[] c=hash.substring(0,32).toCharArray();c[12]='5';c[16]="89ab".charAt(Character.digit(c[16],16)&3);return new String(c,0,8)+"-"+new String(c,8,4)+"-"+new String(c,12,4)+"-"+new String(c,16,4)+"-"+new String(c,20,12);}
     private static String layerUuid(List<Record> records)throws Exception {
         MessageDigest digest=MessageDigest.getInstance("SHA-256");

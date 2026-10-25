@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise MTPKIDX2 initial and update output with real OSTree commits."""
+"""Exercise MTPKIDX3 initial and update output with real OSTree commits."""
 import hashlib
 import os
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
@@ -21,6 +22,12 @@ FSCK = os.environ.get('FSCK_EROFS', 'fsck.erofs')
 
 def run(*args): subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+def dump_inode(image,path):
+    result=subprocess.run([os.environ.get('DUMP_EROFS','dump.erofs'),f'--path={path}',str(image)],
+                          check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    match=re.search(r'\bNID:\s*(\d+)',result.stdout)
+    assert match, (path,result.stdout)
+    return int(match.group(1))
 def run(*args): subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
 
 def attrs_from_variant(data):
@@ -123,15 +130,20 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-layers-test-') as td:
         run('ostree','commit','--repo='+str(repo),'-b','test','--tree=dir='+str(src),'-m',msg)
         return subprocess.check_output(['ostree','rev-parse','--repo='+str(repo),'test'],text=True).strip()
     a=commit('A'); first=t/'A'
-    run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',a,'--out',str(first),'--mkfs',MKFS)
+    dump=os.environ.get('DUMP_EROFS','dump.erofs')
+    run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',a,'--out',str(first),'--mkfs',MKFS,'--dump',dump)
     layer_a,rows_a=read_index(first/'layers.index')
     repeat=t/'A-repeat'
-    run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',a,'--out',str(repeat),'--mkfs',MKFS)
+    run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',a,'--out',str(repeat),'--mkfs',MKFS,'--dump',dump)
     assert (first/'layers.index').read_bytes()==(repeat/'layers.index').read_bytes()
     for layer in layer_a:
         name='pack-'+layer['sha256']+'.erofs'
         assert (first/name).read_bytes()==(repeat/name).read_bytes(), name
     assert '/usr/bin/tool' in {r['path'] for r in rows_a}
+    for row in rows_a:
+        if row['kind'] in ('file','symlink'):
+            image=first/('pack-'+layer_a[row['layer']]['sha256']+'.erofs')
+            assert row['inode']==dump_inode(image,row['path']), row['path']
     old_hashes={x['sha256'] for x in layer_a}
     expected_a=t/'expected-A'; run('ostree','checkout','--force-copy','--repo='+str(repo),a,str(expected_a))
     reconstruct(first,(layer_a,rows_a),expected_a,t/'extract-A')
@@ -145,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-layers-test-') as td:
     (src/'usr/share/doc/added-link').symlink_to('../bin/tool')
     b=commit('B'); second=t/'B'
     run(sys.executable,str(ROOT/'erofs_layers.py'),'--repo',str(repo),'--commit',b,'--out',str(second),
-        '--mkfs',MKFS,'--old-index',str(first/'layers.index'),'--old-layers',str(first))
+        '--mkfs',MKFS,'--dump',dump,'--old-index',str(first/'layers.index'),'--old-layers',str(first))
     layer_b,rows_b=read_index(second/'layers.index'); paths={r['path']:r for r in rows_b}
     assert '/usr/share/doc/delete' not in paths and '/usr/share/doc/deleted-dir/child' not in paths
     assert '/usr/share/doc/remove-link' not in paths
@@ -154,6 +166,10 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-layers-test-') as td:
     assert paths['/usr/share/doc/added-link']['target']=='../bin/tool'
     assert all(paths[p]['layer']!=0xffffffff for p in ('/usr/share/doc/file-link','/usr/share/doc/link','/usr/share/doc/added-link'))
     assert paths['/usr/share/doc/change']['kind']=='file' and paths['/usr/share/doc/new']['kind']=='file'
+    for row in rows_b:
+        if row['kind'] in ('file','symlink'):
+            image=second/('pack-'+layer_b[row['layer']]['sha256']+'.erofs')
+            assert row['inode']==dump_inode(image,row['path']), row['path']
     assert old_hashes.intersection(x['sha256'] for x in layer_b)
     newly_written=[x for x in layer_b if x['sha256'] not in old_hashes]
     assert len(newly_written)==1, newly_written

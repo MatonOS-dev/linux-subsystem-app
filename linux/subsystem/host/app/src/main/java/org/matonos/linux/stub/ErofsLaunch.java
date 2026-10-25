@@ -28,7 +28,7 @@ final class ErofsLaunch {
             try(InputStream in=zip.getInputStream(e)){index=in.readAllBytes();}
         }
         ByteBuffer b=ByteBuffer.wrap(index).order(ByteOrder.LITTLE_ENDIAN);
-        if(b.remaining()<12||!Arrays.equals(read(b,8),"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))throw new IOException("Invalid MTPKIDX2 layer index");
+        if(b.remaining()<12||!Arrays.equals(read(b,8),"MTPKIDX3".getBytes(StandardCharsets.US_ASCII)))throw new IOException("Invalid MTPKIDX3 layer index");
         long count=Integer.toUnsignedLong(b.getInt());
         Map<String,String> splitPaths=new HashMap<>();for(int i=0;i<names.length;i++)splitPaths.put(names[i],paths[i]);
         Map<String,String> mounted=new LinkedHashMap<>();

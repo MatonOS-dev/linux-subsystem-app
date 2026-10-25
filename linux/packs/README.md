@@ -2,7 +2,7 @@
 
 ## EROFS deployment carriers
 
-### Layered format (MTPKIDX2)
+### Layered format (MTPKIDX3)
 
 `erofs_layers.py` writes one complete EROFS image per pack and a `layers.index`
 file for the already-merged deployment view. There is no index image, overlay,
@@ -17,17 +17,19 @@ across independent refs and each ref's layers; mkfs worker counts are divided
 across concurrent layers so nested builds stay bounded. The Python host writer
 uses the same level and applies the same per-layer worker division.
 
-`layers.index` begins with `MTPKIDX2`, a layer table (split name, ZIP entry,
+`layers.index` begins with `MTPKIDX3`, a layer table (split name, ZIP entry,
 image size, SHA-256), then path-sorted records. Each record carries path,
 OSTree checksum, kind, symlink target, serialized xattrs, layer-table index,
-file size, mtime, uid, gid and mode. A file or symlink's layer index identifies
+file size, mtime, uid, gid, mode and the NID assigned by that EROFS image. The
+writers read NIDs from each completed image with `dump.erofs`; they do not
+derive them from paths or traversal order. A file or symlink's layer index identifies
 the complete EROFS image containing it; directories use `0xffffffff`. Symlink
 targets remain in the index for metadata-only `readlink` and `stat` operations,
 while the layer copy lets `O_PATH|O_NOFOLLOW` opens return native symlink
 descriptors that support `readlinkat(fd, "")`.
 The hosted `reader.c` accepts both this deployment view and the separate
 `MTPKIDX1` object-seed index. The compat proxy builds the reader in
-MTPKIDX2-only mode: MTPKIDX1 is no longer a runtime mount format.
+MTPKIDX3-only mode: older layered indexes are no longer runtime mount formats.
 
 Host writer usage: `python3 linux/packs/erofs_layers.py --repo REPO --commit
 CHECKSUM --out OUT --mkfs /path/to/mkfs.erofs`; add `--old-index` and
@@ -44,8 +46,9 @@ and update seeding; it does not describe the deployed filesystem view.
 file-to-symlink replacement and the C reader. Set `FSCK_EROFS` to make it
 extract only the images named by each index, reconstruct A and B, and compare
 paths, bytes, types, modes, ownership, symlinks and xattrs with OSTree
-checkouts. `tests/erofs-layers-java.py` runs the Android Java layer writer
-against the same pinned `mkfs.erofs` and checks its A→B output with fsck.
+checkouts and verifies recorded NIDs against `dump.erofs`.
+`tests/erofs-layers-java.py` runs the Android Java layer writer against the
+same pinned `mkfs.erofs` and checks its A→B output with fsck.
 
 `erofs_pack.py` builds one read-only EROFS image from an already deployed app
 or runtime tree. The default is LZ4HC level 12; `--compression lzma` selects
@@ -217,7 +220,7 @@ PackageManager's parallel `splitNames`/`splitSourceDirs` arrays, pins the stub
 certificate before the first mount, and asks `matonos-erofsd` to mount each
 image with a process-lifetime Binder token. The stub writes the signed base
 index and a split-to-mount-path table into its cache, then passes those to the
-proxy. MTPKIDX2 metadata serves stat, readdir, readlink and misses; file opens
+proxy. MTPKIDX3 metadata serves stat, readdir, readlink and misses; file opens
 go directly to the selected EROFS mount and return ordinary kernel fds. The
 proxy does not open ZIP carriers or support the former MTPKIDX1 launch path.
 The object-seed `PackLaunch` helpers remain for update staging only.

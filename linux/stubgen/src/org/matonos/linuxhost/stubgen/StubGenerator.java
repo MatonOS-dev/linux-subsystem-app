@@ -338,14 +338,14 @@ public final class StubGenerator {
         return unsigned;
     }
 
-    /** Signs one complete per-pack EROFS image for an MTPKIDX2 layer table. */
+    /** Signs one complete per-pack EROFS image for an MTPKIDX3 layer table. */
     public static File generateErofsLayerPack(File workDir,String packageName,File image,
             File output,int revision)throws Exception {
         File unsigned=generateErofsLayerPackUnsigned(workDir,packageName,image,revision);
         try{sign(unsigned,output);return output;}finally{unsigned.delete();}
     }
 
-    /** Unsigned MTPKIDX2 carrier; layers.index names this split and asset. */
+    /** Unsigned MTPKIDX3 carrier; layers.index names this split and asset. */
     public static File generateErofsLayerPackUnsigned(File workDir,String packageName,File image,
             int revision)throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
@@ -372,7 +372,7 @@ public final class StubGenerator {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
         if(!index.isFile()||index.length()<12)throw new IOException("Missing layers.index");
         byte[] bytes=java.nio.file.Files.readAllBytes(index.toPath());
-        if(!Arrays.equals(Arrays.copyOf(bytes,8),"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))
+        if(!Arrays.equals(Arrays.copyOf(bytes,8),"MTPKIDX3".getBytes(StandardCharsets.US_ASCII)))
             throw new IOException("Invalid layers.index format");
         String split="index_"+fileSha256(index);
         BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
@@ -734,8 +734,8 @@ public final class StubGenerator {
             File layersIndex=packDirectory==null?null:new File(packDirectory,"layers.index");
             if(layersIndex!=null&&layersIndex.isFile()) {
                 byte[] index=java.nio.file.Files.readAllBytes(layersIndex.toPath());
-                if(index.length<12||!Arrays.equals(Arrays.copyOf(index,8),"MTPKIDX2".getBytes(StandardCharsets.US_ASCII)))
-                    throw new IOException("Invalid MTPKIDX2 layers.index");
+                if(index.length<12||!Arrays.equals(Arrays.copyOf(index,8),"MTPKIDX3".getBytes(StandardCharsets.US_ASCII)))
+                    throw new IOException("Invalid MTPKIDX3 layers.index");
                 put(zip,"assets/matonos/layers.index",index);
             }
         }

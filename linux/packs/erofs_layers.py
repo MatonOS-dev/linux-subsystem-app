@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build complete EROFS pack layers and a merged-view MTPKIDX2 index."""
+"""Build complete EROFS pack layers and a merged-view MTPKIDX3 index."""
 import argparse
 import base64
 import concurrent.futures
@@ -8,6 +8,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shutil
 import stat
 import struct
@@ -21,7 +22,7 @@ from gi.repository import OSTree
 from gi.repository import GLib
 
 TARGET = 64 * 1024 * 1024
-MAGIC = b'MTPKIDX2'
+MAGIC = b'MTPKIDX3'
 COMPRESSION_LEVEL = 9
 
 
@@ -52,8 +53,9 @@ def save_index(path, layers, records):
                 string(f, r[k])
             xb = bytes.fromhex(r.get('xattrs', ''))
             f.write(struct.pack('<I', len(xb))); f.write(xb)
-            f.write(struct.pack('<IQQIIII', layer_ids.get(r.get('layer_sha256'), 0xffffffff),
-                                r.get('size', 0), r.get('mtime', 0), r['uid'], r['gid'], r['mode'], 0))
+            f.write(struct.pack('<IQQIIIIQ', layer_ids.get(r.get('layer_sha256'), 0xffffffff),
+                                r.get('size', 0), r.get('mtime', 0), r['uid'], r['gid'], r['mode'], 0,
+                                r.get('inode', 0)))
 
 
 def read_index(path):
@@ -72,7 +74,7 @@ def read_index(path):
     for _ in range(nr):
         r = {k:text() for k in ('path','checksum','kind','target')}
         r['xattrs'] = bytes(take(struct.unpack('<I', take(4))[0])).hex()
-        layer, r['size'], r['mtime'], r['uid'], r['gid'], r['mode'], reserved = struct.unpack('<IQQIIII', take(36))
+        layer, r['size'], r['mtime'], r['uid'], r['gid'], r['mode'], reserved, r['inode'] = struct.unpack('<IQQIIIIQ', take(44))
         if reserved: raise ValueError('nonzero reserved field')
         r['layer'] = layer
         records.append(r)
@@ -172,6 +174,25 @@ def make_image(mkfs, image, records, root, epoch, workers):
         pathlib.Path(fifo_name).unlink(missing_ok=True)
 
 
+def dump_layer_inodes(dump, image, directories, entries):
+    by_path={r['path']:r for r in entries}
+    for directory in ['/'] + [r['path'] for r in directories]:
+        output=subprocess.run([dump,f'--path={directory}','--ls',str(image)],check=True,
+                              stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True).stdout
+        base=directory.rstrip('/')
+        for line in output.splitlines():
+            match=re.match(r'^\s*(\d+)\s+\d+\s+(.+)$',line)
+            if not match: continue
+            name=match.group(2)
+            if name in ('.','..'): continue
+            path=(base+'/'+name) if base else '/'+name
+            record=by_path.get(path)
+            if record and record['kind'] in ('file','symlink'):
+                record['inode']=int(match.group(1))
+    missing=[r['path'] for r in entries if r['kind'] in ('file','symlink') and not r.get('inode')]
+    if missing: raise ValueError(f'dump.erofs returned no NID for {missing[0]}')
+
+
 def batches(records):
     groups = {}
     for r in records:
@@ -189,6 +210,7 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--repo',required=True); ap.add_argument('--commit',required=True)
     ap.add_argument('--out',required=True,type=pathlib.Path); ap.add_argument('--mkfs',default='mkfs.erofs')
+    ap.add_argument('--dump',default='dump.erofs')
     ap.add_argument('--old-index',type=pathlib.Path); ap.add_argument('--old-layers',type=pathlib.Path)
     ap.add_argument('--dead-ratio',type=float,default=.5)
     a=ap.parse_args()
@@ -231,7 +253,9 @@ def main():
             if old and old['layer'] != 0xffffffff and old['kind']==r['kind'] and old['checksum']==r['checksum'] and old['target']==r['target'] and old['mode']==r['mode'] and old['uid']==r['uid'] and old['gid']==r['gid'] and old.get('xattrs','')==r.get('xattrs',''):
                 layer=old_layer_by_id[old['layer']]; reused_by_sha[layer['sha256']]=layer
                 if old['layer'] in rewrite_layers: changed.append(r)
-                else: r['layer_sha256']=layer['sha256']
+                else:
+                    r['layer_sha256']=layer['sha256']
+                    r['inode']=old['inode']
             else: changed.append(r)
         for layer_id in rewrite_layers:
             layer=old_layer_by_id[layer_id];reused_by_sha.pop(layer['sha256'],None)
@@ -262,6 +286,7 @@ def main():
             if dst.exists(): image.unlink()
             else: image.replace(dst)
             layer={'split':'pack_'+sha,'entry':'assets/matonos/pack.erofs','image_size':dst.stat().st_size,'sha256':sha}
+            dump_layer_inodes(a.dump,dst,dirs,batch)
             return layer,sha,batch
         with concurrent.futures.ThreadPoolExecutor(max_workers=layer_workers) as pool:
             built=list(pool.map(lambda item:build_batch(*item),enumerate(batch for batch in new_batches if batch)))

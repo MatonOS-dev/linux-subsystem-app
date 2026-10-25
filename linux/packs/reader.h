@@ -6,7 +6,7 @@ typedef struct mtp_index mtp_index;
 typedef struct {
     const char *path, *checksum, *pack, *kind, *target;
     uint64_t offset, length;
-    uint64_t size, mtime;
+    uint64_t size, mtime, inode;
     uint32_t layer;
     uint32_t uid, gid, mode;
     const unsigned char *xattrs;

@@ -27,11 +27,11 @@ static int string(const unsigned char **p,const unsigned char *end,const char **
 int mtp_index_open_buffer(const void *bytes,size_t length,mtp_index **out,mtp_alloc_fn alloc,mtp_free_fn dealloc,void *context) {
     if(!bytes||!out||!alloc||!dealloc||length<12)return -1;
     const unsigned char *b=bytes;size_t z=length;
-#ifdef MTPK_V2_ONLY
+#ifdef MTPK_V3_ONLY
     int v2=1;
-    if(memcmp(b,"MTPKIDX2",8))return -1;
+    if(memcmp(b,"MTPKIDX3",8))return -1;
 #else
-    int v2=!memcmp(b,"MTPKIDX2",8);
+    int v2=!memcmp(b,"MTPKIDX3",8);
     if(!v2&&memcmp(b,"MTPKIDX1",8))return -1;
 #endif
     mtp_index *idx=alloc(context,sizeof(*idx));if(!idx)return -1;
@@ -59,7 +59,7 @@ int mtp_index_open_buffer(const void *bytes,size_t length,mtp_index **out,mtp_al
         if(v2){ if(string(&p,end,&o->kind,idx)||string(&p,end,&o->target,idx)||take(&p,end,4,&q))goto fail; o->pack=idx->alloc(context,1);if(!o->pack)goto fail;((char*)o->pack)[0]=0; }
         else if(string(&p,end,&o->pack,idx)||string(&p,end,&o->kind,idx)||string(&p,end,&o->target,idx)||take(&p,end,4,&q))goto fail;
         o->xattrs_length=u32(q);if(take(&p,end,o->xattrs_length,&q))goto fail;o->xattrs=q;
-        if(v2){if(take(&p,end,36,&q))goto fail;o->layer=u32(q);o->size=u64(q+4);o->mtime=u64(q+12);o->uid=u32(q+20);o->gid=u32(q+24);o->mode=u32(q+28);if(u32(q+32)|| (o->layer!=UINT32_MAX&&o->layer>=nl))goto fail;}
+        if(v2){if(take(&p,end,44,&q))goto fail;o->layer=u32(q);o->size=u64(q+4);o->mtime=u64(q+12);o->uid=u32(q+20);o->gid=u32(q+24);o->mode=u32(q+28);if(u32(q+32)|| (o->layer!=UINT32_MAX&&o->layer>=nl))goto fail;o->inode=u64(q+36);}
         else {if(take(&p,end,28,&q))goto fail;o->offset=u64(q);o->length=u64(q+8);o->uid=u32(q+16);o->gid=u32(q+20);o->mode=u32(q+24);o->layer=UINT32_MAX;o->size=o->length;if(o->offset>UINT64_MAX-o->length)goto fail;}
     }
     if(p!=end)goto fail;

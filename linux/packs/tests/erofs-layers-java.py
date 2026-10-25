@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the production Java tar/index/layer writer with pinned mkfs/fsck."""
-import os, pathlib, subprocess, sys, tempfile
+import os, pathlib, re, subprocess, sys, tempfile
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 STUB=ROOT.parent/'stubgen'
@@ -29,6 +29,13 @@ with tempfile.TemporaryDirectory(prefix='matonos-erofs-java-') as td:
         subprocess.run([FSCK,'--extract='+str(root),'--preserve','--xattrs',str(image)],check=True,stdout=subprocess.DEVNULL)
         images.append(root)
     paths={r['path']:r for r in rows}
+    dump=os.environ.get('DUMP_EROFS','dump.erofs')
+    for row in rows:
+        if row['kind'] in ('file','symlink'):
+            image=bundle/('pack-'+layers[row['layer']]['sha256']+'.erofs')
+            output=subprocess.check_output([dump,'--path='+row['path'],str(image)],text=True)
+            match=re.search(r'\bNID:\s*(\d+)',output)
+            assert match and row['inode']==int(match.group(1)), (row['path'],row['inode'],output)
     for row in rows:
         if row['kind']=='dir':continue
         if row['kind']=='symlink':
