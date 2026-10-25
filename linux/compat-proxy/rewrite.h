@@ -464,7 +464,9 @@ static void proxy_rewrite_after(long nr,proxy_arg_t *a,long result){
        !(a[2]&PROT_EXEC) && (a[2]&PROT_READ)){
         struct proxy_stat st;
         if(!arch_stat_fd((int)a[4],&st)){
-            struct rewrite_pending *p=vfs_alloc(sizeof(*p));
+            /* The registry outlives this trap; vfs_alloc may come from a
+             * per-trap arena that is reset as soon as dispatch returns. */
+            struct rewrite_pending *p=vfs_palloc(sizeof(*p));
             if(p){*p=(struct rewrite_pending){.next=rewrite_pending,.begin=begin,.size=size,.offset=(uint64_t)a[5],.fd=(int)a[4],.prot=(int)a[2],.identity=st};rewrite_pending=p;}
         }
     }

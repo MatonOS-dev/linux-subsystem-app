@@ -216,7 +216,8 @@ static void hc_server(int listener,char *const *env,long parent) {
         long socket=RAW(PROXY_SC_accept4,listener,0,0,SOCK_CLOEXEC,0,0);if(socket<0)continue;
         struct ucred cred;unsigned size=sizeof(cred);
         if(RAW(PROXY_SC_getsockopt,socket,SOL_SOCKET,SO_PEERCRED,&cred,&size,0)<0||cred.uid!=(unsigned)RAW(PROXY_SC_getuid,0,0,0,0,0,0)){RAW(PROXY_SC_close,socket,0,0,0,0,0);continue;}
-        struct hc_worker_record *worker=vfs_alloc(sizeof(*worker));
+        /* Worker records stay linked across loop iterations. */
+        struct hc_worker_record *worker=vfs_palloc(sizeof(*worker));
         if(!worker){int err=-ENOMEM;hc_io((int)socket,&err,4,1);RAW(PROXY_SC_close,socket,0,0,0,0,0);continue;}
         long server=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
         long pid=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
