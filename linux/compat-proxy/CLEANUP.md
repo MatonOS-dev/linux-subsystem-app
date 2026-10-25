@@ -236,8 +236,8 @@ The launcher pins the stub certificate before mounting package layers.
 `erofs-index.c` reads only MTPKIDX2. Metadata operations and misses use its
 merged view; regular file opens resolve to `<layer mount>/<path>` and return
 ordinary fds. Directory descriptors retain only the index cursor metadata
-needed for merged `getdents64`; there is no ZIP carrier fd state. Per-mount
-iteration now uses an in-process mutex and no private lock descriptor;
+needed for merged `getdents64`; there is no ZIP carrier fd state. Iteration
+now uses an in-process mutex and no private lock descriptor;
 cross-process concurrent iteration on one shared directory description may
 race. The host harness covers concurrent threads on one tracked dirfd.
 
@@ -249,3 +249,15 @@ loader-mapping matrix in `tests/loader-maps.py`; `tests/erofs-host.py` tests
 index stat/readdir/readlink, native open/fstat/mmap, exec, negative lookup and
 thread-concurrent getdents on one tracked dirfd.
 `tests/icd-dup-host.py` now builds MTPKIDX2 directory fixtures.
+
+## SysV IPC arena (2026-10-25)
+
+SysV IPC now keeps semaphore/message metadata and every shared-memory segment
+in one private memfd arena. Segment records store page-aligned offsets; the
+arena allocator grows it with `ftruncate`, while established `MAP_SHARED`
+segment mappings remain valid. Fork inherits the single arena fd;
+cross-class exec state carries its number and verifies the inherited fd. The
+metadata recovery journal and fork tickets remain short-lived sidecar files.
+`tests/sysvipc-workload.c` grows the arena by 8 MiB in a child while parent and
+child hold a live segment mapping, then verifies that mapping still works.
+`tests/sysvipc-host.sh` covers lifecycle, recovery and cross-exec state.

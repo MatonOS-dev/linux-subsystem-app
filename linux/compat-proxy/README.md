@@ -94,7 +94,7 @@ exec and fstat then use the native descriptor. Only directory descriptors
 retain index state, so `getdents64` can enumerate the merged view across layers.
 The proxy rejects MTPKIDX1 and has no ZIP slice offsets, file-fd table, copy
 fallback, or per-descriptor seccomp filters. EROFS iteration uses an
-in-process thread mutex per mount and no private lock descriptor. Concurrent
+in-process thread mutex and no private lock descriptor. Concurrent
 iteration of one shared directory description from separate processes may
 race; that behavior is accepted.
 
@@ -115,8 +115,10 @@ sockets retain kernel behavior. The helper restarts lazily after fork.
 ### SysV IPC and state
 
 `sysvipc.c` implements SysV semaphores, shared memory and message queues using
-shared proxy state and futex coordination because the Android kernel is built
-without SysV IPC. The implementation follows Linux ABI layouts and supports
+one shared memfd arena, offsets and futex coordination because the Android
+kernel is built without SysV IPC. Segment pages and semaphore/message metadata
+share the arena; growing its memfd leaves existing shared mappings valid. The
+implementation follows Linux ABI layouts and supports
 selected lifecycle, blocking, timeout and `SEM_UNDO` behavior; unsupported
 operations are reported by the tests and source comments.
 
