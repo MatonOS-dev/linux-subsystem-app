@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <linux/sched.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -59,27 +61,90 @@ static int reset_child_signal_handlers(void) {
         return 1;
     }
 
+    return 0;
+}
+
+int main(void) {
     int fds[2];
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fds) < 0) {
         fprintf(stderr, "zygote socketpair: %s\n", strerror(errno));
         return 1;
     }
     int enabled = 1;
-    int result = setsockopt(fds[0], SOL_SOCKET, SO_PASSCRED,
-                            &enabled, sizeof(enabled));
-    if (result < 0) fprintf(stderr, "zygote SO_PASSCRED: %s\n", strerror(errno));
-    close(fds[0]);
-    close(fds[1]);
-    return result < 0;
-}
+    if (setsockopt(fds[0], SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled)) < 0) {
+        fprintf(stderr, "zygote SO_PASSCRED: %s\n", strerror(errno));
+        return 1;
+    }
 
-int main(void) {
     pid_t child = fork();
     if (child < 0) {
         perror("fork");
         return 1;
     }
-    if (child == 0) _exit(reset_child_signal_handlers());
+    if (child == 0) {
+        close(fds[0]);
+        if (reset_child_signal_handlers()) _exit(1);
+        int passed = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (passed < 0) _exit(2);
+        const int reply = 0x5a17;
+        struct iovec iov = {.iov_base = (void *)&reply, .iov_len = sizeof(reply)};
+        char control[CMSG_SPACE(sizeof(int))] = {0};
+        struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1,
+                             .msg_control = control, .msg_controllen = sizeof(control)};
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &passed, sizeof(passed));
+        if (sendmsg(fds[1], &msg, 0) != sizeof(reply)) _exit(3);
+        close(passed);
+        close(fds[1]);
+        _exit(0);
+    }
+
+    close(fds[1]);
+    int reply = 0;
+    struct iovec iov = {.iov_base = &reply, .iov_len = sizeof(reply)};
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int))] = {0};
+    struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1,
+                         .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t received = recvmsg(fds[0], &msg, 0);
+    if (received != sizeof(reply) || reply != 0x5a17 ||
+        (msg.msg_flags & (MSG_CTRUNC | MSG_TRUNC))) {
+        fprintf(stderr, "zygote reply receive failed: bytes=%zd reply=%x flags=%x errno=%s\n",
+                received, reply, msg.msg_flags, strerror(errno));
+        return 1;
+    }
+
+    pid_t credential_pid = -1;
+    int received_fd = -1;
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg;
+         cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET) continue;
+        if (cmsg->cmsg_type == SCM_CREDENTIALS &&
+            cmsg->cmsg_len >= CMSG_LEN(sizeof(struct ucred))) {
+            struct ucred cred;
+            memcpy(&cred, CMSG_DATA(cmsg), sizeof(cred));
+            credential_pid = cred.pid;
+        } else if (cmsg->cmsg_type == SCM_RIGHTS &&
+                   cmsg->cmsg_len >= CMSG_LEN(sizeof(int))) {
+            memcpy(&received_fd, CMSG_DATA(cmsg), sizeof(received_fd));
+        }
+    }
+    if (credential_pid != child) {
+        fprintf(stderr, "zygote SCM_CREDENTIALS pid mismatch: got=%d expected=%d\n",
+                credential_pid, child);
+        return 1;
+    }
+    struct stat passed_stat;
+    if (received_fd < 0 || fstat(received_fd, &passed_stat) < 0 ||
+        !S_ISCHR(passed_stat.st_mode)) {
+        fprintf(stderr, "zygote SCM_RIGHTS descriptor invalid: fd=%d errno=%s\n",
+                received_fd, strerror(errno));
+        return 1;
+    }
+    close(received_fd);
+    close(fds[0]);
 
     int status = 0;
     if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
@@ -87,6 +152,6 @@ int main(void) {
         fprintf(stderr, "zygote startup child failed (status=%d)\n", status);
         return 1;
     }
-    puts("PASS Chromium zygote signal reset, SOCK_SEQPACKET pair and SO_PASSCRED");
+    puts("PASS Chromium zygote signal reset, SOCK_SEQPACKET reply, SCM_CREDENTIALS pid check and SCM_RIGHTS");
     return 0;
 }
