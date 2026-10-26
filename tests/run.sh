@@ -47,3 +47,7 @@ java -cp "$OUT/install-handoff/classes:$JSON_JAR:$ANDROID_JAR:$ROOT/linux/stubge
 java -cp "$OUT/install-handoff/classes:$JSON_JAR:$ANDROID_JAR:$ROOT/linux/stubgen/prebuilt/apksig.jar" \
   org.matonos.linux.stub.PackageMountsPlanTest
 "$AAPT2" dump badging "$OUT/install-handoff/handoff.apk" | grep -F "package: name='flatpak.app.org_example_Editor.x86_64.stable.x" >/dev/null
+if [[ ${MATON_HOST_SMOKE:-0} == 1 ]]; then
+  MATON_HOST_SMOKE_HEADLESS_ONLY=1 bash "$ROOT/tests/host-smoke/run.sh" \
+    net.sourceforge.ExtremeTuxRacer org.gnome.TextEditor
+fi
