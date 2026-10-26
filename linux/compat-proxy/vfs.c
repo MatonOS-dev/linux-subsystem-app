@@ -270,6 +270,8 @@ static struct mount *table;
 static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
 static char *oldroot_view;
+static char *global_target(const char *,long *);
+int proxy_mount(const char *,const char *);
 static int stacked_oldroot;
 static int hide_resolver;
 static int prefix(const char *,const char *);
@@ -341,13 +343,25 @@ void vfs_network_payload(int isolated){
 }
 void vfs_executable(const char *path){vfs_free(executable);executable=pdupstr(path);}
 char *vfs_exe(void){return executable?dupstr(executable):NULL;}
-int vfs_bwrap_shm_mkdir(const char *path){
-    if(!executable || !path)return 0;
+static int vfs_is_bwrap(void){
+    if(!executable)return 0;
     const char *base=executable;for(const char *p=executable;*p;p++)if(*p=='/')base=p+1;
-    if(!p_equal(base,"bwrap") && !p_equal(base,"matonos-app-bwrap") &&
-       !p_equal(base,"libmatonos-app-bwrap.so"))return 0;
+    return p_equal(base,"bwrap") || p_equal(base,"matonos-app-bwrap") ||
+        p_equal(base,"libmatonos-app-bwrap.so");
+}
+int vfs_bwrap_shm_mkdir(const char *path){
+    if(!vfs_is_bwrap() || !path)return 0;
     size_t n=p_len(path);return p_equal(path,"/dev/shm") ||
         (n>8 && p_equal(path+n-8,"/dev/shm"));
+}
+long vfs_bwrap_erofs_mkdir(const char *path){
+    if(!vfs_is_bwrap() || !path)return -ENOSYS;
+    char *view=erofs_reverse(path);if(!view)return -ENOSYS;
+    long error=0;char *target=global_target(view,&error);vfs_free(view);
+    if(!target)return error;
+    char *source=vfs_temp_create(&error);
+    if(source){error=proxy_mount(source,target);vfs_free(source);}
+    vfs_free(target);return error;
 }
 /* Worker SIGSYS handlers resolve paths concurrently. A shared cache cannot
  * free/replace keys while another thread reads them, or publish a key before
@@ -359,7 +373,21 @@ static struct mount *lookup(const char *path){
     for(struct mount *m=table;m;m=m->next){size_t k=p_len(m->target);if(prefix(path,m->target)&&k>n){n=k;best=m;}}
     return best;
 }
-static char *physical(const char *path){char *erofs=erofs_physical(path);if(erofs)return erofs;struct mount *m=lookup(path);if(!m)return dupstr(path);return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));}
+static char *physical(const char *path){
+    struct mount *m=lookup(path);size_t erofs_len=erofs_prefix_length(path,root);
+    if(root&&oldroot_view){char *oldroot=join(root,oldroot_view);
+        if(oldroot){size_t old_len=erofs_prefix_length(path,oldroot);if(old_len>erofs_len)erofs_len=old_len;vfs_free(oldroot);}}
+    if(m){const char *target=m->target;size_t mount_len=p_len(target);
+        if(root&&prefix(target,root)){target+=p_len(root);mount_len=p_len(target);if(!*target)mount_len=1;}
+        if(mount_len>=erofs_len)return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));
+    }
+    char *erofs=erofs_physical(path);if(erofs)return erofs;
+    erofs=erofs_physical_rooted(path,root);if(erofs)return erofs;
+    if(root&&oldroot_view){char *oldroot=join(root,oldroot_view);
+        if(oldroot){erofs=erofs_physical_rooted(path,oldroot);vfs_free(oldroot);if(erofs)return erofs;}}
+    if(!m)return dupstr(path);
+    return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));
+}
 struct proxy_open_how {uint64_t flags,mode,resolve;};
 #define PROXY_RESOLVE_NO_XDEV       0x01
 #define PROXY_RESOLVE_NO_MAGICLINKS 0x02

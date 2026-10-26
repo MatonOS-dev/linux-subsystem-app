@@ -30,6 +30,12 @@ DNS, SysV IPC, EROFS package prefix swaps, threads/signals and loader lifecycle.
 do not establish compatibility with Android's installed app policy, graphics
 labels or device rendering.
 
+`tests/erofs-mkdir-host.py` reproduces bwrap's mkdir-parents checks through a
+virtual pivot with `/usr` mapped to a package image. Existing directories must
+return `EEXIST`, new payload directories must return `EROFS`, and bwrap's
+missing bind targets get temporary VFS directories that its next virtual bind
+can replace.
+
 Optional diagnostics:
 
 - `--trace` writes trap and virtual-operation details to the saved diagnostic
@@ -201,6 +207,10 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
 - **2026-10-26:** Replaced EROFS layer-index lookup with one mounted image per
   package and target-to-mount prefix swaps. EROFS path metadata and descriptors
   now stay entirely in the kernel.
+- **2026-10-26:** Preserve package-prefix swaps through virtual roots and
+  pivots. Existing directories on read-only package images return `EEXIST` to
+  bwrap's mkdir-parents checks; new payload directories return `EROFS`, while
+  missing bwrap bind targets are represented by temporary VFS directories.
 - **2026-10-17:** Added indexed hardlink emulation and killed-operation
   recovery coverage.
 - **2026-10:** Replaced the separate DNS forwarder with an in-proxy helper

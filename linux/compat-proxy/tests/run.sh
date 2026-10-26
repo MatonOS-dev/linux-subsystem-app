@@ -256,6 +256,7 @@ python3 tests/packaging.py
 bash tests/exec-errors.sh
 
 python3 tests/erofs-host.py
+python3 tests/erofs-mkdir-host.py
 python3 tests/erofs-ldconfig-host.py
 python3 tests/icd-dup-host.py
 

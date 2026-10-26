@@ -891,6 +891,13 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         if(vfs_bwrap_shm_mkdir(original_path)){e=0;goto done;}
         e=-EEXIST;goto done;
     }
+    /* A package EROFS prefix must keep normal mkdir semantics: existing
+     * directories were handled above, while a new payload directory is EROFS.
+     * bwrap uses mkdir-parents for bind targets, so give it a temporary VFS
+     * directory that the following virtual bind can replace. */
+    if(nr==PROXY_SC_mkdirat){char *package_path=erofs_reverse(p);
+        if(package_path){vfs_free(package_path);e=vfs_bwrap_erofs_mkdir(p);if(e==-ENOSYS)e=-EROFS;goto done;}
+    }
     if(exclusive_create && path_exists(p)){e=-EEXIST;goto done;}
     if(create_readonly_open && path_exists(p))a[2]&=~O_CREAT;
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}

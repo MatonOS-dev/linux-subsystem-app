@@ -16,10 +16,29 @@ static struct erofs_mount *erofs_find(const char *path){
     for(struct erofs_mount *m=erofs_mounts;m;m=m->next){size_t n=p_len(m->target);if(n>length&&erofs_prefix(path,m->target)){best=m;length=n;}}
     return best;
 }
+static const char *erofs_root_view(const char *path,const char *root){
+    if(!path||!root||!*root)return NULL;
+    size_t n=p_len(root);if(n>1){for(size_t i=0;i<n;i++)if(path[i]!=root[i])return NULL;
+        if(path[n]&&path[n]!='/')return NULL;}
+    else if(path[0]!='/')return NULL;
+    const char *view=n==1?path:path+n;return *view?view:"/";
+}
+size_t erofs_prefix_length(const char *path,const char *root){
+    struct erofs_mount *m=erofs_find(path);if(m)return p_len(m->target);
+    const char *view=erofs_root_view(path,root);m=view?erofs_find(view):NULL;
+    return m?p_len(m->target):0;
+}
 char *erofs_physical(const char *path){
     struct erofs_mount *m=erofs_find(path);if(!m)return NULL;
     const char *suffix=path+p_len(m->target);if(!*suffix)suffix="/";
     return join(m->directory,suffix);
+}
+/* VFS paths are made global before physical() is called. After pivot_root or
+ * chroot that adds the virtual root in front of package paths, while package
+ * prefixes remain rooted at the app's / (for example /usr). Match both views
+ * so a rooted /usr/lib/... call still reaches the package image. */
+char *erofs_physical_rooted(const char *path,const char *root){
+    const char *view=erofs_root_view(path,root);return view?erofs_physical(view):NULL;
 }
 char *erofs_reverse(const char *path){
     struct erofs_mount *best=NULL;size_t length=0;
