@@ -36,13 +36,14 @@ final class TarStream {
                 if(relative.isEmpty())continue;
                 String name="extra/"+relative; boolean symlink=Files.isSymbolicLink(path);
                 if(Files.isDirectory(path,LinkOption.NOFOLLOW_LINKS)) {
-                    header(out,name.endsWith("/")?name:name+"/",mode(path,0755),0,'5',"");
+                    header(out,name.endsWith("/")?name:name+"/",0755,0,'5',"");
                 } else if(symlink) {
                     String target=Files.readSymbolicLink(path).toString();
                     if(target.length()>100)throw new IOException("Extra-data symlink target is too long for ustar");
                     header(out,name,0777,0,'2',target);
                 } else if(Files.isRegularFile(path,LinkOption.NOFOLLOW_LINKS)) {
-                    long size=Files.size(path);header(out,name,mode(path,0644),size,'0',"");
+                    long size=Files.size(path);int permissions=(mode(path,0644)&0111)!=0?0755:0644;
+                    header(out,name,permissions,size,'0',"");
                     try(InputStream in=PlaceholderFiles.open(path.toFile())){copy(in,out,size);}
                     pad(out,size);
                 } else throw new IOException("Unsupported file in apply_extra output: "+name);
@@ -75,12 +76,12 @@ final class TarStream {
             if(!target.equals(root)&&Files.isSymbolicLink(target))throw new IOException("Tar entry replaces a symlink");
             if(type=='5') {
                 if(size!=0)throw new IOException("Directory tar entry has data");
-                Files.createDirectories(target);
+                Files.createDirectories(target);setMode(target,0755);
             } else if(type=='0'||type==0) {
                 if(size<0||size>Integer.MAX_VALUE)throw new IOException("Tar entry too large");
                 Files.createDirectories(target.getParent());
                 try(OutputStream out=new BufferedOutputStream(Files.newOutputStream(target))) {copy(in,out,size);}
-                pad(in,size);setMode(target,(int)mode&0777);
+                pad(in,size);setMode(target,((int)mode&0111)!=0?0755:0644);
             } else if(type=='2') {
                 if(size!=0||link.isEmpty())throw new IOException("Invalid symlink tar entry");
                 Path relative=Path.of(link);
