@@ -61,7 +61,7 @@ public final class ExtraProbeService extends Service {
             env.put("PATH",nativeDir+":/system/bin");env.put("LD_LIBRARY_PATH",nativeDir+":/system/lib64");
             env.put("LC_ALL","C");env.put("HOME","/");env.put("TMPDIR","/tmp");
             java.lang.Process child=builder.start();
-            try(java.io.InputStream input=new java.io.FileInputStream(keepFile.getFileDescriptor());
+            try(java.io.InputStream input=new ParcelFileDescriptor.AutoCloseInputStream(keepFile);
                     java.io.OutputStream stream=child.getOutputStream()) {
                 byte[] buffer=new byte[4096];int count;while((count=input.read(buffer))!=-1)stream.write(buffer,0,count);
             }

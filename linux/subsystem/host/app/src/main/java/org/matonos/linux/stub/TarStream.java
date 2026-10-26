@@ -19,10 +19,42 @@ import java.util.List;
 import java.util.Set;
 import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 
-/** Small ustar transfer for /app/extra; ownership, timestamps, xattrs and special files are never imported. */
+/** Ustar transport for isolated Flatpak deploy inputs and /app/extra output. */
 final class TarStream {
     private static final int BLOCK=512;
     private TarStream() { }
+
+    /** Streams staging and a materialized repo as ordinary files into the isolated UID's bwrap tmpfs. */
+    static void writeDeployment(Path installation,Path repo,OutputStream destination) throws IOException {
+        OutputStream out=new BufferedOutputStream(destination);
+        writeTree(installation,"install",out,true);
+        writeTree(repo,"repo",out,false);
+        out.write(new byte[BLOCK*2]);out.flush();
+    }
+
+    private static void writeTree(Path root,String name,OutputStream out,boolean staging) throws IOException {
+        header(out,name+"/",0755,0,'5',"");
+        List<Path> entries=new ArrayList<>();
+        try(java.util.stream.Stream<Path> paths=Files.walk(root)) { paths.forEach(entries::add); }
+        entries.sort(Comparator.comparing(path->root.relativize(path).toString()));
+        for(Path path:entries) {
+            Path relative=root.relativize(path);String rel=relative.toString().replace(java.io.File.separatorChar,'/');
+            if(rel.isEmpty()||staging&&(rel.equals("repo")||rel.startsWith("repo/")||rel.equals("isolated-repo")
+                    ||rel.startsWith("isolated-repo/")||rel.equals(".v3-store-root")))continue;
+            if(staging&&rel.startsWith(".v3-inodes/"))continue;
+            String entry=name+"/"+rel;boolean symlink=Files.isSymbolicLink(path);
+            if(Files.isDirectory(path,LinkOption.NOFOLLOW_LINKS))header(out,entry.endsWith("/")?entry:entry+"/",0755,0,'5',"");
+            else if(symlink) {
+                String target=Files.readSymbolicLink(path).toString();
+                header(out,entry,0777,0,'2',target);
+            } else if(Files.isRegularFile(path,LinkOption.NOFOLLOW_LINKS)) {
+                long size=Files.size(path);int permissions=(mode(path,0644)&0111)!=0?0755:0644;
+                header(out,entry,permissions,size,'0',"");
+                try(InputStream in=PlaceholderFiles.open(path.toFile())) { copy(in,out,size); }
+                pad(out,size);
+            } else throw new IOException("Unsupported staged Flatpak file: "+entry);
+        }
+    }
 
     static void writeExtra(Path extra,OutputStream destination) throws IOException {
         OutputStream out=new BufferedOutputStream(destination);
@@ -115,8 +147,7 @@ final class TarStream {
     private static void verifyHeader(byte[] h) throws IOException {
         long expected=octal(h,148,8),actual=0;for(int i=0;i<BLOCK;i++)actual+=(i>=148&&i<156)?32:h[i]&255;
         if(expected!=actual||!field(h,257,5).equals("ustar"))throw new IOException("Invalid ustar header");
-        if(octal(h,108,8)!=0||octal(h,116,8)!=0)throw new IOException("Tar ownership metadata is not accepted");
-        for(int i=265;i<345;i++)if(h[i]!=0)throw new IOException("Tar group metadata is not accepted");
+        // UIDs, GIDs and names are informational only; extractExtra never applies them.
         for(int i=500;i<BLOCK;i++)if(h[i]!=0)throw new IOException("Tar extension metadata is not accepted");
     }
     private static int mode(Path path,int fallback) {

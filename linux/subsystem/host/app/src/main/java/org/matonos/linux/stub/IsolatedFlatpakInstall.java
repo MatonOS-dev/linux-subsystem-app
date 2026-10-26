@@ -32,15 +32,11 @@ final class IsolatedFlatpakInstall {
             java.nio.file.Files.createDirectories(new File(installation,name).toPath());
         java.nio.file.Files.createDirectories(new File(installation,"home/.local/share").toPath());
         java.nio.file.Files.createDirectories(new File(installation,"home/.config").toPath());
-        for(String name:new String[]{"home","tmp","run","cache"})chmodTree(new File(installation,name),0777);
         File repoClone=new File(installation,"isolated-repo");
         if(repoClone.exists())remove(repoClone);
         cloneRepo(new File(installation,"repo").toPath(),repoClone.toPath());
-        int rootMode=android.system.Os.stat(installation.getPath()).st_mode&07777;
-        ParcelFileDescriptor input=ParcelFileDescriptor.open(installation,ParcelFileDescriptor.MODE_READ_ONLY);
-        ParcelFileDescriptor repo=ParcelFileDescriptor.open(repoClone,ParcelFileDescriptor.MODE_READ_ONLY);
+        ParcelFileDescriptor[] archive=ParcelFileDescriptor.createPipe();
         ParcelFileDescriptor[] pipe=ParcelFileDescriptor.createPipe();
-        android.system.Os.chmod(installation.getPath(),0777);
         CountDownLatch connected=new CountDownLatch(1);
         AtomicReference<IIsolatedFlatpakInstall> remoteService=new AtomicReference<>();
         ServiceConnection connection=new ServiceConnection() {
@@ -50,15 +46,20 @@ final class IsolatedFlatpakInstall {
             @Override public void onServiceDisconnected(ComponentName name) { remoteService.set(null); }
         };
         if(!context.bindService(new Intent(context,IsolatedFlatpakInstallService.class),connection,Context.BIND_AUTO_CREATE)) {
-            input.close();repo.close();pipe[0].close();pipe[1].close();
-            android.system.Os.chmod(installation.getPath(),rootMode);remove(repoClone);
+            archive[0].close();archive[1].close();pipe[0].close();pipe[1].close();
+            remove(repoClone);
             throw new IOException("Could not bind Flatpak isolated deploy service");
         }
-        try(input;repo;ParcelFileDescriptor write=pipe[1];
+        try(ParcelFileDescriptor archiveRead=archive[0];
+                ParcelFileDescriptor.AutoCloseOutputStream archiveOut=new ParcelFileDescriptor.AutoCloseOutputStream(archive[1]);
+                ParcelFileDescriptor write=pipe[1];
                 ParcelFileDescriptor.AutoCloseInputStream stream=new ParcelFileDescriptor.AutoCloseInputStream(pipe[0])) {
             if(!connected.await(30,TimeUnit.SECONDS)||remoteService.get()==null)
                 throw new IOException("Flatpak isolated deploy service did not connect");
-            remoteService.get().deploy(input,repo,write,remote,ref,commit,subpaths.toArray(new String[0]));
+            remoteService.get().deploy(archiveRead,write,remote,ref,commit,subpaths.toArray(new String[0]));
+            archiveRead.close();
+            TarStream.writeDeployment(installation.toPath(),repoClone.toPath(),archiveOut);
+            archiveOut.close();
             write.close();
             DataInputStream response=new DataInputStream(stream);
             int status=response.read();
@@ -67,7 +68,6 @@ final class IsolatedFlatpakInstall {
                 byte[] message=new byte[length];response.readFully(message);throw new IOException(new String(message,java.nio.charset.StandardCharsets.UTF_8));
             }
             if(status!=0)throw new IOException("Unexpected isolated deploy status: "+status);
-            grantDeploymentAccess(installation,repoClone,rootMode);
             File files=new File(deployment,"files");
             File transfer=new File(installation.getParentFile(),"isolated-extra-"+java.util.UUID.randomUUID());
             if(!transfer.mkdirs())throw new IOException("Cannot create isolated extra staging directory");
@@ -79,7 +79,6 @@ final class IsolatedFlatpakInstall {
                 if(received.exists()&&!received.renameTo(target))throw new IOException("Cannot move validated extra-data tree into the deployed package");
             } finally {remove(transfer);}
         } finally {
-            try {grantDeploymentAccess(installation,repoClone,rootMode);}catch(Exception ignored){}
             remove(repoClone);
             try{context.unbindService(connection);}catch(IllegalArgumentException ignored){}
         }
@@ -115,27 +114,6 @@ final class IsolatedFlatpakInstall {
             }
         });
         try {android.system.Os.chmod(destination.toString(),0777);}catch(android.system.ErrnoException e){throw new IOException(e);}
-    }
-    /** Make deploy output readable to the subsystem, then restore the private store root mode. */
-    private static void grantDeploymentAccess(File installation,File repoClone,int rootMode) throws IOException {
-        java.nio.file.Files.walkFileTree(installation.toPath(),new SimpleFileVisitor<Path>() {
-            private boolean skipped(Path path){return path.equals(repoClone.toPath())||path.equals(installation.toPath().resolve("repo"));}
-            private void chmod(Path path,int mode)throws IOException {try{android.system.Os.chmod(path.toString(),mode);}catch(android.system.ErrnoException e){throw new IOException(e);}}
-            @Override public FileVisitResult preVisitDirectory(Path dir,BasicFileAttributes attrs)throws IOException {
-                if(skipped(dir))return FileVisitResult.SKIP_SUBTREE;
-                if(!dir.equals(installation.toPath()))chmod(dir,0777);
-                return FileVisitResult.CONTINUE;
-            }
-            @Override public FileVisitResult visitFile(Path file,BasicFileAttributes attrs)throws IOException {
-                if(!java.nio.file.Files.isSymbolicLink(file))chmod(file,java.nio.file.Files.isExecutable(file)?0777:0666);
-                return FileVisitResult.CONTINUE;
-            }
-        });
-        try {android.system.Os.chmod(installation.getPath(),rootMode);}catch(android.system.ErrnoException e){throw new IOException(e);}
-    }
-    private static void chmodTree(File tree,int mode)throws IOException {
-        try {android.system.Os.chmod(tree.getPath(),mode);}catch(android.system.ErrnoException e){throw new IOException(e);}
-        File[] children=tree.listFiles();if(children!=null)for(File child:children)if(child.isDirectory()&&!java.nio.file.Files.isSymbolicLink(child.toPath()))chmodTree(child,mode);
     }
     private static void remove(File tree) {
         if(!java.nio.file.Files.isSymbolicLink(tree.toPath())&&tree.isDirectory()) {File[] children=tree.listFiles();if(children!=null)for(File child:children)remove(child);}

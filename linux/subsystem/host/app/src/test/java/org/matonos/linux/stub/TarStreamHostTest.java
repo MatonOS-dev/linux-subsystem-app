@@ -29,6 +29,22 @@ public final class TarStreamHostTest {
             if(!Files.readSymbolicLink(received.resolve("lib/current")).toString().equals("lib/chrome"))throw new AssertionError("relative symlink did not round trip");
             if(!Files.readSymbolicLink(received.resolve("lib/absolute")).toString().equals("/app/extra/lib/chrome"))throw new AssertionError("absolute symlink target changed");
             if(!Files.readSymbolicLink(received.resolve("lib/parent-link")).toString().equals("../../outside"))throw new AssertionError("relative parent symlink target changed");
+            Path install=Files.createDirectories(root.resolve("install/app/files"));
+            Files.writeString(install.resolve("deploy.txt"),"deployment payload");
+            Path staging=install.getParent().getParent();
+            Files.createDirectories(staging.resolve("repo/objects"));Files.writeString(staging.resolve("repo/objects/object"),"repo payload");
+            Files.writeString(staging.resolve(".v3-store-root"),"private marker");
+            Files.createDirectories(staging.resolve("isolated-repo"));
+            Path archive=root.resolve("deployment.tar");
+            try(java.io.OutputStream out=Files.newOutputStream(archive)) {
+                TarStream.writeDeployment(staging,staging.resolve("repo"),out);
+            }
+            Path unpack=Files.createDirectories(root.resolve("unpacked"));
+            Process untar=new ProcessBuilder("tar","-xf",archive.toString(),"-C",unpack.toString()).inheritIO().start();
+            if(untar.waitFor()!=0)throw new AssertionError("deployment tar could not be extracted");
+            if(!Files.readString(unpack.resolve("install/app/files/deploy.txt")).equals("deployment payload"))throw new AssertionError("deployment tree was not streamed");
+            if(!Files.readString(unpack.resolve("repo/objects/object")).equals("repo payload"))throw new AssertionError("repo tree was not streamed");
+            if(Files.exists(unpack.resolve("install/.v3-store-root"))||Files.exists(unpack.resolve("install/isolated-repo")))throw new AssertionError("private staging data entered the archive");
             System.out.println("PASS isolated apply_extra tar tree and traversal checks");
         } finally {
             try(java.util.stream.Stream<Path> paths=Files.walk(root)) {paths.sorted(java.util.Comparator.reverseOrder()).forEach(path->{try{Files.deleteIfExists(path);}catch(Exception ignored){}});}
