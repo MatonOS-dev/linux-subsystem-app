@@ -817,6 +817,62 @@ void proxy_log(const char *kind,long nr,long result) {
 void proxy_trace_clone_result(long child,long flags) {
     if(proxy_trace)proxy_log("lifecycle-clone",flags,child);
 }
+static void trace_number(uint64_t value) {
+    char digits[24];unsigned n=0;
+    do {digits[n++]=(char)('0'+value%10);value/=10;} while(value);
+    while(n)RAW(PROXY_SC_write,proxy_diagnostic_fd,&digits[--n],1,0,0,0);
+}
+static void trace_unix_io(long nr,proxy_arg_t a[6],long result) {
+    if(!proxy_trace)return;
+    int fd=(int)a[0],domain=0,type=0;socklen_t size=sizeof(int);
+    if(RAW(PROXY_SC_getsockopt,fd,SOL_SOCKET,SO_DOMAIN,&domain,&size,0)<0 || domain!=AF_UNIX)return;
+    size=sizeof(int);
+    if(RAW(PROXY_SC_getsockopt,fd,SOL_SOCKET,SO_TYPE,&type,&size,0)<0)return;
+    uint64_t requested=0;
+    struct proxy_message message={0};
+    int has_message=0;
+    if(nr==PROXY_SC_sendmsg || nr==PROXY_SC_recvmsg) {
+        if(!a[1])return;
+        message=arch_message_read((void *)(uintptr_t)a[1]);has_message=1;
+        for(uint64_t i=0;i<message.iovlen;i++) {
+            struct proxy_iovec v=arch_iovec_read((void *)(uintptr_t)message.iov,(size_t)i);
+            if(v.len>UINT64_MAX-requested){requested=UINT64_MAX;break;}
+            requested+=v.len;
+        }
+    } else requested=(uint64_t)a[2];
+    emit("v3 unix-io op=");
+    const char *op=nr==PROXY_SC_sendmsg?"sendmsg":nr==PROXY_SC_recvmsg?"recvmsg":
+        nr==PROXY_SC_sendto?"sendto":nr==PROXY_SC_recvfrom?"recvfrom":
+        nr==PROXY_SC_write?"write":"read";
+    emit(op);emit(" fd=");trace_number((uint64_t)fd);
+    emit(" type=");trace_number((uint64_t)type);
+    emit(" requested=");trace_number(requested);
+    emit(" returned=");if(result<0){emit("-");trace_number((uint64_t)(-(result+1))+1);}else trace_number((uint64_t)result);
+    unsigned rights=0;int credential_pid=-1;emit(" cmsgs=");
+    int first=1;
+    if(has_message && message.control && message.controllen) {
+        size_t offset=0,limit=(size_t)message.controllen;
+        while(offset+sizeof(struct cmsghdr)<=limit) {
+            struct cmsghdr header;p_copy(&header,(void *)(uintptr_t)(message.control+offset),sizeof(header));
+            if(header.cmsg_len<CMSG_LEN(0) || header.cmsg_len>limit-offset)break;
+            if(!first)emit(",");
+            first=0;
+            trace_number((uint64_t)header.cmsg_level);emit(":");trace_number((uint64_t)header.cmsg_type);
+            size_t payload=header.cmsg_len-CMSG_LEN(0);
+            uintptr_t data=(uintptr_t)message.control+offset+CMSG_LEN(0);
+            if(header.cmsg_level==SOL_SOCKET && header.cmsg_type==SCM_RIGHTS)
+                rights+=(unsigned)(payload/sizeof(int));
+            if(header.cmsg_level==SOL_SOCKET && header.cmsg_type==SCM_CREDENTIALS && payload>=sizeof(struct ucred)) {
+                struct ucred cred;p_copy(&cred,(void *)data,sizeof(cred));credential_pid=cred.pid;
+            }
+            size_t step=CMSG_ALIGN(header.cmsg_len);if(!step || step>limit-offset)break;offset+=step;
+        }
+    }
+    if(first)emit("-");
+    emit(" rights=");trace_number(rights);emit(" cred_pid=");
+    if(credential_pid<0)emit("-");else trace_number((uint64_t)credential_pid);
+    emit("\n");
+}
 static int app_allowed(long nr) {
     for(unsigned i=0;i<sizeof(android_allowed)/sizeof(android_allowed[0]);i++)
         if(android_allowed[i]==arch_encode_syscall(nr)) return 1;
@@ -2072,6 +2128,9 @@ clone_retry:
 finish:
     result=creator_finish(nr,a,result);
     proxy_rewrite_after(nr,a,result);
+    if(nr==PROXY_SC_sendmsg || nr==PROXY_SC_recvmsg || nr==PROXY_SC_sendto ||
+       nr==PROXY_SC_recvfrom || nr==PROXY_SC_write || nr==PROXY_SC_read)
+        trace_unix_io(nr,a,result);
     if(result>=0 && nr==PROXY_SC_mmap)android_pc_cache_invalidate_range((uintptr_t)result,(uintptr_t)result+(uintptr_t)a[1]);
     if(result>=0 && nr==PROXY_SC_munmap)android_pc_cache_invalidate_range((uintptr_t)a[0],(uintptr_t)a[0]+(uintptr_t)a[1]);
     if(result>=0 && nr==PROXY_SC_mremap){

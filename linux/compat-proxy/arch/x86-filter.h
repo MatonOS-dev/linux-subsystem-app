@@ -327,14 +327,20 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_JMP|BPF_JSET|BPF_K,0,1,CLONE_VM);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-    /* sendto without a destination stays native (both pointer halves). */
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,6,encode(PROXY_SC_sendto));
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4]));
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
-    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4])+4);
-    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    /* Without --trace, sendto with no destination stays native. In trace
+     * mode trap it too so AF_UNIX byte counts are visible. */
+    if(proxy_trace) {
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,encode(PROXY_SC_sendto));
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    } else {
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,6,encode(PROXY_SC_sendto));
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4]));
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,0);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[4])+4);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,0);
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    }
     for(long nr=0;nr<512;nr++) if((ours(decode(nr)) || fd_creator(decode(nr)) ||
         (audit==AUDIT_ARCH_I386 && (nr==102 || nr==117 || nr==243 || nr==244))) &&
         nr!=encode(PROXY_SC_clone) && nr!=encode(PROXY_SC_sendto)) {

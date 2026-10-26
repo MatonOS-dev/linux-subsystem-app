@@ -66,7 +66,12 @@ static int reset_child_signal_handlers(void) {
 
 int main(void) {
     int fds[2];
-    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fds) < 0) {
+    /* Zypak's mimic zygote uses a SOCK_STREAM pair and writes its boot and
+     * hello strings as separate sendmsg calls. Chromium reads each fixed
+     * string with RecvMsgWithPid; exercise that exact framing, including the
+     * kernel-added credential cmsg, before testing the later fd-bearing fork
+     * request. */
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) < 0) {
         fprintf(stderr, "zygote socketpair: %s\n", strerror(errno));
         return 1;
     }
@@ -84,30 +89,80 @@ int main(void) {
     if (child == 0) {
         close(fds[0]);
         if (reset_child_signal_handlers()) _exit(1);
+        static const char boot[] = "ZYGOTE_BOOT";
+        static const char hello[] = "ZYGOTE_OK";
+        struct iovec iov = {.iov_base = (void *)boot, .iov_len = sizeof(boot)};
+        struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1};
+        if (sendmsg(fds[1], &msg, 0) != sizeof(boot)) _exit(2);
+        iov.iov_base = (void *)hello;
+        iov.iov_len = sizeof(hello);
+        if (sendmsg(fds[1], &msg, 0) != sizeof(hello)) _exit(3);
+
         int passed = open("/dev/null", O_RDONLY | O_CLOEXEC);
-        if (passed < 0) _exit(2);
+        if (passed < 0) _exit(4);
         const int reply = 0x5a17;
-        struct iovec iov = {.iov_base = (void *)&reply, .iov_len = sizeof(reply)};
+        iov.iov_base = (void *)&reply;
+        iov.iov_len = sizeof(reply);
         char control[CMSG_SPACE(sizeof(int))] = {0};
-        struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1,
-                             .msg_control = control, .msg_controllen = sizeof(control)};
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
         cmsg->cmsg_level = SOL_SOCKET;
         cmsg->cmsg_type = SCM_RIGHTS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
         memcpy(CMSG_DATA(cmsg), &passed, sizeof(passed));
-        if (sendmsg(fds[1], &msg, 0) != sizeof(reply)) _exit(3);
+        if (sendmsg(fds[1], &msg, 0) != sizeof(reply)) _exit(5);
         close(passed);
         close(fds[1]);
         _exit(0);
     }
 
     close(fds[1]);
-    int reply = 0;
-    struct iovec iov = {.iov_base = &reply, .iov_len = sizeof(reply)};
-    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int))] = {0};
+    static const char boot[] = "ZYGOTE_BOOT";
+    static const char hello[] = "ZYGOTE_OK";
+    char message[sizeof(boot) + 1] = {0};
+    struct iovec iov = {.iov_base = message, .iov_len = sizeof(message)};
+    char credential_control[CMSG_SPACE(sizeof(struct ucred))] = {0};
     struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1,
-                         .msg_control = control, .msg_controllen = sizeof(control)};
+                         .msg_control = credential_control,
+                         .msg_controllen = sizeof(credential_control)};
+    const char *expected[] = {boot, hello};
+    const size_t expected_size[] = {sizeof(boot), sizeof(hello)};
+    for (size_t i = 0; i < 2; ++i) {
+        memset(message, 0, sizeof(message));
+        memset(credential_control, 0, sizeof(credential_control));
+        msg.msg_controllen = sizeof(credential_control);
+        msg.msg_flags = 0;
+        iov.iov_len = expected_size[i] + 1;
+        ssize_t received = recvmsg(fds[0], &msg, 0);
+        struct ucred cred = {.pid = -1};
+        int saw_rights = 0;
+        for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg;
+             cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS &&
+                cmsg->cmsg_len >= CMSG_LEN(sizeof(cred)))
+                memcpy(&cred, CMSG_DATA(cmsg), sizeof(cred));
+            else if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS)
+                saw_rights = 1;
+        }
+        if (received != (ssize_t)expected_size[i] ||
+            memcmp(message, expected[i], expected_size[i]) ||
+            message[expected_size[i]] != '\0' || cred.pid != child || saw_rights ||
+            (msg.msg_flags & (MSG_CTRUNC | MSG_TRUNC))) {
+            fprintf(stderr, "zygote %s receive failed: bytes=%zd pid=%d expected_pid=%d flags=%x errno=%s\n",
+                    i ? "hello" : "boot", received, cred.pid, child,
+                    msg.msg_flags, strerror(errno));
+            return 1;
+        }
+    }
+
+    int reply = 0;
+    iov.iov_base = &reply;
+    iov.iov_len = sizeof(reply);
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int))] = {0};
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    msg.msg_flags = 0;
     ssize_t received = recvmsg(fds[0], &msg, 0);
     if (received != sizeof(reply) || reply != 0x5a17 ||
         (msg.msg_flags & (MSG_CTRUNC | MSG_TRUNC))) {
@@ -152,6 +207,6 @@ int main(void) {
         fprintf(stderr, "zygote startup child failed (status=%d)\n", status);
         return 1;
     }
-    puts("PASS Chromium zygote signal reset, SOCK_SEQPACKET reply, SCM_CREDENTIALS pid check and SCM_RIGHTS");
+    puts("PASS Chromium mimic zygote SOCK_STREAM boot/hello framing, SCM_CREDENTIALS pid, signal reset and SCM_RIGHTS");
     return 0;
 }
