@@ -17,7 +17,7 @@ public final class ExtraProbeActivity extends Activity {
     private static final String TAG = "MatonExtraProbe";
     public static final String ACTION = "org.matonos.linux.DEBUG_EXTRA_PROBE";
     private ServiceConnection connection;
-    private ParcelFileDescriptor usrFd, appFd;
+    private ParcelFileDescriptor fileFd;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -27,20 +27,16 @@ public final class ExtraProbeActivity extends Activity {
         try {
             File root = new File(getCacheDir(), "extra-probe");
             delete(root); if (!root.mkdirs()) throw new java.io.IOException("Cannot prepare probe directory");
-            File usr = new File(root, "usr-probe.txt"), app = new File(root, "app-probe.txt");
-            try (FileOutputStream out = new FileOutputStream(usr)) {
-                out.write("usr-file-fd-ok\n".getBytes(StandardCharsets.UTF_8));
+            File probe = new File(root, "probe.txt");
+            try (FileOutputStream out = new FileOutputStream(probe)) {
+                out.write("regular-file-stream-ok\n".getBytes(StandardCharsets.UTF_8));
             }
-            try (FileOutputStream out = new FileOutputStream(app)) {
-                out.write("app-file-fd-ok\n".getBytes(StandardCharsets.UTF_8));
-            }
-            usrFd = ParcelFileDescriptor.open(usr, ParcelFileDescriptor.MODE_READ_ONLY);
-            appFd = ParcelFileDescriptor.open(app, ParcelFileDescriptor.MODE_READ_ONLY);
+            fileFd = ParcelFileDescriptor.open(probe, ParcelFileDescriptor.MODE_READ_ONLY);
             connection = new ServiceConnection() {
                 @Override public void onServiceConnected(ComponentName name, IBinder binder) {
                     try {
                         Log.i(TAG, "Connected to isolated service");
-                        IExtraProbe.Stub.asInterface(binder).run(usrFd, appFd);
+                        IExtraProbe.Stub.asInterface(binder).run(fileFd);
                     } catch (Exception error) { Log.e(TAG, "Could not call isolated probe", error); finish(); }
                 }
                 @Override public void onServiceDisconnected(ComponentName name) {
@@ -49,13 +45,13 @@ public final class ExtraProbeActivity extends Activity {
             };
             if (!bindService(new Intent(this, ExtraProbeService.class), connection, BIND_AUTO_CREATE))
                 throw new java.io.IOException("Could not bind isolated probe service");
-            Log.i(TAG, "Started; service should report file-fd maps, writable locations, loader and bwrap results");
+            Log.i(TAG, "Started; service should report regular-file stream, writable locations, loader and bwrap results");
         } catch (Exception error) { Log.e(TAG, "Probe setup failed", error); finish(); }
     }
 
     @Override protected void onDestroy() {
         if (connection != null) try { unbindService(connection); } catch (Exception ignored) { }
-        close(usrFd); close(appFd); super.onDestroy();
+        close(fileFd); super.onDestroy();
     }
     private static void close(ParcelFileDescriptor fd) { if (fd != null) try { fd.close(); } catch (Exception ignored) { } }
     private static void delete(File file) {
