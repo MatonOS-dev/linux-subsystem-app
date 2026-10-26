@@ -399,8 +399,7 @@ public final class InstallTransaction {
                 org.json.JSONArray paths=new org.json.JSONArray();for(String path:node.subpaths)paths.put(path);
                 File deployment=DeployManifest.stagedDeploymentPath(installation,
                         new JSONObject().put("appRef",node.ref).put("appCommit",node.info.commit).put("subpaths",paths));
-                org.matonos.linux.stub.IsolatedFlatpakInstall.deploy(context,installation,origin.name,
-                        node.ref,node.info.commit,node.subpaths,deployment);
+                buildExtraDataImage(node,installation);
             }
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             Log.i(TAG,"phase=pull ref="+node.ref+" ms="+
@@ -412,6 +411,62 @@ public final class InstallTransaction {
         private boolean hasExtraData(byte[] metadata) {
             String text=new String(metadata,StandardCharsets.UTF_8);
             return java.util.regex.Pattern.compile("(?m)^\\s*\\[Extra Data\\]\\s*$").matcher(text).find();
+        }
+        private void buildExtraDataImage(org.matonos.linuxhost.stubgen.DependencyPlan.Node node,File installation)throws Exception {
+            String packageName=DeployManifest.packageForPublic(node.ref);
+            File apk=File.createTempFile("maton-extra-stub-",".apk",root);
+            File work=new File(root,"extra-stub-work");if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create temporary stub work directory");
+            try {
+                org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(work,node.ref,origin.name,node.ref,null,
+                        java.util.Collections.emptyList(),packageName,apk,null,java.util.Collections.emptyList(),
+                        java.util.Collections.emptyMap(),false,"/app",true);
+                installTemporaryBase(packageName,apk);
+                android.os.ParcelFileDescriptor[] pipe=android.os.ParcelFileDescriptor.createPipe();
+                File image=new File(installation,"extra-data-image.erofs");
+                try(android.os.ParcelFileDescriptor read=pipe[0];android.os.ParcelFileDescriptor write=pipe[1]) {
+                    android.content.Intent request=new android.content.Intent("org.matonos.linuxhost.EXTRA_DATA_INSTALL")
+                            .setComponent(new android.content.ComponentName(packageName,"org.matonos.linux.stub.ExtraDataInstallService"))
+                            .putExtra("ref",node.ref).putExtra("remote",origin.name)
+                            .putExtra("url",origin.url.isEmpty()?"https://dl.flathub.org/repo/flathub.flatpakrepo":origin.url)
+                            .putExtra("subpaths",String.join("\n",node.subpaths)).putExtra("result",write);
+                    context.startService(request);
+                    write.close();
+                    try(java.io.DataInputStream in=new java.io.DataInputStream(new android.os.ParcelFileDescriptor.AutoCloseInputStream(read));
+                            java.io.OutputStream out=Files.newOutputStream(image.toPath())) {
+                        int status=in.readInt();
+                        if(status!=0)throw new java.io.IOException("Stub Flatpak deploy failed: "+in.readUTF());
+                        long length=in.readLong();if(length<=0||length>20L*1024*1024*1024)throw new java.io.IOException("Invalid stub EROFS image length");
+                        byte[] buffer=new byte[65536];long left=length;while(left>0){int count=in.read(buffer,0,(int)Math.min(buffer.length,left));if(count<0)throw new java.io.EOFException("Truncated stub EROFS image");out.write(buffer,0,count);left-=count;}
+                    }
+                }
+                Log.i(TAG,"Stub returned extra-data EROFS for "+node.ref+" bytes="+image.length());
+            } finally {apk.delete();}
+        }
+        private void installTemporaryBase(String packageName,File apk)throws Exception {
+            String action=context.getPackageName()+".EXTRA_STUB."+java.util.UUID.randomUUID();
+            java.util.concurrent.CountDownLatch done=new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<android.content.Intent> response=new java.util.concurrent.atomic.AtomicReference<>();
+            android.content.BroadcastReceiver receiver=new android.content.BroadcastReceiver(){
+                @Override public void onReceive(Context context,android.content.Intent intent){response.set(intent);done.countDown();}
+            };
+            if(android.os.Build.VERSION.SDK_INT>=33)context.registerReceiver(receiver,new android.content.IntentFilter(action),Context.RECEIVER_NOT_EXPORTED);
+            else context.registerReceiver(receiver,new android.content.IntentFilter(action));
+            try {
+                android.content.pm.PackageInstaller.SessionParams params=new android.content.pm.PackageInstaller.SessionParams(android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+                params.setAppPackageName(packageName);
+                android.content.pm.PackageInstaller installer=context.getPackageManager().getPackageInstaller();
+                int id=installer.createSession(params);
+                try(android.content.pm.PackageInstaller.Session session=installer.openSession(id);java.io.InputStream in=Files.newInputStream(apk.toPath());java.io.OutputStream out=session.openWrite("base.apk",0,apk.length())) {
+                    byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);session.fsync(out);
+                    android.content.Intent result=new android.content.Intent(action).setPackage(context.getPackageName());
+                    android.app.PendingIntent pending=android.app.PendingIntent.getBroadcast(context,id,result,android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_MUTABLE);
+                    session.commit(pending.getIntentSender());
+                }
+                if(!done.await(10,java.util.concurrent.TimeUnit.MINUTES))throw new java.io.IOException("Temporary stub install timed out");
+                android.content.Intent result=response.get();
+                if(result==null||result.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS,android.content.pm.PackageInstaller.STATUS_FAILURE)!=android.content.pm.PackageInstaller.STATUS_SUCCESS)
+                    throw new java.io.IOException("Temporary stub install failed: "+(result==null?"no result":result.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE)));
+            } finally {try{context.unregisterReceiver(receiver);}catch(Exception ignored){}}
         }
         private void cliProgress(String ref,InstallProgress parser,long total,long packageBytes,String... args)throws Exception {
             java.util.List<String> tail=new ArrayList<>();tail.add(LoaderCommand.tool(context,LoaderCommand.FLATPAK_CLI).getAbsolutePath());java.util.Collections.addAll(tail,args);
