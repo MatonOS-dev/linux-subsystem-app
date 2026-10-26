@@ -191,6 +191,8 @@ final class V3Launcher {
         // whenever a window closes, so fork from a thread that lives as long as
         // this stub process.
         env.put("FLATPAK_USER_DIR",deployment.getAbsolutePath());
+        // adb (root): touch <cache>/v3-no-rewrite to run without syscall-site patching (A/B debugging).
+        if (new File(cache, "v3-no-rewrite").exists()) env.put("MATON_PROXY_REWRITE","0");
         process = SPAWNER.submit(builder::start).get();
         final Process child = process;
         Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());
