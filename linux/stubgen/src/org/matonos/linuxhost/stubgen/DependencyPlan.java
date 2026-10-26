@@ -57,7 +57,7 @@ public final class DependencyPlan {
     }
     public List<Node> build(String root,String origin,boolean repair)throws Exception {
         if(!nodes.isEmpty())throw new IllegalStateException("A plan is single-use");
-        visit(root,origin,true,repair);
+        visit(root,origin,true,repair,true);
         return List.copyOf(order);
     }
     /** The plan helper appends subpaths to related refs ("ref\n/en", Locale with a language subset);
@@ -70,7 +70,7 @@ public final class DependencyPlan {
         for(String r:raw){String[] parts=r.split("\n");if(parts.length>1)subpaths.put(parts[0],List.of(Arrays.copyOfRange(parts,1,parts.length)));}
         return refsOnly(raw);
     }
-    private Node visit(String ref,String requested,boolean root,boolean repair)throws Exception {
+    private Node visit(String ref,String requested,boolean root,boolean repair,boolean includeRelated)throws Exception {
         if(!validRef(ref))throw new IOException("Invalid dependency ref: "+ref);
         Node existing=nodes.get(ref);if(existing!=null)return existing;
         DeploymentRecord installed=backend.installed(ref);
@@ -93,33 +93,42 @@ public final class DependencyPlan {
             }
         }
         Node node=new Node(ref,origin,info,!root&&installed!=null);node.subpaths.addAll(subpaths.getOrDefault(ref,List.of()));nodes.put(ref,node);
-        // Related Flatpak extensions can belong to a second runtime. Pull that
-        // parent too so apply_extra has its authenticated metadata available.
+        // Flatpak needs an extension's ExtensionOf deployment while applying
+        // extension metadata. It is staging-only: it is not part of the app's
+        // runtime graph, and its own related extensions must not leak into the
+        // launch plan (for example the parent runtime's Locale).
         if(info.parent!=null&&!info.parent.isEmpty()) {
-            node.dependencies.add(info.parent);node.stageDependencies.add(info.parent);visit(info.parent,null,false,repair);
+            node.stageDependencies.add(info.parent);visit(info.parent,null,false,repair,false);
+        }
+        if(!includeRelated) {
+            order.add(node);
+            return node;
         }
         if(recorded!=null) {
             for(DeploymentRecord.Dependency dependency:recorded.dependencies){
-                node.dependencies.add(dependency.ref);node.stageDependencies.add(dependency.ref);visit(dependency.ref,dependency.remote,false,true);
+                node.stageDependencies.add(dependency.ref);
+                if(!dependency.ref.equals(info.parent)) {
+                    node.dependencies.add(dependency.ref);visit(dependency.ref,dependency.remote,false,true,true);
+                }
             }
             if(info.runtime!=null&&!info.runtime.isEmpty()) {
                 String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;
-                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,true);}
+                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,true,true);}
             }
             order.add(node);
-            if(info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:related(ref,origin,info))if(!node.dependencies.contains(related)) {
-                node.dependencies.add(related);visit(related,null,false,true);
+            if(includeRelated&&info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:related(ref,origin,info))if(!node.dependencies.contains(related)) {
+                node.dependencies.add(related);visit(related,null,false,true,true);
             }
         } else {
             // Match Flatpak's runtime-before-app ordering. Related extensions may
             // need their parent's runtime for apply_extra, so stage the parent first.
             if(info.runtime!=null&&!info.runtime.isEmpty()) {
                 String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;
-                node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,repair);
+                node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,repair,true);
             }
             order.add(node);
-            for(String related:related(ref,origin,info))if(!node.dependencies.contains(related)) {
-                node.dependencies.add(related);visit(related,null,false,repair);
+            if(includeRelated)for(String related:related(ref,origin,info))if(!node.dependencies.contains(related)) {
+                node.dependencies.add(related);visit(related,null,false,repair,true);
             }
         }
         return node;

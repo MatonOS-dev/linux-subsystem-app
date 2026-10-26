@@ -23,7 +23,8 @@ public final class DependencyPlanTest {
     interface Checked{void run()throws Exception;}
     static void rejects(Checked code)throws Exception{try{code.run();throw new AssertionError("Expected failure");}catch(IOException expected){}}
     static DependencyPlan.Node node(List<DependencyPlan.Node> nodes,String ref){return nodes.stream().filter(n->n.ref.equals(ref)).findFirst().orElseThrow();}
-    static void check(boolean condition){if(!condition)throw new AssertionError();}
+    static void check(boolean condition){check(condition,"check failed");}
+    static void check(boolean condition,String message){if(!condition)throw new AssertionError(message);}
     public static void main(String[] args)throws Exception {
         // Related refs with subpaths (Locale with a language subset): plan by ref, install only those subpaths.
         check(DependencyPlan.refsOnly(List.of("runtime/a/x86_64/1\n/en","runtime/b/x86_64/1")).equals(List.of("runtime/a/x86_64/1","runtime/b/x86_64/1")));
@@ -80,19 +81,50 @@ public final class DependencyPlanTest {
         };
         crossRemoteExtension.add(APP,FIRST,info("")).add(GL,OTHER,info(""));
         check(node(crossRemoteExtension.plan(false),GL).origin.equals(OTHER));
-        String gnomeRuntime="runtime/org.gnome.Platform/x86_64/46",extension="runtime/org.freedesktop.Platform.Locale/x86_64/26.08",parent="runtime/org.freedesktop.Platform/x86_64/26.08";
+        String gnomeRuntime="runtime/org.gnome.Platform/x86_64/46",extension="runtime/org.freedesktop.Platform.GL.default/x86_64/26.08",parent="runtime/org.freedesktop.Platform/x86_64/26.08";
         Fake extensionParent=new Fake(){
             @Override public List<String> related(String ref,String origin,DependencyPlan.Info info){return ref.equals(APP)?List.of(extension):info.related;}
         };
         extensionParent.add(APP,FIRST,info("org.gnome.Platform/x86_64/46"))
                 .add(gnomeRuntime,FIRST,info(""))
                 .add(extension,OTHER,extension(parent))
-                .add(parent,FIRST,info(""));
+                .add(parent,FIRST,info("", "runtime/org.freedesktop.Platform.Locale/x86_64/26.08"))
+                .add("runtime/org.freedesktop.Platform.Locale/x86_64/26.08",FIRST,info(""));
         plan=extensionParent.plan(false);
-        check(node(plan,extension).dependencies.contains(parent));
+        check(node(plan,extension).stageDependencies.contains(parent),"extension parent was not staged: "+node(plan,extension).stageDependencies+" / "+node(plan,extension).dependencies);
+        check(!node(plan,extension).dependencies.contains(parent));
+        check(plan.stream().noneMatch(n->n.ref.equals("runtime/org.freedesktop.Platform.Locale/x86_64/26.08")));
         check(plan.indexOf(node(plan,parent))<plan.indexOf(node(plan,extension)));
         check(node(plan,parent).origin.equals(FIRST));
-        PlanExecutor.Outcome<Integer> staged=PlanExecutor.execute(plan,4,ignored->1);
+        // GNOME Platform 51 may use extensions built against freedesktop 26.08.
+        // That runtime is staged for apply_extra, but its own Locale is not part
+        // of the GNOME app's launch package graph.
+        String gnome51="runtime/org.gnome.Platform/x86_64/51";
+        String gnomeLocale="runtime/org.gnome.Platform.Locale/x86_64/51";
+        String fdGl="runtime/org.freedesktop.Platform.GL.default/x86_64/26.08";
+        String fdMaton="runtime/org.freedesktop.Platform.GL.maton/x86_64/26.08-extra";
+        String fdCodecs="runtime/org.freedesktop.Platform.codecs-extra/x86_64/26.08";
+        String fdLocale="runtime/org.freedesktop.Platform.Locale/x86_64/26.08";
+        Fake gnome=new Fake(){
+            @Override public List<String> related(String ref,String origin,DependencyPlan.Info info) {
+                if(ref.equals(gnome51))return List.of(gnomeLocale+"\n/en",fdGl,fdMaton,fdCodecs);
+                if(ref.equals(parent))return List.of(fdLocale);
+                return info.related;
+            }
+        };
+        gnome.add(APP,FIRST,info("org.gnome.Platform/x86_64/51"))
+                .add(gnome51,FIRST,info(""))
+                .add(gnomeLocale,FIRST,extension(gnome51))
+                .add(fdGl,OTHER,extension(parent)).add(fdMaton,OTHER,extension(parent))
+                .add(fdCodecs,OTHER,extension(parent))
+                .add(parent,FIRST,info(""))
+                .add(fdLocale,OTHER,extension(parent));
+        plan=gnome.plan(false);
+        check(node(plan,gnomeLocale).subpaths.equals(List.of("/en")));
+        check(plan.stream().noneMatch(n->n.ref.equals(fdLocale)));
+        check(!node(plan,fdGl).dependencies.contains(parent)&&node(plan,fdGl).stageDependencies.contains(parent));
+        check(node(plan,gnome51).dependencies.contains(gnomeLocale));
+        PlanExecutor.Outcome<Integer> staged=PlanExecutor.execute(plan,Runtime.getRuntime().availableProcessors(),ignored->1);
         check(staged.completed.containsKey(APP)&&staged.skipped.isEmpty()&&staged.failed.isEmpty());
         Fake fallback=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable")).add(RUNTIME,OTHER,info(""));
         check(node(fallback.plan(false),RUNTIME).origin.equals(OTHER)&&fallback.choices.isEmpty());

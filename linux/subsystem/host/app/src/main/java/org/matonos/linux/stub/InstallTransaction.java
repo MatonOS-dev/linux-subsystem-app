@@ -151,15 +151,33 @@ public final class InstallTransaction {
             for(org.matonos.linuxhost.stubgen.DeploymentRecord record:installed.records.values())
                 installedMetadata.put(record.ref,new String(record.metadata,StandardCharsets.UTF_8));
             metadata=PackageMounts.metadataWithInstalled(metadata,installedMetadata);
+            java.util.Map<String,org.matonos.linuxhost.stubgen.DependencyPlan.Node> nodesByRef=new java.util.HashMap<>();
+            for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)nodesByRef.put(node.ref,node);
+            // Only the app's runtime closure is mounted into bwrap. ExtensionOf
+            // parents remain staged for Flatpak's apply_extra metadata, but
+            // receive a private staging target and never claim an app target.
+            java.util.Set<String> launchRefs=new java.util.LinkedHashSet<>();
+            java.util.ArrayDeque<String> pendingLaunch=new java.util.ArrayDeque<>();pendingLaunch.add(appRef);
+            while(!pendingLaunch.isEmpty()) {
+                String ref=pendingLaunch.removeFirst();if(!launchRefs.add(ref))continue;
+                org.matonos.linuxhost.stubgen.DependencyPlan.Node node=nodesByRef.get(ref);
+                if(node==null)throw new java.io.IOException("Launch dependency is missing from the package plan: "+ref);
+                pendingLaunch.addAll(node.dependencies);
+            }
             java.util.Map<String,String> mounts=new java.util.HashMap<>();
+            java.util.Map<String,String> plannedTargets=new java.util.LinkedHashMap<>();
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan) {
                 String mount;
-                if(node.ref.equals(appRef)) {
+                if(!launchRefs.contains(node.ref))mount=PackageMounts.stagingTarget(node.ref);
+                else if(node.ref.equals(appRef)) {
                     org.matonos.linuxhost.stubgen.DeploymentRecord previous=installed.records.get(node.ref);
                     mount=previous!=null?previous.mount:(appRef.startsWith("app/")?"/app":"/usr");
                 } else mount=PackageMounts.mountPoint(node.ref,metadata.get(node.ref),metadata);
                 mounts.put(node.ref,mount);
+                plannedTargets.put(node.ref,launchRefs.contains(node.ref)
+                        ?PackageMounts.launchTarget(node.ref,mount):mount);
             }
+            PackageMounts.validateUniqueTargets(plannedTargets);
             String appCommit=null;
             plannedBytes=0;plannedBytesKnown=true;
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)if(!node.reused) {

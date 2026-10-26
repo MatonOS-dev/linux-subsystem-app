@@ -44,12 +44,7 @@ final class DeclaredPackages {
         for(int i=0;i<packages.size();i++) {
             Entry entry=packages.get(i);PackageInfo pkg=entry.pkg;
             String branch=entry.record.ref.startsWith("runtime/")?entry.record.ref.substring(entry.record.ref.lastIndexOf('/')+1):"";
-            String target=entry.mount;
-            // The default and optional GL extension refs share a declared
-            // mount root. Give their branch views stable, non-overlapping
-            // targets used by the launcher: GL/default and GL/maton.
-            if(target!=null&&target.endsWith("/GL")&&entry.record.ref.startsWith("runtime/org.freedesktop.Platform.GL."))
-                target+=branch.endsWith("-extra")?"/maton":"/default";
+            String target=PackageMounts.launchTarget(entry.record.ref,entry.mount);
             args.addAll(ErofsLaunch.arguments(new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,target,branch));
             if(deployment!=null) {
                 File installation=i==0?deployment:new File(deployment,"system");

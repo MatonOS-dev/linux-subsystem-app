@@ -27,6 +27,31 @@ public final class PackageMounts {
         if(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))throw new IOException("Invalid resolved runtime mount point");
         return new Entry(ref,DeployManifest.packageForPublic(ref),mountPoint);
     }
+    /** Apply MatonOS's split view for the stock GL extension mount. */
+    public static String launchTarget(String ref,String target) throws IOException {
+        if(target==null)throw new IOException("Package has no launch target: "+ref);
+        String branch=ref.startsWith("runtime/")?ref.substring(ref.lastIndexOf('/')+1):"";
+        if(target.endsWith("/GL")&&ref.startsWith("runtime/org.freedesktop.Platform.GL."))
+            return target+(branch.endsWith("-extra")?"/maton":"/default");
+        return target;
+    }
+    /** A staged ExtensionOf parent has no app-visible mount in this launch. */
+    public static String stagingTarget(String ref) throws IOException {
+        if(!DeployManifest.validRef(ref))throw new IOException("Invalid staged-only package ref: "+ref);
+        return "/usr/.matonos-staging/"+ref;
+    }
+    /** Reject ambiguous launch plans before pulling packages or starting bwrap. */
+    public static void validateUniqueTargets(java.util.Map<String,String> packageTargets) throws IOException {
+        java.util.Map<String,String> owners=new java.util.HashMap<>();
+        for(java.util.Map.Entry<String,String> entry:packageTargets.entrySet()) {
+            String ref=entry.getKey(),target=entry.getValue();
+            if(target==null||!target.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))
+                throw new IOException("Invalid launch target for "+ref+": "+target);
+            String previous=owners.putIfAbsent(target,ref);
+            if(previous!=null&&!previous.equals(ref))
+                throw new IOException("Duplicate package launch target "+target+": "+previous+" and "+ref);
+        }
+    }
     /** Select the runtime's branch when supported, otherwise its first GL extension version. */
     public static String glExtensionBranch(String runtimeMetadata,String runtimeBranch) throws IOException {
         if(runtimeMetadata==null)throw new IOException("Runtime has no org.freedesktop.Platform.GL extension point");
