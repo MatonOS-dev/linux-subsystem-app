@@ -140,10 +140,12 @@ final class V3Launcher {
                 "--no-a11y-bus", "--nofilesystem=host", "--nofilesystem=/tmp",
                 "--filesystem="+nativeTools.getAbsolutePath()+":ro",
                 "--nodevice=all", "--device=dri",
+                // Match the working host-smoke backend; device Kate exits during Qt's Wayland startup scan without a window.
+                "--env=QT_QPA_PLATFORM=xcb",
                 "--env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1", "--env=GTK_CSD=0",
                 "--env=NO_AT_BRIDGE=1",
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
-                "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
+                "--env=GDK_BACKEND=wayland,x11",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
         if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton:default");command.add("--env=__GLX_VENDOR_LIBRARY_NAME=maton");}
         // adb (root): touch <cache>/v3-vkdebug to log Vulkan loader driver discovery.

@@ -213,14 +213,18 @@ for ref in "${REFS[@]}"; do
       if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]]; then session_bus_prefix=(dbus-run-session --); fi
       set +e
       { printf 'argv:'; printf ' %q' "$WORK/prehandler-filter" "$LOADER" "${launch_args[@]}" \
-          "$FLATPAK" --user run --no-documents-portal --no-a11y-bus --share=network --nodevice=all --nosocket=x11 --command="$appcmd" "$appref"; printf '\n'; } >"$launchlog"
+        "$FLATPAK" --user run --no-documents-portal --no-a11y-bus --share=network --nodevice=all --nosocket=x11 --env=QT_QPA_PLATFORM=xcb --command="$appcmd" "$appref"; printf '\n'; } >"$launchlog"
       timeout --signal=TERM --kill-after=5 90 "${session_bus_prefix[@]}" \
         "$WORK/prehandler-filter" "$LOADER" "${launch_args[@]}" \
-        "$FLATPAK" --user run --no-documents-portal --no-a11y-bus --share=network --nodevice=all --nosocket=x11 --command="$appcmd" "$appref" >>"$launchlog" 2>&1
+        "$FLATPAK" --user run --no-documents-portal --no-a11y-bus --share=network --nodevice=all --nosocket=x11 --env=QT_QPA_PLATFORM=xcb --command="$appcmd" "$appref" >>"$launchlog" 2>&1
       status=$?
       set -e
       kill "$xvfbpid" 2>/dev/null || true; wait "$xvfbpid" 2>/dev/null || true; xvfbpid=
       if ((status==0)); then launch_result='exit 0'; elif ((status==124)); then launch_result='timeout (process remained active)'; else launch_result="exit $status"; fi
+      if [[ $ref == org.kde.kate && $status != 124 ]]; then
+        printf 'Kate host smoke expected to remain active for 90 seconds; got %s (log: %s)\n' "$launch_result" "$launchlog" >&2
+        exit 1
+      fi
       first=$(grep -m1 -E 'PREHANDLER_SIGSYS|SIGSYS|zygote|Check failed|(^|[[:space:]])FATAL:|error:|error while|file too short|Error:|Permission denied|No such file' "$launchlog" || true)
       blocked_syscall=$(grep -m1 'PREHANDLER_SIGSYS syscall=' "$launchlog" || true)
       [[ -n $blocked_syscall ]] || blocked_syscall=none
