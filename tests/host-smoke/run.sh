@@ -18,18 +18,28 @@ PACKER=$ROOT/tests/host-smoke/HostSmokePacker.java
 DEFAULT_REFS=(net.sourceforge.ExtremeTuxRacer net.supertuxkart.SuperTuxKart org.gnome.TextEditor org.kde.kate md.obsidian.Obsidian com.valvesoftware.Steam)
 if (($#)); then REFS=("$@"); else REFS=("${DEFAULT_REFS[@]}"); fi
 
-for tool in flatpak ostree javac java cc timeout; do command -v "$tool" >/dev/null || { echo "missing host tool: $tool" >&2; exit 2; }; done
+for tool in flatpak ostree javac java cc timeout ldd; do command -v "$tool" >/dev/null || { echo "missing host tool: $tool" >&2; exit 2; }; done
 for file in "$FSCK" "$MKFS" "$LOADER" "$FLATPAK" "$BWRAP" "$ANDROID_JAR" "$JSON_JAR" "$APKSIG" "$POLICY"; do
   [[ -e $file ]] || { echo "missing required input: $file" >&2; exit 2; }
 done
 mkdir -p "$WORK"/{flatpak-user,classes,mnt,logs,images,staging}
 WORK=$(readlink -m "$WORK")
+MOUNT_ROOT="$WORK/mnt/matonos/$(id -u)"
+if [[ -d $MOUNT_ROOT ]]; then find "$MOUNT_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; fi
+declare -A extracted_images=()
 export FLATPAK_USER_DIR
 export XDG_DATA_HOME="$WORK/xdg-data" XDG_CONFIG_HOME="$WORK/xdg-config" XDG_CACHE_HOME="$WORK/xdg-cache"
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 mkdir -p "$WORK/host-tools"
 cp "$BWRAP" "$WORK/host-tools/matonos-app-bwrap"
 cp "$(command -v xdg-dbus-proxy)" "$WORK/host-tools/xdg-dbus-proxy"
+DBUS_LIBS="$WORK/host-tools/dbus-libs"
+mkdir -p "$DBUS_LIBS"
+cp -L "$HOST_LD" "$WORK/host-tools/ld-linux-x86-64.so.2"
+while read -r library arrow path _; do
+  [[ $arrow == '=>' && -f $path ]] || continue
+  cp -L "$path" "$DBUS_LIBS/$library"
+done < <(ldd "$WORK/host-tools/xdg-dbus-proxy")
 REPORT="$WORK/host-smoke.md"
 printf '# Host Flatpak smoke\n\nGenerated %s\n\n' "$(date -Is)" >"$REPORT"
 printf 'Host: %s\nFlatpak: %s\n\n' "$(uname -a)" "$(flatpak --version)" >>"$REPORT"
@@ -41,6 +51,18 @@ fi
 is_installed() {
   local ref=$1
   flatpak list --user --columns=ref | grep -Fqx "${ref#app/}"
+}
+restore_symlinks() {
+  local source=$1 target_root=$2 link relative target subdir
+  for subdir in lib lib64 bin usr/lib usr/lib64 usr/bin; do
+    [[ -e $source/$subdir || -L $source/$subdir ]] || continue
+    while IFS= read -r -d '' link; do
+      relative=${link#"$source"/}; target="$target_root/$relative"
+      mkdir -p "$(dirname "$target")"
+      if [[ -e $target || -L $target ]]; then rm -f -- "$target"; fi
+      ln -s -- "$(readlink -- "$link")" "$target"
+    done < <(find "$source/$subdir" -type l -print0)
+  done
 }
 
 for ref in "${REFS[@]}"; do
@@ -75,10 +97,17 @@ for ref in "${REFS[@]}"; do
   mounts=(); targets=(); images=(); backings=()
   while IFS=$'\t' read -r kind one two three four five; do
     [[ $kind == IMAGE ]] || continue
-    image=$four; src=$five; leaf=$(echo "$one" | tr '/.' '__'); mount="$WORK/mnt/matonos/$(id -u)/$leaf"
+    image=$four; src=$five; leaf=$(echo "$one" | tr '/.' '__'); mount="$MOUNT_ROOT/$leaf"
     mkdir -p "$mount"; images+=("$one $two $three bytes"); mounts+=("$mount")
-    if ! "$FSCK" --extract="$mount" "$image" >"$WORK/logs/extract-$leaf.log" 2>&1; then
-      echo "EROFS extraction failed for $one: $(tail -20 "$WORK/logs/extract-$leaf.log")" >>"$REPORT"
+    if [[ -z ${extracted_images[$one]+x} ]]; then
+      if ! "$FSCK" --extract="$mount" "$image" >"$WORK/logs/extract-$leaf.log" 2>&1; then
+        echo "EROFS extraction failed for $one: $(tail -20 "$WORK/logs/extract-$leaf.log")" >>"$REPORT"
+      else
+        symlink_root=$mount
+        if [[ $one == runtime/* ]]; then symlink_root="$mount/${one##*/}"; fi
+        restore_symlinks "$src" "$symlink_root"
+        extracted_images[$one]=1
+      fi
     fi
     targets+=(--erofs-mount "$two" "$mount")
     backings+=(--erofs-backing "$two" "$src")
@@ -91,12 +120,16 @@ for ref in "${REFS[@]}"; do
     --map-ro "$WORK/host-tools/xdg-dbus-proxy" /apex/com.matonos.flatpak/bin/xdg-dbus-proxy \
     --map-ro "$WORK/host-tools/matonos-app-bwrap" /tmp/newroot/apex/com.matonos.flatpak/bin/matonos-app-bwrap \
     --map-ro "$WORK/host-tools/xdg-dbus-proxy" /tmp/newroot/apex/com.matonos.flatpak/bin/xdg-dbus-proxy \
-    --map-ro "$HOST_LD" /tmp/newroot/lib64/ld-linux-x86-64.so.2)
+    --map-ro "$WORK/host-tools/ld-linux-x86-64.so.2" /tmp/newroot/lib64/ld-linux-x86-64.so.2)
+  while read -r library arrow path _; do
+    [[ $arrow == '=>' && -f $path ]] || continue
+    launch_args+=(--map-ro "$DBUS_LIBS/$library" "/tmp/newroot/usr/lib/x86_64-linux-gnu/$library")
+  done < <(ldd "$WORK/host-tools/xdg-dbus-proxy")
   while IFS=$'\t' read -r kind one two; do
     [[ $kind == TARGET ]] || continue
     source_mount=""
     while IFS=$'\t' read -r ikind image_ref split size img_path source; do
-      [[ $ikind == IMAGE && $image_ref == "$one" ]] && { source_mount="$WORK/mnt/matonos/$(id -u)/$(echo "$image_ref" | tr '/.' '__')"; break; }
+      [[ $ikind == IMAGE && $image_ref == "$one" ]] && { source_mount="$MOUNT_ROOT/$(echo "$image_ref" | tr '/.' '__')"; break; }
     done <"$packlog"
     [[ -n $source_mount ]] || continue
     if [[ $one == runtime/* ]]; then branch=${one##*/}; source_mount="$source_mount/$branch"; fi
@@ -128,10 +161,10 @@ for ref in "${REFS[@]}"; do
       launchlog="$WORK/logs/$(echo "$ref" | tr '.:' '__').launch.log"
       set +e
       { printf 'argv:'; printf ' %q' "$WORK/prehandler-filter" "$LOADER" "${launch_args[@]}" \
-          "$FLATPAK" --user run --no-documents-portal --no-session-bus --no-a11y-bus --share=network --nosocket=x11 --command="$appcmd" "$appref"; printf '\n'; } >"$launchlog"
+          "$FLATPAK" --user run --no-documents-portal --no-a11y-bus --share=network --nosocket=x11 --command="$appcmd" "$appref"; printf '\n'; } >"$launchlog"
       timeout --signal=TERM --kill-after=5 90 dbus-run-session -- \
         "$WORK/prehandler-filter" "$LOADER" "${launch_args[@]}" \
-        "$FLATPAK" --user run --no-documents-portal --no-session-bus --no-a11y-bus --share=network --nosocket=x11 --command="$appcmd" "$appref" >>"$launchlog" 2>&1
+        "$FLATPAK" --user run --no-documents-portal --no-a11y-bus --share=network --nosocket=x11 --command="$appcmd" "$appref" >>"$launchlog" 2>&1
       status=$?
       set -e
       kill "$xvfbpid" 2>/dev/null || true; wait "$xvfbpid" 2>/dev/null || true; xvfbpid=

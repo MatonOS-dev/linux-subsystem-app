@@ -4,14 +4,15 @@
 then uses the production OSTree reader, `ErofsImage`, `StubGenerator` split
 writers, `DeploymentRecord`, and `PackageMounts.launchTargets` to prepare and
 extract one EROFS image per deployed app/runtime package with `fsck.erofs`.
-Extraction preserves symlink metadata on host filesystems where `erofsfuse`
-reports symlinks as regular files. The native MatonOS
+The host adapter restores library and executable symlinks from each Flatpak
+deployment after extraction, because the host OSTree conversion can flatten
+them into regular files containing their target text. The native MatonOS
 Flatpak, bwrap, and compat loader execute the real launch under a pre-handler
 seccomp filter compiled from `linux/compat-proxy/build/app-policy.h`. Xvfb
 serves GUI launches over loopback TCP so bwrap does not bind a host X11 socket
-into its synthetic `/tmp`. Launches disable session-bus proxying because the
-host has no MatonOS APEX and its host-built `xdg-dbus-proxy` cannot load through
-the Flatpak runtime image in the compat loader.
+into its synthetic `/tmp`. The host-built `xdg-dbus-proxy` and its host GLib
+library dependencies are mapped into the synthetic root so Flatpak can use its
+normal session-bus proxy path.
 
 Default refs are Extreme Tux Racer, SuperTuxKart, GNOME Text Editor, Kate,
 Obsidian, and Steam. The report and all downloads/build outputs go to
