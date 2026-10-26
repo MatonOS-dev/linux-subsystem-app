@@ -567,6 +567,7 @@ static char *readlink_dynamic(const char *path,long *error){
         n*=2;
     }
 }
+char *vfs_readlink_dynamic(const char *path,long *error){return readlink_dynamic(path,error);}
 struct fd_name {char *path;size_t capacity,length;uint64_t dev,ino;unsigned identity_valid;};
 static struct fd_name *fd_names;
 static size_t fd_names_capacity;
