@@ -68,7 +68,7 @@ public final class DependencyPlan {
     private List<String> related(String ref,String origin,Info info)throws Exception{
         List<String> raw=backend.related(ref,origin,info);
         for(String r:raw){String[] parts=r.split("\n");if(parts.length>1)subpaths.put(parts[0],List.of(Arrays.copyOfRange(parts,1,parts.length)));}
-        return refsOnly(raw);
+        return FlatpakExtensionSelection.select(new String(info.metadata,java.nio.charset.StandardCharsets.UTF_8),ref,refsOnly(raw));
     }
     private Node visit(String ref,String requested,boolean root,boolean repair,boolean includeRelated)throws Exception {
         if(!validRef(ref))throw new IOException("Invalid dependency ref: "+ref);
@@ -105,7 +105,12 @@ public final class DependencyPlan {
             return node;
         }
         if(recorded!=null) {
+            List<String> recordedRefs=new ArrayList<>();
+            for(DeploymentRecord.Dependency dependency:recorded.dependencies)recordedRefs.add(dependency.ref);
+            Set<String> selectedRefs=new HashSet<>(FlatpakExtensionSelection.select(
+                    new String(info.metadata,java.nio.charset.StandardCharsets.UTF_8),ref,recordedRefs));
             for(DeploymentRecord.Dependency dependency:recorded.dependencies){
+                if(!selectedRefs.contains(dependency.ref))continue;
                 node.stageDependencies.add(dependency.ref);
                 if(!dependency.ref.equals(info.parent)) {
                     node.dependencies.add(dependency.ref);visit(dependency.ref,dependency.remote,false,true,true);

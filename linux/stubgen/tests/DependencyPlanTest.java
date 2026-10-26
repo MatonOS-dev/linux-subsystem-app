@@ -7,6 +7,7 @@ public final class DependencyPlanTest {
     static final String FIRST,OTHER;static final byte[] OBJECT={1,2,3};static final String COMMIT;
     static {try{FIRST=new RemoteOrigin("first","https://first.example/repo","AQID").encode();OTHER=new RemoteOrigin("other","https://other.example/repo","AQID").encode();COMMIT=ObjectPacks.hex(java.security.MessageDigest.getInstance("SHA-256").digest(OBJECT));}catch(Exception e){throw new ExceptionInInitializerError(e);}}
     static DependencyPlan.Info info(String runtime,String... related)throws Exception{return new DependencyPlan.Info(COMMIT,"[Runtime]\n".getBytes(),runtime,Arrays.asList(related));}
+    static DependencyPlan.Info infoMetadata(String metadata,String runtime,String... related)throws Exception{return new DependencyPlan.Info(COMMIT,metadata.getBytes(java.nio.charset.StandardCharsets.UTF_8),runtime,Arrays.asList(related));}
     static DependencyPlan.Info extension(String parent)throws Exception{return new DependencyPlan.Info(COMMIT,"[ExtensionOf]\n".getBytes(),"",parent,List.of(),false);}
     static DeploymentRecord record(String ref,String origin,DeploymentRecord.Dependency... dependencies)throws Exception{return new DeploymentRecord(ref,COMMIT,origin,"[Runtime]\n".getBytes(),new byte[]{1},OBJECT,Arrays.asList(dependencies));}
     static class Fake implements DependencyPlan.Backend {
@@ -124,6 +125,40 @@ public final class DependencyPlanTest {
         check(plan.stream().noneMatch(n->n.ref.equals(fdLocale)));
         check(!node(plan,fdGl).dependencies.contains(parent)&&node(plan,fdGl).stageDependencies.contains(parent));
         check(node(plan,gnome51).dependencies.contains(gnomeLocale));
+        // Platform 26.08's actual extension metadata has GL versions in
+        // priority order, while codecs-extra has one fixed extra branch.
+        String platformMetadata=java.nio.file.Files.readString(java.nio.file.Path.of("linux/stubgen/tests/fixtures/platform-26.08.metadata"));
+        String platform="runtime/org.freedesktop.Platform/x86_64/26.08";
+        String glDefault="runtime/org.freedesktop.Platform.GL.default/x86_64/26.08";
+        String glDefaultExtra="runtime/org.freedesktop.Platform.GL.default/x86_64/26.08-extra";
+        String glMaton="runtime/org.freedesktop.Platform.GL.maton/x86_64/26.08-extra";
+        String gl32="runtime/org.freedesktop.Platform.GL32.default/x86_64/26.08";
+        String gl32Extra="runtime/org.freedesktop.Platform.GL32.default/x86_64/26.08-extra";
+        String compat="runtime/org.freedesktop.Platform.Compat.i386/x86_64/26.08";
+        String codecs="runtime/org.freedesktop.Platform.codecs-extra/x86_64/26.08-extra";
+        String codecsWrong="runtime/org.freedesktop.Platform.codecs-extra/x86_64/26.08";
+        Fake versioned=new Fake().add(APP,FIRST,infoMetadata("[Application]\nruntime=org.freedesktop.Platform/x86_64/26.08\n","org.freedesktop.Platform/x86_64/26.08"))
+                .add(platform,FIRST,infoMetadata(platformMetadata,"",glDefault,glDefaultExtra,glMaton,gl32,gl32Extra,compat,codecs,codecsWrong))
+                .add(glDefault,OTHER,extension(platform)).add(glDefaultExtra,OTHER,extension(platform))
+                .add(glMaton,OTHER,extension(platform)).add(gl32,OTHER,extension(platform))
+                .add(gl32Extra,OTHER,extension(platform)).add(compat,OTHER,extension(platform))
+                .add(codecs,OTHER,extension(platform)).add(codecsWrong,OTHER,extension(platform));
+        plan=versioned.plan(false);
+        check(plan.stream().anyMatch(n->n.ref.equals(glDefault))&&!plan.stream().anyMatch(n->n.ref.equals(glDefaultExtra)));
+        check(plan.stream().anyMatch(n->n.ref.equals(gl32))&&!plan.stream().anyMatch(n->n.ref.equals(gl32Extra)));
+        check(plan.stream().anyMatch(n->n.ref.equals(glMaton))&&plan.stream().anyMatch(n->n.ref.equals(compat)));
+        check(plan.stream().anyMatch(n->n.ref.equals(codecs))&&!plan.stream().anyMatch(n->n.ref.equals(codecsWrong)));
+        List<DeploymentRecord.Dependency> previouslyInstalledRefs=new ArrayList<>();
+        for(String ref:List.of(glDefault,glDefaultExtra,glMaton,gl32,gl32Extra,compat,codecs,codecsWrong))
+            previouslyInstalledRefs.add(new DeploymentRecord.Dependency(ref,FIRST,"/usr"));
+        Fake reuseVersioned=new Fake().add(APP,FIRST,infoMetadata("[Application]\nruntime=org.freedesktop.Platform/x86_64/26.08\n","org.freedesktop.Platform/x86_64/26.08"));
+        reuseVersioned.installed.put(platform,new DeploymentRecord(platform,COMMIT,FIRST,platformMetadata.getBytes(java.nio.charset.StandardCharsets.UTF_8),new byte[]{1},OBJECT,previouslyInstalledRefs));
+        for(String ref:List.of(glDefault,glDefaultExtra,glMaton,gl32,gl32Extra,compat,codecs,codecsWrong))
+            reuseVersioned.installed.put(ref,record(ref,FIRST));
+        plan=reuseVersioned.plan(false);
+        check(plan.stream().anyMatch(n->n.ref.equals(glDefault))&&!plan.stream().anyMatch(n->n.ref.equals(glDefaultExtra)));
+        check(plan.stream().anyMatch(n->n.ref.equals(gl32))&&!plan.stream().anyMatch(n->n.ref.equals(gl32Extra)));
+        check(plan.stream().anyMatch(n->n.ref.equals(codecs))&&!plan.stream().anyMatch(n->n.ref.equals(codecsWrong)));
         PlanExecutor.Outcome<Integer> staged=PlanExecutor.execute(plan,Runtime.getRuntime().availableProcessors(),ignored->1);
         check(staged.completed.containsKey(APP)&&staged.skipped.isEmpty()&&staged.failed.isEmpty());
         Fake fallback=new Fake().add(APP,FIRST,info("org.test.Platform/x86_64/stable")).add(RUNTIME,OTHER,info(""));

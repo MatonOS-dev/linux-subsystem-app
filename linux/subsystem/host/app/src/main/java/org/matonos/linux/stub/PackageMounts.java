@@ -27,12 +27,14 @@ public final class PackageMounts {
         if(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))throw new IOException("Invalid resolved runtime mount point");
         return new Entry(ref,DeployManifest.packageForPublic(ref),mountPoint);
     }
-    /** Apply MatonOS's split view for the stock GL extension mount. */
+    /** Map GL extension IDs to the subdirectory targets Flatpak derives from their names. */
     public static String launchTarget(String ref,String target) throws IOException {
         if(target==null)throw new IOException("Package has no launch target: "+ref);
-        String branch=ref.startsWith("runtime/")?ref.substring(ref.lastIndexOf('/')+1):"";
-        if(target.endsWith("/GL")&&ref.startsWith("runtime/org.freedesktop.Platform.GL."))
-            return target+(branch.endsWith("-extra")?"/maton":"/default");
+        String id=extensionId(ref);
+        for(String point:java.util.List.of("org.freedesktop.Platform.GL","org.freedesktop.Platform.GL32")) {
+            String suffix=org.matonos.linuxhost.stubgen.FlatpakExtensionSelection.subdirectorySuffix(id,point);
+            if(suffix!=null&&target.endsWith("/GL"))return suffix.isEmpty()?target:target+"/"+suffix;
+        }
         return target;
     }
     /** A staged ExtensionOf parent has no app-visible mount in this launch. */
@@ -74,19 +76,33 @@ public final class PackageMounts {
             String parentRef=active.removeFirst();
             if(!visited.add(parentRef))continue;
             org.matonos.linuxhost.stubgen.DeploymentRecord parent=records.get(parentRef);
+            java.util.Map<String,java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency>> byMetadata=new java.util.LinkedHashMap<>();
             for(org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency dependency:parent.dependencies) {
                 org.matonos.linuxhost.stubgen.DeploymentRecord child=records.get(dependency.ref);
                 if(child==null)throw new IOException("Launch dependency is missing from the signed package graph: "+dependency.ref);
                 String declaredParent=extensionParent(metadata.get(child.ref));
                 boolean belongs=parentRef.equals(declaredParent);
+                String pointMetadata=metadata.get(parentRef);
                 if(!belongs&&declaredParent!=null) {
                     Parent resolved=plannedX86_64Parent(child.ref,extensionId(child.ref),declaredParent,metadata);
                     belongs=resolved!=null&&parentRef.equals(resolved.ref);
+                    if(belongs)pointMetadata=resolved.metadata;
                 }
                 if(!belongs)continue;
-                String mount=mountPoint(child.ref,metadata.get(child.ref),metadata);
-                targets.put(child.ref,launchTarget(child.ref,mount));
-                active.addLast(child.ref);
+                byMetadata.computeIfAbsent(pointMetadata,ignored->new java.util.ArrayList<>()).add(dependency);
+            }
+            for(java.util.Map.Entry<String,java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency>> group:byMetadata.entrySet()) {
+                java.util.List<String> candidates=new java.util.ArrayList<>();
+                for(org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency dependency:group.getValue())candidates.add(dependency.ref);
+                if(group.getKey()==null)throw new IOException("Extension point metadata is missing for "+parentRef);
+                java.util.List<String> selected=org.matonos.linuxhost.stubgen.FlatpakExtensionSelection.select(group.getKey(),parentRef,candidates);
+                for(org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency dependency:group.getValue()) {
+                    if(!selected.contains(dependency.ref))continue;
+                    org.matonos.linuxhost.stubgen.DeploymentRecord child=records.get(dependency.ref);
+                    String mount=mountPoint(child.ref,metadata.get(child.ref),metadata);
+                    targets.put(child.ref,launchTarget(child.ref,mount));
+                    active.addLast(child.ref);
+                }
             }
         }
         validateUniqueTargets(targets);
