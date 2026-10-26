@@ -449,6 +449,7 @@ public final class InstallTransaction {
                         data.writeString(node.ref);data.writeString(origin.name);
                         data.writeString(origin.url.isEmpty()?"https://dl.flathub.org/repo/flathub.flatpakrepo":origin.url);
                         data.writeString(String.join("\n",node.subpaths));
+                        data.writeString(node.info.runtime.isEmpty()||node.info.runtime.startsWith("runtime/")?node.info.runtime:"runtime/"+node.info.runtime);
                         if(!bound.get(2,java.util.concurrent.TimeUnit.MINUTES).transact(1,data,null,0))
                             throw new java.io.IOException("Stub extra-data service rejected the request");
                     } finally {data.recycle();}

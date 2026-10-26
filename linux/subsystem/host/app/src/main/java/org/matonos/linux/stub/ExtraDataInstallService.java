@@ -32,7 +32,8 @@ public final class ExtraDataInstallService extends Service {
                 if (code != 1) return super.onTransact(code, data, reply, flags);
                 ParcelFileDescriptor result = data.readFileDescriptor();
                 Intent request = new Intent(ACTION).putExtra("ref", data.readString()).putExtra("remote", data.readString())
-                        .putExtra("url", data.readString()).putExtra("subpaths", data.readString());
+                        .putExtra("url", data.readString()).putExtra("subpaths", data.readString())
+                        .putExtra("runtime", data.readString());
                 if (result == null) return false;
                 new Thread(() -> {
                     try (ParcelFileDescriptor fd = result;
@@ -70,7 +71,7 @@ public final class ExtraDataInstallService extends Service {
         File flatpakUser = new File(userData, "flatpak");
         File flatpakSystem = null;
         boolean erofsAvailable = ErofsLaunch.available();
-        if (erofsAvailable) flatpakSystem = prepareRuntimeSystem(root);
+        if (erofsAvailable) flatpakSystem = prepareRuntimeSystem(root, request.getStringExtra("runtime"));
         String dns=LoaderCommand.resolverAddress();
         File resolv=LoaderCommand.writeResolv(new File(run,"install-resolv.conf"),dns);
         List<String> prefix=new ArrayList<>();
@@ -125,40 +126,36 @@ public final class ExtraDataInstallService extends Service {
         }
     }
 
-    private File prepareRuntimeSystem(File root) throws Exception {
+    /** The minimal stub has no deployment split yet; the subsystem names the
+     *  app's runtime from the commit metadata it already verified. */
+    private File prepareRuntimeSystem(File root, String runtimeRef) throws Exception {
+        if (runtimeRef == null || !runtimeRef.matches("runtime/[A-Za-z0-9._+-]+/[A-Za-z0-9._+-]+/[A-Za-z0-9._+-]+"))
+            throw new IOException("EROFS install requires the app's runtime ref");
         android.content.pm.PackageInfo self = getPackageManager().getPackageInfo(getPackageName(),
                 android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
-        org.matonos.linuxhost.stubgen.DeploymentRecord own =
-                org.matonos.linuxhost.stubgen.DeploymentRecord.installed(self.splitNames,self.applicationInfo.splitSourceDirs);
-        org.matonos.linuxhost.stubgen.DeploymentRecord runtime = null;
-        for (org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency dependency : own.dependencies) {
-            if (dependency.ref.startsWith("runtime/org.freedesktop.Platform/x86_64/")) {
-                String packageName = org.matonos.linux.stub.DeployManifest.packageForPublic(dependency.ref);
-                android.content.pm.PackageInfo pkg = getPackageManager().getPackageInfo(packageName,
-                        android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
-                android.content.pm.Signature[] selfSigners=self.signingInfo==null?null:self.signingInfo.getApkContentsSigners();
-                android.content.pm.Signature[] runtimeSigners=pkg.signingInfo==null?null:pkg.signingInfo.getApkContentsSigners();
-                if (self.signingInfo == null || pkg.signingInfo == null || self.signingInfo.hasMultipleSigners()
-                        || pkg.signingInfo.hasMultipleSigners() || selfSigners==null || selfSigners.length!=1
-                        || runtimeSigners==null || runtimeSigners.length!=1 || !selfSigners[0].equals(runtimeSigners[0]))
-                    throw new SecurityException("Untrusted installed Flatpak runtime");
-                runtime = org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
-                        pkg.splitNames, pkg.applicationInfo.splitSourceDirs);
-                if (!runtime.ref.equals(dependency.ref)) throw new IOException("Installed runtime ref mismatch");
-                String mounted = ErofsLaunch.mountInstalledImage(pkg.splitNames, pkg.applicationInfo.splitSourceDirs, EROFS_TOKEN);
-                File system = new File(root, "system");
-                runtime.materialize(system, "/usr");
-                File files = new File(system, dependency.ref + "/" + runtime.commit + "/files");
-                if (!files.delete()) throw new IOException("Cannot replace runtime deployment payload");
-                java.nio.file.Files.createSymbolicLink(files.toPath(), java.nio.file.Path.of(mounted,
-                        dependency.ref.substring(dependency.ref.lastIndexOf('/') + 1)));
-                if (!files.exists())
-                    throw new IOException("Cannot expose installed EROFS runtime to Flatpak");
-                makeReadOnly(system);
-                return system;
-            }
-        }
-        throw new IOException("EROFS install requires the app's installed Platform runtime dependency");
+        String packageName = org.matonos.linux.stub.DeployManifest.packageForPublic(runtimeRef);
+        android.content.pm.PackageInfo pkg = getPackageManager().getPackageInfo(packageName,
+                android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
+        android.content.pm.Signature[] selfSigners=self.signingInfo==null?null:self.signingInfo.getApkContentsSigners();
+        android.content.pm.Signature[] runtimeSigners=pkg.signingInfo==null?null:pkg.signingInfo.getApkContentsSigners();
+        if (self.signingInfo == null || pkg.signingInfo == null || self.signingInfo.hasMultipleSigners()
+                || pkg.signingInfo.hasMultipleSigners() || selfSigners==null || selfSigners.length!=1
+                || runtimeSigners==null || runtimeSigners.length!=1 || !selfSigners[0].equals(runtimeSigners[0]))
+            throw new SecurityException("Untrusted installed Flatpak runtime");
+        org.matonos.linuxhost.stubgen.DeploymentRecord runtime = org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
+                pkg.splitNames, pkg.applicationInfo.splitSourceDirs);
+        if (!runtime.ref.equals(runtimeRef)) throw new IOException("Installed runtime ref mismatch");
+        String mounted = ErofsLaunch.mountInstalledImage(pkg.splitNames, pkg.applicationInfo.splitSourceDirs, EROFS_TOKEN);
+        File system = new File(root, "system");
+        runtime.materialize(system, "/usr");
+        File files = new File(system, runtimeRef + "/" + runtime.commit + "/files");
+        if (!files.delete()) throw new IOException("Cannot replace runtime deployment payload");
+        java.nio.file.Files.createSymbolicLink(files.toPath(), java.nio.file.Path.of(mounted,
+                runtimeRef.substring(runtimeRef.lastIndexOf('/') + 1)));
+        if (!files.exists())
+            throw new IOException("Cannot expose installed EROFS runtime to Flatpak");
+        makeReadOnly(system);
+        return system;
     }
 
     private static void deleteTree(File file) {
