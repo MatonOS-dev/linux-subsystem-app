@@ -706,6 +706,9 @@ public final class LinuxAppStoreService extends Service {
             for(int d=0;d<dependencies.length();d++)node.stageDependencies.add(dependencies.getString(d));
             nodes.add(node);positions.put(ref,i);
         }
+        // Only ordering among the declared packages matters here: the requested app is committed after this
+        // step, so an app's own extension (e.g. its .Locale, whose parent is the app) must not wait for it.
+        for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:nodes)node.stageDependencies.retainAll(positions.keySet());
         java.util.List<String> newlyInstalled=java.util.Collections.synchronizedList(new java.util.ArrayList<>());
         org.matonos.linuxhost.stubgen.PlanExecutor.Outcome<Void> outcome=
                 org.matonos.linuxhost.stubgen.PlanExecutor.execute(nodes,Math.max(1,Runtime.getRuntime().availableProcessors()),node->{
