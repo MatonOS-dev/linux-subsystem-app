@@ -129,6 +129,8 @@ cat build/flatpak-seccomp.out
 cc -no-pie -O2 -Wall -Wextra -Werror tests/flatpak-seccomp-fork.c -o build/flatpak-seccomp-fork
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/flatpak-seccomp-fork" >build/flatpak-seccomp-fork.out 2>build/flatpak-seccomp-fork.log
 cat build/flatpak-seccomp-fork.out
+cc -O2 -Wall -Wextra -Werror tests/adopt-altstack-host.c arch/x86_64/altstack.S -o build/adopt-altstack-host
+timeout 15 build/adopt-altstack-host
 cc -no-pie -O2 -Wall -Wextra -Werror tests/personality.c -o build/personality
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/personality" >build/personality.out 2>build/personality.log
 cat build/personality.out

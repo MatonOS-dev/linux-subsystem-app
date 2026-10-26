@@ -34,6 +34,7 @@
 #include <sys/auxv.h>
 #include <sys/uio.h>
 extern long proxy_raw(long,long,long,long,long,long,long);
+extern long proxy_sigaltstack_on_stack(stack_t *,void *);
 extern void proxy_log(const char *,long,long);
 extern char proxy_clone_entry[];
 extern void proxy_restore(void);
@@ -226,10 +227,13 @@ static void fork_rebase(struct adopt_thread *self) {
      * so register a valid stack again before returning to payload code.
      * Preserve the kernel's post-fork prior state for normal teardown. */
     stack_t current;
-    if(R(sigaltstack,0,&current,0,0,0,0)) {
-        proxy_log("adopt-fork-altstack-query",R(gettid,0,0,0,0,0,0),-1);
+    long query_result=R(sigaltstack,0,&current,0,0,0,0);
+    if(query_result) {
+        proxy_log("adopt-fork-altstack-query",R(gettid,0,0,0,0,0,0),-query_result);
+        self->fork_context=NULL;
         return;
     }
+    current.ss_flags&=~SS_ONSTACK;
     self->prior_signal_stack=current;
     uintptr_t stack_pointer;
     __asm__ volatile("mov %%rsp,%0":"=r"(stack_pointer));
@@ -243,16 +247,36 @@ static void fork_rebase(struct adopt_thread *self) {
                        MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
         if((unsigned long)mapping>=(unsigned long)-4095) {
             proxy_log("adopt-fork-altstack-map",R(gettid,0,0,0,0,0,0),mapping);
+            self->fork_context=NULL;
             return;
         }
         signal_stack=(void *)mapping;
     }
     stack_t resident={.ss_sp=signal_stack,.ss_size=signal_stack_size};
-    long stack_result=R(sigaltstack,&resident,0,0,0,0,0);
+    /* Fork adoption runs inside the proxy's SIGSYS handler. The kernel
+     * rejects sigaltstack changes while RSP is on the currently registered
+     * stack (EPERM), even when the child is installing a fresh mapping.
+     * Execute the raw syscall on the new mapping so the current RSP is outside
+     * the old stack; the live signal frame remains on the inherited mapping
+     * until sigreturn consumes it. */
+    long stack_result=proxy_sigaltstack_on_stack(&resident,
+                        (char *)signal_stack+signal_stack_size-128);
     if(stack_result) {
-        proxy_log("adopt-fork-altstack-install",R(gettid,0,0,0,0,0,0),stack_result);
+        proxy_log("adopt-fork-altstack-install",R(gettid,0,0,0,0,0,0),
+                  -stack_result);
         if(signal_stack!=self->signal_stack) R(munmap,signal_stack,signal_stack_size,0,0,0,0);
-    } else self->signal_stack=signal_stack;
+    } else {
+        self->signal_stack=signal_stack;
+        /* rt_sigreturn restores uc_stack from the live frame. Keep it in
+         * sync with the kernel registration or it will undo the install. */
+        ucontext_t *context=self->fork_context;
+        if(context) {
+            context->uc_stack.ss_sp=signal_stack;
+            context->uc_stack.ss_size=signal_stack_size;
+            context->uc_stack.ss_flags=0;
+        }
+    }
+    self->fork_context=NULL;
 }
 /* Called by the proxy's successful process-clone continuation, while the
  * child still has the application's FS base. Keep this hook x86_64-local:
@@ -460,11 +484,13 @@ miss_record_logged:
         }
         if(!(flags&CLONE_THREAD)) {
             if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+                self->fork_context=uc;
                 ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
                 /* In-handler fork paths return through this signal frame.
                  * Retry clones hand off to proxy_clone_entry and rebase in
                  * assembly, with the encoded syscall number in RAX. */
                 if(g[REG_RAX]==0) adopt_fork_child();
+                else self->fork_context=NULL;
                 return;
             }
             result=-ENOSYS;goto finish;
@@ -516,8 +542,10 @@ miss_record_logged:
         }
     } else if(n==SYS_vfork) {
         if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+            self->fork_context=uc;
             ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
             if(g[REG_RAX]==0) adopt_fork_child();
+            else self->fork_context=NULL;
             return;
         }
         result=-ENOSYS;

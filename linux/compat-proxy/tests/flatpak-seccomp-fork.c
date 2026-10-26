@@ -15,9 +15,15 @@
 #include <unistd.h>
 
 static const size_t child_stack_size=1024*1024;
+static volatile uintptr_t signal_stack_local;
 
 static void chained_syscall(int signal, siginfo_t *info, void *context) {
     (void)signal;(void)info;(void)context;
+}
+static void stack_probe(int signal) {
+    (void)signal;
+    volatile char local;
+    signal_stack_local=(uintptr_t)&local;
 }
 
 static int exec_child(void *arg) {
@@ -26,8 +32,18 @@ static int exec_child(void *arg) {
     /* Standalone host-proxy suites do not link the optional resident
      * adoption backend. On production device launches, the marker is set by
      * adopt_install(), and its private SIGSYS stack must survive fork. */
-    if(getenv("MATON_THREAD_ADOPT"))
+    int adopted=getenv("MATON_THREAD_ADOPT")!=NULL;
+    if(adopted)
         assert(!(current_stack.ss_flags&SS_DISABLE));
+    struct sigaction stack_action={.sa_handler=stack_probe,.sa_flags=SA_ONSTACK};
+    sigemptyset(&stack_action.sa_mask);
+    assert(sigaction(SIGUSR1,&stack_action,NULL)==0);
+    assert(raise(SIGUSR1)==0);
+    if(adopted) {
+        uintptr_t address=signal_stack_local;
+        uintptr_t begin=(uintptr_t)current_stack.ss_sp;
+        assert(address>=begin && address-begin<current_stack.ss_size);
+    }
     struct sigaction action={.sa_sigaction=chained_syscall,.sa_flags=SA_SIGINFO};
     sigemptyset(&action.sa_mask);
     assert(sigaction(SIGSYS,&action,NULL)==0);
