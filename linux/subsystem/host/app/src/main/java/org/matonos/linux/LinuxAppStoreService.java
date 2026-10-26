@@ -63,9 +63,7 @@ public final class LinuxAppStoreService extends Service {
     private final Map<String, Operation> pending = new ConcurrentHashMap<>();
     private final Map<String,Object> packageInstallLocks = new ConcurrentHashMap<>();
     private static volatile LinuxAppStoreService instance;
-    private interface FinalizePackage {void run()throws Exception;}
     private static final class Operation {
-        final java.util.List<FinalizePackage> finalizers=new java.util.ArrayList<>();
         final String stagingId="stage-"+java.util.UUID.randomUUID().toString().replace("-","");
         final int uid;
         final String id, kind, ref, remote, name, url;
@@ -501,9 +499,6 @@ public final class LinuxAppStoreService extends Service {
             catch(PackageManager.NameNotFoundException noActivity){launchable=false;}
         }
         installStubPackage(op,op.ref,op.packArtifacts,op.installed,launchable,InstallTransaction.row(op.stagedManifest,op.ref).getString("mount"));
-        // Every declared package's base/content must exist before any package
-        // runs apply_extra: extension/runtime dependency graphs may contain cycles.
-        for(FinalizePackage finish:op.finalizers)finish.run();
         finishStubInstall(op,success());
     }
     /** A ref's mount and launcher are parameters; every package uses this path. */
@@ -550,13 +545,12 @@ public final class LinuxAppStoreService extends Service {
             org.matonos.linux.stub.PackageMounts.Entry mount=org.matonos.linux.stub.PackageMounts.entry(ref,dependency.getString("mount"));
             requiredPackages.add(mount.packageName);dependencyPackages.put(ref,mount.packageName+">"+mount.mountPoint);
         }
-        // Launcher data is derived here, never supplied by a caller. The
-        // deployment export wins; apply_extra may override it below; otherwise
-        // the remote's appstream is read by this subsystem app, then app id.
+        // Flatpak has already completed stock apply_extra in the isolated
+        // deploy step, so its export tree is part of the staged deployment.
         String appId=appId(packageRef);
         File deployment=org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef));
         org.matonos.linux.stub.LauncherData launcher=org.matonos.linux.stub.LauncherData.resolve(
-                deployment,appId,null,launchable&&"flathub".equals(remote)?new org.matonos.linux.stub.LauncherData.Flathub():null);
+                deployment,appId,new File(deployment,"files/extra"),launchable&&"flathub".equals(remote)?new org.matonos.linux.stub.LauncherData.Flathub():null);
         byte[] baseIcon=launcher.icon!=null?launcher.icon:fallbackIcon();
         org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(work,packageRef,org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote).name,launcher.label,baseIcon,
                 StubGenerator.permissionsForMetadata(org.matonos.linux.stub.DeployManifest.stagedMetadata(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef))),pkg,base,objects,requiredPackages,dependencyPackages,launchable,mountPoint);
@@ -566,16 +560,13 @@ public final class LinuxAppStoreService extends Service {
         int revision=org.matonos.linuxhost.stubgen.PackSessionPlan.nextRevision(
                 installed==null?0:installed.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
                 installed==null?0:installed.baseRevisionCode,installed==null?null:installed.splitRevisionCodes);
-        boolean hasExtra=false;
-        for(org.matonos.linuxhost.stubgen.ObjectPacks.Entry row:org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(objects,"objects.index")))
-            if(row.path.equals("/extra")||row.path.startsWith("/extra/")){hasExtra=true;break;}
         java.util.List<String> desired=new java.util.ArrayList<>(),available=new java.util.ArrayList<>();
         String index=StubGenerator.indexSplitName(objects);desired.add(index);
         if(full || !prior.contains(index)) {
             StubGenerator.generateIndex(work,pkg,objects,new File(artifacts,index+".apk"),revision);available.add(index);
         }
         addErofsImageSplit(op,pkg,work,objects,artifacts,installed,prior,full,revision,desired,available);
-        if(launchable)for(String split:prior)if(split.startsWith(StubGenerator.LAUNCHER_SPLIT_PREFIX))desired.add(split);
+        if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,prior,full,desired,available);
         // Everything needed after this point is now in the pack artifacts,
         // generated APKs, or the captured launcher values. Drop this package's
         // downloaded Flatpak repo and any stale pack-repo from an earlier attempt
@@ -589,20 +580,6 @@ public final class LinuxAppStoreService extends Service {
                 beforeRelease+" -> "+afterRelease+"; available="+stagingRoot.getUsableSpace());
         runPackSession(op,pkg,artifacts,plan(installed!=null,
                 installed==null?0:installed.getLongVersionCode(),prior,desired,available,full));
-        final boolean applyExtra=hasExtra;
-        synchronized(op.finalizers) { op.finalizers.add(()->{
-            try {
-                File applied=applyExtra?org.matonos.linux.stub.ExtraInstall.apply(this,pkg,new File(artifacts,"extra-output")):null;
-                PackageInfo after=getPackageManager().getPackageInfo(pkg,0);
-                java.util.List<String> installedNow=after.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(after.splitNames);
-                java.util.List<String> desired2=new java.util.ArrayList<>(),available2=new java.util.ArrayList<>();
-                desired2.add(index);
-                addErofsImageSplitName(objects,desired2);
-                if(applied!=null){String split=applied.getName().replace(".apk","");desired2.add(split);available2.add(split);}
-                if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,installedNow,false,desired2,available2);
-                runPackSession(op,pkg,artifacts,plan(true,after.getLongVersionCode(),installedNow,desired2,available2,false));
-            }catch(Exception failure){if(installed==null)removePackage(pkg);throw failure;}
-        }); }
     }
 
     /** Adds the package's one complete signed EROFS image. */
@@ -617,11 +594,6 @@ public final class LinuxAppStoreService extends Service {
         }
         Log.i(TAG,"phase=signing ref="+pkg+" ms="+
                 java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-signingStarted)+" bytes="+signedBytes);
-    }
-
-    private static void addErofsImageSplitName(File objects,java.util.List<String> desired) throws Exception {
-        String split=StubGenerator.erofsSplitName(new File(objects,"deployment.erofs"));
-        if(!desired.contains(split))desired.add(split);
     }
 
     /** Adds the code-free launcher split unless the same one is installed. */

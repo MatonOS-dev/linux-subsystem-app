@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -101,6 +102,14 @@ public final class DeployManifest {
 
     /** The deployment directory contains deploy (a file), metadata and files/. */
     public static File stagedDeployment(File installation, JSONObject manifest) throws Exception {
+        File deployment=stagedDeploymentPath(installation,manifest);
+        if (!Files.isDirectory(deployment.toPath(),LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(deployment.toPath()))
+            throw new IOException("Invalid staged app deployment");
+        return deployment;
+    }
+
+    /** Predicts the stock deployment path before Flatpak's deploy step creates it. */
+    public static File stagedDeploymentPath(File installation,JSONObject manifest) throws Exception {
         String ref=manifest.getString("appRef"), commit=manifest.getString("appCommit");
         if(!validRef(ref) || !commit.matches("[0-9a-f]{64}"))
             throw new IOException("Invalid staged app identity");
@@ -122,8 +131,7 @@ public final class DeployManifest {
             for(int j=0;j<subpath.length();j++)if(subpath.charAt(j)!='/')version.append(subpath.charAt(j));
         }
         File deployment=new File(installation,ref+"/"+version);
-        if(!deployment.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator)
-                || Files.isSymbolicLink(deployment.toPath()) || !deployment.isDirectory())
+        if(!deployment.getCanonicalPath().startsWith(installation.getCanonicalPath()+File.separator))
             throw new IOException("Invalid staged app deployment");
         return deployment;
     }

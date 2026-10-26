@@ -1,128 +1,55 @@
-# MatonOS Flatpak stub APK format (v3.5)
+# MatonOS Flatpak stub APK format
 
-A stub APK is a small, signed package record for one installed Flatpak app. It
-contains no application implementation. The shared code is supplied by the
-updatable `org.matonos.linux` host through Android's dynamic shared
-library mechanism. The stub APK is signed on-device with the per-device key
-held by Android Keystore; it is not portable to another device.
+A stub is a signed package record for one installed Flatpak ref. It contains
+no application implementation. The shared code is supplied by the updatable
+`org.matonos.linux` host APK through Android's dynamic shared-library
+mechanism. The per-device signing key is held by Android Keystore.
 
-## Contents
+## Package contents
 
-A v3.5 package is a base APK plus content splits, all signed together:
+The base APK contains the host shared-library declaration, `StubActivity`,
+install/update activities, `StubService`, Flatpak identity metadata and an
+empty valid `classes.dex`. The base has no launcher filter. A code-free
+`launcher_<sha256>` split carries the launcher alias, label, MIME filters and
+icon. The `index_<sha256>` split carries object indexes and OSTree metadata;
+content uses `pack_<sha256>` carrier splits. One signed EROFS image split
+contains the complete deployed tree for that package, including stock
+Flatpak's `/app/extra` output when the ref declares extra data.
 
-- The **base** contains a binary `AndroidManifest.xml` with the required
-  `<uses-library android:name="org.matonos.linuxhost"/>`, approved Android
-  permission declarations, an *always-enabled* `StubActivity`
-  (`org.matonos.linux.stub.StubActivity`) with **no launcher entry**, an
-  unprivileged `org.matonos.linux.stub.InstallActivity` ("install me"),
-  placeholder services (`StubService`, `ExtraService`) and an empty, valid
-  `classes.dex`. The base deliberately carries no `ACTION_MAIN` /
-  `CATEGORY_LAUNCHER` filter: the icon in the launcher is the launcher split's
-  `activity-alias`, so a label or icon change never updates the base.
-- `ExtraService` (AIDL `IExtraExec`) is declared in every base and in every
-  runtime/extension package, with metadata
-  `org.matonos.linuxhost.EXTRA_MOUNT` naming the declared mount point (`/app`
-  for apps, the package's own mount point otherwise). It is declared
-  `exported="true"` only because a cross-app bind cannot use
-  `exported="false"`; every call is refused unless `Binder.getCallingUid()`
-  is the subsystem app's. It runs the package's `apply_extra` under the
-  package's own UID and returns the applied tree as a ustar archive over a
-  pipe. See `docs/FLATPAK-EXTRA-DATA.md`.
-- Activity metadata `org.matonos.linuxhost.FLATPAK_REF`, `...FLATPAK_REMOTE`,
-  `...MIN_INTERFACE_VERSION` and `...APP_REF` are unchanged. The ref supplies
-  app ID, architecture and branch; Flatpak resolves the runtime and
-  dependencies from app metadata.
-- Exactly one `index_<sha256>` code-free split holds `objects.index` and
-  `objects.ostree`; content rides in `pack_<sha256>` carrier splits (see
-  `linux/packs/README.md`).
-- A code-free **launcher split** `launcher_<sha256>` declares an
-  `<activity-alias>` targeting the base `StubActivity` with the
-  `ACTION_MAIN`/`CATEGORY_LAUNCHER` filter, one `ACTION_VIEW` filter per
-  `MimeType=` from the source `.desktop`, a literal `android:label` and an
-  adaptive icon whose resources live inside the split (type id 2,
-  `0x7f020000`-`2`, so no ID can clash with the base).
-- A **self-contained extra split** `extra_<sha256>` carries the applied
-  `apply_extra` output in the pack format (one payload pack plus its own
-  embedded `objects.index`/`objects.ostree`). When the launcher data came from
-  the extra output's `export/`, the same split also carries the launcher
-  components above; otherwise it is launcher-less.
+## Install and extra-data flow
 
-Launcher data source order: the deployment's
-`export/share/applications/*.desktop` → a `.desktop` in the applied extra
-output's `export/` (overrides the deployment entry) → the remote's
-appstream, read by the subsystem app itself (never supplied by a caller) →
-the Flatpak app id and a generic icon.
+The subsystem app's normal install process downloads refs with stock
+`flatpak install --no-deploy`. Refs with an `[Extra Data]` section are then
+deployed by stock `flatpak install --no-pull` in an
+`android:isolatedProcess="true"` service. The app passes the local Flatpak
+installation and OSTree repo as directory FDs. The service starts the
+existing compatibility loader, whose directory maps expose only those FDs to
+Flatpak. Flatpak itself runs its stock deploy and `apply_extra` bwrap path.
+The isolated service has no app permissions, network permission or Keystore
+access. It returns `/app/extra` as a ustar stream; the subsystem validates and
+extracts regular files, directories and safe relative symlinks, then builds
+the EROFS image itself. It never imports an image or filesystem ownership,
+xattrs or timestamps from that process.
 
-Stub format version is `1` (`STUB_VERSION_CODE` is `20`); it is separate from
-the host interface version and only changes with the template/format. The
-Flatpak ref is checked against the standard `app|runtime/name/arch/branch`
-form.
+Refs without extra data keep the existing in-subsystem deploy. Extra-data
+output is already present before launcher metadata is selected and before the
+single image is built; there is no per-package extra service or extra split.
 
-## Host interface
+## Host interface and tests
 
-`HostContract.INTERFACE_VERSION` is the host ABI version. The host launcher
-reads the ref and minimum version from the stub activity metadata; when the
-launched component is the code-free launcher `activity-alias` (which carries no
-metadata of its own), `StubActivity` falls back to the base activity's
-metadata. `StubService` hosts the per-app runtime; `ExtraService` applies the
-package's extra data (above).
+`HostContract.INTERFACE_VERSION` is the host ABI version. `StubService` hosts
+the per-app runtime; the subsystem app owns install and update actions.
 
-The stub generator is `MatonLinuxStubGenerator` in `linux/stubgen`. Its Java
-entry points accept an app-private work directory, Flatpak ref, remote, label,
-PNG bytes, permission list, package name and output APK; the launcher and extra
-splits are generated by `generateLauncher` and `generateExtra`. It encodes the
-small binary XML vocabulary directly (including `activity-alias`), so it does
-not require AAPT2 on-device, then signs with `apksig`. The Android Keystore
-alias `matonos_flatpak_stub_v1` is created on first use as a non-exportable EC
-P-256 signing key.
+`linux/stubgen` generates signed stubs and code-free launcher/index/image
+splits. Its host harness uses AOSP's `aapt2` to parse generated manifests.
+The subsystem device probe is started on a fresh VM with:
 
-It also emits code-free `launcher_`/`extra_` splits, so the generated
-manifests (base, launcher alias, extra pack carrier, runtime and pack) are all
-parsed by AOSP's own `aapt2` in the host test harness
-(`linux/stubgen/tests/run-tests.sh`), including the split component rules a
-code-free split must satisfy.
+```sh
+/mnt/data/aosp/out/host/linux-x86/bin/adb -s 127.0.0.1:5556 shell am start \
+  -n org.matonos.linux/.stub.ExtraProbeActivity \
+  -a org.matonos.linux.DEBUG_EXTRA_PROBE
+```
 
-## Stock PackageManager multiarch handling
-
-The first on-device attempt used a host APK without `android:multiArch` and
-PackageManager rejected that library provider because it contained JNI
-libraries. AOSP's `PackageAbiHelperImpl` handles `pkg.isMultiArch()` in a
-separate ABI path before the single-ABI branch that throws
-`Shared library with native libs must be multiarch`. The host manifest now
-sets `<application android:multiArch="true"/>`; AAPT2 confirms the flag is
-present. A fresh-image build and stub-install retest are pending. If the
-multiarch APK still cannot register as a shared-library provider, use the
-Java-only provider/native-engine split documented as a contingency in
-[SHARED-CHANGES.md](SHARED-CHANGES.md), without patching AOSP.
-
-## Verification status
-
-On a fresh QEMU boot, the generator produced a signed APK using Android
-Keystore. The fixed manifest parsed through reconciliation. That image's host
-APK did not yet declare `android:multiArch="true"`, so PackageManager did not
-register the dynamic library and the stub failed with
-`INSTALL_FAILED_MISSING_SHARED_LIBRARY`. The rebuilt host APK now sets the
-flag; install and launcher verification on an image containing it are pending.
-
-After the provider/engine split, repeat on a freshly built and booted image:
-
-1. Expose `MatonLinuxStubGenerator` to a small trusted test caller (the store
-   app or bridge; integration is out of scope here).
-2. Generate a stub for `app/org.example.Test/x86_64/stable` with an appstream
-   label, PNG, and no permissions.
-3. Install it with `pm install -r /data/local/tmp/test.apk`, verify `pm path`
-   and dynamic-library resolution, enable it with `pm enable
-   <package>/org.matonos.linux.stub.StubActivity`, then launch its
-   launcher activity.
-4. Confirm the host shows the explicit “Flatpak runtime launcher is not
-   wired” message until the runtime hook is connected.
-
-## Follow-up contract for the bridge and store
-
-The store must choose the package name, map requested Flatpak permissions to
-the approved Android permission list, derive the launcher label/icon/MIME
-associations (appstream is read by the subsystem app itself, never passed in by
-a caller) and invoke the generator when installing or updating a ref. The bridge/store integration also needs a narrow caller
-surface for this library and policy for which signed callers may mint stubs.
-The installed per-device key must not be exported or copied; after a reset,
-stubs are re-minted from installed refs and store metadata.
+Expected logcat output under `MatonExtraProbe` shows a UID different from the
+subsystem app and `proxy+bwrap exit=0`. The isolated deploy and local
+extra-data install tests are documented in the stock-extra final report.

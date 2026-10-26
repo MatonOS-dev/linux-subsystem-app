@@ -31,6 +31,13 @@
         <activity android:name=".stub.StubActivity" android:exported="true" />
         <activity android:name=".stub.InstallActivity" android:exported="true" />
         <service android:name=".stub.StubService" android:exported="false" />
+        <!-- Explicit coordinator probe for isolated-process fd + proxy + bwrap support. -->
+        <activity android:name=".stub.ExtraProbeActivity" android:exported="true"
+            android:excludeFromRecents="true" android:noHistory="true" />
+        <service android:name=".stub.ExtraProbeService" android:exported="false"
+            android:isolatedProcess="true" />
+        <service android:name=".stub.IsolatedFlatpakInstallService" android:exported="false"
+            android:isolatedProcess="true" />
         <service android:name=".LinuxAppStoreService" android:exported="true"
             android:foregroundServiceType="dataSync" />
         <service android:name=".LinuxAppStoreService$CleanupJobService" android:exported="false"

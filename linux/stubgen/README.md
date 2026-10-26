@@ -16,10 +16,11 @@ host package; an update must match the system package's signature, so no
 extra certificate check is needed.
 
 MatonOS is based on AOSP. StubGenerator remains Java and retains its existing
-no-image generate signature. Its new overload accepts a file containing the
-code EROFS image and an optional RuntimeDependency. generateRuntime creates a
-code-free static-library APK; generateExtra creates the code-free `extra` split.
-No AOSP changes, native components, kernel changes or SELinux changes are used.
+no-image generate signature. Its image overload accepts a file containing the
+complete deployed EROFS tree and an optional RuntimeDependency. No extra-data
+split is generated; stock Flatpak applies extra data before the image is
+created. No AOSP changes, native components, kernel changes or SELinux changes
+are used.
 
 Images are streamed twice (CRC, then ZIP output), stored as the first ZIP entry,
 and padded through a local extra field to a 4096-byte data offset. Signing uses

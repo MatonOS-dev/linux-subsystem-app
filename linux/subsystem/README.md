@@ -58,6 +58,36 @@ Send scan-less DPAD_DOWN/UP/LEFT/RIGHT, ENTER and DEL events with
 unmapped keycode produces no key in the app, and IME-delivered KeyEvents use
 the same mapping. IME text commits that do not produce KeyEvents are outside
 this change. No shared-file or kernel changes are required.
+
+### Flatpak extra data at install time
+
+Refs without `[Extra Data]` keep the existing in-subsystem deploy. For refs
+that declare it, the subsystem first runs stock `flatpak install --no-deploy`
+to fetch the commit and extra-data files, then asks its isolated-process
+service to run stock `flatpak install --no-pull`. That runs Flatpak's own
+`apply_extra_data` path, including its bwrap invocation. The service receives
+the staging installation and a materialized OSTree repository as directory
+FDs, starts the compatibility loader, and returns only `/app/extra` as a tar
+stream. The subsystem validates the archive paths, extracts the tree and
+builds the package's single EROFS image itself. The image builder never trusts
+an image or filesystem ownership metadata from the isolated service.
+
+The repository view is materialized because the staged repo uses the
+subsystem UID's private v3 hardlink store, which is deliberately not shared
+with the random isolated UID. Immutable OSTree object/data files are hardlinked
+into the temporary view; mutable repository metadata is copied. The original
+staged repo and its placeholder indexes stay intact for image packing.
+
+The coordinator probe is an adb-triggered isolated service that maps test
+`/usr` and `/app` directory FDs through the loader, runs bwrap with network
+unsharing and logs the UID and exit status. Its exact command and fresh-image
+result are in `out/pc-logs/agents/stock-extra.final.md`. On a fresh userdebug
+image, set `persist.vendor.maton.sleep_idle_s` to `0`, run that probe, then
+install Flathub's `com.google.Chrome`. Confirm the install finishes, inspect
+the package's one installed EROFS image for `/app/extra`, launch it and
+confirm its extra-data resources load. Repeat once after uninstall/reinstall
+to cover cleanup of the staged tree. Host test results and remaining device
+gaps are recorded in the same report.
 ### Round 17: fullscreen modes and runtime children
 
 Mapped fullscreen X11 configure requests now reach Xwayland unchanged; Android

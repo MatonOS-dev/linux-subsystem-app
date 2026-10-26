@@ -37,8 +37,7 @@ public final class StagedPacks {
         if(requested!=null)for(int i=0;i<requested.length();i++)subpaths.add(requested.getString(i));
         OstreePacks original=OstreePacks.read(sourceRepo,manifest.getString("appCommit"),source,objectXattrs,subpaths);
         // The committed tree is the deployment's files/ exactly as deployed,
-        // including the raw extra downloads apply_extra has not consumed (the
-        // installer defers those to the stub). A separate bare-user repo keeps
+        // including the stock apply_extra output. A separate bare-user repo keeps
         // that tree without the bare-user-only restrictions of the download repo:
         // committing into the download repo stores executables as 0600.
         File localRepo=new File(operation,"pack-repo");

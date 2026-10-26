@@ -17,6 +17,12 @@ javac -d "$OUT/flatpak-output" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/FlatpakOutput.java" \
   "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/FlatpakOutputTest.java"
 java -cp "$OUT/flatpak-output" org.matonos.linux.stub.FlatpakOutputTest
+mkdir -p "$OUT/extra-tar"
+javac -d "$OUT/extra-tar" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/TarStream.java" \
+  "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/TarStreamHostTest.java"
+java -cp "$OUT/extra-tar" org.matonos.linux.stub.TarStreamHostTest
 bash "$ROOT/tests/workdirs/run.sh" "$OUT/workdirs"
 bash "$ROOT/linux/stubgen/tests/run-tests.sh" "${MATON_AOSP_ROOT:-/}" "$OUT/stubgen"
 bash "$ROOT/tests/placeholder/run.sh" "$OUT/placeholder"
