@@ -23,7 +23,7 @@ trap 'kill "$log_pid" 2>/dev/null || true; wait "$log_pid" 2>/dev/null || true' 
     -a org.matonos.linux.DEBUG_INSTALL_CHROME
 until grep -qE 'Chrome extra-data install (succeeded|failed)' "$CHROME_TEST_OUT/logcat.txt"; do sleep 1; done
 if grep -q 'Chrome extra-data install failed' "$CHROME_TEST_OUT/logcat.txt"; then
-    grep -E 'create-denied|create-dirfd|v3 create (input|backing)|Creating temp file|Chrome extra-data install failed' "$CHROME_TEST_OUT/logcat.txt" || true
+    grep -E 'create-denied|create-dirfd|v3 create (input|backing)|Creating temp file|Race condition binding dirfd|v3 mount|Chrome extra-data install failed' "$CHROME_TEST_OUT/logcat.txt" || true
     echo "Install failed; return logcat.txt to chrome-sol. Do not call this a launch pass." >&2
     exit 1
 fi
@@ -42,7 +42,7 @@ component=$("${adb[@]}" shell cmd package resolve-activity --brief \
     -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "$pkg" | tr -d '\r' | tail -n 1)
 [[ $component == "$pkg/"* ]]
 "${adb[@]}" shell am start -n "$component"
-echo "Install, split publication and install/ cleanup passed. Chrome launched."
+echo "Install, split publication and install/ cleanup passed. Launcher start requested; browser rendering still needs verification."
 echo "Coordinator: verify a rendered Wayland window, browse a page, close and relaunch."
 echo "Capture a screenshot and /proc/<Chrome PID>/cmdline to confirm --ozone-platform=wayland."
 echo "Keep capture running for those checks; press Enter when finished."

@@ -1,34 +1,37 @@
 # Chrome extra-data follow-through (chrome-sol)
 
 Status: host fixes and tests complete; device install/launch is NOT verified.
-The original device tempfile denial is not yet identified to a pathname.
+Attempt 11 reaches apply_extra; its bind-fd failure is reproduced and fixed on the host.
 No VM was started and no other worktree was modified.
 
-## What the supplied logs establish
+## Round 2: exact failure and fix
 
-Attempt 9, PID 3256, ends with `While trying to apply extra data: Creating
- temp file: Permission denied` (log lines 3107–3109). Flatpak's
-`apply_extra_data()` calls `flatpak_run_setup_base_argv()` before spawning
-bwrap. Its propagated error has this shape; a failed spawned script instead
-returns `apply_extra script failed, exit status N`. The exact error text is
-libglnx's named `openat(O_CREAT|O_EXCL|O_NOFOLLOW|O_NOCTTY|flags, 0600)`
-fallback in `open_tmpfile_core()` after O_TMPFILE is unsupported.
+Rebased chrome-sol onto main 8cd77ce, including the coordinator's removal of
+makeReadOnly() from the shared-runtime staging installation. That resolves
+the earlier `install/system/repo/tmp.*` create denial.
 
-The seccomp-export tempfile is a candidate: the pinned Flatpak already calls
-`glnx_open_anonymous_tmpfile()` there, honoring TMPDIR. Both locked libglnx
-copies honor TMPDIR too. ExtraDataInstallService supplies an app-private
-`install/tmp`. The supplied logs contain neither that open's pathname nor a
-matching file-create AVC. Consequently /var/tmp mode, SELinux, stale binaries,
-and path translation are NOT established root causes. The prior bwrap-only
-01777 change cannot explain a failure before bwrap starts.
+Attempt 11 does **not** fail on the /usr, /app or /app/extra directory fds:
+all three mounts are logged successfully. It fails on the later regular-file
+`/etc/e2scrub.conf` bind. Its target was recorded below
+`/tmp/oldroot/data/data/.../newroot/etc/e2scrub.conf`, instead of
+`/tmp/newroot/etc/e2scrub.conf`. The temporary mount source used the
+`/data/user/0` spelling while the kernel proc fd link returned `/data/data`.
+Reverse lookup missed the alias and the subsequent reopen saw the unmounted
+placeholder inode, triggering bwrap's real dev/ino comparison.
 
-Denied creates now print logical input, translated backing path (or resolution
-failure), dirfd, flags, errno and PID without requiring full trace. Install
-stdout/stderr streams to MatonExtraData as it happens. The stub's existing
-cache/v3-trace marker now enables loader --trace and Flatpak --verbose for
-extra-data too. A coordinator retry must capture these lines; correlate a
-relative path with create-dirfd and the preceding trace. Compare the installed
-host native-library hash with the newly built loader if no diagnostic appears.
+vfs_mount now resolves a native source through O_PATH + its kernel proc fd
+link before storing the mapping, as a native bind mount resolves its source.
+This handles symlinked ancestors generally, with no app rule or fake stat.
+When the native source cannot be opened/read, the existing spelling remains.
+Explicit loader --map sources retain their existing symlink semantics.
+
+The revised apply-extra-host.py opens O_PATH fds **inside** the proxy and
+passes --ro-bind-fd for /usr, /app and a regular file, plus --bind-fd for
+/app/extra. TMPDIR has a symlinked parent, reproducing the device alias case.
+Before the fix this produced `Race condition binding dirfd: Invalid argument`;
+afterwards it reads the bound file, extracts Debian/xz via bsdtar under the
+Flatpak filter, renames output and removes inputs successfully. The payload
+also verifies /proc/self remains absent.
 
 ## Fixes and host evidence
 
@@ -39,7 +42,7 @@ host native-library hash with the newly built loader if no diagnostic appears.
   relative lookups on native proc FDs against their pinned kernel path. This
   uses the real FD, not stale cached names, and does not expose /proc after
   exec into the payload. No Chrome-specific proxy behavior was added.
-* Cleanup: prepareRuntimeSystem makes the staged shared installation read-only.
+* Cleanup: older staged shared installations can contain read-only directories.
   Removing children requires writable parent directories; restore owner write
   while deleting the app-owned staging tree. Never follow runtime symlinks.
   Regression checks removal, preserved external runtime, and repeated cleanup.
@@ -87,7 +90,7 @@ On the coordinator's fresh image with this branch's loader and host Java:
 
 ```sh
 ADB_SERIAL=127.0.0.1:5556 \
-CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol/device \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol/attempt12 \
 bash tests/chrome-sol/verify-device.sh
 ```
 
@@ -100,3 +103,23 @@ a web page, Wayland flag in /proc/<pid>/cmdline, and close/relaunch. Remove the
 cache/v3-trace marker afterwards. Only the coordinator runs VMs.
 
 No shared device-tree, AOSP, kernel or other agents' changes are required.
+
+## Round 2 verification
+
+Logs: `/mnt/data/aosp/out/pc-logs/chrome-sol-bindfd/`.
+The x86_64/i386 proxy build and complete proxy tests/run.sh pass, including
+Android shared-library packaging, EROFS bind/ldconfig, ICD aliases, fd tracking,
+temporary-directory cleanup and rewrite tests. Flatpak-shaped ldconfig/payload
+and ICD duplication fixtures pass separately. The revised apply_extra fixture
+passes with the real fd bind options and aliased TMPDIR. Device-tree preflight
+passes. The complete repository tests/run.sh also passes, including extra-data
+validation/cleanup, image/index/launcher splits, install handoff and launch
+dependency planning. No AOSP build or VM was started.
+
+The remaining device checks are stock apply_extra against the real Chrome deb,
+Binder image handback, commit validation, second PackageInstaller publication,
+install/ deletion and an actual Wayland browser launch. Run verify-device.sh
+above on a fresh image/APK including commit fb65a0d. Keep the returned log and
+check that /etc regular-file bind targets stay in /tmp/newroot rather than
+/tmp/oldroot/data/data. If it fails later, return the whole log, not only the
+last Flatpak error. No shared changes or kernel changes are requested.
