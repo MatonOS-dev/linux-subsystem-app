@@ -863,6 +863,15 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(a[one] && !*(char *)(uintptr_t)a[one] && at){
         if(nr==PROXY_SC_fchmodat2){struct proxy_stat mode;if(!arch_stat_fd(fd,&mode) && S_ISREG(mode.st_mode))a[2]=(a[2]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
+    if(nr==PROXY_SC_newfstatat && original_path &&
+            (a[3]&AT_SYMLINK_NOFOLLOW) && !(a[3]&AT_EMPTY_PATH)){
+        char *logical=NULL;
+        if(vfs_plain_nofollow_path(fd,original_path,&logical)){
+            long result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
+            if(!result)links_payload_path_stat(logical,(void *)(uintptr_t)a[2],0);
+            vfs_free(logical);return result;
+        }
+    }
     if(proxy_trace && original_path){
         proxy_log("path-input",nr,fd);
         emit("v3 path input ");emit(original_path);emit("\n");

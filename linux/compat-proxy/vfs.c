@@ -429,6 +429,30 @@ static char *physical(const char *path){
     if(!m)return dupstr(path);
     return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));
 }
+/* For a no-follow stat of one child, the kernel can use the tracked dirfd
+ * directly when the virtual mapping is an identity map. Requiring an
+ * explicit self-map keeps this away from ordinary, rooted, and EROFS views. */
+int vfs_plain_nofollow_path(int fd,const char *path,char **logical_out){
+    if(logical_out)*logical_out=NULL;
+    if(fd==AT_FDCWD || root || !path || !*path || path[0]=='/' || path[0]=='.')return 0;
+    for(size_t i=0;path[i];i++)if(path[i]=='/')return 0;
+    char *base=vfs_fd_name(fd);if(!base)return 0;
+    char *logical=join(base,path);vfs_free(base);if(!logical)return 0;
+    for(size_t i=0;logical[i];){while(logical[i]=='/')i++;size_t start=i;while(logical[i]&&logical[i]!='/')i++;
+        if(p_equal(logical+start,".v3-inodes")){vfs_free(logical);return 0;}}
+    if(prefix(logical,"/proc") || prefix(logical,"/sys") || prefix(logical,"/dev") ||
+            p_equal(path,".v3-store-root") || p_equal(path,".v3-inodes") ||
+            (hide_resolver && (p_equal(logical,"/etc/resolv.conf") ||
+                    p_equal(logical,"/run/host/monitor/resolv.conf"))) ||
+            erofs_prefix_length(logical,NULL)) {vfs_free(logical);return 0;}
+    struct mount *m=lookup(logical);
+    if(!m || !p_equal(m->source,m->target)){vfs_free(logical);return 0;}
+    char *host=physical(logical);int same=host && p_equal(host,logical);vfs_free(host);
+    if(!same){vfs_free(logical);return 0;}
+    links_recover_path(logical);
+    if(logical_out)*logical_out=logical;else vfs_free(logical);
+    return 1;
+}
 struct proxy_open_how {uint64_t flags,mode,resolve;};
 #define PROXY_RESOLVE_NO_XDEV       0x01
 #define PROXY_RESOLVE_NO_MAGICLINKS 0x02
@@ -445,20 +469,34 @@ struct proxy_open_how {uint64_t flags,mode,resolve;};
 static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd,char **outpath){
     if(outfd)*outfd=-1;
     if(outpath)*outpath=NULL;
-    if(fd!=AT_FDCWD || !path || path[0]!='/' || p_equal(path,"/"))return NULL;
-    for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
-        if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.'))return NULL;
+    if(!path || !*path)return NULL;
+    char *global=NULL;
+    if(path[0]=='/')global=root?join(root,path):dupstr(path);
+    else {
+        if(fd==AT_FDCWD)return NULL;
+        char *base=vfs_fd_name(fd);
+        if(!base)return NULL;
+        global=root?join(root,base):dupstr(base);
+        vfs_free(base);
+        if(global){char *next=join(global,path);vfs_free(global);global=next;}
     }
-    char *global=root?join(root,path):dupstr(path);if(!global)return NULL;
-    if((hide_resolver && (p_equal(path,"/etc/resolv.conf") ||
+    if(!global || p_equal(global,"/")){vfs_free(global);return NULL;}
+    for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
+        if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.')){vfs_free(global);return NULL;}
+    }
+    if((hide_resolver && (path[0]!='/' || p_equal(path,"/etc/resolv.conf") ||
             p_equal(path,"/run/host/monitor/resolv.conf")))){vfs_free(global);return NULL;}
     for(size_t i=0;global[i];){while(global[i]=='/')i++;size_t start=i;while(global[i]&&global[i]!='/')i++;
         if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
-    struct mount *m=lookup(global);char *host_path=physical(global);
+    struct mount *m=lookup(global);
+    int direct_relative=fd!=AT_FDCWD && !root && m &&
+        p_equal(m->source,m->target) && !erofs_prefix_length(global,NULL);
+    char *host_path=physical(global);
     if(!host_path){vfs_free(global);return NULL;}
     links_recover_path(host_path);
     struct proxy_open_how how={.flags=O_PATH|O_CLOEXEC|(!follow?O_NOFOLLOW:0),
-        .resolve=PROXY_RESOLVE_NO_MAGICLINKS|PROXY_RESOLVE_NO_SYMLINKS};
+        .resolve=PROXY_RESOLVE_NO_MAGICLINKS|PROXY_RESOLVE_NO_SYMLINKS|
+            (direct_relative?PROXY_RESOLVE_NO_XDEV:0)};
     /* physical() already selected the mount's absolute backing name. Resolving
      * that name directly avoids opening and closing a helper root fd on every
      * trapped lookup; NO_SYMLINKS keeps this fast path conservative. */
@@ -466,6 +504,7 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     if(targetfd<0){vfs_free(host_path);vfs_free(global);return NULL;}
     if(outfd){char *marker=dupstr("");if(marker){*outfd=(int)targetfd;if(outpath)*outpath=host_path;else vfs_free(host_path);vfs_free(global);return marker;}}
     if(outfd&&outpath){RAW(PROXY_SC_close,targetfd,0,0,0,0,0);vfs_free(host_path);vfs_free(global);return NULL;}
+    if(direct_relative){RAW(PROXY_SC_close,targetfd,0,0,0,0,0);if(identity)*identity=m;vfs_free(global);return host_path;}
     vfs_free(host_path);
     char proc[48]="/proc/self/fd/";size_t k=14;unsigned value=(unsigned)targetfd;char digits[16];size_t d=0;
     do{digits[d++]=(char)('0'+value%10);value/=10;}while(value);
@@ -720,7 +759,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
     char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable,1);
     uint64_t ended=proxy_count_now();
     if(started && ended>=started)proxy_count_resolution(ended-started);
-    if(answer && cacheable && identity && fd==AT_FDCWD && follow &&
+    if(answer && cacheable && fd==AT_FDCWD && follow &&
             resolve_cacheable_path(path) && key_len<PATH_MAX){
         size_t value_len=p_len(answer);
         if(value_len<PATH_MAX){
@@ -730,7 +769,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
                 resolve_cache_count++;
                 struct resolve_cache_entry *entry=&resolve_cache[slot];size_t bucket=(size_t)hash&(resolve_cache_bucket_count-1);
                 entry->valid=0;entry->follow=follow;entry->key_len=key_len;
-                entry->value_len=value_len;entry->identity=*identity;entry->hash=hash;entry->next=resolve_cache_buckets[bucket];
+                entry->value_len=value_len;entry->identity=identity?*identity:NULL;entry->hash=hash;entry->next=resolve_cache_buckets[bucket];
                 p_copy(entry->key,path,key_len+1);p_copy(entry->value,answer,value_len+1);
                 entry->valid=1;resolve_cache_buckets[bucket]=slot+1;
             }
