@@ -23,7 +23,16 @@ The subsystem app first pulls and authenticates the commit with
 small signed stub with no launcher entry or app icon. That stub runs stock
 `flatpak install` under the package UID, including Flatpak's own bwrap
 `apply_extra` path, then builds the single EROFS image with the same mkfs
-options as the subsystem. It returns the image through a file descriptor.
+options as the subsystem. The user installation is `<app data dir>/install`,
+which is also the generic compat-proxy hardlink-emulation root needed by
+OSTree. When `matonos-erofsd` is available, the already-installed Platform
+runtime is mounted from its package and exposed as a read-only Flatpak system
+installation, so the stub only deploys the app. The stub validates the image,
+returns it through a file descriptor, then removes `install/`.
+
+Without `matonos-erofsd`, the stub keeps the full app-plus-runtime deployment
+under `install/`. Launching directly from that tree is still TODO; this fallback
+does not yet have an end-to-end launch path.
 
 The subsystem extracts the image with the pinned `fsck.erofs` and compares
 every path outside `/app/extra` against the authenticated OSTree commit
