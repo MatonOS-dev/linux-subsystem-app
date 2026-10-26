@@ -47,4 +47,11 @@ final class ErofsLaunch {
         IErofsMounter result=IErofsMounter.Stub.asInterface(binder);
         if(result==null)throw new IOException("matonos-erofsd is unavailable");return result;
     }
+
+    static boolean available() {
+        try {
+            return (IBinder)Class.forName("android.os.ServiceManager")
+                    .getMethod("getService",String.class).invoke(null,"matonos.erofs") != null;
+        } catch(Exception unavailable) { return false; }
+    }
 }

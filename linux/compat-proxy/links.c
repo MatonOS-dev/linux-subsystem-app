@@ -50,6 +50,40 @@ static int marked_device(const char *dir,uint64_t *device){
  if(device)*device=st.st_dev;
  return 1;
 }
+/* Android denies link(2) in app data. OSTree needs it while Flatpak deploys
+ * an installation, so permit the same emulation in each app's private
+ * <data-dir>/install tree. Keep this boundary tied to Android app-data paths;
+ * a random directory named "install" does not opt in. */
+static int app_install_path(const char *dir){
+ const char *p=dir,*package=0;
+ const char *prefixes[]={"/data/user/","/data/user_de/","/data/data/"};
+ int matched=0;
+ for(size_t k=0;k<sizeof(prefixes)/sizeof(prefixes[0]);k++){
+  const char *prefix=prefixes[k];size_t n=p_len(prefix),i=0;
+  while(prefix[i] && dir[i]==prefix[i])i++;
+  if(i!=n)continue;
+  p=dir+n;
+  if(k<2){
+   const char *user=p;while(*p>='0' && *p<='9')p++;
+   if(p==user || *p!='/')continue;
+   p++;
+  }
+  matched=1;break;
+ }
+ if(!matched)return 0;
+ package=p;
+ while(*p && *p!='/')p++;
+ if(p==package || !*p || !p_equal(p,"/install"))return 0;
+ return 1;
+}
+static int app_install_device(const char *dir,uint64_t *device){
+ if(!app_install_path(dir))return 0;
+ struct proxy_stat st;
+ if(arch_stat_at(AT_FDCWD,dir,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode)
+     || st.st_uid!=links_euid() || (st.st_mode&0300)!=0300 || (st.st_mode&0022))return 0;
+ if(device)*device=st.st_dev;
+ return 1;
+}
 int links_marker(const char *path){const char *name=path;for(const char *p=path;*p;p++)if(*p=='/')name=p+1;return p_equal(name,".v3-store-root");}
 /* Marker roots change only through path-mutating syscalls handled by path_call.
  * Every directory on a walk shares the walk's answer (its nearest marker root,
@@ -111,6 +145,7 @@ static int tree(char *root,const char *path){
    break;
   }
   if(marked_device(root,&device)){marked=private_dir(root,device);break;}
+  if(app_install_device(root,&device)){marked=1;break;}
   if(depth<TREE_WALK_DEPTH)visited[depth++]=p_len(root);
   if(!parent(up,root) || p_equal(up,root)){marked=0;break;}
   p_copy(root,up,p_len(up)+1);

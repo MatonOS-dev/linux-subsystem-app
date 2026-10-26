@@ -406,6 +406,7 @@ public final class InstallTransaction {
                     java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pullStarted)+" bytes="+size);
             DeployManifest.verifyPlanned(installation,manifest,node.ref,node.info.commit,node.info.metadata,node.subpaths);
             StagedPacks.verify(context,installation,()->cancelled.get());
+            if(isolatedDeploy)cleanupExtraDataInstall(DeployManifest.packageForPublic(node.ref));
             long payload=metadataSize(node.info.metadata,"xa.installed-size");if(payload>0)verifiedPayloadBytes.addAndGet(payload);
         }
         private boolean hasExtraData(byte[] metadata) {
@@ -469,6 +470,25 @@ public final class InstallTransaction {
                         "org.matonos.linux.stub.ExtraDataInstallService"),0);
                 return true;
             } catch(android.content.pm.PackageManager.NameNotFoundException absent) { return false; }
+        }
+        private void cleanupExtraDataInstall(String packageName)throws Exception {
+            android.content.Intent request=new android.content.Intent("org.matonos.linuxhost.EXTRA_DATA_INSTALL")
+                    .setComponent(new android.content.ComponentName(packageName,"org.matonos.linux.stub.ExtraDataInstallService"));
+            java.util.concurrent.CompletableFuture<android.os.IBinder> bound=new java.util.concurrent.CompletableFuture<>();
+            android.content.ServiceConnection connection=new android.content.ServiceConnection() {
+                @Override public void onServiceConnected(android.content.ComponentName name,android.os.IBinder binder){bound.complete(binder);}
+                @Override public void onServiceDisconnected(android.content.ComponentName name){}
+                @Override public void onNullBinding(android.content.ComponentName name){bound.completeExceptionally(new java.io.IOException("Stub extra-data service returned no binder"));}
+            };
+            if(!context.bindService(request,connection,Context.BIND_AUTO_CREATE|Context.BIND_IMPORTANT))
+                throw new java.io.IOException("Cannot bind stub extra-data service for cleanup");
+            try {
+                android.os.IBinder binder=bound.get(2,java.util.concurrent.TimeUnit.MINUTES);
+                android.os.Parcel data=android.os.Parcel.obtain();
+                try {
+                    if(!binder.transact(2,data,null,0))throw new java.io.IOException("Stub extra-data service rejected install cleanup");
+                } finally {data.recycle();}
+            } finally {context.unbindService(connection);}
         }
         private void installTemporaryBase(String packageName,File apk)throws Exception {
             String action=context.getPackageName()+".EXTRA_STUB."+java.util.UUID.randomUUID();

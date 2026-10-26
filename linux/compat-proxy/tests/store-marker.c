@@ -24,6 +24,14 @@ long proxy_raw(long n,long a,long b,long c,long d,long e,long f){
 }
 #include "../links.c"
 int main(int argc,char **argv){
- assert(argc==2);assert(marked_device(argv[1],NULL));foreign=1;assert(!marked_device(argv[1],NULL));
+ assert(argc==2);
+ assert(app_install_path("/data/user/0/org.example.app/install"));
+ assert(app_install_path("/data/user/10/org.example.app/install"));
+ assert(app_install_path("/data/user_de/12/org.example.app/install"));
+ assert(app_install_path("/data/data/org.example.app/install"));
+ assert(!app_install_path("/data/user/0/org.example.app/files/install"));
+ assert(!app_install_path("/tmp/org.example.app/install"));
+ assert(!app_install_path("/data/userx/0/org.example.app/install"));
+ assert(marked_device(argv[1],NULL));foreign=1;assert(!marked_device(argv[1],NULL));
  puts("PASS foreign-owned regular marker ignored; marker stat always no-follow");
 }
