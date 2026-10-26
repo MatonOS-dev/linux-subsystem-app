@@ -79,6 +79,15 @@ finishes, inspect its one EROFS image for `/app/extra`, launch it and confirm
 its extra-data resources load. Repeat after uninstall/reinstall to cover
 cleanup. Host validator tests cover good content and reject a changed
 committed file, setuid content and an escaping symlink.
+
+On a userdebug image, the same install can be started from adb with
+the following command; logcat tag `MatonExtraInstall` reports progress and
+completion.
+
+```sh
+adb shell am start -n org.matonos.linux/.DebugExtraInstallActivity \
+  -a org.matonos.linux.DEBUG_INSTALL_CHROME
+```
 ### Round 17: fullscreen modes and runtime children
 
 Mapped fullscreen X11 configure requests now reach Xwayland unchanged; Android

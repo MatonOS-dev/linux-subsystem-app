@@ -50,5 +50,13 @@ after uninstall/reinstall to cover cleanup. Host validator tests cover a good
 image and reject a changed committed file, setuid content and escaping
 symlink.
 
-The package install itself exercises the returned file descriptor and the
-package-specific UID. No isolated-process probe remains.
+The adb-triggerable debug install is:
+
+```sh
+/mnt/data/aosp/out/host/linux-x86/bin/adb -s 127.0.0.1:5556 shell am start \
+  -n org.matonos.linux/.DebugExtraInstallActivity \
+  -a org.matonos.linux.DEBUG_INSTALL_CHROME
+```
+
+Logcat tag `MatonExtraInstall` reports progress and completion. No isolated-
+process probe remains.
