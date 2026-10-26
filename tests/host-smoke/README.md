@@ -33,7 +33,12 @@ The Android `PackageInstaller` session and PackageManager signature/split
 resolution are not available on a Linux host. The harness writes the same
 unsigned base-independent EROFS and index split contents as the production
 generators and consumes deployment records and launch targets with the same
-production Java code. `erofsfuse` mounts generated images read-only, but its
+production Java code. The host adapter does not invoke Android's
+`InstallTransaction`/`StagedPacks` service orchestration: it takes the refs and
+deployments from Flatpak's private host installation and supplies them to the
+shared OSTree, EROFS, split, record, and launch-target components. It therefore
+does not test PackageInstaller/PackageManager signatures or transaction
+recovery. `erofsfuse` mounts generated images read-only, but its
 1.9.4 FUSE path can expose EROFS symlinks as regular files containing their
 target text; failures at those paths are host filesystem gaps, not evidence of
 a device launch failure. The harness also does not exercise init mount
