@@ -219,7 +219,10 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
     if(fd<0){vfs_free(resolved);return fd;}
     struct proxy_stat st;error=arch_stat_fd(fd,&st);
     if(!error && (!S_ISREG(st.st_mode) || !(st.st_mode&0111)))error=-EACCES;
-    if(!error)error=RAW(PROXY_SC_faccessat,AT_FDCWD,resolved,1,0,0,0);
+    /* Payload execution is emulated by this loader, not delegated to the
+     * kernel. The backing filesystem may be mounted noexec (Android app data
+     * and the runtime EROFS mount can be), which must not override Linux
+     * execute bits after the virtual filesystem has resolved the path. */
     vfs_free(resolved);
     Elf64_Ehdr h={0};Elf32_Ehdr h32;
     if(error)goto done;

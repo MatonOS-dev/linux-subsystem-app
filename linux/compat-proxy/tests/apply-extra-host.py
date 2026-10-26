@@ -7,6 +7,7 @@ import importlib.util
 import io
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -37,11 +38,23 @@ with (extra/'payload.deb').open('wb') as deb:
 script = out/'apply_extra'
 script.write_text('#!/bin/sh\nset -eu\ntest ! -e /proc/self\ntest \"$(cat /etc/bind-fd-fixture)\" = bind-fd-file\nbsdtar -xf payload.deb data.tar.xz\nbsdtar -xf data.tar.xz\nmv opt/browser browser\nrm -r opt payload.deb data.tar.xz\n')
 script.chmod(0o755)
-app = out/'app'
+# The wrapper gives us a writable noexec tmpfs, matching the Android app-data
+# or EROFS backing-mount constraint this test covers.
+app_tmp = tempfile.TemporaryDirectory(prefix='maton-apply-extra-',
+                                      dir=os.environ['MATON_NOEXEC_DIR'])
+app = pathlib.Path(app_tmp.name)/'app'
 (app/'extra').mkdir(parents=True, exist_ok=True)
 (app/'bin').mkdir(parents=True, exist_ok=True)
 (app/'bin/apply_extra').write_bytes(script.read_bytes())
 (app/'bin/apply_extra').chmod(0o755)
+# Android's app-data and EROFS backing mounts may be noexec even though the
+# proxy emulates execve; assert this fixture really has that property.
+shutil.copy2('/bin/sh', app/'bin/sh')
+(app/'bin/sh').chmod(0o755)
+if os.access(app/'bin/sh', os.X_OK):
+    raise RuntimeError('MATON_NOEXEC_DIR is not noexec; cannot run the exec regression')
+(app/'bin/apply_extra').write_text((app/'bin/apply_extra').read_text().replace(
+    '#!/bin/sh', '#!/app/bin/sh'))
 bound_file = out/'bound-file'
 bound_file.write_text('bind-fd-file\n')
 launcher_source = out/'bind-fd-launcher.c'
@@ -77,6 +90,7 @@ try:
     assert (extra/'browser/browser').read_text() == 'extra-data-extracted\n'
     assert (extra/'browser/browser').stat().st_mode & 0o777 == 0o755
     assert not (extra/'payload.deb').exists()
-    print('PASS apply_extra: bsdtar Debian/xz extraction, rename and cleanup under Flatpak seccomp without /proc')
+    print('PASS apply_extra: noexec deployment script and interpreter, bind-fd, Debian/xz extraction, rename and cleanup under Flatpak seccomp without /proc')
 finally:
     os.close(fd)
+    app_tmp.cleanup()

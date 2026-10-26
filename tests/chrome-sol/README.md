@@ -123,3 +123,31 @@ above on a fresh image/APK including commit fb65a0d. Keep the returned log and
 check that /etc regular-file bind targets stay in /tmp/newroot rather than
 /tmp/oldroot/data/data. If it fails later, return the whole log, not only the
 last Flatpak error. No shared changes or kernel changes are requested.
+
+## Round 3: executable on a noexec backing mount
+
+Attempt 12 reaches `execve("/app/bin/apply_extra", ...)` through the proxy and
+bwrap reports `EACCES`. The proxy already checks the Linux execute bits, then
+`validate_exec()` also called host `faccessat(X_OK)` on the translated backing
+path. That second check incorrectly imports Android's backing-mount `noexec`
+flag into emulated Linux execution; the payload loader reads and maps the ELF
+itself, so the kernel's mount-level exec gate does not apply. Removed that
+check while retaining regular-file and execute-bit validation.
+
+`tests/apply-extra-host.sh` recreates the apply-extra bind-fd invocation with
+both the script and its `/app/bin/sh` interpreter on a writable `noexec` tmpfs.
+It passes the proxy's Flatpak seccomp path and completes Debian/xz extraction
+and cleanup. `tests/run.sh` now includes this regression.
+
+Coordinator VM check (no VM was started by this task):
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round3 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Keep the full `logcat.txt`. On failure, correlate the `v3 exec resolved` path,
+the bwrap `execvp` message, and any SELinux AVCs for the same PID. On success,
+continue through image handback, package split publication, stock
+`chrome-flags.conf`, and the Wayland launch/render checks in the script.

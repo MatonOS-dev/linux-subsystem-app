@@ -284,6 +284,7 @@ python3 tests/erofs-mkdir-host.py
 python3 tests/erofs-single-backing-host.py
 python3 tests/erofs-ldconfig-host.py
 python3 tests/icd-dup-host.py
+bash tests/apply-extra-host.sh /mnt/data/aosp/out/pc-logs/chrome-sol-host
 
 python3 tests/loader-maps.py
 
