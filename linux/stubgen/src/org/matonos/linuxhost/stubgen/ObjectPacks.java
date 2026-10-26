@@ -72,13 +72,25 @@ public final class ObjectPacks {
      * addressed; directories and symlinks get a stable path-derived checksum.
      * Symlink targets must be relative and non-escaping. */
     public static List<Entry> fromTree(File root,String prefix) throws Exception {
+        return fromTree(root,prefix,false);
+    }
+    /** Directory image source with the deployed POSIX modes preserved exactly. */
+    public static List<Entry> fromTreeWithModes(File root,String prefix) throws Exception {
+        return fromTree(root,prefix,true);
+    }
+    private static List<Entry> fromTree(File root,String prefix,boolean preserveModes) throws Exception {
         if(!root.isDirectory()||Files.isSymbolicLink(root.toPath()))
             throw new IOException("Missing tree root");
         List<Entry> entries=new ArrayList<>();
-        fromTreeInto(root,"",prefix.endsWith("/")?prefix:prefix+"/",entries);
+        String normalized=prefix.endsWith("/")?prefix:prefix+"/";
+        if(preserveModes) {
+            String path=normalized.substring(0,normalized.length()-1);
+            Entry top=new Entry(path,pathChecksum(path,"dir"),"dir",unixMode(root.toPath()));entries.add(top);
+        }
+        fromTreeInto(root,"",normalized,entries,preserveModes);
         return entries;
     }
-    private static void fromTreeInto(File directory,String relative,String prefix,List<Entry> entries) throws Exception {
+    private static void fromTreeInto(File directory,String relative,String prefix,List<Entry> entries,boolean preserveModes) throws Exception {
         File[] children=directory.listFiles();
         if(children==null)throw new IOException("Cannot list "+directory);
         Arrays.sort(children,Comparator.comparing(File::getName));
@@ -90,15 +102,19 @@ public final class ObjectPacks {
             java.nio.file.Path from=child.toPath();
             if(Files.isSymbolicLink(from)) {
                 java.nio.file.Path target=Files.readSymbolicLink(from);
-                if(target.isAbsolute()||escapes(target))throw new IOException("Unsafe tree link "+path);
-                Entry e=new Entry(path,pathChecksum(path,"symlink"),"symlink",0120777);e.target=target.toString();entries.add(e);
+                if(!preserveModes&&(target.isAbsolute()||escapes(target)))throw new IOException("Unsafe tree link "+path);
+                Entry e=new Entry(path,pathChecksum(path,"symlink"),"symlink",preserveModes?unixMode(from):0120777);e.target=target.toString();entries.add(e);
             } else if(Files.isDirectory(from,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                Entry e=new Entry(path,pathChecksum(path,"dir"),"dir",0100755);entries.add(e);
-                fromTreeInto(child,relative+name+"/",prefix,entries);
+                Entry e=new Entry(path,pathChecksum(path,"dir"),"dir",preserveModes?unixMode(from):0100755);entries.add(e);
+                fromTreeInto(child,relative+name+"/",prefix,entries,preserveModes);
             } else if(Files.isRegularFile(from,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                Entry e=new Entry(path,checksum(child),"file",PlaceholderFiles.resolve(child).canExecute()?0100755:0100644);e.source=child;entries.add(e);
+                Entry e=new Entry(path,checksum(child),"file",preserveModes?unixMode(from):(PlaceholderFiles.resolve(child).canExecute()?0100755:0100644));e.source=child;entries.add(e);
             } else throw new IOException("Unsupported tree entry "+path);
         }
+    }
+    private static int unixMode(java.nio.file.Path path)throws IOException {
+        try{return ((Number)Files.getAttribute(path,"unix:mode",java.nio.file.LinkOption.NOFOLLOW_LINKS)).intValue()&07777;}
+        catch(UnsupportedOperationException error){throw new IOException("POSIX modes are required for deployed image",error);}
     }
     private static boolean escapes(java.nio.file.Path target) {
         for(java.nio.file.Path part:target)if(part.toString().equals(".."))return true;

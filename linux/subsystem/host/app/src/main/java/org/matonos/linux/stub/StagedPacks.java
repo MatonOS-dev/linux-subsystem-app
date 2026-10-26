@@ -71,10 +71,39 @@ public final class StagedPacks {
             }
         }
         IBinder seedToken=seedUnchangedFromMounted(installed,operation,imageEntries,manifest.getString("appRef"));
-        long mkfsStarted=System.nanoTime();org.matonos.linuxhost.stubgen.ErofsImage.BuildResult imageResult=
-                org.matonos.linuxhost.stubgen.ErofsImage.build(imageEntries,output,erofsTool,imageEpoch,cancelled,workPool);
+        long mkfsStarted=System.nanoTime();long imageBytes;
+        File returnedImage=new File(installation,"extra-data-image.erofs");
+        if(returnedImage.isFile()) {
+            List<ExtraImageValidator.Entry> trusted=new ArrayList<>();
+            String trustedPrefix=manifest.getString("appRef").startsWith("runtime/")
+                    ? "/"+manifest.getString("appRef").substring(manifest.getString("appRef").lastIndexOf('/')+1)
+                    : "/app";
+            for(ObjectPacks.Entry sourceEntry:original.entries) {
+                String path=sourceEntry.path.equals("/")?trustedPrefix:trustedPrefix+sourceEntry.path;
+                trusted.add(new ExtraImageValidator.Entry(path,sourceEntry.kind,sourceEntry.mode,
+                        sourceEntry.target,sourceEntry.checksum,sourceEntry.source));
+            }
+            File extracted=new File(installation,"extra-image-validated");
+            try {
+                ExtraImageValidator.checkImage(
+                        LoaderCommand.tool(context,"libmatonos-fsck-erofs.so"),returnedImage,extracted,trusted);
+                File extra=new File(extracted,"app/extra"),target=new File(deployedFiles,"extra");
+                if(extra.exists()) {
+                    delete(target);
+                    Files.move(extra.toPath(),target.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+                try(InputStream in=org.matonos.linuxhost.stubgen.PlaceholderFiles.open(returnedImage);
+                        OutputStream out=new FileOutputStream(new File(output,"deployment.erofs"))) {
+                    byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);
+                }
+            } finally {delete(extracted);}
+            imageBytes=returnedImage.length();
+        } else {
+            org.matonos.linuxhost.stubgen.ErofsImage.BuildResult imageResult=
+                    org.matonos.linuxhost.stubgen.ErofsImage.build(imageEntries,output,erofsTool,imageEpoch,cancelled,workPool);
+            imageBytes=imageResult.image.imageSize;
+        }
         if(seedToken!=null)seedToken.pingBinder(); // Keep the mounted-image lease alive through the full write.
-        long imageBytes=imageResult.image.imageSize;
         Log.i("MatonInstall","phase=mkfs_total ref="+manifest.optString("ref","unknown")+" ms="+
                 java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-mkfsStarted)+" bytes="+imageBytes);
         // The prior release's payloads live in its mounted EROFS image, not in
@@ -98,6 +127,12 @@ public final class StagedPacks {
             // informational walk runs; that must not fail a completed install.
             android.util.Log.w("MatonInstall","Cannot measure temporary operation size",error);
         }
+    }
+
+    private static void delete(File file) {
+        if(java.nio.file.Files.isSymbolicLink(file.toPath())) { file.delete(); return; }
+        if(file.isDirectory()) {File[] children=file.listFiles();if(children!=null)for(File child:children)delete(child);}
+        file.delete();
     }
 
     /** Reuse bytes from the installed image where the OSTree object checksum is unchanged. */

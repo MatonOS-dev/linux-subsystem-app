@@ -62,32 +62,32 @@ this change. No shared-file or kernel changes are required.
 ### Flatpak extra data at install time
 
 Refs without `[Extra Data]` keep the existing in-subsystem deploy. For refs
-that declare it, the subsystem first runs stock `flatpak install --no-deploy`
-to fetch the commit and extra-data files, then asks its isolated-process
-service to run stock `flatpak install --no-pull`. That runs Flatpak's own
-`apply_extra_data` path, including its bwrap invocation. The subsystem streams
-the staging installation and a materialized OSTree repository as ustar over a
-pipe. The isolated service extracts them into bwrap's writable tmpfs, runs the
-stock deploy, and streams only `/app/extra` back. The subsystem validates the
-output paths, extracts the tree and builds the package's single EROFS image
-itself. Archive ownership, xattrs and timestamps are not imported.
+that declare it, the subsystem authenticates the commit with
+`flatpak install --no-deploy`, installs a small signed stub, and has stock
+Flatpak run under the package UID. The stub pulls and deploys the ref itself,
+including Flatpak's `apply_extra` bwrap path, builds one EROFS image with the
+same mkfs options as the subsystem, and returns the image through a file
+descriptor. The subsystem extracts it with its pinned `fsck.erofs`, checks
+all content outside `/app/extra` against the authenticated commit, and checks
+`/app/extra` for safe path types, modes and symlinks. The validated image is
+then installed in the ordinary image split. Launcher metadata is read from
+the validated deployment, including extra-data exports.
 
-The repository view is materialized because the staged repo uses the
-subsystem UID's private v3 hardlink store, which is deliberately not shared
-with the random isolated UID. Immutable OSTree object/data files are hardlinked
-into the temporary view; mutable repository metadata is copied. The original
-staged repo and its placeholder indexes stay intact for image packing.
+On a fresh userdebug image, set `persist.vendor.maton.sleep_idle_s` to `0`,
+install Flathub's `com.google.Chrome` from the store, confirm the install
+finishes, inspect its one EROFS image for `/app/extra`, launch it and confirm
+its extra-data resources load. Repeat after uninstall/reinstall to cover
+cleanup. Host validator tests cover good content and reject a changed
+committed file, setuid content and an escaping symlink.
 
-The coordinator probe is an adb-triggered isolated service that passes one
-regular file through a pipe and asks bwrap to stage it with `--file`, then
-logs the UID, writable locations and exit status. Its fresh-image result is
-in the coordinator's probe log. On a fresh userdebug
-image, set `persist.vendor.maton.sleep_idle_s` to `0`, run that probe, then
-install Flathub's `com.google.Chrome`. Confirm the install finishes, inspect
-the package's one installed EROFS image for `/app/extra`, launch it and
-confirm its extra-data resources load. Repeat once after uninstall/reinstall
-to cover cleanup of the staged tree. Host test results and remaining device
-gaps are recorded in the same report.
+On a userdebug image, the same install can be started from adb with
+the following command; logcat tag `MatonExtraInstall` reports progress and
+completion.
+
+```sh
+adb shell am start -n org.matonos.linux/.DebugExtraInstallActivity \
+  -a org.matonos.linux.DEBUG_INSTALL_CHROME
+```
 ### Round 17: fullscreen modes and runtime children
 
 Mapped fullscreen X11 configure requests now reach Xwayland unchanged; Android

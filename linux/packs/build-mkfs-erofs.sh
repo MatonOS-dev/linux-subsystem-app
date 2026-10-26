@@ -9,7 +9,9 @@ ARCHIVE=$WORK/src/erofs-utils-v1.9.4.tar.gz
 SOURCE=$WORK/src/erofs-utils-1.9.4
 BUILD=$WORK/build/erofs-utils-1.9.4
 OUT=$WORK/out/matonos-mkfs-erofs
+FSCK_OUT=$WORK/out/matonos-fsck-erofs
 PREBUILT=$HERE/prebuilt/x86_64/matonos-mkfs-erofs
+FSCK_PREBUILT=$HERE/prebuilt/x86_64/matonos-fsck-erofs
 [[ -x $ROOTFS/bin/sh ]] || { echo "Missing Alpine musl rootfs: $ROOTFS" >&2; exit 1; }
 mkdir -p "$WORK/src" "$WORK/build" "$WORK/out" "$(dirname "$PREBUILT")"
 cat > "$WORK/build/static-cc" <<'EOF'
@@ -41,14 +43,21 @@ chmod -R u+w "$SOURCE"
     CFLAGS="-O2 -g0 -ffile-prefix-map=/source=./src -fdebug-prefix-map=/source=./src" \
       ./configure --prefix=/usr --enable-lz4 --disable-lzma --disable-fuse \
         --without-zlib --without-libzstd --without-libcurl --without-libxml2 --without-uuid --without-libnl3
-    make -j4
+    make -j"$(nproc)"
     cp mkfs/mkfs.erofs /scratch/out/matonos-mkfs-erofs
+    cp fsck/fsck.erofs /scratch/out/matonos-fsck-erofs
   '
 install -m 0755 "$OUT" "$PREBUILT"
+install -m 0755 "$FSCK_OUT" "$FSCK_PREBUILT"
 if readelf -l "$PREBUILT" | grep -q INTERP; then
   echo "mkfs.erofs unexpectedly has a dynamic interpreter" >&2
   exit 1
 fi
 "$PREBUILT" --version
-(cd "$(dirname "$PREBUILT")" && sha256sum "$(basename "$PREBUILT")") > "$HERE/prebuilt/x86_64/SHA256SUMS"
-echo "Built static musl mkfs.erofs: $PREBUILT"
+"$FSCK_PREBUILT" --version
+if readelf -l "$FSCK_PREBUILT" | grep -q INTERP; then
+  echo "fsck.erofs unexpectedly has a dynamic interpreter" >&2
+  exit 1
+fi
+(cd "$(dirname "$PREBUILT")" && sha256sum "$(basename "$PREBUILT")" "$(basename "$FSCK_PREBUILT")") > "$HERE/prebuilt/x86_64/SHA256SUMS"
+echo "Built static musl mkfs.erofs and fsck.erofs: $PREBUILT $FSCK_PREBUILT"
