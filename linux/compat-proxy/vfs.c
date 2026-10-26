@@ -617,7 +617,7 @@ restart:;
                 p_equal(out,"/run/host/monitor/resolv.conf"))){*error=-ENOENT;goto fail;}
         if(p_equal(out+used-len,".v3-inodes")){*error=-ENOENT;goto fail;}
         size_t next=i;while(input[next]=='/')next++;
-        if(!follow && !input[next] && input[i]!='/' )continue;
+        if(!follow && !input[next])continue;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
         long e=0;char *target=readlink_dynamic(host,&e);

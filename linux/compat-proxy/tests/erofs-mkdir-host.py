@@ -35,10 +35,11 @@ int main(int argc,char **argv){
  CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/default",0755)==-1 && errno==EEXIST);
  if(!strcmp(argv[2],"bwrap")){
   struct stat st;
-  CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/extension",0755)==0);
+  CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/extension/",0755)==0);
   CHECK(stat("/usr/lib/x86_64-linux-gnu/GL/extension",&st)==0 && S_ISDIR(st.st_mode));
  }else{
   CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/new-payload-dir",0755)==-1 && errno==EROFS);
+  CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/new-payload-dir/",0755)==-1 && errno==EROFS);
  }
  close(root);
  puts("PASS pivoted EROFS mkdir-parents: existing=EEXIST, new=EROFS, bwrap bind target=virtual directory");
