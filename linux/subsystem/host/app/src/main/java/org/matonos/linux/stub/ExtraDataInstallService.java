@@ -24,6 +24,11 @@ public final class ExtraDataInstallService extends Service {
         return new android.os.Binder() {
             @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
                     throws android.os.RemoteException {
+                if (code == 2) {
+                    File root=new File(getDataDir(), "install");
+                    if (new File(root, ".erofs-handback").isFile()) deleteTree(root);
+                    return true;
+                }
                 if (code != 1) return super.onTransact(code, data, reply, flags);
                 ParcelFileDescriptor result = data.readFileDescriptor();
                 Intent request = new Intent(ACTION).putExtra("ref", data.readString()).putExtra("remote", data.readString())
@@ -105,11 +110,12 @@ public final class ExtraDataInstallService extends Service {
                 ExtraImageValidator.checkImage(LoaderCommand.tool(this, "libmatonos-fsck-erofs.so"),
                         output, checked, trusted);
             } finally { deleteTree(checked); }
-            // The package image is now validated and handed back below. The
-            // host transaction validates it again against the pulled commit.
+            if (!new File(root, ".erofs-handback").createNewFile())
+                throw new IOException("Cannot mark validated EROFS handback");
+            // The host transaction validates it against the pulled commit
+            // before asking this service to remove install/.
             handback = new File(getDataDir(), "extra-data-image.erofs");
             java.nio.file.Files.copy(output.toPath(), handback.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            deleteTree(root);
         } else {
             // TODO: launch directly from this full app+runtime installation
             // when matonos-erofsd is absent; retain install/ as the fallback.
