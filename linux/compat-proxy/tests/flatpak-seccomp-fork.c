@@ -12,7 +12,16 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static void chained_syscall(int signal, siginfo_t *info, void *context) {
+    (void)signal;(void)info;(void)context;
+}
+
 static int exec_child(void *arg) {
+    struct sigaction action={.sa_sigaction=chained_syscall,.sa_flags=SA_SIGINFO};
+    sigemptyset(&action.sa_mask);
+    assert(sigaction(SIGSYS,&action,NULL)==0);
+    errno=0;
+    assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
     char *const argv[]={(char *)arg,(char *)"after-clone-exec",NULL};
     execv(argv[0],argv);
     return 90;
@@ -47,6 +56,10 @@ int main(int argc,char **argv) {
         assert(pidfd>=0);
         int status=0;
         assert(waitpid(cloned,&status,0)==cloned);
+        if(!WIFEXITED(status) || WEXITSTATUS(status)!=0)
+            fprintf(stderr,"clone child status=0x%x signal=%d exit=%d\n",status,
+                    WIFSIGNALED(status)?WTERMSIG(status):0,
+                    WIFEXITED(status)?WEXITSTATUS(status):-1);
         assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
         _exit(0);
     }

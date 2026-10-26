@@ -374,8 +374,17 @@ miss_record_logged:
     }
     else if(n==SYS_brk) result=app_brk;
     else if(n==SYS_rt_sigaction) {
-        if(g[REG_RDI]==SIGSYS && g[REG_RSI]) result=-EINVAL;
-        else result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
+        if(g[REG_RDI]==SIGSYS && g[REG_RSI]) {
+            /* The proxy owns the kernel SIGSYS action and emulates payload
+             * registrations by chaining them. Let its dispatcher update the
+             * chained action; rejecting this here makes apps that install a
+             * SIGSYS handler after fork/exec fail their signal setup. */
+            if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+                ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+                return;
+            }
+            result=-EINVAL;
+        } else result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
     } else if(n==SYS_rt_sigprocmask) {
         unsigned long old=*(unsigned long *)&uc->uc_sigmask, next=old;
         if(g[REG_R10]!=8) result=-EINVAL;
