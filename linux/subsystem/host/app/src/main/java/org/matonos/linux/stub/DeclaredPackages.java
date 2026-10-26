@@ -54,6 +54,7 @@ final class DeclaredPackages {
             if(deployment!=null) {
                 File installation=i==0?deployment:new File(deployment,"system");
                 File files=new File(installation,entry.record.ref+"/"+entry.record.commit+"/files");
+                args.addAll(PackLaunch.backingArguments(target,files));
             }
         }
         return args;

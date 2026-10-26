@@ -379,7 +379,13 @@ static char *physical(const char *path){
         if(oldroot){size_t old_len=erofs_prefix_length(path,oldroot);if(old_len>erofs_len)erofs_len=old_len;vfs_free(oldroot);}}
     if(m){const char *target=m->target;size_t mount_len=p_len(target);
         if(root&&prefix(target,root)){target+=p_len(root);mount_len=p_len(target);if(!*target)mount_len=1;}
-        if(mount_len>=erofs_len)return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));
+        if(mount_len>=erofs_len){
+            char *backing=join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));
+            if(!backing)return NULL;
+            char *image=erofs_physical(backing);vfs_free(backing);
+            if(image)return image;
+            return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));
+        }
     }
     char *erofs=erofs_physical(path);if(erofs)return erofs;
     erofs=erofs_physical_rooted(path,root);if(erofs)return erofs;

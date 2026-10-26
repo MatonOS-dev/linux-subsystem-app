@@ -52,6 +52,7 @@ void vfs_gpu_init(void);
 void vfs_network_payload(int);
 long vfs_gpu_publish(const char *,const char *,const char *,const char *,const char *,unsigned,const char *,unsigned);
 long erofs_mount(const char *,const char *);
+long erofs_backing(const char *,const char *);
 char *erofs_physical(const char *);
 char *erofs_physical_rooted(const char *,const char *);
 size_t erofs_prefix_length(const char *,const char *);

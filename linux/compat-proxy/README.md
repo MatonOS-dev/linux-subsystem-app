@@ -34,7 +34,16 @@ labels or device rendering.
 virtual pivot with `/usr` mapped to a package image. Existing directories must
 return `EEXIST`, new payload directories must return `EROFS`, and bwrap's
 missing bind targets get temporary VFS directories that its next virtual bind
-can replace.
+can replace. `tests/erofs-single-backing-host.py` models the physical OSTree
+deployment `files/` directory passed by the stub: opening the bwrap target and
+then using its dirfd must resolve to the associated image branch, even when
+the physical directory is empty.
+
+For a single-image deployment, the loader receives `--erofs-mount <target>
+<mount>/<branch>` and `--erofs-backing <target> <deployment-files>`. The
+second association lets path resolution replace both the virtual package
+target and its physical deployment prefix with the same mounted image path.
+After that swap, filesystem operations use native kernel EROFS behavior.
 
 Optional diagnostics:
 
