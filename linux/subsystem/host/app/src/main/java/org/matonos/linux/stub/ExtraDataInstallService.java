@@ -114,8 +114,6 @@ public final class ExtraDataInstallService extends Service {
                 throw new IOException("Cannot mark validated EROFS handback");
             // The host transaction validates it against the pulled commit
             // before asking this service to remove install/.
-            handback = new File(getDataDir(), "extra-data-image.erofs");
-            java.nio.file.Files.copy(output.toPath(), handback.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } else {
             // TODO: launch directly from this full app+runtime installation
             // when matonos-erofsd is absent; retain install/ as the fallback.
@@ -125,7 +123,6 @@ public final class ExtraDataInstallService extends Service {
             byte[] buffer = new byte[65536]; int count;
             while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
         }
-        if (handback != output) handback.delete();
     }
 
     private File prepareRuntimeSystem(File root) throws Exception {
