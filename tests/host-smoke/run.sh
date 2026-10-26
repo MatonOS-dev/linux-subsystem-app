@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 WORK=${MATON_HOST_SMOKE_WORK:-/mnt/data/aosp/out/pc-logs/host-smoke}
-FUSE=${EROFS_FUSE:-/mnt/data/aosp/out/pc-logs/erofs-pipeline/src/erofs-utils-1.9.4/fuse/erofsfuse}
+FLATPAK_USER_DIR=${MATON_HOST_SMOKE_FLATPAK_USER_DIR:-$WORK/flatpak-user}
+FSCK=${FSCK_EROFS:-/mnt/data/aosp/out/pc-logs/erofs-pipeline/src/erofs-utils-1.9.4/fsck/fsck.erofs}
 MKFS=${MKFS_EROFS:-$ROOT/linux/packs/prebuilt/x86_64/matonos-mkfs-erofs}
 ANDROID_JAR=${MATON_ANDROID_JAR:-/mnt/data/aosp/prebuilts/sdk/current/public/android.jar}
 JSON_JAR=${MATON_JSON_JAR:-/mnt/data/aosp/prebuilts/misc/common/json/json-prebuilt.jar}
@@ -18,15 +19,12 @@ DEFAULT_REFS=(net.sourceforge.ExtremeTuxRacer net.supertuxkart.SuperTuxKart org.
 if (($#)); then REFS=("$@"); else REFS=("${DEFAULT_REFS[@]}"); fi
 
 for tool in flatpak ostree javac java cc timeout; do command -v "$tool" >/dev/null || { echo "missing host tool: $tool" >&2; exit 2; }; done
-for file in "$FUSE" "$MKFS" "$LOADER" "$FLATPAK" "$BWRAP" "$ANDROID_JAR" "$JSON_JAR" "$APKSIG" "$POLICY"; do
+for file in "$FSCK" "$MKFS" "$LOADER" "$FLATPAK" "$BWRAP" "$ANDROID_JAR" "$JSON_JAR" "$APKSIG" "$POLICY"; do
   [[ -e $file ]] || { echo "missing required input: $file" >&2; exit 2; }
 done
 mkdir -p "$WORK"/{flatpak-user,classes,mnt,logs,images,staging}
 WORK=$(readlink -m "$WORK")
-fuse_mounts=()
-cleanup_mounts() { for m in "${fuse_mounts[@]}"; do fusermount3 -u "$m" 2>/dev/null || fusermount -u "$m" 2>/dev/null || true; done; }
-trap cleanup_mounts EXIT
-export FLATPAK_USER_DIR="$WORK/flatpak-user"
+export FLATPAK_USER_DIR
 export XDG_DATA_HOME="$WORK/xdg-data" XDG_CONFIG_HOME="$WORK/xdg-config" XDG_CACHE_HOME="$WORK/xdg-cache"
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 mkdir -p "$WORK/host-tools"
@@ -36,7 +34,7 @@ REPORT="$WORK/host-smoke.md"
 printf '# Host Flatpak smoke\n\nGenerated %s\n\n' "$(date -Is)" >"$REPORT"
 printf 'Host: %s\nFlatpak: %s\n\n' "$(uname -a)" "$(flatpak --version)" >>"$REPORT"
 
-if [[ ! -x $FUSE ]]; then echo "erofsfuse is not executable: $FUSE" >&2; exit 2; fi
+if [[ ! -x $FSCK ]]; then echo "fsck.erofs is not executable: $FSCK" >&2; exit 2; fi
 if ! flatpak remotes --user | awk '{print $1}' | grep -qx flathub; then
   flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 fi
@@ -78,10 +76,10 @@ for ref in "${REFS[@]}"; do
   while IFS=$'\t' read -r kind one two three four five; do
     [[ $kind == IMAGE ]] || continue
     image=$four; src=$five; leaf=$(echo "$one" | tr '/.' '__'); mount="$WORK/mnt/matonos/$(id -u)/$leaf"
-    mkdir -p "$mount"; images+=("$one $two $three bytes"); mounts+=("$mount"); fuse_mounts+=("$mount")
-    "$FUSE" "$image" "$mount" >"$WORK/logs/fuse-$leaf.log" 2>&1 & fusepid=$!
-    for _ in $(seq 1 100); do [[ -d $mount && -r $mount ]] && break; sleep 0.1; done
-    if ! kill -0 "$fusepid" 2>/dev/null || ! ls -A "$mount" >/dev/null 2>&1; then echo "EROFS mount failed for $one" >>"$REPORT"; fi
+    mkdir -p "$mount"; images+=("$one $two $three bytes"); mounts+=("$mount")
+    if ! "$FSCK" --extract="$mount" "$image" >"$WORK/logs/extract-$leaf.log" 2>&1; then
+      echo "EROFS extraction failed for $one: $(tail -20 "$WORK/logs/extract-$leaf.log")" >>"$REPORT"
+    fi
     targets+=(--erofs-mount "$two" "$mount")
     backings+=(--erofs-backing "$two" "$src")
   done <"$packlog"
@@ -150,7 +148,6 @@ for ref in "${REFS[@]}"; do
     else printf '\n- GUI launch: **SKIP** (Xvfb unavailable)\n- Probes:\n```text\n%s\n```\n' "$(cat "$probes")" >>"$REPORT"; fi
   else printf '\n- Package images: %s\n- Mounted images: %s\n- Launch targets: %s\n- GUI launch: **SKIP** (headless-only mode)\n- Probes:\n```text\n%s\n```\n' "$(grep -c '^IMAGE' "$packlog")" "${#mounts[@]}" "$(grep -c '^TARGET' "$packlog" || true)" "$(cat "$probes")" >>"$REPORT"; fi
   if [[ -n ${xvfbpid:-} ]]; then kill "$xvfbpid" 2>/dev/null || true; wait "$xvfbpid" 2>/dev/null || true; xvfbpid=; fi
-  for m in "${mounts[@]}"; do fusermount3 -u "$m" 2>/dev/null || fusermount -u "$m" 2>/dev/null || true; done
 done
 
 printf '\n## Host/device gaps\n\n- The host uses the production userspace image writer, EROFS FUSE mounts, launch target planner, native loader/bwrap/Flatpak path, and generated app syscall allow-list as a pre-handler seccomp filter. `erofsfuse` exposes some runtime symlinks as regular files containing the link text (for example, the 17-byte `libcurl.so.4` entry), so affected apps stop before their device-specific blocker.\n- Host launches use Xvfb over loopback TCP and `--no-session-bus`: the host has no mounted `/apex` helper and the host-built D-Bus proxy cannot load the runtime library through the host proxy path. This skips the device session-bus proxy.\n- Android PackageInstaller, PackageManager split arrays/signature verification, init-driven `matonos-erofsd` mounts, Android SELinux, the real installed seccomp timing, graphics bridge, Wayland/session broker, and device GPU drivers are not present on the host.\n' >>"$REPORT"
