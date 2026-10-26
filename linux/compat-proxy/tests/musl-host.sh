@@ -13,6 +13,9 @@ for source,target in (('matonos-flatpak','libmatonos-flatpak.so'),('matonos-app-
     shutil.copy2('../flatpak/prebuilt/static/x86_64/'+source,tool_dir+'/'+target)
 # The helper sets argv[0] to these applet names before exec; aliases model
 # that dispatch for this host-side fixture without weakening its UID check.
+for app in ('flatpak','bwrap'):
+    link=tool_dir+'/'+app
+    if os.path.lexists(link): os.unlink(link)
 os.symlink('libmatonos-flatpak.so',tool_dir+'/flatpak')
 os.symlink('libmatonos-flatpak.so',tool_dir+'/bwrap')
 PY
