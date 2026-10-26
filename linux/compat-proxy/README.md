@@ -39,6 +39,13 @@ deployment `files/` directory passed by the stub: opening the bwrap target and
 then using its dirfd must resolve to the associated image branch, even when
 the physical directory is empty.
 
+The mkdir regression also covers Compat.i386 when its extension point is a
+symlink in the immutable EROFS runtime. During bwrap setup the runtime can be
+bound below a staged root while the process still uses an outer root; the
+temporary directory must shadow the symlink at that staged alias. The test
+checks both the direct-root bind and this staged-root case, then verifies the
+extension marker is visible through the bound directory.
+
 `tests/mkdir-home-host.py` checks that a bwrap-bound writable app home can
 create new directories through `mkdir` both with and without a trailing slash.
 
