@@ -185,6 +185,7 @@ struct ldt_cache_entry { unsigned selector; unsigned age; int real_entry; unsign
 struct thread_state {
     unsigned direct_depth;
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
+    unsigned int personality;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     struct tls_entry tls[PROXY_TLS_ENTRIES];
     unsigned reserved;
@@ -1832,13 +1833,30 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
         break;
     case PROXY_SC_personality:
-        /* x86_64 ldconfig selects PER_LINUX32 while scanning the i386
-         * runtime. Android's app seccomp rejects that mode, and changing
-         * uname/address-space personality is unnecessary for our process
-         * proxy. Preserve the kernel return value but leave the mode alone. */
-        if((unsigned long)a[0]==PER_LINUX32) {
-            result=RAW(nr,UINT32_MAX,0,0,0,0,0);
-        } else result=RAW(nr,a[0],0,0,0,0,0);
+        /* personality is task state, but Android may reject setting it from
+         * an app. Keep the logical persona per thread when seccomp blocks the
+         * kernel operation; query and previous-value semantics remain Linux
+         * compatible. */
+        {
+            struct thread_state *ts=thread?thread:thread_state();
+            unsigned int requested=(unsigned int)a[0];
+            if(proxy_trace){emit("v3 personality arg=");crash_hex(requested);
+                trace_word(" pid=",RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+                trace_word(" tid=",RAW(PROXY_SC_gettid,0,0,0,0,0,0));emit("\n");}
+            if(requested==UINT32_MAX)result=ts?(long)ts->personality:PER_LINUX;
+            else {
+                unsigned int previous=ts?ts->personality:PER_LINUX;
+                result=RAW(nr,a[0],0,0,0,0,0);
+                if(result>=0) {
+                    if(ts)ts->personality=requested;
+                    /* Kernel accepted it: retain its exact previous value. */
+                } else if(result==-EACCES || result==-EPERM) {
+                    result=previous;
+                    if(ts)ts->personality=requested;
+                }
+            }
+            if(proxy_trace){emit("v3 personality result=");crash_hex(result);emit("\n");}
+        }
         break;
     case PROXY_SC_seccomp:
         if(proxy_trace) {
