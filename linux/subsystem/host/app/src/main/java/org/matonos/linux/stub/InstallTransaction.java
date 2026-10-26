@@ -425,24 +425,38 @@ public final class InstallTransaction {
         long value=completedBytes.get();for(long partial:refPartialBytes.values())value+=partial;return value;
     }
     /** Count allocated blocks once per inode, including hardlinked checkouts. */
+    /** Measurement only: parallel package builds remove staging files while this walks, so entries that
+     *  vanish mid-walk are skipped instead of failing the install. */
+    private static void walkPresent(File root,java.util.function.Consumer<java.nio.file.Path> visit)throws Exception {
+        Files.walkFileTree(root.toPath(),new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+            @Override public java.nio.file.FileVisitResult preVisitDirectory(java.nio.file.Path dir,java.nio.file.attribute.BasicFileAttributes a){visit.accept(dir);return java.nio.file.FileVisitResult.CONTINUE;}
+            @Override public java.nio.file.FileVisitResult visitFile(java.nio.file.Path file,java.nio.file.attribute.BasicFileAttributes a){visit.accept(file);return java.nio.file.FileVisitResult.CONTINUE;}
+            @Override public java.nio.file.FileVisitResult visitFileFailed(java.nio.file.Path file,java.io.IOException e)throws java.io.IOException{
+                if(e instanceof java.nio.file.NoSuchFileException)return java.nio.file.FileVisitResult.CONTINUE;throw e;}
+            @Override public java.nio.file.FileVisitResult postVisitDirectory(java.nio.file.Path dir,java.io.IOException e)throws java.io.IOException{
+                if(e==null||e instanceof java.nio.file.NoSuchFileException)return java.nio.file.FileVisitResult.CONTINUE;throw e;}
+        });
+    }
     public static long allocatedBytes(File root)throws Exception {
         java.util.Set<String> seen=new java.util.HashSet<>();
         long[] bytes={0};
-        try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(root.toPath())) {
-            java.util.Iterator<java.nio.file.Path> it=paths.iterator();
-            while(it.hasNext()) {
-                android.system.StructStat stat=android.system.Os.lstat(it.next().toString());
+        walkPresent(root,path->{
+            try {
+                android.system.StructStat stat=android.system.Os.lstat(path.toString());
                 if(seen.add(stat.st_dev+":"+stat.st_ino))bytes[0]=Math.addExact(bytes[0],Math.multiplyExact(stat.st_blocks,512));
+            } catch(android.system.ErrnoException gone) {
+                if(gone.errno!=android.system.OsConstants.ENOENT)throw new java.io.UncheckedIOException(new java.io.IOException(gone));
             }
-        }
+        });
         return bytes[0];
     }
     public static long treeBytes(File root)throws Exception {
         long[] bytes={0};
-        try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(root.toPath())) {
-            java.util.Iterator<java.nio.file.Path> it=paths.iterator();
-            while(it.hasNext()) {java.nio.file.Path path=it.next();if(Files.isRegularFile(path,java.nio.file.LinkOption.NOFOLLOW_LINKS))bytes[0]=Math.addExact(bytes[0],Files.size(path));}
-        }
+        walkPresent(root,path->{
+            try{if(Files.isRegularFile(path,java.nio.file.LinkOption.NOFOLLOW_LINKS))bytes[0]=Math.addExact(bytes[0],Files.size(path));}
+            catch(java.nio.file.NoSuchFileException gone){}
+            catch(java.io.IOException e){throw new java.io.UncheckedIOException(e);}
+        });
         return bytes[0];
     }
     private static byte[] blob(java.io.DataInputStream in)throws Exception {
