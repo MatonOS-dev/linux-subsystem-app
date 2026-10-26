@@ -88,6 +88,7 @@ if command -v bwrap >/dev/null; then
 else
     printf 'SKIP host bwrap unavailable\n'
 fi
+python3 tests/mkdir-home-host.py
 
 mkdir -p build/root-scaffold
 for name in usr bin lib lib64 etc sbin proc dev; do

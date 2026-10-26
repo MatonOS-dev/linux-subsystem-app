@@ -39,6 +39,9 @@ deployment `files/` directory passed by the stub: opening the bwrap target and
 then using its dirfd must resolve to the associated image branch, even when
 the physical directory is empty.
 
+`tests/mkdir-home-host.py` checks that a bwrap-bound writable app home can
+create new directories through `mkdir` both with and without a trailing slash.
+
 For a single-image deployment, the loader receives `--erofs-mount <target>
 <mount>/<branch>` and `--erofs-backing <target> <deployment-files>`. The
 second association lets path resolution replace both the virtual package
