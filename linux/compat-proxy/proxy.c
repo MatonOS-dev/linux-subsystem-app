@@ -812,6 +812,9 @@ void proxy_log(const char *kind,long nr,long result) {
     do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)line[n++]=digits[--d];line[n++]='\n';
     RAW(PROXY_SC_write,proxy_diagnostic_fd,line,n,0,0,0);
 }
+void proxy_trace_clone_result(long child,long flags) {
+    if(proxy_trace)proxy_log("lifecycle-clone",flags,child);
+}
 static int app_allowed(long nr) {
     for(unsigned i=0;i<sizeof(android_allowed)/sizeof(android_allowed[0]);i++)
         if(android_allowed[i]==arch_encode_syscall(nr)) return 1;
@@ -1785,8 +1788,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         result=file_dispatch(nr,a);break;
     case PROXY_SC_getdents64:result=file_dispatch(nr,a);break;
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
-    case PROXY_SC_exit:proxy_rewrite_exit();vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("exit-status",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit",nr,a[0]);vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit-group",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=RAW(nr,a[0],a[1],a[2],0,0,0);if(result>0 && sysctl_fds)sysctl_sync();break;
     case PROXY_SC_close_range:if(sysctl_fds)sysctl_sync();result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:result=file_dispatch(nr,a);break;
@@ -1962,7 +1965,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();}break;
+        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);proxy_trace_clone_result(result,SIGCHLD);if(proxy_trace)proxy_log("lifecycle-vfork",SIGCHLD,result);if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();}break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -1976,6 +1979,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             dns_fork_prepare();
             result=RAW(PROXY_SC_clone,a[0]&~(long)(NS_FLAGS|CLONE_VFORK),0,a[2],a[3],a[4],0);
             dns_fork_result(result);ipc_fork_result(result);
+            proxy_trace_clone_result(result,a[0]);
 
             if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
             break;
@@ -1996,7 +2000,7 @@ clone_retry:
         if(nr==PROXY_SC_execveat && (a[0]!=AT_FDCWD || a[4])) {result=-ENOSYS;break;}
         if(!thread) {result=-ENOMEM;break;}
         proxy_count_dump();
-        if(proxy_trace){emit("v3 exec ");emit(path);emit("\n");}
+        if(proxy_trace){emit("v3 lifecycle-exec pid=");crash_hex(RAW(PROXY_SC_getpid,0,0,0,0,0,0));emit(" path=");emit(path);emit("\n");emit("v3 exec ");emit(path);emit("\n");}
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {

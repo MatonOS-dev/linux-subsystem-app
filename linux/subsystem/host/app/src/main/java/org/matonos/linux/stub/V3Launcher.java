@@ -61,6 +61,7 @@ final class V3Launcher {
         // with directories bwrap already made for other binds.
         File home = new File(context.getDataDir().getCanonicalFile(), "home");
         File cache = context.getCacheDir().getCanonicalFile();
+        final boolean trace = new File(cache, "v3-trace").exists();
         for (File directory : new File[]{home, cache, new File(home, ".config"), new File(home, ".local/share")})
             if (!directory.isDirectory() && !directory.mkdirs())
                 throw new java.io.IOException("Cannot create application directory " + directory);
@@ -78,7 +79,7 @@ final class V3Launcher {
         command.add("--supervise");
         command.add("--gpu-bridge");
         // adb (root): touch <cache>/v3-trace to log every trapped call.
-        if (new File(cache, "v3-trace").exists()) command.add("--trace");
+        if (trace) command.add("--trace");
         if (context.checkSelfPermission(android.Manifest.permission.INTERNET) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED) {
             LoaderCommand.addDns(command, dns);
@@ -195,6 +196,7 @@ final class V3Launcher {
         if (new File(cache, "v3-no-rewrite").exists()) env.put("MATON_PROXY_REWRITE","0");
         process = SPAWNER.submit(builder::start).get();
         final Process child = process;
+        if(trace)Log.i("MatonV3","v3-trace stub started loader supervisor process; waitFor targets this process");
         Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());
         new Thread(() -> drain(child.getInputStream(),false,null), "v3-output").start();
         CountDownLatch stderrDrained=new CountDownLatch(1);
@@ -203,6 +205,7 @@ final class V3Launcher {
             try {
                 int status = child.waitFor();
                 stderrDrained.await(2,TimeUnit.SECONDS);
+                if(trace)Log.i("MatonV3","v3-trace stub waitFor completed status="+status);
                 synchronized (V3Launcher.class) { exit = status; }
                 notifyLaunchStatusChanged();
                 if(status==0) {

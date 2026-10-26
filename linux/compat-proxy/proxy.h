@@ -69,6 +69,7 @@ int proxy_dns_forwarder(const char *);
 int proxy_mount(const char *, const char *);
 const char *proxy_path(const char *, char *, size_t);
 void proxy_log(const char *, long, long);
+void proxy_trace_clone_result(long, long);
 extern int proxy_trace;
 size_t p_len(const char *);
 void p_copy(void *, const void *, size_t);
