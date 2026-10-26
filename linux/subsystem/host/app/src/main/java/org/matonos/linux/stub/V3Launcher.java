@@ -11,7 +11,11 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /** One Linux process tree per stub UID, under the inherited app filter/domain. */
 final class V3Launcher {
@@ -27,6 +31,7 @@ final class V3Launcher {
     private static Process process;
     private static Integer exit;
     private static String error;
+    private static final Deque<String> stderrTail=new ArrayDeque<>();
     private static final java.util.Set<Runnable> statusListeners =
             new java.util.concurrent.CopyOnWriteArraySet<>();
 
@@ -108,7 +113,8 @@ final class V3Launcher {
             command.add("--map-ro");command.add(extensionFiles.getAbsolutePath());
             command.add("/usr/lib/x86_64-linux-gnu/GL/maton");
             PackageDeployment.CompatI386 compat=PackageDeployment.prepareCompatI386(
-                    context,systemRoot,launchWork,runtimeBranch);
+                    context,systemRoot,launchWork,runtimeBranch,
+                    !packages.isEmpty()&&PackageDeployment.appDeclaresCompatI386(packages.get(0).record,runtimeBranch));
             if(compat!=null) {
                 PackageDeployment.enableI386Runtime(systemRoot,runtimeBranch);
                 command.add("--i386-tls-reserve");
@@ -148,7 +154,7 @@ final class V3Launcher {
             command.add("--command="+name);
         }
         command.add(ref.substring(4));
-        ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
+        ProcessBuilder builder = new ProcessBuilder(command);
         Map<String, String> env = builder.environment();
         env.clear();
         env.put("FLATPAK_SYSTEM_DIR", new File(deployment,"system").getAbsolutePath());
@@ -184,19 +190,21 @@ final class V3Launcher {
         process = SPAWNER.submit(builder::start).get();
         final Process child = process;
         Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());
-        new Thread(() -> {
-            try (BufferedReader output = new BufferedReader(new InputStreamReader(child.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = output.readLine()) != null) Log.i("MatonV3", line);
-            } catch (Exception failure) { Log.w("MatonV3", "Cannot read loader output", failure); }
-        }, "v3-output").start();
+        new Thread(() -> drain(child.getInputStream(),false,null), "v3-output").start();
+        CountDownLatch stderrDrained=new CountDownLatch(1);
+        new Thread(() -> drain(child.getErrorStream(),true,stderrDrained), "v3-stderr").start();
         new Thread(() -> {
             try {
                 int status = child.waitFor();
+                stderrDrained.await(2,TimeUnit.SECONDS);
                 synchronized (V3Launcher.class) { exit = status; }
                 notifyLaunchStatusChanged();
-                Log.i("MatonV3", "Loader exited: " + status);
-                endWithLinuxApp(context);
+                if(status==0) {
+                    Log.i("MatonV3", "Loader exited: 0");
+                    endWithLinuxApp(context);
+                } else {
+                    Log.e("MatonV3", launchErrorMessage(status));
+                }
             } catch (InterruptedException failure) {
                 Thread.currentThread().interrupt();
                 synchronized (V3Launcher.class) { error = "Interrupted while waiting for loader"; }
@@ -204,6 +212,23 @@ final class V3Launcher {
             }
         }, "v3-exit").start();
         return getLaunchStatus();
+    }
+
+    private static void drain(java.io.InputStream stream,boolean stderr,CountDownLatch complete) {
+        try (BufferedReader output = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = output.readLine()) != null) {
+                if(stderr) {
+                    if(line.length()>500)line=line.substring(0,500)+"…";
+                    synchronized(V3Launcher.class) {
+                        stderrTail.addLast(line);
+                        while(stderrTail.size()>20)stderrTail.removeFirst();
+                    }
+                    Log.w("MatonV3",line);
+                } else Log.i("MatonV3",line);
+            }
+        } catch(Exception failure) { Log.w("MatonV3",stderr?"Cannot read loader stderr":"Cannot read loader output",failure); }
+        finally { if(complete!=null)complete.countDown(); }
     }
 
     /** The Android process lives exactly as long as its Linux app: when the
@@ -241,8 +266,16 @@ final class V3Launcher {
 
     static synchronized JSONObject getLaunchStatus() throws Exception {
         JSONObject status = new JSONObject().put("ok", process != null && exit == null && error == null);
-        if (exit != null) status.put("exitCode", exit).put("error", "Application exited (" + exit + ")");
+        if (exit != null) status.put("exitCode", exit).put("error", launchErrorMessage(exit));
         if (error != null) status.put("error", error);
         return status;
+    }
+    private static synchronized String launchErrorMessage(int status) {
+        StringBuilder message=new StringBuilder("Application exited (").append(status).append(')');
+        if(!stderrTail.isEmpty()) {
+            message.append("\nLast stderr lines:");
+            for(String line:stderrTail)message.append("\n").append(line);
+        } else message.append("\nNo stderr was captured.");
+        return message.toString();
     }
 }

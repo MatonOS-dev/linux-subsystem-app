@@ -95,7 +95,15 @@ final class PackageDeployment {
         }
         if(copied==0)throw new IOException("Bundled extension lacks its file tree: "+prefix);
     }
-    static CompatI386 prepareCompatI386(Context context,File systemRoot,File cache,String branch) throws Exception {
+    static boolean appDeclaresCompatI386(DeploymentRecord app,String branch) {
+        String ref="runtime/org.freedesktop.Platform.Compat.i386/x86_64/"+branch;
+        for(DeploymentRecord.Dependency dependency:app.dependencies)
+            if(dependency.ref.equals(ref))return true;
+        return false;
+    }
+    static CompatI386 prepareCompatI386(Context context,File systemRoot,File cache,String branch,
+            boolean required) throws Exception {
+        if(!required)return null;
         String ref="runtime/org.freedesktop.Platform.Compat.i386/x86_64/"+branch;
         PackageManager pm=context.getPackageManager();PackageInfo pkg;
         try{pkg=pm.getPackageInfo(DeployManifest.packageForPublic(ref),PackageManager.GET_SIGNING_CERTIFICATES);}
@@ -110,17 +118,19 @@ final class PackageDeployment {
             throw new SecurityException("i386 compatibility extension was not installed by the subsystem");
         org.matonos.linuxhost.stubgen.DeploymentRecord record=
                 org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
-        if(!record.ref.equals(ref)||!new String(record.metadata,StandardCharsets.UTF_8).contains("name = org.freedesktop.Platform.Compat.i386"))
+        String extensionParent=PackageMounts.extensionParent(new String(record.metadata,StandardCharsets.UTF_8));
+        if(!record.ref.equals(ref)||!new String(record.metadata,StandardCharsets.UTF_8).contains("name = org.freedesktop.Platform.Compat.i386")
+                ||extensionParent==null||!extensionParent.matches("runtime/org\\.freedesktop\\.Platform/(?:i386|x86_64)/"+java.util.regex.Pattern.quote(branch)))
             throw new IOException("Installed i386 compatibility extension ref mismatch");
         String mount="/usr/lib/i386-linux-gnu";
-        // PackageDeployment.prepare() already materialized every declared
-        // package from its signed record. Recreate the Flatpak-canonical
-        // metadata in place; DeploymentRecord.materialize() is intentionally
-        // a first-write operation and its files/ createDirectory would fail.
+        // Optional runtime extensions are outside the ordinary app closure and
+        // therefore have a private target after the EROFS-target change. Build
+        // the Flatpak-canonical deployment at the extension's real target.
         Path version=systemRoot.toPath().resolve(ref).resolve(record.commit);
         Path files=version.resolve("files");
+        if(!Files.exists(version,LinkOption.NOFOLLOW_LINKS))record.materialize(systemRoot,mount);
         if(!Files.isDirectory(files,LinkOption.NOFOLLOW_LINKS)||Files.isSymbolicLink(files))
-            throw new IOException("Missing materialized i386 compatibility extension");
+            throw new IOException("Cannot materialize i386 compatibility extension for runtime "+branch);
         Files.write(version.resolve("metadata"),compatMetadata(branch).getBytes(StandardCharsets.UTF_8));
         Files.write(version.resolve("deploy"),DeployRecord.extension(record.remote,record.commit,branch));
         File apk=new File(pkg.applicationInfo.sourceDir);

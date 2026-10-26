@@ -9,6 +9,27 @@ import java.util.zip.*;
 import org.junit.Test;
 
 public final class PackageDeploymentTest {
+    @Test public void GNOME51DoesNotRequireAnInstalledCompatExtension() throws Exception {
+        assertFalse(PackageDeployment.appDeclaresCompatI386(appRecord("app/org.gnome.TextEditor/x86_64/stable",
+                java.util.Collections.emptyList()),"51"));
+    }
+    @Test public void SteamLikeAppUsesCompatForItsOwnRuntimeBranch() throws Exception {
+        org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency compat=
+                new org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency(
+                        "runtime/org.freedesktop.Platform.Compat.i386/x86_64/24.08","flathub",
+                        "/usr/lib/i386-linux-gnu");
+        org.matonos.linuxhost.stubgen.DeploymentRecord steam=appRecord(
+                "app/com.valvesoftware.Steam/x86_64/stable",java.util.Collections.singletonList(compat));
+        assertTrue(PackageDeployment.appDeclaresCompatI386(steam,"24.08"));
+        assertFalse(PackageDeployment.appDeclaresCompatI386(steam,"25.08"));
+    }
+    private static org.matonos.linuxhost.stubgen.DeploymentRecord appRecord(String ref,
+            java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency> dependencies) throws Exception {
+        byte[] object={7,3,1};
+        String commit=hex(java.security.MessageDigest.getInstance("SHA-256").digest(object));
+        return new org.matonos.linuxhost.stubgen.DeploymentRecord(ref,commit,"flathub",
+                "[Application]\n".getBytes(StandardCharsets.UTF_8),new byte[]{1},object,dependencies);
+    }
     @Test public void materializesBundledGlExtensionAsInstalledRuntime() throws Exception {
         materialize("26.08");
     }
@@ -33,9 +54,9 @@ public final class PackageDeploymentTest {
         File files=PackageDeployment.prepareGl32Extension(system.toFile(),apk.toFile(),"25.08");
         Path version=system.resolve("runtime/org.freedesktop.Platform.GL32.maton/x86_64/25.08").resolve(commit);
         assertEquals(version.resolve("files").toFile(),files);
-        assertEquals(PackageDeployment.gl32Metadata("25.08"),Files.readString(version.resolve("metadata")));
+        assertEquals(PackageDeployment.gl32Metadata("25.08"),read(version.resolve("metadata")));
         assertArrayEquals(DeployRecord.extension("flathub",commit,"25.08"),Files.readAllBytes(version.resolve("deploy")));
-        assertEquals("gl32",Files.readString(files.toPath().resolve("lib/libEGL_maton.so")));
+        assertEquals("gl32",read(files.toPath().resolve("lib/libEGL_maton.so")));
         assertArrayEquals(commitObject,Files.readAllBytes(system.resolve("repo/objects").resolve(commit.substring(0,2)).resolve(commit.substring(2)+".commit")));
     }
     @Test public void i386ExtensionPointsAreAddedOnceAndLinkTheInterpreter() throws Exception {
@@ -47,9 +68,9 @@ public final class PackageDeploymentTest {
         Path root=Files.createTempDirectory("maton-i386-runtime");
         Path branch=root.resolve("runtime/org.freedesktop.Platform/x86_64/25.08");
         Path version=branch.resolve("a".repeat(64));Files.createDirectories(version.resolve("files"));
-        Files.writeString(version.resolve("metadata"),original);Files.createSymbolicLink(branch.resolve("active"),Path.of("a".repeat(64)));
+        Files.write(version.resolve("metadata"),original.getBytes(StandardCharsets.UTF_8));Files.createSymbolicLink(branch.resolve("active"),Path.of("a".repeat(64)));
         PackageDeployment.enableI386Runtime(root.toFile(),"25.08");
-        assertEquals(updated,Files.readString(version.resolve("metadata")));
+        assertEquals(updated,read(version.resolve("metadata")));
         assertEquals(Path.of("/usr/lib/i386-linux-gnu/ld-linux.so.2"),Files.readSymbolicLink(version.resolve("files/lib/ld-linux.so.2")));
     }
     /** Packaged gl-maton/build.py record for commit 6fbb4ff1… on branch 26.08. */
@@ -79,7 +100,7 @@ public final class PackageDeploymentTest {
         Path version=system.resolve(ref).resolve(commit);
         assertEquals(version.resolve("files").toFile(),files);
         assertTrue(Files.isDirectory(files.toPath()));
-        assertEquals("vulkan",Files.readString(files.toPath().resolve("lib/libmaton_vulkan.so")));
+        assertEquals("vulkan",read(files.toPath().resolve("lib/libmaton_vulkan.so")));
         assertTrue(Files.isRegularFile(version.resolve("metadata")));
         assertArrayEquals(DeployRecord.extension("flathub",commit,branch),Files.readAllBytes(version.resolve("deploy")));
         assertTrue(new String(Files.readAllBytes(version.resolve("deploy")),StandardCharsets.UTF_8)
@@ -93,6 +114,9 @@ public final class PackageDeploymentTest {
     }
     private static void put(ZipOutputStream zip,String name,String value)throws IOException {
         zip.putNextEntry(new ZipEntry(name));zip.write(value.getBytes(StandardCharsets.UTF_8));zip.closeEntry();
+    }
+    private static String read(Path path)throws IOException {
+        return new String(Files.readAllBytes(path),StandardCharsets.UTF_8);
     }
     private static String hex(byte[] bytes) {
         StringBuilder value=new StringBuilder(bytes.length*2);
