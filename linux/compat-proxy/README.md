@@ -77,6 +77,16 @@ Android policy and only add the loader's routing rules. i386 and x86_64 syscall
 numbers are generated from the checked-out UAPI headers; i386 aliases account
 for legacy wire names such as `mmap2`, `fstatat64` and `fcntl64`.
 
+`personality()` is routed before Android-library fast paths, i386 adoption and
+Flatpak's emulated payload filter. Queries return the current per-thread
+persona (seeded from the kernel); sets use the real syscall when Android
+permits it, and otherwise retain the requested persona and return the previous
+value when Android reports `EACCES` or `EPERM`. This preserves the API's
+query/set state, not kernel side effects:
+the resident loader already handles ELF32 exec itself, while kernel-controlled
+exec layout, ASLR and mmap permission effects remain unavailable when the
+kernel refuses the request.
+
 The resident ELF loader maps static, glibc and bionic ELF images, their
 interpreters, argv/env and auxv. Resident exec keeps the proxy in the process,
 resets ABI-specific TLS and closes payload CLOEXEC descriptors. Cross-class
