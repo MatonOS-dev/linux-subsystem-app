@@ -18,31 +18,32 @@ public final class ExtraDataInstallService extends Service {
     public static final String ACTION = "org.matonos.linuxhost.EXTRA_DATA_INSTALL";
     private static final String TAG = "MatonExtraData";
 
-    @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        ParcelFileDescriptor result = intent == null ? null : intent.getParcelableExtra("result");
-        if (result == null) { stopSelf(startId); return START_NOT_STICKY; }
-        android.app.NotificationManager notifications=getSystemService(android.app.NotificationManager.class);
-        notifications.createNotificationChannel(new android.app.NotificationChannel("matonos-extra-data",
-                "Linux application setup",android.app.NotificationManager.IMPORTANCE_LOW));
-        startForeground(17,new android.app.Notification.Builder(this,"matonos-extra-data")
-                .setContentTitle("Setting up Linux application")
-                .setSmallIcon(android.R.drawable.stat_sys_download).setOngoing(true).build(),
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-        new Thread(() -> {
-            try (ParcelFileDescriptor fd = result;
-                    java.io.DataOutputStream out = new java.io.DataOutputStream(new FileOutputStream(fd.getFileDescriptor()))) {
-                try {
-                    build(intent, out);
-                    out.flush();
-                } catch (Throwable error) {
-                    android.util.Log.e(TAG, "Extra-data deployment failed", error);
-                    out.writeInt(-1);
-                    out.writeUTF(String.valueOf(error.getMessage()));
-                }
-            } catch (Exception error) { android.util.Log.e(TAG, "Could not return extra-data result", error); }
-            finally { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId); }
-        }, "maton-extra-data").start();
-        return START_NOT_STICKY;
+    /** Binder call 1: result pipe fd, ref, remote, url, subpaths. FDs cannot travel in service Intents. */
+    @Override public IBinder onBind(Intent intent) {
+        return new android.os.Binder() {
+            @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
+                    throws android.os.RemoteException {
+                if (code != 1) return super.onTransact(code, data, reply, flags);
+                ParcelFileDescriptor result = data.readFileDescriptor();
+                Intent request = new Intent(ACTION).putExtra("ref", data.readString()).putExtra("remote", data.readString())
+                        .putExtra("url", data.readString()).putExtra("subpaths", data.readString());
+                if (result == null) return false;
+                new Thread(() -> {
+                    try (ParcelFileDescriptor fd = result;
+                            java.io.DataOutputStream out = new java.io.DataOutputStream(new FileOutputStream(fd.getFileDescriptor()))) {
+                        try {
+                            build(request, out);
+                            out.flush();
+                        } catch (Throwable error) {
+                            android.util.Log.e(TAG, "Extra-data deployment failed", error);
+                            out.writeInt(-1);
+                            out.writeUTF(String.valueOf(error.getMessage()));
+                        }
+                    } catch (Exception error) { android.util.Log.e(TAG, "Could not return extra-data result", error); }
+                }, "maton-extra-data").start();
+                return true;
+            }
+        };
     }
 
     private void build(Intent request, java.io.DataOutputStream out) throws Exception {
@@ -112,5 +113,4 @@ public final class ExtraDataInstallService extends Service {
         if (process.waitFor() != 0) throw new IOException("Stock Flatpak failed: " + new String(log, java.nio.charset.StandardCharsets.UTF_8));
     }
 
-    @Override public IBinder onBind(Intent intent) { return null; }
 }

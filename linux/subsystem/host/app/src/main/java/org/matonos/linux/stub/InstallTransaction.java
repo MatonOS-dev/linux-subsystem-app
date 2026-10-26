@@ -432,19 +432,34 @@ public final class InstallTransaction {
                 File image=new File(installation,"extra-data-image.erofs");
                 try(android.os.ParcelFileDescriptor read=pipe[0];android.os.ParcelFileDescriptor write=pipe[1]) {
                     android.content.Intent request=new android.content.Intent("org.matonos.linuxhost.EXTRA_DATA_INSTALL")
-                            .setComponent(new android.content.ComponentName(packageName,"org.matonos.linux.stub.ExtraDataInstallService"))
-                            .putExtra("ref",node.ref).putExtra("remote",origin.name)
-                            .putExtra("url",origin.url.isEmpty()?"https://dl.flathub.org/repo/flathub.flatpakrepo":origin.url)
-                            .putExtra("subpaths",String.join("\n",node.subpaths)).putExtra("result",write);
-                    context.startForegroundService(request);
+                            .setComponent(new android.content.ComponentName(packageName,"org.matonos.linux.stub.ExtraDataInstallService"));
+                    java.util.concurrent.CompletableFuture<android.os.IBinder> bound=new java.util.concurrent.CompletableFuture<>();
+                    android.content.ServiceConnection connection=new android.content.ServiceConnection() {
+                        @Override public void onServiceConnected(android.content.ComponentName name,android.os.IBinder binder){bound.complete(binder);}
+                        @Override public void onServiceDisconnected(android.content.ComponentName name){}
+                        @Override public void onNullBinding(android.content.ComponentName name){bound.completeExceptionally(new java.io.IOException("Stub extra-data service returned no binder"));}
+                    };
+                    if(!context.bindService(request,connection,Context.BIND_AUTO_CREATE|Context.BIND_IMPORTANT))
+                        throw new java.io.IOException("Cannot bind stub extra-data service");
+                    try {
+                    android.os.Parcel data=android.os.Parcel.obtain();
+                    try {
+                        data.writeFileDescriptor(write.getFileDescriptor());
+                        data.writeString(node.ref);data.writeString(origin.name);
+                        data.writeString(origin.url.isEmpty()?"https://dl.flathub.org/repo/flathub.flatpakrepo":origin.url);
+                        data.writeString(String.join("\n",node.subpaths));
+                        if(!bound.get(2,java.util.concurrent.TimeUnit.MINUTES).transact(1,data,null,0))
+                            throw new java.io.IOException("Stub extra-data service rejected the request");
+                    } finally {data.recycle();}
                     write.close();
                     try(java.io.DataInputStream in=new java.io.DataInputStream(new android.os.ParcelFileDescriptor.AutoCloseInputStream(read));
                             java.io.OutputStream out=Files.newOutputStream(image.toPath())) {
                         int status=in.readInt();
                         if(status!=0)throw new java.io.IOException("Stub Flatpak deploy failed: "+in.readUTF());
-                        long length=in.readLong();if(length<=0||length>20L*1024*1024*1024)throw new java.io.IOException("Invalid stub EROFS image length");
+                        long length=in.readLong();if(length<=0)throw new java.io.IOException("Invalid stub EROFS image length");
                         byte[] buffer=new byte[65536];long left=length;while(left>0){int count=in.read(buffer,0,(int)Math.min(buffer.length,left));if(count<0)throw new java.io.EOFException("Truncated stub EROFS image");out.write(buffer,0,count);left-=count;}
                     }
+                    } finally {context.unbindService(connection);}
                 }
                 Log.i(TAG,"Stub returned extra-data EROFS for "+node.ref+" bytes="+image.length());
         }
