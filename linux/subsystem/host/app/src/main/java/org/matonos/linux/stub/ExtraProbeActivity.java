@@ -12,7 +12,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 
-/** Creates disposable directory fds in the host UID and hands them to an isolated service. */
+/** Creates disposable files in the host UID and hands file fds to an isolated service. */
 public final class ExtraProbeActivity extends Activity {
     private static final String TAG = "MatonExtraProbe";
     public static final String ACTION = "org.matonos.linux.DEBUG_EXTRA_PROBE";
@@ -26,14 +26,13 @@ public final class ExtraProbeActivity extends Activity {
         }
         try {
             File root = new File(getCacheDir(), "extra-probe");
-            delete(root); File usr = new File(root, "usr"), app = new File(root, "app");
-            if (!new File(usr, "bin").mkdirs() || !new File(app, "extra").mkdirs())
-                throw new java.io.IOException("Cannot prepare probe directories");
-            try (FileOutputStream out = new FileOutputStream(new File(usr, "probe.txt"))) {
-                out.write("usr-fd-ok\n".getBytes(StandardCharsets.UTF_8));
+            delete(root); if (!root.mkdirs()) throw new java.io.IOException("Cannot prepare probe directory");
+            File usr = new File(root, "usr-probe.txt"), app = new File(root, "app-probe.txt");
+            try (FileOutputStream out = new FileOutputStream(usr)) {
+                out.write("usr-file-fd-ok\n".getBytes(StandardCharsets.UTF_8));
             }
-            try (FileOutputStream out = new FileOutputStream(new File(app, "probe.txt"))) {
-                out.write("app-fd-ok\n".getBytes(StandardCharsets.UTF_8));
+            try (FileOutputStream out = new FileOutputStream(app)) {
+                out.write("app-file-fd-ok\n".getBytes(StandardCharsets.UTF_8));
             }
             usrFd = ParcelFileDescriptor.open(usr, ParcelFileDescriptor.MODE_READ_ONLY);
             appFd = ParcelFileDescriptor.open(app, ParcelFileDescriptor.MODE_READ_ONLY);
@@ -50,7 +49,7 @@ public final class ExtraProbeActivity extends Activity {
             };
             if (!bindService(new Intent(this, ExtraProbeService.class), connection, BIND_AUTO_CREATE))
                 throw new java.io.IOException("Could not bind isolated probe service");
-            Log.i(TAG, "Started; service should report fd, loader, bwrap and command results");
+            Log.i(TAG, "Started; service should report file-fd maps, writable locations, loader and bwrap results");
         } catch (Exception error) { Log.e(TAG, "Probe setup failed", error); finish(); }
     }
 
