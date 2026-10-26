@@ -49,10 +49,12 @@ tasks.named('preBuild').configure { dependsOn packageFlatpakPlan }
 
 // Standalone GPL-2+ tool: invoked with exec, never linked into the host.
 def erofsTool = file('../../../packs/prebuilt/x86_64/matonos-mkfs-erofs')
+def fsckErofsTool = file('../../../packs/prebuilt/x86_64/matonos-fsck-erofs')
 def erofsJni = new File(layout.buildDirectory.get().asFile, 'generated/erofsJni')
 def packageMkfsErofs = tasks.register('packageMkfsErofs', Copy) {
-    inputs.file erofsTool
+    inputs.files erofsTool, fsckErofsTool
     from(erofsTool) { rename { 'libmatonos-mkfs-erofs.so' } }
+    from(fsckErofsTool) { rename { 'libmatonos-fsck-erofs.so' } }
     into new File(erofsJni, 'x86_64')
 }
 tasks.named('preBuild').configure { dependsOn packageMkfsErofs }
@@ -236,6 +238,7 @@ android {
             keepDebugSymbols += '**/libmatonos-app-flatpak.so'
             keepDebugSymbols += '**/libmatonos-app-bwrap.so'
             keepDebugSymbols += '**/libmatonos-mkfs-erofs.so'
+            keepDebugSymbols += '**/libmatonos-fsck-erofs.so'
         }
     }
     signingConfigs {

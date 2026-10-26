@@ -23,6 +23,11 @@ javac -d "$OUT/extra-tar" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/TarStream.java" \
   "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/TarStreamHostTest.java"
 java -cp "$OUT/extra-tar" org.matonos.linux.stub.TarStreamHostTest
+mkdir -p "$OUT/extra-image-validator"
+javac -d "$OUT/extra-image-validator" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/ExtraImageValidator.java" \
+  "$ROOT/tests/extra-image-validator/ExtraImageValidatorTest.java"
+java -cp "$OUT/extra-image-validator" org.matonos.linux.stub.ExtraImageValidatorTest
 bash "$ROOT/tests/workdirs/run.sh" "$OUT/workdirs"
 bash "$ROOT/linux/stubgen/tests/run-tests.sh" "${MATON_AOSP_ROOT:-/}" "$OUT/stubgen"
 bash "$ROOT/tests/placeholder/run.sh" "$OUT/placeholder"
