@@ -51,6 +51,14 @@
 #define SIGSYS_BIT (UINT64_C(1) << (SIGSYS-1))
 #define SA_RESTORER 0x04000000
 #define NS_FLAGS (CLONE_NEWNS|CLONE_NEWCGROUP|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET)
+#define PAYLOAD_SECCOMP_FILTERS 8
+#define PAYLOAD_SECCOMP_INSNS 4096
+struct payload_seccomp_filter { unsigned short len; unsigned flags; struct sock_filter insns[PAYLOAD_SECCOMP_INSNS]; };
+static struct payload_seccomp_filter payload_seccomp[PAYLOAD_SECCOMP_FILTERS];
+static unsigned payload_seccomp_count;
+static unsigned payload_seccomp_active_count;
+static int payload_current_bwrap;
+static long payload_filter(long,proxy_arg_t *);
 #ifdef HOST_COMMAND_TEST
 static int hc_test_fd=-1;
 #endif
@@ -1315,6 +1323,103 @@ long proxy_copy(void *dst,const void *src,size_t size) {
     RAW(PROXY_SC_close,fd[0],0,0,0,0,0);RAW(PROXY_SC_close,fd[1],0,0,0,0,0);
     return r==(long)size?0:r<0?r:-EFAULT;
 }
+/* User-dispatch reaches this handler before the kernel can apply filters to
+ * calls we emulate. Keep the stock filter program and run it against those
+ * calls; real kernel calls still use the kernel's stacked seccomp filters. */
+static uint32_t payload_filter_action(const struct payload_seccomp_filter *filter,
+                                     const struct seccomp_data *data) {
+    uint32_t mem[BPF_MEMWORDS]={0},a=0,x=0;
+    for(unsigned pc=0;pc<filter->len;pc++) {
+        struct sock_filter ins=filter->insns[pc];uint32_t value=0;
+        switch(BPF_CLASS(ins.code)) {
+        case BPF_LD: case BPF_LDX:
+            if(BPF_MODE(ins.code)==BPF_IMM)value=ins.k;
+            else if(BPF_MODE(ins.code)==BPF_LEN)value=sizeof(*data);
+            else if(BPF_MODE(ins.code)==BPF_MEM && ins.k<BPF_MEMWORDS)value=mem[ins.k];
+            else if(BPF_MODE(ins.code)==BPF_ABS && ins.k<=sizeof(*data)-4)
+                p_copy(&value,(const char *)data+ins.k,sizeof(value));
+            else return SECCOMP_RET_ALLOW;
+            if(BPF_CLASS(ins.code)==BPF_LD)a=value;else x=value;break;
+        case BPF_ST:if(ins.k>=BPF_MEMWORDS)return SECCOMP_RET_ALLOW;mem[ins.k]=a;break;
+        case BPF_STX:if(ins.k>=BPF_MEMWORDS)return SECCOMP_RET_ALLOW;mem[ins.k]=x;break;
+        case BPF_ALU:
+            value=BPF_SRC(ins.code)==BPF_X?x:ins.k;
+            switch(BPF_OP(ins.code)) {
+            case BPF_ADD:a+=value;break;case BPF_SUB:a-=value;break;
+            case BPF_MUL:a*=value;break;case BPF_DIV:if(!value)return SECCOMP_RET_ALLOW;a/=value;break;
+            case BPF_OR:a|=value;break;case BPF_AND:a&=value;break;case BPF_LSH:a<<=value;break;
+            case BPF_RSH:a>>=value;break;case BPF_NEG:a=(uint32_t)-a;break;
+            case BPF_MOD:if(!value)return SECCOMP_RET_ALLOW;a%=value;break;case BPF_XOR:a^=value;break;
+            default:return SECCOMP_RET_ALLOW;
+            } break;
+        case BPF_JMP:
+            if(BPF_OP(ins.code)==BPF_JA){pc+=ins.k;break;}
+            value=BPF_SRC(ins.code)==BPF_X?x:ins.k;
+            switch(BPF_OP(ins.code)) {
+            case BPF_JEQ:if(a==value)pc+=ins.jt;else pc+=ins.jf;break;
+            case BPF_JGT:if(a>value)pc+=ins.jt;else pc+=ins.jf;break;
+            case BPF_JGE:if(a>=value)pc+=ins.jt;else pc+=ins.jf;break;
+            case BPF_JSET:if(a&value)pc+=ins.jt;else pc+=ins.jf;break;
+            default:return SECCOMP_RET_ALLOW;
+            } break;
+        case BPF_RET:return BPF_RVAL(ins.code)==BPF_A?a:ins.k;
+        case BPF_MISC:if(BPF_MISCOP(ins.code)==BPF_TAX)x=a;else if(BPF_MISCOP(ins.code)==BPF_TXA)a=x;else return SECCOMP_RET_ALLOW;break;
+        default:return SECCOMP_RET_ALLOW;
+        }
+    }
+    return SECCOMP_RET_ALLOW;
+}
+static long payload_seccomp_errno(long syscall_nr,proxy_arg_t *args,uintptr_t ip) {
+    struct seccomp_data data={.nr=(int)syscall_nr,.arch=ARCH_AUDIT,.instruction_pointer=ip};
+    for(unsigned i=0;i<6;i++)data.args[i]=(uint64_t)args[i];
+    for(unsigned i=0;i<payload_seccomp_active_count;i++) {
+        uint32_t action=payload_filter_action(&payload_seccomp[i],&data);
+        if((action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_ERRNO) {
+            unsigned error=action&SECCOMP_RET_DATA;
+            return -(long)(error?error:EPERM);
+        }
+    }
+    return 0;
+}
+static long payload_seccomp_install(long nr,proxy_arg_t *args) {
+    int install=(nr==PROXY_SC_prctl && args[0]==PR_SET_SECCOMP && args[1]==SECCOMP_MODE_FILTER) ||
+                (nr==PROXY_SC_seccomp && args[0]==SECCOMP_SET_MODE_FILTER);
+    if(!install)return payload_filter(nr,args);
+    struct sock_fprog program;
+    if(payload_seccomp_count>=PAYLOAD_SECCOMP_FILTERS)return payload_filter(nr,args);
+    if(proxy_copy(&program,(void *)(uintptr_t)args[2],sizeof(program)))return -EFAULT;
+    if(!program.len || program.len>PAYLOAD_SECCOMP_INSNS)return -EINVAL;
+    struct payload_seccomp_filter next={.len=program.len,
+        .flags=nr==PROXY_SC_seccomp?(unsigned)args[1]:0};
+    if(proxy_copy(next.insns,program.filter,(size_t)program.len*sizeof(next.insns[0])))return -EFAULT;
+    if(payload_current_bwrap) {
+        /* bwrap supplies the filter before forking its setup child. Retain it
+         * for the app exec so bwrap's own namespace and mount setup is intact. */
+        payload_seccomp[payload_seccomp_count++]=next;
+        return 0;
+    }
+    long result=payload_filter(nr,args);
+    if(!result) {
+        payload_seccomp[payload_seccomp_count++]=next;
+        payload_seccomp_active_count=payload_seccomp_count;
+    }
+    return result;
+}
+static long payload_seccomp_activate(void) {
+    if(payload_seccomp_active_count>=payload_seccomp_count)return 0;
+    for(unsigned i=payload_seccomp_active_count;i<payload_seccomp_count;i++) {
+        struct sock_fprog program={.len=payload_seccomp[i].len,.filter=payload_seccomp[i].insns};
+        long result=RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,payload_seccomp[i].flags,
+                        (long)&program,0,0,0);
+        if(result<0)return result;
+    }
+    payload_seccomp_active_count=payload_seccomp_count;
+    return 0;
+}
+static int payload_exec_is_bwrap(const char *path) {
+    const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
+    return p_equal(base,"bwrap") || p_equal(base,"matonos-app-bwrap");
+}
 static int termios2_call(proxy_arg_t *a,long *result) {
     unsigned long cmd=(unsigned long)a[1]&0xffffffffu;
     struct proxy_termios2 copy={0};
@@ -1619,6 +1724,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
         goto clean_mask;
     }
+    result=payload_seccomp_errno(info->si_syscall,a,(uintptr_t)info->si_call_addr);
+    if(result){if(proxy_trace)proxy_log("flatpak-seccomp-deny",info->si_syscall,result);goto finish;}
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
     extern int adopt_i386_syscall(long,proxy_arg_t *,void *,long *);
     if(adopt_i386_syscall(nr,a,uc,&result))goto finish;
@@ -1702,7 +1809,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
                 result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);
                 if(!result && dispatch_owner==tid) {dispatch_selector=NULL;dispatch_owner=0;}
             } else result=-EINVAL;
-        } else result=payload_filter(nr,a);
+        } else result=payload_seccomp_install(nr,a);
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
         break;
     case PROXY_SC_seccomp:
@@ -1710,7 +1817,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             emit("v3 seccomp op="); crash_hex(a[0]);
             trace_word(" flags=",a[1]); trace_word(" args=",a[2]);
         }
-        result=payload_filter(nr,a);
+        result=payload_seccomp_install(nr,a);
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
         break;
     case PROXY_SC_rt_sigaction:
@@ -1868,6 +1975,10 @@ clone_retry:
                 dispatch_selector=NULL;dispatch_owner=0;
             }
             if(thread) thread->app_stack.ss_flags=SS_DISABLE;
+            payload_current_bwrap=payload_exec_is_bwrap(path);
+            if(!payload_current_bwrap) {
+                result=payload_seccomp_activate();if(result<0)break;
+            }
             ARCH_CONTEXT(uc,ARCH_PC)=image.entry;ARCH_CONTEXT(uc,ARCH_STACK)=image.stack;
             arch_exec_context(uc);
         }break;

@@ -115,6 +115,10 @@ cc -no-pie -O2 -Wall -Wextra -Werror tests/process.c -o build/process
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/process" "$PWD/build/process-parent" "$PWD/build/process-child" >build/process.out 2>build/process.log
 cat build/process.out
 
+cc -no-pie -O2 -Wall -Wextra -Werror tests/flatpak-seccomp.c -o build/flatpak-seccomp
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/flatpak-seccomp" >build/flatpak-seccomp.out 2>build/flatpak-seccomp.log
+cat build/flatpak-seccomp.out
+
 cc -no-pie -O2 -Wall -Wextra -Werror tests/net.c -o build/net-test
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/net-test" >build/net-test.out 2>build/net-test.log
 cat build/net-test.out
