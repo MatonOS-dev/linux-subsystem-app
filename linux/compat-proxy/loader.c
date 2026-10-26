@@ -65,6 +65,70 @@ static int resident_collision(uintptr_t low,uintptr_t high) {
 #endif
 }
 
+/* Keep the Android-visible launch process alive if Flatpak/bwrap's direct
+ * child exits while a forked Linux app process is still starting.  The
+ * supervisor becomes a child subreaper, then runs the ordinary loader in a
+ * child. Orphaned descendants are reparented here and reaped before this
+ * process reports the application's final status to Process.waitFor(). */
+#ifndef PROXY_LIBRARY
+static void supervisor_pid_text(char out[24],long value) {
+    char reverse[24];unsigned n=0;
+    do { reverse[n++]=(char)('0'+value%10);value/=10; } while(value && n<sizeof(reverse));
+    unsigned i=0;while(n)out[i++]=reverse[--n];out[i]=0;
+}
+static void strip_supervise_option(int argc,char **argv) {
+    for(int i=1;i<argc;i++)argv[i]=argv[i+1];
+}
+static int supervise_launch(int argc,char **argv,char **environ) {
+    if(argc<2 || !p_equal(argv[1],"--supervise"))return -1;
+
+    long expected_parent=0;
+    for(int i=2;i+1<argc;i++)if(p_equal(argv[i],"--parent-pid")) {
+        const char *number=argv[i+1];if(!*number)return 2;
+        for(;*number;number++) {
+            if(*number<'0'||*number>'9'||expected_parent>214748364)return 2;
+            expected_parent=expected_parent*10+*number-'0';
+        }
+        if(expected_parent<=0)return 2;
+        break;
+    }
+    long setup=RAW(PROXY_SC_prctl,PR_SET_CHILD_SUBREAPER,1,0,0,0,0);
+    if(setup<0) {
+        strip_supervise_option(argc,argv);
+        return (int)RAW(PROXY_SC_execve,argv[0],argv,environ,0,0,0)==0?0:2;
+    }
+    if(expected_parent &&
+       (RAW(PROXY_SC_prctl,PR_SET_PDEATHSIG,SIGKILL,0,0,0,0)<0 ||
+        RAW(PROXY_SC_getppid,0,0,0,0,0,0)!=expected_parent))return 2;
+
+    long supervisor=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+    long child=RAW(PROXY_SC_fork,0,0,0,0,0,0);
+    if(child<0)return 2;
+    if(child==0) {
+        char supervisor_pid[32];
+        supervisor_pid_text(supervisor_pid,(long)supervisor);
+        strip_supervise_option(argc,argv);
+        for(int i=1;i+1<argc;i++)if(p_equal(argv[i],"--parent-pid"))argv[i+1]=supervisor_pid;
+        RAW(PROXY_SC_execve,argv[0],argv,environ,0,0,0);
+        return 127;
+    }
+
+    long status=0,waited;
+    do waited=RAW(PROXY_SC_wait4,child,&status,0,0,0,0);while(waited==-EINTR);
+    if(waited<0)return 2;
+    int app_status=(status&0x7f)==0?(int)((status>>8)&0xff):
+                   (status&0x7f)!=0x7f?128+(int)(status&0x7f):2;
+    for(;;) {
+        long descendant_status;
+        do waited=RAW(PROXY_SC_wait4,-1,&descendant_status,0,0,0,0);while(waited==-EINTR);
+        if(waited>0)continue;
+        if(waited==-ECHILD)break;
+        return 2;
+    }
+    return app_status;
+}
+#endif
+
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
@@ -416,6 +480,8 @@ int proxy_load(const char *path,char *const *argv,char *const *env,struct image 
 }
 #ifndef PROXY_LIBRARY
 int main(int argc,char **argv,char **environ) {
+    int supervised=supervise_launch(argc,argv,environ);
+    if(supervised>=0)return supervised;
     char **end=environ;while(*end)end++;
     arch_elf_auxv *original=(void *)(end+1);
     for(;original->a_type;original++)if(original->a_type<64)inherited_aux[original->a_type]=original->a_un.a_val;

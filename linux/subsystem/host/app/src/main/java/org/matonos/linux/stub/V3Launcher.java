@@ -72,6 +72,10 @@ final class V3Launcher {
         LoaderCommand.writeResolv(resolv, dns);
         ArrayList<String> command = new ArrayList<>();
         command.add(loader.getAbsolutePath());
+        // Flatpak/bwrap can exit after its app forks. Keep this process alive
+        // as a child subreaper so the app UID and task are not torn down while
+        // an orphaned Linux app process is still starting or running.
+        command.add("--supervise");
         command.add("--gpu-bridge");
         // adb (root): touch <cache>/v3-trace to log every trapped call.
         if (new File(cache, "v3-trace").exists()) command.add("--trace");
@@ -189,7 +193,7 @@ final class V3Launcher {
         env.put("FLATPAK_USER_DIR",deployment.getAbsolutePath());
         process = SPAWNER.submit(builder::start).get();
         final Process child = process;
-        Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());
+        Log.i("MatonV3", "Started v3 loader pid=" + child.pid() + " for " + context.getPackageName());
         new Thread(() -> drain(child.getInputStream(),false,null), "v3-output").start();
         CountDownLatch stderrDrained=new CountDownLatch(1);
         new Thread(() -> drain(child.getErrorStream(),true,stderrDrained), "v3-stderr").start();

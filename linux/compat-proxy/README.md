@@ -85,6 +85,12 @@ runtime state through a sealed memfd. Signals are forwarded/chained with the
 payload ABI context; clone/fork, thread exit, robust lists, and selected
 pthread TLS behavior are adapted by architecture backends.
 
+The Android launch path uses the loader's `--supervise` mode. A small
+child-subreaper process owns the ordinary Flatpak/bwrap loader and waits for
+orphaned Linux descendants before returning the launch status to Android.
+This keeps the stub process and app task alive when a launcher exits after
+forking its real application process.
+
 With `--gpu-bridge`, the loader publishes the GPU bridge entry points and
 adopts resident bionic pthreads while GPU calls enter Android graphics
 libraries. Adoption is opt-in and has separate x86_64 and i386 implementations.

@@ -28,6 +28,7 @@ for test in signals threads spawn binder zygote-startup; do
     timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/$test" >"build/$test.out" 2>"build/$test.log"
     cat "build/$test.out"
 done
+python3 tests/supervise.py build/linux-layer-v3
 cc -no-pie -O2 -Wall -Wextra -Werror tests/fcntl-native.c -o build/fcntl-native
 timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/fcntl-native" >build/fcntl-native.out 2>build/fcntl-native.log
 cat build/fcntl-native.out
