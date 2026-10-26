@@ -17,6 +17,7 @@ void vfs_resolve_cache_invalidate(void);
 char *vfs_resolve(int, const char *, int, long *);
 int vfs_openat2_path_fd(int,const char *,int,int *,char **);
 int vfs_plain_nofollow_path(int,const char *,char **);
+int vfs_plain_nofollow_dir_path(int,const char *,int);
 /* Follow symlinks, but retain a final proc fd magic link for linkat. */
 #define VFS_FOLLOW_LINK_SOURCE 2
 char *vfs_resolve_mount(int,const char *,int,long *,void **);
@@ -28,7 +29,9 @@ int vfs_has_nested_mount(const char *,const char *,int);
 void vfs_fd_close(int);
 long vfs_fd_dup(int,int);
 char *vfs_fd_name(int);
-void vfs_fd_record(int,int,const char *);
+char *vfs_fd_name_identity(int,uint64_t,uint64_t);
+char *vfs_fd_name_cached(int);
+void vfs_fd_record(int,int,const char *,int);
 void vfs_fd_rename(const char *,const char *);
 char *vfs_proc_fd_name(const char *);
 void vfs_executable(const char *);

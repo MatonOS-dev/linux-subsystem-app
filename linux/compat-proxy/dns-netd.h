@@ -111,7 +111,7 @@ static void dns_worker(void *unused){(void)unused;
     for(;;){struct epoll_event events[32];long n=RAW(PROXY_SC_epoll_pwait,ep,events,32,-1,0,8);if(n<0)continue;
         for(long i=0;i<n;i++){
             int fd=events[i].data.fd;
-            if(fd==server){unsigned char query[65536];struct sockaddr_in peer;unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,sizeof(query),0,&peer,&plen);if(q<=0||!dns_port_owned(peer.sin_port))continue;
+            if(fd==server){unsigned char query[65536];struct sockaddr_in peer={0};unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,sizeof(query),0,&peer,&plen);if(q<=0||!dns_port_owned(peer.sin_port))continue;
                 int r=dns_netd_send(query,(size_t)q);if(r<0)continue;struct dns_pending *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,r,0,0,0,0,0);continue;}*p=(struct dns_pending){.fd=r,.peer=peer,.next=dns_pending};dns_pending=p;struct epoll_event re={.events=EPOLLIN,.data.fd=r};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,r,&re,0,0);
             }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;unsigned char answer[65536];int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_netd_result(fd,&rcode,answer,sizeof(answer));RAW(PROXY_SC_close,fd,0,0,0,0,0);if(sz>0)RAW(PROXY_SC_sendto,server,answer,sz,0,&p->peer,sizeof(p->peer));*pp=p->next;vfs_free(p);}
         }

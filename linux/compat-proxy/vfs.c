@@ -434,10 +434,10 @@ static char *physical(const char *path){
  * explicit self-map keeps this away from ordinary, rooted, and EROFS views. */
 int vfs_plain_nofollow_path(int fd,const char *path,char **logical_out){
     if(logical_out)*logical_out=NULL;
-    if(fd==AT_FDCWD || root || !path || !*path || path[0]=='/' || path[0]=='.')return 0;
+    if(fd==AT_FDCWD || root || !path || !*path || path[0]=='/' || p_equal(path,".."))return 0;
     for(size_t i=0;path[i];i++)if(path[i]=='/')return 0;
     char *base=vfs_fd_name(fd);if(!base)return 0;
-    char *logical=join(base,path);vfs_free(base);if(!logical)return 0;
+    char *logical=p_equal(path,".")?dupstr(base):join(base,path);vfs_free(base);if(!logical)return 0;
     for(size_t i=0;logical[i];){while(logical[i]=='/')i++;size_t start=i;while(logical[i]&&logical[i]!='/')i++;
         if(p_equal(logical+start,".v3-inodes")){vfs_free(logical);return 0;}}
     if(prefix(logical,"/proc") || prefix(logical,"/sys") || prefix(logical,"/dev") ||
@@ -453,19 +453,27 @@ int vfs_plain_nofollow_path(int fd,const char *path,char **logical_out){
     if(logical_out)*logical_out=logical;else vfs_free(logical);
     return 1;
 }
+int vfs_plain_nofollow_dir_path(int fd,const char *path,int flags){
+    if(fd==AT_FDCWD || root || !(flags&O_DIRECTORY) || !(flags&O_NOFOLLOW) ||
+            !path || !*path || path[0]=='/' || p_equal(path,".") || p_equal(path,".."))return 0;
+    for(size_t i=0;path[i];i++)if(path[i]=='/')return 0;
+    char *base=vfs_fd_name(fd);if(!base)return 0;
+    char *logical=join(base,path);vfs_free(base);if(!logical)return 0;
+    if(prefix(logical,"/proc") || prefix(logical,"/sys") || prefix(logical,"/dev") ||
+            erofs_prefix_length(logical,NULL)){vfs_free(logical);return 0;}
+    struct mount *m=lookup(logical);
+    if(!m || !p_equal(m->source,m->target) ||
+            vfs_has_nested_mount(m->target,m->target,0)){vfs_free(logical);return 0;}
+    char *host=physical(logical);int same=host && p_equal(host,logical);
+    vfs_free(host);vfs_free(logical);return same;
+}
 struct proxy_open_how {uint64_t flags,mode,resolve;};
 #define PROXY_RESOLVE_NO_XDEV       0x01
 #define PROXY_RESOLVE_NO_MAGICLINKS 0x02
 #define PROXY_RESOLVE_NO_SYMLINKS   0x04
 #define PROXY_RESOLVE_IN_ROOT       0x10
-/* Resolve ordinary absolute names in one kernel path walk. Virtual mounts are
- * represented by their backing directory fd. This path is deliberately
- * limited to names without dot components or symlinks: dot-dot can cross a
- * virtual mount boundary, and an absolute symlink under a virtual mount is
- * rooted at the virtual root rather than that mount's backing directory.
- * Magic links, relative/dirfd paths, packed entries, mount roots and all
- * openat2 errors use the existing component walker, which also handles the
- * virtual-root escape and EXDEV rules. */
+/* Resolve ordinary names in one kernel path walk. Keep symlinks on the
+ * component walker because a link can cross an emulated mapping. */
 static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd,char **outpath){
     if(outfd)*outfd=-1;
     if(outpath)*outpath=NULL;
@@ -490,7 +498,8 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
         if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
     struct mount *m=lookup(global);
     int direct_relative=fd!=AT_FDCWD && !root && m &&
-        p_equal(m->source,m->target) && !erofs_prefix_length(global,NULL);
+        p_equal(m->source,m->target) && !erofs_prefix_length(global,NULL) &&
+        !vfs_has_nested_mount(m->target,m->target,0);
     char *host_path=physical(global);
     if(!host_path){vfs_free(global);return NULL;}
     links_recover_path(host_path);
@@ -510,15 +519,11 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     do{digits[d++]=(char)('0'+value%10);value/=10;}while(value);
     while(d)proc[k++]=digits[--d];
     proc[k]=0;
-    size_t cap=256;char *answer=NULL;
-    for(;;){char *buffer=vfs_alloc(cap+1);if(!buffer)break;
+    size_t cap=256;char *answer=NULL;for(;;){char *buffer=vfs_alloc(cap+1);if(!buffer)break;
         long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,buffer,cap,0,0);
-        if(n<0){vfs_free(buffer);break;}
-        if((size_t)n<cap){buffer[n]=0;answer=buffer;break;}
-        vfs_free(buffer);if(cap>SIZE_MAX/2-1)break;cap*=2;
-    }
-    if(answer && outfd)*outfd=(int)targetfd;
-    else RAW(PROXY_SC_close,targetfd,0,0,0,0,0);
+        if(n<0){vfs_free(buffer);break;}if((size_t)n<cap){buffer[n]=0;answer=buffer;break;}
+        vfs_free(buffer);if(cap>SIZE_MAX/2-1)break;cap*=2;}
+    if(answer && outfd)*outfd=(int)targetfd;else RAW(PROXY_SC_close,targetfd,0,0,0,0,0);
     if(answer && identity)*identity=m;
     vfs_free(global);return answer;
 }
@@ -562,7 +567,7 @@ static char *readlink_dynamic(const char *path,long *error){
         n*=2;
     }
 }
-struct fd_name {char *path;size_t capacity,length;};
+struct fd_name {char *path;size_t capacity,length;uint64_t dev,ino;unsigned identity_valid;};
 static struct fd_name *fd_names;
 static size_t fd_names_capacity;
 /* Only protect the fd-name bookkeeping, never a payload syscall (flock may
@@ -585,7 +590,7 @@ static void fd_names_unlock(proxy_sigmask_t mask){
 }
 static void fd_name_close(int fd){
     proxy_sigmask_t mask=fd_names_lock();
-    if(fd>=0 && (size_t)fd<fd_names_capacity)fd_names[fd].length=0;
+    if(fd>=0 && (size_t)fd<fd_names_capacity){fd_names[fd].length=0;fd_names[fd].identity_valid=0;}
     fd_names_unlock(mask);
 }
 static int fd_names_reserve(size_t needed){
@@ -607,7 +612,7 @@ static int fd_name_set_locked(int fd,const char *path){
     p_copy(entry->path,path,n);entry->length=n;return 0;
 }
 void vfs_fd_close(int fd){fd_name_close(fd);}
-long vfs_fd_dup(int from,int to){if(from==to)return 0;char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name);vfs_free(name);}return 0;}
+long vfs_fd_dup(int from,int to){if(from==to)return 0;char *name=vfs_fd_name(from);fd_name_close(to);if(name){vfs_fd_record(to,AT_FDCWD,name,1);vfs_free(name);}return 0;}
 char *vfs_fd_name(int fd){
     PROFILE_BEGIN();
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
@@ -616,6 +621,28 @@ char *vfs_fd_name(int fd){
         else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
     }}
     fd_names_unlock(mask);PROFILE_END(3);return name;
+}
+char *vfs_fd_name_identity(int fd,uint64_t dev,uint64_t ino){
+    proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
+    if(fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];
+        if(p->length){
+            if(p->dev==dev && p->ino==ino){
+                if(!root)name=dupstr(p->path);
+                else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
+            }else{p->length=0;p->identity_valid=0;}
+        }
+    }
+    fd_names_unlock(mask);return name;
+}
+char *vfs_fd_name_cached(int fd){
+    proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
+    if(fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];
+        if(p->length && p->identity_valid){
+            if(!root)name=dupstr(p->path);
+            else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
+        }
+    }
+    fd_names_unlock(mask);return name;
 }
 static int self_proc(const char *path){
     if(prefix(path,"/proc/self") || prefix(path,"/proc/thread-self"))return 1;
@@ -826,7 +853,7 @@ static char *global_target(const char *target,long *error){
     char *out=vfs_alloc(p_len(p)+2);if(!out){vfs_free(p);*error=-ENOMEM;return NULL;}size_t n=1;out[0]='/';out[1]=0;
     for(size_t i=0;p[i];){while(p[i]=='/')i++;size_t start=i;while(p[i]&&p[i]!='/')i++;size_t len=i-start;if(!len)break;if(len==1&&p[start]=='.')continue;if(len==2&&p[start]=='.'&&p[start+1]=='.'){while(n>1&&out[n-1]!='/')n--;if(n>1)n--;out[n]=0;continue;}if(n>1)out[n++]='/';p_copy(out+n,p+start,len);n+=len;out[n]=0;}vfs_free(p);return out;
 }
-void vfs_fd_record(int fd,int dirfd,const char *path){
+void vfs_fd_record(int fd,int dirfd,const char *path,int capture_identity){
     PROFILE_BEGIN();
     long e=0;char *global=global_target(path,&e);
     if(path[0]!='/'){
@@ -835,8 +862,14 @@ void vfs_fd_record(int fd,int dirfd,const char *path){
         global=relative?global_target(relative,&e):NULL;vfs_free(relative);
     }
     if(!global)return;
+    struct proxy_stat st={0};long stat_result=capture_identity?arch_stat_fd(fd,&st):-ENOSYS;
     proxy_sigmask_t mask=fd_names_lock();
-    (void)fd_name_set_locked(fd,global);
+    if(!fd_name_set_locked(fd,global)){
+        struct fd_name *entry=&fd_names[fd];
+        entry->identity_valid=stat_result==0;
+        if(!stat_result){entry->dev=st.st_dev;entry->ino=st.st_ino;}
+        else if(capture_identity)entry->length=0;
+    }
     fd_names_unlock(mask);vfs_free(global);PROFILE_END(4);
 }
 void vfs_fd_rename(const char *source,const char *destination){
