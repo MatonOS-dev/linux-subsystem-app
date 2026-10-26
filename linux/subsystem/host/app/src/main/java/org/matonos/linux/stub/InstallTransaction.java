@@ -414,13 +414,20 @@ public final class InstallTransaction {
         }
         private void buildExtraDataImage(org.matonos.linuxhost.stubgen.DependencyPlan.Node node,File installation)throws Exception {
             String packageName=DeployManifest.packageForPublic(node.ref);
-            File apk=File.createTempFile("maton-extra-stub-",".apk",root);
+            File apk=new File(installation,"extra-data-stub.apk");
             File work=new File(root,"extra-stub-work");if(!work.isDirectory()&&!work.mkdirs())throw new java.io.IOException("Cannot create temporary stub work directory");
-            try {
-                org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(work,node.ref,origin.name,node.ref,null,
-                        java.util.Collections.emptyList(),packageName,apk,null,java.util.Collections.emptyList(),
-                        java.util.Collections.emptyMap(),false,"/app",true);
-                installTemporaryBase(packageName,apk);
+            boolean launchable=node.ref.startsWith("app/")&&PackageMounts.extensionParent(new String(node.info.metadata,StandardCharsets.UTF_8))==null;
+            java.util.List<String> requiredPackages=new ArrayList<>();
+            java.util.Map<String,String> dependencies=new java.util.TreeMap<>();
+            for(String dependency:node.dependencies) {
+                String dependencyPackage=DeployManifest.packageForPublic(dependency);
+                requiredPackages.add(dependencyPackage);
+                dependencies.put(dependency,dependencyPackage+">/usr");
+            }
+            org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(work,node.ref,origin.name,node.ref,null,
+                    org.matonos.linuxhost.stubgen.StubGenerator.permissionsForMetadata(new String(node.info.metadata,StandardCharsets.UTF_8)),packageName,apk,null,requiredPackages,
+                    dependencies,launchable,launchable?"/app":"/usr",true);
+            if(!hasExtraDataService(packageName))installTemporaryBase(packageName,apk);
                 android.os.ParcelFileDescriptor[] pipe=android.os.ParcelFileDescriptor.createPipe();
                 File image=new File(installation,"extra-data-image.erofs");
                 try(android.os.ParcelFileDescriptor read=pipe[0];android.os.ParcelFileDescriptor write=pipe[1]) {
@@ -429,7 +436,7 @@ public final class InstallTransaction {
                             .putExtra("ref",node.ref).putExtra("remote",origin.name)
                             .putExtra("url",origin.url.isEmpty()?"https://dl.flathub.org/repo/flathub.flatpakrepo":origin.url)
                             .putExtra("subpaths",String.join("\n",node.subpaths)).putExtra("result",write);
-                    context.startService(request);
+                    context.startForegroundService(request);
                     write.close();
                     try(java.io.DataInputStream in=new java.io.DataInputStream(new android.os.ParcelFileDescriptor.AutoCloseInputStream(read));
                             java.io.OutputStream out=Files.newOutputStream(image.toPath())) {
@@ -440,7 +447,13 @@ public final class InstallTransaction {
                     }
                 }
                 Log.i(TAG,"Stub returned extra-data EROFS for "+node.ref+" bytes="+image.length());
-            } finally {apk.delete();}
+        }
+        private boolean hasExtraDataService(String packageName) {
+            try {
+                context.getPackageManager().getServiceInfo(new android.content.ComponentName(packageName,
+                        "org.matonos.linux.stub.ExtraDataInstallService"),0);
+                return true;
+            } catch(android.content.pm.PackageManager.NameNotFoundException absent) { return false; }
         }
         private void installTemporaryBase(String packageName,File apk)throws Exception {
             String action=context.getPackageName()+".EXTRA_STUB."+java.util.UUID.randomUUID();
@@ -454,9 +467,10 @@ public final class InstallTransaction {
             try {
                 android.content.pm.PackageInstaller.SessionParams params=new android.content.pm.PackageInstaller.SessionParams(android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL);
                 params.setAppPackageName(packageName);
+                params.setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
                 android.content.pm.PackageInstaller installer=context.getPackageManager().getPackageInstaller();
                 int id=installer.createSession(params);
-                try(android.content.pm.PackageInstaller.Session session=installer.openSession(id);java.io.InputStream in=Files.newInputStream(apk.toPath());java.io.OutputStream out=session.openWrite("base.apk",0,apk.length())) {
+                try(android.content.pm.PackageInstaller.Session session=installer.openSession(id);java.io.InputStream in=org.matonos.linuxhost.stubgen.PlaceholderFiles.open(apk);java.io.OutputStream out=session.openWrite("base.apk",0,apk.length())) {
                     byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);session.fsync(out);
                     android.content.Intent result=new android.content.Intent(action).setPackage(context.getPackageName());
                     android.app.PendingIntent pending=android.app.PendingIntent.getBroadcast(context,id,result,android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_MUTABLE);

@@ -45,6 +45,18 @@ public final class ForegroundManifestTest {
             throw new AssertionError("Missing per-stub portal provider capability declaration\n"+xml);
         if (xml.contains("org.matonos.linuxruntimes"))
             throw new AssertionError("Retired runtime package query present\n"+xml);
+        java.lang.reflect.Field minimal=manifest.getDeclaredField("minimalStub");minimal.setAccessible(true);minimal.setBoolean(encoder,true);
+        try(ZipOutputStream zip=new ZipOutputStream(new FileOutputStream(apk))) {
+            zip.putNextEntry(new ZipEntry("AndroidManifest.xml"));zip.write((byte[])encode.invoke(encoder));zip.closeEntry();
+        }
+        p=new ProcessBuilder(args[0],"dump","xmltree",apk.getAbsolutePath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
+        xml=new String(p.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+        if(p.waitFor()!=0||!xml.contains("org.matonos.linuxhost.EXTRA_DATA_INSTALL")
+                ||!xml.contains("org.matonos.permission.INSTALL_LINUX_APPS")
+                ||!xml.contains("foregroundServiceType(0x01010599)=1 ")
+                ||!xml.contains("android.permission.FOREGROUND_SERVICE_DATA_SYNC")
+                ||xml.contains("icon(0x01010002)")||xml.contains("android.intent.category.LAUNCHER"))
+            throw new AssertionError("Minimal extra-data base must expose only its install service without an icon or launcher entry\n"+xml);
         Object dependency=ctor.newInstance("flatpak.runtime.org.example.Platform.x86_64.stable.xabcdef123456","","runtime/org.example.Platform/x86_64/stable","example",Collections.emptyList());
         java.lang.reflect.Field noActivities=manifest.getDeclaredField("noActivities");noActivities.setAccessible(true);noActivities.setBoolean(dependency,true);
         java.lang.reflect.Field mount=manifest.getDeclaredField("packs");mount.setAccessible(true);mount.set(dependency,"/usr");

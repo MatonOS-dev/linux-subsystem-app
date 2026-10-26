@@ -92,7 +92,10 @@ public final class StagedPacks {
                     delete(target);
                     Files.move(extra.toPath(),target.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 }
-                Files.copy(returnedImage.toPath(),new File(output,"deployment.erofs").toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                try(InputStream in=org.matonos.linuxhost.stubgen.PlaceholderFiles.open(returnedImage);
+                        OutputStream out=new FileOutputStream(new File(output,"deployment.erofs"))) {
+                    byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);
+                }
             } finally {delete(extracted);}
             imageBytes=returnedImage.length();
         } else {

@@ -4,14 +4,10 @@ import android.app.Service;
 import android.content.Intent;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
-import android.system.Os;
-import android.system.OsConstants;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import org.matonos.linuxhost.stubgen.ErofsImage;
@@ -25,6 +21,13 @@ public final class ExtraDataInstallService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         ParcelFileDescriptor result = intent == null ? null : intent.getParcelableExtra("result");
         if (result == null) { stopSelf(startId); return START_NOT_STICKY; }
+        android.app.NotificationManager notifications=getSystemService(android.app.NotificationManager.class);
+        notifications.createNotificationChannel(new android.app.NotificationChannel("matonos-extra-data",
+                "Linux application setup",android.app.NotificationManager.IMPORTANCE_LOW));
+        startForeground(17,new android.app.Notification.Builder(this,"matonos-extra-data")
+                .setContentTitle("Setting up Linux application")
+                .setSmallIcon(android.R.drawable.stat_sys_download).setOngoing(true).build(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         new Thread(() -> {
             try (ParcelFileDescriptor fd = result;
                     java.io.DataOutputStream out = new java.io.DataOutputStream(new FileOutputStream(fd.getFileDescriptor()))) {
@@ -37,7 +40,7 @@ public final class ExtraDataInstallService extends Service {
                     out.writeUTF(String.valueOf(error.getMessage()));
                 }
             } catch (Exception error) { android.util.Log.e(TAG, "Could not return extra-data result", error); }
-            finally { stopSelf(startId); }
+            finally { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId); }
         }, "maton-extra-data").start();
         return START_NOT_STICKY;
     }
@@ -56,8 +59,12 @@ public final class ExtraDataInstallService extends Service {
         userData.mkdirs(); userConfig.mkdirs();
         File flatpakUser = new File(userData, "flatpak");
         runFlatpak(home, tmp, run, cache, flatpakUser, "remote-add", "--user", "--if-not-exists", remote, url);
+        String tags=android.os.LocaleList.getDefault().toLanguageTags();
+        List<String> localeTags=new ArrayList<>();if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));
+        runFlatpak(home,tmp,run,cache,flatpakUser,"config","--user","--set","languages",
+                org.matonos.linux.stub.FlatpakLanguages.configuration(localeTags));
         List<String> install = new ArrayList<>();
-        install.add("install"); install.add("--user"); install.add("--assumeyes"); install.add("--no-deps"); install.add("--no-related");
+        install.add("install"); install.add("--user"); install.add("--assumeyes"); install.add("--no-related");
         String subpaths = request.getStringExtra("subpaths");
         if (subpaths != null) for (String subpath : subpaths.split("\n")) if (!subpath.isEmpty()) install.add("--subpath=" + subpath);
         install.add(remote); install.add(ref);
@@ -71,11 +78,11 @@ public final class ExtraDataInstallService extends Service {
         if (!current.isDirectory()) throw new IOException("Flatpak did not create a deployed files tree");
         String imagePrefix = ref.startsWith("runtime/")
                 ? "/" + ref.substring(ref.lastIndexOf('/') + 1) + "/" : "/app/";
-        List<ObjectPacks.Entry> entries = ObjectPacks.fromTree(current, imagePrefix);
+        List<ObjectPacks.Entry> entries = ObjectPacks.fromTreeWithModes(current, imagePrefix);
         File output = new File(root, "deployment.erofs");
         File mkfs = LoaderCommand.tool(this, "libmatonos-mkfs-erofs.so");
         ErofsImage.build(entries, output.getParentFile(), mkfs, System.currentTimeMillis() / 1000L);
-        try (java.io.InputStream in = Files.newInputStream(output.toPath())) {
+        try (java.io.InputStream in = org.matonos.linuxhost.stubgen.PlaceholderFiles.open(output)) {
             out.writeInt(0); out.writeLong(output.length());
             byte[] buffer = new byte[65536]; int count;
             while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);

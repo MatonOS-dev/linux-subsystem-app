@@ -509,12 +509,16 @@ public final class LinuxAppStoreService extends Service {
         synchronized(lock) {
             if(installed==null)try {
                 PackageInfo current=getPackageManager().getPackageInfo(packageName,PackageManager.GET_SIGNING_CERTIFICATES);
-                JSONObject row=InstallTransaction.row(op.stagedManifest,packageRef);
-                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
-                        current.splitNames,current.applicationInfo.splitSourceDirs);
-                if(packageSignerMatches(current)&&record.ref.equals(packageRef)&&record.commit.equals(row.getString("commit"))
-                        &&record.remote.equals(row.getString("origin")))return;
-                throw new SecurityException("Package was installed by another operation with different content; retry");
+                String declared=current.applicationInfo.metaData==null?null:current.applicationInfo.metaData.getString(StubGenerator.REF_META);
+                if(!packageSignerMatches(current)||!packageRef.equals(declared))throw new SecurityException("Package was installed by another operation with different content; retry");
+                try {
+                    JSONObject row=InstallTransaction.row(op.stagedManifest,packageRef);
+                    org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
+                            current.splitNames,current.applicationInfo.splitSourceDirs);
+                    if(record.ref.equals(packageRef)&&record.commit.equals(row.getString("commit"))
+                            &&record.remote.equals(row.getString("origin")))return;
+                } catch(Exception incompleteTemporaryStub) { /* Complete the package from its signed temporary base. */ }
+                installed=current;
             }catch(PackageManager.NameNotFoundException absent) { }
             else try {
                 PackageInfo current=getPackageManager().getPackageInfo(packageName,PackageManager.GET_SIGNING_CERTIFICATES);
@@ -545,15 +549,23 @@ public final class LinuxAppStoreService extends Service {
             org.matonos.linux.stub.PackageMounts.Entry mount=org.matonos.linux.stub.PackageMounts.entry(ref,dependency.getString("mount"));
             requiredPackages.add(mount.packageName);dependencyPackages.put(ref,mount.packageName+">"+mount.mountPoint);
         }
-        // Flatpak has already completed stock apply_extra in the isolated
-        // deploy step, so its export tree is part of the staged deployment.
+        // Stub-built extra data has been validated and copied into this staged
+        // deployment before launcher metadata and its split are selected.
         String appId=appId(packageRef);
         File deployment=org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef));
         org.matonos.linux.stub.LauncherData launcher=org.matonos.linux.stub.LauncherData.resolve(
                 deployment,appId,new File(deployment,"files/extra"),launchable&&"flathub".equals(remote)?new org.matonos.linux.stub.LauncherData.Flathub():null);
         byte[] baseIcon=launcher.icon!=null?launcher.icon:fallbackIcon();
-        org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(work,packageRef,org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote).name,launcher.label,baseIcon,
-                StubGenerator.permissionsForMetadata(org.matonos.linux.stub.DeployManifest.stagedMetadata(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef))),pkg,base,objects,requiredPackages,dependencyPackages,launchable,mountPoint);
+        String stagedMetadata=org.matonos.linux.stub.DeployManifest.stagedMetadata(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef));
+        if(hasExtraData(stagedMetadata)) {
+            File minimalBase=new File(installation,"extra-data-stub.apk");
+            if(!minimalBase.isFile())throw new java.io.IOException("Extra-data stub base is missing");
+            try(java.io.InputStream in=org.matonos.linuxhost.stubgen.PlaceholderFiles.open(minimalBase);
+                    java.io.OutputStream out=new java.io.FileOutputStream(base)) {
+                byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);
+            }
+        } else org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(work,packageRef,org.matonos.linuxhost.stubgen.RemoteOrigin.parse(remote).name,launcher.label,baseIcon,
+                StubGenerator.permissionsForMetadata(stagedMetadata),pkg,base,objects,requiredPackages,dependencyPackages,launchable,mountPoint);
         boolean full=installed==null || installed.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE ||
                 !org.matonos.linuxhost.stubgen.PackSessionPlan.sameBase(base,new File(installed.applicationInfo.sourceDir));
         java.util.List<String> prior=installed==null || installed.splitNames==null?java.util.Collections.emptyList():java.util.Arrays.asList(installed.splitNames);
@@ -580,6 +592,10 @@ public final class LinuxAppStoreService extends Service {
                 beforeRelease+" -> "+afterRelease+"; available="+stagingRoot.getUsableSpace());
         runPackSession(op,pkg,artifacts,plan(installed!=null,
                 installed==null?0:installed.getLongVersionCode(),prior,desired,available,full));
+    }
+
+    private static boolean hasExtraData(String metadata) {
+        return java.util.regex.Pattern.compile("(?m)^\\s*\\[Extra Data\\]\\s*$").matcher(metadata).find();
     }
 
     /** Adds the package's one complete signed EROFS image. */

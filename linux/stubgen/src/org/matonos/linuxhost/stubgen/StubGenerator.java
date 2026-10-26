@@ -183,21 +183,21 @@ public final class StubGenerator {
         return generatePackage(workDir,ref,remote,label,iconPng,permissions,packageName,output,
                 packDirectory,requiredPackages,dependencies,launchable,mountPoint,false);
     }
-    /** Minimal, non-launchable base used only while the app UID performs Flatpak apply_extra. */
+    /** Small base used while the package UID performs Flatpak apply_extra. */
     public static File generatePackage(File workDir,String ref,String remote,String label,byte[] iconPng,
             List<String> permissions,String packageName,File output,File packDirectory,List<String> requiredPackages,
             Map<String,String> dependencies,boolean launchable,String mountPoint,boolean minimal) throws Exception {
         if(!validRef(ref)||(packageName==null||!packageName.matches("[A-Za-z][A-Za-z0-9_.]+")))throw new IllegalArgumentException("Invalid package identity");
         if(!launchable&&(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*")||Arrays.asList(mountPoint.split("/")).contains("..")))throw new IllegalArgumentException("Invalid package mount");
         BinaryManifest manifest=new BinaryManifest(packageName,cleanLabel(label),ref,remote,permissions);
-        manifest.minInterfaceVersion=2;manifest.noActivities=!launchable;
+        manifest.minInterfaceVersion=2;manifest.noActivities=!launchable&&!minimal;
         manifest.minimalStub=minimal;
         manifest.packs=launchable?String.join(";",requiredPackages):mountPoint;
         manifest.dependencyPackages=encodeDependencies(dependencies);
         File unsigned=File.createTempFile("matonos-stub-meta-",".apk",workDir);
         try {
             // Runtimes are ordinary stub packages without a launcher activity.
-            writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages,!launchable,minimal);
+            writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages,!launchable&&!minimal,minimal);
             sign(unsigned,output);return output;
         } finally {unsigned.delete();}
     }
@@ -759,6 +759,10 @@ public final class StubGenerator {
             startEnd("uses-permission",attrs(a("name","android.permission.WAKE_LOCK")));
             // "install me" downloads as the stub's UID (netd DNS + sockets need it).
             startEnd("uses-permission",attrs(a("name","android.permission.INTERNET")));
+            if(minimalStub) {
+                startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE")));
+                startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE_DATA_SYNC")));
+            }
             start("queries",null,attrs());
             startEnd("package",attrs(a("name","org.matonos.linux")));
             start("intent",null,attrs());
@@ -766,23 +770,22 @@ public final class StubGenerator {
             end("intent");
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
-            start("application", null, attrs(a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1), ab("hasCode", true), a("appComponentFactory", HOST_LOADER), new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
+            List<Attr> appAttrs=new ArrayList<>(Arrays.asList(a("label",label),ab("hasCode",true),a("appComponentFactory",HOST_LOADER),new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
+            if(!minimalStub)appAttrs.add(new Attr("icon","@drawable/icon",0x7f010000,1));
+            start("application",null,attrs(appAttrs.toArray(new Attr[0])));
             startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
             if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
             if(noActivities){
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
-                if(minimalStub) {
-                    start("service",null,attrs(a("name","org.matonos.linux.stub.ExtraDataInstallService"),ab("exported",true)));
-                    start("intent-filter",null,attrs());
-                    startEnd("action",attrs(a("name","org.matonos.linuxhost.EXTRA_DATA_INSTALL")));
-                    end("intent-filter");end("service");
-                }
+                if(minimalStub)extraDataService();
                 end("application");end("manifest");namespace(false);return finish();
             }
             startEnd("provider", attrs(a("name", "org.matonos.linux.PortalFiles"),
                     a("authorities", pkg + ".portal.files"), ab("exported", false), ab("grantUriPermissions", true)));
-            start("activity", null, attrs(a("name", HOST_ACTIVITY), ab("exported", true), ab("enabled", true), a("label", label), new Attr("icon", "@drawable/icon", 0x7f010000, 1)));
+            List<Attr> activityAttrs=new ArrayList<>(Arrays.asList(a("name",HOST_ACTIVITY),ab("exported",true),ab("enabled",true),a("label",label)));
+            if(!minimalStub)activityAttrs.add(new Attr("icon","@drawable/icon",0x7f010000,1));
+            start("activity",null,attrs(activityAttrs.toArray(new Attr[0])));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             startEnd("meta-data", attrs(a("name", REMOTE_META), a("value", remote)));
             startEnd("meta-data", attrs(a("name", MIN_INTERFACE_META), ai("value", minInterfaceVersion)));
@@ -821,10 +824,17 @@ public final class StubGenerator {
                     a("value", "Owns the Linux application runtime and its background network operations")));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             end("service");
+            if(minimalStub)extraDataService();
             startEnd("service", attrs(a("name", "org.matonos.linux.stub.InstallService"),
                     ab("exported", false), ai("foregroundServiceType", 1)));
             end("application"); end("manifest"); namespace(false);
             return finish();
+        }
+        private void extraDataService() throws IOException {
+            start("service",null,attrs(a("name","org.matonos.linux.stub.ExtraDataInstallService"),a("permission","org.matonos.permission.INSTALL_LINUX_APPS"),ai("foregroundServiceType",1),ab("exported",true)));
+            start("intent-filter",null,attrs());
+            startEnd("action",attrs(a("name","org.matonos.linuxhost.EXTRA_DATA_INSTALL")));
+            end("intent-filter");end("service");
         }
         byte[] packManifest(String split) throws IOException {
             namespace(true);
