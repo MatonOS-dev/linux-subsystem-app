@@ -40,12 +40,65 @@ public final class PackageMounts {
         if(!DeployManifest.validRef(ref))throw new IOException("Invalid staged-only package ref: "+ref);
         return "/usr/.matonos-staging/"+ref;
     }
+    /**
+     * Rebuild the virtual mount view for this launch. A package's signed
+     * install-time mount describes its role when that package was installed;
+     * shared runtimes can have a different role for another launching app.
+     * Only the app, its declared runtime, and extensions reached from those
+     * packages' signed dependency edges get a visible target.
+     */
+    public static java.util.Map<String,String> launchTargets(
+            List<org.matonos.linuxhost.stubgen.DeploymentRecord> packages) throws Exception {
+        if(packages==null||packages.isEmpty())throw new IOException("Launch package graph is empty");
+        org.matonos.linuxhost.stubgen.DeploymentRecord app=packages.get(0);
+        if(!app.ref.startsWith("app/"))throw new IOException("Launch package graph root is not an app: "+app.ref);
+        java.util.Map<String,org.matonos.linuxhost.stubgen.DeploymentRecord> records=new java.util.LinkedHashMap<>();
+        java.util.Map<String,String> metadata=new java.util.LinkedHashMap<>();
+        for(org.matonos.linuxhost.stubgen.DeploymentRecord record:packages) {
+            records.put(record.ref,record);
+            metadata.put(record.ref,new String(record.metadata,java.nio.charset.StandardCharsets.UTF_8));
+        }
+        String runtime=value(metadata.get(app.ref),"Application","runtime");
+        if(runtime==null||runtime.isEmpty())throw new IOException("Launching app has no declared Flatpak runtime: "+app.ref);
+        if(!runtime.startsWith("runtime/"))runtime="runtime/"+runtime;
+        if(!records.containsKey(runtime))throw new IOException("Launching app runtime is missing from its package graph: "+runtime);
+
+        java.util.Map<String,String> targets=new java.util.LinkedHashMap<>();
+        for(String ref:records.keySet())targets.put(ref,null);
+        targets.put(app.ref,"/app");
+        targets.put(runtime,"/usr");
+        java.util.ArrayDeque<String> active=new java.util.ArrayDeque<>();
+        java.util.Set<String> visited=new java.util.HashSet<>();
+        active.add(app.ref);active.add(runtime);
+        while(!active.isEmpty()) {
+            String parentRef=active.removeFirst();
+            if(!visited.add(parentRef))continue;
+            org.matonos.linuxhost.stubgen.DeploymentRecord parent=records.get(parentRef);
+            for(org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency dependency:parent.dependencies) {
+                org.matonos.linuxhost.stubgen.DeploymentRecord child=records.get(dependency.ref);
+                if(child==null)throw new IOException("Launch dependency is missing from the signed package graph: "+dependency.ref);
+                String declaredParent=extensionParent(metadata.get(child.ref));
+                boolean belongs=parentRef.equals(declaredParent);
+                if(!belongs&&declaredParent!=null) {
+                    Parent resolved=plannedX86_64Parent(child.ref,extensionId(child.ref),declaredParent,metadata);
+                    belongs=resolved!=null&&parentRef.equals(resolved.ref);
+                }
+                if(!belongs)continue;
+                String mount=mountPoint(child.ref,metadata.get(child.ref),metadata);
+                targets.put(child.ref,launchTarget(child.ref,mount));
+                active.addLast(child.ref);
+            }
+        }
+        validateUniqueTargets(targets);
+        return java.util.Collections.unmodifiableMap(targets);
+    }
     /** Reject ambiguous launch plans before pulling packages or starting bwrap. */
     public static void validateUniqueTargets(java.util.Map<String,String> packageTargets) throws IOException {
         java.util.Map<String,String> owners=new java.util.HashMap<>();
         for(java.util.Map.Entry<String,String> entry:packageTargets.entrySet()) {
             String ref=entry.getKey(),target=entry.getValue();
-            if(target==null||!target.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))
+            if(target==null)continue;
+            if(!target.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*"))
                 throw new IOException("Invalid launch target for "+ref+": "+target);
             String previous=owners.putIfAbsent(target,ref);
             if(previous!=null&&!previous.equals(ref))

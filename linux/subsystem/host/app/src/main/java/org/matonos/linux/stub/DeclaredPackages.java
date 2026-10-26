@@ -41,10 +41,15 @@ final class DeclaredPackages {
     }
     static List<String> arguments(List<Entry> packages,File cache,boolean rootExtra,File deployment)throws Exception {
         List<String> args=new ArrayList<>();
+        Map<String,String> launchTargets=rootExtra?PackageMounts.launchTargets(records(packages)):null;
         for(int i=0;i<packages.size();i++) {
             Entry entry=packages.get(i);PackageInfo pkg=entry.pkg;
             String branch=entry.record.ref.startsWith("runtime/")?entry.record.ref.substring(entry.record.ref.lastIndexOf('/')+1):"";
-            String target=PackageMounts.launchTarget(entry.record.ref,entry.mount);
+            String target=rootExtra?launchTargets.get(entry.record.ref):PackageMounts.launchTarget(entry.record.ref,entry.mount);
+            // The signed Flatpak deployment remains available for metadata and
+            // dependency resolution, but unrelated staged packages do not
+            // overlay a path in this app's filesystem.
+            if(target==null)continue;
             args.addAll(ErofsLaunch.arguments(new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,target,branch));
             if(deployment!=null) {
                 File installation=i==0?deployment:new File(deployment,"system");
@@ -53,6 +58,11 @@ final class DeclaredPackages {
             }
         }
         return args;
+    }
+    private static List<DeploymentRecord> records(List<Entry> packages) {
+        List<DeploymentRecord> result=new ArrayList<>(packages.size());
+        for(Entry entry:packages)result.add(entry.record);
+        return result;
     }
     private DeclaredPackages(){}
 }
