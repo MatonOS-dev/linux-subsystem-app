@@ -193,7 +193,7 @@ final class V3Launcher {
         env.put("FLATPAK_USER_DIR",deployment.getAbsolutePath());
         process = SPAWNER.submit(builder::start).get();
         final Process child = process;
-        Log.i("MatonV3", "Started v3 loader pid=" + child.pid() + " for " + context.getPackageName());
+        Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());
         new Thread(() -> drain(child.getInputStream(),false,null), "v3-output").start();
         CountDownLatch stderrDrained=new CountDownLatch(1);
         new Thread(() -> drain(child.getErrorStream(),true,stderrDrained), "v3-stderr").start();
