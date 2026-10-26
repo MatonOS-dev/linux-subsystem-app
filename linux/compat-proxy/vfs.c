@@ -453,11 +453,15 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
             p_equal(path,"/run/host/monitor/resolv.conf")))){vfs_free(global);return NULL;}
     for(size_t i=0;global[i];){while(global[i]=='/')i++;size_t start=i;while(global[i]&&global[i]!='/')i++;
         if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
-    struct mount *m=lookup(global);char *host_path=physical(global);
+    struct mount *m=lookup(global);
+    int direct_relative=fd!=AT_FDCWD && !root && m &&
+        p_equal(m->source,m->target) && !erofs_prefix_length(global,NULL);
+    char *host_path=physical(global);
     if(!host_path){vfs_free(global);return NULL;}
     links_recover_path(host_path);
     struct proxy_open_how how={.flags=O_PATH|O_CLOEXEC|(!follow?O_NOFOLLOW:0),
-        .resolve=PROXY_RESOLVE_NO_MAGICLINKS|PROXY_RESOLVE_NO_SYMLINKS};
+        .resolve=PROXY_RESOLVE_NO_MAGICLINKS|PROXY_RESOLVE_NO_SYMLINKS|
+            (direct_relative?PROXY_RESOLVE_NO_XDEV:0)};
     /* physical() already selected the mount's absolute backing name. Resolving
      * that name directly avoids opening and closing a helper root fd on every
      * trapped lookup; NO_SYMLINKS keeps this fast path conservative. */
@@ -465,6 +469,7 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     if(targetfd<0){vfs_free(host_path);vfs_free(global);return NULL;}
     if(outfd){char *marker=dupstr("");if(marker){*outfd=(int)targetfd;if(outpath)*outpath=host_path;else vfs_free(host_path);vfs_free(global);return marker;}}
     if(outfd&&outpath){RAW(PROXY_SC_close,targetfd,0,0,0,0,0);vfs_free(host_path);vfs_free(global);return NULL;}
+    if(direct_relative){RAW(PROXY_SC_close,targetfd,0,0,0,0,0);if(identity)*identity=m;vfs_free(global);return host_path;}
     vfs_free(host_path);
     char proc[48]="/proc/self/fd/";size_t k=14;unsigned value=(unsigned)targetfd;char digits[16];size_t d=0;
     do{digits[d++]=(char)('0'+value%10);value/=10;}while(value);
