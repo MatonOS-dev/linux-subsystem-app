@@ -418,6 +418,30 @@ static char *physical(const char *path){
     if(!m)return dupstr(path);
     return join(m->source,path+(p_len(m->target)==1?0:p_len(m->target)));
 }
+/* For a no-follow stat of one child, the kernel can use the tracked dirfd
+ * directly when the virtual mapping is an identity map. Requiring an
+ * explicit self-map keeps this away from ordinary, rooted, and EROFS views. */
+int vfs_plain_nofollow_path(int fd,const char *path,char **logical_out){
+    if(logical_out)*logical_out=NULL;
+    if(fd==AT_FDCWD || root || !path || !*path || path[0]=='/' || path[0]=='.')return 0;
+    for(size_t i=0;path[i];i++)if(path[i]=='/')return 0;
+    char *base=vfs_fd_name(fd);if(!base)return 0;
+    char *logical=join(base,path);vfs_free(base);if(!logical)return 0;
+    for(size_t i=0;logical[i];){while(logical[i]=='/')i++;size_t start=i;while(logical[i]&&logical[i]!='/')i++;
+        if(p_equal(logical+start,".v3-inodes")){vfs_free(logical);return 0;}}
+    if(prefix(logical,"/proc") || prefix(logical,"/sys") || prefix(logical,"/dev") ||
+            p_equal(path,".v3-store-root") || p_equal(path,".v3-inodes") ||
+            (hide_resolver && (p_equal(logical,"/etc/resolv.conf") ||
+                    p_equal(logical,"/run/host/monitor/resolv.conf"))) ||
+            erofs_prefix_length(logical,NULL)) {vfs_free(logical);return 0;}
+    struct mount *m=lookup(logical);
+    if(!m || !p_equal(m->source,m->target)){vfs_free(logical);return 0;}
+    char *host=physical(logical);int same=host && p_equal(host,logical);vfs_free(host);
+    if(!same){vfs_free(logical);return 0;}
+    links_recover_path(logical);
+    if(logical_out)*logical_out=logical;else vfs_free(logical);
+    return 1;
+}
 struct proxy_open_how {uint64_t flags,mode,resolve;};
 #define PROXY_RESOLVE_NO_XDEV       0x01
 #define PROXY_RESOLVE_NO_MAGICLINKS 0x02
