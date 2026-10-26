@@ -27,7 +27,15 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private static final long LAST_WINDOW_GRACE_MS = 10_000;
     private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable launchStatusChanged = () -> runOnUiThread(() -> {
-        if (!destroyed) finish();
+        if (destroyed) return;
+        try {
+            JSONObject result=V3Launcher.getLaunchStatus();
+            if(result.has("exitCode")) {
+                message(result.optString("error","Application exited"));
+                return;
+            }
+        } catch(Exception failure) { android.util.Log.w("MatonFlatpakStub","Cannot read launch exit status",failure); }
+        finish();
     });
     private final Runnable noWindowNotice = () -> {
         if (!destroyed && window == 0) message("Application is running, but no window has appeared.");
