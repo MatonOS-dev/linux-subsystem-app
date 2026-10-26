@@ -18,28 +18,26 @@ import java.util.Map;
 public final class ExtraProbeService extends Service {
     private static final String TAG="MatonExtraProbe";
     private final IExtraProbe.Stub binder=new IExtraProbe.Stub() {
-        @Override public void run(ParcelFileDescriptor usr, ParcelFileDescriptor app) {
+        @Override public void run(ParcelFileDescriptor file) {
             int caller=Binder.getCallingUid();
             try {
                 if(caller!=getPackageManager().getApplicationInfo("org.matonos.linux",0).uid)
                     throw new SecurityException("Probe accepts calls only from the subsystem app");
             } catch(PackageManager.NameNotFoundException missing) { throw new SecurityException(missing); }
-            Thread worker=new Thread(()->execute(usr,app),"isolated-extra-probe");worker.setDaemon(true);worker.start();
+            Thread worker=new Thread(()->execute(file),"isolated-extra-probe");worker.setDaemon(true);worker.start();
         }
     };
 
     @Override public IBinder onBind(Intent intent) { return binder; }
 
-    private void execute(ParcelFileDescriptor usr,ParcelFileDescriptor app) {
-        try( ParcelFileDescriptor keepUsr=usr; ParcelFileDescriptor keepApp=app ) {
+    private void execute(ParcelFileDescriptor file) {
+        try(ParcelFileDescriptor keepFile=file) {
             int uid=Process.myUid();
             int appUid=getApplicationInfo().uid;
-            Log.i(TAG,"isolated uid="+uid+" appUid="+appUid+" ownPid="+Process.myPid()+" fileFds="+usr.getFd()+","+app.getFd());
+            Log.i(TAG,"isolated uid="+uid+" appUid="+appUid+" ownPid="+Process.myPid()+" fileFd="+file.getFd());
             if(uid==appUid) throw new SecurityException("Service is running as the subsystem UID, not an isolated UID");
-            String usrPath="/proc/"+Process.myPid()+"/fd/"+usr.getFd();
-            String appPath="/proc/"+Process.myPid()+"/fd/"+app.getFd();
-            if(!new File(usrPath).isFile()||!new File(appPath).isFile())
-                throw new IllegalArgumentException("Probe transport descriptors are not regular files");
+            String filePath="/proc/"+Process.myPid()+"/fd/"+file.getFd();
+            if(!new File(filePath).isFile())throw new IllegalArgumentException("Probe transport descriptor is not a regular file");
             probeWrite("app-cache",new File(getCacheDir(),"extra-probe-isolated-write"));
             probeWrite("data-local-tmp",new File("/data/local/tmp/extra-probe-isolated-write-"+Process.myPid()));
             probeWrite("dev-shm",new File("/dev/shm/extra-probe-isolated-write-"+Process.myPid()));
@@ -47,25 +45,26 @@ public final class ExtraProbeService extends Service {
             ArrayList<String> command=new ArrayList<>();
             command.add(LoaderCommand.loader(this).getAbsolutePath());
             command.add("--parent-pid");command.add(Integer.toString(Process.myPid()));
-            command.add("--map-ro");command.add(usrPath);command.add("/usr/probe.txt");
-            command.add("--map-ro");command.add(appPath);command.add("/app/probe.txt");
             command.add(LoaderCommand.tool(this,LoaderCommand.FLATPAK_BWRAP).getAbsolutePath());
             command.add("--unshare-net");command.add("--dir");command.add("/usr");
             command.add("--dir");command.add("/app");
-            command.add("--ro-bind");command.add("/usr/probe.txt");command.add("/usr/probe.txt");
-            command.add("--ro-bind");command.add("/app/probe.txt");command.add("/app/probe.txt");
-            command.add("--tmpfs");command.add("/scratch");
+            command.add("--tmpfs");command.add("/tmp");
+            command.add("--file");command.add("0");command.add("/tmp/probe.txt");
             command.add("--ro-bind");command.add("/system/bin/toybox");command.add("/bin/toybox");
             command.add("--proc");command.add("/proc");command.add("--dev");command.add("/dev");
             command.add("/bin/toybox");command.add("sh");command.add("-c");
-            command.add("cat /usr/probe.txt /app/probe.txt && echo scratch-write-ok > /scratch/write-test && cat /scratch/write-test");
-            Log.i(TAG,"starting v3 proxy + bwrap with regular-file-backed maps; network namespace requested");
+            command.add("cat /tmp/probe.txt && echo scratch-write-ok > /tmp/write-test && cat /tmp/write-test");
+            Log.i(TAG,"starting v3 proxy + bwrap with stdin-to-file stream; network namespace requested");
             ProcessBuilder builder=new ProcessBuilder(command).redirectErrorStream(true);
             Map<String,String> env=builder.environment();env.clear();
             String nativeDir=LoaderCommand.nativeLibraryDir(this).getAbsolutePath();
             env.put("PATH",nativeDir+":/system/bin");env.put("LD_LIBRARY_PATH",nativeDir+":/system/lib64");
             env.put("LC_ALL","C");env.put("HOME","/");env.put("TMPDIR","/tmp");
             java.lang.Process child=builder.start();
+            try(java.io.InputStream input=new ParcelFileDescriptor.AutoCloseInputStream(keepFile);
+                    java.io.OutputStream stream=child.getOutputStream()) {
+                byte[] buffer=new byte[4096];int count;while((count=input.read(buffer))!=-1)stream.write(buffer,0,count);
+            }
             try(BufferedReader output=new BufferedReader(new InputStreamReader(child.getInputStream()))) {
                 String line;while((line=output.readLine())!=null)Log.i(TAG,"child: "+line);
             }

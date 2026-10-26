@@ -21,10 +21,10 @@ Flatpak's `/app/extra` output when the ref declares extra data.
 The subsystem app's normal install process downloads refs with stock
 `flatpak install --no-deploy`. Refs with an `[Extra Data]` section are then
 deployed by stock `flatpak install --no-pull` in an
-`android:isolatedProcess="true"` service. The app passes the local Flatpak
-installation and OSTree repo as directory FDs. The service starts the
-existing compatibility loader, whose directory maps expose only those FDs to
-Flatpak. Flatpak itself runs its stock deploy and `apply_extra` bwrap path.
+`android:isolatedProcess="true"` service. The app streams the local Flatpak
+installation and a materialized OSTree repo as ustar over a pipe. The service
+extracts the stream into bwrap's writable tmpfs and runs Flatpak's stock
+deploy and `apply_extra` bwrap path there.
 The isolated service has no app permissions, network permission or Keystore
 access. It returns `/app/extra` as a ustar stream; the subsystem validates and
 extracts regular files, directories and safe relative symlinks, then builds
@@ -51,5 +51,5 @@ The subsystem device probe is started on a fresh VM with:
 ```
 
 Expected logcat output under `MatonExtraProbe` shows a UID different from the
-subsystem app and `proxy+bwrap exit=0`. The isolated deploy and local
+subsystem app, the regular-file stream contents and `proxy+bwrap exit=0`. The isolated deploy and local
 extra-data install tests are documented in the stock-extra final report.
