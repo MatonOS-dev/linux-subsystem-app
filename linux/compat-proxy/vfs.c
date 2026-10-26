@@ -434,12 +434,22 @@ struct proxy_open_how {uint64_t flags,mode,resolve;};
 static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd,char **outpath){
     if(outfd)*outfd=-1;
     if(outpath)*outpath=NULL;
-    if(fd!=AT_FDCWD || !path || path[0]!='/' || p_equal(path,"/"))return NULL;
-    for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
-        if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.'))return NULL;
+    if(!path || !*path)return NULL;
+    char *global=NULL;
+    if(path[0]=='/')global=root?join(root,path):dupstr(path);
+    else {
+        if(fd==AT_FDCWD)return NULL;
+        char *base=vfs_fd_name(fd);
+        if(!base)return NULL;
+        global=root?join(root,base):dupstr(base);
+        vfs_free(base);
+        if(global){char *next=join(global,path);vfs_free(global);global=next;}
     }
-    char *global=root?join(root,path):dupstr(path);if(!global)return NULL;
-    if((hide_resolver && (p_equal(path,"/etc/resolv.conf") ||
+    if(!global || p_equal(global,"/")){vfs_free(global);return NULL;}
+    for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
+        if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.')){vfs_free(global);return NULL;}
+    }
+    if((hide_resolver && (path[0]!='/' || p_equal(path,"/etc/resolv.conf") ||
             p_equal(path,"/run/host/monitor/resolv.conf")))){vfs_free(global);return NULL;}
     for(size_t i=0;global[i];){while(global[i]=='/')i++;size_t start=i;while(global[i]&&global[i]!='/')i++;
         if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
