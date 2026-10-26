@@ -709,7 +709,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
     char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable,1);
     uint64_t ended=proxy_count_now();
     if(started && ended>=started)proxy_count_resolution(ended-started);
-    if(answer && cacheable && identity && fd==AT_FDCWD && follow &&
+    if(answer && cacheable && fd==AT_FDCWD && follow &&
             resolve_cacheable_path(path) && key_len<PATH_MAX){
         size_t value_len=p_len(answer);
         if(value_len<PATH_MAX){
@@ -719,7 +719,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
                 resolve_cache_count++;
                 struct resolve_cache_entry *entry=&resolve_cache[slot];size_t bucket=(size_t)hash&(resolve_cache_bucket_count-1);
                 entry->valid=0;entry->follow=follow;entry->key_len=key_len;
-                entry->value_len=value_len;entry->identity=*identity;entry->hash=hash;entry->next=resolve_cache_buckets[bucket];
+                entry->value_len=value_len;entry->identity=identity?*identity:NULL;entry->hash=hash;entry->next=resolve_cache_buckets[bucket];
                 p_copy(entry->key,path,key_len+1);p_copy(entry->value,answer,value_len+1);
                 entry->valid=1;resolve_cache_buckets[bucket]=slot+1;
             }
