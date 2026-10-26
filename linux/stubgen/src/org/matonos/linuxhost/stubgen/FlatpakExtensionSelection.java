@@ -97,8 +97,9 @@ public final class FlatpakExtensionSelection {
             int equals = value.indexOf('=');
             if (current != null && equals > 0) {
                 String key = value.substring(0, equals).trim();
-                if (current.putIfAbsent(key, value.substring(equals + 1).trim()) != null)
-                    throw new IOException("Duplicate Flatpak metadata key " + key);
+                // GKeyFile (what flatpak itself uses) accepts repeated keys and keeps the last value;
+                // real runtimes (org.kde.Platform's built-extensions) rely on it.
+                current.put(key, value.substring(equals + 1).trim());
             }
         }
         return result;
