@@ -59,10 +59,8 @@ ALLOW = {
         1, "extracts a host-APK asset into the runtime directory, not staging"),
     ("PackInstaller.java", "fileinputstream"): (
         1, "streams an already-built artifact into the PackageInstaller session, not staging"),
-    ("ExtraService.java", "randomaccessfile"): (
-        1, "reads an installed pack_ split carrier (app-owned), not staging"),
     ("ExtraService.java", "fileinputstream"): (
-        1, "streams the freshly built extra APK over the result pipe, not staging"),
+        2, "reads an installed EROFS image file and streams the freshly built extra APK; neither reads staging"),
     ("ExtraService.java", "zipfile"): (
         1, "reads the installed index_ split APK (app-owned), not staging"),
     ("InstallTransaction.java", "files-copy"): (
@@ -86,7 +84,7 @@ ALLOW = {
     ("DeploymentRecord.java", "zipfile"): (
         1, "reads the installed index_ split APK (app-owned), not staging"),
     ("PackLaunch.java", "zipfile"): (
-        3, "reads installed index_/extra_ splits and the signed subsystem GL pack archive (app-owned), not staging"),
+        1, "reads installed index metadata from the PackageManager split; deployment payload files come from EROFS"),
     ("PackageDeployment.java", "zipfile"): (
         2, "reads ref/commit metadata and materializes the signed subsystem GL extension tree from an app-owned APK, not staging"),
     ("V3Launcher.java", "files-readAllBytes"): (

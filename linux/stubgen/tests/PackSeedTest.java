@@ -20,26 +20,36 @@ public final class PackSeedTest {
   } catch(NoSuchFileException missing) { return null; }
  };}
  static OstreePacks read(File repo,String rev)throws Exception{return OstreePacks.read(repo,rev,cli(repo),xattrs());}
+ static void verifyImageSeed(File root)throws Exception {
+  File image=new File(root,"mounted-image/24.08/Locale/fr");image.mkdirs();
+  byte[] payload="locale payload from installed image".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+  File source=new File(image,"messages.mo");Files.write(source.toPath(),payload);
+  String checksum=ObjectPacks.hex(java.security.MessageDigest.getInstance("SHA-256").digest(payload));
+  ObjectPacks.Entry entry=new ObjectPacks.Entry("/Locale/fr/messages.mo",checksum,"file",0100644);
+  entry.length=payload.length;entry.uid=0;entry.gid=0;entry.xattrs=new byte[0];
+  File repo=new File(root,"image-seed-repo");cli(repo).run("init","--mode=bare-user-only");
+  PackSeed.seedFromImage(Collections.singletonList(entry),new File(root,"mounted-image"),"24.08",repo,()->false);
+  File object=new File(repo,"objects/"+checksum.substring(0,2)+"/"+checksum.substring(2)+".file");
+  if(!Arrays.equals(payload,Files.readAllBytes(object.toPath())))throw new AssertionError("EROFS image update seeding failed");
+  byte[] original="original index /files prefix".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+  Files.write(new File(image,"original.mo").toPath(),original);
+  String originalChecksum=ObjectPacks.hex(java.security.MessageDigest.getInstance("SHA-256").digest(original));
+  ObjectPacks.Entry originalEntry=new ObjectPacks.Entry("/files/Locale/fr/original.mo",originalChecksum,"file",0100644);
+  originalEntry.length=original.length;originalEntry.uid=0;originalEntry.gid=0;
+  PackSeed.seedFromImage(Collections.singletonList(originalEntry),new File(root,"mounted-image"),"24.08","/files",repo,()->false);
+  File originalObject=new File(repo,"objects/"+originalChecksum.substring(0,2)+"/"+originalChecksum.substring(2)+".file");
+  if(!Arrays.equals(original,Files.readAllBytes(originalObject.toPath())))throw new AssertionError("EROFS original-index path mapping failed");
+ }
  static List<String> mount(File packs,File root)throws Exception {
-  root.mkdirs();
-   List<String> names=new ArrayList<>(),paths=new ArrayList<>();
-   for(File pack:packs.listFiles())if(pack.getName().startsWith("pack-")) {
-    String name="pack_"+pack.getName().substring(5,69);File carrier=new File(root,name+".apk");
-    boolean inherited;
-    try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(pack)){inherited=zip.getEntry("AndroidManifest.xml")!=null;}
-    // Inherited PackageInstaller splits are reused unchanged, never rewrapped.
-    if(inherited)Files.copy(pack.toPath(),carrier.toPath());else ObjectPacks.carrier(pack,carrier,new byte[]{1});
-    names.add(name);paths.add(carrier.getAbsolutePath());
-   }
-   String indexName="index_"+"0".repeat(64);File indexApk=new File(root,"index.apk");
-   try(java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(new FileOutputStream(indexApk))) {
-    zip.putNextEntry(new java.util.zip.ZipEntry("assets/matonos/objects.index"));zip.write(Files.readAllBytes(new File(packs,"objects.index").toPath()));zip.closeEntry();
-   }
-   names.add(indexName);paths.add(indexApk.getAbsolutePath());
-   return PackLaunch.arguments(indexApk,names.toArray(new String[0]),paths.toArray(new String[0]),new File(root,"mount"));
+  root.mkdirs();File carriers=new File(root,"carriers");carriers.mkdirs();
+  for(File pack:packs.listFiles())if(pack.getName().matches("pack-[0-9a-f]{64}\\.zip"))
+   Files.copy(pack.toPath(),new File(carriers,pack.getName()).toPath());
+  File index=new File(root,"objects.index");Files.copy(new File(packs,"objects.index").toPath(),index.toPath());
+  return Arrays.asList("--pack-mount","/app",index.getAbsolutePath(),carriers.getAbsolutePath());
  }
  public static void main(String[] args)throws Exception {
   File root=new File(args[0]);root.mkdirs();File source=new File(root,"source"),tree=new File(root,"tree"),packs=new File(root,"packs"),scratch=new File(root,"scratch");tree.mkdirs();File files=new File(tree,"files");files.mkdirs();Files.writeString(new File(tree,"metadata").toPath(),"[Application]\nname=org.test.App\n");
+  verifyImageSeed(root);
   cli(source).run("init","--mode=bare-user");
   byte[] large=new byte[1024*1024];new Random(42).nextBytes(large);Files.write(new File(files,"unchanged").toPath(),large);
   Files.write(new File(files,"changed").toPath(),large);Files.createSymbolicLink(new File(files,"link").toPath(),Path.of("unchanged"));

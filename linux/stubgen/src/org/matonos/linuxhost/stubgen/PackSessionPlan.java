@@ -62,7 +62,7 @@ public final class PackSessionPlan {
     private static SortedSet<String> names(Collection<String> names) throws IOException {
         SortedSet<String> result=new TreeSet<>();
         for(String name:names) {
-            if(name==null || !name.matches("(?:pack|index|extra|launcher|erofs)_[0-9a-f]{64}") || !result.add(name))
+            if(name==null || !name.matches("(?:index|extra|launcher|erofs)_[0-9a-f]{64}") || !result.add(name))
                 throw new IOException("Invalid or duplicate content split: "+name);
         }
         return result;

@@ -310,23 +310,36 @@ public final class InstallTransaction {
             if(installed.installed(ref)==null)return;
             android.content.pm.PackageInfo pkg=context.getPackageManager().getPackageInfo(
                     DeployManifest.packageForPublic(ref),0);
-            java.util.List<String> args=org.matonos.linuxhost.stubgen.PackLaunch.arguments(
-                    new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,new File(root,"seed"));
-            java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries=
-                    org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(args.get(2)));
+            android.os.IBinder imageLease=new android.os.Binder();
+            File imageRoot=new File(ErofsLaunch.mountInstalledImage(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,imageLease));
+            String imagePrefix=ref.startsWith("runtime/")?ref.substring(ref.lastIndexOf('/')+1):"";
+            File currentIndex=File.createTempFile("installed-image-",".index",root);
+            java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries;
+            try {
+                Files.write(currentIndex.toPath(),org.matonos.linuxhost.stubgen.PackLaunch.installedIndexAsset(
+                        pkg.splitNames,pkg.applicationInfo.splitSourceDirs,"objects.index"));
+                entries=org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(currentIndex);
+            } finally {currentIndex.delete();}
             long required=org.matonos.linuxhost.stubgen.PackSeed.bytes(entries,
                     new android.os.StatFs(root.getAbsolutePath()).getBlockSizeLong()),available=root.getUsableSpace();
             report("staging",-1,-1,-1,"Update base temporary bytes: "+required+"; available: "+available);
             if(required>available)throw new java.io.IOException("Insufficient space for installed update base: "+required+" bytes required, "+available+" available");
             try {
-                org.matonos.linuxhost.stubgen.PackSeed.seed(entries,new File(args.get(3)),new File(installation,"repo"),()->cancelled.get());
+                org.matonos.linuxhost.stubgen.PackSeed.seedFromImage(entries,imageRoot,imagePrefix,new File(installation,"repo"),()->cancelled.get());
                 org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
-                java.util.List<String> original=org.matonos.linuxhost.stubgen.PackLaunch.originalArguments(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,new File(root,"seed-original"));
-                java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> originalEntries=org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(original.get(2)));
+                File originalIndex=File.createTempFile("installed-original-",".index",root);
+                java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> originalEntries;
+                try {
+                    Files.write(originalIndex.toPath(),org.matonos.linuxhost.stubgen.PackLaunch.installedIndexAsset(
+                            pkg.splitNames,pkg.applicationInfo.splitSourceDirs,"original.index"));
+                    originalEntries=org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(originalIndex);
+                } finally {originalIndex.delete();}
                 long originalBytes=org.matonos.linuxhost.stubgen.PackSeed.bytes(originalEntries,new android.os.StatFs(root.getAbsolutePath()).getBlockSizeLong());
                 report("staging",-1,-1,-1,"Original update base payload budget: "+originalBytes);
                 if(originalBytes>root.getUsableSpace())throw new java.io.IOException("Insufficient space for original update base");
-                org.matonos.linuxhost.stubgen.PackSeed.seed(originalEntries,new File(original.get(3)),new File(installation,"repo"),()->cancelled.get());
+                org.matonos.linuxhost.stubgen.PackSeed.seedFromImage(originalEntries,imageRoot,imagePrefix,"/files",
+                        new File(installation,"repo"),()->cancelled.get());
+                imageLease.pingBinder(); // Hold the mounted-image lease through both seed passes.
                 for(int i=0;i<pkg.splitNames.length;i++)if(INDEX_SPLIT.matcher(pkg.splitNames[i]).matches()) {
                     try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(pkg.applicationInfo.splitSourceDirs[i])) {
                         java.util.zip.ZipEntry metadata=zip.getEntry("assets/matonos/original.ostree");

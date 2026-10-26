@@ -37,8 +37,7 @@ public final class PackInstaller implements PackSessionPlan.Installer {
         try {session=installer.openSession(id);}catch(Exception e){installer.abandonSession(id);id=-1;throw e;}
     }
     @Override public synchronized void write(String name) throws Exception {
-        File apk=new File(artifacts,name);
-        if(!name.matches("base\\.apk|(?:erofs|pack|index|extra|launcher)_[0-9a-f]{64}\\.apk") || !apk.isFile())throw new IOException("Invalid session artifact");
+        File apk=validateArtifact(artifacts,name);
         try(InputStream input=new FileInputStream(apk);OutputStream output=session.openWrite(name,0,apk.length())) {
             byte[] buffer=new byte[32768];int n;
             while((n=input.read(buffer))!=-1) {
@@ -51,6 +50,15 @@ public final class PackInstaller implements PackSessionPlan.Installer {
         // before writing the next split keeps the session from duplicating the
         // entire staged split set on disk.
         if(!apk.delete() && apk.exists())throw new IOException("Cannot release staged session artifact: "+name);
+    }
+    /** Validate the exact basename and staged file used by write(). */
+    public static File validateArtifact(File artifacts,String name) throws IOException {
+        if(artifacts==null || name==null || !name.matches("base\\.apk|(?:erofs|index|extra|launcher)_[0-9a-f]{64}\\.apk"))
+            throw new IOException("Invalid session artifact");
+        File apk=new File(artifacts,name);
+        if(!apk.isFile() || !apk.getCanonicalFile().getParentFile().equals(artifacts.getCanonicalFile()))
+            throw new IOException("Invalid session artifact");
+        return apk;
     }
     @Override public synchronized void remove(String split) throws Exception {session.removeSplit(split);}
     @Override public synchronized void commit() throws Exception {

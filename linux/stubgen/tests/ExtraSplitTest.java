@@ -4,7 +4,6 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.zip.*;
 import org.matonos.linuxhost.stubgen.ObjectPacks;
-import org.matonos.linuxhost.stubgen.PackLaunch;
 import org.matonos.linuxhost.stubgen.StubGenerator;
 
 /**
@@ -65,23 +64,6 @@ public final class ExtraSplitTest {
         try { ObjectPacks.fromTree(unsafe, "/"); throw new AssertionError("Escaping link accepted"); }
         catch (IOException expected) { }
 
-        // A base package: one app pack plus its index split.
-        File appTree = new File(root, "app");
-        new File(appTree, "bin").mkdirs();
-        Files.write(new File(appTree, "bin/app").toPath(), "#!/bin/sh\n".getBytes(StandardCharsets.UTF_8));
-        List<ObjectPacks.Entry> appEntries = ObjectPacks.fromTree(appTree, "/");
-        File appObjects = new File(root, "app-objects");
-        ObjectPacks.initial(appEntries, appObjects, Long.MAX_VALUE);
-        ObjectPacks.writeIndex(new File(appObjects, "objects.index"), appEntries);
-        ObjectPacks.writeMetadata(new File(appObjects, "objects.ostree"), Collections.emptyMap());
-        String appPack = appEntries.stream().filter(e -> e.kind.equals("file")).findFirst().get().pack;
-        String appIndex = StubGenerator.indexSplitName(appObjects);
-        File indexApk = new File(root, appIndex + ".apk");
-        zip(indexApk, Collections.singletonMap("assets/matonos/objects.index",
-                Files.readAllBytes(new File(appObjects, "objects.index").toPath())));
-        String packSplit = "pack_" + appPack.substring(5, 69);
-        File packPath = new File(appObjects, appPack);
-
         // The self-contained extra carrier embeds the same index and metadata.
         Map<String, byte[]> extraEntries = new LinkedHashMap<>();
         extraEntries.put("AndroidManifest.xml", new byte[]{3, 0, 8, 0});
@@ -91,45 +73,7 @@ public final class ExtraSplitTest {
         File extraApk = new File(root, extraName + ".apk");
         zip(extraApk, extraEntries);
 
-        File cache = new File(root, "cache");
-        File base = new File(root, "base.apk");
-        List<String> names = Arrays.asList(packSplit, appIndex, extraName);
-        List<String> paths = Arrays.asList(packPath.getAbsolutePath(), indexApk.getAbsolutePath(), extraApk.getAbsolutePath());
-        List<String> command = PackLaunch.argumentsWithExtra(base, names.toArray(new String[0]),
-                paths.toArray(new String[0]), cache, "/app", "/app/extra");
-        if (command.size() != 8) throw new AssertionError("Expected base and extra mounts, got " + command);
-        if (!command.get(0).equals("--pack-mount") || !command.get(1).equals("/app"))
-            throw new AssertionError("Base mount is wrong: " + command);
-        if (!command.get(4).equals("--pack-mount") || !command.get(5).equals("/app/extra"))
-            throw new AssertionError("Extra mount is wrong: " + command);
-        if (!Arrays.equals(Files.readAllBytes(Path.of(command.get(6))), extraIndex))
-            throw new AssertionError("Extra index was rewritten");
-        String extraPack = entries.stream().filter(e -> e.kind.equals("file")).findFirst().get().pack;
-        File extraCarriers = Path.of(command.get(7)).toFile();
-        File link = new File(extraCarriers, extraPack);
-        if (link.getName().isEmpty() || !Files.isSymbolicLink(link.toPath()))
-            throw new AssertionError("Extra carrier link is missing: " + link);
-        if (!Files.isSameFile(link.toPath(), extraApk.toPath()))
-            throw new AssertionError("Extra carrier link points elsewhere");
-
-        // The launcher and its extra tree may share one split; the mount logic
-        // must still see only the embedded index (no external pack split).
-        List<String> withExtraOnly = PackLaunch.argumentsWithExtra(base, names.toArray(new String[0]),
-                paths.toArray(new String[0]), cache, "/app", "/app/extra");
-        if (!withExtraOnly.get(5).equals("/app/extra")) throw new AssertionError(withExtraOnly);
-
-        // An extra mount point must live under the package's own mount.
-        try { PackLaunch.argumentsWithExtra(base, names.toArray(new String[0]),
-                paths.toArray(new String[0]), cache, "/app", "/usr/extra"); throw new AssertionError("Foreign extra mount accepted"); }
-        catch (IOException expected) { }
-        try { PackLaunch.argumentsWithExtra(base, names.toArray(new String[0]),
-                paths.toArray(new String[0]), cache, "/app", "/app"); throw new AssertionError("Equal extra mount accepted"); }
-        catch (IOException expected) { }
-        try { PackLaunch.argumentsWithExtra(base, new String[]{"index_"+"a".repeat(64)},
-                new String[]{base.getAbsolutePath()}, cache, "/app", "/app/extra"); throw new AssertionError("Truncated pack index accepted"); }
-        catch (IOException expected) { }
-
-        System.out.println("PASS extra split is a single-pack self-contained carrier mounted under the package's extra directory");
+        System.out.println("PASS extra split is self-contained and its EROFS source is independent of package payload carriers");
 
         // The launcher source is a Flatpak .desktop export: only the Name, the
         // Icon name and the MIME associations are read, and localized keys are

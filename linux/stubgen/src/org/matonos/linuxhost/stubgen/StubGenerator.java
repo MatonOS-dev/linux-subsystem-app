@@ -271,27 +271,6 @@ public final class StubGenerator {
         }
     }
 
-    /** Builds a code-free split named for the immutable content ZIP hash.
-     * Indexed offsets survive manifest insertion and v2/v3 signing. */
-    public static File generatePack(File workDir, String packageName, File pack, File output) throws Exception {
-        return generatePack(workDir,packageName,pack,output,0);
-    }
-    public static File generatePack(File workDir, String packageName, File pack, File output,int revision) throws Exception {
-        if(revision<0)throw new IllegalArgumentException("Negative split revision");
-        if(!packageName.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"))
-            throw new IllegalArgumentException("Invalid package name");
-        String name=pack.getName();
-        if(!name.matches("pack-[0-9a-f]{64}\\.zip"))throw new IllegalArgumentException("Invalid pack name");
-        String split="pack_"+name.substring(5,69);
-        BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
-        encoder.revisionCode=revision;
-        File unsigned=File.createTempFile("matonos-pack-",".apk",workDir);
-        try {
-            ObjectPacks.carrier(pack,unsigned,encoder.packManifest(split));
-            sign(unsigned,output);return output;
-        } finally {unsigned.delete();}
-    }
-
     /** Builds a signed split carrying one stored, page-aligned EROFS deployment.
      * The split metadata is inside the signed APK and lets mountd locate the
      * bytes from the ZIP local header without extracting the image. */

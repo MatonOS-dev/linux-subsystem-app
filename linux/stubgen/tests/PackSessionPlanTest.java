@@ -2,7 +2,7 @@ import org.matonos.linuxhost.stubgen.PackSessionPlan;
 import java.util.*;
 
 public class PackSessionPlanTest {
-    static String a="pack_"+"a".repeat(64), b="pack_"+"b".repeat(64), c="pack_"+"c".repeat(64);
+    static String a="erofs_"+"a".repeat(64), b="erofs_"+"b".repeat(64), c="erofs_"+"c".repeat(64);
     static List<String> list(String... s){return Arrays.asList(s);}
     static void check(boolean value){if(!value)throw new AssertionError();}
     interface Action {void run() throws Exception;}
@@ -51,6 +51,7 @@ public class PackSessionPlanTest {
         rejects(()->PackSessionPlan.create(false,0,1,list(),list(a),list(),true));
         rejects(()->PackSessionPlan.create(true,1,1,list(a,a),list(a),list(),true));
         rejects(()->PackSessionPlan.create(true,1,1,list(a),list("../bad"),list(),true));
+        rejects(()->PackSessionPlan.create(true,1,1,list(),list("pack_"+"f".repeat(64)),list("pack_"+"f".repeat(64)),true));
         rejects(()->PackSessionPlan.create(false,0,1,list(),list(),list(),false));
         String ix="index_"+"d".repeat(64), next="index_"+"e".repeat(64);
         PackSessionPlan index=PackSessionPlan.create(true,17,17,list(a,ix),list(a,next),list(next),false);

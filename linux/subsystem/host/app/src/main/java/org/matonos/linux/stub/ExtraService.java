@@ -11,7 +11,6 @@ import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.util.Log;
-import org.matonos.linuxhost.stubgen.PackLaunch;
 import org.matonos.linuxhost.stubgen.StubGenerator;
 
 import java.io.BufferedReader;
@@ -21,7 +20,6 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -38,7 +36,7 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The mount point comes from the service's own {@code EXTRA_MOUNT}
  * metadata ({@code /app} for apps, the runtime's mount point otherwise). The
- * package's packs are mounted read-only there through the v3 loader and its
+ * package's EROFS image is mounted read-only there and its
  * raw downloads are copied into a writable directory mapped over
  * {@code <mount>/extra}, exactly where Flatpak's deploy-time step would have
  * put them. The script then runs with that directory as its working
@@ -74,12 +72,14 @@ public final class ExtraService extends Service {
                 ApplicationInfo info = getApplicationInfo();
                 java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> index =
                         org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(readIndex(info));
-                Map<String, String> carriers = carriers(info);
                 if (!hasExtra(index)) {
                     stream.write(ExtraProtocol.STATUS_NONE);
                     return;
                 }
-                materialize(index, carriers, work);
+                String image=ErofsLaunch.mountInstalledImage(info.splitNames,info.splitSourceDirs,new Binder());
+                String ref=packageRef();
+                String imagePrefix=ref.startsWith("runtime/")?ref.substring(ref.lastIndexOf('/')+1):"";
+                materialize(index,new File(image),imagePrefix,work);
                 if (hasFile(index, "/bin/apply_extra")) runApplyExtra(work);
                 File objects = packApplied(work);
                 String split = StubGenerator.extraSplitName(objects);
@@ -123,7 +123,9 @@ public final class ExtraService extends Service {
             if (entry.path.equals(path) && entry.kind.equals("file")) return true;
         return false;
     }
-    private static void materialize(java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> index, Map<String,String> carriers, File destination) throws IOException {
+    private static void materialize(java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> index,
+            File imageRoot,String imagePrefix,File destination) throws IOException {
+        File root=imageRoot.getCanonicalFile();
         for (org.matonos.linuxhost.stubgen.ObjectPacks.Entry entry : index) {
             String path=entry.path;
             if (!path.equals("/extra") && !path.startsWith("/extra/")) continue;
@@ -135,11 +137,14 @@ public final class ExtraService extends Service {
                 if(link.isAbsolute())throw new IOException("Unsafe extra-data link");
                 java.nio.file.Files.createSymbolicLink(target.toPath(),link);
             } else if(entry.kind.equals("file")) {
-                File carrier=new File(carriers.get(entry.pack));
-                try(java.io.RandomAccessFile in=new java.io.RandomAccessFile(carrier,"r");
+                String relative=(imagePrefix==null||imagePrefix.isEmpty()?"":imagePrefix+"/")+path.substring(1);
+                File source=new File(root,relative).getCanonicalFile();
+                if(!source.toPath().startsWith(root.toPath())||!source.isFile()||source.length()!=entry.length)
+                    throw new IOException("Missing installed EROFS extra file: "+path);
+                File parent=target.getParentFile();if(parent!=null&&!parent.isDirectory()&&!parent.mkdirs())throw new IOException("Cannot create extra-data parent");
+                try(java.io.InputStream in=new java.io.FileInputStream(source);
                     java.io.OutputStream out=new java.io.FileOutputStream(target)) {
-                    in.seek(entry.offset); byte[] buffer=new byte[65536]; long left=entry.length;
-                    while(left>0){int count=in.read(buffer,0,(int)Math.min(buffer.length,left));if(count<0)throw new IOException("Truncated extra payload");out.write(buffer,0,count);left-=count;}
+                    byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);
                 }
                 if((entry.mode&0111)!=0)target.setExecutable(true,true);
             }
@@ -233,17 +238,14 @@ public final class ExtraService extends Service {
             try (java.io.InputStream in = zip.getInputStream(entry)) { return in.readAllBytes(); }
         }
     }
-
-    /** Indexed pack name to the installed {@code pack_} split that carries it. */
-    private static Map<String, String> carriers(ApplicationInfo info) throws IOException {
-        Map<String, String> carriers = new HashMap<>();
-        String[] names = info.splitNames;
-        String[] paths = info.splitSourceDirs;
-        if (names == null || paths == null) return carriers;
-        for (int i = 0; i < names.length && i < paths.length; i++)
-            if (names[i].matches("pack_[0-9a-f]{64}"))
-                carriers.put("pack-" + names[i].substring(5) + ".zip", paths[i]);
-        return carriers;
+    private String packageRef() throws IOException {
+        try {
+            android.content.pm.ServiceInfo info=getPackageManager().getServiceInfo(
+                    new android.content.ComponentName(this,ExtraService.class),PackageManager.GET_META_DATA);
+            String ref=info.metaData==null?null:info.metaData.getString(StubGenerator.REF_META);
+            if(ref==null)throw new IOException("Missing installed package ref");
+            return ref;
+        } catch(PackageManager.NameNotFoundException missing) { throw new IOException("Package ref metadata is unavailable",missing); }
     }
 
     private String mountPoint() throws IOException {

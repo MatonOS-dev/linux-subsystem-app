@@ -43,5 +43,47 @@ public final class PackSeed {
             }finally{Files.deleteIfExists(temp);}
         }
     }
+    /** Seed canonical OSTree file objects from the package's installed, mounted EROFS image. */
+    public static void seedFromImage(List<ObjectPacks.Entry> entries,File imageRoot,String imagePrefix,
+            File repo,java.util.function.BooleanSupplier cancelled)throws Exception {
+        seedFromImage(entries,imageRoot,imagePrefix,"",repo,cancelled);
+    }
+    /** Optional source-root stripping maps OSTree original-index {@code /files/...} paths to deployment paths. */
+    public static void seedFromImage(List<ObjectPacks.Entry> entries,File imageRoot,String imagePrefix,
+            String sourcePrefix,File repo,java.util.function.BooleanSupplier cancelled)throws Exception {
+        Path root=imageRoot.getCanonicalFile().toPath();
+        String prefix=imagePrefix==null||imagePrefix.isEmpty()?"":imagePrefix;
+        if(!prefix.isEmpty()&&!prefix.matches("[A-Za-z0-9_.+-]+"))throw new IOException("Invalid EROFS image prefix");
+        if(sourcePrefix==null||(!sourcePrefix.isEmpty()&&!sourcePrefix.matches("/(?:[A-Za-z0-9_.+-]+/?)*")))
+            throw new IOException("Invalid installed image source prefix");
+        for(ObjectPacks.Entry e:entries) {
+            if(cancelled.getAsBoolean())throw new IOException("Update cancelled");
+            if(!eligible(e))continue;
+            Path target=new File(repo,"objects/"+e.checksum.substring(0,2)+"/"+e.checksum.substring(2)+".file").toPath();
+            if(Files.exists(target,LinkOption.NOFOLLOW_LINKS))continue;
+            Files.createDirectories(target.getParent());
+            if(e.kind.equals("symlink")){Files.createSymbolicLink(target,Path.of(e.target));continue;}
+            if(e.path==null||!e.path.startsWith("/")||e.path.contains("..")
+                    ||(!sourcePrefix.isEmpty()&&!e.path.startsWith(sourcePrefix+"/")))
+                throw new IOException("Invalid installed image path");
+            String imagePath=sourcePrefix.isEmpty()?e.path:e.path.substring(sourcePrefix.length());
+            String relative=(prefix.isEmpty()?"":prefix+"/")+imagePath.substring(1);
+            Path source=root.resolve(relative).normalize().toFile().getCanonicalFile().toPath();
+            if(!source.startsWith(root)||!Files.isRegularFile(source)||Files.size(source)!=e.length)
+                throw new IOException("Installed EROFS image lacks indexed file: "+e.path);
+            Path temp=Files.createTempFile(target.getParent(),"seed-",".tmp");
+            try {
+                try(InputStream input=PlaceholderFiles.open(source.toFile());OutputStream output=Files.newOutputStream(temp)) {
+                    byte[] buffer=new byte[65536];int count;
+                    while((count=input.read(buffer))!=-1) {
+                        if(cancelled.getAsBoolean())throw new IOException("Update cancelled");
+                        output.write(buffer,0,count);
+                    }
+                }
+                Files.setPosixFilePermissions(temp,PosixFilePermissions.fromString(e.mode==0100755?"rwxr-xr-x":"rw-r--r--"));
+                Files.move(temp,target,StandardCopyOption.ATOMIC_MOVE);
+            } finally {Files.deleteIfExists(temp);}
+        }
+    }
     private PackSeed(){}
 }

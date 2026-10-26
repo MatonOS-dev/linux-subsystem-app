@@ -51,18 +51,11 @@ public final class PackCarrierTest {
   Process lp=new ProcessBuilder(args[1],"dump","xmltree",launcherManifest.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String lxml=new String(lp.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(lp.waitFor()!=0||!lxml.contains("E: activity-alias")||!lxml.contains("targetActivity(0x01010202)=\"org.matonos.linux.stub.StubActivity\"")||!lxml.contains("split=\""+launcherSplit+"\"")||!lxml.contains("label(0x01010001)=\"Editor\"")||!lxml.contains("icon(0x01010002)=@0x7f020000")||!lxml.contains("android.intent.category.LAUNCHER")||!lxml.contains("android.intent.action.VIEW")||!lxml.contains("mimeType(0x01010026)=\"text/plain\"")||!lxml.contains("mimeType(0x01010026)=\"image/png\""))throw new AssertionError("Launcher split manifest is wrong\n"+lxml);
-  Method pm=manifest.getDeclaredMethod("packManifest",String.class);pm.setAccessible(true);
-  String split="pack_"+row.pack.substring(5,69);
-  File unsigned=new File(dir,"pack-unsigned.apk"),signed=new File(dir,"pack-signed.apk");
-  ObjectPacks.carrier(new File(dir,row.pack),unsigned,(byte[])pm.invoke(encoder,split));
   PrivateKey key=KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(Files.readAllBytes(new File(dir,"key.der").toPath())));
   X509Certificate cert=(X509Certificate)CertificateFactory.getInstance("X.509").generateCertificate(new FileInputStream(new File(dir,"cert.pem")));
   Class<?> material=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$KeyMaterial");
   Constructor<?> kc=material.getDeclaredConstructor(PrivateKey.class,X509Certificate.class);kc.setAccessible(true);
   Method sign=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator").getDeclaredMethod("sign",File.class,File.class,material);sign.setAccessible(true);
-  sign.invoke(null,unsigned,signed,kc.newInstance(key,cert));
-  ApkVerifier.Result result=new ApkVerifier.Builder(signed).setMinCheckedPlatformVersion(30).build().verify();
-  if(!result.isVerified())throw new AssertionError(result.getErrors().toString());
   File erofsUnsigned=org.matonos.linuxhost.stubgen.StubGenerator.generateErofsPackUnsigned(
           dir,"flatpak.org.example.Test",payload,44);
   File erofsSigned=new File(dir,"erofs-signed.apk");sign.invoke(null,erofsUnsigned,erofsSigned,kc.newInstance(key,cert));
@@ -87,17 +80,6 @@ public final class PackCarrierTest {
    if(!new ApkVerifier.Builder(erofsSigned).setMinCheckedPlatformVersion(30).build().verify().isVerified())throw new AssertionError("EROFS split signature");
   }
   Files.deleteIfExists(erofsUnsigned.toPath());
-  try(RandomAccessFile f=new RandomAccessFile(signed,"r");ZipFile zip=new ZipFile(signed)) {
-   f.seek(0);byte[] header=new byte[30];f.readFully(header);
-   int names=(header[26]&255)|((header[27]&255)<<8),extra=(header[28]&255)|((header[29]&255)<<8);
-   if(30+names+extra!=row.offset || row.offset%4096!=0)throw new AssertionError("Signer moved indexed payload");
-   if(zip.getEntry(row.checksum).getMethod()!=ZipEntry.STORED)throw new AssertionError("Compressed payload");
-   byte[] bytes=new byte[(int)row.length];f.seek(row.offset);f.readFully(bytes);
-   if(!Arrays.equals(bytes,Files.readAllBytes(payload.toPath())))throw new AssertionError("Payload slice changed");
-  }
-  Process p=new ProcessBuilder(args[1],"dump","xmltree",signed.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
-  String xml=new String(p.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-  if(p.waitFor()!=0 || !xml.contains("split=\""+split+"\"") || !xml.contains("hasCode(0x0101000c)=false") || !xml.contains("revisionCode(0x010104d5)=42"))throw new AssertionError(xml);
   // Multi-entry carrier: embedded index/metadata and a raster icon must not move the payload.
   java.util.Map<String,byte[]> entries=new java.util.LinkedHashMap<>();
   entries.put("AndroidManifest.xml",(byte[])lm.invoke(encoder,launcherSplit,"Editor",Collections.singletonList("text/plain"),0x7f020000));
@@ -122,10 +104,10 @@ public final class PackCarrierTest {
   if(decoded.size()!=1 || !decoded.get(0).pack.equals(row.pack) || decoded.get(0).offset!=row.offset)throw new AssertionError("Index round trip");
   File installedDir=new File(dir,"installed-carriers"),updatedDir=new File(dir,"updated-carriers");installedDir.mkdirs();
   Files.deleteIfExists(new File(installedDir,row.pack).toPath());
-  Files.createSymbolicLink(new File(installedDir,row.pack).toPath(),signed.toPath().toAbsolutePath());
+  Files.createSymbolicLink(new File(installedDir,row.pack).toPath(),multi.toPath().toAbsolutePath());
   ObjectPacks.Entry fresh=new ObjectPacks.Entry(row.path,row.checksum,row.kind,row.mode);fresh.source=payload;
   ObjectPacks.update(Collections.singletonList(fresh),decoded,installedDir,updatedDir,0.5);
-  if(!fresh.pack.equals(row.pack) || fresh.offset!=row.offset || !Arrays.equals(Files.readAllBytes(new File(updatedDir,row.pack).toPath()),Files.readAllBytes(signed.toPath())))throw new AssertionError("Installed APK carrier reuse");
+  if(!fresh.pack.equals(row.pack) || fresh.offset!=row.offset || !Arrays.equals(Files.readAllBytes(new File(updatedDir,row.pack).toPath()),Files.readAllBytes(multi.toPath())))throw new AssertionError("Installed APK carrier reuse");
   Files.write(new File(dir,"objects.ostree").toPath(),new byte[0]);
   byte[] commitObject=new byte[]{1,9,2};
   String commit=ObjectPacks.hex(MessageDigest.getInstance("SHA-256").digest(commitObject));
@@ -147,39 +129,21 @@ public final class PackCarrierTest {
   org.matonos.linuxhost.stubgen.DeploymentRecord installedRecord=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
           new String[]{indexName},new String[]{base.getAbsolutePath()});
   if(!installedRecord.ref.equals(record.ref)||!Arrays.equals(installedRecord.commitObject,commitObject))throw new AssertionError("Signed index lost its deployment record");
-  List<String> original=PackLaunch.originalArguments(new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"original-cache"));
-  if(!Arrays.equals(Files.readAllBytes(Path.of(original.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Original index changed");
+  byte[] original=PackLaunch.installedIndexAsset(new String[]{indexName},new String[]{base.getAbsolutePath()},"original.index");
+  if(!Arrays.equals(original,Files.readAllBytes(index.toPath())))throw new AssertionError("Original index changed");
+  byte[] installedIndex=PackLaunch.installedIndexAsset(new String[]{indexName},new String[]{base.getAbsolutePath()},"objects.index");
+  if(!Arrays.equals(installedIndex,Files.readAllBytes(index.toPath())))throw new AssertionError("Installed index changed");
   try(ZipFile zip=new ZipFile(base)){if(zip.getEntry("assets/matonos/original.ostree")==null)throw new AssertionError("Signed index lost original metadata");}
   Process ip=new ProcessBuilder(args[1],"dump","xmltree",base.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String ix=new String(ip.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(ip.waitFor()!=0 || !ix.contains("split=\""+indexName+"\"") || !ix.contains("revisionCode(0x010104d5)=43"))throw new AssertionError(ix);
-  List<String> command=org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
   File deploymentFiles=new File(dir,"app/org.example.App/x86_64/stable/commit/files").getAbsoluteFile();
   List<String> backing=PackLaunch.backingArguments("/app",deploymentFiles);
   if(!backing.equals(Arrays.asList("--erofs-backing","/app",deploymentFiles.toString())))throw new AssertionError(backing);
   if(!PackLaunch.backingArguments(deploymentFiles.toString(),deploymentFiles).get(2).equals(deploymentFiles.toString()))throw new AssertionError("Identity backing");
   try {PackLaunch.backingArguments("/app",new File("relative/files"));throw new AssertionError("Relative backing accepted");}
   catch(IOException expected){}
-  if(command.size()!=4||!command.get(0).equals("--pack-mount")||!command.get(1).equals("/app"))throw new AssertionError(command);
-  if(!PackLaunch.arguments(base,new String[]{split,indexName},new String[]{signed.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"),"/usr").get(1).equals("/usr"))throw new AssertionError("custom runtime mount point");
-  if(!Files.isSameFile(Path.of(command.get(3),row.pack),signed.toPath()))throw new AssertionError("Wrong carrier resolution");
-  if(!Arrays.equals(Files.readAllBytes(Path.of(command.get(2))),Files.readAllBytes(index.toPath())))throw new AssertionError("Index changed");
-  File extensionArchive=new File(dir,"host-extension.apk");
-  try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(extensionArchive))) {
-   z.putNextEntry(new ZipEntry("assets/gl-maton/objects.index"));z.write(Files.readAllBytes(index.toPath()));z.closeEntry();
-   z.putNextEntry(new ZipEntry("assets/gl-maton/"+row.pack));z.write(Files.readAllBytes(new File(dir,row.pack).toPath()));z.closeEntry();
-  }
-  List<String> extension=PackLaunch.argumentsFromArchive(extensionArchive,"assets/gl-maton",new File(dir,"extension-cache"),"/usr/lib/x86_64-linux-gnu/GL/maton");
-  if(!extension.get(1).equals("/usr/lib/x86_64-linux-gnu/GL/maton")||!Files.isRegularFile(Path.of(extension.get(3),row.pack)))throw new AssertionError("APK extension pack was not mounted");
-  try {
-   org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,new String[]{"index_"+"b".repeat(64),"index_"+"c".repeat(64)},new String[]{base.getAbsolutePath(),base.getAbsolutePath()},new File(dir,"cache"));
-   throw new AssertionError("Duplicate index accepted");
-  } catch(IOException expected) { }
-  try {
-   org.matonos.linuxhost.stubgen.PackLaunch.arguments(base,null,null,new File(dir,"cache"));
-   throw new AssertionError("Missing split accepted");
-  } catch(IOException expected) { }
-  System.out.println("PASS launcher resolves PackageManager split names/paths, index and custom mount arguments; missing split rejected");
-  System.out.println("PASS signed code-free pack manifest, content hash name, STORED 4096 alignment and indexed slice");
+  System.out.println("PASS image launch backing arguments and installed index metadata resolution");
+  System.out.println("PASS signed EROFS image and index metadata splits; legacy pack split producer removed");
  }
 }

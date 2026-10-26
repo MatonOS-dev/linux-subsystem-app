@@ -78,15 +78,12 @@ public final class StagedPacks {
         long imageBytes=imageResult.image.imageSize;
         Log.i("MatonInstall","phase=mkfs_total ref="+manifest.optString("ref","unknown")+" ms="+
                 java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-mkfsStarted)+" bytes="+imageBytes);
-        if(installed==null || installed.getLongVersionCode()!=org.matonos.linuxhost.stubgen.StubGenerator.STUB_VERSION_CODE) {
-            org.matonos.linuxhost.stubgen.ObjectPacks.initial(payloads,output,org.matonos.linuxhost.stubgen.ObjectPacks.DEFAULT_PACK_SIZE);
-        } else {
-            List<String> args=org.matonos.linuxhost.stubgen.PackLaunch.arguments(new File(installed.applicationInfo.sourceDir),
-                    installed.splitNames,installed.applicationInfo.splitSourceDirs,new File(output.getParentFile(),"installed"));
-            org.matonos.linuxhost.stubgen.ObjectPacks.update(payloads,
-                    org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(new File(args.get(2))),
-                    new File(args.get(3)),output,0.5);
-        }
+        // The prior release's payloads live in its mounted EROFS image, not in
+        // pack_ APK carriers. Reuse matching file sources above while building
+        // the new single image; this metadata pack index is regenerated from
+        // the newly staged tree for extra-data and update bookkeeping.
+        org.matonos.linuxhost.stubgen.ObjectPacks.initial(payloads,output,
+                org.matonos.linuxhost.stubgen.ObjectPacks.DEFAULT_PACK_SIZE);
         org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"objects.index"),fresh.entries);
         org.matonos.linuxhost.stubgen.ObjectPacks.writeMetadata(new File(output,"objects.ostree"),fresh.metadata);
         org.matonos.linuxhost.stubgen.ObjectPacks.writeIndex(new File(output,"original.index"),original.entries);
