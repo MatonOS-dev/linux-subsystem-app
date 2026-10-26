@@ -17,12 +17,6 @@ javac -d "$OUT/flatpak-output" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/FlatpakOutput.java" \
   "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/FlatpakOutputTest.java"
 java -cp "$OUT/flatpak-output" org.matonos.linux.stub.FlatpakOutputTest
-mkdir -p "$OUT/extra-tar"
-javac -d "$OUT/extra-tar" \
-  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
-  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/TarStream.java" \
-  "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/TarStreamHostTest.java"
-java -cp "$OUT/extra-tar" org.matonos.linux.stub.TarStreamHostTest
 mkdir -p "$OUT/extra-image-validator"
 javac -d "$OUT/extra-image-validator" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/ExtraImageValidator.java" \

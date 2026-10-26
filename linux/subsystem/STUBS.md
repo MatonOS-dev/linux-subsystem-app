@@ -8,8 +8,8 @@ mechanism. The per-device signing key is held by Android Keystore.
 ## Package contents
 
 The base APK contains the host shared-library declaration, `StubActivity`,
-install/update activities, `StubService`, Flatpak identity metadata and an
-empty valid `classes.dex`. The base has no launcher filter. A code-free
+install/update activities, `StubService`, Flatpak identity metadata and the
+extra-data install service when needed. The base has no launcher filter. A code-free
 `launcher_<sha256>` split carries the launcher alias, label, MIME filters and
 icon. The `index_<sha256>` split carries object indexes and OSTree metadata;
 content uses `pack_<sha256>` carrier splits. One signed EROFS image split
@@ -18,22 +18,21 @@ Flatpak's `/app/extra` output when the ref declares extra data.
 
 ## Install and extra-data flow
 
-The subsystem app's normal install process downloads refs with stock
-`flatpak install --no-deploy`. Refs with an `[Extra Data]` section are then
-deployed by stock `flatpak install --no-pull` in an
-`android:isolatedProcess="true"` service. The app streams the local Flatpak
-installation and a materialized OSTree repo as ustar over a pipe. The service
-extracts the stream into bwrap's writable tmpfs and runs Flatpak's stock
-deploy and `apply_extra` bwrap path there.
-The isolated service has no app permissions, network permission or Keystore
-access. It returns `/app/extra` as a ustar stream; the subsystem validates and
-extracts regular files, directories and safe relative symlinks, then builds
-the EROFS image itself. It never imports an image or filesystem ownership,
-xattrs or timestamps from that process.
+The subsystem app first pulls and authenticates the commit with
+`flatpak install --no-deploy`. For refs with `[Extra Data]`, it installs a
+small signed stub with no launcher entry or app icon. That stub runs stock
+`flatpak install` under the package UID, including Flatpak's own bwrap
+`apply_extra` path, then builds the single EROFS image with the same mkfs
+options as the subsystem. It returns the image through a file descriptor.
 
-Refs without extra data keep the existing in-subsystem deploy. Extra-data
-output is already present before launcher metadata is selected and before the
-single image is built; there is no per-package extra service or extra split.
+The subsystem extracts the image with the pinned `fsck.erofs` and compares
+every path outside `/app/extra` against the authenticated OSTree commit
+(file checksum, mode and symlink target). Under `/app/extra` it accepts only
+regular files, directories and non-escaping relative symlinks without
+setuid/setgid bits. It then uses that validated image in the normal EROFS
+split and reads launcher metadata from the extracted deployment, including
+extra-data exports. Refs without extra data keep the existing in-subsystem
+deploy path.
 
 ## Host interface and tests
 
@@ -42,14 +41,14 @@ the per-app runtime; the subsystem app owns install and update actions.
 
 `linux/stubgen` generates signed stubs and code-free launcher/index/image
 splits. Its host harness uses AOSP's `aapt2` to parse generated manifests.
-The subsystem device probe is started on a fresh VM with:
+The end-to-end extra-data test is an ordinary store install of Flathub's
+`com.google.Chrome`. On a fresh userdebug image, set
+`persist.vendor.maton.sleep_idle_s` to `0`, install Chrome from the store,
+confirm the install finishes, inspect the package's one EROFS image for
+`/app/extra`, launch it and confirm its extra-data resources load. Repeat
+after uninstall/reinstall to cover cleanup. Host validator tests cover a good
+image and reject a changed committed file, setuid content and escaping
+symlink.
 
-```sh
-/mnt/data/aosp/out/host/linux-x86/bin/adb -s 127.0.0.1:5556 shell am start \
-  -n org.matonos.linux/.stub.ExtraProbeActivity \
-  -a org.matonos.linux.DEBUG_EXTRA_PROBE
-```
-
-Expected logcat output under `MatonExtraProbe` shows a UID different from the
-subsystem app, the regular-file stream contents and `proxy+bwrap exit=0`. The isolated deploy and local
-extra-data install tests are documented in the stock-extra final report.
+The package install itself exercises the returned file descriptor and the
+package-specific UID. No isolated-process probe remains.
