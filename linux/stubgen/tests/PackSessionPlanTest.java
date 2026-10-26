@@ -57,6 +57,23 @@ public class PackSessionPlanTest {
         check(index.write.equals(list(next+".apk")) && index.remove.equals(list(ix)));
         PackSessionPlan full=PackSessionPlan.create(true,17,18,list(a,ix),list(a,next),list(a,next),true);
         check(full.mode==PackSessionPlan.Mode.FULL && full.remove.isEmpty());
+        java.io.File imageA=java.io.File.createTempFile("erofs-a-",".img"),imageB=java.io.File.createTempFile("erofs-b-",".img");
+        try {
+            byte[] imageContents="identical deterministic EROFS image".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            java.nio.file.Files.write(imageA.toPath(),imageContents);java.nio.file.Files.write(imageB.toPath(),imageContents);
+            String erofs=org.matonos.linuxhost.stubgen.StubGenerator.erofsSplitName(imageA);
+            check(erofs.equals(org.matonos.linuxhost.stubgen.StubGenerator.erofsSplitName(imageB)));
+            // Split names are scoped to one PackageInstaller package. Identical
+            // images in the app and a dependency therefore remain valid.
+            PackSessionPlan app=PackSessionPlan.create(false,0,1,list(),list(erofs),list(erofs),true);
+            PackSessionPlan dependency=PackSessionPlan.create(false,0,1,list(),list(erofs),list(erofs),true);
+            check(app.write.equals(list("base.apk",erofs+".apk")));
+            check(dependency.write.equals(list("base.apk",erofs+".apk")));
+            // Reusing an installed EROFS split must keep it without rewriting it.
+            PackSessionPlan retained=PackSessionPlan.create(true,1,1,list(erofs),list(erofs),list(),false);
+            check(retained.mode==PackSessionPlan.Mode.INHERIT && retained.write.isEmpty() && retained.remove.isEmpty());
+            rejects(()->PackSessionPlan.create(false,0,1,list(),list(erofs,erofs),list(erofs),true));
+        } finally {imageA.delete();imageB.delete();}
         check(PackSessionPlan.nextRevision(17,17,0,new int[]{2,5,3})==6);
         check(PackSessionPlan.nextRevision(17,18,0,new int[]{Integer.MAX_VALUE})==1);
         rejects(()->PackSessionPlan.nextRevision(17,17,0,new int[]{Integer.MAX_VALUE}));
