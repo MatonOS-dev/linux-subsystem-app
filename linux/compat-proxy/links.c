@@ -360,14 +360,35 @@ end:if(lock>=0)unlock(lock);return r;
 static void refresh(const char *object){char root[PATH_MAX],store[PATH_MAX];size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock>=0){if(!recover(root,store)){struct proxy_stat st;if(!arch_stat_at(AT_FDCWD,object,&st,0))ensure_count(root,store,object);}unlock(lock);}}
 void links_recover_path(const char *path){char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;if(!tree(root,path) || !catpath(store,root,".v3-inodes") || arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return;long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock);}}
 /* Only regular files can be store objects; skip the /proc lookup for the rest. */
-void links_fd_stat(int fd,struct proxy_stat *st){if(!S_ISREG(st->st_mode))return;char proc[80]="/proc/self/fd/",path[PATH_MAX];size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-1,0,0);if(n>0){path[n]=0;links_stat(path,st);}}
+static char *fd_path(int fd,uint64_t dev,uint64_t ino){
+ char *tracked=vfs_fd_name_identity(fd,dev,ino);if(tracked)return tracked;
+ char proc[80]="/proc/self/fd/",path[PATH_MAX];size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;
+ long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-1,0,0);
+ if(n<=0)return NULL;
+ path[n]=0;size_t length=(size_t)n+1;char *copy=vfs_alloc(length);
+ if(copy)p_copy(copy,path,length);
+ return copy;
+}
+void links_fd_stat(int fd,struct proxy_stat *st){
+ if(!S_ISREG(st->st_mode))return;
+ char *path=fd_path(fd,(uint64_t)st->st_dev,(uint64_t)st->st_ino);
+ if(path){links_stat(path,st);vfs_free(path);}
+}
 void links_stat(const char *object,struct proxy_stat *st){if(component(object) && S_ISREG(st->st_mode)){refresh(object);st->st_nlink=read_count(object);}}
 static long dents_locked(long fd,void *buf,long size){
  long n;do{n=RAW(PROXY_SC_getdents64,fd,buf,size,0,0,0);if(n<=0)return n;long used=0;for(long off=0;off<n;){unsigned char *d=(unsigned char *)buf+off;unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n)return -EIO;char *name=(void *)(d+19);if(!p_equal(name,".v3-inodes")){for(unsigned short i=0;i<len;i++)((unsigned char *)buf)[used+i]=d[i];used+=len;}off+=len;}if(used)return used;}while(n>0);return n;
 }
 long links_dents(long fd,void *buf,long size){
- char proc[80]="/proc/self/fd/",path[PATH_MAX],root[PATH_MAX],store[PATH_MAX];size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;long lock=-1,n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-3,0,0);struct proxy_stat st;
- if(n>0){path[n++]='/';path[n++]='.';path[n]=0;if(tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock);return r;}}}
+ char path[PATH_MAX],root[PATH_MAX],store[PATH_MAX];long lock=-1;struct proxy_stat st,fdst;
+ char *tracked=vfs_fd_name_cached((int)fd);
+ if(!tracked && !arch_stat_fd((int)fd,&fdst))
+  tracked=fd_path((int)fd,(uint64_t)fdst.st_dev,(uint64_t)fdst.st_ino);
+ if(tracked){size_t n=p_len(tracked);if(n+3<=sizeof(path)){p_copy(path,tracked,n);path[n++]='/';path[n++]='.';path[n]=0;}else n=0;vfs_free(tracked);
+  if(n && tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock);return r;}}
+ }else{
+  char proc[80]="/proc/self/fd/";size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-3,0,0);
+  if(n>0){path[n++]='/';path[n++]='.';path[n]=0;if(tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock);return r;}}}
+ }
  long r=dents_locked(fd,buf,size);if(lock>=0)unlock(lock);return r;
 }
 void links_payload_fd_stat(int fd,void *wire){struct proxy_stat s;arch_stat_decode(&s,wire);links_fd_stat(fd,&s);arch_stat_nlink(wire,s.st_nlink);}

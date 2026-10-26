@@ -258,7 +258,7 @@ static struct thread_state *thread_state(void) {
 #endif
     struct thread_node *p=vfs_palloc(sizeof(*p));if(!p)return NULL;
     p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
-    stack_t current;
+    stack_t current={0};
     if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0)) {
         p->state.signal_stack=current.ss_sp;p->state.signal_stack_size=current.ss_size;
     }
@@ -863,6 +863,12 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(a[one] && !*(char *)(uintptr_t)a[one] && at){
         if(nr==PROXY_SC_fchmodat2){struct proxy_stat mode;if(!arch_stat_fd(fd,&mode) && S_ISREG(mode.st_mode))a[2]=(a[2]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
+    if(nr==PROXY_SC_openat && original_path &&
+            vfs_plain_nofollow_dir_path(fd,original_path,(int)a[2])){
+        long result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+        if(result>=0){vfs_fd_close((int)result);vfs_fd_record((int)result,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
+        return result;
+    }
     if(nr==PROXY_SC_newfstatat && original_path &&
             (a[3]&AT_SYMLINK_NOFOLLOW) && !(a[3]&AT_EMPTY_PATH)){
         char *logical=NULL;
@@ -1002,7 +1008,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(e>=0 && ((nr==PROXY_SC_openat && (a[2]&O_CREAT)) || nr==PROXY_SC_linkat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))links_cache_invalidate();
     /* Native closes bypass proxy cleanup. A successful open starts a new fd
      * lifetime, so retire pathname metadata left by the prior occupant. */
-    if(e>=0 && nr==PROXY_SC_openat){vfs_fd_close((int)e);vfs_fd_record((int)e,fd,original_path);}
+    if(e>=0 && nr==PROXY_SC_openat){vfs_fd_close((int)e);vfs_fd_record((int)e,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
     if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */
