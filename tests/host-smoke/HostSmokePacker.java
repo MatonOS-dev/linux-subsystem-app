@@ -94,8 +94,8 @@ public final class HostSmokePacker {
                     for(ObjectPacks.Entry e:entries){ObjectPacks.Entry n=new ObjectPacks.Entry("/"+branch+(e.path.equals("/")?"":e.path),e.checksum,e.kind,e.mode);n.target=e.target;n.xattrs=e.xattrs;n.uid=e.uid;n.gid=e.gid;n.mtime=e.mtime;n.length=e.length;n.source=e.source;rooted.add(n);}entries=rooted;
                 }
                 ErofsImage.BuildResult built=ErofsImage.build(entries,out,mkfs,Math.max(1,packed.commitTime));split=built.image.split;size=built.image.imageSize;
-                ObjectPacks.initial(packed.entries,out,ObjectPacks.DEFAULT_PACK_SIZE);
-                ObjectPacks.writeIndex(new File(out,"objects.index"),packed.entries);
+                ObjectPacks.initial(entries,out,ObjectPacks.DEFAULT_PACK_SIZE);
+                ObjectPacks.writeIndex(new File(out,"objects.index"),entries);
                 ObjectPacks.writeMetadata(new File(out,"objects.ostree"),packed.metadata);
                 Files.write(new File(out,"deployment.bin").toPath(),new DeploymentRecord(ref,commits.get(ref),"flathub",
                     read(new File(d,"metadata")),read(new File(d,"deploy")),read(commitObject(repo,commits.get(ref)))).encode());
