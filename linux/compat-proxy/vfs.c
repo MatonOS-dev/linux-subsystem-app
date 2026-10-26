@@ -862,6 +862,20 @@ int vfs_has_nested_mount(const char *path,const char *ancestor,int staging){
     return 0;
 }
 long vfs_mount_readonly(void *identity){struct mount *m=identity;return m && (m->flags&MS_RDONLY)?-EROFS:0;}
+/* A native bind resolves the source before attaching it. Keep the kernel's
+ * spelling here too: proc fd links canonicalize symlinked ancestors (notably
+ * Android /data/user/0 versus /data/data). Reverse lookup must see that same
+ * spelling when bwrap binds a regular file through its destination fd. */
+static char *mount_source_name(const char *source){
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,source,O_PATH|O_CLOEXEC,0,0,0);
+    if(fd<0)return NULL;
+    char proc[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned long)fd;
+    do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);
+    while(d)proc[k++]=digits[--d];
+    proc[k]=0;
+    long error=0;char *name=readlink_dynamic(proc,&error);
+    RAW(PROXY_SC_close,fd,0,0,0,0,0);return name;
+}
 int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_palloc(sizeof(*m));if(!m)return -ENOMEM;m->source=vfs_palloc(p_len(source)+1);m->target=vfs_palloc(p_len(target)+1);if(m->source)p_copy(m->source,source,p_len(source)+1);if(m->target)p_copy(m->target,target,p_len(target)+1);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;vfs_resolve_cache_invalidate();
     proxy_log("mount-owner",PROXY_SC_mount,0);
     RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
@@ -944,7 +958,10 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     if(!e && !src)e=-ENOMEM;
     if(!e){
         struct mount *prior=table;char *virtual_source=(flags&MS_BIND)?global_target(source,&e):NULL;
-        if(!e)e=proxy_mount(src,dest);
+        if(!e){char *native=mount_source_name(src);
+            if(native){vfs_free(src);src=native;}
+            e=proxy_mount(src,dest);
+        }
         if(!e){table->flags=flags;table->pack_shadow=!(flags&MS_BIND);}
         if(!e && virtual_source && (flags&MS_REC))for(struct mount *m=prior;m;m=m->next){if(prefix(m->target,virtual_source) && !p_equal(m->target,virtual_source)){
             char *child=join(dest,m->target+p_len(virtual_source));if(!child){e=-ENOMEM;break;}e=proxy_mount(m->source,child);vfs_free(child);if(e)break;table->flags=m->flags;table->pack_shadow=m->pack_shadow;

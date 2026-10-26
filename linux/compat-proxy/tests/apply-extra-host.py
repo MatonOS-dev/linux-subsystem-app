@@ -35,24 +35,44 @@ with (extra/'payload.deb').open('wb') as deb:
         deb.write(body)
         if len(body)%2: deb.write(b'\n')
 script = out/'apply_extra'
-script.write_text('#!/bin/sh\nset -eu\ntest ! -e /proc/self\nbsdtar -xf payload.deb data.tar.xz\nbsdtar -xf data.tar.xz\nmv opt/browser browser\nrm -r opt payload.deb data.tar.xz\n')
+script.write_text('#!/bin/sh\nset -eu\ntest ! -e /proc/self\ntest \"$(cat /etc/bind-fd-fixture)\" = bind-fd-file\nbsdtar -xf payload.deb data.tar.xz\nbsdtar -xf data.tar.xz\nmv opt/browser browser\nrm -r opt payload.deb data.tar.xz\n')
 script.chmod(0o755)
+app = out/'app'
+(app/'extra').mkdir(parents=True, exist_ok=True)
+(app/'bin').mkdir(parents=True, exist_ok=True)
+(app/'bin/apply_extra').write_bytes(script.read_bytes())
+(app/'bin/apply_extra').chmod(0o755)
+bound_file = out/'bound-file'
+bound_file.write_text('bind-fd-file\n')
+launcher_source = out/'bind-fd-launcher.c'
+launcher_source.write_text('#define _GNU_SOURCE\n#include <fcntl.h>\n#include <unistd.h>\nint main(int argc,char **argv){if(argc<7)return 2;for(int i=0;i<4;i++){int fd=open(argv[i+1],O_PATH);if(fd<0||dup2(fd,100+i)<0)return 3;close(fd);}execv(argv[5],argv+5);return 4;}\n')
+launcher = out/'bind-fd-launcher'
+subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(launcher_source), '-o', str(launcher)], check=True)
+# Open inside the proxy so fd tracking matches Flatpak; include a regular-file
+# bind because directory-only tests miss bwrap's file placeholder/reopen path.
+mount_fds = [100, 101, 102, 103]
+# Android's /data/user/0 alias canonicalizes to /data/data in proc fd links.
+# A symlinked ancestor models the same mismatch without an Android device.
+tmp_alias = out/'tmp-alias'
+if not tmp_alias.exists(): tmp_alias.symlink_to(out, target_is_directory=True)
+(out/'tmp').mkdir(exist_ok=True)
 fd = os.memfd_create('apply-extra-flatpak-filter', 0)
 try:
     os.write(fd, fixture.flatpak_filter_bytes())
     os.lseek(fd, 0, 0)
-    args = fixture.proxy + (["--trace"] if os.environ.get("COMPAT_TRACE") else []) + [fixture.bwrap, '--unshare-user', '--unshare-pid',
+    args = fixture.proxy + (["--trace"] if os.environ.get("COMPAT_TRACE") else []) + [str(launcher), "/usr", str(app), str(extra), str(bound_file), fixture.bwrap, '--unshare-user', '--unshare-pid',
         '--unshare-net', '--unshare-ipc', '--cap-drop', 'ALL',
-        '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin',
+        '--ro-bind-fd', str(mount_fds[0]), '/usr', '--symlink', 'usr/bin', '/bin',
         '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
+        '--ro-bind-fd', str(mount_fds[3]), '/etc/bind-fd-fixture',
         '--tmpfs', '/tmp', '--dir', '/var/tmp', '--dev', '/dev',
-        '--ro-bind', str(script), '/app/bin/apply_extra',
-        '--bind', str(extra), '/app/extra', '--chdir', '/app/extra',
+        '--ro-bind-fd', str(mount_fds[1]), '/app',
+        '--bind-fd', str(mount_fds[2]), '/app/extra', '--chdir', '/app/extra',
         '--setenv', 'PATH', '/usr/bin:/bin', '--seccomp', str(fd),
         '--', '/app/bin/apply_extra']
     with (out/'stdout.txt').open('wb') as stdout, (out/'stderr.txt').open('wb') as stderr:
         result = subprocess.run(args, pass_fds=[fd], stdout=stdout, stderr=stderr,
-            env={'PATH': '/usr/bin:/bin', 'TMPDIR': str(out)}, timeout=40)
+            env={'PATH': '/usr/bin:/bin', 'TMPDIR': str(tmp_alias/'tmp')}, timeout=40)
     if result.returncode: raise RuntimeError(f'apply_extra exit {result.returncode}: see {out}/stderr.txt')
     assert (extra/'browser/browser').read_text() == 'extra-data-extracted\n'
     assert (extra/'browser/browser').stat().st_mode & 0o777 == 0o755
