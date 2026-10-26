@@ -15,6 +15,9 @@
 #include <unistd.h>
 struct term2 {unsigned i,o,c,l;unsigned char line,cc[19];unsigned is,os;};
 int main(void){
+ int pipefd[2];assert(!pipe(pipefd));struct winsize ws;errno=0;
+ assert(ioctl(pipefd[0],TIOCGWINSZ,&ws)==-1&&errno==ENOTTY);
+ close(pipefd[0]);close(pipefd[1]);
  int m=open("/dev/pts/ptmx",O_RDWR|O_NOCTTY);assert(m>=0);
  assert(!grantpt(m)&&!unlockpt(m));char *name=ptsname(m);assert(name);
  int s=open(name,O_RDWR|O_NOCTTY);assert(s>=0);

@@ -8,9 +8,11 @@
 #include <sys/prctl.h>
 #include <sys/personality.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
+#include <string.h>
 #include <unistd.h>
 
-int main(void) {
+static void check_personality(void) {
     /* Verify Linux's query, set return, and subsequent previous-value
      * behavior. Under Android's syscall filter the proxy may emulate the set;
      * on desktop Linux the kernel may perform it. */
@@ -42,6 +44,25 @@ int main(void) {
     old=syscall(SYS_personality,PER_LINUX);
     assert(old==ADDR_NO_RANDOMIZE);
     assert(personality(0xffffffffUL)==PER_LINUX);
+}
+
+int main(int argc,char **argv) {
+    if(argc==2 && !strcmp(argv[1],"--exec-child")) {
+        check_personality();
+        puts("PASS personality semantics in exec'd child");
+        return 0;
+    }
+
+    check_personality();
+    pid_t child=fork();
+    assert(child>=0);
+    if(!child) {
+        execl(argv[0],argv[0],"--exec-child",(char *)NULL);
+        _exit(127);
+    }
+    int status=0;
+    assert(waitpid(child,&status,0)==child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
     puts("PASS personality query/set/previous semantics survive Flatpak payload seccomp");
     return 0;
 }

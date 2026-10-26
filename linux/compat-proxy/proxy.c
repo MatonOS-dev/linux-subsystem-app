@@ -12,6 +12,7 @@
 #define RESIDENT_FREE vfs_free
 #include "resident-ranges.h"
 #include <sys/time.h>
+#include <sys/ioctl.h>
 #include <sys/inotify.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -1886,6 +1887,13 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         result=descriptor_dup_dispatch(nr,a);break;
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
+        /* Linux reports ENOTTY for TIOCGWINSZ on pipes and other non-device
+         * fds. Android SELinux may reject the ioctl first with EACCES; decide
+         * from fd type so callers such as bwrap see Linux's result. */
+        if(nr==PROXY_SC_ioctl && (unsigned long)a[1]==TIOCGWINSZ){
+            struct proxy_stat st;
+            if(!arch_stat_fd((int)a[0],&st) && !S_ISCHR(st.st_mode)){result=-ENOTTY;break;}
+        }
         if(nr==PROXY_SC_ioctl && termios2_call(a,&result)){if(proxy_trace)proxy_log("tty-ioctl",a[1],result);break;}
         /* Reflink clone: Android app data (ext4/f2fs) has none, and app domains may not issue it,
          * so each attempt is an AVC denial. Answer as a non-reflink filesystem would. */
@@ -1893,6 +1901,10 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(app_allowed(nr)) { if(!unix_call(nr,a,&result))result=dns_call(nr,a); }
         if(nr==PROXY_SC_ioctl && proxy_trace)proxy_log("tty-ioctl",a[1],result);
         break;
+    case PROXY_SC_personality:
+        /* Keep the common ours() dispatcher routed through the same Linux
+         * query/set emulation as direct and early trapped dispatch. */
+        result=personality_call(a,thread);break;
     case PROXY_SC_prctl:
         if(proxy_trace) {
             emit("v3 prctl option="); crash_hex(a[0]);
@@ -2140,7 +2152,9 @@ finish:
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace){
         if(original==PROXY_SC_personality){emit("v3 personality trap arg=");
-            crash_hex((uint64_t)a[0]);trace_word(" result=",result);emit("\n");}
+            crash_hex((uint64_t)a[0]);trace_word(" result=",result);
+            trace_word(" call_nr=",(uint64_t)info->si_syscall);
+            trace_word(" pc=",(uintptr_t)info->si_call_addr);emit("\n");}
         if(result==-EBADF){
             emit("v3 ebadf syscall=");crash_hex((uint64_t)original);
             trace_word(" ip=",(uintptr_t)info->si_call_addr);
