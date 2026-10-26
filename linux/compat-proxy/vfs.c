@@ -354,6 +354,11 @@ int vfs_bwrap_shm_mkdir(const char *path){
     size_t n=p_len(path);return p_equal(path,"/dev/shm") ||
         (n>8 && p_equal(path+n-8,"/dev/shm"));
 }
+int vfs_bwrap_tmpdir_mkdir(const char *path){
+    if(!vfs_is_bwrap() || !path)return 0;
+    size_t n=p_len(path);return p_equal(path,"var/tmp") || p_equal(path,"/var/tmp") ||
+        (n>8 && p_equal(path+n-8,"/var/tmp"));
+}
 static long vfs_bwrap_erofs_destination(const char *path,int directory,unsigned mode){
     if(!vfs_is_bwrap() || !path)return -ENOSYS;
     char *view=erofs_reverse(path);if(!view)return -ENOSYS;
