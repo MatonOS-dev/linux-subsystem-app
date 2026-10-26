@@ -185,7 +185,7 @@ struct ldt_cache_entry { unsigned selector; unsigned age; int real_entry; unsign
 struct thread_state {
     unsigned direct_depth;
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
-    unsigned int personality;
+    unsigned int personality,personality_valid;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     struct tls_entry tls[PROXY_TLS_ENTRIES];
     unsigned reserved;
@@ -268,6 +268,7 @@ static struct thread_state *thread_state(void) {
 #endif
     struct thread_node *p=vfs_palloc(sizeof(*p));if(!p)return NULL;
     p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
+    p->state.personality_valid=0;
     stack_t current={0};
     if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0)) {
         p->state.signal_stack=current.ss_sp;p->state.signal_stack_size=current.ss_size;
@@ -283,6 +284,7 @@ static struct thread_state *thread_state(void) {
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
     thread_stack_cache_add(page,&p->state);return &p->state;
 }
+static long personality_call(proxy_arg_t *args,struct thread_state *thread);
 #if ARCH_AUDIT == AUDIT_ARCH_I386
 static int tls_slot_for_real(struct thread_state *thread, int real_entry) {
     for (int i=0;i<PROXY_TLS_ENTRIES;i++)
@@ -1165,6 +1167,7 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
        a[1]!=F_SETFL && a[1]!=F_DUPFD && a[1]!=F_DUPFD_CLOEXEC)return rewrite_slow(nr,a);
     struct thread_state *thread;
     {PROFILE_BEGIN();thread=thread_state();PROFILE_END(9);}
+    if(nr==PROXY_SC_personality)return personality_call(a,thread);
     if(thread)thread->direct_depth++;
     uintptr_t ceiling=(uintptr_t)&ceiling;
     void *arena;
@@ -1402,6 +1405,33 @@ static long payload_seccomp_errno(long syscall_nr,proxy_arg_t *args,uintptr_t ip
         }
     }
     return 0;
+}
+static long personality_call(proxy_arg_t *args,struct thread_state *thread) {
+    /* Flatpak's filter denies personality requests before the syscall would
+     * reach its ordinary ours() dispatch. Keep Linux query/previous-value
+     * semantics here, while letting Android perform requests its own filter
+     * allows. */
+    unsigned int requested=(unsigned int)args[0];
+    unsigned int previous=PER_LINUX;
+    if(thread && thread->personality_valid)previous=thread->personality;
+    else {
+        long current=RAW(PROXY_SC_personality,UINT32_MAX,0,0,0,0,0);
+        if(current>=0)previous=(unsigned int)current;
+        if(thread){thread->personality=previous;thread->personality_valid=1;}
+    }
+    long result;
+    if(requested==UINT32_MAX)result=(long)previous;
+    else {
+        result=RAW(PROXY_SC_personality,args[0],0,0,0,0,0);
+        if(result==-EACCES || result==-EPERM)result=previous;
+        if((result>=0 || result==(long)previous) && thread) {
+            thread->personality=requested;thread->personality_valid=1;
+        }
+    }
+    if(proxy_trace){emit("v3 personality arg=");crash_hex(requested);
+        trace_word(" result=",result);trace_word(" pid=",RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+        trace_word(" tid=",RAW(PROXY_SC_gettid,0,0,0,0,0,0));emit("\n");}
+    return result;
 }
 static long payload_seccomp_install(long nr,proxy_arg_t *args) {
     int install=(nr==PROXY_SC_prctl && args[0]==PR_SET_SECCOMP && args[1]==SECCOMP_MODE_FILTER) ||
@@ -1717,6 +1747,9 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
     long result=-ENOSYS;
     if(call.error){result=call.error;goto finish;}
+    /* Keep this ahead of Android-library fast paths, Flatpak's emulated
+     * seccomp and i386 adoption, all of which can otherwise consume it. */
+    if(nr==PROXY_SC_personality) {result=personality_call(a,thread);goto finish;}
     proxy_rewrite_trap_site((uintptr_t)info->si_call_addr,info->si_syscall);
     uintptr_t syscall_pc=(uintptr_t)info->si_call_addr;
     int syscall_mapping=android_library_mapping_state(syscall_pc);
@@ -1834,32 +1867,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             } else result=-EINVAL;
         } else result=payload_seccomp_install(nr,a);
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
-        break;
-    case PROXY_SC_personality:
-        /* personality is task state, but Android may reject setting it from
-         * an app. Keep the logical persona per thread when seccomp blocks the
-         * kernel operation; query and previous-value semantics remain Linux
-         * compatible. */
-        {
-            struct thread_state *ts=thread?thread:thread_state();
-            unsigned int requested=(unsigned int)a[0];
-            if(proxy_trace){emit("v3 personality arg=");crash_hex(requested);
-                trace_word(" pid=",RAW(PROXY_SC_getpid,0,0,0,0,0,0));
-                trace_word(" tid=",RAW(PROXY_SC_gettid,0,0,0,0,0,0));emit("\n");}
-            if(requested==UINT32_MAX)result=ts?(long)ts->personality:PER_LINUX;
-            else {
-                unsigned int previous=ts?ts->personality:PER_LINUX;
-                result=RAW(nr,a[0],0,0,0,0,0);
-                if(result>=0) {
-                    if(ts)ts->personality=requested;
-                    /* Kernel accepted it: retain its exact previous value. */
-                } else if(result==-EACCES || result==-EPERM) {
-                    result=previous;
-                    if(ts)ts->personality=requested;
-                }
-            }
-            if(proxy_trace){emit("v3 personality result=");crash_hex(result);emit("\n");}
-        }
         break;
     case PROXY_SC_seccomp:
         if(proxy_trace) {
@@ -2073,6 +2080,8 @@ finish:
     }
     ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
     if(proxy_trace){
+        if(original==PROXY_SC_personality){emit("v3 personality trap arg=");
+            crash_hex((uint64_t)a[0]);trace_word(" result=",result);emit("\n");}
         if(result==-EBADF){
             emit("v3 ebadf syscall=");crash_hex((uint64_t)original);
             trace_word(" ip=",(uintptr_t)info->si_call_addr);
