@@ -8,7 +8,7 @@ NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 API=35
 JOBS=${MATON_BUILD_JOBS:-$(nproc)}
-[[ $JOBS =~ ^[1-4]$ ]] || die 'MATON_BUILD_JOBS must be 1..4'
+[[ $JOBS =~ ^[1-9][0-9]*$ ]] || die 'MATON_BUILD_JOBS must be a positive integer'
 [[ -x $TOOLCHAIN/bin/x86_64-linux-android${API}-clang ]] || die "missing NDK at $NDK"
 
 # Build output lives under out/, never in the source tree: unpacked upstream

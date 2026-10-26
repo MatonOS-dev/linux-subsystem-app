@@ -16,7 +16,6 @@ export ARFLAGS=crD
 export LC_ALL=C TZ=UTC
 OUT=${OUT_DIR:-$HERE/out}
 JOBS=${JOBS:-$(nproc)}
-[ "$JOBS" -le 4 ] || { echo 'JOBS must be <= 4' >&2; exit 2; }
 MUSL_PREFIX=${MUSL_PREFIX:-/usr}
 CC=${CC:-$MUSL_PREFIX/bin/x86_64-alpine-linux-musl-gcc}
 CXX=${CXX:-$MUSL_PREFIX/bin/x86_64-alpine-linux-musl-g++}
