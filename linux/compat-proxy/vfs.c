@@ -357,7 +357,31 @@ int vfs_bwrap_shm_mkdir(const char *path){
 long vfs_bwrap_erofs_mkdir(const char *path){
     if(!vfs_is_bwrap() || !path)return -ENOSYS;
     char *view=erofs_reverse(path);if(!view)return -ENOSYS;
-    long error=0;char *target=global_target(view,&error);vfs_free(view);
+    long error=0;char *target=NULL;struct mount *alias=NULL;size_t source_length=0;
+    /* During bwrap setup, an EROFS image may be bind-mounted below a staged
+     * root such as /tmp/newroot/usr while the process root is still /tmp.
+     * Reversing the backing path to /usr and applying root would shadow
+     * /tmp/usr instead. Preserve the active virtual bind alias when the
+     * backing object is exposed through one. */
+    size_t alias_target_length=SIZE_MAX;int alias_in_root=0;
+    for(struct mount *m=table;m;m=m->next){
+        size_t n=p_len(m->source);
+        if(!prefix(path,m->source))continue;
+        char *source_view=erofs_reverse(m->source);
+        int source_is_erofs=source_view!=NULL;
+        vfs_free(source_view);
+        if(source_is_erofs){
+            int in_root=root&&prefix(m->target,root);
+            size_t target_length=p_len(m->target);
+            if(n>source_length || (n==source_length && in_root && !alias_in_root) ||
+                    (n==source_length && in_root==alias_in_root && target_length<alias_target_length)){
+                alias=m;source_length=n;alias_in_root=in_root;alias_target_length=target_length;
+            }
+        }
+    }
+    if(alias){target=join(alias->target,path+source_length);if(!target)error=-ENOMEM;}
+    else target=global_target(view,&error);
+    vfs_free(view);
     if(!target)return error;
     char *source=vfs_temp_create(&error);
     if(source){error=proxy_mount(source,target);vfs_free(source);}
