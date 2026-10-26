@@ -23,6 +23,7 @@
 #include <ucontext.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
+#include <sys/personality.h>
 #include <sys/mman.h>
 #include <linux/seccomp.h>
 #include <linux/filter.h>
@@ -1500,6 +1501,7 @@ static int ours(long n) {
     case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
     case PROXY_SC_flock:case PROXY_SC_fstat:case PROXY_SC_getdents64:case PROXY_SC_exit:case PROXY_SC_exit_group:case PROXY_SC_write:case PROXY_SC_dup:case PROXY_SC_fcntl:
     case PROXY_SC_capget:case PROXY_SC_capset:case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:
+    case PROXY_SC_personality:
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:case PROXY_SC_modify_ldt:
 #endif
@@ -1817,6 +1819,15 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             } else result=-EINVAL;
         } else result=payload_seccomp_install(nr,a);
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
+        break;
+    case PROXY_SC_personality:
+        /* x86_64 ldconfig selects PER_LINUX32 while scanning the i386
+         * runtime. Android's app seccomp rejects that mode, and changing
+         * uname/address-space personality is unnecessary for our process
+         * proxy. Preserve the kernel return value but leave the mode alone. */
+        if((unsigned long)a[0]==PER_LINUX32) {
+            result=RAW(nr,UINT32_MAX,0,0,0,0,0);
+        } else result=RAW(nr,a[0],0,0,0,0,0);
         break;
     case PROXY_SC_seccomp:
         if(proxy_trace) {
