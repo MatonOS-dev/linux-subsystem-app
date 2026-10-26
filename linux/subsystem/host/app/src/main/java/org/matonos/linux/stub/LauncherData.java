@@ -26,9 +26,8 @@ import java.util.List;
  * <p>Source order (v3.5):
  *
  * <ol>
- *   <li>the applied extra output's {@code export/} when {@code apply_extra}
- *       produced a {@code .desktop} there (it overlays the deployment's own
- *       export, and the components then live in the {@code extra_} split);</li>
+ *   <li>the deployed {@code files/extra/export/} tree, which stock Flatpak
+ *       populated during deployment;</li>
  *   <li>the deployment's own {@code export/share/applications/*.desktop};</li>
  *   <li>the remote's appstream entry, read here, never passed in by a
  *       caller;</li>
@@ -43,15 +42,10 @@ public final class LauncherData {
     public final List<String> mimeTypes;
     /** PNG bytes, or null meaning "use the caller's generic icon". */
     public final byte[] icon;
-    /** True when the {@code .desktop} came from the extra output: the launcher
-     * components must then be carried by the {@code extra_} split. */
-    public final boolean fromExtra;
-
-    private LauncherData(String label, List<String> mimeTypes, byte[] icon, boolean fromExtra) {
+    private LauncherData(String label, List<String> mimeTypes, byte[] icon) {
         this.label = label;
         this.mimeTypes = mimeTypes;
         this.icon = icon;
-        this.fromExtra = fromExtra;
     }
 
     /** Appstream lookup, injected so tests need no network. */
@@ -122,30 +116,28 @@ public final class LauncherData {
      */
     public static LauncherData resolve(File deployment, String appId, File extraOutput,
             Appstream appstream) throws Exception {
-        LauncherData extra = fromExport(extraOutput, appId, true);
+        LauncherData extra = fromExport(extraOutput, appId);
         if (extra != null) return extra;
-        LauncherData deployed = fromExport(deployment, appId, false);
+        LauncherData deployed = fromExport(deployment, appId);
         if (deployed != null) return deployed;
         if (appstream != null) {
             Appstream.Entry entry = appstream.lookup(appId);
             if (entry != null && entry.name != null && !entry.name.trim().isEmpty())
-                return new LauncherData(entry.name, Collections.<String>emptyList(), entry.icon, false);
+                return new LauncherData(entry.name, Collections.<String>emptyList(), entry.icon);
         }
-        return new LauncherData(appId, Collections.<String>emptyList(), null, false);
+        return new LauncherData(appId, Collections.<String>emptyList(), null);
     }
 
     /**
-     * The launcher data of an applied extra output's {@code export/}, or null
-     * when it carries no {@code .desktop}. {@link #fromExtra} is then true: the
-     * components must be carried by the {@code extra_} split, because the
-     * extra output is installed after the launcher decision.
+     * Launcher data from the applied extra tree's {@code export/}, or null
+     * when it carries no {@code .desktop}.
      */
     public static LauncherData fromExtraOutput(File extraOutput, String appId) throws IOException {
-        return fromExport(extraOutput, appId, true);
+        return fromExport(extraOutput, appId);
     }
 
     /** The export tree of {@code root}, or null when it carries no .desktop. */
-    private static LauncherData fromExport(File root, String appId, boolean fromExtra) throws IOException {
+    private static LauncherData fromExport(File root, String appId) throws IOException {
         if (root == null) return null;
         File desktop = desktopFile(new File(root, "export/share/applications"), appId);
         if (desktop == null) return null;
@@ -153,7 +145,7 @@ public final class LauncherData {
         if (content.length == 0) throw new IOException("Desktop entry is empty");
         StubGenerator.DesktopEntry entry = StubGenerator.parseDesktop(new String(content, StandardCharsets.UTF_8));
         byte[] icon = exportIcon(root, appId, entry.iconName);
-        return new LauncherData(entry.name, entry.mimeTypes, icon, fromExtra);
+        return new LauncherData(entry.name, entry.mimeTypes, icon);
     }
 
     /** The app's exported .desktop: the app id name first, else a lone file. */

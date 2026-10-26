@@ -41,22 +41,13 @@ public final class StubGenerator {
     static void setSigningBackendForTest(SigningBackend backend) { testSigningBackend = backend; }
     public static final int FORMAT_VERSION = 1;
     // v14 adds bridge visibility for self-task Linux window capabilities.
-    // v19 moves the launcher entry into a code-free launcher split, applies
-    // Flatpak extra data in a per-package service, and carries the result in a
-    // self-contained extra split mounted over the package's extra directory.
-    public static final int STUB_VERSION_CODE = 21;
+    // v22 removes the per-package apply_extra service and extra split; stock
+    // Flatpak now applies the downloaded data before the single EROFS image is built.
+    public static final int STUB_VERSION_CODE = 22;
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
-    /** Per-package service that applies this package's Flatpak extra data. */
-    public static final String EXTRA_SERVICE = "org.matonos.linux.stub.ExtraService";
-    /** Mount point the extra service mounts this package's packs at. */
-    public static final String EXTRA_MOUNT_META = "org.matonos.linuxhost.EXTRA_MOUNT";
     /** Split carrying the launcher components (activity-alias) and nothing else. */
     public static final String LAUNCHER_SPLIT_PREFIX = "launcher_";
-    /** Split carrying the applied extra output (and possibly the launcher). */
-    public static final String EXTRA_SPLIT_PREFIX = "extra_";
-    /** The mount point an app's extra directory lives under. */
-    public static final String APP_MOUNT = "/app";
     /** Host-side AppComponentFactory: loads the stub's components from the current host APK. */
     public static final String HOST_LOADER = "org.matonos.linux.stub.StubLoader";
     /** Unprivileged entry point (the store uses it): asks the bridge to install this stub's Flatpak; no-op when installed. */
@@ -358,24 +349,6 @@ public final class StubGenerator {
         return LAUNCHER_SPLIT_PREFIX+ObjectPacks.hex(hash.digest());
     }
 
-    /** Identity of the extra output: index, metadata and, when it also carries
-     * the launcher components, the label, MIME types and icon. */
-    public static String extraSplitName(File objects) throws Exception {
-        return extraSplitName(objects,null,null,null);
-    }
-    public static String extraSplitName(File objects,String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
-        java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
-        for(String name:Arrays.asList("objects.index","objects.ostree")) {
-            byte[] bytes=java.nio.file.Files.readAllBytes(new File(objects,name).toPath());
-            update(hash,bytes);
-        }
-        if(launcherLabel!=null&&launcherIcon!=null&&launcherIcon.length>0) {
-            update(hash,cleanLabel(launcherLabel).getBytes(StandardCharsets.UTF_8));
-            for(String mime:cleanMimeTypes(launcherMimeTypes)) update(hash,mime.getBytes(StandardCharsets.UTF_8));
-            update(hash,launcherIcon);
-        }
-        return EXTRA_SPLIT_PREFIX+ObjectPacks.hex(hash.digest());
-    }
     private static void update(java.security.MessageDigest hash,byte[] bytes) {
         hash.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length).array());hash.update(bytes);
     }
@@ -403,96 +376,6 @@ public final class StubGenerator {
             }
             sign(unsigned,output);return output;
         } finally {unsigned.delete();}
-    }
-
-    /** Self-contained extra split: the applied extra output in the pack format,
-     * with the index and metadata embedded so the loader can mount it directly.
-     * When the launcher source is the extra output, the same split also carries
-     * the launcher components and their resources. */
-    public static File generateExtra(File workDir,String pkg,File objects,File output,int revision,
-            String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
-        File unsigned=generateExtraUnsigned(workDir,pkg,objects,revision,launcherLabel,launcherMimeTypes,launcherIcon);
-        try { sign(unsigned,output); return output; }
-        finally { unsigned.delete(); }
-    }
-
-    /** Builds the package's extra split without signing it. */
-    public static File generateExtraUnsigned(File workDir,String pkg,File objects,int revision,
-            String launcherLabel,List<String> launcherMimeTypes,byte[] launcherIcon) throws Exception {
-        if(revision<0)throw new IllegalArgumentException("Negative split revision");
-        if(!packageName(pkg))throw new IllegalArgumentException("Invalid package name");
-        if(!new File(objects,"objects.index").isFile()||!new File(objects,"objects.ostree").isFile())
-            throw new IOException("Missing pack index or metadata");
-        boolean launcher=launcherLabel!=null&&launcherIcon!=null&&launcherIcon.length>0;
-        List<ObjectPacks.Entry> entries=ObjectPacks.readIndex(new File(objects,"objects.index"));
-        String pack=null;
-        for(ObjectPacks.Entry entry:entries)if(entry.kind.equals("file")) {
-            if(pack==null)pack=entry.pack;
-            else if(!pack.equals(entry.pack))throw new IOException("Extra split requires a single pack");
-        }
-        if(pack==null)throw new IOException("Extra split has no payload pack");
-        String split=extraSplitName(objects,launcher?launcherLabel:null,launcherMimeTypes,launcher?launcherIcon:null);
-        BinaryManifest manifest=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
-        manifest.revisionCode=revision;
-        java.util.Map<String,byte[]> appended=new LinkedHashMap<>();
-        if(launcher) appended.put("AndroidManifest.xml",manifest.launcherManifest(split,cleanLabel(launcherLabel),cleanMimeTypes(launcherMimeTypes),0x7f020000));
-        else appended.put("AndroidManifest.xml",manifest.packManifest(split));
-        appended.put("assets/matonos/objects.index",java.nio.file.Files.readAllBytes(new File(objects,"objects.index").toPath()));
-        appended.put("assets/matonos/objects.ostree",java.nio.file.Files.readAllBytes(new File(objects,"objects.ostree").toPath()));
-        if(launcher) {
-            appended.put("resources.arsc",iconResourceTable(pkg,2));
-            appended.put("res/drawable/foreground.png",launcherIcon);
-            appended.put("res/drawable/icon.xml",new BinaryManifest("","","","flathub",Collections.emptyList()).adaptiveIcon(0x7f020000));
-        }
-        File unsigned=File.createTempFile("matonos-extra-",".apk",workDir);
-        ObjectPacks.carrier(new File(objects,pack),unsigned,appended);
-        return unsigned;
-    }
-
-    /** Validates an unsigned extra split's minimal signing identity. */
-    /**
-     * The extra split is built inside the package, next to vendor code, so the
-     * subsystem only signs it when its manifest is exactly the identity plus a
-     * code-free application and the APK carries no code.
-     */
-    public static boolean validExtraIdentity(File apk,String pkg,String split) throws Exception {
-        if(!packageName(pkg)||split==null||!split.matches("extra_[0-9a-f]{64}")) return false;
-        try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(apk)) {
-            for(java.util.Enumeration<? extends java.util.zip.ZipEntry> e=zip.entries();e.hasMoreElements();) {
-                String name=e.nextElement().getName();
-                if(name.endsWith(".dex")||name.startsWith("lib/")||name.equals("resources.arsc"))return false;
-            }
-            java.util.zip.ZipEntry manifest=zip.getEntry("AndroidManifest.xml");
-            if(manifest==null)return false;
-            byte[] bytes;
-            try(java.io.InputStream in=zip.getInputStream(manifest)){bytes=in.readAllBytes();}
-            com.android.apksig.internal.apk.AndroidBinXmlParser parser =
-                    new com.android.apksig.internal.apk.AndroidBinXmlParser(java.nio.ByteBuffer.wrap(bytes));
-            boolean identity=false,codeFree=false;
-            for(;parser.getEventType()!=com.android.apksig.internal.apk.AndroidBinXmlParser.EVENT_END_DOCUMENT;parser.next()) {
-                if(parser.getEventType()!=com.android.apksig.internal.apk.AndroidBinXmlParser.EVENT_START_ELEMENT)continue;
-                String element=parser.getName();
-                if("manifest".equals(element)&&parser.getDepth()==1) {
-                    String foundPackage=null,foundSplit=null;Integer version=null;
-                    for(int i=0;i<parser.getAttributeCount();i++) {
-                        String name=parser.getAttributeName(i);
-                        if("package".equals(name))foundPackage=parser.getAttributeStringValue(i);
-                        else if("split".equals(name))foundSplit=parser.getAttributeStringValue(i);
-                        else if("versionCode".equals(name))version=parser.getAttributeIntValue(i);
-                    }
-                    identity=pkg.equals(foundPackage)&&split.equals(foundSplit)&&version!=null&&version==STUB_VERSION_CODE;
-                } else if("application".equals(element)&&parser.getDepth()==2) {
-                    for(int i=0;i<parser.getAttributeCount();i++)
-                        if("hasCode".equals(parser.getAttributeName(i)))codeFree=!parser.getAttributeBooleanValue(i);
-                } else if(!("uses-sdk".equals(element)&&parser.getDepth()==2)) return false;
-            }
-            return identity&&codeFree;
-        }
-    }
-
-    /** Signs an identity-checked package-built extra split with the subsystem key. */
-    public static File signExtra(File unsigned,File output) throws Exception {
-        sign(unsigned,output); return output;
     }
 
     private static boolean packageName(String pkg) {
@@ -838,7 +721,7 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, EXTRA_SERVICE, EXTRA_MOUNT_META, APP_MOUNT, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             // Pre-intern commit info values if present
             if (commitInfo != null) {
@@ -873,11 +756,6 @@ public final class StubGenerator {
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
             if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
             if(noActivities){
-                start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
-                startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
-                startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", packs)));
-                start("intent-filter",null,attrs());startEnd("action",attrs(a("name","org.matonos.linuxhost.PACKAGE")));end("intent-filter");
-                end("service");
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
                 end("application");end("manifest");namespace(false);return finish();
             }
@@ -921,14 +799,6 @@ public final class StubGenerator {
             startEnd("property", attrs(a("name", "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"),
                     a("value", "Owns the Linux application runtime and its background network operations")));
             startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
-            end("service");
-            // Extra data is arbitrary vendor code: the stub's own UID runs
-            // apply_extra, never the installer. Exported only so the subsystem
-            // app can bind it; the service refuses every other caller's UID.
-            start("service", null, attrs(a("name", EXTRA_SERVICE), ab("exported", true), ab("enabled", true)));
-            startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
-            startEnd("meta-data", attrs(a("name", EXTRA_MOUNT_META), a("value", APP_MOUNT)));
-            start("intent-filter",null,attrs());startEnd("action",attrs(a("name","org.matonos.linuxhost.PACKAGE")));end("intent-filter");
             end("service");
             startEnd("service", attrs(a("name", "org.matonos.linux.stub.InstallService"),
                     ab("exported", false), ai("foregroundServiceType", 1)));

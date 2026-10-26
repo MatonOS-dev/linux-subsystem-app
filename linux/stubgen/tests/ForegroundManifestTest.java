@@ -54,7 +54,7 @@ public final class ForegroundManifestTest {
         }
         p=new ProcessBuilder(args[0],"dump","xmltree",apk.getAbsolutePath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
         xml=new String(p.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-        if(p.waitFor()!=0||xml.contains("E: activity")||!xml.contains("/usr/lib/GL")||!xml.contains("ExtraService")||!xml.contains("runtime/org.example.Platform"))throw new AssertionError("Nonlaunchable package declaration failed\n"+xml);
+        if(p.waitFor()!=0||xml.contains("E: activity")||!xml.contains("/usr/lib/GL")||!xml.contains("runtime/org.example.Platform"))throw new AssertionError("Nonlaunchable package declaration failed\n"+xml);
         System.out.println("PASS: AOSP parses foreground-service type IDs, install dataSync, runtime specialUse and the host StubLoader factory");
     }
 }

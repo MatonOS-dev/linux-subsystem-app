@@ -12,7 +12,7 @@ import org.junit.Test;
 public final class LauncherDataTest {
     private static final String APP_ID = "org.example.Editor";
 
-    @Test public void prefersTheAppliedExtraExport() throws Exception {
+    @Test public void prefersTheDeployedExtraExport() throws Exception {
         Path extra = Files.createTempDirectory("launcher-extra");
         desktop(extra, APP_ID, "Extra App", "extra-icon", "text/plain;application/pdf;");
         png(extra.resolve("export/share/icons/hicolor/64x64/apps/extra-icon.png"));
@@ -21,7 +21,6 @@ public final class LauncherDataTest {
 
         LauncherData data = LauncherData.resolve(deployment.toFile(), APP_ID, extra.toFile(), null);
         assertEquals("Extra App", data.label);
-        assertTrue("Components must move to the extra split", data.fromExtra);
         assertEquals(2, data.mimeTypes.size());
         assertNotNull("The extra export carries the icon", data.icon);
     }
@@ -39,7 +38,6 @@ public final class LauncherDataTest {
 
         LauncherData data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
         assertEquals("Deployed App", data.label);
-        assertFalse(data.fromExtra);
         assertEquals(1, data.mimeTypes.size());
         assertNotNull(data.icon);
     }
@@ -49,7 +47,6 @@ public final class LauncherDataTest {
                 appId -> new LauncherData.Appstream.Entry("From Appstream", png()));
         assertEquals("From Appstream", data.label);
         assertNotNull(data.icon);
-        assertFalse(data.fromExtra);
     }
 
     @Test public void fallsBackToTheAppId() throws Exception {
@@ -57,7 +54,6 @@ public final class LauncherDataTest {
         assertEquals(APP_ID, data.label);
         assertNull("The caller supplies the generic icon", data.icon);
         assertTrue(data.mimeTypes.isEmpty());
-        assertFalse(data.fromExtra);
     }
 
     @Test public void ignoresAnAppstreamEntryWithoutAName() throws Exception {

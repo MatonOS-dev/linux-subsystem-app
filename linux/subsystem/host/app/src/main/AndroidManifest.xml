@@ -36,6 +36,8 @@
             android:excludeFromRecents="true" android:noHistory="true" />
         <service android:name=".stub.ExtraProbeService" android:exported="false"
             android:isolatedProcess="true" />
+        <service android:name=".stub.IsolatedFlatpakInstallService" android:exported="false"
+            android:isolatedProcess="true" />
         <service android:name=".LinuxAppStoreService" android:exported="true"
             android:foregroundServiceType="dataSync" />
         <service android:name=".LinuxAppStoreService$CleanupJobService" android:exported="false"

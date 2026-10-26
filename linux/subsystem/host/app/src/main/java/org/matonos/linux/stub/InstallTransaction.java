@@ -379,23 +379,39 @@ public final class InstallTransaction {
             report("download",5,-1,-1,"Downloading "+node.ref+" from "+origin.display());
             long pullStarted=System.nanoTime();
             InstallProgress parser=new InstallProgress();
+                boolean isolatedDeploy=hasExtraData(node.info.metadata);
                 java.util.List<String> install=new ArrayList<>(java.util.Arrays.asList("install","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas"));
+                if(isolatedDeploy)install.add("--no-deploy");
                 // Explicit installs get every subpath; pass the ones Flatpak chose (Locale: device languages).
                 for(String subpath:node.subpaths)install.add("--subpath="+subpath);
                 install.add(origin.name);install.add(node.ref);
                 cliProgress(node.ref,parser,total,size,install.toArray(new String[0]));
-            JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
-            if(!node.info.commit.equals(manifest.getString("appCommit"))) {
-                // install has no --commit option; update can bind the downloaded
-                // deployment to the exact snapshot inspected before any pull.
-                cliProgress(node.ref,parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
-                manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
+            if(!isolatedDeploy) {
+                JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
+                if(!node.info.commit.equals(manifest.getString("appCommit"))) {
+                    // install has no --commit option; update can bind the downloaded
+                    // deployment to the exact snapshot inspected before any pull.
+                    cliProgress(node.ref,parser,total,size,"update","--system","--assumeyes","--no-deps","--no-related",deltaBases.contains(node.ref)?"--ostree-verbose":"--no-static-deltas","--commit="+node.info.commit,node.ref);
+                    manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
+                }
             }
+            if(isolatedDeploy) {
+                org.json.JSONArray paths=new org.json.JSONArray();for(String path:node.subpaths)paths.put(path);
+                File deployment=DeployManifest.stagedDeploymentPath(installation,
+                        new JSONObject().put("appRef",node.ref).put("appCommit",node.info.commit).put("subpaths",paths));
+                org.matonos.linux.stub.IsolatedFlatpakInstall.deploy(context,installation,origin.name,
+                        node.ref,node.info.commit,node.subpaths,deployment);
+            }
+            JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             Log.i(TAG,"phase=pull ref="+node.ref+" ms="+
                     java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pullStarted)+" bytes="+size);
             DeployManifest.verifyPlanned(installation,manifest,node.ref,node.info.commit,node.info.metadata,node.subpaths);
             StagedPacks.verify(context,installation,()->cancelled.get());
             long payload=metadataSize(node.info.metadata,"xa.installed-size");if(payload>0)verifiedPayloadBytes.addAndGet(payload);
+        }
+        private boolean hasExtraData(byte[] metadata) {
+            String text=new String(metadata,StandardCharsets.UTF_8);
+            return java.util.regex.Pattern.compile("(?m)^\\s*\\[Extra Data\\]\\s*$").matcher(text).find();
         }
         private void cliProgress(String ref,InstallProgress parser,long total,long packageBytes,String... args)throws Exception {
             java.util.List<String> tail=new ArrayList<>();tail.add(LoaderCommand.tool(context,LoaderCommand.FLATPAK_CLI).getAbsolutePath());java.util.Collections.addAll(tail,args);

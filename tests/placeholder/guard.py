@@ -59,10 +59,6 @@ ALLOW = {
         1, "extracts a host-APK asset into the runtime directory, not staging"),
     ("PackInstaller.java", "fileinputstream"): (
         1, "streams an already-built artifact into the PackageInstaller session, not staging"),
-    ("ExtraService.java", "fileinputstream"): (
-        2, "reads an installed EROFS image file and streams the freshly built extra APK; neither reads staging"),
-    ("ExtraService.java", "zipfile"): (
-        1, "reads the installed index_ split APK (app-owned), not staging"),
     ("InstallTransaction.java", "files-copy"): (
         1, "copies the bundled remote descriptor asset, not staging"),
     ("InstallTransaction.java", "files-readAllBytes"): (
@@ -94,9 +90,7 @@ ALLOW = {
     ("PackSessionPlan.java", "zipfile"): (
         1, "compares two installed base APKs in sameBase(), not staging"),
     ("StubGenerator.java", "files-readAllBytes"): (
-        5, "reads objects/index writer artifacts under the app-owned pack directory"),
-    ("StubGenerator.java", "zipfile"): (
-        1, "reads a generated/installed split APK, not staging"),
+        2, "reads objects/index writer artifacts under the app-owned pack directory"),
 }
 
 # Files that read staged content and must keep routing through the helper.
