@@ -836,6 +836,10 @@ static int path_exists(const char *path) {
     struct proxy_stat st;
     return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0;
 }
+static int path_is_symlink(const char *path) {
+    struct proxy_stat st;
+    return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0 && S_ISLNK(st.st_mode);
+}
 static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
     int at=(one==1 && nr!=PROXY_SC_inotify_add_watch) || (nr==PROXY_SC_symlinkat && one==2);
@@ -888,6 +892,14 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
     int exclusive_create=nr==PROXY_SC_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL);
     if(nr==PROXY_SC_mkdirat && path_exists(p)){
+        /* Runtime extension points can be symlinks in a single-image
+         * deployment. Flatpak's bwrap creates a directory at the extension
+         * path in its tmpfs view before binding the extension over it. Give
+         * that mkdir the same shadowing behaviour as a missing EROFS target. */
+        if(path_is_symlink(p)){
+            e=vfs_bwrap_erofs_mkdir(p);
+            if(e!=-ENOSYS)goto done;
+        }
         if(vfs_bwrap_shm_mkdir(original_path)){e=0;goto done;}
         e=-EEXIST;goto done;
     }

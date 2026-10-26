@@ -37,6 +37,11 @@ int main(int argc,char **argv){
   struct stat st;
   CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/extension/",0755)==0);
   CHECK(stat("/usr/lib/x86_64-linux-gnu/GL/extension",&st)==0 && S_ISDIR(st.st_mode));
+ }else if(!strcmp(argv[2],"bwrap-symlink")){
+  struct stat st;
+  CHECK(mkdirat(root,"usr/lib/i386-linux-gnu",0755)==0);
+  CHECK(lstat("/usr/lib/i386-linux-gnu",&st)==0 && S_ISDIR(st.st_mode));
+  CHECK(stat("/usr/lib/i386-linux-gnu",&st)==0 && S_ISDIR(st.st_mode));
  }else{
   CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/new-payload-dir",0755)==-1 && errno==EROFS);
   CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/new-payload-dir/",0755)==-1 && errno==EROFS);
@@ -59,3 +64,16 @@ result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIP
 if result.returncode:
     raise RuntimeError(result.stdout+'\n'+result.stderr)
 print(result.stdout.strip())
+
+# Platform runtimes may expose the Compat.i386 extension point as a symlink.
+# bwrap must be able to create its bind destination as a directory in its
+# virtual namespace, shadowing the immutable EROFS symlink for this launch.
+compat=(mount/'lib/i386-linux-gnu')
+compat.parent.mkdir(parents=True,exist_ok=True)
+(mount/'lib/x86_64-linux-gnu').mkdir(parents=True,exist_ok=True)
+compat.symlink_to('x86_64-linux-gnu')
+cmd=[str(base/'build/linux-layer-v3'),'--android-filter','--erofs-mount','/usr',str(mount),str(bwrap),str(newroot),'bwrap-symlink']
+result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+if result.returncode:
+    raise RuntimeError(result.stdout+'\n'+result.stderr)
+print('PASS bwrap extension bind target shadows EROFS symlink')
