@@ -82,6 +82,8 @@ static void strip_supervise_option(int argc,char **argv) {
 static int supervise_launch(int argc,char **argv,char **environ) {
     if(argc<2 || !p_equal(argv[1],"--supervise"))return -1;
 
+    for(int i=2;i<argc;i++)if(p_equal(argv[i],"--trace")){proxy_trace=1;break;}
+
     long expected_parent=0;
     for(int i=2;i+1<argc;i++)if(p_equal(argv[i],"--parent-pid")) {
         const char *number=argv[i+1];if(!*number)return 2;
@@ -105,6 +107,7 @@ static int supervise_launch(int argc,char **argv,char **environ) {
     /* Android's inherited app filter allows clone(SIGCHLD), not fork. */
     long child=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
     if(child<0)return 2;
+    if(proxy_trace)proxy_log("supervisor-launch",supervisor,child);
     if(child==0) {
         char supervisor_pid[32];
         supervisor_pid_text(supervisor_pid,(long)supervisor);
@@ -115,14 +118,16 @@ static int supervise_launch(int argc,char **argv,char **environ) {
     }
 
     long status=0,waited;
+    if(proxy_trace)proxy_log("supervisor-wait-main",child,supervisor);
     do waited=RAW(PROXY_SC_wait4,child,&status,0,0,0,0);while(waited==-EINTR);
     if(waited<0)return 2;
+    if(proxy_trace)proxy_log("supervisor-main-status",child,status);
     int app_status=(status&0x7f)==0?(int)((status>>8)&0xff):
                    (status&0x7f)!=0x7f?128+(int)(status&0x7f):2;
     for(;;) {
         long descendant_status;
         do waited=RAW(PROXY_SC_wait4,-1,&descendant_status,0,0,0,0);while(waited==-EINTR);
-        if(waited>0)continue;
+        if(waited>0){if(proxy_trace)proxy_log("supervisor-descendant-status",waited,descendant_status);continue;}
         if(waited==-ECHILD)break;
         return 2;
     }

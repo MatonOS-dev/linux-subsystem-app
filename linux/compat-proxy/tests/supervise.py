@@ -22,3 +22,12 @@ for loader in loaders:
     assert result.returncode==0,(loader,result.returncode,result.stderr.decode(errors="replace"))
     assert elapsed>=0.25, f"{loader}: supervisor exited before orphaned payload: {elapsed:.3f}s"
     print(f"PASS {os.path.basename(loader)} supervisor waits for forked payload descendants")
+    assert b"lifecycle-" not in result.stderr, f"{loader}: lifecycle tracing enabled without --trace"
+    traced=subprocess.run([loader,"--supervise","--trace","--android-filter",child],
+                          stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=10)
+    trace=traced.stderr
+    assert traced.returncode==0,(loader,traced.returncode,trace.decode(errors="replace"))
+    for event in (b"supervisor-launch",b"supervisor-wait-main",b"supervisor-main-status",
+                  b"supervisor-descendant-status",b"lifecycle-clone",b"lifecycle-exit-group"):
+        assert event in trace, f"{loader}: missing {event!r} lifecycle event: {trace.decode(errors='replace')}"
+    print(f"PASS {os.path.basename(loader)} v3-trace records supervisor and payload lifecycle")

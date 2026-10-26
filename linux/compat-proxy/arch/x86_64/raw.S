@@ -89,6 +89,9 @@ proxy_clone_after:
     sub $512,%rsp
     fxsave64 (%rsp)
     mov 72(%rbp),%rdi
+    mov 40(%rbp),%rsi
+    call proxy_trace_clone_result
+    mov 72(%rbp),%rdi
     call dns_fork_result
     mov 72(%rbp),%rdi
     call ipc_fork_result
@@ -204,5 +207,8 @@ proxy_rewrite_trap:
     mov 32(%r11),%r8
     mov 40(%r11),%r9
     syscall
+    ret
+.weak proxy_trace_clone_result
+proxy_trace_clone_result:
     ret
 .section .note.GNU-stack,"",@progbits
