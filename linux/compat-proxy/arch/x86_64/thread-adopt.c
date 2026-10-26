@@ -221,6 +221,38 @@ static void fork_rebase(struct adopt_thread *self) {
     adopt_map_bind(self->resident_fs,self);
     adopt_map_bind(atomic_load(&self->app_fs),self);
     atomic_store(&self->tid,R(gettid,0,0,0,0,0,0));
+    /* Linux clears the calling thread's alternate signal stack in a
+     * non-CLONE_VM process child. The proxy's SIGSYS action uses SA_ONSTACK,
+     * so register a valid stack again before returning to payload code.
+     * Preserve the kernel's post-fork prior state for normal teardown. */
+    stack_t current;
+    if(R(sigaltstack,0,&current,0,0,0,0)) {
+        proxy_log("adopt-fork-altstack-query",R(gettid,0,0,0,0,0,0),-1);
+        return;
+    }
+    self->prior_signal_stack=current;
+    uintptr_t stack_pointer;
+    __asm__ volatile("mov %%rsp,%0":"=r"(stack_pointer));
+    void *signal_stack=self->signal_stack;
+    uintptr_t inherited=(uintptr_t)signal_stack;
+    if(stack_pointer>=inherited && stack_pointer-inherited<signal_stack_size) {
+        /* A stackless fork can be adopted while its SIGSYS frame is still on
+         * the inherited stack. Register a fresh stack so that this live
+         * frame remains untouched until rt_sigreturn consumes it. */
+        long mapping=R(mmap,0,signal_stack_size,PROT_READ|PROT_WRITE,
+                       MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        if((unsigned long)mapping>=(unsigned long)-4095) {
+            proxy_log("adopt-fork-altstack-map",R(gettid,0,0,0,0,0,0),mapping);
+            return;
+        }
+        signal_stack=(void *)mapping;
+    }
+    stack_t resident={.ss_sp=signal_stack,.ss_size=signal_stack_size};
+    long stack_result=R(sigaltstack,&resident,0,0,0,0,0);
+    if(stack_result) {
+        proxy_log("adopt-fork-altstack-install",R(gettid,0,0,0,0,0,0),stack_result);
+        if(signal_stack!=self->signal_stack) R(munmap,signal_stack,signal_stack_size,0,0,0,0);
+    } else self->signal_stack=signal_stack;
 }
 /* Called by the proxy's successful process-clone continuation, while the
  * child still has the application's FS base. Keep this hook x86_64-local:
