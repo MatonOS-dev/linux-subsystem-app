@@ -28,6 +28,10 @@ for test in signals threads spawn binder zygote-startup; do
     timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/$test" >"build/$test.out" 2>"build/$test.log"
     cat "build/$test.out"
 done
+cc -O2 -Wall -Wextra -Werror tests/prehandler-filter.c -o build/prehandler-filter
+cc -O2 -Wall -Wextra -Werror tests/supervise-child.c -o build/supervise-child
+timeout 15 build/prehandler-filter build/linux-layer-v3 --supervise --android-filter "$PWD/build/supervise-child" >build/prehandler-filter.out 2>build/prehandler-filter.log
+printf 'PASS loader supervisor starts under the generated Android app syscall allowlist\n'
 python3 tests/supervise.py build/linux-layer-v3
 cc -no-pie -O2 -Wall -Wextra -Werror tests/fcntl-native.c -o build/fcntl-native
 timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/fcntl-native" >build/fcntl-native.out 2>build/fcntl-native.log

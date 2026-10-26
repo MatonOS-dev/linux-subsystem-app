@@ -102,7 +102,8 @@ static int supervise_launch(int argc,char **argv,char **environ) {
         RAW(PROXY_SC_getppid,0,0,0,0,0,0)!=expected_parent))return 2;
 
     long supervisor=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
-    long child=RAW(PROXY_SC_fork,0,0,0,0,0,0);
+    /* Android's inherited app filter allows clone(SIGCHLD), not fork. */
+    long child=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
     if(child<0)return 2;
     if(child==0) {
         char supervisor_pid[32];
