@@ -56,4 +56,42 @@ public final class PackageMountsTest {
   try{PackageMounts.glExtensionBranch("[Runtime]\nname=org.freedesktop.Platform\n","25.08");fail();}
   catch(java.io.IOException expected){assertTrue(expected.getMessage().contains("no org.freedesktop.Platform.GL extension point"));}
  }
+ @Test public void launchTargetsUseFlatpakVersionOrderAndExtensionIdSuffixes() throws Exception {
+  String runtime="runtime/org.freedesktop.Platform/x86_64/26.08";
+  String app="app/com.valvesoftware.Steam/x86_64/stable";
+  String gl="runtime/org.freedesktop.Platform.GL.default/x86_64/26.08";
+  String glExtra="runtime/org.freedesktop.Platform.GL.default/x86_64/26.08-extra";
+  String glMaton="runtime/org.freedesktop.Platform.GL.maton/x86_64/26.08-extra";
+  String gl32="runtime/org.freedesktop.Platform.GL32.default/x86_64/26.08";
+  String gl32Extra="runtime/org.freedesktop.Platform.GL32.default/x86_64/26.08-extra";
+  String compat="runtime/org.freedesktop.Platform.Compat.i386/x86_64/26.08";
+  String codecs="runtime/org.freedesktop.Platform.codecs-extra/x86_64/26.08-extra";
+  String codecsWrong="runtime/org.freedesktop.Platform.codecs-extra/x86_64/26.08";
+  String platformMetadata;
+  try(java.io.InputStream input=getClass().getResourceAsStream("/platform-26.08.metadata")) {
+   assertNotNull("real Platform 26.08 metadata fixture",input);
+   platformMetadata=new String(input.readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+  }
+  String origin="flathub",commit=org.matonos.linuxhost.stubgen.ObjectPacks.hex(
+    java.security.MessageDigest.getInstance("SHA-256").digest(new byte[]{1}));
+  java.util.List<String> refs=java.util.Arrays.asList(gl,glExtra,glMaton,gl32,gl32Extra,compat,codecs,codecsWrong);
+  java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency> runtimeDeps=new java.util.ArrayList<>();
+  for(String ref:refs)runtimeDeps.add(new org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency(ref,origin,"/usr"));
+  java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord> records=new java.util.ArrayList<>();
+  records.add(new org.matonos.linuxhost.stubgen.DeploymentRecord(app,commit,origin,
+    ("[Application]\nruntime=org.freedesktop.Platform/x86_64/26.08\n").getBytes(),new byte[]{1},new byte[]{1},
+    java.util.Collections.singletonList(new org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency(runtime,origin,"/usr"))));
+  records.add(new org.matonos.linuxhost.stubgen.DeploymentRecord(runtime,commit,origin,platformMetadata.getBytes(),new byte[]{1},new byte[]{1},runtimeDeps));
+  for(String ref:refs)records.add(new org.matonos.linuxhost.stubgen.DeploymentRecord(ref,commit,origin,
+    ("[ExtensionOf]\nref="+runtime+"\n").getBytes(),new byte[]{1},new byte[]{1}));
+  java.util.Map<String,String> targets=PackageMounts.launchTargets(records);
+  assertEquals("/usr/lib/x86_64-linux-gnu/GL/default",targets.get(gl));
+  assertNull(targets.get(glExtra));
+  assertEquals("/usr/lib/x86_64-linux-gnu/GL/maton",targets.get(glMaton));
+  assertEquals("/usr/lib/i386-linux-gnu/GL/default",targets.get(gl32));
+  assertNull(targets.get(gl32Extra));
+  assertEquals("/usr/lib/i386-linux-gnu",targets.get(compat));
+  assertEquals("/usr/lib/x86_64-linux-gnu/codecs-extra",targets.get(codecs));
+  assertNull(targets.get(codecsWrong));
+ }
 }
