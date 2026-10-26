@@ -38,6 +38,7 @@ char *vfs_readlink_dynamic(const char *,long *);
 void vfs_executable(const char *);
 char *vfs_exe(void);
 int vfs_bwrap_shm_mkdir(const char *);
+int vfs_bwrap_tmpdir_mkdir(const char *);
 long vfs_bwrap_erofs_mkdir(const char *);
 long vfs_bwrap_erofs_file(const char *,unsigned);
 char *vfs_reverse(const char *);

@@ -921,6 +921,9 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(proxy_trace){emit("v3 path resolved ");emit(p);emit("\n");}
     int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
     int exclusive_create=nr==PROXY_SC_openat && (a[2]&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL);
+    /* Flatpak apply_extra has no per-app cache/tmp bind. Give its private
+     * /var/tmp the standard sticky, world-writable mode for libc tempfiles. */
+    if(nr==PROXY_SC_mkdirat && vfs_bwrap_tmpdir_mkdir(p))a[2]=01777;
     if(nr==PROXY_SC_mkdirat && path_exists(p)){
         /* Runtime extension points can be symlinks in a single-image
          * deployment. Flatpak's bwrap creates a directory at the extension
