@@ -34,6 +34,7 @@ char *vfs_fd_name_cached(int);
 void vfs_fd_record(int,int,const char *,int);
 void vfs_fd_rename(const char *,const char *);
 char *vfs_proc_fd_name(const char *);
+char *vfs_readlink_dynamic(const char *,long *);
 void vfs_executable(const char *);
 char *vfs_exe(void);
 int vfs_bwrap_shm_mkdir(const char *);

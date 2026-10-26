@@ -1021,7 +1021,10 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */
         if(p_len(p)>=6 && p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/' && raw[0]=='/'){
-            char *rev=vfs_reverse(raw);if(rev){size_t n=p_len(rev);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],rev,n);e=(long)n;vfs_free(rev);}}
+            char *full=raw;long full_error=0;int complete=1;
+            if(e==(long)a[3]){full=vfs_readlink_dynamic(p,&full_error);if(!full)complete=0;}
+            if(complete){char *rev=vfs_reverse(full);if(rev){size_t n=p_len(rev);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],rev,n);e=(long)n;vfs_free(rev);}}
+            if(full && full!=raw)vfs_free(full);}
         vfs_free(raw);
     }
 done:

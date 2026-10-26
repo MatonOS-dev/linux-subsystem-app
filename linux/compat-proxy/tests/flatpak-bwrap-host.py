@@ -112,10 +112,19 @@ def phase(name, payload=False):
         # Instance metadata and locks follow flatpak_run_add_app_info_args.
         instance=fixture/'instance';instance.mkdir(exist_ok=True)
         (instance/'.ref').touch()
+        extension_conf='runtime-001-org.freedesktop.Platform.GL.maton.conf'
+        (instance/'ld.so.conf.d').mkdir(exist_ok=True)
+        (instance/'ld.so.conf.d'/extension_conf).touch()
         (instance/'info').write_text('[Application]\nname=org.matonos.CompatTest\n')
         (instance/'run-environ').write_bytes(b'PATH=/usr/bin:/bin\0container=flatpak\0')
         args+=['--ro-bind',str(instance),'/run/flatpak',
                '--lock-file','/run/flatpak/.ref']
+        # Flatpak binds generated extension loader config files below this
+        # long destination. bwrap resolves the parent through its tracked fd
+        # and then mounts the --ro-bind-data tmpfile at the reconstructed
+        # path; keep this exact shape covered against fd-path truncation.
+        args+=['--ro-bind-data',data(b'/usr/lib\n'),
+               '/run/flatpak/ld.so.conf.d/'+extension_conf]
         for flag in ['--info-fd','--json-status-fd']:
             fd=os.open(fixture/(name+flag+'.json'),os.O_RDWR|os.O_CREAT|os.O_TRUNC,0o600)
             opened.append(fd);checks[flag]=fd;args += [flag,str(fd)]
@@ -129,7 +138,7 @@ def phase(name, payload=False):
         args+=['--perms','0600','--file',data(info),'/.flatpak-info',
                '--ro-bind-data',data(info),'/.flatpak-info',
                '--setenv','container','flatpak']
-        command=['/bin/bash','-c','ls /app /usr; head -2 /etc/passwd; cat /run/flatpak/info; cmp /.flatpak-info "/proc/$$/root/.flatpak-info"; echo proc-root-ok; /app/filter-check']
+        command=['/bin/bash','-c','ls /app /usr; head -2 /etc/passwd; cat /run/flatpak/info; test "$(cat /run/flatpak/ld.so.conf.d/runtime-001-org.freedesktop.Platform.GL.maton.conf)" = /usr/lib; cmp /.flatpak-info "/proc/$$/root/.flatpak-info"; echo proc-root-ok; /app/filter-check']
     else:
         command=ldconfig_command
     args+=['--seccomp',data(flatpak_filter_bytes(payload))]
