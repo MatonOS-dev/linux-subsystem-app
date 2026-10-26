@@ -641,7 +641,11 @@ char *vfs_proc_fd_name(const char *path){
 return NULL;
 }
 static char *basepath(int fd,long *error){if(fd==AT_FDCWD){
-if(cwd){char *global=root?join(root,cwd):dupstr(cwd);char *host=global?physical(global):NULL;struct proxy_stat named,actual;int valid=host && !arch_stat_at(AT_FDCWD,host,&named,0) && !arch_stat_at(AT_FDCWD,".",&actual,0) && named.st_dev==actual.st_dev && named.st_ino==actual.st_ino;vfs_free(global);vfs_free(host);if(valid)return dupstr(cwd);vfs_free(cwd);cwd=NULL;}size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);return q;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
+/* chdir/fchdir are emulated by this proxy, so cwd is stable proxy state.
+ * Sample the kernel once for the initial cwd, then never query it while
+ * resolving paths. Fork inherits it and exec state transfer serializes it. */
+if(!cwd){size_t n=256;for(;;){char *s=vfs_alloc(n);if(!s){*error=-ENOMEM;return NULL;}long r=RAW(PROXY_SC_getcwd,s,n,0,0,0,0);if(r>=0){char *q=vfs_reverse(s);vfs_free(s);if(!q){*error=-ENOMEM;return NULL;}cwd=pdupstr(q);vfs_free(q);if(!cwd){*error=-ENOMEM;return NULL;}break;}vfs_free(s);if(r!=-ERANGE){*error=r;return NULL;}if(n>SIZE_MAX/2){*error=-EOVERFLOW;return NULL;}n*=2;}}
+return dupstr(cwd);}
     char *tracked=vfs_fd_name(fd);if(tracked)return tracked;
     struct proxy_stat st;long status=arch_stat_fd(fd,&st);if(status<0){*error=status;return NULL;}if(!S_ISDIR(st.st_mode)){*error=-ENOTDIR;return NULL;}
     char p[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0;unsigned long v=(unsigned)fd;do{digits[d++]=(char)('0'+v%10);v/=10;}while(v);while(d)p[k++]=digits[--d];p[k]=0;
@@ -840,9 +844,8 @@ void vfs_fd_rename(const char *source,const char *destination){
     char *old_view=vfs_reverse(source),*new_view=vfs_reverse(destination);long error=0;
     char *old=old_view?global_target(old_view,&error):NULL;
     char *next=new_view?global_target(new_view,&error):NULL;
-    vfs_free(old_view);vfs_free(new_view);
-    if(!old || !next){vfs_free(old);vfs_free(next);return;}
-    size_t old_len=p_len(old);proxy_sigmask_t mask=fd_names_lock();
+    if(!old || !next){vfs_free(old_view);vfs_free(new_view);vfs_free(old);vfs_free(next);return;}
+    size_t old_len=p_len(old);if(cwd&&prefix(cwd,old_view)){char *renamed=join(new_view,cwd+p_len(old_view));if(renamed){char *saved=pdupstr(renamed);if(saved){vfs_free(cwd);cwd=saved;}vfs_free(renamed);}}vfs_free(old_view);vfs_free(new_view);proxy_sigmask_t mask=fd_names_lock();
     for(size_t i=0;i<fd_names_capacity;i++){
         struct fd_name *entry=&fd_names[i];if(!entry->length || !prefix(entry->path,old))continue;
         char *renamed=join(next,entry->path+old_len);if(!renamed)continue;
