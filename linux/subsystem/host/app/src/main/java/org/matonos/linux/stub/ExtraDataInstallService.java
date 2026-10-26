@@ -152,7 +152,6 @@ public final class ExtraDataInstallService extends Service {
                 runtimeRef.substring(runtimeRef.lastIndexOf('/') + 1)));
         if (!files.exists())
             throw new IOException("Cannot expose installed EROFS runtime to Flatpak");
-        makeReadOnly(system);
         return system;
     }
 
@@ -160,15 +159,6 @@ public final class ExtraDataInstallService extends Service {
         ExtraDataFiles.deleteTree(file);
     }
 
-    private static void makeReadOnly(File file) throws IOException {
-        if (java.nio.file.Files.isSymbolicLink(file.toPath())) return;
-        if (file.isDirectory()) {
-            File[] children=file.listFiles();
-            if (children==null) throw new IOException("Cannot read Flatpak system installation");
-            for (File child:children) makeReadOnly(child);
-        }
-        if (!file.setWritable(false,false)) throw new IOException("Cannot make Flatpak system installation read-only");
-    }
 
     private void runFlatpak(List<String> prefix,File home, File tmp, File run, File cache, File userDir, File systemDir, String... args) throws Exception {
         List<String> command = new ArrayList<>();
