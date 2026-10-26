@@ -5,7 +5,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.content.pm.ApplicationInfo;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.util.Log;
@@ -22,8 +21,8 @@ public final class DebugExtraInstallActivity extends Activity {
         TextView status = new TextView(this); status.setText("Starting Chrome extra-data install");
         status.setGravity(android.view.Gravity.CENTER); setContentView(status);
         if (!ACTION.equals(getIntent().getAction())
-                || (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
-            Log.e(TAG, "Debug Chrome install is only available on debug builds"); finish(); return;
+                || "user".equals(android.os.Build.TYPE)) {
+            Log.e(TAG, "Debug Chrome install is only available on userdebug/eng images"); finish(); return;
         }
         connection = new ServiceConnection() {
             @Override public void onServiceConnected(ComponentName name, IBinder binder) {
