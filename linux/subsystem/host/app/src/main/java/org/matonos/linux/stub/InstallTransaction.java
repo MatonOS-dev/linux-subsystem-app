@@ -470,8 +470,10 @@ public final class InstallTransaction {
                 params.setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
                 android.content.pm.PackageInstaller installer=context.getPackageManager().getPackageInstaller();
                 int id=installer.createSession(params);
-                try(android.content.pm.PackageInstaller.Session session=installer.openSession(id);java.io.InputStream in=org.matonos.linuxhost.stubgen.PlaceholderFiles.open(apk);java.io.OutputStream out=session.openWrite("base.apk",0,apk.length())) {
-                    byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);session.fsync(out);
+                try(android.content.pm.PackageInstaller.Session session=installer.openSession(id)) {
+                    try(java.io.InputStream in=org.matonos.linuxhost.stubgen.PlaceholderFiles.open(apk);java.io.OutputStream out=session.openWrite("base.apk",0,apk.length())) {
+                        byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);session.fsync(out);
+                    }
                     android.content.Intent result=new android.content.Intent(action).setPackage(context.getPackageName());
                     android.app.PendingIntent pending=android.app.PendingIntent.getBroadcast(context,id,result,android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_MUTABLE);
                     session.commit(pending.getIntentSender());
