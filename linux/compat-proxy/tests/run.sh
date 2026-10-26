@@ -2,6 +2,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+cc -O2 -Wall -Wextra -Werror tests/create-denied.c -o build/create-denied
+mkdir -p build/create-denied-dir
+chmod 0500 build/create-denied-dir
+timeout 15 build/linux-layer-v3 --android-filter --map "$PWD/build/create-denied-dir" /denied "$PWD/build/create-denied" >build/create-denied.out 2>build/create-denied.log
+chmod 0700 build/create-denied-dir
+grep -q 'v3 create input /denied/tmp.fixture' build/create-denied.log
+grep -q "v3 create backing $PWD/build/create-denied-dir/tmp.fixture" build/create-denied.log
+cat build/create-denied.out
 cc -O2 -Wall -Wextra -Werror tests/payload-filter.c -o build/payload-filter
 build/payload-filter
 cc -O2 -Wall -Wextra -Werror -pthread tests/i386-thread-adopt.c \
