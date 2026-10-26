@@ -88,12 +88,8 @@ public final class ExtraDataInstallService extends Service {
         if (subpaths != null) for (String subpath : subpaths.split("\n")) if (!subpath.isEmpty()) install.add("--subpath=" + subpath);
         install.add(remote); install.add(ref);
         runFlatpak(prefix,home, tmp, run, cache, flatpakUser, flatpakSystem, install.toArray(new String[0]));
-        File deploy = new File(flatpakUser, "repo/deploy/" + ref);
-        File current = new File(deploy, "active/files");
-        if (!current.isDirectory()) {
-            String[] children = deploy.list();
-            if (children != null) for (String child : children) if (child.endsWith(".files")) current = new File(deploy, child);
-        }
+        // Stock Flatpak layout: <installation>/<kind>/<id>/<arch>/<branch>/active/files.
+        File current = new File(flatpakUser, ref + "/active/files");
         if (!current.isDirectory()) throw new IOException("Flatpak did not create a deployed files tree");
         String imagePrefix = ref.startsWith("runtime/")
                 ? "/" + ref.substring(ref.lastIndexOf('/') + 1) + "/" : "/app/";

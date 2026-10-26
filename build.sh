@@ -65,7 +65,7 @@ if [[ ${1:-} == --build-dependencies ]]; then
   bash "$ROOT/linux/subsystem/build-compositor.sh"
 fi
 [[ -s $BUILD_DIR/flatpak/build.ninja ]] || { echo 'Build pinned dependencies first with --build-dependencies (see README)' >&2; exit 2; }
-grep -q $'flatpak\t4cce363ef3168baf10a4cd0a916694d3959f9558\t' "$CACHE_DIR/src/flatpak.pin" || { echo 'Flatpak cache does not match the v3.5 source pin' >&2; exit 2; }
+grep -q $'flatpak\t8078df1477d6b6f1c15efaf327889a52a8adfedc\t' "$CACHE_DIR/src/flatpak.pin" || { echo 'Flatpak cache does not match the v3.5 source pin' >&2; exit 2; }
 bash "$ROOT/tests/run.sh" "$OUTPUT/tests"
 GRADLE=${MATON_GRADLE_HOME:-$HOME/Documents/gradle-9.4.1}/bin/gradle
 REAL_VERSION_CODE=$(( $(git -C "$ROOT" rev-list --count HEAD) + 2 ))

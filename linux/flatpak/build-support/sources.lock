@@ -5,7 +5,7 @@ glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08
 ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-
 ostree-libglnx|git|https://github.com/GNOME/libglnx.git|b415d046880d585e5161bf230590543adeea4fe6|-
 ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462ef9e2657ca4ccd7667|-
-flatpak|git|https://github.com/MatonOS-dev/flatpak|4cce363ef3168baf10a4cd0a916694d3959f9558|-
+flatpak|git|https://github.com/MatonOS-dev/flatpak|8078df1477d6b6f1c15efaf327889a52a8adfedc|-
 flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
 variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
 DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-

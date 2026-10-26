@@ -6,7 +6,7 @@ glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08
 ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-
 ostree-libglnx|git|https://github.com/GNOME/libglnx.git|b415d046880d585e5161bf230590543adeea4fe6|-
 ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462ef9e2657ca4ccd7667|-
-flatpak|git|https://github.com/MatonOS-dev/flatpak|4cce363ef3168baf10a4cd0a916694d3959f9558|-
+flatpak|git|https://github.com/MatonOS-dev/flatpak|8078df1477d6b6f1c15efaf327889a52a8adfedc|-
 flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
 variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
 DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
@@ -31,10 +31,10 @@ toolchain: Alpine 3.24.2; x86_64-alpine-linux-musl-gcc (Alpine 15.2.0) 15.2.0; m
 
 
 static musl APK helper artifacts
-b47d698948d74e4d668287828f9a8d3ac5b2f50c8dd971682548a9829276998c  matonos-flatpak
+4d4081918a22f52b770d097852d86426efdad8591bf7fef5b559981413564180  matonos-flatpak
 be389e69d4d11f3394ba54a3fb723958f0ca2ea3d58427ebfb4fef138668d532  matonos-app-flatpak
 c377c15b6ba90df136082e2786ea1f22751a590ceaa0584eb6070f484bb0ace0  matonos-app-bwrap
 7ad291c8b94f97f67ee77fda26ec0e7cfe47f4d6952adf46637bce6f0447aaa5  matonos-app-tool
 
 static musl plan helper artifact
-9dd424481ca084a1721a92ae85649a12a7722335445d2003fc23bd2d5aa14140  libmatonos-flatpak-plan.so
+bba89e78e13e00cea17dcf2ec4740beccbb12ac53be20bdb100427678d28d89b  libmatonos-flatpak-plan.so

@@ -53,7 +53,7 @@ generated stubs become usable after the bootstrap finishes.
 
 Flatpak's source/dependency lock is `linux/flatpak/build-support/sources.lock`:
 MatonOS-dev/flatpak branch `matonos/v26.10`, commit
-`4cce363ef3168baf10a4cd0a916694d3959f9558`. Its CLI/multicall recipe was
+`8078df1477d6b6f1c15efaf327889a52a8adfedc`. Its CLI/multicall recipe was
 carried from MatonOS_apexs; image-only store helpers are excluded. The build
 keeps source archives and dependency output outside this repository. An existing
 verified dependency cache can be selected with `MATON_FLATPAK_CACHE`,
