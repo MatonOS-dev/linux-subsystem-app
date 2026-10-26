@@ -75,7 +75,9 @@ public final class ExtraDataInstallService extends Service {
         String dns=LoaderCommand.resolverAddress();
         File resolv=LoaderCommand.writeResolv(new File(run,"install-resolv.conf"),dns);
         List<String> prefix=new ArrayList<>();
-        prefix.add(LoaderCommand.loader(this).getAbsolutePath());prefix.add("--parent-pid");
+        prefix.add(LoaderCommand.loader(this).getAbsolutePath());
+        if (new File(getCacheDir(), "v3-trace").exists()) prefix.add("--trace");
+        prefix.add("--parent-pid");
         prefix.add(Integer.toString(android.os.Process.myPid()));LoaderCommand.addDns(prefix,dns);LoaderCommand.addResolvMaps(prefix,resolv);
         runFlatpak(prefix,home, tmp, run, cache, flatpakUser, flatpakSystem, "remote-add", "--user", "--if-not-exists", remote, url);
         String tags=android.os.LocaleList.getDefault().toLanguageTags();
@@ -155,9 +157,7 @@ public final class ExtraDataInstallService extends Service {
     }
 
     private static void deleteTree(File file) {
-        if (java.nio.file.Files.isSymbolicLink(file.toPath())) { file.delete(); return; }
-        if (file.isDirectory()) { File[] children=file.listFiles(); if (children!=null) for (File child:children) deleteTree(child); }
-        file.delete();
+        ExtraDataFiles.deleteTree(file);
     }
 
     private static void makeReadOnly(File file) throws IOException {
@@ -174,6 +174,7 @@ public final class ExtraDataInstallService extends Service {
         List<String> command = new ArrayList<>();
         command.addAll(prefix);
         command.add(LoaderCommand.tool(this, LoaderCommand.FLATPAK_CLI).getAbsolutePath());
+        if (new File(getCacheDir(), "v3-trace").exists()) command.add("--verbose");
         java.util.Collections.addAll(command, args);
         ProcessBuilder builder = new ProcessBuilder(command).directory(home).redirectErrorStream(true);
         java.util.Map<String,String> env = builder.environment(); env.clear();
@@ -185,9 +186,18 @@ public final class ExtraDataInstallService extends Service {
         if (systemDir != null) env.put("FLATPAK_SYSTEM_DIR", systemDir.getAbsolutePath());
         env.put("FLATPAK_SYSTEM_CACHE_DIR",cache.getAbsolutePath());
         for(String key:new String[]{"SSL_CERT_DIR","CURL_CA_BUNDLE","G_TLS_CA_PATH"})env.put(key,"/apex/com.android.conscrypt/cacerts");
-        Process process = builder.start(); byte[] log;
-        try (java.io.InputStream in = process.getInputStream()) { log = in.readAllBytes(); }
-        if (process.waitFor() != 0) throw new IOException("Stock Flatpak failed: " + new String(log, java.nio.charset.StandardCharsets.UTF_8));
+        Process process = builder.start(); StringBuilder log = new StringBuilder();
+        // Stream evidence while the operation is running, including successful
+        // apply_extra output; full proxy traces must not wait for process exit.
+        try (java.io.BufferedReader in = new java.io.BufferedReader(new java.io.InputStreamReader(
+                process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = in.readLine()) != null) {
+                android.util.Log.i(TAG, line);
+                log.append(line).append('\n');
+            }
+        }
+        if (process.waitFor() != 0) throw new IOException("Stock Flatpak failed: " + log);
     }
 
 }

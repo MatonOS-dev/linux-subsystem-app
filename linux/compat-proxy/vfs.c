@@ -701,6 +701,25 @@ static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *err
     char *proc_root=proxy_proc_root_path(path);
     if(proc_root){char *answer=vfs_resolve_mount_impl(fd,proc_root,follow,error,identity,cacheable,allow_fast);vfs_free(proc_root);return answer;}
     if(cacheable)*cacheable=1;
+    /* An open proc dirfd pins the original filesystem across pivot_root.
+     * apply_extra deliberately has no /proc in its new root, but bwrap still
+     * uses its retained proc_fd to finish the user namespace maps. Re-rooting
+     * that relative lookup incorrectly targets newroot/proc instead. */
+    if(root && vfs_is_bwrap() && fd!=AT_FDCWD && path[0]!='/'){
+        char proc[64]="/proc/self/fd/",digits[24];size_t k=14;unsigned d=0,value=(unsigned)fd;
+        do{digits[d++]=(char)('0'+value%10);value/=10;}while(value);
+        while(d)proc[k++]=digits[--d];
+        proc[k]=0;
+        long base_error=0;char *base=readlink_dynamic(proc,&base_error);
+        if(base && prefix(base,"/proc")){
+            char *native=join(base,path);vfs_free(base);
+            if(cacheable)*cacheable=0;
+            if(identity)*identity=NULL;
+            if(!native)*error=-ENOMEM;
+            return native;
+        }
+        vfs_free(base);
+    }
     /* Polling roots are immutable generated directories. Re-check the current
      * mount source so an unmount/overmount cannot reuse a stale fast answer. */
     if(p_equal(path,"/sys/bus") || p_equal(path,"/sys/class")){

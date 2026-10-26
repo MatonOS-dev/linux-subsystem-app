@@ -856,6 +856,13 @@ static int path_is_symlink(const char *path) {
     struct proxy_stat st;
     return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0 && S_ISLNK(st.st_mode);
 }
+static void create_denied(long nr,long flags,long result,int dirfd,const char *input,const char *backing){
+    if(nr!=PROXY_SC_openat || !(flags&O_CREAT) || (result!=-EACCES && result!=-EPERM))return;
+    proxy_log("create-denied",result,flags);
+    proxy_log("create-dirfd",dirfd,0);
+    emit("v3 create input ");emit(input?input:"(null)");emit("\n");
+    emit("v3 create backing ");emit(backing?backing:"(resolution failed)");emit("\n");
+}
 static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
     int at=(one==1 && nr!=PROXY_SC_inotify_add_watch) || (nr==PROXY_SC_symlinkat && one==2);
@@ -917,7 +924,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         }
     }
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path,(int)a[2]);if(synthetic!=-ENOSYS)return synthetic;}
-    long e=0;void *pm=NULL,*qm=NULL;char *p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}return e;}
+    long e=0;void *pm=NULL,*qm=NULL;char *p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}create_denied(nr,a[2],e,fd,original_path,NULL);return e;}
     char *q=NULL;
     if(proxy_trace){emit("v3 path resolved ");emit(p);emit("\n");}
     int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
@@ -1051,6 +1058,10 @@ done:
             if(arch_stat_at(AT_FDCWD,p,&probe,0)==-EACCES)e=-ENOENT;
         }
     }
+    /* A failed create must identify the translated path even without full
+     * tracing: callers such as libglnx otherwise report only "Creating temp
+     * file", hiding whether the failure precedes bwrap or is in its payload. */
+    create_denied(nr,a[2],e,fd,original_path,p);
     vfs_free(p);vfs_free(q);return e;
 }
 /* Shared file-path dispatch for the ordinary SIGSYS route and the first
