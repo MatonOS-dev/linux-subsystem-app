@@ -26,7 +26,15 @@ source.write_text(r'''#define _GNU_SOURCE
 #include <unistd.h>
 #define CHECK(c) do { if(!(c)){fprintf(stderr,"FAIL %d %s errno=%d\n",__LINE__,#c,errno);return 1;} } while(0)
 int main(int argc,char **argv){
- CHECK(argc==3 || (argc==4 && (!strcmp(argv[2],"bwrap-symlink") || !strcmp(argv[2],"bwrap-root-alias"))));
+ CHECK(argc==3 || (argc==4 && (!strcmp(argv[2],"bwrap-symlink") || !strcmp(argv[2],"bwrap-root-alias") || !strcmp(argv[2],"bwrap-app-dest"))));
+ if(!strcmp(argv[2],"bwrap-app-dest")){
+  int root=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);CHECK(root>=0);
+  CHECK(mkdirat(root,"app/lib/i386-linux-gnu/GL",0755)==0);
+  int file=openat(root,"app/lib/i386-linux-gnu/GL32",O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0644);CHECK(file>=0);
+  CHECK(write(file,"app-bind-target",15)==15);close(file);
+  struct stat st;CHECK(fstatat(root,"app/lib/i386-linux-gnu/GL32",&st,0)==0 && S_ISREG(st.st_mode) && st.st_size==15);
+  close(root);puts("PASS bwrap creates missing directory and file bind destinations in app image");return 0;
+ }
  if(!strcmp(argv[2],"bwrap-root-alias")){
   struct stat st;
   CHECK(mount("/usr","/newroot/usr",NULL,MS_BIND,NULL)==0);
@@ -51,6 +59,9 @@ int main(int argc,char **argv){
   struct stat st;
   CHECK(mkdirat(root,"usr/lib/x86_64-linux-gnu/GL/extension/",0755)==0);
   CHECK(stat("/usr/lib/x86_64-linux-gnu/GL/extension",&st)==0 && S_ISDIR(st.st_mode));
+  int file=openat(root,"usr/lib/x86_64-linux-gnu/GL/extension.conf",O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0644);CHECK(file>=0);
+  CHECK(write(file,"runtime-bind-target",19)==19);close(file);
+  CHECK(fstatat(root,"usr/lib/x86_64-linux-gnu/GL/extension.conf",&st,0)==0 && S_ISREG(st.st_mode) && st.st_size==19);
  }else if(!strcmp(argv[2],"bwrap-symlink")){
   struct stat st;
   int libfd=open("/usr/lib",O_RDONLY|O_DIRECTORY|O_CLOEXEC);CHECK(libfd>=0);
@@ -104,6 +115,18 @@ result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIP
 if result.returncode:
     raise RuntimeError(result.stdout+'\n'+result.stderr)
 print('PASS direct-root extension bind target shadows EROFS symlink')
+
+# Steam's GL32 extension has a file and directory destination under /app.
+# Exercise both types against a separate immutable app-image prefix.
+app_image=root/'app-image'
+(app_image/'lib/i386-linux-gnu').mkdir(parents=True)
+cmd=[str(base/'build/linux-layer-v3'),'--android-filter','--erofs-mount','/app',str(app_image),
+     str(bwrap),str(newroot),'bwrap-app-dest']
+result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+if result.returncode:
+    raise RuntimeError(result.stdout+'\n'+result.stderr)
+print(result.stdout.strip())
+
 cmd=[str(base/'build/linux-layer-v3'),'--android-filter','--erofs-mount','/usr',str(mount),
      '--root',str(root),'/bwrap',str(root),'bwrap-root-alias','/usr/lib/x86_64-linux-gnu/extension']
 result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)

@@ -917,6 +917,25 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_mkdirat){char *package_path=erofs_reverse(p);
         if(package_path){vfs_free(package_path);e=vfs_bwrap_erofs_mkdir(p);if(e==-ENOSYS)e=-EROFS;goto done;}
     }
+    /* bwrap creates absent regular-file bind destinations with open(O_CREAT)
+     * before mounting over them. Give that operation a per-launch writable
+     * shadow in the same way as mkdirat, including for app-image prefixes. */
+    if(nr==PROXY_SC_openat && (a[2]&O_CREAT) && !path_exists(p)){
+        char *package_path=erofs_reverse(p);
+        if(package_path){
+            vfs_free(package_path);
+            e=vfs_bwrap_erofs_file(p,(unsigned)a[3]&07777);
+            if(e!=-ENOSYS){
+                if(e)goto done;
+                /* The shadow file now exists by design, so this O_EXCL
+                 * creation must complete against that file rather than
+                 * report that the original package target existed. */
+                a[2]&=~O_EXCL;exclusive_create=0;
+                vfs_free(p);p=vfs_resolve_mount(fd,original_path,follow,&e,&pm);
+                if(!p)goto done;
+            }
+        }
+    }
     if(exclusive_create && path_exists(p)){e=-EEXIST;goto done;}
     if(create_readonly_open && path_exists(p))a[2]&=~O_CREAT;
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}

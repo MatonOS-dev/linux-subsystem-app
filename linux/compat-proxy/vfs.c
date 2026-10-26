@@ -354,7 +354,7 @@ int vfs_bwrap_shm_mkdir(const char *path){
     size_t n=p_len(path);return p_equal(path,"/dev/shm") ||
         (n>8 && p_equal(path+n-8,"/dev/shm"));
 }
-long vfs_bwrap_erofs_mkdir(const char *path){
+static long vfs_bwrap_erofs_destination(const char *path,int directory,unsigned mode){
     if(!vfs_is_bwrap() || !path)return -ENOSYS;
     char *view=erofs_reverse(path);if(!view)return -ENOSYS;
     long error=0;char *target=NULL;struct mount *alias=NULL;size_t source_length=0;
@@ -384,9 +384,20 @@ long vfs_bwrap_erofs_mkdir(const char *path){
     vfs_free(view);
     if(!target)return error;
     char *source=vfs_temp_create(&error);
-    if(source){error=proxy_mount(source,target);vfs_free(source);}
+    if(source && !directory){
+        char *file=join(source,"destination");
+        if(!file)error=-ENOMEM;
+        else{
+            long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,mode,0,0);
+            if(fd<0)error=fd;else RAW(PROXY_SC_close,fd,0,0,0,0,0);
+            vfs_free(source);source=file;
+        }
+    }
+    if(source){if(!error)error=proxy_mount(source,target);vfs_free(source);}
     vfs_free(target);return error;
 }
+long vfs_bwrap_erofs_mkdir(const char *path){return vfs_bwrap_erofs_destination(path,1,0755);}
+long vfs_bwrap_erofs_file(const char *path,unsigned mode){return vfs_bwrap_erofs_destination(path,0,mode);}
 /* Worker SIGSYS handlers resolve paths concurrently. A shared cache cannot
  * free/replace keys while another thread reads them, or publish a key before
  * its mount identity. Walk the small mount list instead; no per-call shared
