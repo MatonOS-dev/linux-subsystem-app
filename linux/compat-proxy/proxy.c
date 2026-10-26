@@ -72,6 +72,13 @@ void proxy_fd_number_moved(int oldfd,int newfd){
 static struct kernel_action chained;
 static struct kernel_action chained_segv;
 static void rewrite_segv_handler(int,siginfo_t *,void *);
+static void normalize_payload_action(struct kernel_action *action) {
+    action->mask&=~SIGSYS_BIT;
+    /* A default/ignored disposition never enters a restorer. Some kernels
+     * reject the stale SA_RESTORER bit Chromium retains after clearing the
+     * restorer while resetting every signal disposition in a zygote child. */
+    if(action->handler<=1 && !action->restorer)action->flags&=~SA_RESTORER;
+}
 int proxy_diagnostics_init(void) {
     proxy_fd_reserve_init();
     if(!proxy_fd_reserve_ready)return -EMFILE;
@@ -1666,14 +1673,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             struct kernel_action next=chained;
             if(a[1]) p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
             if(a[2]) p_copy((void *)(uintptr_t)a[2],&chained,sizeof(chained));
-            if(a[1]) {next.mask&=~SIGSYS_BIT;chained=next;}result=0;
+            if(a[1]) {normalize_payload_action(&next);chained=next;}result=0;
         }
         else if(a[0]==SIGSEGV) {
             if(a[3]!=8){result=-EINVAL;break;}
             struct kernel_action next=chained_segv;
             if(a[1])p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
             if(a[2])p_copy((void *)(uintptr_t)a[2],&chained_segv,sizeof(chained_segv));
-            if(a[1]){next.mask&=~SIGSYS_BIT;chained_segv=next;}
+            if(a[1]){normalize_payload_action(&next);chained_segv=next;}
 #if ARCH_AUDIT == AUDIT_ARCH_I386
             struct kernel_action proxy={(uintptr_t)ldt_segv_handler,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
 #else
@@ -1683,7 +1690,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         }
         else {
             struct kernel_action action;
-            if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));action.mask&=~SIGSYS_BIT;a[1]=(long)&action;}
+            if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));normalize_payload_action(&action);a[1]=(long)&action;}
             result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
         }break;
     case PROXY_SC_rt_sigprocmask: {
