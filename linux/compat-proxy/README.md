@@ -843,3 +843,37 @@ Round 19 validation: full `bash linux/compat-proxy/tests/run.sh` passed
 fixtures); device-tree preflight passed. Logs:
 `/mnt/data/aosp/out/pc-logs/fork-adopt-r19-tests.log` and
 `/mnt/data/aosp/out/pc-logs/fork-adopt-r19/{positive,negative,preflight}.log`.
+
+### Round 20: distinguish nested setup from the userns assertion
+
+`day-r19/obsidian.txt` identifies pid 10211 as the portal-side nested
+ldconfig bwrap (`--args 31 ldconfig -X -C ...`). Its argument bundle has
+no `--assert-userns-disabled`. The inherited-zero check in the emulated
+unshare path nevertheless rejected its setup with EPERM. The prior clone
+exemption alone could not cover bwrap's subsequent unshare.
+
+Nested bwrap monitor setup now has the same inherited-limit exemption for
+unshare as clone. Explicit `--assert-userns-disabled` monitors retain the
+zero-limit probe behavior. Options are recognized in direct argv and the
+NUL-delimited `--args` fd, before loader replacement or CLOEXEC cleanup.
+The limit remains zero for ordinary app payloads; a monitor writing its
+own limit still loses the exemption. This models portal-side setup outside
+the app restriction without enabling userns creation in the app itself.
+
+The bwrap-filter-name regression starts with an outer zero limit and active
+Flatpak seccomp, then forks assertion monitors (direct and bundled option),
+and a setup monitor. Assertions get EPERM; setup unshare and clone succeed;
+execed app unshare and monitor-written zero limits remain denied.
+
+Device follow-up (coordinator; no VM used here): fresh image, Obsidian with
+v3-trace for 90 seconds. Check that nested ldconfig no longer prints
+`unshare user ns`, both ldconfig runs finish, and inspect browser/zygote,
+gpu/renderer exec and display socket connect/toplevel events. Keep Kate as
+control. No shared device-tree or kernel changes are needed.
+
+Validation: complete `bash linux/compat-proxy/tests/run.sh` passed (exit 0),
+including x86_64, i386, cross-exec, Android loader packaging, apply-extra
+and site rewrite. Host log: `/mnt/data/aosp/out/pc-logs/fork-adopt-r20-host.log`.
+Device-tree preflight also passed. The focused regression was extended to
+check unshare in the cloned monitor child before payload exec and passed
+again (`fork-adopt-r20-regression.log`).

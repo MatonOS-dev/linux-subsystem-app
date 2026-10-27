@@ -9,12 +9,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 int main(int argc,char **argv) {
-    assert(argc==3);
+    assert(argc>=3 && argc<=5);
     if(!strcmp(argv[1],"payload")) {
         errno=0;
         assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
@@ -45,6 +46,20 @@ int main(int argc,char **argv) {
     if(!strcmp(argv[1],"launch")) {
         /* The outer Flatpak payload already has an active filter before
          * its portal launches a nested APK-named bwrap monitor. */
+        pid_t probe=fork();assert(probe>=0);
+        if(!probe){execl(argv[2],argv[2],"monitor",argv[0],"--assert-userns-disabled",NULL);_exit(92);}
+        int status;assert(waitpid(probe,&status,0)==probe);
+        assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
+        probe=fork();assert(probe>=0);
+        if(!probe){
+            int fd=memfd_create("bwrap-args",0);assert(fd>=0);
+            const char option[]="--assert-userns-disabled";
+            assert(write(fd,option,sizeof(option))==sizeof(option));
+            char number[24];snprintf(number,sizeof(number),"%d",fd);
+            execl(argv[2],argv[2],"monitor",argv[0],"--args",number,NULL);_exit(93);
+        }
+        assert(waitpid(probe,&status,0)==probe);
+        assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
         execl(argv[2],argv[2],"monitor",argv[0],NULL);
         return 90;
     }
@@ -53,9 +68,16 @@ int main(int argc,char **argv) {
     /* Nested --assert-userns-disabled probes with unshare, without writing
      * a new limit. Initial monitor clone setup must still be available. */
     errno=0;
-    assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
+    if(argc>3)assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
+    else assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
     pid_t child=syscall(SYS_clone,CLONE_NEWUSER|SIGCHLD,0,0,0,0);assert(child>=0);
-    if(!child){execl(argv[2],argv[2],"payload",argv[2],NULL);_exit(91);}
+    if(!child){
+        /* The portal's ldconfig bwrap clones first, then unshares again. */
+        errno=0;
+        if(argc>3)assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
+        else assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
+        execl(argv[2],argv[2],"payload",argv[2],NULL);_exit(91);
+    }
     int status;assert(waitpid(child,&status,0)==child);
     assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
     int setup=open("/proc/sys/user/max_user_namespaces",O_WRONLY|O_CLOEXEC);

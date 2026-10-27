@@ -985,9 +985,11 @@ extern char proxy_clone_entry[],proxy_clone_after[];
  * bwrap still needs our virtual setup, like the inherited seccomp exemption.
  * Keep zero intact (no unsigned wrap) for the next payload exec. */
 static unsigned userns_remaining=~0U;
-/* Exemption is only for the monitor's initial clone. unshare is also
- * bwrap --assert-userns-disabled's probe and must observe the inherited zero. */
+/* Inherited payload restrictions do not prevent nested monitor setup. An
+ * explicit --assert-userns-disabled probe must still observe inherited zero;
+ * a monitor writing its own limit loses the setup exemption. */
 static int bwrap_inherited_userns_limit;
+static int bwrap_assert_userns_disabled;
 struct sysctl_fd {int fd;struct sysctl_fd *next;int seen_len;char seen[12];};
 static struct sysctl_fd *sysctl_fds;
 static void sysctl_sync(void);
@@ -1694,6 +1696,27 @@ static int payload_exec_is_bwrap(const char *path) {
     return p_equal(base,"bwrap") || p_equal(base,"matonos-app-bwrap") ||
            p_equal(base,"libmatonos-app-bwrap.so");
 }
+/* Flatpak passes monitor options as NUL-delimited --args memfds. Inspect
+ * before proxy_load/exec closes CLOEXEC descriptors or replaces argv memory. */
+static int bwrap_assert_option(char *const *argv) {
+    for(size_t i=1;argv && argv[i];i++) {
+        if(p_equal(argv[i],"--"))break;
+        if(p_equal(argv[i],"--assert-userns-disabled"))return 1;
+        if(!p_equal(argv[i],"--args") || !argv[i+1])continue;
+        const char *n=argv[++i];unsigned fd=0;int valid=*n!=0;
+        for(;*n;n++){if(*n<'0'||*n>'9'||fd>(2147483647U-(unsigned)(*n-'0'))/10){valid=0;break;}fd=fd*10+(*n-'0');}
+        if(!valid)continue;
+        char bytes[4096],word[64];size_t used=0;long offset=0,count;
+        while((count=RAW(PROXY_SC_pread64,fd,bytes,sizeof(bytes),offset,0,0))>0){
+            for(long j=0;j<count;j++) {
+                if(!bytes[j]){if(used<sizeof(word)){word[used]=0;if(p_equal(word,"--assert-userns-disabled"))return 1;}used=0;}
+                else if(used<sizeof(word))word[used++]=bytes[j];
+            }
+            offset+=count;
+        }
+    }
+    return 0;
+}
 static int termios2_call(proxy_arg_t *a,long *result) {
     unsigned long cmd=(unsigned long)a[1]&0xffffffffu;
     struct proxy_termios2 copy={0};
@@ -2175,7 +2198,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     case PROXY_SC_unshare:
         result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;
-        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining)result=-EPERM;}
+        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining && (!bwrap_inherited_userns_limit || bwrap_assert_userns_disabled))result=-EPERM;}
         if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;}
         break;
     case PROXY_SC_mount:result=vfs_mount((char *)(uintptr_t)a[0],(char *)(uintptr_t)a[1],(char *)(uintptr_t)a[2],(unsigned long)a[3]);break;
@@ -2249,6 +2272,8 @@ clone_retry:
         if(!thread) {result=-ENOMEM;break;}
         proxy_count_dump();
         if(proxy_trace){emit("v3 lifecycle-exec pid=");crash_hex(RAW(PROXY_SC_getpid,0,0,0,0,0,0));emit(" path=");emit(path);emit("\n");emit("v3 exec ");emit(path);emit("\n");trace_exec_argv((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2]);}
+        int next_bwrap=payload_exec_is_bwrap(path);
+        int next_assert=next_bwrap && bwrap_assert_option((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2]);
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {
@@ -2273,7 +2298,8 @@ clone_retry:
                 dispatch_selector=NULL;dispatch_owner=0;
             }
             if(thread) thread->app_stack.ss_flags=SS_DISABLE;
-            payload_current_bwrap=payload_exec_is_bwrap(path);
+            payload_current_bwrap=next_bwrap;
+            bwrap_assert_userns_disabled=next_assert;
             bwrap_inherited_userns_limit=payload_current_bwrap && !userns_remaining;
             if(!payload_current_bwrap) {
                 result=payload_seccomp_activate();if(result<0)break;
