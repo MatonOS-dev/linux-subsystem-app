@@ -42,8 +42,8 @@ static uid_t links_euid(void){
 static int private_dir(const char *p,dev_t dev){struct proxy_stat st;return !arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && S_ISDIR(st.st_mode) && st.st_dev==dev && st.st_uid==links_euid() && (st.st_mode&0300)==0300 && !(st.st_mode&0022);}
 /* A marker is ordinary visible metadata, but only its owner may establish it
  * outside the payload. Never follow a symlink when recognizing a boundary. */
-static int marked_device(const char *dir,uint64_t *device){
- char name[PATH_MAX];if(!catpath(name,dir,".v3-store-root"))return 0;
+static int marked_device(const char *dir,uint64_t *device,char *name){
+ if(!catpath(name,dir,".v3-store-root"))return 0;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,name,O_PATH|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return 0;
  struct proxy_stat st;long r=arch_stat_fd(fd,&st);RAW(PROXY_SC_close,fd,0,0,0,0,0);
  if(r || !S_ISREG(st.st_mode) || st.st_uid!=links_euid())return 0;
@@ -127,11 +127,18 @@ static int tree_root_put(const char *path,uint64_t device,uint64_t generation){
  return -2;
 }
 static int tree(char *root,const char *path){
- char up[PATH_MAX],key[PATH_MAX];if(!parent(key,path))return 0;
- uint64_t generation=__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE),device=0;
+ /* Path-sized temporaries live in the per-trap arena, off the bounded
+  * alternate signal stack used by the seccomp handler. */
+ struct tree_scratch {char up[PATH_MAX],key[PATH_MAX],marker[PATH_MAX];size_t visited[TREE_WALK_DEPTH];};
+ struct tree_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return 0;
+ char *up=scratch->up,*key=scratch->key;if(!parent(key,path))return 0;
+ uint64_t generation,device=0;
  /* Offsets into key of each directory walked past without an answer. */
- size_t visited[TREE_WALK_DEPTH];int depth=0,marked=0,cached=-2;
+ int depth=0,marked=0,cached=-2;
  p_copy(root,key,p_len(key)+1);
+restart:
+ generation=__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE);
+ depth=0;marked=0;cached=-2;device=0;p_copy(root,key,p_len(key)+1);
  for(;;){
   if(tree_cache_trylock()){
    cached=tree_cache_get(root,generation);
@@ -141,12 +148,12 @@ static int tree(char *root,const char *path){
   if(cached==-1){marked=0;break;}
   if(cached>=0){
    marked=private_dir(root,device);
-   if(!marked){links_cache_invalidate();return tree(root,path);}
+   if(!marked){links_cache_invalidate();goto restart;}
    break;
   }
-  if(marked_device(root,&device)){marked=private_dir(root,device);break;}
+  if(marked_device(root,&device,scratch->marker)){marked=private_dir(root,device);break;}
   if(app_install_device(root,&device)){marked=1;break;}
-  if(depth<TREE_WALK_DEPTH)visited[depth++]=p_len(root);
+  if(depth<TREE_WALK_DEPTH)scratch->visited[depth++]=p_len(root);
   if(!parent(up,root) || p_equal(up,root)){marked=0;break;}
   p_copy(root,up,p_len(up)+1);
  }
@@ -155,8 +162,8 @@ static int tree(char *root,const char *path){
    int index=marked?tree_root_put(root,device,generation):-1;
    if(index!=-2){
     /* The walked directories are prefixes of key; truncate in place. */
-    char dir[PATH_MAX];
-    for(int i=0;i<depth;i++){p_copy(dir,key,visited[i]);dir[visited[i]]=0;tree_cache_put(dir,generation,index);}
+    char *dir=up;
+    for(int i=0;i<depth;i++){size_t n=scratch->visited[i];p_copy(dir,key,n);dir[n]=0;tree_cache_put(dir,generation,index);}
     if(marked)tree_cache_put(root,generation,index);
    }
   }
@@ -172,7 +179,10 @@ static int index_path(char *out,const char *store,const struct proxy_stat *st){
  key[18]='-';key[35]=0;return catpath(out,store,key);
 }
 int links_target(const char *name,char *out){
- struct proxy_stat st;char root[PATH_MAX],store[PATH_MAX],entry[PATH_MAX],id[36];
+ /* Keep the caller-visible root on its existing storage; internal index
+  * paths are scratch and must not consume more signal-handler stack. */
+ struct proxy_stat st;char root[PATH_MAX],id[36],*scratch=vfs_alloc(2*PATH_MAX);if(!scratch)return 0;
+ char *store=scratch,*entry=store+PATH_MAX;
  if(!tree(root,name) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes") || !index_path(entry,store,&st))return 0;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return 0;
  long n=RAW(PROXY_SC_read,fd,id,sizeof(id),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);

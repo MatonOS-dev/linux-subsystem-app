@@ -32,6 +32,6 @@ int main(int argc,char **argv){
  assert(!app_install_path("/data/user/0/org.example.app/files/install"));
  assert(!app_install_path("/tmp/org.example.app/install"));
  assert(!app_install_path("/data/userx/0/org.example.app/install"));
- assert(marked_device(argv[1],NULL));foreign=1;assert(!marked_device(argv[1],NULL));
+ char marker[PATH_MAX];assert(marked_device(argv[1],NULL,marker));foreign=1;assert(!marked_device(argv[1],NULL,marker));
  puts("PASS foreign-owned regular marker ignored; marker stat always no-follow");
 }

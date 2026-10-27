@@ -275,11 +275,17 @@ static struct thread_state *thread_state(void) {
         p->state.signal_stack=current.ss_sp;p->state.signal_stack_size=current.ss_size;
     }
     if(!(current.ss_flags&SS_ONSTACK)) {
-        long area=RAW(PROXY_SC_mmap,0,1<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+#ifdef COMPAT_LINKS_TEST
+        /* Match the ~67 KiB handler stack from the bwrap/Steam crash trace. */
+        const size_t signal_stack_size=0x10d30;
+#else
+        const size_t signal_stack_size=1<<20;
+#endif
+        long area=RAW(PROXY_SC_mmap,0,signal_stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
         if((unsigned long)area>=(unsigned long)-4095){vfs_free(p);return NULL;}
-        stack_t own={.ss_sp=(void *)area,.ss_size=1<<20};
-        if(RAW(PROXY_SC_sigaltstack,&own,0,0,0,0,0)){RAW(PROXY_SC_munmap,area,1<<20,0,0,0,0);vfs_free(p);return NULL;}
-        p->state.signal_stack=(void *)area;p->state.signal_stack_size=1<<20;
+        stack_t own={.ss_sp=(void *)area,.ss_size=signal_stack_size};
+        if(RAW(PROXY_SC_sigaltstack,&own,0,0,0,0,0)){RAW(PROXY_SC_munmap,area,signal_stack_size,0,0,0,0);vfs_free(p);return NULL;}
+        p->state.signal_stack=(void *)area;p->state.signal_stack_size=signal_stack_size;
     }
     do {p->next=__atomic_load_n(&threads,__ATOMIC_ACQUIRE);}
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
