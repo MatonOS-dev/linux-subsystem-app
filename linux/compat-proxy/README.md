@@ -1358,3 +1358,33 @@ check-inhibit/check-portal-wire/check-policy-wildcard pass. No VM used.
 Android broker compilation and linking also pass with SDK NDK
 30.0.16248370 and the pinned static dependencies (lib64 prefix exposed via
 a private lib symlink view under the test output directory).
+
+### Chromium SIGSYS default disposition after exec (fork-adopt round 25)
+
+The disposition is already process-wide (`chained`); a worker install is visible
+from the main thread and other workers. The remaining Chromium rejection has a
+separate reproducible cause: resident exec reset only `chained.handler`, retaining
+`SA_SIGINFO` from the previous payload's caught action. Chromium's
+`IsDefaultSignalAction` in `sandbox/linux/seccomp-bpf/trap.cc` rejects either a non-default pointer **or**
+`SA_SIGINFO`, so a null pointer alone did not restore the default disposition.
+Reset the complete caught SIGSYS action on successful resident exec; preserve
+SIG_IGN as Linux does. Masks remain per-thread.
+
+`tests/sigsys-virtual.c` now installs a caught action, re-execs `/proc/self/exe`,
+and creates a worker which queries the default disposition (including flags),
+installs its handler and a TSYNC seccomp TRAP filter, and handles a trap. The main
+thread and a subsequent worker both observe that handler and handle traps with
+register edits. This passes natively and failed on the previous proxy at the
+worker's default query, under both static and resident-adoption launchers.
+The regular suite also runs the adoption case with tracing enabled.
+
+Device verification still required: freshly build the loader and rerun Chrome
+and Obsidian with v3-trace for 90 seconds, retaining exec argv, stderr, compositor
+xdg_toplevel events and a screenshot. Check that Chrome's `Existing signal
+handler when trying to install SIGSYS` and GPU exit loop disappear, Chrome keeps
+its toplevel, and Obsidian still renders its vault picker. No VM was run here.
+
+Round-25 host verification: full `bash linux/compat-proxy/tests/run.sh` passed
+(including i386 suites, both traced SIGSYS launchers, apply-extra and rewrite
+regressions); standalone Android x86_64/i386 loader builds and device-tree
+preflight passed. Logs: `/mnt/data/aosp/out/pc-logs/fork-adopt-round25-{tests,android,preflight}.log`.

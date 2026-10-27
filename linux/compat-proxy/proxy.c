@@ -2429,7 +2429,9 @@ clone_retry:
             ARCH_CLEAR_TLS();
             proxy_log("ours-exec",nr,0);
             /* A real exec resets caught signal actions. Our resident action stays. */
-            if(chained.handler!=1) chained.handler=0;
+            /* Reset the entire caught disposition: Chromium also checks
+             * SA_SIGINFO when deciding whether SIGSYS is still default. */
+            if(chained.handler!=1) chained=(struct kernel_action){0};
 #if ARCH_AUDIT == AUDIT_ARCH_I386
             if(chained_segv.handler!=1)chained_segv.handler=0;
 #endif
