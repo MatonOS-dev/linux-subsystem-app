@@ -112,7 +112,13 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
     }
     private void serve() {
         try {
-            // Exactly one authenticated broker, no reconnect into stale request state.
+            // The in-process broker connects exactly once at session start.
+            // If that connection ever ends before this portal is closed (a
+            // transient peer error, a reset broker channel), the backend and
+            // the upstream flatpak-portal process must stay alive for the
+            // stub's lifetime: a later payload launch still needs them. Log
+            // loudly and accept a fresh authenticated broker instead of
+            // tearing the whole portal down.
             while(!stopped) {
                 LocalSocket socket=server.accept();client=socket;socket.setSoTimeout(3000);
                 byte[] token=new byte[64];
@@ -124,7 +130,8 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
                     if(!java.security.MessageDigest.isEqual(token,secret().getBytes(StandardCharsets.US_ASCII)))throw new IOException("Wrong backend capability");
                 }catch(Exception e){socket.close();client=null;continue;}
                 socket.getOutputStream().write(new byte[]{'O','K','A','Y'});
-                socket.setSoTimeout(0);run(socket);break;
+                socket.setSoTimeout(0);run(socket);
+                if(!stopped)Log.w("MatonPortal","Portal broker connection ended; keeping the portal backend resident");
             }
         }catch(Exception e){if(!stopped)Log.w("MatonPortal","Backend disconnected",e);}
         finally {

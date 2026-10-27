@@ -7,5 +7,6 @@ public class JavaPortal {
     public static int closes;
     public JavaPortal(Context c,File f,Consumer<Boolean> changed,Launcher launcher){}
     public String secret(){return "secret";}
+    public void setFlatpakDirectories(File userDir,File systemDir){}
     public void close(){closes++;}
 }

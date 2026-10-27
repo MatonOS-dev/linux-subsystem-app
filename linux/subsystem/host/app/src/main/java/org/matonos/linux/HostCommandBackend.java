@@ -30,8 +30,13 @@ final class HostCommandBackend implements AutoCloseable {
     private String flatpakUserDir,flatpakSystemDir;
     private final Map<Integer,Entry> children=new HashMap<>();
     private Child portal;
+    private List<byte[]> portalArgv;
+    private Map<String,String> portalEnv;
     private int serial;
     private boolean closed;
+    /** Delay between portal restart attempts while no payload host-command
+     *  socket is present; the spawn itself fails fast when it is absent. */
+    private static final long PORTAL_RESTART_DELAY_MS = 1000;
     HostCommandBackend(Spawner spawner,Consumer<Message> output){this(spawner,output,null);}
     HostCommandBackend(Spawner spawner,Consumer<Message> output,String flatpakExecutable){
         this.spawner=spawner;this.output=output;
@@ -111,15 +116,56 @@ final class HostCommandBackend implements AutoCloseable {
      * filesystem. This keeps its /proc and bwrap view aligned with the app. */
     synchronized void startFlatpakPortal(List<byte[]> argv,Map<String,String> env) throws Exception {
         if(closed||portal!=null)return;
-        Child child=spawner.spawn(new byte[]{0},argv,Collections.emptyMap(),env,0);
+        portalArgv=argv;portalEnv=env;
+        portalSpawn();
+    }
+    /** Spawn one portal child and keep a collector on it (caller holds this).
+     * When the child exits — a payload tree teardown kills the host-command
+     * server and the portal with it — the portal is restarted so the next
+     * payload still finds org.freedesktop.portal.Flatpak on the session bus. */
+    private synchronized void portalSpawn() throws Exception {
+        if(closed||portal!=null)return;
+        // Re-read the current private installation paths at spawn time so a
+        // restarted portal still resolves the app/runtime this session runs.
+        Map<String,String> env=portalEnv;
+        if(env!=null&&(flatpakUserDir!=null||flatpakSystemDir!=null)) {
+            env=new LinkedHashMap<String,String>(env);
+            if(flatpakUserDir!=null)env.put("FLATPAK_USER_DIR",flatpakUserDir);
+            if(flatpakSystemDir!=null)env.put("FLATPAK_SYSTEM_DIR",flatpakSystemDir);
+        }
+        Child child=spawner.spawn(new byte[]{0},portalArgv,Collections.emptyMap(),env,0);
         if(child.pid()<=0){child.close();throw new IllegalStateException("Invalid portal PID");}
         portal=child;
         Thread watcher=new Thread(()->{
+            boolean restarted=true;
             try{int status=child.waitStatus();java.util.logging.Logger.getLogger("MatonPortal").info("Upstream Flatpak portal exited with wait status "+status);}
             catch(Exception error){java.util.logging.Logger.getLogger("MatonPortal").warning("Lost upstream Flatpak portal process: "+error);}
-            finally{child.close();synchronized(HostCommandBackend.this){if(portal==child)portal=null;}}
+            finally{
+                child.close();
+                synchronized(HostCommandBackend.this){
+                    if(portal==child)portal=null;
+                    if(restarted)restartPortal();
+                }
+            }
         },"flatpak-portal");
         watcher.setDaemon(true);watcher.start();
+    }
+    private synchronized void restartPortal() {
+        if(closed||portal!=null||portalArgv==null)return;
+        // The portal dies with the payload tree that hosted it. A later payload
+        // brings its own host-command socket; retry until one can take a new
+        // portal (spawn throws fast when the socket is absent), never spinning.
+        Thread restarter=new Thread(()->{
+            try{
+                for(;;){
+                    if(closed)return;
+                    try{portalSpawn();return;}
+                    catch(Exception error){java.util.logging.Logger.getLogger("MatonPortal").warning("Deferring Flatpak portal restart: "+error);}
+                    Thread.sleep(PORTAL_RESTART_DELAY_MS);
+                }
+            }catch(InterruptedException error){Thread.currentThread().interrupt();}
+        },"flatpak-portal-restart");
+        restarter.setDaemon(true);restarter.start();
     }
     private List<Message> error(Message c,String name,String reason){Message m=reply(c,3,"s",reason);m.error=name;return Collections.singletonList(m);}
     /** Start reaping only after the method reply has been written to the bus. */

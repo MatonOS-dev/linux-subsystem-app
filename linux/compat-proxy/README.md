@@ -1225,3 +1225,51 @@ v3-trace through the manifest download. A repeat of this crash would now name
 the layer instead of vanishing: `fatal-segv` and `fatal-segv-pc` give the pc
 and `fatal-layer` states that it is layer code, with layer image base
 0x70000000 on i386 and 0x600000000000 on x86_64.
+
+### Steam round 19: portal survives payload teardowns (2026-10-28, app-side)
+
+Steam's client update completed and the app survived its self-restart, but
+the wrapper's portal probe failed again after the restart. The per-stub
+upstream `flatpak portal` process ran in the compat-proxy host-command tree,
+which dies with the payload tree that hosted it (`hc_server` sets
+PDEATHSIG on the first sandbox process; workers and the portal follow).
+The session bus (in-process broker) and the Java portal backend were still
+alive, but `org.freedesktop.portal.Flatpak` had no owner, so
+`flatpak-spawn` / the Steam wrapper check failed for the relaunched payload.
+Nothing ever restarted the portal: `HostCommandBackend.startFlatpakPortal`
+was start-once and its watcher only nulled the child reference on exit.
+
+Changes (subsystem app, no proxy/AOSP/kernel change):
+
+- `HostCommandBackend` now remembers the portal argv/env and restarts the
+  portal whenever it exits, until the runtime is closed. The restarter
+  retries at a modest delay while no payload host-command socket can take a
+  new portal (spawn fails fast when the socket is absent), so it never spins
+  and reacts to whatever payload is currently resident. A guard in the
+  re-entrant spawn path prevents any double spawn.
+- `JavaPortal.serve()` no longer tears the whole backend down when its one
+  broker connection ends: it now logs and re-enters the accept loop until
+  the portal is explicitly closed, keeping the backend and the flatpak
+  portal process resident for the stub's lifetime. Previously a lost broker
+  channel fell into the `finally` and `commands.close()` killed the portal.
+- The dbus-review fixture `JavaPortal` double gained the
+  `setFlatpakDirectories` method it was missing (pre-existing compile break
+  in the dev-only suite since the portal landed).
+
+Regression: `HostCommandBackendTest.portalRestartRegression()` drives two
+consecutive portal exits as payload teardowns and asserts a fresh portal
+child is spawned each time (three consecutive payload launches all reach
+`org.freedesktop.portal.Flatpak`), and that `close()` stops restarts.
+Validation: `test-host-command.sh`, `test-portals.sh`, the dbus-review JVM
+suite and `make check-inhibit check-portal-wire check-policy-wildcard` all
+pass; the touched portal sources compile against the SDK 36 android.jar.
+No VM was used; device retest is the coordinator's.
+
+Remaining risk: a brand-new payload can race the restarted portal's
+name registration on the bus (a `flatpak-spawn` arriving in the few
+milliseconds before `org.freedesktop.portal.Flatpak` is re-owned fails
+once). Steam's own repeated probes absorb this; a retry in the caller also
+works. The broker still never reconnects a lost Java portal backend channel,
+so only the Desktop (Java) portal interfaces would be affected by such a
+loss; the Flatpak portal (what Steam's check uses) is served by the separate
+restarted process and is unaffected.
