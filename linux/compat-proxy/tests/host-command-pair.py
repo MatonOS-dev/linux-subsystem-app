@@ -39,6 +39,23 @@ with tempfile.TemporaryDirectory(prefix='hc-pair-',dir='/mnt/data/aosp/out') as 
         with open(d/'out','w+b') as out:
             s,pid,p=spawn(['/bin/sh','-c','printf "%s:%s" "${HC_INHERIT-unset}" "$ONLY"'],env={'ONLY':'clean'},fds={1:out.fileno()},flags=1)
             assert pid>0 and read_int(s)==0;s.close();out.seek(0);assert out.read()==b'unset:clean'
+        # The portal display probe must deliver output, EOF and exit status
+        # through a nested stock bwrap, as steam-runtime-launch-client expects.
+        read_fd,write_fd=os.pipe()
+        try:
+            s,pid,p=spawn(['/usr/bin/bwrap','--ro-bind','/','/','--','/bin/sh','-euc',
+                           'echo "${DISPLAY+DISPLAY_is_set}"'],
+                          env={'DISPLAY':':0'},fds={1:write_fd})
+            os.close(write_fd);write_fd=-1
+            assert pid>0,pid
+            assert read_int(s)==0;s.close()
+            assert select.select([read_fd],[],[],5)[0], 'display probe stdout not ready'
+            assert os.read(read_fd,4096)==b'DISPLAY_is_set\n'
+            assert select.select([read_fd],[],[],5)[0], 'display probe stdout EOF leaked'
+            assert os.read(read_fd,4096)==b'', 'display probe stdout not closed'
+        finally:
+            os.close(read_fd)
+            if write_fd>=0:os.close(write_fd)
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',str(ROOT/'tests/host-command-child.c'),'-o',str(d/'app/hc-child')],check=True)
         master,slave=pty.openpty()
         try:

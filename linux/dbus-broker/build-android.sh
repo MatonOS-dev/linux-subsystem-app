@@ -28,6 +28,6 @@ STATIC_LIBS=("$GLIB_PREFIX/lib/libgio-2.0.a" \
 # Per-app bus: a JNI library loaded into the app's own process, not an executable.
 "$TOOLCHAIN/x86_64-linux-android35-clang" -shared -o "$OUT/libmatonos-dbus-broker.so" \
   "$OUT/maton_broker_jni.o" "$OUT/broker.o" "$OUT/portals.o" \
-  "${STATIC_LIBS[@]}"
+  "${STATIC_LIBS[@]}" -llog
 "$TOOLCHAIN/llvm-strip" "$OUT/libmatonos-dbus-broker.so"
 echo "Built per-app JNI broker in $OUT"

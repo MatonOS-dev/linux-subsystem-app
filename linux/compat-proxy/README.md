@@ -1273,3 +1273,41 @@ works. The broker still never reconnects a lost Java portal backend channel,
 so only the Desktop (Java) portal interfaces would be affected by such a
 loss; the Flatpak portal (what Steam's check uses) is served by the separate
 restarted process and is unaffected.
+
+### Steam round 20: portal display probe completion (2026-10-28)
+
+The four `Cannot start upstream Flatpak portal: Connection refused` messages
+in day-r28 are startup retries against a stale host-command socket, before
+`host-command-start` at 22:27:53.426. Startup succeeds at 22:27:53.494.
+They are not evidence that the portal remains absent.
+
+At 22:27:57.064 pid 23761 runs the updated client's
+`steam-runtime-launch-client --bus-name org.freedesktop.portal.Flatpak
+--app-path '' --share-pids -- /bin/sh -euc
+'echo "${DISPLAY+DISPLAY_is_set}"'`. The portal starts Flatpak pid 23764,
+then nested bwrap, then shell pid 23770 at 22:27:58.241. The shell's write
+returns 15 (the length of `DISPLAY_is_set\n`) at 22:27:58.255. Thus this
+probe reaches the nested payload; it is not a missing-service failure.
+The launch client continues polling until 22:28:07.503, followed by the
+wrapper's error dialog. The trace does not show whether SpawnExited was
+sent or whether stdout EOF was lost; neither cause is established yet.
+
+A new host-command-pair regression runs that shell through nested stock
+bwrap under the proxy and Android filter and checks output, EOF and status
+zero. It passes. This covers the resident command path, not the complete
+Steam runtime/portal interaction. No per-app workaround was added.
+
+`MatonPortalBus` logcat records Flatpak portal calls, matching replies and
+signals (including SpawnExited), since the in-process broker's stderr is
+not captured by payload-stderr. The next fresh device capture should retain
+this tag, plus the existing exec trace and /proc fd/wchan/status snapshots
+of the launch client, portal and nested bwrap after the shell prints. Match
+the Spawn reply PID to SpawnExited's PID/status. A missing signal points to
+child collection; a delivered signal with a still-polling launch client
+requires checking stdout pipe holders. Black-window failure remains open.
+
+Validation: host-command-pair.py, test-host-command.sh and broker
+check-inhibit/check-portal-wire/check-policy-wildcard pass. No VM used.
+Android broker compilation and linking also pass with SDK NDK
+30.0.16248370 and the pinned static dependencies (lib64 prefix exposed via
+a private lib symlink view under the test output directory).

@@ -1,6 +1,9 @@
 #include "broker.h"
 
 #include <errno.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 #include <fcntl.h>
 #include <stddef.h>
 #include <string.h>
@@ -35,7 +38,7 @@ struct _Service {
     const GDBusInterfaceVTable *vtable;
     gpointer user_data;
 };
-struct _Pending { Client *origin; guint32 serial; };
+struct _Pending { Client *origin; guint32 serial; gboolean flatpak; };
 struct _Broker {
     char *socket_path;
     uid_t owner_uid;
@@ -522,16 +525,37 @@ static gboolean denied_call(GDBusMessage *m) {
     if (iface != NULL && g_str_equal(iface, "org.freedesktop.Flatpak")) return TRUE;
     return FALSE;
 }
+/* Portal completion crosses the in-process bus, outside payload stderr.
+ * Keep this small breadcrumb on Android too: stderr there is /dev/null. */
+static void trace_flatpak_message(GDBusMessage *message, const char *peer, gboolean reply) {
+    const char *iface=g_dbus_message_get_interface(message);
+    const char *member=g_dbus_message_get_member(message);
+    if (!reply && g_strcmp0(iface,"org.freedesktop.portal.Flatpak")!=0) return;
+    GVariant *body=g_dbus_message_get_body(message);
+    char *args=body?g_variant_print(body,TRUE):g_strdup("()");
+    const char *destination=g_dbus_message_get_destination(message);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO,"MatonPortalBus",
+#else
+    g_printerr(
+#endif
+        "Flatpak peer=%s destination=%s serial=%u reply_serial=%u member=%s args=%s\n",
+        peer?peer:"<pre-Hello>",destination?destination:"<broadcast>",
+        g_dbus_message_get_serial(message),g_dbus_message_get_reply_serial(message),member?member:(g_dbus_message_get_error_name(message)?g_dbus_message_get_error_name(message):"<reply>"),args);
+    g_free(args);
+}
 static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *message,
                                    gboolean incoming, gpointer data) {
     (void)connection;
     Client *c = data; Broker *b = c->broker;
     if (!incoming) return message;
     GDBusMessageType type = g_dbus_message_get_message_type(message);
+    trace_flatpak_message(message,c->unique,FALSE);
     if (type == G_DBUS_MESSAGE_TYPE_METHOD_RETURN || type == G_DBUS_MESSAGE_TYPE_ERROR) {
         guint32 reply = g_dbus_message_get_reply_serial(message);
         Pending *p = g_hash_table_lookup(c->pending, GUINT_TO_POINTER(reply));
         if (p != NULL) {
+            if(p->flatpak)trace_flatpak_message(message,c->unique,TRUE);
             GDBusMessage *forward = g_dbus_message_copy(message, NULL);
             g_dbus_message_set_reply_serial(forward, p->serial);
             g_dbus_message_set_destination(forward, p->origin->unique);
@@ -560,6 +584,7 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
             gboolean allowed = destination[0] == ':' ? target != NULL :
                 ((access_for(b, destination) & ACCESS_TALK)!=0);
             if (target && allowed) send_raw(target,routed);
+            trace_flatpak_message(routed,target&&allowed?"routed-to-live-client":"undeliverable",FALSE);
             g_object_unref(routed);return NULL;
         }
         for (guint j = 0; j < b->clients->len; j++) {
@@ -671,6 +696,7 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
     if (g_dbus_connection_send_message(target->connection, copy,
             G_DBUS_SEND_MESSAGE_FLAGS_NONE, &forwarded, &error)) {
         Pending *p = g_new0(Pending, 1); p->origin = c; p->serial = g_dbus_message_get_serial(message);
+        p->flatpak=g_strcmp0(g_dbus_message_get_interface(message),"org.freedesktop.portal.Flatpak")==0;
         g_ptr_array_add(c->outgoing, p);
         g_hash_table_insert(target->pending, GUINT_TO_POINTER(forwarded), p);
     } else {
