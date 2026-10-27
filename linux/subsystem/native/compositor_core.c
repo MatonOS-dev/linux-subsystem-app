@@ -159,7 +159,11 @@ struct Window {
   struct wlr_scene_tree* scene_tree;
   struct MatonPresenter* presenter;
   struct wl_listener frame, commit, toplevel_destroy, surface_commit;
-  struct wl_event_source* retry;
+  /* A skipped shm frame is retried when a buffer is released or the client
+   * commits another frame. Never poll for a free buffer: the headless output
+   * can complete frames immediately and turn a failed allocation into an
+   * unbounded SurfaceControl/Binder transaction stream. */
+  bool present_pending;
   struct wl_listener xsurface_destroy, xsurface_associate, xsurface_geometry, scene_tree_destroy;
   /* Window-state requests (fullscreen, minimize) from X11 or xdg_toplevel. */
   struct wl_listener request_fullscreen, request_minimize, request_move, request_resize;
@@ -415,12 +419,17 @@ struct ReleaseFence {
   struct wlr_buffer* buffer;
   struct wl_event_source* source;
 };
+static void schedule_pending_presentations(void) {
+  for(struct Window* w=server.windows;w;w=w->next)
+    if(w->present_pending&&w->output&&!w->stopped)wlr_output_schedule_frame(w->output);
+}
 static int on_release_fence(int fd,uint32_t mask,void* data) {
   struct ReleaseFence* release=data;
   if(!(mask&(WL_EVENT_READABLE|WL_EVENT_HANGUP|WL_EVENT_ERROR)))return 0;
   if(release->source)wl_event_source_remove(release->source);
   close(fd);
   wlr_buffer_unlock(release->buffer);
+  schedule_pending_presentations();
   free(release);
   return 0;
 }
@@ -431,7 +440,11 @@ static void release_buffer(struct wlr_buffer* buffer,int fence_fd) {
   enqueue(cmd);
 }
 static void track_release(struct wlr_buffer* buffer,int fd) {
-  if(fd<0){wlr_buffer_unlock(buffer);return;}
+  if(fd<0){
+    wlr_buffer_unlock(buffer);
+    schedule_pending_presentations();
+    return;
+  }
   struct ReleaseFence* release=calloc(1,sizeof(*release));
   if(!release){close(fd);return;}
   release->buffer=buffer;
@@ -455,32 +468,21 @@ static void on_commit(struct wl_listener* l,void* data) {
   }
   (void)maton_surface_output_present(&w->surface,ahb,b,-1);
 }
-static int on_present_retry(void* data) {
-  struct Window* w=data;
-  if(w->output && !w->stopped)wlr_output_schedule_frame(w->output);
-  return 0;
-}
 static void on_frame(struct wl_listener* l,void* data) {
   (void)data;
   struct Window* w=window_from_listener(l,offsetof(struct Window,frame));
   /* Windows are not composited: each visible buffer becomes its own Android
    * layer (presenter.c), so client dma-bufs reach SurfaceFlinger untouched. */
   if(!w->stopped && w->scene_output&&w->presenter){
-    /* A busy shm pool skips a layer's new content; retry shortly so the
-     * last commit is not left unshown when the client goes idle. Not on the
-     * next frame: the headless output fires that at once, and a layer whose
-     * Android window is not latching (hidden, stopped) would then spin the
-     * Wayland thread and starve every other window. */
-    if(maton_presenter_present(w->presenter,w->scene,window_fit(w),w->width,w->height)){
-      if(!w->retry)w->retry=wl_event_loop_add_timer(wl_display_get_event_loop(server.display),on_present_retry,w);
-      if(w->retry)wl_event_source_timer_update(w->retry,50);
-    }
+    /* Retry failed shm copies only after a buffer becomes available (release
+     * fence) or another client commit schedules a frame. A periodic timer
+     * drives an unbounded transaction stream when allocation cannot recover. */
+    w->present_pending=maton_presenter_present(w->presenter,w->scene,window_fit(w),w->width,w->height);
     struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);wlr_scene_output_send_frame_done(w->scene_output,&now);
   }
 }
 static void destroy_output(struct Window* w) {
   clear_window_pointer(w);
-  if(w->retry){wl_event_source_remove(w->retry);w->retry=NULL;}
   if(w->frame.link.prev){wl_list_remove(&w->frame.link);wl_list_init(&w->frame.link);}
   if(w->commit.link.prev){wl_list_remove(&w->commit.link);wl_list_init(&w->commit.link);}
   if(w->presenter)maton_presenter_destroy(w->presenter);w->presenter=NULL;
@@ -1046,7 +1048,6 @@ static void process_commands(void) {
       if(w){w->stopped=c->a;
         if(w->stopped)clear_window_pointer(w);
         if(w->toplevel && w->toplevel->base->initialized)wlr_xdg_toplevel_set_suspended(w->toplevel,w->stopped);
-        if(w->stopped && w->retry){wl_event_source_remove(w->retry);w->retry=NULL;}
         if(!w->stopped && w->output)wlr_output_schedule_frame(w->output);
       }break;
     case CMD_ATTACH:if(w)maton_java_window_state(w->id,w->client_decorated?MATON_STATE_CLIENT_DECORATED:MATON_STATE_SERVER_DECORATED);monitor_cover(c->a,c->b);attach_output(c);break;
