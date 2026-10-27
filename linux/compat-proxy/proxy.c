@@ -832,6 +832,71 @@ static void trace_number(uint64_t value) {
     do {digits[n++]=(char)('0'+value%10);value/=10;} while(value);
     while(n)RAW(PROXY_SC_write,proxy_diagnostic_fd,&digits[--n],1,0,0,0);
 }
+/* The kernel's /proc/<pid>/cmdline continues to show the resident loader
+ * after an emulated exec. In opt-in trace mode, publish a bounded, escaped
+ * copy of the Linux argv so child roles can be identified without changing
+ * the process-visible argv or relying on PR_SET_MM (not available to apps).
+ * Use proxy_copy so a bad userspace pointer only truncates diagnostics. */
+static void trace_exec_argv(char *const argv[]) {
+    if(!proxy_trace || !argv)return;
+    for(unsigned index=0;index<32;index++) {
+        uintptr_t pointer=0;
+        if(proxy_copy(&pointer,(const char *)argv+index*sizeof(pointer),sizeof(pointer))) {
+            emit("v3 exec-argv pid=");trace_number(RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+            emit(" index=");trace_number(index);emit(" <EFAULT>\n");return;
+        }
+        if(!pointer)return;
+        char line[1024];size_t used=0;
+        const char *prefix="v3 exec-argv pid=";while(*prefix)line[used++]=*prefix++;
+        uint64_t pid=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+        char digits[24];unsigned digit_count=0;
+        do {digits[digit_count++]=(char)('0'+pid%10);pid/=10;} while(pid);
+        while(digit_count)line[used++]=digits[--digit_count];
+        prefix=" index=";while(*prefix)line[used++]=*prefix++;
+        uint64_t number=index;digit_count=0;
+        do {digits[digit_count++]=(char)('0'+number%10);number/=10;} while(number);
+        while(digit_count)line[used++]=digits[--digit_count];
+        prefix=" value=";while(*prefix)line[used++]=*prefix++;
+
+        size_t copied=0;int terminated=0;
+        while(copied<192 && !terminated) {
+            char chunk[32];size_t amount=192-copied;if(amount>sizeof(chunk))amount=sizeof(chunk);
+            if(proxy_copy(chunk,(const char *)pointer+copied,amount)) {
+                /* A valid short string can end immediately before a guard
+                 * page; the wider probe may cross it. Retry bytewise so the
+                 * terminator remains observable without reading past it. */
+                int readable=1;
+                for(size_t i=0;i<amount;i++) {
+                    char byte;
+                    if(proxy_copy(&byte,(const char *)pointer+copied+i,1)) {
+                        const char *fault="<EFAULT>";while(*fault)line[used++]=*fault++;
+                        readable=0;break;
+                    }
+                    if(!byte){terminated=1;break;}
+                    unsigned char c=(unsigned char)byte;
+                    if(c>=0x21 && c<=0x7e && c!='\\')line[used++]=(char)c;
+                    else {
+                        static const char hex[]="0123456789abcdef";
+                        line[used++]='\\';line[used++]='x';line[used++]=hex[c>>4];line[used++]=hex[c&15];
+                    }
+                }
+                copied+=amount;if(!readable)break;continue;
+            }
+            for(size_t i=0;i<amount;i++) {
+                unsigned char c=(unsigned char)chunk[i];if(!c){terminated=1;break;}
+                if(c>=0x21 && c<=0x7e && c!='\\')line[used++]=(char)c;
+                else {
+                    static const char hex[]="0123456789abcdef";
+                    line[used++]='\\';line[used++]='x';line[used++]=hex[c>>4];line[used++]=hex[c&15];
+                }
+            }
+            copied+=amount;
+        }
+        if(!terminated && copied>=192) {line[used++]='.';line[used++]='.';line[used++]='.';}
+        line[used++]='\n';RAW(PROXY_SC_write,proxy_diagnostic_fd,line,used,0,0,0);
+    }
+    emit("v3 exec-argv truncated\n");
+}
 /* Keep redirected GTK/GLib errors observable in opt-in layer tracing.
  * Steam's helpers can replace stderr with a file or /dev/null; tracing only
  * syscall results loses the actual fatal message. Copy successful bytes,
@@ -2110,7 +2175,7 @@ clone_retry:
         if(nr==PROXY_SC_execveat && (a[0]!=AT_FDCWD || a[4])) {result=-ENOSYS;break;}
         if(!thread) {result=-ENOMEM;break;}
         proxy_count_dump();
-        if(proxy_trace){emit("v3 lifecycle-exec pid=");crash_hex(RAW(PROXY_SC_getpid,0,0,0,0,0,0));emit(" path=");emit(path);emit("\n");emit("v3 exec ");emit(path);emit("\n");}
+        if(proxy_trace){emit("v3 lifecycle-exec pid=");crash_hex(RAW(PROXY_SC_getpid,0,0,0,0,0,0));emit(" path=");emit(path);emit("\n");emit("v3 exec ");emit(path);emit("\n");trace_exec_argv((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2]);}
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {
