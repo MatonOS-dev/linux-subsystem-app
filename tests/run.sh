@@ -13,6 +13,14 @@ javac -d "$OUT/install-progress" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/InstallProgress.java" \
   "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/InstallProgressTest.java"
 java -cp "$OUT/install-progress" org.matonos.linux.stub.InstallProgressTest
+mkdir -p "$OUT/stub-session"
+javac -d "$OUT/stub-session" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/WindowLifetime.java" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/LoaderQuit.java" \
+  "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/WindowLifetimeTest.java" \
+  "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/LoaderQuitTest.java"
+java -cp "$OUT/stub-session" org.matonos.linux.stub.WindowLifetimeTest
+java -cp "$OUT/stub-session" org.matonos.linux.stub.LoaderQuitTest
 mkdir -p "$OUT/chrome-per-app-dirs/classes" "$OUT/chrome-per-app-dirs/runtime"
 javac -d "$OUT/chrome-per-app-dirs/classes" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/FlatpakPerAppDirs.java" \
