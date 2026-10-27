@@ -990,6 +990,9 @@ static unsigned userns_remaining=~0U;
  * a monitor writing its own limit loses the setup exemption. */
 static int bwrap_inherited_userns_limit;
 static int bwrap_assert_userns_disabled;
+/* --dev needs a temporary root mapping and a second userns to restore the
+ * requested IDs. That setup precedes --assert-userns-disabled's probe. */
+static int bwrap_devpts_userns;
 struct sysctl_fd {int fd;struct sysctl_fd *next;int seen_len;char seen[12];};
 static struct sysctl_fd *sysctl_fds;
 static void sysctl_sync(void);
@@ -1698,24 +1701,39 @@ static int payload_exec_is_bwrap(const char *path) {
 }
 /* Flatpak passes monitor options as NUL-delimited --args memfds. Inspect
  * before proxy_load/exec closes CLOEXEC descriptors or replaces argv memory. */
-static int bwrap_assert_option(char *const *argv) {
+struct bwrap_options { int assertion,devpts,joined,blocked,id_next; unsigned uid,gid; };
+static void bwrap_option_word(struct bwrap_options *o,const char *word) {
+    if(o->id_next) {
+        unsigned id=0;int valid=*word!=0;
+        for(const char *p=word;*p;p++){if(*p<'0'||*p>'9'||id>(~0U-(unsigned)(*p-'0'))/10){valid=0;break;}id=id*10+(*p-'0');}
+        if(valid){if(o->id_next==1)o->uid=id;else o->gid=id;}
+        o->id_next=0;return;
+    }
+    if(p_equal(word,"--assert-userns-disabled"))o->assertion=1;
+    else if(p_equal(word,"--dev"))o->devpts=1;
+    else if(p_equal(word,"--userns"))o->joined=1;
+    else if(p_equal(word,"--userns-block-fd"))o->blocked=1;
+    else if(p_equal(word,"--uid"))o->id_next=1;
+    else if(p_equal(word,"--gid"))o->id_next=2;
+}
+static struct bwrap_options bwrap_options_read(char *const *argv) {
+    struct bwrap_options o={.uid=RAW(PROXY_SC_getuid,0,0,0,0,0,0),.gid=RAW(PROXY_SC_getgid,0,0,0,0,0,0)};
     for(size_t i=1;argv && argv[i];i++) {
         if(p_equal(argv[i],"--"))break;
-        if(p_equal(argv[i],"--assert-userns-disabled"))return 1;
-        if(!p_equal(argv[i],"--args") || !argv[i+1])continue;
+        if(!p_equal(argv[i],"--args") || !argv[i+1]){bwrap_option_word(&o,argv[i]);continue;}
         const char *n=argv[++i];unsigned fd=0;int valid=*n!=0;
         for(;*n;n++){if(*n<'0'||*n>'9'||fd>(2147483647U-(unsigned)(*n-'0'))/10){valid=0;break;}fd=fd*10+(*n-'0');}
         if(!valid)continue;
         char bytes[4096],word[64];size_t used=0;long offset=0,count;
         while((count=RAW(PROXY_SC_pread64,fd,bytes,sizeof(bytes),offset,0,0))>0){
             for(long j=0;j<count;j++) {
-                if(!bytes[j]){if(used<sizeof(word)){word[used]=0;if(p_equal(word,"--assert-userns-disabled"))return 1;}used=0;}
+                if(!bytes[j]){if(used<sizeof(word)){word[used]=0;bwrap_option_word(&o,word);}else o.id_next=0;used=0;}
                 else if(used<sizeof(word))word[used++]=bytes[j];
             }
             offset+=count;
         }
     }
-    return 0;
+    return o;
 }
 static int termios2_call(proxy_arg_t *a,long *result) {
     unsigned long cmd=(unsigned long)a[1]&0xffffffffu;
@@ -2198,8 +2216,19 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     case PROXY_SC_unshare:
         result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;
-        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining && (!bwrap_inherited_userns_limit || bwrap_assert_userns_disabled))result=-EPERM;}
-        if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;}
+        if(!result && (a[0]&CLONE_NEWUSER)) {
+            sysctl_sync();
+            if(!userns_remaining && (!bwrap_inherited_userns_limit ||
+               (bwrap_assert_userns_disabled && !bwrap_devpts_userns)))result=-EPERM;
+        }
+        if(!result) {
+            if(a[0]&CLONE_NEWUSER) {
+                if(bwrap_devpts_userns && proxy_trace)proxy_log("bwrap-devpts-userns",a[0],0);
+                bwrap_devpts_userns=0;
+                if(userns_remaining && userns_remaining!=~0U)userns_remaining--;
+            }
+            namespaces|=a[0];
+        }
         break;
     case PROXY_SC_mount:result=vfs_mount((char *)(uintptr_t)a[0],(char *)(uintptr_t)a[1],(char *)(uintptr_t)a[2],(unsigned long)a[3]);break;
     case PROXY_SC_umount2:result=vfs_unmount((char *)(uintptr_t)a[0]);break;
@@ -2273,7 +2302,11 @@ clone_retry:
         proxy_count_dump();
         if(proxy_trace){emit("v3 lifecycle-exec pid=");crash_hex(RAW(PROXY_SC_getpid,0,0,0,0,0,0));emit(" path=");emit(path);emit("\n");emit("v3 exec ");emit(path);emit("\n");trace_exec_argv((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2]);}
         int next_bwrap=payload_exec_is_bwrap(path);
-        int next_assert=next_bwrap && bwrap_assert_option((char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2]);
+        char *const *next_argv=(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2];
+        struct bwrap_options next_options={0};
+        if(next_bwrap)next_options=bwrap_options_read(next_argv);
+        int next_devpts=next_options.assertion && next_options.devpts &&
+            !next_options.joined && !next_options.blocked && (next_options.uid || next_options.gid);
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
         if(!result) {
@@ -2299,7 +2332,8 @@ clone_retry:
             }
             if(thread) thread->app_stack.ss_flags=SS_DISABLE;
             payload_current_bwrap=next_bwrap;
-            bwrap_assert_userns_disabled=next_assert;
+            bwrap_assert_userns_disabled=next_options.assertion;
+            bwrap_devpts_userns=next_devpts;
             bwrap_inherited_userns_limit=payload_current_bwrap && !userns_remaining;
             if(!payload_current_bwrap) {
                 result=payload_seccomp_activate();if(result<0)break;

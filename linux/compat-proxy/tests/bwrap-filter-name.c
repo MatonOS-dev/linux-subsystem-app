@@ -53,7 +53,7 @@ int main(int argc,char **argv) {
         probe=fork();assert(probe>=0);
         if(!probe){
             int fd=memfd_create("bwrap-args",0);assert(fd>=0);
-            const char option[]="--assert-userns-disabled";
+            const char option[]="--assert-userns-disabled\0--dev\0/dev";
             assert(write(fd,option,sizeof(option))==sizeof(option));
             char number[24];snprintf(number,sizeof(number),"%d",fd);
             execl(argv[2],argv[2],"monitor",argv[0],"--args",number,NULL);_exit(93);
@@ -67,15 +67,22 @@ int main(int argc,char **argv) {
      * payload's filter. It must not inherit that payload-only restriction. */
     /* Nested --assert-userns-disabled probes with unshare, without writing
      * a new limit. Initial monitor clone setup must still be available. */
-    errno=0;
-    if(argc>3)assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
-    else assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
+    int devpts=argc>3 && !strcmp(argv[3],"--args");
+    /* The device's devpts path clones first; its first unshare restores IDs. */
+    if(!devpts){
+        errno=0;
+        if(argc>3)assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
+        else assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
+    }
     pid_t child=syscall(SYS_clone,CLONE_NEWUSER|SIGCHLD,0,0,0,0);assert(child>=0);
     if(!child){
         /* The portal's ldconfig bwrap clones first, then unshares again. */
         errno=0;
-        if(argc>3)assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
+        if(argc>3 && !devpts)assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
         else assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
+        if(devpts){
+            errno=0;assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
+        }
         execl(argv[2],argv[2],"payload",argv[2],NULL);_exit(91);
     }
     int status;assert(waitpid(child,&status,0)==child);

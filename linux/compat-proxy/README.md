@@ -877,3 +877,58 @@ and site rewrite. Host log: `/mnt/data/aosp/out/pc-logs/fork-adopt-r20-host.log`
 Device-tree preflight also passed. The focused regression was extended to
 check unshare in the cloned monitor child before payload exec and passed
 again (`fork-adopt-r20-regression.log`).
+### Round 21: devpts remapping precedes the userns assertion
+
+The existing `day-r20/obsidian.txt` capture already includes the full bundle
+for PID 10947, fd 68 (19:07:25.670). It has `--assert-userns-disabled` and
+`--dev /dev`, but **no `--userns`, `--userns2` or `--pidns` fd**. Thus
+`--parent-expose-pids` in Flatpak's argv did not result in joining those
+namespaces in this capture. Do not assume that argv flag proves setns ran.
+
+Upstream bubblewrap's non-root path implicitly adds CLONE_NEWUSER. With
+`--dev`, its first namespace maps the real IDs to zero to mount devpts.
+After pivot_root it calls unshare(CLONE_NEWUSER) to restore the requested
+UID/GID, then calls unshare again for `--assert-userns-disabled`. Round 20
+rejected the first of these two calls, producing `unshare user ns`, before
+it ever reached the assertion. The previous synthetic test omitted devpts
+and therefore modeled the first unshare as the assertion itself.
+
+Recognized assertion monitors now get one devpts remapping transition when
+creating their own user namespace with nonzero requested IDs. Option
+inspection handles direct argv and NUL-delimited `--args` fds, including
+explicit `--uid`/`--gid`; joining a supplied namespace or using the external
+userns-block protocol does not grant that transition. Successful unshare
+consumes it. The inherited zero limit, subsequent assertion, monitor-written
+limits and payload filter remain intact. This extends the existing virtual
+monitor setup model; it does not create kernel namespaces or introduce an
+application-specific rule.
+
+`tests/portal-userns.c` replays the portal boundary as `flatpak run --sandbox
+--parent-pid=... --parent-expose-pids`, then executes the **shipped stock
+bwrap** with `--args 68` under the inherited app seccomp filter and zero
+userns quota. Only Flatpak's deployment lookup/argument assembly is an
+offline fixture: no installed Flatpak deployment is altered. The bundle
+contains the captured devpts/assertion path and the real bwrap forks,
+unshares, asserts, and execs a payload that verifies the inherited filter.
+This regression fails on unmodified main with the same `unshare user ns`
+error and passes with the fix. `tests/musl-host.sh` runs it, and the smaller
+APK-name regression also covers both unshares in order.
+
+Device rerun (coordinator; no VM was used here): fresh image, stock Obsidian
+with v3-trace for 90 seconds and window state, plus Kate as a control. Expect
+`bwrap-devpts-userns` once in the nested child, then a successful unshare,
+the assertion's EPERM, and `zypak-helper child` payload exec. Check whether
+GPU/renderer processes and a display connection/toplevel follow; this host
+regression does not establish that Obsidian renders on device. No shared
+MatonOS device-tree or kernel changes are needed.
+
+Validation: `tests/run.sh` passed completely (exit 0), including apply-extra,
+new portal regression, mixed i386/x86_64 exec and rewrite suites. The final
+standalone APK-name and real-bwrap portal regressions passed too. Android
+x86_64 and i386 builds via `build-android.sh` passed. Evidence is in
+`/mnt/data/aosp/out/pc-logs/fork-adopt-r21-{suite,android,name-final,portal-final}.log`;
+the baseline's matching bwrap failure is in `fork-adopt-r21-portal-before.log`.
+The branch was subsequently rebased onto main `6705c95` (the coordinator's
+Steam revert). Both complete `tests/run.sh` and Android x86_64/i386 builds
+passed again on that base; final logs are `fork-adopt-r21-rebased-suite.log`
+and `fork-adopt-r21-rebased-android.log` in the same directory.

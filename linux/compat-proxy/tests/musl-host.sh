@@ -35,3 +35,10 @@ printf 'PASS staged static musl bwrap -> host root and fixture payloads\n'
 mkdir -p build/flatpak-bwrap/app
 cc -O2 -Wall -Wextra -Werror tests/filter-check.c -o build/flatpak-bwrap/app/filter-check
 python3 tests/flatpak-bwrap-host.py
+
+# Portal Spawn: inherited app filter/zero quota -> Flatpak argv boundary ->
+# actual shipped bwrap --args fd -> fork + devpts remapping + payload exec.
+cc -no-pie -O2 -Wall -Wextra -Werror tests/portal-userns.c -o build/portal-userns
+timeout 20 build/linux-layer-v3 --android-filter --trace "$PWD/build/portal-userns" launch "$root/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/libmatonos-app-bwrap.so" >build/portal-userns.out 2>build/portal-userns.log
+cat build/portal-userns.out
+grep -q 'bwrap-devpts-userns' build/portal-userns.log
