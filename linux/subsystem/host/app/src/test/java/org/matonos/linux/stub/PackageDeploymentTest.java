@@ -34,6 +34,25 @@ public final class PackageDeploymentTest {
         assertTrue(PackageDeployment.appDeclaresCompatI386(steam,"24.08"));
         assertFalse(PackageDeployment.appDeclaresCompatI386(steam,"25.08"));
     }
+    @Test public void portalDefaultSystemInstallSeesTheUserLaunchedApp() throws Exception {
+        org.matonos.linuxhost.stubgen.DeploymentRecord app=appRecord(
+                "app/com.valvesoftware.Steam/x86_64/stable",java.util.Collections.emptyList());
+        Path root=Files.createTempDirectory("maton-flatpak-portal-view");
+        Path user=root.resolve("user"),system=root.resolve("system");
+        PackageDeployment.materializeAppForPortal(app,user.toFile(),system.toFile(),"/app");
+        for(Path installation:new Path[]{user,system}) {
+            Path branch=installation.resolve(app.ref);
+            Path version=branch.resolve(app.commit);
+            assertEquals(Path.of(app.commit),Files.readSymbolicLink(branch.resolve("active")));
+            assertTrue(Files.isDirectory(version.resolve("files")));
+            assertArrayEquals(app.metadata,Files.readAllBytes(version.resolve("metadata")));
+            assertArrayEquals(app.deploy,Files.readAllBytes(version.resolve("deploy")));
+            assertEquals(app.commit+"\n",new String(Files.readAllBytes(
+                    installation.resolve("repo/refs/heads/deploy").resolve(app.ref)),StandardCharsets.US_ASCII));
+            assertArrayEquals(app.commitObject,Files.readAllBytes(installation.resolve("repo/objects")
+                    .resolve(app.commit.substring(0,2)).resolve(app.commit.substring(2)+".commit")));
+        }
+    }
     private static org.matonos.linuxhost.stubgen.DeploymentRecord appRecord(String ref,
             java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency> dependencies) throws Exception {
         byte[] object={7,3,1};
