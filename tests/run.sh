@@ -12,6 +12,12 @@ javac -d "$OUT/install-progress" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/InstallProgress.java" \
   "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/InstallProgressTest.java"
 java -cp "$OUT/install-progress" org.matonos.linux.stub.InstallProgressTest
+mkdir -p "$OUT/chrome-per-app-dirs/classes" "$OUT/chrome-per-app-dirs/runtime"
+javac -d "$OUT/chrome-per-app-dirs/classes" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/FlatpakPerAppDirs.java" \
+  "$ROOT/tests/chrome-sol/FlatpakPerAppDirsTest.java"
+java -cp "$OUT/chrome-per-app-dirs/classes" FlatpakPerAppDirsTest \
+  "$OUT/chrome-per-app-dirs/runtime"
 mkdir -p "$OUT/flatpak-output"
 javac -d "$OUT/flatpak-output" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/FlatpakOutput.java" \

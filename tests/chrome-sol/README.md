@@ -499,3 +499,42 @@ bash tests/chrome-sol/verify-device.sh
 
 Confirm the Chrome header validates, then verify the second PackageInstaller
 pass, staging cleanup, and launch through Wayland.
+
+## Round 17: create Flatpak's per-app runtime lock file
+
+The round-16 trace shows the second bwrap does not block on an info/sync fd.
+It completes the pivot, then its command child exits immediately: bwrap logs
+`execvp chrome: No such file or directory`. Before that, Flatpak's stock
+runner binds `/run/flatpak/per-app-dirs-ref` from
+`$XDG_RUNTIME_DIR/.flatpak/com.google.Chrome/.ref`; the proxy trace maps this
+to the stub runtime directory, where the backing file was absent. Flatpak
+uses this empty file as the per-app directory lock while starting bwrap.
+
+`PerAppRuntime` now creates the empty mode-0600 lock file from the validated
+application ref. This is generic to Flatpak app IDs and stays in the stub's
+private runtime directory. A Java host test checks its path, type, mode and
+idempotence. A bwrap/proxy regression then reproduces Flatpak's bind,
+`--lock-file` and `execvp chrome` sequence; the command reads the lock file and
+exits successfully.
+
+Host checks:
+
+```sh
+MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh /mnt/data/aosp/out/pc-logs/chrome-sol-round17-host
+bash linux/compat-proxy/tests/run.sh
+```
+
+The compat-proxy suite now runs the bwrap launch regression after building its
+static musl bwrap fixture. No VM was run for this fix. Coordinator device check
+on a freshly built image:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round17 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Verify the lock bind no longer produces `ENOENT`, Chrome opens a Wayland
+window, and `/proc/<Chrome PID>/cmdline` contains
+`--ozone-platform=wayland`. Keep logcat running while opening a page and
+closing/relaunching Chrome.

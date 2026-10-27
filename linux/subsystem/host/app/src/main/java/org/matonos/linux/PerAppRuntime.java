@@ -45,6 +45,10 @@ public final class PerAppRuntime implements AutoCloseable {
     public PerAppRuntime(Context context, File directory, String ref) throws Exception {
         this.context = context;
         this.directory = directory;
+        // Flatpak's stock runner bind-mounts this empty lock file at
+        // /run/flatpak/per-app-dirs-ref. Android has no XDG_RUNTIME_DIR
+        // per-app tree, so the stub runtime supplies its equivalent.
+        FlatpakPerAppDirs.ensureRef(directory, ref);
         this.bus = new SessionBus(context, directory, ref, android.os.Process.myUid(),
                 this::inhibit, this::open);
         try {

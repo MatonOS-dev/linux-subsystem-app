@@ -296,6 +296,13 @@ python3 tests/erofs-single-backing-host.py
 python3 tests/erofs-ldconfig-host.py
 python3 tests/icd-dup-host.py
 bash tests/musl-host.sh
+chrome_out=${MATON_CHROME_TEST_OUT:-/mnt/data/aosp/out/pc-logs/chrome-sol-host-launch}
+mkdir -p "$chrome_out/classes" "$chrome_out/runtime"
+javac -d "$chrome_out/classes" \
+    "$PWD/../../linux/subsystem/host/app/src/main/java/org/matonos/linux/FlatpakPerAppDirs.java" \
+    "$PWD/../../tests/chrome-sol/FlatpakPerAppDirsTest.java"
+java -cp "$chrome_out/classes" FlatpakPerAppDirsTest "$chrome_out/runtime"
+python3 "$PWD/../../tests/chrome-sol/per-app-dirs-ref-host.py" "$chrome_out/runtime" "$chrome_out"
 bash tests/apply-extra-host.sh /mnt/data/aosp/out/pc-logs/chrome-sol-host
 
 python3 tests/loader-maps.py
