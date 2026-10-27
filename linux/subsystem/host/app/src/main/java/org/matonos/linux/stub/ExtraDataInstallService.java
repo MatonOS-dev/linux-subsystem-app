@@ -83,7 +83,7 @@ public final class ExtraDataInstallService extends Service {
         prefix.add(LoaderCommand.loader(this).getAbsolutePath());
         if (new File(getCacheDir(), "v3-trace").exists()) prefix.add("--trace");
         prefix.add("--parent-pid");
-        prefix.add(Integer.toString(android.os.Process.myPid()));LoaderCommand.addDns(prefix,dns);LoaderCommand.addResolvMaps(prefix,resolv);
+        prefix.add(Integer.toString(android.os.Process.myPid()));LoaderCommand.addDns(prefix,dns);LoaderCommand.addResolvMaps(this,prefix,resolv);
         runFlatpak(prefix,home, tmp, run, cache, flatpakUser, flatpakSystem, "remote-add", "--user", "--if-not-exists", remote, url);
         String tags=android.os.LocaleList.getDefault().toLanguageTags();
         List<String> localeTags=new ArrayList<>();if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));

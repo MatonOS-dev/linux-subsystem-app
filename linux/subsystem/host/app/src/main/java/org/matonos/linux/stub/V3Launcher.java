@@ -97,7 +97,7 @@ final class V3Launcher {
         if(commandSocket.exists()&&!commandSocket.delete())throw new java.io.IOException("Cannot remove stale command socket");
         command.add("--host-command");command.add(commandSocket.getAbsolutePath());
         command.add("--parent-pid"); command.add(Integer.toString(android.os.Process.myPid()));
-        LoaderCommand.addResolvMaps(command, resolv);
+        LoaderCommand.addResolvMaps(context,command, resolv);
         // Flatpak's pre-bwrap CLI calls getpwuid() for the Android app UID.
         // Expose the stub's actual Linux home until bwrap installs its runtime
         // passwd file, which then supplies the ordinary in-sandbox account.

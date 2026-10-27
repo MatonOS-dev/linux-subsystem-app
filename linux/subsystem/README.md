@@ -167,3 +167,23 @@ PackageInstaller sessions start, so finished packages no longer hold staging
 space. `pack-repo` itself must stay a separate `bare-user` repo: committing the
 deployed tree into the `bare-user-only` download repo records executables as
 `0600` (seen on VulkanInfo's `bin/vulkaninfo`, exec failed with `EACCES`).
+
+### Persistent Linux machine identity (fork-adopt round 26)
+
+Android's host view lacks a usable `/etc/machine-id`; stock Flatpak therefore
+created an empty sandbox file in the Chrome capture. `MachineId.ensure`
+generates a UUID-derived 32-digit ID in the calling stub's persistent files
+directory, outside launch/cache directories. A file lock and atomic publication
+keep concurrent launch/install processes on the same identity. Valid IDs are
+reused across launches and APK updates; clearing app data or reinstalling starts
+a new installation identity. Empty/invalid files are repaired.
+
+The common loader host mappings supply `/etc/machine-id`, its Android
+`/system/etc/machine-id` alias and `/var/lib/dbus/machine-id`. Stock Flatpak
+can bind that host identity into both outer and portal-launched sandboxes.
+The ID is per stub installation, consistent with each app's independent Linux
+session, rather than a hardware identifier. MachineIdTest covers format,
+stability, concurrent launches and empty-file repair; Android app Java
+compilation passes. Device verification: read both sandbox machine-id paths,
+check 32 lowercase hex digits plus newline, then relaunch and update the host
+APK and verify that the value stays the same. No VM was run here.
