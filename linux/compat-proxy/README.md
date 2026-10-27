@@ -221,6 +221,26 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
 
 ## Changelog
 
+- **2026-10-27:** Fatal-signal reports now include the active Linux
+  executable path. Android `/proc/self/cmdline` remains the resident loader's
+  argv across emulated Linux execs, so it cannot identify an aborting payload;
+  the proxy records the path as it maps each exec image instead. The
+  `exec-signals-host.py` regression checks that a post-exec crash names the
+  crashing fixture.
+
+- **Steam round 6 investigation:** the available day-r9 trace records Linux
+  PID 14344 receiving SIGABRT from `tgkill` (`si_code=-6`) at glibc
+  `libc.so.6+0x75f3c`. The trace does not contain an assertion message or a
+  stack, so the abort trigger is still unknown. `DBUS_FATAL_WARNINGS=0` is
+  present in bwrap's environment and does not establish a fatal D-Bus warning.
+  The fatal report now identifies the loaded executable on a repeat run. The
+  black Steam window is also unresolved: capture a fresh-image launch with
+  v3-trace enabled, the full logcat/proxy stderr, and the Steam per-user
+  `~/.var/app/com.valvesoftware.Steam/logs/` files; include a screenshot while
+  the window is black. Use the reported executable/PID to capture its live
+  `/proc/<pid>/cmdline` and status before it exits. No VM was used for this
+  diagnostic change, and no generic runtime fix is established yet.
+
 - **2026-10-27:** Allow Linux `dup2`/`dup3` to replace a descriptor previously
   owned by a resident Android library. After a successful replacement, update
   ownership from the source descriptor; an ordinary source releases the old

@@ -11,6 +11,7 @@ p = subprocess.run([str(root / 'build/linux-layer-v3'), '--android-filter',
 (root / 'build/exec-signals.log').write_bytes(p.stderr)
 assert p.returncode == -11, (p.returncode, p.stderr)
 for field in (b'v3 fatal signal=0x000000000000000b', b' addr=', b' pc=',
+              b'v3 fatal executable=', b'/build/exec-signals',
               b'v3 fatal map=', b'v3 fatal image=', b' elf-offset='):
     assert field in p.stderr, p.stderr
 print('PASS resident exec signal reset, SIG_IGN preservation and crash diagnostics')

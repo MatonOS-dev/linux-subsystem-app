@@ -110,6 +110,7 @@ static void crash_text(const char *s){RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p
 static uintptr_t maps_hex(const char **p){return resident_maps_hex(p);}
 struct image_map {uintptr_t lo,hi,offset;char *path;struct image_map *next;};
 static struct image_map *image_maps;
+static const char *fatal_exec_path;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
 static void ldt_segv_handler(int,siginfo_t *,void *);
 #endif
@@ -117,7 +118,7 @@ void proxy_image_map(uintptr_t lo,uintptr_t hi,uintptr_t offset,const char *path
     struct image_map *m=vfs_palloc(sizeof(*m));if(!m)return;
     m->path=vfs_palloc(p_len(path)+1);if(!m->path){vfs_free(m);return;}
     p_copy(m->path,path,p_len(path)+1);m->lo=lo;m->hi=hi;m->offset=offset;
-    m->next=image_maps;image_maps=m;
+    m->next=image_maps;image_maps=m;fatal_exec_path=m->path;
 }
 static void proxy_rewrite_dump(void *);
 static void crash_report(int sig,siginfo_t *info,void *context) {
@@ -128,6 +129,7 @@ static void crash_report(int sig,siginfo_t *info,void *context) {
     crash_text(" code=");crash_hex(info->si_code);
     crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);
     crash_text(" pc=");crash_hex(pc);crash_text("\n");
+    if(fatal_exec_path){crash_text("v3 fatal executable=");crash_text(fatal_exec_path);crash_text("\n");}
     for(struct image_map *m=image_maps;m;m=m->next)if(pc>=m->lo && pc<m->hi){
         crash_text("v3 fatal image=");crash_text(m->path);crash_text(" elf-offset=");crash_hex(pc-m->lo+m->offset);crash_text("\n");break;
     }
