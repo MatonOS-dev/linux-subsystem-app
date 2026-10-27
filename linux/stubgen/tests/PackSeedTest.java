@@ -20,6 +20,41 @@ public final class PackSeedTest {
   } catch(NoSuchFileException missing) { return null; }
  };}
  static OstreePacks read(File repo,String rev)throws Exception{return OstreePacks.read(repo,rev,cli(repo),xattrs());}
+ static String placeholderKey(Path path)throws Exception {
+  long dev=((Number)Files.getAttribute(path,"unix:dev")).longValue();
+  long ino=((Number)Files.getAttribute(path,"unix:ino")).longValue();
+  return String.format(java.util.Locale.ROOT,"p-%016x-%016x",dev,ino);
+ }
+ static void verifyPlaceholderCommitModes(File root)throws Exception {
+  File repo=new File(root,"marker-mode-repo"),tree=new File(root,"marker-mode-tree");
+  File script=new File(tree,"flextop-init");tree.mkdirs();
+  Files.writeString(script.toPath(),"#!/bin/sh\nexit 0\n");
+  Files.setAttribute(script.toPath(),"unix:mode",0100755);
+  OstreePacks.Command command=cli(repo);command.run("init","--mode=bare-user-only");
+  String commit=command.run("commit","--branch=marker-mode","--tree=dir="+tree).trim();
+  File objectDir=new File(repo,"objects");File object=null;
+  try(java.util.stream.Stream<Path> paths=Files.walk(objectDir.toPath())) {
+   object=paths.filter(path->path.toString().endsWith(".file")).findFirst().orElseThrow().toFile();
+  }
+
+  // Model the proxy's hardlink store: OSTree's object and its user.ostreemeta
+  // stay together in the backing inode, while the repo path becomes a 01600
+  // placeholder whose mode would be misread as 0600 without resolution.
+  Files.createFile(repo.toPath().resolve(".v3-store-root"));
+  Files.setAttribute(repo.toPath(),"unix:mode",0700);
+  Path store=repo.toPath().resolve(".v3-inodes");Files.createDirectory(store);
+  Files.setAttribute(store,"unix:mode",0700);
+  String id="i-"+"a".repeat(32);Path backing=store.resolve(id);
+  Files.move(object.toPath(),backing);
+  Files.createFile(object.toPath());Files.setAttribute(object.toPath(),"unix:mode",01600);
+  Files.writeString(store.resolve(placeholderKey(object.toPath())),id+"\0");
+
+  OstreePacks committed=OstreePacks.read(repo,commit,command,xattrs());
+  ObjectPacks.Entry entry=committed.entries.stream().filter(value->value.path.equals("/flextop-init"))
+          .findFirst().orElseThrow();
+  if(entry.mode!=0100755)
+   throw new AssertionError("committed mode read from proxy marker instead of OSTree metadata: expected 0100755, got "+Integer.toOctalString(entry.mode));
+ }
  static void verifyImageSeed(File root)throws Exception {
   File image=new File(root,"mounted-image/24.08/Locale/fr");image.mkdirs();
   byte[] payload="locale payload from installed image".getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -50,6 +85,7 @@ public final class PackSeedTest {
  public static void main(String[] args)throws Exception {
   File root=new File(args[0]);root.mkdirs();File source=new File(root,"source"),tree=new File(root,"tree"),packs=new File(root,"packs"),scratch=new File(root,"scratch");tree.mkdirs();File files=new File(tree,"files");files.mkdirs();Files.writeString(new File(tree,"metadata").toPath(),"[Application]\nname=org.test.App\n");
   verifyImageSeed(root);
+  verifyPlaceholderCommitModes(root);
   cli(source).run("init","--mode=bare-user");
   byte[] large=new byte[1024*1024];new Random(42).nextBytes(large);Files.write(new File(files,"unchanged").toPath(),large);
   Files.write(new File(files,"changed").toPath(),large);Files.createSymbolicLink(new File(files,"link").toPath(),Path.of("unchanged"));

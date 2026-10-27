@@ -137,7 +137,13 @@ public final class OstreePacks {
             String name=child(prefix,f[0]),sum=hex(f[1]);
             if(!selected(name,subpaths))continue;
             File payload=path(sum,"file");
-            byte[] rawMeta=xattrs.get(payload,"user.ostreemeta");
+            // The compat proxy represents hardlinks in the source repository
+            // as empty 01600 files.  The OSTree metadata xattr lives on the
+            // indexed backing inode, so resolve the marker before reading
+            // committed uid/gid/mode.  Reading the marker itself silently
+            // falls back to its 0600 permissions and corrupts image validation.
+            File metadataSource=PlaceholderFiles.resolve(payload);
+            byte[] rawMeta=xattrs.get(metadataSource,"user.ostreemeta");
             int uid,gid,mode;byte[] packedXattrs;
             if(rawMeta!=null) {
                 byte[][] attributes=tuple(rawMeta,new int[]{4,4,4,1},new int[]{4,4,4,-1});
@@ -146,7 +152,7 @@ public final class OstreePacks {
             } else {
                 // bare-user-only objects carry no user.ostreemeta: OSTree takes
                 // the mode from the object file itself, uid/gid 0, no xattrs.
-                java.nio.file.Path object=payload.toPath();
+                java.nio.file.Path object=metadataSource.toPath();
                 if(Files.isSymbolicLink(object))mode=0120777;
                 else {
                     int bits=0;

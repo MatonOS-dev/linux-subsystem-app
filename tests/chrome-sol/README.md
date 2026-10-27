@@ -441,3 +441,35 @@ bash tests/chrome-sol/verify-device.sh
 Confirm the returned image passes commit validation, the second PackageInstaller
 pass publishes image/index/launcher splits, staging is removed, and Chrome
 launches using `--ozone-platform=wayland` from `chrome-flags.conf`.
+
+## Round 15: read committed modes through proxy hardlink markers
+
+Attempt 23 was rejected because `flextop-init` was reported as mode `0600`
+from the downloaded OSTree commit while the returned image had mode `0755`.
+The committed-entry reader inspected the repository object path directly. In
+the proxy store that path can be an empty `01600` marker, while its indexed
+backing inode holds the object and any `user.ostreemeta` metadata. Both the
+xattr lookup and the bare-user fallback mode lookup now resolve through the
+shared `PlaceholderFiles` implementation before reading metadata. This keeps
+the trusted side tied to the OSTree object and prevents marker permissions
+from entering `original.entries`.
+
+The regression creates a real bare-user-only OSTree commit containing an
+executable, replaces its file object with a correctly indexed proxy marker,
+then reads the commit and asserts the mode remains `0755`. The full host suite
+passed with `MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh
+/mnt/data/aosp/out/pc-logs/chrome-sol/tests`. The suite's final APK check was
+updated to inspect the fresh fixture directory produced by its test. No VM was
+run.
+
+Coordinator device check remains:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round15 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Confirm `/app/flextop-init` validates against the commit, then verify the
+second PackageInstaller pass, staging cleanup, and Chrome launch through
+Wayland.
