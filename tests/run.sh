@@ -24,6 +24,7 @@ javac -d "$OUT/extra-data-files" \
 java -cp "$OUT/extra-data-files" org.matonos.linux.stub.ExtraDataFilesTest
 mkdir -p "$OUT/extra-image-validator"
 javac -d "$OUT/extra-image-validator" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/ExtraImageValidator.java" \
   "$ROOT/tests/extra-image-validator/ExtraImageValidatorTest.java"
 java -cp "$OUT/extra-image-validator" org.matonos.linux.stub.ExtraImageValidatorTest

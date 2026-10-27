@@ -1,5 +1,8 @@
 package org.matonos.linux.stub;
 
+import org.matonos.linuxhost.stubgen.PlaceholderFiles;
+
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
@@ -25,6 +28,19 @@ public final class ExtraImageValidatorTest {
             Files.writeString(root.resolve("run"),"trusted");mode(root.resolve("run"),0755);
             Path include=Files.createDirectories(temp.resolve("good/app/include"));
             Files.writeString(include.resolve("header.h"),"committed-header");mode(include.resolve("header.h"),0644);
+            Path trustedStore=Files.createDirectories(temp.resolve("trusted-store"));
+            mode(trustedStore,0700);
+            Path inodeStore=Files.createDirectory(trustedStore.resolve(".v3-inodes"));mode(inodeStore,0700);
+            Path storeMarker=Files.createFile(trustedStore.resolve(".v3-store-root"));mode(storeMarker,0600);
+            Path backing=inodeStore.resolve("i-0123456789abcdef0123456789abcdef");
+            Files.writeString(backing,"committed-header");mode(backing,0644);
+            Path trustedHeader=trustedStore.resolve("header.h");Files.createFile(trustedHeader);Files.setAttribute(trustedHeader,"unix:mode",0101600);
+            long dev=((Number)Files.getAttribute(trustedHeader,"unix:dev")).longValue();
+            long ino=((Number)Files.getAttribute(trustedHeader,"unix:ino")).longValue();
+            Files.writeString(inodeStore.resolve(String.format(java.util.Locale.ROOT,"p-%016x-%016x",dev,ino)),
+                    "i-0123456789abcdef0123456789abcdef\0");
+            if(!PlaceholderFiles.isPlaceholder(trustedHeader.toFile()))
+                throw new AssertionError("trusted file is an indexed hardlink marker");
             Path extra=Files.createDirectories(temp.resolve("good/app/extra"));Files.writeString(extra.resolve("blob"),"downloaded");mode(extra.resolve("blob"),0644);
             mode(root.getParent(),0755);mode(root,0755);mode(include,0755);mode(extra,0755);
             mode(temp.resolve("good/app"),0755);mode(temp.resolve("good"),0755);
@@ -32,7 +48,8 @@ public final class ExtraImageValidatorTest {
                     entry("/files","dir",0755,null,null),entry("/files/bin","dir",0755,null,null),
                     entry("/files/bin/run","file",0755,sha("trusted"),null),
                     entry("/files/include","dir",0755,null,null),
-                    entry("/files/include/header.h","file",0644,sha("committed-header"),null),
+                    new ExtraImageValidator.Entry("/files/include/header.h","file",0644,null,
+                            "OSTree-object-id-is-not-the-file-content-digest",trustedHeader.toFile()),
                     entry("/export","dir",0755,null,null),entry("/metadata","file",0644,null,null));
             List<ExtraImageValidator.Entry> expected=ExtraImageValidator.flatpakFiles(commit,"/app");
             ExtraImageValidator.validate(temp.resolve("good").toFile(),expected);
@@ -50,6 +67,12 @@ public final class ExtraImageValidatorTest {
 
             Path tampered=temp.resolve("tampered");copy(temp.resolve("good"),tampered);Files.writeString(tampered.resolve("app/bin/run"),"modified");
             rejects(tampered,expected,"tampered non-extra file");
+
+            Path tamperedHardlink=temp.resolve("tampered-hardlink");copy(temp.resolve("good"),tamperedHardlink);
+            Files.writeString(tamperedHardlink.resolve("app/include/header.h"),"modified-header");
+            mode(tamperedHardlink.resolve("app"),0755);mode(tamperedHardlink.resolve("app/bin"),0755);
+            mode(tamperedHardlink.resolve("app/include"),0755);
+            rejects(tamperedHardlink,expected,"tampered marker-backed file","expected sha256","actual ");
 
             Path setuid=temp.resolve("setuid");copy(temp.resolve("good"),setuid);mode(setuid.resolve("app/extra/blob"),04755);
             rejects(setuid,expected,"setuid extra-data file");

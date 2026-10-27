@@ -67,8 +67,6 @@ ALLOW = {
         1, "reads the installed index_ split APK (app-owned), not staging"),
     ("StagedPacks.java", "files-readAllBytes"): (
         1, "reads a File.createTempFile ostree error log, not staging"),
-    ("ExtraImageValidator.java", "files-newInputStream"): (
-        1, "hashes a file extracted by fsck.erofs into a fresh validation directory, not the staged placeholder tree"),
     ("ObjectPacks.java", "fileinputstream"): (
         1, "digest() re-reads a pack just written to an app-owned output directory"),
     ("ObjectPacks.java", "files-readAllBytes"): (

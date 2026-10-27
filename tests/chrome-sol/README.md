@@ -473,3 +473,29 @@ bash tests/chrome-sol/verify-device.sh
 Confirm `/app/flextop-init` validates against the commit, then verify the
 second PackageInstaller pass, staging cleanup, and Chrome launch through
 Wayland.
+
+## Round 16: validate returned file bytes against logical OSTree contents
+
+`ExtraImageValidator` now hashes each extracted regular file against the
+trusted commit entry's source file, read with `PlaceholderFiles.open()`. This
+uses the logical OSTree payload when the source path is a proxy-emulated
+hardlink marker, instead of treating the marker or an object identity as the
+file's byte digest. Mismatch diagnostics include expected and actual SHA-256
+values. The validator's other checks inspect extracted image metadata or
+symlink targets and do not read regular-file contents outside this helper.
+
+The host regression uses an indexed `01600` marker whose backing inode contains
+a header file, validates matching image bytes, then rejects tampered bytes. The
+full host suite passed with `MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh
+/mnt/data/aosp/out/pc-logs/chrome-sol-round16-host`. No VM was run.
+
+Coordinator device check remains:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round16 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Confirm the Chrome header validates, then verify the second PackageInstaller
+pass, staging cleanup, and launch through Wayland.

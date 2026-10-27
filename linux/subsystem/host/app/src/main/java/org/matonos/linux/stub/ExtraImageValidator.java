@@ -7,6 +7,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 
 /** Validates a stub-built image after fsck.erofs has extracted it to a private directory. */
 public final class ExtraImageValidator {
@@ -113,7 +114,11 @@ public final class ExtraImageValidator {
                 } else if(entry.kind.equals("symlink")) {
                     if(!symlink||!Files.readSymbolicLink(item).toString().equals(entry.target))throw new IOException("EROFS symlink differs from commit: "+relative);
                 } else if(entry.kind.equals("file")) {
-                    if(!file||!sha256(item.toFile()).equals(entry.sha256))throw new IOException("EROFS file differs from commit: "+relative);
+                    if(!file)throw new IOException("EROFS file type differs from commit: "+relative);
+                    String expectedHash=entry.content==null?entry.sha256:sha256(entry.content);
+                    String actual=sha256(item.toFile());
+                    if(expectedHash==null||!actual.equals(expectedHash))throw new IOException("EROFS file differs from commit: "+relative+
+                            " (expected sha256 "+expectedHash+", actual "+actual+")");
                 } else throw new IOException("Invalid committed entry kind: "+entry.kind);
             }
         }
@@ -144,7 +149,7 @@ public final class ExtraImageValidator {
         catch(UnsupportedOperationException error){throw new IOException("EROFS validation requires POSIX mode support",error);}
     }
     private static String sha256(File file)throws IOException {
-        try {java.security.MessageDigest d=java.security.MessageDigest.getInstance("SHA-256");try(java.io.InputStream in=Files.newInputStream(file.toPath())){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)d.update(b,0,n);}StringBuilder s=new StringBuilder();for(byte b:d.digest())s.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return s.toString();}
+        try {java.security.MessageDigest d=java.security.MessageDigest.getInstance("SHA-256");try(java.io.InputStream in=PlaceholderFiles.open(file)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)d.update(b,0,n);}StringBuilder s=new StringBuilder();for(byte b:d.digest())s.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return s.toString();}
         catch(java.security.NoSuchAlgorithmException e){throw new AssertionError(e);}
     }
 }
