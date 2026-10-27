@@ -104,6 +104,17 @@ static int dns_port_owned(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++)
 static void dns_track_port(unsigned short port){if(!port||dns_port_owned(port))return;for(unsigned i=0;i<DNS_PORTS;i++){unsigned empty=0;if(__atomic_compare_exchange_n(&dns_ports[i],&empty,port,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED))return;}}
 static void dns_untrack_port(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++){unsigned value=__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE);if(value==port)__atomic_compare_exchange_n(&dns_ports[i],&value,0,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED);}}
 static void dns_worker(void *unused){(void)unused;
+    /* This is a layer thread, not a payload thread: it never traps, so it has
+     * no thread state, no alternate signal stack and no registered stack
+     * bounds. A payload thread gets those on its first trap; take them here
+     * before touching the stack-heavy body. Then unblock only the synchronous
+     * fault signals: they can only come from this thread's own execution, and
+     * the inherited all-blocked mask would force SIG_DFL, killing the process
+     * with no MatonOS crash report. */
+    (void)thread_state();
+    proxy_sigmask_t faults=(UINT64_C(1)<<(SIGSEGV-1))|(UINT64_C(1)<<(SIGBUS-1))|
+                           (UINT64_C(1)<<(SIGFPE-1))|(UINT64_C(1)<<(SIGILL-1));
+    RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&faults,0,8,0,0);
     int server=(int)RAW(PROXY_SC_socket,AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0,0,0,0);if(server<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
     struct sockaddr_in bindaddr={.sin_family=AF_INET,.sin_addr={.s_addr=0x0100007f}};
     if(RAW(PROXY_SC_bind,server,&bindaddr,sizeof(bindaddr),0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}

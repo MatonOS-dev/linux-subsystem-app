@@ -545,8 +545,15 @@ static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
     struct kernel_action action=chained_segv;
     if(action.handler==1 && info->si_code<=0)return;
     if(action.handler<=1) {
+        uintptr_t pc=ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC);
         proxy_log("fatal-segv",info->si_code,(long)info->si_addr);
-        proxy_log("fatal-segv-pc",0,(long)ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC));
+        proxy_log("fatal-segv-pc",0,(long)pc);
+        /* A pc outside every payload image is our own code. Say so, so the
+         * crash is reported as MatonOS instead of an unexplained app fault
+         * (a helper thread's fault used to be invisible entirely). */
+        int payload_pc=0;
+        for(struct image_map *m=image_maps;m;m=m->next)if(pc>=m->lo && pc<m->hi){payload_pc=1;break;}
+        if(!payload_pc)proxy_log("fatal-layer",0,(long)pc);
         RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);
         return;
     }
