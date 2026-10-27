@@ -500,3 +500,48 @@ checks still verify that descendants outlive a successfully exited main.
 Validation: the full compat-proxy tests/run.sh passes, including Android NDK
 builds and packaging. Evidence: out/pc-logs/steam-personality/r8-final-suite.log
 in the AOSP checkout. No VM was started.
+
+Steam round 8: redirected helper errors
+--------------------------------------
+
+Zenity investigation: day-r10/steam.txt identifies PID 16746 (0x416a) as
+/usr/bin/zenity, launched after steam-runtime-check-requirements PID 16737.
+It receives self-sent SIGABRT at libc+0x75f3c after two successful writes
+of 462 and 469 bytes. Their text and destination fd are absent from the old
+trace, so neither a GTK/D-Bus assertion nor a rendering failure is proven.
+The trace has no steamwebhelper exec. The screenshot alone cannot identify
+the owner of the black surface, and no evidence ties the adopted zombies
+to that surface: their original parents have already exited.
+
+Opt-in trace now copies successful fd-2 write/writev bytes to the preserved
+proxy diagnostic sink, labelled payload-stderr with PID and byte count.
+This retains GTK/GLib errors even when the launcher redirects stderr into
+a file or /dev/null. It preserves the original write result and destination;
+normal launches do not duplicate payload output. The regression redirects
+stderr to /dev/null and verifies both write forms are visible only with
+--trace, including execution through the i386 peer loader.
+
+Coordinator's next capture (no agent VM was started): rebuild the subsystem,
+launch stock Steam on a fresh image with v3-trace, and save the full logcat
+stream through zenity's exit. Retain payload-stderr begin/end blocks for
+its PID, supervisor-descendant-status events while main is alive, and the
+Steam logs directory. To attribute the surface, include the compositor's
+window PID/title list at the black window. The abort reason and black-window
+cause remain open; this change fixes continuous reaping, not rendering.
+No shared device-tree or kernel changes are required.
+
+The later host attempt with the captured FreeDesktop 26.08 runtime, Android
+filter and Xvfb did reach the same libc+0x75f3c abort. Its stderr identifies
+Gtk gtkiconhelper.c:495 ensure_surface_for_gicon: glycin cannot load GTK's
+fallback image-missing.png because spawning its image decoder fails. In
+this host fixture glycin attempts bwrap and gets ENOENT (the fixture maps
+/usr to the runtime, which lacks that host bwrap). The device instead sees
+/.flatpak-info and successfully execs /bin/flatpak-spawn twice, PIDs 16756
+and 16762, immediately before the abort. Thus the host ENOENT is not itself
+a proven device bug; the matching image-loader failure is the specific
+lead for the next capture. Preserve zenity's complete assertion text and
+both flatpak-spawn children/portal stderr. Do not disable glycin isolation
+or add a Steam override to bypass that failing nested launch.
+Host evidence: out/pc-logs/steam-personality/r8-host/zenity.log (the attempt
+hit its 180-second timeout while processing the slow archived runtime;
+it is not a passing GUI test). All new test output/scratch was under out.

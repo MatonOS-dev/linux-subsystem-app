@@ -832,6 +832,26 @@ static void trace_number(uint64_t value) {
     do {digits[n++]=(char)('0'+value%10);value/=10;} while(value);
     while(n)RAW(PROXY_SC_write,proxy_diagnostic_fd,&digits[--n],1,0,0,0);
 }
+/* Keep redirected GTK/GLib errors observable in opt-in layer tracing.
+ * Steam's helpers can replace stderr with a file or /dev/null; tracing only
+ * syscall results loses the actual fatal message. Copy successful bytes,
+ * without changing the application's destination or write result. */
+static void trace_stderr(long nr,proxy_arg_t a[6],long result) {
+    if(!proxy_trace || a[0]!=2 || result<=0 ||
+       (nr!=PROXY_SC_write && nr!=PROXY_SC_writev))return;
+    emit("v3 payload-stderr pid=");trace_number(RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+    emit(" bytes=");trace_number((uint64_t)result);emit(" begin\n");
+    if(nr==PROXY_SC_write)RAW(PROXY_SC_write,proxy_diagnostic_fd,a[1],result,0,0,0);
+    else {
+        size_t left=(size_t)result;
+        for(size_t i=0;i<(size_t)a[2] && left;i++) {
+            struct proxy_iovec v=arch_iovec_read((void *)(uintptr_t)a[1],i);
+            size_t count=v.len<left?v.len:left;
+            RAW(PROXY_SC_write,proxy_diagnostic_fd,v.base,count,0,0,0);left-=count;
+        }
+    }
+    emit("\nv3 payload-stderr end\n");
+}
 static void trace_unix_io(long nr,proxy_arg_t a[6],long result) {
     if(!proxy_trace)return;
     int fd=(int)a[0],domain=0,type=0;socklen_t size=sizeof(int);
@@ -2153,6 +2173,7 @@ clone_retry:
     default:break;
     }
 finish:
+    trace_stderr(nr,a,result);
     result=creator_finish(nr,a,result);
     proxy_rewrite_after(nr,a,result);
     if(nr==PROXY_SC_sendmsg || nr==PROXY_SC_recvmsg || nr==PROXY_SC_sendto ||
