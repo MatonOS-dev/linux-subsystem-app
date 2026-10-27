@@ -1,8 +1,38 @@
 # Chrome extra-data follow-through (chrome-sol)
 
-Status: host fixes and tests complete; device install/launch is NOT verified.
-Attempt 11 reaches apply_extra; its bind-fd failure is reproduced and fixed on the host.
+Status: the host path now republishes the returned extra-data tree in the full
+EROFS image; coordinator device install/launch verification is still pending.
 No VM was started and no other worktree was modified.
+
+## Round 19: publish the post-handback deployment tree
+
+Round 18's install and split publication completed, but Chrome could not find
+its default entry point because `/app/extra` was empty at launch. `StagedPacks`
+had read the local deployed-tree commit and generated `fresh.entries` before
+merging the stub-returned `/app/extra`. It then built the published image and
+`objects.index` from that stale entry list. The merged files existed on disk,
+but were absent from the mounted EROFS image.
+
+The service now validates and merges the returned payload first, then commits
+and reads the full deployed tree. Those refreshed entries are used for the
+image and object index, including runtime branch remapping and reuse of
+unchanged files. The regression builds/extracts a pre-merge image to show the
+payload is missing, then rebuilds from the refreshed tree and checks that both
+the Chrome wrapper and `/app/extra/chrome` payload are present. The full host
+suite passed at `/mnt/data/aosp/out/pc-logs/chrome-sol-round18-host`.
+
+Coordinator: rebuild the subsystem APK/image and run this on a freshly booted
+VM. No VM was started for this change. Verify installation, image/index/
+launcher split publication, cleanup of `install/`, a visible Chrome window,
+navigation to a page, close/relaunch, and
+`--ozone-platform=wayland` in Chrome's process command line. Keep the complete
+logcat and screenshot:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round19 \
+bash tests/chrome-sol/verify-device.sh
+```
 
 ## Round 2: exact failure and fix
 

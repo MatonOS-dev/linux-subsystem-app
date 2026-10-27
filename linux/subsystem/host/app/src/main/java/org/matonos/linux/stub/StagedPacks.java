@@ -43,7 +43,33 @@ public final class StagedPacks {
         File localRepo=new File(operation,"pack-repo");
         OstreePacks.Command local=command(context,operation,localRepo,cancelled);
         local.run("init","--mode=bare-user");
-        long deployStarted=System.nanoTime();File deployedFiles=new File(deployment,"files");
+        File deployedFiles=new File(deployment,"files");
+        File returnedImage=new File(installation,"extra-data-image.erofs");
+        if(returnedImage.isFile()) {
+            List<ExtraImageValidator.Entry> committed=new ArrayList<>();
+            String trustedPrefix=manifest.getString("appRef").startsWith("runtime/")
+                    ? "/"+manifest.getString("appRef").substring(manifest.getString("appRef").lastIndexOf('/')+1)
+                    : "/app";
+            for(ObjectPacks.Entry sourceEntry:original.entries)
+                committed.add(new ExtraImageValidator.Entry(sourceEntry.path,sourceEntry.kind,sourceEntry.mode,
+                        sourceEntry.target,sourceEntry.checksum,sourceEntry.source));
+            List<ExtraImageValidator.Entry> trusted=ExtraImageValidator.flatpakFiles(committed,trustedPrefix);
+            File extracted=new File(installation,"extra-image-validated");
+            try {
+                ExtraImageValidator.checkImage(
+                        LoaderCommand.tool(context,"libmatonos-fsck-erofs.so"),returnedImage,extracted,trusted);
+                // This is only the stub's extra-data payload image. Merge its
+                // /app/extra into the complete verified deployment, then build
+                // the published image from the full tree below.
+                ExtraDataImage.mergeExtra(extracted,deployedFiles);
+            } finally {delete(extracted);}
+        }
+
+        // Snapshot only after the returned extra-data payload has been merged.
+        // Reading this tree earlier leaves /extra out of both the published
+        // EROFS image and its object index, even though the APK has an image
+        // split and the deployment directory now contains the payload.
+        long deployStarted=System.nanoTime();
         String commit=OstreePacks.commitDeployed(deployedFiles,local);
         Log.i("MatonInstall","phase=deploy ref="+manifest.optString("ref","unknown")+" ms="+
                 java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-deployStarted)+" bytes="+InstallTransaction.treeBytes(deployedFiles));
@@ -72,26 +98,6 @@ public final class StagedPacks {
         }
         IBinder seedToken=seedUnchangedFromMounted(installed,operation,imageEntries,manifest.getString("appRef"));
         long mkfsStarted=System.nanoTime();long imageBytes;
-        File returnedImage=new File(installation,"extra-data-image.erofs");
-        if(returnedImage.isFile()) {
-            List<ExtraImageValidator.Entry> committed=new ArrayList<>();
-            String trustedPrefix=manifest.getString("appRef").startsWith("runtime/")
-                    ? "/"+manifest.getString("appRef").substring(manifest.getString("appRef").lastIndexOf('/')+1)
-                    : "/app";
-            for(ObjectPacks.Entry sourceEntry:original.entries)
-                committed.add(new ExtraImageValidator.Entry(sourceEntry.path,sourceEntry.kind,sourceEntry.mode,
-                        sourceEntry.target,sourceEntry.checksum,sourceEntry.source));
-            List<ExtraImageValidator.Entry> trusted=ExtraImageValidator.flatpakFiles(committed,trustedPrefix);
-            File extracted=new File(installation,"extra-image-validated");
-            try {
-                ExtraImageValidator.checkImage(
-                        LoaderCommand.tool(context,"libmatonos-fsck-erofs.so"),returnedImage,extracted,trusted);
-                // This is only the stub's extra-data payload image. Merge its
-                // /app/extra into the complete verified deployment, then build
-                // the published image from the full tree below.
-                ExtraDataImage.mergeExtra(extracted,deployedFiles);
-            } finally {delete(extracted);}
-        }
         org.matonos.linuxhost.stubgen.ErofsImage.BuildResult imageResult=
                 org.matonos.linuxhost.stubgen.ErofsImage.build(imageEntries,output,erofsTool,imageEpoch,cancelled,workPool);
         imageBytes=imageResult.image.imageSize;
