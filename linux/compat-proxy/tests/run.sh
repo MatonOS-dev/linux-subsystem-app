@@ -176,6 +176,14 @@ cc -m32 -nostdlib -static -no-pie tests/i386-dns-start.S -o build/i386-dns-start
 timeout 15 build/linux-layer-v3-i386 --android-filter --dns-forwarder 127.0.0.53:53 \
     "$PWD/build/i386-dns-start" >build/i386-dns-start.out 2>build/i386-dns-start.log
 printf 'PASS i386 DNS helper startup with high-address stack mapping\n'
+# The helper thread must enter dns_worker on an ABI-aligned stack. Its query
+# path is the first place -msse2 codegen reaches an aligned frame slot, and a
+# 4-byte slip used to kill the payload with an unreported SIGSEGV.
+cc -m32 -nostdlib -static -no-pie tests/i386-dns-query.S -o build/i386-dns-query
+timeout 15 build/linux-layer-v3-i386 --android-filter --dns-forwarder 127.0.0.53:53 \
+    "$PWD/build/i386-dns-query" >build/i386-dns-query.out 2>build/i386-dns-query.log
+cat build/i386-dns-query.out
+printf 'PASS i386 DNS helper query on the ABI-aligned helper stack\n'
 cc -O2 -Wall -Wextra -Werror -Wno-array-bounds -Wno-stringop-overflow -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-translation.c -o build/dns-translation
 build/dns-translation
 cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-host.c -o build/dns-host

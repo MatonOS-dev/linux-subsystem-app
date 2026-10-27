@@ -42,7 +42,13 @@ proxy_raw_clone_thread:
 proxy_raw_clone_after:
  test %eax,%eax
  jnz 1f
+ /* i386 SysV ABI: esp must be 16-byte aligned at the call site, so the
+  * callee enters with esp%16==12. The clone stack is only page aligned, and
+  * -msse2 codegen trusts that promise (movaps to aligned frame slots), so a
+  * 4-byte slip kills the helper thread on its first vectorised store. */
  mov %ecx,%esp
+ and $-16,%esp
+ sub $12,%esp
  push %edi
  call *%ebp
  mov %eax,%ebx
