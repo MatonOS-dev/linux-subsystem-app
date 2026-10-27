@@ -649,3 +649,37 @@ Validation: full `bash linux/compat-proxy/tests/run.sh` exits 0, including
 mixed x86_64/i386, staged musl bwrap and apply-extra. Logs in the AOSP checkout:
 `out/pc-logs/fork-adopt-r16-suite.log`, `fork-adopt-r16-focused.log`, and
 `fork-adopt-r16-baseline.log`. No shared or kernel changes are required.
+
+Obsidian round 17: inherited filter during nested bwrap setup
+------------------------------------------------------------
+
+The absolute `day-r16/obsidian.txt` capture still fails before ldconfig:
+portal-launched Flatpak 4122 execs APK-named bwrap 4123, which receives
+`flatpak-seccomp-deny 56 -1` on its namespace clone. It prints the namespace
+permission error and exits 1; Flatpak reports `ldconfig failed, exit status
+256`. Thus round 16's spelling fix did not resolve the captured blocker.
+The browser's sandboxed zygote cannot finish launching, before any display
+connection. This is distinct from the inotify EOF fixed on main.
+
+The monitor already inherits an ACTIVE outer Flatpak payload filter. Deferring
+only filters newly installed by that monitor cannot undo its inherited clone
+denial. For a bwrap monitor, dispatch namespace clone, unshare, mount, umount
+and pivot_root to the existing virtual namespace implementation before the
+payload-filter ERRNO check. These operations construct the proxy's virtual
+view; clone still strips kernel namespace flags. Ordinary payloads keep the
+inherited policy, and this does not remove the kernel's inherited filter.
+There are no application-specific conditions.
+
+The APK-name regression now installs the outer filter before execing the
+monitor, then installs the nested filter, exercises namespace setup and clone,
+and verifies unshare remains denied after payload exec. The same regression
+aborts on unmodified main at the monitor's namespace setup assertion and
+passes with the fix. Full compat-proxy host suite (including apply-extra)
+and Android x86_64/i386 builds passed (exit 0); results are recorded in `out/pc-logs/fork-adopt-r17-{suite,android}.log`.
+
+Next device verification: fresh image, stock Obsidian with v3-trace for 90 s
+and window state; confirm nested bwrap no longer reports clone denial or
+ldconfig status 256, `/app/bin/zypak-helper child` and the sandboxed zygote
+execute, then inspect display connect/get_toplevel. Recheck Kate rendering.
+This change fixes the evidenced setup failure; a window is not yet verified.
+No VM, AOSP build, shared-file changes or kernel changes were made.

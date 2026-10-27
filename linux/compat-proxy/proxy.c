@@ -1994,7 +1994,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
         goto clean_mask;
     }
-    result=payload_seccomp_errno(info->si_syscall,a,(uintptr_t)info->si_call_addr);
+    /* Nested bwrap inherits the outer payload filter. Its namespace calls
+     * construct our virtual filesystem/process view, not kernel namespaces;
+     * allow that setup while retaining the inherited policy for the payload.
+     * Merely deferring filters installed by this monitor is insufficient. */
+    int virtual_namespace_setup=payload_current_bwrap &&
+        (nr==PROXY_SC_unshare || nr==PROXY_SC_mount || nr==PROXY_SC_umount2 ||
+         nr==PROXY_SC_pivot_root || (nr==PROXY_SC_clone && (a[0]&NS_FLAGS)));
+    result=virtual_namespace_setup?0:payload_seccomp_errno(info->si_syscall,a,(uintptr_t)info->si_call_addr);
     if(result){if(proxy_trace)proxy_log("flatpak-seccomp-deny",info->si_syscall,result);goto finish;}
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
     extern int adopt_i386_syscall(long,proxy_arg_t *,void *,long *);

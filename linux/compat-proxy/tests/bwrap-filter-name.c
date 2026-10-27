@@ -14,10 +14,6 @@
 
 int main(int argc,char **argv) {
     assert(argc==3);
-    if(!strcmp(argv[1],"launch")) {
-        execl(argv[2],argv[2],"monitor",argv[0],NULL);
-        return 90;
-    }
     if(!strcmp(argv[1],"payload")) {
         errno=0;
         assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
@@ -37,6 +33,12 @@ int main(int argc,char **argv) {
     struct sock_fprog filter={.len=sizeof(code)/sizeof(code[0]),.filter=code};
     assert(prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)==0);
     assert(prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&filter)==0);
+    if(!strcmp(argv[1],"launch")) {
+        /* The outer Flatpak payload already has an active filter before
+         * its portal launches a nested APK-named bwrap monitor. */
+        execl(argv[2],argv[2],"monitor",argv[0],NULL);
+        return 90;
+    }
     /* bwrap's monitor may start further namespace setup after installing the
      * payload's filter. It must not inherit that payload-only restriction. */
     assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
