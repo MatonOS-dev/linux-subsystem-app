@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+cc -O2 -Wall -Wextra -Werror tests/inotify-read.c -o build/inotify-read-test
+build/inotify-read-test
 cc -O2 -Wall -Wextra -Werror tests/create-denied.c -o build/create-denied
 mkdir -p build/create-denied-dir
 chmod 0500 build/create-denied-dir
