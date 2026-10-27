@@ -108,7 +108,10 @@ public final class ObjectPacks {
                 Entry e=new Entry(path,pathChecksum(path,"dir"),"dir",preserveModes?unixMode(from):0100755);entries.add(e);
                 fromTreeInto(child,relative+name+"/",prefix,entries,preserveModes);
             } else if(Files.isRegularFile(from,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                Entry e=new Entry(path,checksum(child),"file",preserveModes?unixMode(from):(PlaceholderFiles.resolve(child).canExecute()?0100755:0100644));e.source=child;entries.add(e);
+                // A proxy-emulated hardlink is an empty 01600 marker on disk;
+                // its backing object carries the deployed bytes and mode.
+                File source=PlaceholderFiles.resolve(child);
+                Entry e=new Entry(path,checksum(child),"file",preserveModes?unixMode(source.toPath()):(source.canExecute()?0100755:0100644));e.source=source;entries.add(e);
             } else throw new IOException("Unsupported tree entry "+path);
         }
     }

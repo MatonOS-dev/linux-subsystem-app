@@ -345,3 +345,33 @@ Keep the full logcat. Confirm image validation passes, the second package
 install publishes the image/index/launcher splits, install staging is cleaned
 up, and Chrome launches with `--ozone-platform=wayland` from its stock
 `chrome-flags.conf`.
+
+## Round 12: resolve proxy hardlink modes while building extra-data images
+
+The extra-data image walk read file bytes through `PlaceholderFiles`, but took
+the mode and source path from the raw staged entry. Proxy-emulated OSTree
+hardlinks are empty `01600` marker files, so image entries inherited that mode.
+`ObjectPacks.fromTreeWithModes` now uses the shared `PlaceholderFiles`
+resolution for the backing source and its deployed mode; the EROFS writer
+continues to read through that same resolver.
+
+The real proxy fixture now compares mode-preserving image entries from an
+OSTree hardlink checkout with a copy-mode checkout, then builds and extracts
+the image tar and checks every extracted entry's mode. Verified by
+`bash tests/placeholder/run.sh /mnt/data/aosp/out/pc-logs/chrome-sol/placeholder`
+and the complete
+`MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh /mnt/data/aosp/out/pc-logs/chrome-sol/full-tests`
+host suite. No VM was run here.
+
+Coordinator: rebuild the subsystem APK and verify on a freshly booted image.
+Exact device test:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round12 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Confirm image validation passes, the second package install publishes the
+image/index/launcher splits, install staging is cleaned up, and Chrome launches
+with `--ozone-platform=wayland` from its stock `chrome-flags.conf`.

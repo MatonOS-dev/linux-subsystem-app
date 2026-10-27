@@ -1,6 +1,7 @@
 package org.matonos.linux.stub;
 
 import org.json.JSONObject;
+import org.matonos.linuxhost.stubgen.ErofsImage;
 import org.matonos.linuxhost.stubgen.ObjectPacks;
 import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 
@@ -93,6 +94,48 @@ public final class PlaceholderFixtureTest {
         File stagedFiles = new File(deployment, "files");
         compareTrees(stagedFiles, copyCheckout);
         check(hasPlaceholderFile(stagedFiles), "staged tree exposes at least one file placeholder");
+
+        // Extra-data image construction preserves deployed modes as well as
+        // content. Proxy hardlink markers are 01600 placeholders, so the mode
+        // must come from the indexed backing inode just like the file bytes.
+        List<ObjectPacks.Entry> stagedImage = ObjectPacks.fromTreeWithModes(stagedFiles, "/app/");
+        List<ObjectPacks.Entry> copiedImage = ObjectPacks.fromTreeWithModes(copyCheckout, "/app/");
+        equals(copiedImage.size(), stagedImage.size(), "image entry count");
+        boolean resolvedPlaceholder = false;
+        for (int i = 0; i < stagedImage.size(); i++) {
+            ObjectPacks.Entry actual = stagedImage.get(i), expected = copiedImage.get(i);
+            equals(expected.path, actual.path, "image path");
+            equals(expected.kind, actual.kind, "image kind " + actual.path);
+            equals(expected.checksum, actual.checksum, "image content " + actual.path);
+            equals(expected.mode, actual.mode, "image mode " + actual.path);
+            if (actual.kind.equals("file") && PlaceholderFiles.isPlaceholder(
+                    new File(stagedFiles, actual.path.substring("/app/".length())))) {
+                check(actual.mode != 01600, "image mode must not come from the 01600 marker");
+                check(actual.source.equals(PlaceholderFiles.resolve(
+                        new File(stagedFiles, actual.path.substring("/app/".length())))),
+                        "image source resolves to proxy backing inode");
+                resolvedPlaceholder = true;
+            }
+        }
+        check(resolvedPlaceholder, "image fixture contains a resolved hardlink placeholder");
+
+        File fakeMkfs = new File(workspace, "fake-mkfs-erofs");
+        Files.writeString(fakeMkfs.toPath(), "#!/bin/sh\ncat \"${11}\" > \"${10}\"\n");
+        check(fakeMkfs.setExecutable(true), "Cannot make fake mkfs executable");
+        File imageOut = new File(workspace, "image");
+        ErofsImage.build(stagedImage, imageOut, fakeMkfs, 0);
+        File extractedImage = new File(workspace, "image-extracted");
+        Files.createDirectories(extractedImage.toPath());
+        Process extract = new ProcessBuilder("tar", "-xf", new File(imageOut, "deployment.erofs").toString(),
+                "-C", extractedImage.toString()).inheritIO().start();
+        if (extract.waitFor() != 0) throw new IOException("Cannot extract image fixture tar");
+        for (ObjectPacks.Entry entry : copiedImage) {
+            if (entry.path.equals("/app")) continue;
+            File extracted = new File(extractedImage, "app/" + entry.path.substring("/app/".length()));
+            equals(entry.mode, ((Number) Files.getAttribute(extracted.toPath(), "unix:mode",
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS)).intValue() & 07777,
+                    "built image mode " + entry.path);
+        }
 
         // The deterministic pack writer must consume the backing content, so
         // its entry identities, index and packs are byte-identical.
