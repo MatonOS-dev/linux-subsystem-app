@@ -164,7 +164,10 @@ public final class LinuxAppStoreService extends Service {
         int uid=Binder.getCallingUid();
         if (id==null || !id.matches("[A-Za-z0-9_-]{1,64}") || callback==null)
             throw new IllegalArgumentException("Invalid operation request");
-        boolean privileged=checkCallingPermission(INSTALL)==PackageManager.PERMISSION_GRANTED;
+        // Local Binder calls from our activities retain our UID; Android's
+        // checkCallingPermission deliberately rejects calls from this process.
+        boolean privileged=uid==android.os.Process.myUid()
+                || checkCallingPermission(INSTALL)==PackageManager.PERMISSION_GRANTED;
         if (!privileged && (kind.equals("install") || kind.equals("update"))) {
             ref=authenticateStubRef(uid);
             try {remote=remoteFor(ref);}catch(Exception e){throw new SecurityException("Cannot resolve installed origin",e);}
