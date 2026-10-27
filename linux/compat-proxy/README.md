@@ -1358,3 +1358,45 @@ check-inhibit/check-portal-wire/check-policy-wildcard pass. No VM used.
 Android broker compilation and linking also pass with SDK NDK
 30.0.16248370 and the pinned static dependencies (lib64 prefix exposed via
 a private lib symlink view under the test output directory).
+
+### Steam round 21: display probe completes; client architecture assertion
+
+The day-r29 capture disproves a stuck portal completion in this run:
+`Spawn` at 23:31:36.347 receives PID 26695 at 23:31:36.378;
+`SpawnExited(26695, 0)` is routed to the live client at 23:31:37.611.
+Steam then execs `ubuntu12_32/steam` as PID 26701 at 23:31:37.627.
+Do not fix portal routing based on the previous run's timeout alone.
+
+The next failures are separate: the update UI child (26706) starts an
+exec from i386 to the runtime's x86_64 `/bin/sh` at 23:31:40.788, then
+its parent reports `ProcessMessagesFromChild: failed to read header`
+and `CUpdateUILinux: error communicating with child process, detaching: 32`.
+Installation verification completes at 23:31:55.593. At 23:32:10.276 the
+client reports `../common/friendsuihelpers.cpp (54) : Is64BitOS()`.
+No steamwebhelper exec occurs. These observations locate failures but do
+not establish the client architecture check's implementation or the UI
+child's exit cause.
+
+Bionic's `libc_init_common.cpp::__initialize_personality` sets PER_LINUX32
+on ELF32 startup, including our resident i386 loader; the exec state stream
+does not transfer the caller's persona. This is a candidate explanation,
+not proof that Steam's assertion reads uname. Opt-in `v3 uname` diagnostics
+now report the actual kernel machine answer, kernel/tracked persona, ABI,
+PID and result without changing them. Peer exec/import breadcrumbs show
+whether the UI child's cross-ABI loader handoff completes. The uname host
+regression compares native Linux output for PER_LINUX and PER_LINUX32 and
+checks invalid-pointer EFAULT under tracing. Both production Android loader
+ABIs are compiled as part of validation.
+
+Next device capture: same fresh launch with v3-trace and payload-stderr;
+include console-linux.txt and Steam's bootstrap/client logs plus the app UID
+process tree with wchan/syscall/fd targets after the Is64BitOS assertion.
+Retain `v3 uname`, `exec-peer-enter`, `exec-peer-return`, `exec-state-import`
+and fatal/lifecycle lines. This will distinguish a persona-induced machine
+answer from a failed cross-ABI exec and identify the remaining wait.
+No VM, kernel change, AOSP patch or per-app workaround is part of this round.
+
+Validation: full proxy suite (private external fixture roots), nested
+host-command-pair display probe, native uname comparison/EFAULT, both
+production Android loader builds, device-tree preflight and diff checks pass.
+Device confirmation remains pending with the coordinator; no Java changed.

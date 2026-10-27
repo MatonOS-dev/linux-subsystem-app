@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
 bash tests/exec-origin.sh
+bash tests/uname-trace.sh
 cc -O2 -Wall -Wextra -Werror tests/proc-dirfd.c -o build/proc-dirfd
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/proc-dirfd" >build/proc-dirfd.out 2>build/proc-dirfd.log
 cat build/proc-dirfd.out

@@ -181,6 +181,7 @@ int state_import(const char *number,const char *token){
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
  if(magic!=UINT64_C(0x335854454e4f544d)||version!=8||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
  if(!s.error)transfer(&s);
+ if(proxy_trace)proxy_log("exec-state-import",ARCH_AUDIT,s.error);
  if(s.pos!=s.size)s.error=-EINVAL;
  RAW(PROXY_SC_munmap,data,st.st_size,0,0,0,0);proxy_private_fd_release((int)fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);private_fd=-1;
  return s.error;
@@ -230,7 +231,9 @@ int state_exec(const char *path,char *const *args,char *const *env){
  long handoff_flags=RAW(PROXY_SC_fcntl,private_fd,F_GETFD,0,0,0,0);
  if(handoff_flags<0)error=handoff_flags;
  else if((handoff_flags&FD_CLOEXEC) && RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags&~FD_CLOEXEC,0,0,0)<0)error=-EIO;
- else {error=RAW(PROXY_SC_execveat,fd,"",av,env,0x1000,0);
+ else {if(proxy_trace)proxy_log("exec-peer-enter",ARCH_AUDIT,fd);
+  error=RAW(PROXY_SC_execveat,fd,"",av,env,0x1000,0);
+  if(proxy_trace)proxy_log("exec-peer-return",ARCH_AUDIT,error);
   /* A failed exec leaves the caller alive; restore its private descriptor's
    * original kernel flag along with the rest of its state. */
   if(error<0 && (handoff_flags&FD_CLOEXEC))RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags,0,0,0);}}
