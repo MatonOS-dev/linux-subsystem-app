@@ -104,6 +104,8 @@ final class JavaPortal implements AutoCloseable,PortalBackend.Platform {
     boolean isHeld() {return held;}
     void setFlatpakDirectories(File userDir,File systemDir) {
         flatpakUserDir=userDir;flatpakSystemDir=systemDir;
+        commands.setFlatpakDirectories(userDir==null?null:userDir.getAbsolutePath(),
+                systemDir==null?null:systemDir.getAbsolutePath());
     }
     private static void readFully(InputStream in,byte[] data) throws IOException {
         int offset=0;while(offset<data.length){int n=in.read(data,offset,data.length-offset);if(n<=0)throw new EOFException();offset+=n;}
