@@ -26,6 +26,7 @@
 #include <sys/syscall.h>
 #include <sys/prctl.h>
 #include <sys/personality.h>
+#include <sys/utsname.h>
 #include <sys/mman.h>
 #include <linux/seccomp.h>
 #include <linux/filter.h>
@@ -1421,6 +1422,7 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     struct thread_state *thread;
     {PROFILE_BEGIN();thread=thread_state();PROFILE_END(9);}
     if(nr==PROXY_SC_personality)return personality_call(a,thread);
+    if(nr==PROXY_SC_uname && proxy_trace)return rewrite_slow(nr,a);
     if(thread)thread->direct_depth++;
     uintptr_t ceiling=(uintptr_t)&ceiling;
     void *arena;
@@ -1855,6 +1857,7 @@ done:
     RAW(PROXY_SC_close,fd,0,0,0,0,0);return n<0?n:result;
 }
 static int ours(long n) {
+    if(n==PROXY_SC_uname && proxy_trace)return 1;
     if(proxy_rewrite_traps(n))return 1;
     if(ipc_ours(n))return 1;
     if(resident_fds_enabled && (n==PROXY_SC_close || n==PROXY_SC_close_range ||
@@ -2168,6 +2171,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
        nr!=PROXY_SC_dup2 && nr!=PROXY_SC_dup3) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     if(nr==PROXY_SC_fchmod){struct proxy_stat mode;if(!arch_stat_fd((int)a[0],&mode) && S_ISREG(mode.st_mode))a[1]=(a[1]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}
     switch(nr) {
+    case PROXY_SC_uname:
     case PROXY_SC_mprotect:case PROXY_SC_munmap:case PROXY_SC_mremap:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
     case PROXY_SC_read:result=payload_read((int)a[0],(void *)(uintptr_t)a[1],(size_t)a[2]);break;
@@ -2481,6 +2485,21 @@ clone_retry:
     default:break;
     }
 finish:
+    /* Observe the actual kernel answer, including Bionic startup's persona.
+     * Do not infer the OS architecture from this loader's ELF class. */
+    if(proxy_trace && nr==PROXY_SC_uname) {
+        struct utsname uts;
+        emit("v3 uname");trace_word(" result=",result);
+        trace_word(" pid=",RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+        trace_word(" abi=",ARCH_AUDIT);
+        trace_word(" kernel-persona=",RAW(PROXY_SC_personality,UINT32_MAX,0,0,0,0,0));
+        if(thread && thread->personality_valid)trace_word(" tracked-persona=",thread->personality);
+        if(!result && !proxy_copy(&uts,(void *)(uintptr_t)a[0],sizeof(uts))) {
+            uts.machine[sizeof(uts.machine)-1]=0;
+            emit(" machine=");emit(uts.machine);
+        }
+        emit("\n");
+    }
     trace_stderr(nr,a,result);
     result=creator_finish(nr,a,result);
     proxy_rewrite_after(nr,a,result);
