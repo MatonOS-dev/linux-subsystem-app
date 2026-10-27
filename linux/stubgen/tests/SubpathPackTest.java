@@ -14,7 +14,14 @@ public final class SubpathPackTest {
         return args->{List<String> command=new ArrayList<>(Arrays.asList("ostree","--repo="+repo));
             Collections.addAll(command,args);return run(command.toArray(new String[0]));};
     }
-    private static OstreePacks.Xattrs xattrs() { return (file,name)->null; }
+    private static OstreePacks.Xattrs xattrs() { return (file,name)->{
+        String key=name.startsWith("user.")?name.substring(5):name;
+        java.nio.file.attribute.UserDefinedFileAttributeView view=Files.getFileAttributeView(
+                file.toPath(),java.nio.file.attribute.UserDefinedFileAttributeView.class);
+        if(view==null||!view.list().contains(key))return null;
+        java.nio.ByteBuffer value=java.nio.ByteBuffer.allocate(view.size(key));view.read(key,value);
+        return Arrays.copyOf(value.array(),value.position());
+    }; }
     private static void check(boolean value,String message) { if(!value)throw new AssertionError(message); }
     private static void compareTree(Path expected,Path actual) throws Exception {
         try(java.util.stream.Stream<Path> paths=Files.walk(expected)) {
@@ -35,13 +42,22 @@ public final class SubpathPackTest {
         File tree=new File(root,"tree");
         Files.createDirectories(new File(tree,"en/nested").toPath());Files.createDirectories(new File(tree,"de/nested").toPath());
         Files.writeString(new File(tree,"en/hello.txt").toPath(),"hello in English\n");
+        Files.writeString(new File(tree,"en/manifest-base-1.json").toPath(),"{}\n");
+        Files.setPosixFilePermissions(new File(tree,"en/hello.txt").toPath(),
+                java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+        Files.setPosixFilePermissions(new File(tree,"en/manifest-base-1.json").toPath(),
+                java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
         Files.writeString(new File(tree,"en/nested/deep.txt").toPath(),"English nested\n");
         Files.writeString(new File(tree,"de/bonjour.txt").toPath(),"bonjour\n");
         Files.writeString(new File(tree,"de/nested/other.txt").toPath(),"German nested\n");
         OstreePacks.Command src=cli(source);src.run("init","--mode=bare-user");
-        String commit=src.run("commit","--branch=locale","--parent=none","--no-xattrs",
+        String commit=src.run("commit","--branch=locale","--parent=none",
                 "--canonical-permissions","--subject=locale subpath fixture","--tree=dir="+tree.getAbsolutePath());
         OstreePacks all=OstreePacks.read(source,commit,src,xattrs());
+        ObjectPacks.Entry executable=all.entries.stream().filter(e->e.path.equals("/en/hello.txt")).findFirst().orElseThrow();
+        ObjectPacks.Entry manifest=all.entries.stream().filter(e->e.path.equals("/en/manifest-base-1.json")).findFirst().orElseThrow();
+        check(executable.mode==0100755,"real OSTree file mode was misread for executable: "+Integer.toOctalString(executable.mode));
+        check(manifest.mode==0100644,"real OSTree file mode was misread for manifest: "+Integer.toOctalString(manifest.mode));
         OstreePacks.Command dst=cli(partial);dst.run("init","--mode=bare-user-only");
         dst.run("remote","add","--no-gpg-verify","test","file://"+source.getAbsolutePath());
         dst.run("pull","--subpath=/en","test","locale");
@@ -52,7 +68,7 @@ public final class SubpathPackTest {
         OstreePacks original=OstreePacks.read(partial,commit,dst,xattrs(),Collections.singletonList("/en"));
         Set<String> actual=new TreeSet<>();for(ObjectPacks.Entry entry:original.entries)actual.add(entry.path);
         Set<String> expected=new TreeSet<>(Arrays.asList("/","/en","/en/nested",
-                "/en/hello.txt","/en/nested/deep.txt"));
+                "/en/hello.txt","/en/manifest-base-1.json","/en/nested/deep.txt"));
         check(actual.equals(expected),"Scoped source entries differ: "+actual);
         File originalIndex=new File(root,"original.index");ObjectPacks.writeIndex(originalIndex,original.entries);
         byte[] encodedIndex=Files.readAllBytes(originalIndex.toPath());
