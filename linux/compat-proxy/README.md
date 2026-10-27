@@ -1148,3 +1148,80 @@ steam-r17-tail directory for the Chrome/apply-extra fixtures. Suite/build
 logs: /mnt/data/aosp/out/pc-logs/agents/steam-r17-{suite,android,preflight}.log.
 The new regression's before/after logs are steam-r17-{before,after}.log in
 the same directory. No VM or shared host-smoke fixture was used.
+
+### Steam round 18: i386 DNS helper stack alignment
+
+Rebased on main. day-r26/steam.txt shows pid 18553 (ubuntu12_32/steam,
+-no-cef-sandbox) dying of SIGSEGV at 21:02:00.271, immediately after
+`v3 trap ours 295 47` (sendto of the 47-byte resolver query) at .268. The
+last trapped calls are 267 rt_sigprocmask, 330 socket (fd 13), 29 connect
+-ENOENT (absent systemd resolver), 27 close, 330 socket (fd 13), 317
+setsockopt, 29 connect 0 (the configured endpoint, which starts the helper)
+and that sendto. No poll/recvfrom follows because poll is executed inside the
+trap frame and only logs on return. Operation numbers are the common
+PROXY_SC_* enum, not i386 syscall numbers.
+
+The missing crash report is itself the finding: no capture (day-r24 chrome or
+obsidian, day-r25 or day-r26 steam, day-r26 kate) contains `v3 fatal`,
+`fatal-segv` or `fatal-sigsys` for that pid, so the fault never reached a
+proxy handler. Reproduced on the host instead of on a device, with a new
+freestanding socketcall test against build/linux-layer-v3-i386: gdb stops in
+dns_worker at `movaps %xmm0,-0x88(%ebp)` with si_code 128 (SI_KERNEL) and
+ebp=0xf7a22ff4: the destination 0xf7a22f6c is 12 mod 16, four bytes short of
+the boundary movaps requires.
+
+Cause: arch/i386/raw.S proxy_raw_clone_thread entered the helper with
+esp=stack_top-8, i.e. 8 mod 16, while i386 SysV requires esp%16==12 at
+function entry (16-byte aligned at the call site). The build uses -msse2, so
+clang emits movaps into a frame slot it believes aligned and the helper takes
+#GP the first time the query path initialises an aligned local. Round 17's
+mmap errno-range fix is what made this reachable: in day-r25 the resolver
+connect returned -EIO because the helper never started, so no helper thread
+existed to fault. Nothing about the payload, DNS protocol or netd wire format
+is involved.
+
+The death was silent because dns_start blocks every signal across
+proxy_raw_clone_thread and the worker inherits that mask. A synchronous
+SIGSEGV under a blocked mask is forced to SIG_DFL: no handler, no report, no
+tombstone, just the shell's "Segmentation fault". Three changes:
+
+- proxy_raw_clone_thread aligns the child stack (and $-16, sub $12) before
+  push arg/call entry, so the helper enters with the ABI's 12 mod 16.
+- dns_worker now takes the layer-thread state a payload thread gets on its
+  first trap (thread_state: registered tid plus a 1 MiB alternate signal
+  stack) and unblocks only SIGSEGV, SIGBUS, SIGFPE and SIGILL. Those are
+  synchronous, so they can only come from this thread's own execution and
+  cannot steal the payload's signals.
+- dispatch_segv_app logs `fatal-layer` with the faulting pc when that pc lies
+  outside every payload image, so an i386 SIGSEGV in layer code is reported
+  as a MatonOS crash instead of an unexplained app fault. x86_64 app crashes
+  still go through crash_report unchanged.
+
+With the alignment reverted and the other two changes kept, the same test now
+reports `fatal-segv 128`, `fatal-segv-pc 0x7032...` (dns_worker) and
+`fatal-layer` before dying, which is exactly the report the device capture
+lacked. The helper's vfs_alloc keeps working from an unregistered stack: it
+falls back to vfs_palloc, one page per netd command, freed once the command
+is built.
+
+The new regression is tests/i386-dns-query.S: socketcall socket
+(SOCK_DGRAM|SOCK_NONBLOCK), connect, sendto 47 bytes, poll 2 s, recvfrom that
+must report EAGAIN. It exits 139 with the pre-fix loader and 0 after the fix,
+and runs next to i386-dns-start in tests/run.sh. It covers helper survival,
+not netd's device-side answer; tests/dns-helper.c still owns the wire round
+trip.
+
+This is not the SIGSYS clash. 18553 died of signal 11; the SIGSYS death in
+the same window is pid 18556 (/bin/sh -c ... steam -child-update-ui, wait
+status 31), which fork-adopt round 24 owns.
+
+Validation: build.sh, build-i386.sh, the production build-android.sh
+(x86_64 and i386 GPU-bridge loaders), device preflight (6/6) and the full
+tests/run.sh (rc=0, including the new i386 query case, the 64-bit dns-helper/
+dns-host/dns-translation cases and the i386 SSE signal-frame cases). No VM was
+used.
+Follow-up on the next device run: rebuild both ABIs, relaunch Steam and keep
+v3-trace through the manifest download. A repeat of this crash would now name
+the layer instead of vanishing: `fatal-segv` and `fatal-segv-pc` give the pc
+and `fatal-layer` states that it is layer code, with layer image base
+0x70000000 on i386 and 0x600000000000 on x86_64.
