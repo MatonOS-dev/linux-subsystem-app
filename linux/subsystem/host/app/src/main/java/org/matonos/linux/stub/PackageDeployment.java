@@ -14,13 +14,21 @@ import java.nio.file.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.matonos.linuxhost.stubgen.DeploymentRecord;
+import org.matonos.linuxhost.stubgen.PackLaunch;
 import org.matonos.linuxhost.stubgen.StubGenerator;
 
 /** Rebuild Flatpak's disposable lookup metadata from PM's installed index APKs. */
 final class PackageDeployment {
     static final class CompatI386 {
         final File files;final java.util.List<String> arguments;
-        CompatI386(File files,java.util.List<String> arguments){this.files=files;this.arguments=arguments;}
+        CompatI386(File files,java.util.List<String> arguments) throws IOException {
+            this.files=files;
+            this.arguments=new java.util.ArrayList<>(arguments);
+            // bwrap binds the disposable deployment's files directory at both
+            // app and runtime extension points. Resolve it to the same image
+            // so mount-destination creation gets the temporary EROFS shadow.
+            this.arguments.addAll(PackLaunch.backingArguments("/usr/lib/i386-linux-gnu",files));
+        }
     }
     static File prepare(Context context,String appRef) throws Exception {
         File root=new File(WorkDirs.root(context),"flatpak-launch");

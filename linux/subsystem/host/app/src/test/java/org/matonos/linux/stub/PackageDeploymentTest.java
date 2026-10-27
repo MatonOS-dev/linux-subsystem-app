@@ -9,6 +9,17 @@ import java.util.zip.*;
 import org.junit.Test;
 
 public final class PackageDeploymentTest {
+    @Test public void optionalCompatMountIncludesItsDisposableBacking() throws Exception {
+        File files=new File("/deployment/runtime/Compat.i386/x86_64/26.08/commit/files");
+        java.util.List<String> mount=java.util.Arrays.asList("--erofs-mount",
+                "/usr/lib/i386-linux-gnu","/mnt/matonos/10001/1/26.08");
+        PackageDeployment.CompatI386 compat=new PackageDeployment.CompatI386(files,mount);
+        assertEquals(java.util.Arrays.asList("--erofs-mount","/usr/lib/i386-linux-gnu",
+                "/mnt/matonos/10001/1/26.08","--erofs-backing","/usr/lib/i386-linux-gnu",
+                files.toString()),compat.arguments);
+        assertEquals(3,mount.size());
+    }
+
     @Test public void GNOME51DoesNotRequireAnInstalledCompatExtension() throws Exception {
         assertFalse(PackageDeployment.appDeclaresCompatI386(appRecord("app/org.gnome.TextEditor/x86_64/stable",
                 java.util.Collections.emptyList()),"51"));
