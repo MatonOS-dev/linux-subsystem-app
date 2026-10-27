@@ -84,6 +84,9 @@ def phase(name, payload=False, compat=False, backing=True):
     runtime_fd=directory(runtime)
     app_fd=directory(fixture/'app')
     (fixture/'app/.ref').touch()
+    if payload:
+        subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',
+                        str(base/'tests/proc-dirfd.c'),'-o',str(fixture/'app/proc-dirfd')],check=True)
     cache_fd=directory(fixture/'cache')
     args=['--ro-bind-fd',runtime_fd,'/usr','--ro-bind-fd',app_fd,'/app',
           '--unshare-user','--disable-userns','--proc','/proc','--unshare-pid',
@@ -155,7 +158,7 @@ def phase(name, payload=False, compat=False, backing=True):
         args+=['--perms','0600','--file',data(info),'/.flatpak-info',
                '--ro-bind-data',data(info),'/.flatpak-info',
                '--setenv','container','flatpak']
-        command=['/bin/bash','-c','ls /app /usr; head -2 /etc/passwd; cat /run/flatpak/info; test "$(cat /run/flatpak/ld.so.conf.d/runtime-001-org.freedesktop.Platform.GL.maton.conf)" = /usr/lib; cmp /.flatpak-info "/proc/$$/root/.flatpak-info"; echo proc-root-ok; /app/filter-check']
+        command=['/bin/bash','-c','ls /app /usr; head -2 /etc/passwd; cat /run/flatpak/info; test "$(cat /run/flatpak/ld.so.conf.d/runtime-001-org.freedesktop.Platform.GL.maton.conf)" = /usr/lib; cmp /.flatpak-info "/proc/$$/root/.flatpak-info"; echo proc-root-ok; /app/proc-dirfd || exit $?; /app/filter-check']
     else:
         command=ldconfig_command
     args+=['--seccomp',data(flatpak_filter_bytes(payload))]
@@ -203,6 +206,7 @@ def phase(name, payload=False, compat=False, backing=True):
             payload_out=(build/('musl-flatpak-'+name+'.out')).read_bytes()
             assert b'filter-ok' in payload_out
             assert b'proc-root-ok' in payload_out
+            assert b'PASS proc dirfd' in payload_out
         else: assert (fixture/'cache'/pathlib.Path(command[3]).name).stat().st_size>0
         print('PASS static musl Flatpak-shaped '+name)
     finally:

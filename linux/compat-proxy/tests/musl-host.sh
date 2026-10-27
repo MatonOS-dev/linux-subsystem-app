@@ -43,3 +43,5 @@ cc -no-pie -O2 -Wall -Wextra -Werror tests/portal-userns.c -o build/portal-usern
 timeout 20 build/linux-layer-v3 --android-filter --trace "$PWD/build/portal-userns" launch "$root/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/libmatonos-app-bwrap.so" >build/portal-userns.out 2>build/portal-userns.log
 cat build/portal-userns.out
 grep -q 'bwrap-devpts-userns' build/portal-userns.log
+
+python3 tests/proc-dirfd-host.py

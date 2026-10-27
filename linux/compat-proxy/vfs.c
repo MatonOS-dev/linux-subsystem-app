@@ -776,16 +776,20 @@ restart:;
             }else if(status>=0 && !S_ISDIR(st.st_mode))status=-ENOTDIR;
             if(status<0){vfs_free(host);*error=status;goto fail;}
         }
-        /* Native proc fd magic links name the kernel's backing object. Keep
-         * that native path (and any suffix) out of the virtual-root rewrite.
-         * EROFS fds are ordinary native fds now, so this needs no tracking. */
+        /* Proc fd links reference kernel objects, not their readlink text:
+         * pipe:[ino], socket:[ino], anon_inode:... and deleted files cannot
+         * be reopened/stat'ed by that text. Keep the native magic link (and
+         * suffix) so the kernel follows the object outside our virtual root. */
         if(target && prefix(host,"/proc") && !p_equal(out+(used>=4?used-4:0),"/exe")){
             int magic=0;
             for(size_t j=0;host[j];j++)if(host[j]=='/'&&host[j+1]=='f'&&host[j+2]=='d'&&host[j+3]=='/')magic=1;
             if(magic){
-                /* pipe:[N], socket:[N] and anon_inode labels cannot be
-                 * opened as paths. Keep the proc magic link for the kernel. */
-                char *answer=join(target[0]=='/'?target:host,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);
+                /* Keep ordinary backing paths for mount-source identity and
+                 * bwrap's fd bind targets. Only object labels need the magic
+                 * link: they have no usable backing pathname. */
+                size_t n=p_len(target);
+                int object=target[0]!='/' || (n>=10 && p_equal(target+n-10," (deleted)"));
+                char *answer=join(object?host:target,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);
                 if(!answer)*error=-ENOMEM;
                 return answer;
             }

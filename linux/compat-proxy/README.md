@@ -1007,3 +1007,33 @@ loader-maps.py's Private_Dirty == 0 assertion (504 kB text mapping); an isolated
 rerun reproduced that failure. This round does not claim a fully green suite.
 The remaining tests/site-rewrite.sh passed separately. Logs are in
 /mnt/data/aosp/out/pc-logs/agents/steam-personality-r15-{tests,maps,rewrite}.log.
+
+### Proc fd object checks (fork-adopt round 22)
+
+The GPU fatal check in `day-r22/obsidian.txt` occurs after Chromium opens
+`/proc` and `self/fd/`, enumerates descriptors, and stats fd 1. The resolver
+returned the pipe's readlink label (`pipe:[1299974]`) as a pathname, so
+`fstatat` returned ENOENT. Opening the proc/task/fd directories had succeeded;
+the failure was following an individual proc fd magic link.
+
+For pipe/socket/anonymous objects and deleted files, keep the native proc fd
+magic-link pathname and let the kernel follow the object. Continue resolving
+ordinary file targets to their backing path, which bwrap uses to identify
+bind-mount destinations. This is independent of the application and requires
+no Flatpak or AOSP changes.
+
+`tests/proc-dirfd.c` repeats the task/fd dirfd opens and Chromium's enumerate
+and fstatat loop, comparing each result with fstat; it also checks no-follow
+symlink metadata and reopening a deleted memfd. `tests/proc-dirfd-host.py`
+runs it inside two shipped bwrap invocations with `--proc /proc` and inherited
+Flatpak BPF. Both reproduce ENOENT with main f173d3f and pass with this fix.
+The Flatpak-shaped payload fixture runs the check too. Validation passed:
+`tests/run.sh` (including x86_64/i386 Android loader builds, mixed-class exec,
+Flatpak/musl, apply-extra and rewrite tests), `tests/musl-host.sh`, and native
+and proxied proc-dirfd runs. Suite log:
+`/mnt/data/aosp/out/pc-logs/fork-adopt-r22-suite.log`.
+
+Device validation remains with the coordinator: freshly launch Obsidian with
+v3-trace and capture its log plus compositor toplevel events. Verify the
+`proc_util.cc` fatal and GPU retry loop disappear and a window appears; use
+Kate as the rendering control. No VM was run for this change.
