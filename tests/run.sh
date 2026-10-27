@@ -28,6 +28,16 @@ javac -d "$OUT/extra-data-files" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/ExtraDataFiles.java" \
   "$ROOT/tests/extra-data-files/ExtraDataFilesTest.java"
 java -cp "$OUT/extra-data-files" org.matonos.linux.stub.ExtraDataFilesTest
+mkdir -p "$OUT/extra-data-handoff"
+javac -d "$OUT/extra-data-handoff" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/ObjectPacks.java" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PackLaunch.java" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/ErofsImage.java" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/OstreePacks.java" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/ExtraDataImage.java" \
+  "$ROOT/tests/extra-data-handoff/ExtraDataImageTest.java"
+java -cp "$OUT/extra-data-handoff" org.matonos.linux.stub.ExtraDataImageTest
 mkdir -p "$OUT/extra-image-validator"
 javac -d "$OUT/extra-image-validator" \
   "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
