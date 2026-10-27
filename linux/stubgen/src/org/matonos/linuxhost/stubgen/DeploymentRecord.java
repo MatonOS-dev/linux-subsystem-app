@@ -116,7 +116,7 @@ public final class DeploymentRecord {
         // without this ref the app is reported as not installed.
         Path deployedRef=repo.resolve("refs/heads/deploy").resolve(ref);
         Files.createDirectories(deployedRef.getParent());
-        Files.writeString(deployedRef,commit+"\n",StandardCharsets.US_ASCII);
+        Files.write(deployedRef,(commit+"\n").getBytes(StandardCharsets.US_ASCII));
         Files.createDirectories(repo.resolve("refs/remotes"));
         Files.createDirectories(repo.resolve("tmp"));
         Files.write(repo.resolve("config"),"[core]\nrepo_version=1\nmode=bare-user-only\n".getBytes(StandardCharsets.UTF_8));
