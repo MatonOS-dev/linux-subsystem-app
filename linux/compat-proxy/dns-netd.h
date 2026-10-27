@@ -72,7 +72,10 @@ void dns_fork_result(long result){
     (void)result;
     if(dns_fork_pid && (RAW(PROXY_SC_getpid,0,0,0,0,0,0)!=dns_fork_pid ||
        RAW(PROXY_SC_gettid,0,0,0,0,0,0)==dns_fork_tid)){
-        proxy_sigmask_t mask=dns_fork_mask;
+        /* Retry clones finish outside the SIGSYS frame. Its saved mask
+         * includes the handler's implicit SIGSYS block; never restore that
+         * block into the payload continuation (parent or child). */
+        proxy_sigmask_t mask=dns_fork_mask&~(UINT64_C(1)<<(SIGSYS-1));
         dns_fork_pid=dns_fork_tid=0;
         dns_unlock(mask);
     }
