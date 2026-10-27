@@ -12,6 +12,7 @@ ops=[x.split(b' op=',1)[1].split(b' ',1)[0] for x in io]
 assert ops==[b'write',b'read',b'sendto',b'recvfrom',b'sendmsg',b'recvmsg'],io
 for line in io:
     assert b' fd=' in line and b' type=1 requested=' in line and b' returned=' in line,line
+    assert b' msg_flags=' in line and b' pid=' in line,line
 assert any(b' cmsgs=1:1 rights=1 cred_pid=-' in x for x in io),io
 assert any(b' cmsgs=1:2' in x and b' rights=1 cred_pid=' in x for x in io),io
 print('PASS AF_UNIX path and byte/ancillary traces cover read/write, sendto/recvfrom and sendmsg/recvmsg')

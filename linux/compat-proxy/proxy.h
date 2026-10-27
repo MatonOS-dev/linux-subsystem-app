@@ -61,6 +61,7 @@ int proxy_i386_tls_prepare_payload(void);
 int proxy_tls_claim_reserved(const struct user_desc *, unsigned *);
 int proxy_tls_release_reserved(void);
 int proxy_resident_fds_snapshot(int after);
+int proxy_resident_fd_owned(int fd);
 int proxy_host_command(const char *);
 void proxy_host_snapshot(char *const *);
 extern int proxy_diagnostic_fd;

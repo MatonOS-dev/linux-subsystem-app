@@ -434,3 +434,45 @@ that bwrap resolves Compat.i386 files to its /mnt/matonos image, creates the
 GL tmpfs destination, executes ldconfig, and no longer reports exit status
 256. No VM was used for this follow-up; no kernel or shared image policy
 changes are required.
+
+Round 11: Zypak spawn-request ancillary truncation
+------------------------------------------------
+The day-r10 trace shows pid 16453 successfully sending 552 bytes and 125
+SCM_RIGHTS descriptors on fd 9. Supervisor pid 16427 receives 552 bytes on
+fd 21 but only 16 descriptors, then prints EMSGSIZE. This is Zypak's
+userspace `Socket::Read` rejecting MSG_CTRUNC, not a kernel sendmsg failure.
+Its spawn strategy enumerates `/proc/self/fd` and forwards every entry;
+its receiver allocates space for 16 descriptors.
+
+Our enumeration filter excluded reserved proxy descriptors but omitted
+resident Android EGL/driver descriptors. They survive emulated Linux exec
+for the Android libraries, so forwarding them as Linux child descriptors
+inflates that request. Enumeration now also excludes resident-owned fds.
+This changes neither the reported fd limit nor application descriptor numbers,
+and does not close driver fds or increase Zypak's buffer. Explicit application
+replacement of a resident fd still retires its ownership as before.
+
+The resident-fds host fixture now creates 125 resident driver fds and runs
+Zypak's enumerate/send/receive pattern through the actual installed proxy.
+Before the fix it fails on MSG_CTRUNC; afterward the fixed 16-fd receiver
+gets every enumerated application fd. Existing fork, dup2 replacement,
+close_range and resident exec checks remain in that fixture.
+
+Device validation remains necessary: on a fresh coordinator image launch
+stock Obsidian with v3-trace and capture logcat through the first window or
+90 seconds. Look for `proc-resident-fds-hidden` (includes pid/count), the
+spawn-request send/recv `unix-io` lines (now include pid and msg_flags),
+absence of Zypak's EMSGSIZE, and a display socket connection/toplevel.
+The device log did not contain fd identities, so matching all 125 device
+fds to resident ownership is an inference to verify with that capture.
+Also re-run Kate to retain its working posix_spawn/vfork coverage. No VM,
+AOSP build, shared device-tree edit or kernel change was made for this fix.
+
+Host validation: the complete `bash tests/run.sh` passes, including the
+previously failing apply-extra fixture; `python3 tests/unix-trace-host.py`
+passes with pid/message-flag assertions. Optional root-owned marker,
+i386-musl and captured EROFS ldconfig fixtures retain their existing skips.
+Evidence: `/mnt/data/aosp/out/pc-logs/fork-adopt-r11-{baseline,focused,suite,final-suite}.log`.
+Upstream protocol references: Zypak `src/sandbox/spawn_strategy/run.cc`
+(`FindAllFds`) and `src/base/socket.cc` (`Socket::Read`) at
+https://github.com/refi64/zypak/tree/master/src .

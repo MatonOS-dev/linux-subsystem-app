@@ -8,6 +8,8 @@ int main(int argc,char **argv,char **env) {
     CHECK(proxy_resident_fds_snapshot(0)==0);
     long owned=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/zero",O_RDONLY|O_CLOEXEC,0,0,0);
     CHECK(owned>=0);
+    /* Device EGL keeps many driver descriptors resident across Linux exec. */
+    for(unsigned i=0;i<124;i++)CHECK(RAW(PROXY_SC_openat,AT_FDCWD,"/dev/zero",O_RDONLY|O_CLOEXEC,0,0,0)>=0);
     CHECK(proxy_resident_fds_snapshot(1)==0);
     CHECK(!resident_fd_owned(ordinary) && resident_fd_owned(owned));
     if(owned==4) {

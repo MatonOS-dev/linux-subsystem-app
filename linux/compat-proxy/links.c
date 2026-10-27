@@ -432,7 +432,7 @@ static int proc_self_fd_directory(long fd){
 static long proc_self_fd_dents(long fd,void *buf,long size){
  long n;do{
   n=RAW(PROXY_SC_getdents64,fd,buf,size,0,0,0);if(n<=0)return n;
-  long used=0;
+  long used=0;unsigned resident_hidden=0;
   for(long off=0;off<n;){
    unsigned char *d=(unsigned char *)buf+off;unsigned short len=*(unsigned short *)(d+16);
    if(len<20 || off+len>n)return -EIO;
@@ -441,10 +441,15 @@ static long proc_self_fd_dents(long fd,void *buf,long size){
     if(*p<'0'||*p>'9'||value>(2147483647U-(unsigned)(*p-'0'))/10){numeric=0;break;}
     value=value*10+(unsigned)(*p-'0');
    }
-   if(numeric && vfs_private_fd((int)value))private=1;
+   /* Resident Android driver descriptors survive the emulated exec but
+    * are not Linux payload descriptors. In particular, forwarding these
+    * through Zypak's enumerate-and-send protocol truncates SCM_RIGHTS. */
+   if(numeric && proxy_resident_fd_owned((int)value)){private=1;resident_hidden++;}
+   else if(numeric && vfs_private_fd((int)value))private=1;
    if(!private){for(unsigned short i=0;i<len;i++)((unsigned char *)buf)[used+i]=d[i];used+=len;}
    off+=len;
   }
+  if(proxy_trace && resident_hidden)proxy_log("proc-resident-fds-hidden",fd,resident_hidden);
   if(used)return used;
  }while(n>0);
  return n;
