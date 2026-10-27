@@ -683,3 +683,30 @@ ldconfig status 256, `/app/bin/zypak-helper child` and the sandboxed zygote
 execute, then inspect display connect/get_toplevel. Recheck Kate rendering.
 This change fixes the evidenced setup failure; a window is not yet verified.
 No VM, AOSP build, shared-file changes or kernel changes were made.
+Steam round 12: nested display probe and last child (2026-10-27)
+---------------------------------------------------------------
+The day-r15 trace confirms the portal's nested `flatpak run` reaches the
+display probe command (`/bin/sh -euc 'echo "${DISPLAY+DISPLAY_is_set}"'`),
+but bwrap exits before running that command: its stderr says it cannot create
+a new namespace because unprivileged user namespaces are unavailable. So the
+probe is attempted, not successful, and it does not establish whether the
+display socket works. Steam then starts `zenity` with the generic D-Bus / portal
+error. Zenity aborts because its glycin image loader exits early; the trace
+shows the nested `flatpak-spawn ... prlimit ... glycin-image-rs` request and a
+loader failure, followed by Steam's `xterm: command not found` fallback. The
+last traced helper is `cat /tmp/tmp.2frL9mdVbV`; no `steamwebhelper` exec is
+present. The capture does not include that helper's collected exit status, so
+it does not yet establish whether Steam waits on `cat` or what it reads.
+
+The proxy trace does not report the parent application's wait status because
+wait4 is passed through the Android app filter without entering the proxy
+handler. The trace proves the namespace probe blocker and zenity's GTK loader
+failure, but does not prove either is the final reason Steam does not reach
+`steamwebhelper`. Re-run a fresh-image Steam launch with v3-trace and payload
+stderr enabled. While the window is black, capture the Linux process tree and
+for the `cat` PID and its parent capture `/proc/<pid>/{status,wchan,syscall}`
+and `/proc/<pid>/fd` symlink targets; preserve the temporary file's contents
+and Steam's `~/.var/app/com.valvesoftware.Steam/logs/`. This will distinguish
+a still-running `cat`, a completed child whose parent is blocked elsewhere,
+and a parent waiting on another helper. No VM was started for this diagnostic
+round.
