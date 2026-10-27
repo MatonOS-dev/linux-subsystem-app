@@ -2156,6 +2156,11 @@ finish:
             trace_word(" call_nr=",(uint64_t)info->si_syscall);
             trace_word(" pc=",(uintptr_t)info->si_call_addr);emit("\n");}
         if(result==-EBADF){
+            if(nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3){
+                proxy_log("dup-source-kernel",a[0],RAW(PROXY_SC_fcntl,a[0],F_GETFD,0,0,0,0));
+                proxy_log("dup-source-private",a[0],vfs_private_fd((int)a[0]));
+                proxy_log("dup-target-private",a[1],private_close_fd((int)a[1]));
+            }
             emit("v3 ebadf syscall=");crash_hex((uint64_t)original);
             trace_word(" ip=",(uintptr_t)info->si_call_addr);
             for(unsigned i=0;i<6;i++){

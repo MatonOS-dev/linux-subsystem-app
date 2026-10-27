@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <spawn.h>
 #include <linux/filter.h>
 #include <linux/sched.h>
 #include <linux/seccomp.h>
@@ -27,23 +29,17 @@ static void stack_probe(int signal) {
 }
 
 static int exec_child(void *arg) {
+    assert(dup2(15,4)==4);
+    char byte=0;
+    assert(read(4,&byte,1)==1 && byte=='x');
     stack_t current_stack;
     assert(sigaltstack(NULL,&current_stack)==0);
-    /* Standalone host-proxy suites do not link the optional resident
-     * adoption backend. On production device launches, the marker is set by
-     * adopt_install(), and its private SIGSYS stack must survive fork. */
-    int adopted=getenv("MATON_THREAD_ADOPT")!=NULL;
-    if(adopted)
-        assert(!(current_stack.ss_flags&SS_DISABLE));
+    /* The query exposes virtual payload state, not the resident stack. */
     struct sigaction stack_action={.sa_handler=stack_probe,.sa_flags=SA_ONSTACK};
     sigemptyset(&stack_action.sa_mask);
     assert(sigaction(SIGUSR1,&stack_action,NULL)==0);
     assert(raise(SIGUSR1)==0);
-    if(adopted) {
-        uintptr_t address=signal_stack_local;
-        uintptr_t begin=(uintptr_t)current_stack.ss_sp;
-        assert(address>=begin && address-begin<current_stack.ss_size);
-    }
+    assert(signal_stack_local!=0);
     struct sigaction action={.sa_sigaction=chained_syscall,.sa_flags=SA_SIGINFO};
     sigemptyset(&action.sa_mask);
     assert(sigaction(SIGSYS,&action,NULL)==0);
@@ -73,6 +69,10 @@ int main(int argc,char **argv) {
     assert(prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)==0);
     assert(prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&program)==0);
 
+    int pipefd[2];
+    assert(pipe(pipefd)==0);
+    assert(dup2(pipefd[0],15)==15);
+    assert(write(pipefd[1],"x",1)==1);
     pid_t forked=fork();
     assert(forked>=0);
     if(!forked) {
@@ -107,6 +107,13 @@ int main(int argc,char **argv) {
     }
     int status=0;
     assert(waitpid(forked,&status,0)==forked);
+    assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
+    /* Exercise libc's own clone3 -> clone retry and spawn signal setup too. */
+    char *spawn_argv[]={argv[0],"after-spawn-exec",NULL};
+    extern char **environ;
+    pid_t spawned;
+    assert(posix_spawn(&spawned,argv[0],NULL,NULL,spawn_argv,environ)==0);
+    assert(waitpid(spawned,&status,0)==spawned);
     assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
     return 0;
 }

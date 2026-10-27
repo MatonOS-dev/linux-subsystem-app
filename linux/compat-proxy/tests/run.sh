@@ -136,6 +136,8 @@ timeout 15 build/adopt-altstack-filter
 cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-rebase-filter.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-rebase-filter
 timeout 15 build/adopt-rebase-filter
 printf 'PASS resident adoption rebase inside SIGSYS and outside altstack, main and fork child\n'
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-fork-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-fork-launch
+timeout 20 build/adopt-fork-launch "$PWD/build/flatpak-seccomp-fork"
 cc -no-pie -O2 -Wall -Wextra -Werror tests/personality.c -o build/personality
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/personality" >build/personality.out 2>build/personality.log
 cat build/personality.out

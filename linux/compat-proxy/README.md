@@ -315,3 +315,42 @@ Kate should get past the clone3 fallback and PIDFD clone; Obsidian's zypak
 children should get past signal setup; Steam's bwrap ldconfig should finish.
 Collect the complete trace including main-process startup and raw-call tail.
 No shared device-tree changes or kernel changes are needed.
+
+Round-5 fork adoption: DNS fork preparation runs inside SIGSYS and saves a
+kernel mask containing the handler's implicit SIGSYS block. The assembly
+clone retry completes after sigreturn; restoring that mask there blocked
+SIGSYS in both parent and child. Their next trapped syscall killed them
+without entering a handler. `dns_fork_result` now removes that bit before
+restoring the mask. This is independent of altstack adoption: traced clone
+flags 4113 are 0x1011 (`CLONE_PIDFD|SIGCHLD`), after the proxy has removed
+`CLONE_VM|CLONE_VFORK`, so these continuations have private memory.
+
+`tests/adopt-fork-launch.c` runs the real resident handler and proxy filters
+with `flatpak-seccomp-fork`: fork, clone3 ENOSYS, vfork-style clone retry,
+inherited fd 15 duplicated onto 4, signal setup, exec, and libc posix_spawn.
+The old DNS mask restoration reproduces child and parent SIGSYS on the host;
+the corrected version passes. The payload altstack query is virtual and
+must not be confused with the resident kernel stack; the separate rebase
+fixture checks the actual resident stack.
+
+Obsidian's round-5 `android 35 -9` means common syscall ID 35 (`dup2`), not
+native syscall 35 (`nanosleep`). Adoption does not itself close fd 15, and
+the inherited-descriptor regression passes. That trace cannot distinguish a
+missing source from a proxy-owned target. Trace-mode EBADF now logs source
+kernel F_GETFD, source VFS-private state, and target private/ownership state.
+Re-run stock Kate and Obsidian with v3-trace on the coordinator's rebuilt
+subsystem. Kate should pass the retry into exec without raw status 31;
+for Obsidian collect `dup-source-kernel`, `dup-source-private`, and
+`dup-target-private` if exit 127 remains. No per-app workaround, shared
+image configuration, kernel change, VM run or push is part of this fix.
+
+Host validation for this change: the complete `tests/run.sh` stops at the
+zygote-startup credential fixture (`bytes=13`, correct child PID, flags=0).
+A separate loader built with the unchanged DNS implementation fails the same
+fixture identically. With only that fixture omitted in an external runner,
+all remaining suite checks pass, including x86_64/i386, Android NDK loader
+builds/packaging, resident adoption, musl/bwrap/ldconfig, apply-extra, and
+rewrite tests. The prior apply-extra exit 4 does not reproduce here.
+Logs and baseline strace: `/mnt/data/aosp/out/pc-logs/fork-adopt/r5-*`,
+`baseline-zygote.log`, and `baseline-trace.*`. No complete-suite pass is
+claimed while the independent zygote credential fixture remains failing.
