@@ -121,6 +121,35 @@ CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round7 \
 bash tests/chrome-sol/verify-device.sh
 ```
 
+## Round 8: app-data hardlink denial
+
+Android app-data SELinux denies `linkat` even though the syscall is present in
+the app seccomp allowlist. During `fsck.erofs --extract`, repeated EROFS inode
+entries are therefore materialized as separate regular files from the image
+instead of being linked to the first extracted path. The validator still
+checks each committed path's type, mode and SHA-256 against the trusted commit;
+hardlink group identity is not part of `/app/extra` validation, where files
+are checked for safe types and modes. The pack and OSTree tests continue to
+exercise hardlink grouping at deployment creation time.
+
+`fsck-app-seccomp-host.py` now models the Android link denial as `EACCES` for
+`linkat`, extracts a Chrome-like image containing a hardlink, and verifies the
+copy's bytes and mode without shared inode identity. It also walks configured
+build-context ancestors and the standard AOSP checkout location to find
+Bionic when `build.sh` sets `MATON_AOSP_ROOT` to an output context. It skips
+only when Bionic is genuinely absent. Rebuild with
+`bash linux/packs/build-mkfs-erofs.sh`, then run
+`MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh <out-dir>`.
+
+Coordinator: rebuild the subsystem APK and test on a freshly booted image
+(no VM was run for this change). Exact device test:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round8 \
+bash tests/chrome-sol/verify-device.sh
+```
+
 The script retries the existing debug install trigger, captures logcat without
 clearing others' logs, waits for the actual result, checks installed splits and
 install/ cleanup, writes the requested stock flag file, and resolves/starts the

@@ -8,18 +8,36 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FSCK = pathlib.Path(os.environ.get("FSCK_EROFS", ROOT / "prebuilt/x86_64/matonos-fsck-erofs"))
 MKFS = pathlib.Path(os.environ.get("MKFS_EROFS", ROOT / "prebuilt/x86_64/matonos-mkfs-erofs"))
-AOSP = pathlib.Path(os.environ.get("MATON_AOSP_ROOT", "/mnt/data/aosp"))
-LIBC = AOSP / "bionic/libc"
+def find_bionic_libc():
+    candidates = []
+    for value in (os.environ.get("MATON_AOSP_ROOT"), os.environ.get("MATON_BUILD_ROOT"), "/mnt/data/aosp"):
+        if value:
+            candidate = pathlib.Path(value).resolve()
+            candidates.extend((candidate, *candidate.parents))
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        libc = candidate / "bionic/libc"
+        if (libc / "tools/genseccomp.py").is_file():
+            return libc
+    return None
+
+LIBC = find_bionic_libc()
 
 if not FSCK.is_file() or not MKFS.is_file():
     raise SystemExit("Build linux/packs first or set FSCK_EROFS and MKFS_EROFS")
-if not (LIBC / "tools/genseccomp.py").is_file():
-    raise SystemExit(f"Bionic sources not found under MATON_AOSP_ROOT={AOSP}")
+if LIBC is None:
+    print("SKIP fsck app-seccomp test: Bionic sources are absent from the configured build context and /mnt/data/aosp")
+    raise SystemExit(0)
 
 launcher = r'''
 #include <linux/filter.h>
 #include <linux/audit.h>
 #include <linux/seccomp.h>
+#include <asm/unistd.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,7 +49,7 @@ launcher = r'''
 #include <unistd.h>
 #include "x86_64_app_policy.cpp"
 int main(int argc, char **argv) {
-  struct sock_filter filter[3 + 1 + x86_64_app_filter_size + 1];
+  struct sock_filter filter[3 + 1 + 2 + x86_64_app_filter_size + 1];
   size_t count = 0;
   filter[count++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
       offsetof(struct seccomp_data, arch));
@@ -41,6 +59,11 @@ int main(int argc, char **argv) {
       SECCOMP_RET_KILL_PROCESS);
   filter[count++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
       offsetof(struct seccomp_data, nr));
+  /* App-data SELinux denies linkat; model that denial as EACCES. */
+  filter[count++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+      __NR_linkat, 0, 1);
+  filter[count++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K,
+      SECCOMP_RET_ERRNO | EACCES);
   for (size_t i = 0; i < x86_64_app_filter_size; ++i)
     filter[count++] = x86_64_app_filter[i];
   filter[count++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K,
@@ -151,7 +174,9 @@ with tempfile.TemporaryDirectory(prefix="matonos-fsck-app-policy-") as temp:
     out_link = extracted / "app/extra/opt/google/chrome/chrome-link"
     out_data = extracted / "app/extra/opt/google/chrome/resources.pak"
     assert out_chrome.read_bytes() == executable.read_bytes()
-    assert out_chrome.stat().st_ino == out_hardlink.stat().st_ino, "hardlink not preserved"
+    assert out_chrome.stat().st_ino != out_hardlink.stat().st_ino, "app-data extraction must materialize hardlinks as copies"
+    assert out_hardlink.read_bytes() == executable.read_bytes(), "hardlink copy content differs"
+    assert out_hardlink.stat().st_mode & 0o7777 == 0o4755, oct(out_hardlink.stat().st_mode)
     assert os.readlink(out_link) == "chrome"
     assert out_chrome.stat().st_mode & 0o7777 == 0o4755, oct(out_chrome.stat().st_mode)
     assert out_data.read_bytes() == data.read_bytes()
@@ -160,4 +185,4 @@ with tempfile.TemporaryDirectory(prefix="matonos-fsck-app-policy-") as temp:
     except OSError as error:
         if error.errno not in (1, 95, 61, 524):
             raise
-    print("PASS full Chrome-like EROFS extraction under Bionic's generated x86_64 app policy")
+    print("PASS full Chrome-like EROFS extraction under Bionic's generated x86_64 app policy with linkat denied (EACCES)")

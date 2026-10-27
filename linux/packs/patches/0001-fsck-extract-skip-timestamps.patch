@@ -3,8 +3,10 @@ Subject: [PATCH] fsck: use app-allowed syscalls during extraction
 
 Android app seccomp blocks legacy chmod, mknod, lchown, mkdir, rmdir, lstat,
 unlink, link and symlink syscalls. Use equivalent *at interfaces allowed by
-Bionic's app policy. The output directory check uses O_PATH and fstat to keep
-its no-symlink check. Validation needs contents, types and modes, so it skips
+Bionic's app policy. Android's app-data SELinux policy also denies hardlink
+creation, so materialize repeated EROFS inodes as regular-file copies during
+extraction. The output directory check uses O_PATH and fstat to keep its
+no-symlink check. Validation needs contents, types and modes, so it skips
 timestamp restoration.
 
 --- a/fsck/main.c
@@ -67,9 +69,19 @@ timestamp restoration.
 @@ -936 +929 @@
 -			if (unlink(fsckcfg.extract_path) < 0) {
 +			if (unlinkat(AT_FDCWD, fsckcfg.extract_path, 0) < 0) {
-@@ -1021 +1014 @@
+@@ -1018,8 +1011,4 @@ static int erofsfsck_extract_inode(struct erofs_inode *inode)
+-	if (oldpath) {
 -		if (link(oldpath, fsckcfg.extract_path) == -1) {
-+		if (linkat(AT_FDCWD, oldpath, AT_FDCWD, fsckcfg.extract_path, 0) == -1) {
+-			erofs_err("failed to extract hard link: %s (%s)",
+-				  fsckcfg.extract_path, strerror(errno));
+-			return -errno;
+-		}
+-		return 0;
+-	}
++	if (oldpath) {
++		/* App data disallows linkat; recreate the inode contents instead. */
++		return erofs_extract_file(inode);
++	}
 @@ -1310 +1303 @@
 -	unlink(filename);
 +	unlinkat(AT_FDCWD, filename, 0);
