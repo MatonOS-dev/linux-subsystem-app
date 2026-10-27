@@ -926,3 +926,29 @@ report records no blocked syscall, with `/etc/os-release` containing the
 relative link text as its first diagnostic. This smoke does not establish
 that the on-device portal probe or Steam UI now succeeds. See that directory's
 `host-smoke.md` and `logs/com_valvesoftware_Steam.launch.log`.
+
+### Steam round 15: named socket bind regression
+
+Restored 2bd9538 on main's revert, retaining the growing private-fd tracking
+and anonymous proc-label handling. The regression was the blanket S_ISSOCK /
+S_ISFIFO exclusion in vfs_proc_fd_name: musl bwrap resolves its source using
+an O_PATH fd. A named socket is still a filesystem object, so that descriptor
+must keep its tracked virtual name. Actual socket/pipe I/O descriptors still
+return the kernel's socket:[N] / pipe:[N] labels.
+
+`tests/bwrap-socket.py` maps a directory containing a real Unix socket to
+/tmp/.X11-unix, then runs the staged stock musl bwrap with a socket --bind.
+It fails on restored 2bd9538 with the device's exact ENOTDIR error and passes
+with the O_PATH distinction. The host distro's bwrap alone did not reproduce
+this; musl-host.sh now runs the regression after staging the shipped applet.
+No per-app rules, AOSP changes, or kernel changes are needed. Device follow-up:
+fresh-image Kate launch, then Steam launch; verify the X11 bind succeeds and
+capture any remaining portal probe failure. No VM was used for this round.
+
+Validation: native proxy build passed; full tests/run.sh passed through the
+musl Flatpak ldconfig/payload and apply_extra checks, including the new socket
+regression, 64 tmpfs locks across exec, and pipe aliases. It stopped at
+loader-maps.py's Private_Dirty == 0 assertion (504 kB text mapping); an isolated
+rerun reproduced that failure. This round does not claim a fully green suite.
+The remaining tests/site-rewrite.sh passed separately. Logs are in
+/mnt/data/aosp/out/pc-logs/agents/steam-personality-r15-{tests,maps,rewrite}.log.

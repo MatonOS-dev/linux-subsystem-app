@@ -673,7 +673,13 @@ char *vfs_proc_fd_name(const char *path){
         if(*n)return NULL;
         /* A tracked open through /proc/fd must not turn a pipe/socket label
          * into a pathname. Let readlink return the kernel text for these. */
-        struct proxy_stat st;if(arch_stat_fd((int)fd,&st)<0 || (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode) || !(st.st_mode&S_IFMT)))return NULL;
+        /* O_PATH descriptors for named sockets/FIFOs still name filesystem
+         * objects. bwrap resolves its bind source through precisely these fds.
+         * Only actual I/O descriptors expose anonymous proc labels. */
+        long flags=RAW(PROXY_SC_fcntl,(int)fd,F_GETFL,0,0,0,0);
+        struct proxy_stat st;if(arch_stat_fd((int)fd,&st)<0 ||
+            (!(flags>=0 && (flags&O_PATH)) &&
+             (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode) || !(st.st_mode&S_IFMT))))return NULL;
         return vfs_fd_name((int)fd);
     }
 return NULL;
