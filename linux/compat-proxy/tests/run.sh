@@ -124,6 +124,10 @@ cc -no-pie -O2 -Wall -Wextra -Werror tests/process.c -o build/process
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/process" "$PWD/build/process-parent" "$PWD/build/process-child" >build/process.out 2>build/process.log
 cat build/process.out
 
+cc -no-pie -O2 -Wall -Wextra -Werror tests/bwrap-filter-name.c -o build/bwrap-filter-name
+cp build/bwrap-filter-name build/libmatonos-app-bwrap.so
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/bwrap-filter-name" launch "$PWD/build/libmatonos-app-bwrap.so" >build/bwrap-filter-name.out 2>build/bwrap-filter-name.log
+cat build/bwrap-filter-name.out
 cc -no-pie -O2 -Wall -Wextra -Werror tests/flatpak-seccomp.c -o build/flatpak-seccomp
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/flatpak-seccomp" >build/flatpak-seccomp.out 2>build/flatpak-seccomp.log
 cat build/flatpak-seccomp.out

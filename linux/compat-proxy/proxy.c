@@ -1628,7 +1628,11 @@ static long payload_seccomp_activate(void) {
 }
 static int payload_exec_is_bwrap(const char *path) {
     const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
-    return p_equal(base,"bwrap") || p_equal(base,"matonos-app-bwrap");
+    /* APK native executables keep their lib*.so filename on device.
+     * Classify that spelling too: the monitor must defer its payload filter
+     * until the payload exec, including when it later spawns nested bwrap. */
+    return p_equal(base,"bwrap") || p_equal(base,"matonos-app-bwrap") ||
+           p_equal(base,"libmatonos-app-bwrap.so");
 }
 static int termios2_call(proxy_arg_t *a,long *result) {
     unsigned long cmd=(unsigned long)a[1]&0xffffffffu;

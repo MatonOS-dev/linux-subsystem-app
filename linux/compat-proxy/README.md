@@ -610,3 +610,42 @@ host suite and compat-proxy suite passed. Re-run Steam on a fresh device image:
 confirm the nested display probe exits successfully, `steamwebhelper` executes,
 and it connects to the Wayland/X11 display. This round used the coordinator's
 trace and did not start a VM.
+
+Obsidian round 16: APK bwrap filter activation
+---------------------------------------------
+
+`day-r15/obsidian-threads.txt` shows browser 28745 sleeping in recvmsg on fd
+20 (`__skb_wait_for_more_packets`), its sandbox IPC thread polling, and the
+unsandboxed zygote 28772 polling. These waits persist through the available
+samples (t=23; subsequent headings contain no process samples). The nested
+portal launch is the concrete failure: flatpak 28778 runs bwrap 28779 for
+ldconfig, whose clone is rejected by `flatpak-seccomp-deny 56 -1`; bwrap
+reports no permission to create a namespace and Flatpak reports ldconfig
+status 256. The browser subsequently reports failure to notify the stub of
+exit (EBADF) and remains waiting. No display connection or inotify EOF
+error explains this capture.
+
+The bwrap detector omitted the APK executable name
+`libmatonos-app-bwrap.so`, although the argument logger already recognised
+it. Consequently the monitor installed and activated its payload filter
+immediately instead of deferring it until payload exec. Monitor descendants
+then inherited a filter forbidding their namespace setup. Recognise this
+packaging name in the existing detector; retain normal filter inheritance
+and enforcement for the actual payload. This is independent of app identity.
+
+`tests/bwrap-filter-name.c` execs the APK-named monitor, installs a filter
+forbidding unshare and user-namespace clone, performs monitor namespace
+setup and clone, execs the payload, and verifies its unshare is denied.
+It also verifies the monitor remains usable after the payload exits.
+The pre-fix proxy aborts this regression (SIGABRT); the fixed proxy passes.
+
+Device verification remains necessary: rebuild the proxy in a fresh image,
+launch stock Obsidian with v3-trace for 90 seconds, and capture logcat and
+window state. Confirm the nested bwrap no longer emits the namespace/ldconfig
+failure, the sandboxed zygote executes, and a display connection/toplevel
+appears. Recheck Kate rendering. No VM or image build was started here.
+
+Validation: full `bash linux/compat-proxy/tests/run.sh` exits 0, including
+mixed x86_64/i386, staged musl bwrap and apply-extra. Logs in the AOSP checkout:
+`out/pc-logs/fork-adopt-r16-suite.log`, `fork-adopt-r16-focused.log`, and
+`fork-adopt-r16-baseline.log`. No shared or kernel changes are required.
