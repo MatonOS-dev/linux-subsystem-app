@@ -50,11 +50,16 @@ int main(int argc,char **argv) {
     }
     /* bwrap's monitor may start further namespace setup after installing the
      * payload's filter. It must not inherit that payload-only restriction. */
-    assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
+    /* Nested --assert-userns-disabled probes with unshare, without writing
+     * a new limit. Initial monitor clone setup must still be available. */
+    errno=0;
+    assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
     pid_t child=syscall(SYS_clone,CLONE_NEWUSER|SIGCHLD,0,0,0,0);assert(child>=0);
     if(!child){execl(argv[2],argv[2],"payload",argv[2],NULL);_exit(91);}
     int status;assert(waitpid(child,&status,0)==child);
     assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
+    int setup=open("/proc/sys/user/max_user_namespaces",O_WRONLY|O_CLOEXEC);
+    assert(setup>=0 && write(setup,"1",1)==1 && close(setup)==0);
     assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
     int limit=open("/proc/sys/user/max_user_namespaces",O_WRONLY|O_CLOEXEC);
     assert(limit>=0 && write(limit,"0",1)==1 && close(limit)==0);

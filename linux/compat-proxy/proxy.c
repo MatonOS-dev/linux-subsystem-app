@@ -985,6 +985,8 @@ extern char proxy_clone_entry[],proxy_clone_after[];
  * bwrap still needs our virtual setup, like the inherited seccomp exemption.
  * Keep zero intact (no unsigned wrap) for the next payload exec. */
 static unsigned userns_remaining=~0U;
+/* Exemption is only for the monitor's initial clone. unshare is also
+ * bwrap --assert-userns-disabled's probe and must observe the inherited zero. */
 static int bwrap_inherited_userns_limit;
 struct sysctl_fd {int fd;struct sysctl_fd *next;int seen_len;char seen[12];};
 static struct sysctl_fd *sysctl_fds;
@@ -2173,7 +2175,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     case PROXY_SC_unshare:
         result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;
-        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining && !bwrap_inherited_userns_limit)result=-EPERM;}
+        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining)result=-EPERM;}
         if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;}
         break;
     case PROXY_SC_mount:result=vfs_mount((char *)(uintptr_t)a[0],(char *)(uintptr_t)a[1],(char *)(uintptr_t)a[2],(unsigned long)a[3]);break;

@@ -805,3 +805,41 @@ A copied helper retaining the old open writer fails the new regression with
 Android validation compiled Java and ran unit tests without native preBuild
 tasks; this change adds no native code. No host-smoke installation or VM was
 used in this round.
+
+### Obsidian nested bwrap assertion (fork-adopt round 19)
+
+The day-r18 device trace confirms the nested ldconfig phase finishes without
+`ldconfig failed`. Browser 8809 starts unsandboxed zygote 8833 and sandbox
+shim 8835. The portal launches Flatpak 8839, which starts nested bwrap child
+8846 for `zypak-helper child - /app/obsidian --type=zygote`. Its argument
+bundle contains `--assert-userns-disabled`. At 18:47:12.128 its unshare
+probe incorrectly returns success (`ours 367 0`), then it prints
+`creation of new user namespaces was not disabled as requested` and exits.
+The browser subsequently reports the stub exit notification failure. There
+are no GPU/renderer execs or display connects in this capture.
+
+The inherited-zero exception added for nested monitor setup was too broad:
+it also allowed the unshare probe that checks the outer bwrap's zero limit.
+Restrict the exception to namespace clone setup. Unshare observes the zero
+limit, including inside a nested monitor. A monitor that explicitly writes
+its own nonzero limit can still unshare, then set zero and verify denial.
+This changes the proxy's general namespace emulation, with no app rules.
+
+`tests/bwrap-filter-name.c` now covers inherited-zero unshare denial before
+any monitor sysctl write, initial clone setup, payload exec/filter enforcement,
+and explicit nonzero/zero monitor limits. Restoring only the old unshare
+condition makes it fail at the inherited-zero assertion; the fixed test passes.
+
+Coordinator fresh-image check: launch stock Obsidian with v3-trace for 90 s;
+retain exec-argv, bwrap argument bundles, stderr and Unix I/O. Verify the
+nested `--assert-userns-disabled` probe returns EPERM, its diagnostic is gone,
+and `zypak-helper child` reaches the sandboxed zygote. Then inspect GPU/renderer
+startup and Wayland/X11 connects/toplevel creation. Recheck Kate as control.
+No VM was run here; this fixes the evidenced bwrap exit, and does not establish
+that Obsidian renders. No shared device-tree or kernel changes are needed.
+
+Round 19 validation: full `bash linux/compat-proxy/tests/run.sh` passed
+(including x86_64/i386 builds, musl/stock bwrap, apply-extra and site rewrite
+fixtures); device-tree preflight passed. Logs:
+`/mnt/data/aosp/out/pc-logs/fork-adopt-r19-tests.log` and
+`/mnt/data/aosp/out/pc-logs/fork-adopt-r19/{positive,negative,preflight}.log`.
