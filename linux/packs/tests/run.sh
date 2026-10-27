@@ -78,3 +78,4 @@ PY
 cc -std=c99 -Wall -Wextra -Werror -I. reader.c tests/reader_test.c -o "$tmp/reader-test"
 "$tmp/reader-test" "$tmp/b1/objects.index"
 echo 'OSTree object-pack tests passed (three real bare-user commits, checkout reconstruction and update-policy replay)'
+python3 tests/fsck-app-seccomp-host.py

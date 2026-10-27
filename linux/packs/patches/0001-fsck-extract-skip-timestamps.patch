@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] fsck: skip timestamps during extraction
+
+EROFS validation only consumes file contents, types and modes. Android's
+untrusted app seccomp filter traps utimensat, so applying archive timestamps
+from this standalone validation helper kills it with SIGSYS.
+
+--- a/fsck/main.c
++++ b/fsck/main.c
+@@ -322,12 +322,4 @@ static void erofsfsck_set_attributes(struct erofs_inode *inode, char *path)
+-#ifdef HAVE_UTIMENSAT
+-	if (utimensat(AT_FDCWD, path, (struct timespec []) {
+-				[0] = { .tv_sec = inode->i_mtime,
+-					.tv_nsec = inode->i_mtime_nsec },
+-				[1] = { .tv_sec = inode->i_mtime,
+-					.tv_nsec = inode->i_mtime_nsec },
+-			}, AT_SYMLINK_NOFOLLOW) < 0)
+-#else
+-	if (utime(path, &((struct utimbuf){.actime = inode->i_mtime,
+-					   .modtime = inode->i_mtime})) < 0)
+-#endif
+-		erofs_warn("failed to set times: %s", path);
++	/*
++	 * Do not restore timestamps during extraction. Validation only needs
++	 * content, type and mode; Android app seccomp traps utimensat.
++	 */

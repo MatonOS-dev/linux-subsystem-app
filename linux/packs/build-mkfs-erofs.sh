@@ -27,6 +27,7 @@ rm -rf "$SOURCE" "$BUILD"
 mkdir -p "$SOURCE" "$BUILD"
 tar -xzf "$ARCHIVE" -C "$SOURCE" --strip-components=1
 chmod -R u+w "$SOURCE"
+patch -d "$SOURCE" -p1 < "$HERE/patches/0001-fsck-extract-skip-timestamps.patch"
 /usr/bin/bwrap \
   --bind "$ROOTFS" / \
   --bind "$WORK" /scratch \

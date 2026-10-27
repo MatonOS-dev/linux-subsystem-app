@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="matonos-erofs-pipeline-") as temp:
     for image in outputs:
         started = time.perf_counter()
         subprocess.run([str(MKFS), "-zlz4hc,12", "--preserve-mtime", "--all-root",
-                        "--mkfs-time", "-T", "0", "--workers=4", "-U", uuid,
+                        "--mkfs-time", "-T", "0", "-U", uuid,
                         str(image), str(tree)], check=True, stdout=subprocess.DEVNULL)
         elapsed.append((time.perf_counter() - started) * 1000)
         subprocess.run([FSCK, str(image)], check=True, stdout=subprocess.DEVNULL)

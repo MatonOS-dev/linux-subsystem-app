@@ -231,3 +231,31 @@ The changed store service and debug activity compile with javac against SDK 36,
 JSON/apksig and the existing generated host/AIDL classes. Device-tree preflight
 and git diff --check pass. Logs: chrome-round4-proxy-tests.log,
 chrome-round4-suite.log, chrome-round4-preflight.log under out/pc-logs.
+
+## Round 6: app seccomp kills fsck timestamp restoration
+
+The device reported exit status 159 (possible SIGSYS). A `strace -f` run of
+static musl `fsck.erofs --extract=...` against a real EROFS deployment showed
+`utimensat(..., AT_SYMLINK_NOFOLLOW)` after extracted files and symlinks were
+created. The operation restores archive timestamps; Android app validation
+only uses contents, object types and modes. Android app seccomp traps this
+syscall, so the extraction helper now skips timestamp restoration in its
+pinned erofs-utils build. Ownership and permissions remain unchanged, and
+mode validation remains active.
+
+`linux/packs/tests/fsck-app-seccomp-host.py` runs image extraction under a
+seccomp filter that traps `utimensat`, then checks file contents and executable
+mode. It is part of `linux/packs/tests/run.sh`. Rebuild with
+`bash linux/packs/build-mkfs-erofs.sh`; the build applies
+`linux/packs/patches/0001-fsck-extract-skip-timestamps.patch` to pinned
+upstream source. Verified: the regression passed and the full
+`MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh <out-dir>` host suite passed.
+
+Coordinator: rebuild the subsystem APK and test on a freshly booted image
+(no VM was run for this change). Exact device test:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round6 \
+bash tests/chrome-sol/verify-device.sh
+```
