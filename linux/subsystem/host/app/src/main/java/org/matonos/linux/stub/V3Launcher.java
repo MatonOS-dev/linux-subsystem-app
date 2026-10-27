@@ -186,6 +186,14 @@ final class V3Launcher {
             String target = Files.readSymbolicLink(alias.toPath()).toString();
             if (target.matches("x11/X[0-9]+")) env.put("DISPLAY", ":" + target.substring(5));
         }
+        if (trace) {
+            Log.i("MatonV3", "v3-trace launch ref=" + ref +
+                    " WAYLAND_DISPLAY=" + env.get("WAYLAND_DISPLAY") +
+                    " DISPLAY=" + env.getOrDefault("DISPLAY", "<unset>") +
+                    " XDG_RUNTIME_DIR=" + env.get("XDG_RUNTIME_DIR") +
+                    " waylandSocket=" + new File(runtime.directory(), "wayland-0").exists() +
+                    " x11Alias=" + Files.isSymbolicLink(alias.toPath()));
+        }
         builder.directory(home);
         // PR_SET_PDEATHSIG (the loader's --parent-pid) fires when the *thread*
         // that forked it exits, not the process. Activity launch threads end
