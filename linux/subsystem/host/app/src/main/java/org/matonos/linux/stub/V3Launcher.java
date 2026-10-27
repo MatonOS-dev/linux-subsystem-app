@@ -70,7 +70,7 @@ final class V3Launcher {
         WorkDirs.keep(launchWork); // Loader pack mappings live until process exit.
         File passwd = new File(launchWork,"v3-passwd");
         File group = new File(launchWork,"v3-group");
-        StubPasswd.write(passwd, group, android.os.Process.myUid(), android.os.Process.myGid(), home);
+        StubPasswd.write(passwd, group, android.os.Process.myUid(), android.system.Os.getgid(), home);
         File resolv = new File(launchWork, "v3-resolv.conf");
         String dns = LoaderCommand.resolverAddress();
         LoaderCommand.writeResolv(resolv, dns);
