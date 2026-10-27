@@ -15,7 +15,20 @@ static void contents(int dir,const char *name,const char *want){char b[256];int 
 int main(int argc,char **argv){
     if(argc==3 && !strcmp(argv[1],"--publish")){CHECK(!vfs_gpu_publish(argv[2],"0x8086","0x5912","i915","renderD129",129,"card2",2));return 0;}
 
+    /* libpci starts by enumerating the PCI bus, rather than /sys/class/drm.
+     * A missing devices directory makes its default error callback exit(1). */
+    DIR *pci=opendir("/sys/bus/pci/devices");CHECK(pci);
+    struct dirent *entry;unsigned devices=0;
+    while((entry=readdir(pci)))if(entry->d_name[0]!='.'){
+        CHECK(!strcmp(entry->d_name,"0000:00:00.0"));devices++;
+        int dev=openat(dirfd(pci),entry->d_name,O_RDONLY|O_DIRECTORY);CHECK(dev>=0);
+        contents(dev,"vendor","0x8086\n");contents(dev,"device","0x5912\n");
+        contents(dev,"class","0x030000\n");close(dev);
+    }
+    CHECK(devices==1);closedir(pci);
     char path[256],link[256];struct stat a,b;
+    CHECK(!stat("/sys/bus/pci/devices/0000:00:00.0",&a));
+    CHECK(!stat("/sys/devices/pci0000:00/0000:00:00.0",&b));CHECK(a.st_ino==b.st_ino);
     const char *nodes[]={"226:129","226:2"};
     const char *classes[]={"renderD129","card2"};
     for(unsigned i=0;i<2;i++){
