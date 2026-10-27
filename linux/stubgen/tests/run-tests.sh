@@ -17,6 +17,12 @@ java -Xmx256m -cp "$TEST_OUT/classes" DependencyPlanTest
 java -Xmx256m -cp "$TEST_OUT/classes" org.matonos.linuxhost.stubgen.PlanExecutorTest
 java -Xmx256m -cp "$TEST_OUT/classes" PackageGraphTest
 java -Xmx256m -cp "$TEST_OUT/classes" DeploymentRecordTest "$TEST_OUT"
+if command -v flatpak >/dev/null && command -v ostree >/dev/null && \
+    python3 -c 'from gi.repository import GLib' >/dev/null 2>&1; then
+  python3 "$STUB_DIR/tests/deployment-flatpak-test.py" "$TEST_OUT/classes" "$TEST_OUT/flatpak-lookup"
+else
+  echo 'SKIP stock Flatpak deployment lookup test (requires Flatpak, OSTree and PyGObject)'
+fi
 java -Xmx256m -cp "$TEST_OUT/classes" PackSessionPlanTest
 java -Xmx256m -cp "$TEST_OUT/classes:$ANDROID_JAR:$STUB_DIR/prebuilt/apksig.jar" \
   org.matonos.linuxhost.stubgen.SessionPlanHandoffTest "$TEST_OUT" "$TEST_OUT/key.der" "$TEST_OUT/cert.pem"

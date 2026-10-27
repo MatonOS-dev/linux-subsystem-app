@@ -111,7 +111,13 @@ public final class DeploymentRecord {
         Path repo=root.resolve("repo");Files.createDirectories(repo.resolve("objects"));
         Path object=repo.resolve("objects").resolve(commit.substring(0,2)).resolve(commit.substring(2)+".commit");
         Files.createDirectories(object.getParent());Files.write(object,commitObject);
-        Files.createDirectories(repo.resolve("refs/heads"));Files.createDirectories(repo.resolve("refs/remotes"));
+        // Flatpak run enumerates installed refs from OSTree's deployed-ref
+        // namespace; active/current links alone are enough for `info`, but
+        // without this ref the app is reported as not installed.
+        Path deployedRef=repo.resolve("refs/heads/deploy").resolve(ref);
+        Files.createDirectories(deployedRef.getParent());
+        Files.writeString(deployedRef,commit+"\n",StandardCharsets.US_ASCII);
+        Files.createDirectories(repo.resolve("refs/remotes"));
         Files.createDirectories(repo.resolve("tmp"));
         Files.write(repo.resolve("config"),"[core]\nrepo_version=1\nmode=bare-user-only\n".getBytes(StandardCharsets.UTF_8));
     }
