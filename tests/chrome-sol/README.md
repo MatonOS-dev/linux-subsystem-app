@@ -124,6 +124,36 @@ check that /etc regular-file bind targets stay in /tmp/newroot rather than
 /tmp/oldroot/data/data. If it fails later, return the whole log, not only the
 last Flatpak error. No shared changes or kernel changes are requested.
 
+## Round 5: expose the fsck process result
+
+Attempt 14 reaches image creation, then `fsck.erofs` exits nonzero without
+output. `ExtraImageValidator` now includes the numeric process status in its
+exception and, for Linux's conventional `128+signal` result, prints a possible
+signal name. Java's `Process.waitFor()` does not distinguish a signal exit
+from a normal exit with the same numeric code, so this is intentionally marked
+as possible. The device log from attempt 14 does not include the hidden status
+and therefore cannot yet identify why fsck failed.
+
+Host checks: `matonos-mkfs-erofs` and `matonos-fsck-erofs` from
+`linux/packs/prebuilt/x86_64/` successfully built and extracted a small image;
+the validator regression covers a diagnostic nonzero exit and a SIGTERM exit.
+The full `tests/run.sh` suite passes with `MATON_AOSP_ROOT=/mnt/data/aosp`.
+These host checks do not reproduce Android app SELinux or its process filter.
+
+Coordinator: build the updated subsystem APK and run the existing fresh-image
+test, keeping the full logcat. The failure summary now prints fsck's status and
+possible signal inline:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round5 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Return the full logcat and the status/signal line. If fsck succeeds, the script
+continues with split publication, install/ cleanup and the stock Wayland flag
+launch checks described above. No VM was started for this round.
+
 ## Round 3: executable on a noexec backing mount
 
 Attempt 12 reaches `execve("/app/bin/apply_extra", ...)` through the proxy and

@@ -12,6 +12,9 @@ public final class ExtraImageValidatorTest {
     public static void main(String[] args)throws Exception {
         Path temp=Files.createTempDirectory("extra-image-test");
         try {
+            rejectsFsck(temp,"#!/bin/sh\necho fsck diagnostic >&2\nexit 7\n","exit status 7","fsck diagnostic");
+            rejectsFsck(temp,"#!/bin/sh\nkill -TERM $$\n","exit status 143","possible signal 15 (SIGTERM");
+
             Path root=Files.createDirectories(temp.resolve("good/app/bin"));
             Files.writeString(root.resolve("run"),"trusted");mode(root.resolve("run"),0755);
             Path extra=Files.createDirectories(temp.resolve("good/app/extra"));Files.writeString(extra.resolve("blob"),"downloaded");mode(extra.resolve("blob"),0644);
@@ -34,6 +37,17 @@ public final class ExtraImageValidatorTest {
         } finally { remove(temp); }
     }
     private static ExtraImageValidator.Entry entry(String path,String kind,int mode,String hash,String target){return new ExtraImageValidator.Entry(path,kind,mode,target,hash,null);}
+    private static void rejectsFsck(Path temp,String script,String... expected)throws Exception {
+        Path fsck=Files.createTempFile(temp,"fsck-", ".sh");Files.writeString(fsck,script);fsck.toFile().setExecutable(true);
+        Path extracted=temp.resolve("extract-"+Files.size(fsck)+"-"+System.nanoTime());
+        try {
+            ExtraImageValidator.checkImage(fsck.toFile(),temp.resolve("test.erofs").toFile(),extracted.toFile(),java.util.Collections.emptyList());
+            throw new AssertionError("accepted failing fsck process");
+        } catch(java.io.IOException failure) {
+            for(String fragment:expected)if(!failure.getMessage().contains(fragment))
+                throw new AssertionError("fsck failure omitted '"+fragment+"': "+failure.getMessage());
+        } finally {remove(extracted);Files.deleteIfExists(fsck);}
+    }
     private static void rejects(Path root,List<ExtraImageValidator.Entry> expected,String name)throws Exception {try{ExtraImageValidator.validate(root.toFile(),expected);throw new AssertionError("accepted "+name);}catch(java.io.IOException good){}}
     private static String sha(String text)throws Exception{byte[] d=MessageDigest.getInstance("SHA-256").digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));StringBuilder s=new StringBuilder();for(byte b:d)s.append(String.format("%02x",b&255));return s.toString();}
     private static void mode(Path path,int value)throws Exception{HashSet<PosixFilePermission> p=new HashSet<>();if((value&0400)!=0)p.add(PosixFilePermission.OWNER_READ);if((value&0200)!=0)p.add(PosixFilePermission.OWNER_WRITE);if((value&0100)!=0)p.add(PosixFilePermission.OWNER_EXECUTE);if((value&0040)!=0)p.add(PosixFilePermission.GROUP_READ);if((value&0020)!=0)p.add(PosixFilePermission.GROUP_WRITE);if((value&0010)!=0)p.add(PosixFilePermission.GROUP_EXECUTE);if((value&0004)!=0)p.add(PosixFilePermission.OTHERS_READ);if((value&0002)!=0)p.add(PosixFilePermission.OTHERS_WRITE);if((value&0001)!=0)p.add(PosixFilePermission.OTHERS_EXECUTE);Files.setPosixFilePermissions(path,p);}

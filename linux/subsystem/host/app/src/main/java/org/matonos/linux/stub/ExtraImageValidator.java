@@ -30,8 +30,30 @@ public final class ExtraImageValidator {
         byte[] output;
         try(java.io.InputStream in=process.getInputStream()) { output=in.readAllBytes(); }
         int status=process.waitFor();
-        if(status!=0)throw new IOException("fsck.erofs rejected stub image: "+new String(output,java.nio.charset.StandardCharsets.UTF_8));
+        if(status!=0)throw new IOException("fsck.erofs rejected stub image (exit status "+status+
+                signalHint(status)+"): "+new String(output,java.nio.charset.StandardCharsets.UTF_8));
         validate(extracted,committed);
+    }
+
+    /** Process.waitFor exposes signal deaths as 128+signal on Linux, without a separate signal field. */
+    private static String signalHint(int status) {
+        int signal=status-128;
+        if(signal<1||signal>64)return "";
+        String name;
+        switch(signal) {
+            case 1:name="SIGHUP";break; case 2:name="SIGINT";break; case 3:name="SIGQUIT";break;
+            case 4:name="SIGILL";break; case 5:name="SIGTRAP";break; case 6:name="SIGABRT";break;
+            case 7:name="SIGBUS";break; case 8:name="SIGFPE";break; case 9:name="SIGKILL";break;
+            case 10:name="SIGUSR1";break; case 11:name="SIGSEGV";break; case 12:name="SIGUSR2";break;
+            case 13:name="SIGPIPE";break; case 14:name="SIGALRM";break; case 15:name="SIGTERM";break;
+            case 16:name="SIGSTKFLT";break; case 17:name="SIGCHLD";break; case 18:name="SIGCONT";break;
+            case 19:name="SIGSTOP";break; case 20:name="SIGTSTP";break; case 21:name="SIGTTIN";break;
+            case 22:name="SIGTTOU";break; case 23:name="SIGURG";break; case 24:name="SIGXCPU";break;
+            case 25:name="SIGXFSZ";break; case 26:name="SIGVTALRM";break; case 27:name="SIGPROF";break;
+            case 28:name="SIGWINCH";break; case 29:name="SIGIO";break; case 30:name="SIGPWR";break;
+            case 31:name="SIGSYS";break; default:name="unknown";break;
+        }
+        return "; possible signal "+signal+" ("+name+", if terminated by signal)";
     }
 
     /** Commit entries are exact outside /app/extra. That subtree is only type/mode checked. */
