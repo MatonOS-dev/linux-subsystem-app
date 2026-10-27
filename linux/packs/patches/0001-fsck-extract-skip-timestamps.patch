@@ -1,13 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-Subject: [PATCH] fsck: skip timestamps during extraction
+Subject: [PATCH] fsck: use app-allowed syscalls during extraction
 
-EROFS validation only consumes file contents, types and modes. Android's
-untrusted app seccomp filter traps utimensat, so applying archive timestamps
-from this standalone validation helper kills it with SIGSYS.
+Android app seccomp blocks legacy chmod, mknod, lchown, mkdir, rmdir, lstat,
+unlink, link and symlink syscalls. Use equivalent *at interfaces allowed by
+Bionic's app policy. The output directory check uses O_PATH and fstat to keep
+its no-symlink check. Validation needs contents, types and modes, so it skips
+timestamp restoration.
 
 --- a/fsck/main.c
 +++ b/fsck/main.c
-@@ -322,12 +322,4 @@ static void erofsfsck_set_attributes(struct erofs_inode *inode, char *path)
+@@ -322,13 +322 @@
 -#ifdef HAVE_UTIMENSAT
 -	if (utimensat(AT_FDCWD, path, (struct timespec []) {
 -				[0] = { .tv_sec = inode->i_mtime,
@@ -20,7 +22,54 @@ from this standalone validation helper kills it with SIGSYS.
 -					   .modtime = inode->i_mtime})) < 0)
 -#endif
 -		erofs_warn("failed to set times: %s", path);
-+	/*
-+	 * Do not restore timestamps during extraction. Validation only needs
-+	 * content, type and mode; Android app seccomp traps utimensat.
-+	 */
+-
++	/* Validation needs content, types and modes, not archive timestamps. */
+@@ -336 +324 @@
+-		ret = lchown(path, inode->i_uid, inode->i_gid);
++		ret = fchownat(AT_FDCWD, path, inode->i_uid, inode->i_gid, AT_SYMLINK_NOFOLLOW);
+@@ -343 +331 @@
+-			ret = chmod(path, inode->i_mode);
++			ret = fchmodat(AT_FDCWD, path, inode->i_mode, 0);
+@@ -345 +333 @@
+-			ret = chmod(path, inode->i_mode & ~fsckcfg.umask);
++			ret = fchmodat(AT_FDCWD, path, inode->i_mode & ~fsckcfg.umask, 0);
+@@ -686 +674 @@
+-	if (mkdir(fsckcfg.extract_path, 0700) < 0) {
++	if (mkdirat(AT_FDCWD, fsckcfg.extract_path, 0700) < 0) {
+@@ -695,2 +683,7 @@
+-		if (lstat(fsckcfg.extract_path, &st) ||
+-		    !S_ISDIR(st.st_mode)) {
++		int dirfd = openat(AT_FDCWD, fsckcfg.extract_path,
++				   O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++		int statret = dirfd < 0 ? -1 : fstat(dirfd, &st);
++
++		if (dirfd >= 0)
++			close(dirfd);
++		if (statret < 0 || !S_ISDIR(st.st_mode)) {
+@@ -706 +699 @@
+-		if (chmod(fsckcfg.extract_path, 0700) < 0) {
++		if (fchmodat(AT_FDCWD, fsckcfg.extract_path, 0700, 0) < 0) {
+@@ -838 +831 @@
+-				if (rmdir(fsckcfg.extract_path) < 0) {
++				if (unlinkat(AT_FDCWD, fsckcfg.extract_path, AT_REMOVEDIR) < 0) {
+@@ -844 +837 @@
+-				   chmod(fsckcfg.extract_path, 0700) < 0) {
++				   fchmodat(AT_FDCWD, fsckcfg.extract_path, 0700, 0) < 0) {
+@@ -896 +889 @@
+-	if (symlink(buf, fsckcfg.extract_path) < 0) {
++	if (symlinkat(buf, AT_FDCWD, fsckcfg.extract_path) < 0) {
+@@ -900 +893 @@
+-			if (unlink(fsckcfg.extract_path) < 0) {
++			if (unlinkat(AT_FDCWD, fsckcfg.extract_path, 0) < 0) {
+@@ -932 +925 @@
+-	if (mknod(fsckcfg.extract_path, inode->i_mode, inode->u.i_rdev) < 0) {
++	if (mknodat(AT_FDCWD, fsckcfg.extract_path, inode->i_mode, inode->u.i_rdev) < 0) {
+@@ -936 +929 @@
+-			if (unlink(fsckcfg.extract_path) < 0) {
++			if (unlinkat(AT_FDCWD, fsckcfg.extract_path, 0) < 0) {
+@@ -1021 +1014 @@
+-		if (link(oldpath, fsckcfg.extract_path) == -1) {
++		if (linkat(AT_FDCWD, oldpath, AT_FDCWD, fsckcfg.extract_path, 0) == -1) {
+@@ -1310 +1303 @@
+-	unlink(filename);
++	unlinkat(AT_FDCWD, filename, 0);

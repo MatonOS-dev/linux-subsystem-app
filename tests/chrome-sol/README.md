@@ -94,6 +94,33 @@ CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol/attempt12 \
 bash tests/chrome-sol/verify-device.sh
 ```
 
+## Round 7: use only syscalls allowed by app seccomp
+
+The device still killed fsck with SIGSYS after timestamp restoration was
+removed. The full extraction path also used legacy `chmod`, `mknod`,
+`lchown`, `mkdir`, `rmdir`, `lstat`, `unlink`, `link`, and `symlink` calls.
+The fsck build now uses the corresponding `*at` interfaces. When checking an
+existing extraction root it opens the directory with `O_PATH|O_DIRECTORY|
+O_NOFOLLOW` and validates it with `fstat`, preserving the symlink rejection.
+Archive timestamps are not restored; validation checks contents, types and
+modes.
+
+`linux/packs/tests/fsck-app-seccomp-host.py` generates Bionic's current
+x86_64 app filter using `genseccomp.py`, installs that policy in a traced
+child, and performs the full extraction of a Chrome-shaped EROFS image with
+an executable setuid mode, hardlink, symlink and user xattr. It reports the
+first trapped syscall number. It is part of `linux/packs/tests/run.sh`.
+Verified after rebuilding with `bash linux/packs/build-mkfs-erofs.sh`.
+
+Coordinator: rebuild the subsystem APK and test on a freshly booted image
+(no VM was run for this change). Exact device test:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round7 \
+bash tests/chrome-sol/verify-device.sh
+```
+
 The script retries the existing debug install trigger, captures logcat without
 clearing others' logs, waits for the actual result, checks installed splits and
 install/ cleanup, writes the requested stock flag file, and resolves/starts the
