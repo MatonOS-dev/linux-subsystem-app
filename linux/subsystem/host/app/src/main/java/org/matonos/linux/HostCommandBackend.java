@@ -82,6 +82,15 @@ final class HostCommandBackend implements AutoCloseable {
                 if(flatpakExecutable!=null&&Arrays.equals(argv.get(0),flatpakExecutable)) {
                     if(flatpakUserDir!=null)env.put("FLATPAK_USER_DIR",flatpakUserDir);
                     if(flatpakSystemDir!=null)env.put("FLATPAK_SYSTEM_DIR",flatpakSystemDir);
+                    String ref="<unknown>",commit="<latest>";
+                    for(byte[] arg:argv) {
+                        if(arg.length==0)continue;
+                        String value=new String(arg,0,arg.length-1,java.nio.charset.StandardCharsets.UTF_8);
+                        if(value.matches("app/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))ref=value;
+                        else if(value.matches("--commit=[0-9a-f]{64}"))commit=value.substring("--commit=".length());
+                    }
+                    java.util.logging.Logger.getLogger("MatonPortal").info("Flatpak Spawn lookup ref="+ref+
+                            " commit="+commit+" userDir="+flatpakUserDir+" systemDir="+flatpakSystemDir);
                 }
                 Child child=spawner.spawn(cwd,argv,fds,env,flags);
                 if(child.pid()<=0||children.containsKey(child.pid())){child.close();throw new IllegalStateException("Invalid child PID");}

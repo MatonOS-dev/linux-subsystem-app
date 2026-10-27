@@ -23,7 +23,7 @@ trap 'kill "$log_pid" 2>/dev/null || true; wait "$log_pid" 2>/dev/null || true' 
     -a org.matonos.linux.DEBUG_INSTALL_CHROME
 until grep -qE 'Chrome extra-data install (succeeded|failed)|Could not start Chrome install|Could not bind store service|Store service disconnected' "$CHROME_TEST_OUT/logcat.txt"; do sleep 1; done
 if grep -qE 'Chrome extra-data install failed|Could not start Chrome install|Could not bind store service|Store service disconnected' "$CHROME_TEST_OUT/logcat.txt"; then
-    grep -E 'create-denied|create-dirfd|v3 create (input|backing)|Creating temp file|Race condition binding dirfd|v3 mount|v3 exec|execvp|fsck\.erofs rejected stub image|possible signal|exit status|avc: denied|Chrome extra-data install failed|Could not start Chrome install' "$CHROME_TEST_OUT/logcat.txt" || true
+    grep -E 'Flatpak Spawn lookup|Prepared Flatpak app deployment|create-denied|create-dirfd|v3 create (input|backing)|Creating temp file|Race condition binding dirfd|v3 mount|v3 exec|execvp|fsck\.erofs rejected stub image|possible signal|exit status|avc: denied|Chrome extra-data install failed|Could not start Chrome install' "$CHROME_TEST_OUT/logcat.txt" || true
     echo "Install failed; return logcat.txt to chrome-sol. Do not call this a launch pass." >&2
     exit 1
 fi
@@ -42,6 +42,13 @@ component=$("${adb[@]}" shell cmd package resolve-activity --brief \
     -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "$pkg" | tr -d '\r' | tail -n 1)
 [[ $component == "$pkg/"* ]]
 "${adb[@]}" shell am start -n "$component"
+sleep 8
+{
+    echo '=== Published private Flatpak deployments ==='
+    "${adb[@]}" shell "for root in /data/user/0/$pkg/no_backup/work/flatpak-launch /data/user/0/$pkg/no_backup/work/flatpak-launch/system; do echo ROOT=\$root; ref=\$root/app/com.google.Chrome/x86_64/stable; readlink \$ref/active; ls -ld \$ref/34a83e470564192554ad103904cc56564c876f0032522199c6d3838e091cbf9e \$ref/34a83e470564192554ad103904cc56564c876f0032522199c6d3838e091cbf9e/files; cat \$root/repo/refs/heads/deploy/app/com.google.Chrome/x86_64/stable; done" 2>&1 || true
+    echo '=== Running Chrome Flatpak identity ==='
+    "${adb[@]}" shell 'for p in /proc/[0-9]*; do cmd=$(tr "\000" " " <"$p/cmdline" 2>/dev/null) || continue; case "$cmd" in *"/app/bin/chrome"*|*"/app/extra/chrome"*) echo "PID=${p##*/} CMD=$cmd"; cat "$p/root/.flatpak-info" 2>&1 || true;; esac; done' 2>&1 || true
+} >"$CHROME_TEST_OUT/spawn-deployment.txt"
 echo "Install, split publication and install/ cleanup passed. Launcher start requested; browser rendering still needs verification."
 echo "Coordinator: verify a rendered Wayland window, browse a page, close and relaunch."
 echo "Capture a screenshot and /proc/<Chrome PID>/cmdline to confirm --ozone-platform=wayland."

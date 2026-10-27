@@ -36,7 +36,7 @@ public final class PackageDeploymentTest {
     }
     @Test public void portalDefaultSystemInstallSeesTheUserLaunchedApp() throws Exception {
         org.matonos.linuxhost.stubgen.DeploymentRecord app=appRecord(
-                "app/com.valvesoftware.Steam/x86_64/stable",java.util.Collections.emptyList());
+                "app/com.google.Chrome/x86_64/stable",java.util.Collections.emptyList());
         Path root=Files.createTempDirectory("maton-flatpak-portal-view");
         Path user=root.resolve("user"),system=root.resolve("system");
         PackageDeployment.materializeAppForPortal(app,user.toFile(),system.toFile(),"/app");
@@ -51,14 +51,28 @@ public final class PackageDeploymentTest {
                     installation.resolve("repo/refs/heads/deploy").resolve(app.ref)),StandardCharsets.US_ASCII));
             assertArrayEquals(app.commitObject,Files.readAllBytes(installation.resolve("repo/objects")
                     .resolve(app.commit.substring(0,2)).resolve(app.commit.substring(2)+".commit")));
+            assertFlatpakCommitLookup(user,system,installation,app);
         }
+    }
+    private static void assertFlatpakCommitLookup(Path user,Path system,Path installation,
+            org.matonos.linuxhost.stubgen.DeploymentRecord app) throws Exception {
+        ProcessBuilder command=new ProcessBuilder("flatpak",
+                installation.equals(user)?"--user":"--system","info","--show-commit",app.ref);
+        command.environment().put("FLATPAK_USER_DIR",user.toString());
+        command.environment().put("FLATPAK_SYSTEM_DIR",system.toString());
+        Process process=command.start();
+        String stdout=new String(process.getInputStream().readAllBytes(),StandardCharsets.UTF_8).trim();
+        String stderr=new String(process.getErrorStream().readAllBytes(),StandardCharsets.UTF_8);
+        assertEquals("Stock Flatpak lookup failed in "+installation+": "+stderr,0,process.waitFor());
+        assertEquals("Flatpak must resolve the exact deployed commit from either installation",app.commit,stdout);
     }
     private static org.matonos.linuxhost.stubgen.DeploymentRecord appRecord(String ref,
             java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency> dependencies) throws Exception {
         byte[] object={7,3,1};
         String commit=hex(java.security.MessageDigest.getInstance("SHA-256").digest(object));
         return new org.matonos.linuxhost.stubgen.DeploymentRecord(ref,commit,"flathub",
-                "[Application]\n".getBytes(StandardCharsets.UTF_8),new byte[]{1},object,dependencies);
+                "[Application]\n".getBytes(StandardCharsets.UTF_8),
+                DeployRecord.subpaths("flathub",commit,java.util.Collections.emptyList()),object,dependencies);
     }
     @Test public void materializesBundledGlExtensionAsInstalledRuntime() throws Exception {
         materialize("26.08");

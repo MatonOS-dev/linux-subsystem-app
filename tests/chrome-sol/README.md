@@ -1,8 +1,48 @@
 # Chrome extra-data follow-through (chrome-sol)
 
-Status: the host path now republishes the returned extra-data tree in the full
-EROFS image; coordinator device install/launch verification is still pending.
-No VM was started and no other worktree was modified.
+Status: host install/image publication passes. Chrome's coordinator launch
+capture still reports a pinned-commit lookup failure; no VM was started by
+this worktree.
+
+## Round 20: trace the portal's pinned deployment identity
+
+Round 19's `/.flatpak-info` pin is `34a83e470564192554ad103904cc56564c876f0032522199c6d3838e091cbf9e`.
+The trace shows the extra-data staging checkout at that same commit, and
+`StagedPacks.record()` writes the verified `appCommit` and its matching
+OSTree commit object into the signed deployment record. PackageDeployment
+publishes that record to both the user and default system installation, which
+the stock Flatpak portal Spawn lookup can select.
+
+The regression now asks stock Flatpak to resolve the generated app ref and
+commit independently through both installation roots. To pinpoint why the
+device still rejects Chrome, this round logs the commit and roots received by
+portal Spawn and saves both deployment trees plus the running sandbox's
+`/.flatpak-info` to `spawn-deployment.txt`. This keeps Flatpak's exact-commit
+Spawn behavior intact while exposing whether the device is looking in a
+different root or whether its installed record diverges from the launch pin.
+
+The targeted `PackageDeploymentTest` passed all 9 tests, including Flatpak
+commit lookup through both roots. `bash -n tests/chrome-sol/verify-device.sh`
+passed. The full `tests/run.sh` progressed through pack, placeholder, portal,
+and install-handoff checks, then stalled for over four minutes in AOSP D8 while
+building the stub-loader test fixture under host JDK 21; that run was
+interrupted after its worker threads stopped making progress. The Android
+Gradle unit-test task could not run with the host's Gradle 4.4.1
+(`dependencyResolutionManagement` is unsupported). No VM was started.
+
+Coordinator: rebuild the subsystem APK and run on a fresh image. The device
+script now captures the exact identity and deployment records:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round20 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Compare `spawn-deployment.txt`'s active links, deployed refs, and
+`/.flatpak-info` commit with the `MatonPortal` lookup log. Do not count install
+success as a launch pass; confirm the Chrome window, navigation, close/reopen,
+and `--ozone-platform=wayland` in its command line.
 
 ## Round 19: publish the post-handback deployment tree
 

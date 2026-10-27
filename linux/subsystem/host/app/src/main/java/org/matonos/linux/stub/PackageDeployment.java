@@ -45,6 +45,10 @@ final class PackageDeployment {
             if(i==0)materializeAppForPortal(entry.record,root,new File(root,"system"),entry.mount);
             else entry.record.materialize(new File(root,"system"),entry.mount);
         }
+        DeclaredPackages.Entry app=packages.get(0);
+        android.util.Log.i("MatonV3","Prepared Flatpak app deployment ref="+app.record.ref+
+                " commit="+app.record.commit+" userDir="+root+
+                " systemDir="+new File(root,"system"));
         // Deployments are reconstructed for each launch, but Flatpak's
         // per-user overrides are user state and must survive that rebuild.
         Path durableOverrides=new File(context.getDataDir(),
