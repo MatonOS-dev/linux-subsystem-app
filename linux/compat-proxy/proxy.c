@@ -981,7 +981,11 @@ static long namespace_clone_parent;
 static unsigned long namespace_clone_flags;
 uintptr_t proxy_clone_resume;
 extern char proxy_clone_entry[],proxy_clone_after[];
+/* Outer bwrap --disable-userns limits payload-created namespaces. Nested
+ * bwrap still needs our virtual setup, like the inherited seccomp exemption.
+ * Keep zero intact (no unsigned wrap) for the next payload exec. */
 static unsigned userns_remaining=~0U;
+static int bwrap_inherited_userns_limit;
 struct sysctl_fd {int fd;struct sysctl_fd *next;int seen_len;char seen[12];};
 static struct sysctl_fd *sysctl_fds;
 static void sysctl_sync(void);
@@ -1003,6 +1007,7 @@ static void sysctl_sync(void){
         for(;k<len && buf[k]>='0' && buf[k]<='9';k++){unsigned digit=buf[k]-'0';if(limit>(~0U-digit)/10){overflow=1;break;}limit=limit*10+digit;}
         if(overflow || !k || (k<len && !(k+1==len && buf[k]=='\n')))continue;
         userns_remaining=limit;
+        bwrap_inherited_userns_limit=0; /* This monitor explicitly set its own limit. */
     }
 }
 
@@ -1914,7 +1919,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             vfs_raw_count_fork_child();
             ipc_fork();
             namespaces|=namespace_clone_flags;
-            if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;
+            if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;
         }
         namespace_clone_parent=0;namespace_clone_flags=0;
     }
@@ -2168,8 +2173,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     case PROXY_SC_unshare:
         result=(a[0]&~(long)NS_FLAGS)?-ENOSYS:0;
-        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining)result=-EPERM;}
-        if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+        if(!result && (a[0]&CLONE_NEWUSER)){sysctl_sync();if(!userns_remaining && !bwrap_inherited_userns_limit)result=-EPERM;}
+        if(!result){namespaces|=a[0];if((a[0]&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;}
         break;
     case PROXY_SC_mount:result=vfs_mount((char *)(uintptr_t)a[0],(char *)(uintptr_t)a[1],(char *)(uintptr_t)a[2],(unsigned long)a[3]);break;
     case PROXY_SC_umount2:result=vfs_unmount((char *)(uintptr_t)a[0]);break;
@@ -2212,7 +2217,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
          * stack needs the assembly retry gateway to preserve its continuation. */
         if((a[0]&NS_FLAGS) && (a[0]&CLONE_VM)){result=-ENOTSUP;break;}
         if(a[0]&CLONE_NEWUSER)sysctl_sync();
-        if((a[0]&CLONE_NEWUSER) && !userns_remaining){result=-EPERM;break;}
+        if((a[0]&CLONE_NEWUSER) && !userns_remaining && !bwrap_inherited_userns_limit){result=-EPERM;break;}
         if(!(a[0]&CLONE_VM)){
             if(a[0]&CLONE_FILES){result=-ENOTSUP;break;}
             if(a[1])goto clone_retry;
@@ -2222,7 +2227,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             dns_fork_result(result);ipc_fork_result(result);
             proxy_trace_clone_result(result,a[0]);
 
-            if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining!=~0U)userns_remaining--;}
+            if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
@@ -2267,6 +2272,7 @@ clone_retry:
             }
             if(thread) thread->app_stack.ss_flags=SS_DISABLE;
             payload_current_bwrap=payload_exec_is_bwrap(path);
+            bwrap_inherited_userns_limit=payload_current_bwrap && !userns_remaining;
             if(!payload_current_bwrap) {
                 result=payload_seccomp_activate();if(result<0)break;
             }

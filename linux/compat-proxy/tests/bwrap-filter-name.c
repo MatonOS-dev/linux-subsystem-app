@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sched.h>
@@ -19,6 +20,14 @@ int main(int argc,char **argv) {
         assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
         puts("PASS APK bwrap filter deferred in monitor and active after payload exec");
         return 0;
+    }
+    if(!strcmp(argv[1],"launch")) {
+        /* Outer bwrap --disable-userns writes zero before payload exec.
+         * The portal and nested monitor inherit that virtual limit too. */
+        assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
+        int limit=open("/proc/sys/user/max_user_namespaces",O_WRONLY|O_CLOEXEC);
+        assert(limit>=0 && write(limit,"0",1)==1);
+        assert(close(limit)==0);
     }
     struct sock_filter code[]={
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
@@ -47,5 +56,9 @@ int main(int argc,char **argv) {
     int status;assert(waitpid(child,&status,0)==child);
     assert(WIFEXITED(status) && WEXITSTATUS(status)==0);
     assert(syscall(SYS_unshare,CLONE_NEWUSER)==0);
+    int limit=open("/proc/sys/user/max_user_namespaces",O_WRONLY|O_CLOEXEC);
+    assert(limit>=0 && write(limit,"0",1)==1 && close(limit)==0);
+    errno=0;
+    assert(syscall(SYS_clone,CLONE_NEWUSER|SIGCHLD,0,0,0,0)==-1 && errno==EPERM);
     return 0;
 }

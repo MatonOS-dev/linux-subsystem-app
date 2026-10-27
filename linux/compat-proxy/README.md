@@ -683,3 +683,45 @@ ldconfig status 256, `/app/bin/zypak-helper child` and the sandboxed zygote
 execute, then inspect display connect/get_toplevel. Recheck Kate rendering.
 This change fixes the evidenced setup failure; a window is not yet verified.
 No VM, AOSP build, shared-file changes or kernel changes were made.
+
+Obsidian round 18: inherited virtual user-namespace limit
+-------------------------------------------------------
+
+In `day-r17/obsidian.txt`, nested bwrap 6175 returns EPERM from clone
+(operation 25) and prints the namespace permission error. It never execs
+ldconfig; status 256 is bwrap's exit 1. There is no payload-filter denial.
+Outer bwrap used `--disable-userns` and accessed max_user_namespaces. Our
+virtual limit survives exec and supplies a second rejection after round 17's
+filter exemption. Browser 6144 starts unsandboxed zygote 6168, but portal
+Flatpak 6174 fails its ldconfig setup before the sandboxed zygote can exec.
+The captured `--type=zygote` argv for 6174 is an argument to `flatpak run`,
+not evidence that the sandboxed Electron zygote executed. No GPU/renderer
+exec or display connection follows; the browser polls after the spawn failure.
+
+Allow recognized bwrap monitors to perform virtual user-namespace setup
+with an inherited zero limit, matching their existing inherited-filter
+exemption. Preserve zero for payloads and prevent decrement underflow.
+A fresh sysctl write by the monitor clears the exemption, so upstream
+bwrap can verify its own --disable-userns request. The initial broad
+exemption failed apply-extra on that check; the narrowed fix includes a
+regression assertion for it. Kernel namespace flags continue to be stripped.
+No application rule is used.
+The APK-name regression now carries an outer `--disable-userns`-style zero
+limit through exec in addition to the inherited Flatpak seccomp filter.
+Unmodified main aborts on its monitor's unshare assertion; the fix permits
+monitor unshare/clone and payload exec while payload unshare remains EPERM.
+
+Device verification still needed: fresh image, stock Obsidian with v3-trace
+for 90 seconds and window state. Check that bwrap's namespace error and
+ldconfig status 256 disappear, then look for actual `zypak-helper child` /
+Electron sandboxed zygote exec, GPU/renderer and display connect/get_toplevel.
+Recheck Kate rendering. No VM, AOSP build, shared-file or kernel change.
+
+Validation: complete `tests/run.sh` passed (exit 0), including apply-extra,
+i386/cross-exec, Android packaging and rewrite tests; standalone Android
+x86_64/i386 builds passed. Logs: `out/pc-logs/fork-adopt-r18-suite.log` and
+`fork-adopt-r18-android.log`. Two earlier suite attempts hit the existing
+zygote SOCK_STREAM/credentials framing fixture; the identical failure was
+reproduced with unmodified main (`fork-adopt-r18-main-zygote.log`), and the
+final full run passed it. Captured EROFS/i386-musl fixture skips remain as
+reported by the suite. Device window rendering remains unverified.
