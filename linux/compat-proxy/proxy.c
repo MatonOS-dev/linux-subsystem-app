@@ -67,6 +67,7 @@ static int hc_test_fd=-1;
 static int proxy_count_fd=-1;
 static long payload_close_range(unsigned,unsigned,unsigned);
 #include "resident-fds.h"
+int proxy_resident_fd_owned(int fd){return resident_fd_owned(fd);}
 static int private_close_fd(int fd){
 #ifdef HOST_COMMAND_TEST
     if(fd==hc_test_fd)return 1;
@@ -880,6 +881,8 @@ static void trace_unix_io(long nr,proxy_arg_t a[6],long result) {
     if(first)emit("-");
     emit(" rights=");trace_number(rights);emit(" cred_pid=");
     if(credential_pid<0)emit("-");else trace_number((uint64_t)credential_pid);
+    emit(" msg_flags=");trace_number((uint32_t)message.flags);
+    emit(" pid=");trace_number((uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));
     emit("\n");
 }
 static int app_allowed(long nr) {
