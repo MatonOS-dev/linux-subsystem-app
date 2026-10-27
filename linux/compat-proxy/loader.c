@@ -118,20 +118,28 @@ static int supervise_launch(int argc,char **argv,char **environ) {
         return 127;
     }
 
-    long status=0,waited;
+    int app_status=2,main_reaped=0;
     if(proxy_trace)proxy_log("supervisor-wait-main",child,supervisor);
-    do waited=RAW(PROXY_SC_wait4,child,&status,0,0,0,0);while(waited==-EINTR);
-    if(waited<0)return 2;
-    if(proxy_trace)proxy_log("supervisor-main-status",child,status);
-    int app_status=(status&0x7f)==0?(int)((status>>8)&0xff):
-                   (status&0x7f)!=0x7f?128+(int)(status&0x7f):2;
+    /* Wait on every child from the start: adopted orphans may exit while
+     * Flatpak's main process remains alive for the whole desktop session.
+     * Blocking waitid is woken by child state changes without a SIGCHLD
+     * handler or a check/sleep race. Only our direct/adopted children are
+     * eligible; payload parents retain their own children's wait status. */
     for(;;) {
-        long descendant_status;
-        do waited=RAW(PROXY_SC_wait4,-1,&descendant_status,0,0,0,0);while(waited==-EINTR);
-        if(waited>0){if(proxy_trace)proxy_log("supervisor-descendant-status",waited,descendant_status);continue;}
+        siginfo_t info={0};
+        long waited=RAW(PROXY_SC_waitid,0,0,&info,4,0,0); /* P_ALL, WEXITED */
+        if(waited==-EINTR)continue;
         if(waited==-ECHILD)break;
-        return 2;
+        if(waited<0)return 2;
+        long status=info.si_code==CLD_EXITED?(long)info.si_status<<8:
+                    info.si_status|(info.si_code==CLD_DUMPED?0x80:0);
+        if(info.si_pid==child) {
+            main_reaped=1;
+            app_status=info.si_code==CLD_EXITED?info.si_status:128+info.si_status;
+            if(proxy_trace)proxy_log("supervisor-main-status",child,status);
+        } else if(proxy_trace)proxy_log("supervisor-descendant-status",info.si_pid,status);
     }
+    if(!main_reaped)return 2;
     return app_status;
 }
 #endif

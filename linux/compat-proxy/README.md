@@ -476,3 +476,27 @@ Evidence: `/mnt/data/aosp/out/pc-logs/fork-adopt-r11-{baseline,focused,suite,fin
 Upstream protocol references: Zypak `src/sandbox/spawn_strategy/run.cc`
 (`FindAllFds`) and `src/base/socket.cc` (`Socket::Read`) at
 https://github.com/refi64/zypak/tree/master/src .
+
+
+Steam round 8: continuous descendant reaping (2026-10-27)
+-------------------------------------------------------
+The launch supervisor previously blocked in wait4(main) until Flatpak's
+main process exited. Its adopted descendants could therefore remain zombies
+throughout a live session. It now blocks in waitid(P_ALL, WEXITED), consuming
+all direct/adopted child exits immediately, retrying EINTR and stopping at
+ECHILD. The main child's status is recorded separately and remains the
+application result; living descendants still keep the supervisor alive.
+This is driven by kernel child-state notifications, without a polling loop
+or an asynchronous signal handler. Children with a living payload parent
+are not eligible for this supervisor's wait and keep their original status.
+
+The regression creates a short-lived parent, lets its orphan exit 37, and
+checks /proc/<orphan>/status disappears while the main child is still alive.
+It then exits the main child with 23 and verifies that status is preserved.
+The pre-change supervisor fails the live-child test with fixture exit 16;
+x86_64 and i386 fixed supervisors pass under the Android filter. Existing
+checks still verify that descendants outlive a successfully exited main.
+
+Validation: the full compat-proxy tests/run.sh passes, including Android NDK
+builds and packaging. Evidence: out/pc-logs/steam-personality/r8-final-suite.log
+in the AOSP checkout. No VM was started.
