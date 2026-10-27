@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 out=${1:-$PWD/build/apply-extra-host}
 mkdir -p "$out"
-mountpoint=$(mktemp -d "$PWD/build/apply-extra-noexec.XXXXXX")
+mountpoint=$(mktemp -d "$out/apply-extra-noexec.XXXXXX")
 trap 'rmdir "$mountpoint"' EXIT
 unshare -Urnm sh -eu -c '
     mount --make-rprivate /
