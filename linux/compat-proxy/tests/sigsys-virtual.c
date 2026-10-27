@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include <signal.h>
+#include <pthread.h>
+#include <string.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -33,9 +35,9 @@ static void trapped(int sig,siginfo_t *info,void *opaque) {
 static void probe(int seccomp_api) {
     struct sigaction old,action={.sa_sigaction=trapped,.sa_flags=SA_SIGINFO};
     CHECK(sigaction(SIGSYS,NULL,&old)==0);
-    CHECK(old.sa_handler==SIG_DFL);
+    CHECK(old.sa_handler==SIG_DFL && !(old.sa_flags&SA_SIGINFO));
     CHECK(sigaction(SIGSYS,&action,&old)==0);
-    CHECK(old.sa_handler==SIG_DFL);
+    CHECK(old.sa_handler==SIG_DFL && !(old.sa_flags&SA_SIGINFO));
     CHECK(sigaction(SIGSYS,NULL,&old)==0 && old.sa_sigaction==trapped);
     sigset_t blocked,mask;
     sigemptyset(&blocked);sigaddset(&blocked,SIGSYS);
@@ -69,10 +71,56 @@ static void probe(int seccomp_api) {
     CHECK(syscall(SYS_gettid)==0);
     CHECK(errno==0 && seen==3);
 }
-int main(void) {
+static void *worker_install(void *unused) {
+    (void)unused;
+    struct sigaction old,action={.sa_sigaction=trapped,.sa_flags=SA_SIGINFO};
+    CHECK(sigaction(SIGSYS,NULL,&old)==0 && old.sa_handler==SIG_DFL && !(old.sa_flags&SA_SIGINFO));
+    CHECK(sigaction(SIGSYS,&action,&old)==0 && old.sa_handler==SIG_DFL && !(old.sa_flags&SA_SIGINFO));
+    struct sock_filter code[]={
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,SYS_getpid,0,1),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_TRAP|73),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog filter={sizeof(code)/sizeof(code[0]),code};
+    CHECK(prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)==0);
+    CHECK(syscall(SYS_seccomp,SECCOMP_SET_MODE_FILTER,SECCOMP_FILTER_FLAG_TSYNC,&filter)==0);
+    CHECK(syscall(SYS_getpid)==12345);
+    return NULL;
+}
+static void *worker_query(void *unused) {
+    (void)unused;
+    struct sigaction old;
+    CHECK(sigaction(SIGSYS,NULL,&old)==0 && old.sa_sigaction==trapped);
+    CHECK(syscall(SYS_getpid)==12345);
+    return NULL;
+}
+static void threaded_probe(void) {
+    pthread_t worker;
+    CHECK(pthread_create(&worker,NULL,worker_install,NULL)==0);
+    CHECK(pthread_join(worker,NULL)==0);
+    struct sigaction old;
+    CHECK(sigaction(SIGSYS,NULL,&old)==0 && old.sa_sigaction==trapped);
+    CHECK(syscall(SYS_getpid)==12345);
+    CHECK(pthread_create(&worker,NULL,worker_query,NULL)==0);
+    CHECK(pthread_join(worker,NULL)==0);
+    CHECK(seen==3);
+}
+int main(int argc,char **argv) {
+    if(argc==2 && !strcmp(argv[1],"--threaded")){threaded_probe();return 0;}
+    pid_t threaded=fork();CHECK(threaded>=0);
+    if(!threaded){
+        /* A zygote installs a caught action, then execs a new payload. Kernel
+         * exec clears the complete action, including SA_SIGINFO. */
+        struct sigaction action={.sa_sigaction=trapped,.sa_flags=SA_SIGINFO};
+        CHECK(sigaction(SIGSYS,&action,NULL)==0);
+        execl("/proc/self/exe",argv[0],"--threaded",NULL);
+        _exit(30);
+    }
+    int threaded_status;CHECK(waitpid(threaded,&threaded_status,0)==threaded && threaded_status==0);
     pid_t child=fork();CHECK(child>=0);
     if(!child){probe(1);_exit(0);}
     int status;CHECK(waitpid(child,&status,0)==child && status==0);
     probe(0);
-    puts("PASS virtual SIGSYS disposition and seccomp TRAP siginfo/ucontext in parent and fork child");
+    puts("PASS virtual SIGSYS: exec resets flags; worker disposition shared; TSYNC TRAP siginfo/ucontext in workers, main and fork child");
 }
