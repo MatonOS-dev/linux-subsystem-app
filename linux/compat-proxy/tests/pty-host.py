@@ -7,5 +7,9 @@ p=subprocess.run([str(root/'build/linux-layer-v3'),'--android-filter','--trace',
 (root/'build/pty.log').write_bytes(p.stderr)
 assert p.returncode==0,(p.returncode,p.stderr[-4000:])
 assert b'v3 exec /bin/sh' in p.stderr,p.stderr[-4000:]
+assert b'v3 exec-argv ' in p.stderr,p.stderr[-4000:]
+assert b' value=sh\n' in p.stderr,p.stderr[-4000:]
+assert b' value=-c\n' in p.stderr,p.stderr[-4000:]
+assert b' value=echo\\x20ok\n' in p.stderr,p.stderr[-4000:]
 print(p.stdout.decode(),end='')
-print('PASS original diagnostic sink survives close/dup2/fcntl/close_range and shell exec')
+print('PASS original diagnostic sink survives fd mutation and trace reports resident-exec argv')
