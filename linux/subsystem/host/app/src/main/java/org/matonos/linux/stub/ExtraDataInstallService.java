@@ -65,6 +65,11 @@ public final class ExtraDataInstallService extends Service {
         new File(getDataDir(), "extra-data-image.erofs").delete();
         File home = new File(root, "home"), tmp = new File(root, "tmp"), run = new File(root, "run"), cache = new File(root, "cache");
         for (File dir : new File[]{root, home, tmp, run, cache}) if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Cannot create Flatpak directory");
+        // Mark the store root explicitly so ObjectPacks' raw tree walk resolves
+        // the proxy's hardlink markers through the same .v3-inodes store.
+        java.nio.file.Files.createFile(new File(root, ".v3-store-root").toPath(),
+                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
         File userData = new File(root, "xdg-data");
         File userConfig = new File(root, "xdg-config");
         userData.mkdirs(); userConfig.mkdirs();
