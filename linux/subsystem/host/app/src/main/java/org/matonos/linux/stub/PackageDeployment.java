@@ -42,7 +42,8 @@ final class PackageDeployment {
         if(!packages.get(0).record.ref.equals(appRef))throw new IOException("Installed deployment ref mismatch");
         for(int i=0;i<packages.size();i++) {
             DeclaredPackages.Entry entry=packages.get(i);
-            entry.record.materialize(i==0?root:new File(root,"system"),entry.mount);
+            if(i==0)materializeAppForPortal(entry.record,root,new File(root,"system"),entry.mount);
+            else entry.record.materialize(new File(root,"system"),entry.mount);
         }
         // Deployments are reconstructed for each launch, but Flatpak's
         // per-user overrides are user state and must survive that rebuild.
@@ -51,6 +52,19 @@ final class PackageDeployment {
         Files.createDirectories(durableOverrides);
         Files.createSymbolicLink(root.toPath().resolve("overrides"),durableOverrides);
         return root;
+    }
+    /**
+     * The app is launched from Flatpak's per-user installation, but the stock
+     * Flatpak portal's sandbox Spawn path runs `flatpak run` with the default
+     * system installation. Publish the same signed deployment metadata in
+     * both disposable roots so either stock lookup resolves the already
+     * mounted package payload.
+     */
+    static void materializeAppForPortal(org.matonos.linuxhost.stubgen.DeploymentRecord app,
+            File userRoot,File systemRoot,String mount)throws IOException {
+        if(!app.ref.startsWith("app/"))throw new IOException("Expected an app deployment");
+        app.materialize(userRoot,mount);
+        app.materialize(systemRoot,mount);
     }
     /** Add the subsystem's bundled GL driver as a normal Flatpak runtime extension deployment. */
     static File prepareGlExtension(File systemRoot,File archive,String branch) throws Exception {

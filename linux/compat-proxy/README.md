@@ -564,3 +564,24 @@ for the nested launch failure is therefore still unproven; do not disable
 glycin isolation or add a Steam-specific override. The next device capture
 should retain upstream Flatpak portal debug output plus the nested bwrap argv,
 stderr and exit status for both helper calls. No VM was started for this round.
+
+Steam round 10: portal default installation (2026-10-27)
+--------------------------------------------------------
+
+The day-r13 trace captures both `flatpak-spawn --sandbox` helper launches.
+The portal's stock `flatpak run` child checks the default system installation
+at `flatpak-launch/system/app/com.valvesoftware.Steam/...` and reports the
+installed commit as missing. The app is launched from the private user
+installation, so its signed deployment metadata was only present at
+`flatpak-launch/app/...`. This causes the Steam runtime's display probe to
+fail and prevents the glycin image decoder from starting; zenity then aborts
+while loading GTK's fallback image. `steamwebhelper` is never exec'd in this
+capture, so the black window's later-stage cause remains unobserved.
+
+PackageDeployment now publishes the app's deployment record into both private
+roots, with both pointing to the same package-owned EROFS mount. A regression
+checks the stock `active` link, deployment metadata, deployed-ref index, and
+OSTree commit object in both roots. Re-run the Round 10 fresh-image capture to
+confirm the portal probes and glycin decoder launch, then inspect whether
+`steamwebhelper` starts and connects to the display. No VM was started for
+this change.

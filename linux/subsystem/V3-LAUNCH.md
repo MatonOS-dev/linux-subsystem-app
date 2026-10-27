@@ -8,6 +8,12 @@ files link to the corresponding virtual pack mount. FLATPAK_USER_DIR names this
 private tree; FLATPAK_SYSTEM_DIR names its system child. No shared installation,
 registered UID pointer or deployment lease is required.
 
+The app's signed deployment record is also published in that private system
+child. The upstream Flatpak portal's sandbox Spawn path invokes stock
+`flatpak run` without selecting `--user`, so its default system lookup must
+resolve the same app ref. Both installations point at the same package-owned
+EROFS payload; only the Flatpak lookup metadata is duplicated.
+
 PackageManager owns app registration, content updates and uninstall. Runtime
 packages supply runtime/extension payloads; a missing runtime goes through the
 existing authenticated store repair API. Extra-data executes at the owning
