@@ -3,6 +3,7 @@ package org.matonos.linux;
 import java.io.FileDescriptor;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 import static org.matonos.linux.PortalWire.*;
 
 /** Wire codec round trips plus ownership, reply-before-exit, and lifetimes. */
@@ -48,6 +49,19 @@ public final class HostCommandBackendTest {
         },signals::add,"/native/libmatonos-app-flatpak.so");
         Message flatpak=call("HostCommand","ayaaya{uh}a{ss}u",bytes("/"),Arrays.asList(bytes("flatpak"),bytes("--version")),Collections.emptyList(),Collections.emptyList(),0);
         alias.dispatch(wire(flatpak));check("/native/libmatonos-app-flatpak.so\0".equals(normalized[0]),"flatpak command resolves to the packaged launcher");alias.close();
+        AtomicReference<Map<String,String>> spawnEnv=new AtomicReference<>();
+        HostCommandBackend spawn=new HostCommandBackend((cwd,argv,fds,env,flags)->{
+            spawnEnv.set(new LinkedHashMap<>(env));Child child=new Child(100);child.exit(0);return child;
+        },signals::add,"/native/libmatonos-app-flatpak.so");
+        spawn.setFlatpakDirectories("/private/user-install","/private/system-install");
+        Message portalSpawn=call("HostCommand","ayaaya{uh}a{ss}u",bytes("/"),
+                Arrays.asList(bytes("/native/libmatonos-app-flatpak.so"),bytes("run")),Collections.emptyList(),
+                Arrays.asList(Arrays.asList("FLATPAK_USER_DIR","/sandbox/missing"),Arrays.asList("KEEP","yes")),0);
+        spawn.dispatch(wire(portalSpawn));
+        check("/private/user-install".equals(spawnEnv.get().get("FLATPAK_USER_DIR"))&&
+                "/private/system-install".equals(spawnEnv.get().get("FLATPAK_SYSTEM_DIR"))&&
+                "yes".equals(spawnEnv.get().get("KEEP")),"portal Spawn restores private installation paths without losing env");
+        spawn.close();
         System.out.println("PASS Development wire signature/fds, real pid, version, reply-before-exit, raw wait status, sender ownership, flags, WATCH_BUS, runtime cleanup");
     }
 }

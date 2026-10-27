@@ -27,6 +27,7 @@ final class HostCommandBackend implements AutoCloseable {
     private final Spawner spawner;
     private final Consumer<Message> output;
     private final byte[] flatpakExecutable;
+    private String flatpakUserDir,flatpakSystemDir;
     private final Map<Integer,Entry> children=new HashMap<>();
     private Child portal;
     private int serial;
@@ -35,6 +36,9 @@ final class HostCommandBackend implements AutoCloseable {
     HostCommandBackend(Spawner spawner,Consumer<Message> output,String flatpakExecutable){
         this.spawner=spawner;this.output=output;
         this.flatpakExecutable=flatpakExecutable==null?null:(flatpakExecutable+"\0").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+    synchronized void setFlatpakDirectories(String userDir,String systemDir) {
+        flatpakUserDir=userDir;flatpakSystemDir=systemDir;
     }
     private Message reply(Message c,int type,String sig,Object... body){
         Message m=new Message();m.type=type;m.serial=++serial;m.sender=":1.0";m.destination=c.sender;
@@ -70,6 +74,15 @@ final class HostCommandBackend implements AutoCloseable {
                     if(target<0||index<0||index>=c.fds.size()||fds.containsKey(target))throw new IllegalArgumentException("Invalid fd mapping");fds.put(target,c.fds.get(index));}
                 Map<String,String> env=new LinkedHashMap<>();for(Object pair:(List<?>)c.body.get(3)){List<?> p=(List<?>)pair;String key=(String)p.get(0),value=(String)p.get(1);
                     if(key.isEmpty()||key.indexOf('=')>=0||key.indexOf(0)>=0||value.indexOf(0)>=0)throw new IllegalArgumentException("Invalid environment");env.put(key,value);}
+                // The stock Flatpak portal invokes the packaged CLI trampoline
+                // for Spawn. Its caller environment is captured inside bwrap,
+                // where the private per-app installation paths are absent.
+                // Restore those paths only for this trampoline so nested
+                // `flatpak run --sandbox` can resolve the current app/runtime.
+                if(flatpakExecutable!=null&&Arrays.equals(argv.get(0),flatpakExecutable)) {
+                    if(flatpakUserDir!=null)env.put("FLATPAK_USER_DIR",flatpakUserDir);
+                    if(flatpakSystemDir!=null)env.put("FLATPAK_SYSTEM_DIR",flatpakSystemDir);
+                }
                 Child child=spawner.spawn(cwd,argv,fds,env,flags);
                 if(child.pid()<=0||children.containsKey(child.pid())){child.close();throw new IllegalStateException("Invalid child PID");}
                 children.put(child.pid(),new Entry(c.sender,child,(flags&2)!=0));
