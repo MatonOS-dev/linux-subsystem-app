@@ -19,6 +19,7 @@ for app in ('flatpak','bwrap'):
 os.symlink('libmatonos-flatpak.so',tool_dir+'/flatpak')
 os.symlink('libmatonos-flatpak.so',tool_dir+'/bwrap')
 PY
+python3 tests/bwrap-socket.py
 for app in bwrap flatpak; do
     timeout 20 build/linux-layer-v3 --android-filter --map "$root/system_ext" /system_ext "/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/$app" --version >"build/musl-$app.out" 2>"build/musl-$app.log"
     cat "build/musl-$app.out"
