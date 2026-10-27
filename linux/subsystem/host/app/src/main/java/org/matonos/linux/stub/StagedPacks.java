@@ -86,22 +86,15 @@ public final class StagedPacks {
             try {
                 ExtraImageValidator.checkImage(
                         LoaderCommand.tool(context,"libmatonos-fsck-erofs.so"),returnedImage,extracted,trusted);
-                File extra=new File(extracted,"app/extra"),target=new File(deployedFiles,"extra");
-                if(extra.exists()) {
-                    delete(target);
-                    Files.move(extra.toPath(),target.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                }
-                try(InputStream in=org.matonos.linuxhost.stubgen.PlaceholderFiles.open(returnedImage);
-                        OutputStream out=new FileOutputStream(new File(output,"deployment.erofs"))) {
-                    byte[] buffer=new byte[65536];int count;while((count=in.read(buffer))!=-1)out.write(buffer,0,count);
-                }
+                // This is only the stub's extra-data payload image. Merge its
+                // /app/extra into the complete verified deployment, then build
+                // the published image from the full tree below.
+                ExtraDataImage.mergeExtra(extracted,deployedFiles);
             } finally {delete(extracted);}
-            imageBytes=returnedImage.length();
-        } else {
-            org.matonos.linuxhost.stubgen.ErofsImage.BuildResult imageResult=
-                    org.matonos.linuxhost.stubgen.ErofsImage.build(imageEntries,output,erofsTool,imageEpoch,cancelled,workPool);
-            imageBytes=imageResult.image.imageSize;
         }
+        org.matonos.linuxhost.stubgen.ErofsImage.BuildResult imageResult=
+                org.matonos.linuxhost.stubgen.ErofsImage.build(imageEntries,output,erofsTool,imageEpoch,cancelled,workPool);
+        imageBytes=imageResult.image.imageSize;
         if(seedToken!=null)seedToken.pingBinder(); // Keep the mounted-image lease alive through the full write.
         Log.i("MatonInstall","phase=mkfs_total ref="+manifest.optString("ref","unknown")+" ms="+
                 java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-mkfsStarted)+" bytes="+imageBytes);
