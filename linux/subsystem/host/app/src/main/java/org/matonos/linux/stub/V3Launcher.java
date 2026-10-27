@@ -35,6 +35,12 @@ final class V3Launcher {
     private static final java.util.Set<Runnable> statusListeners =
             new java.util.concurrent.CopyOnWriteArraySet<>();
 
+    /** End the Linux session through loader exit so the ordinary exit cleanup runs. */
+    static synchronized void requestQuit() {
+        if (LoaderQuit.request(process, exit != null))
+            Log.i("MatonV3", "Quit requested from the runtime notification");
+    }
+
     static void addLaunchStatusListener(Runnable listener) {
         boolean terminal;
         synchronized (V3Launcher.class) {
@@ -232,10 +238,10 @@ final class V3Launcher {
                 notifyLaunchStatusChanged();
                 if(status==0) {
                     Log.i("MatonV3", "Loader exited: 0");
-                    endWithLinuxApp(context);
                 } else {
                     Log.e("MatonV3", launchErrorMessage(status));
                 }
+                endWithLinuxApp(context);
             } catch (InterruptedException failure) {
                 Thread.currentThread().interrupt();
                 synchronized (V3Launcher.class) { error = "Interrupted while waiting for loader"; }

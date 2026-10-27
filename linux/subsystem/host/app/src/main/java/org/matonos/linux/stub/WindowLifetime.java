@@ -10,8 +10,8 @@ final class WindowLifetime {
 
     synchronized void opened(Object activity) { activities.add(activity); }
 
-    /** Recreation and closing one of several windows must keep the session. */
-    synchronized boolean destroyed(Object activity, boolean finishing, boolean changingConfiguration) {
-        return activities.remove(activity) && activities.isEmpty() && finishing && !changingConfiguration;
+    /** True only when a tracked activity was the last open Android window. */
+    synchronized boolean destroyed(Object activity) {
+        return activities.remove(activity) && activities.isEmpty();
     }
 }

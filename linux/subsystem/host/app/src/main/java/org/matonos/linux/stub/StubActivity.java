@@ -20,11 +20,6 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private volatile int window;
     private volatile boolean destroyed;
     private static final String WINDOW = "org.matonos.linuxhost.WINDOW_ID";
-    /** After the last window closes, the session lives this long for a new
-     * one: an app answering a close with a save dialog, switching modes
-     * (Steam Big Picture) or going from splash to main window. Android lets
-     * an app start activities shortly after its own finished. */
-    private static final long LAST_WINDOW_GRACE_MS = 10_000;
     private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable launchStatusChanged = () -> runOnUiThread(() -> {
         if (destroyed) return;
@@ -40,13 +35,6 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private final Runnable noWindowNotice = () -> {
         if (!destroyed && window == 0) message("Application is running, but no window has appeared.");
     };
-    private static final Runnable END_SESSION = () -> {
-        // killProcess bypasses Service.onDestroy: explicitly close native
-        // runtime children before ending the per-app host.
-        org.matonos.linux.runtime.NativeCompositor.nativeStop();
-        android.os.Process.killProcess(android.os.Process.myPid());
-    };
-
     /** Open an Android window for an app window that arrived while no
      * activity was hosting (e.g. after the app closed its last window). */
     public static void openWindow(android.content.Context context, int id, int width, int height) {
@@ -185,7 +173,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         WINDOWS.opened(this);
-        MAIN.removeCallbacks(END_SESSION);
+        StubService.updateWindowNotification(this, true);
         status=new TextView(this);status.setPadding(32,32,32,32);
         status.setText("Starting application…");setContentView(status);
         window=state!=null?state.getInt(WINDOW,0):getIntent().getIntExtra(WINDOW,0);
@@ -324,14 +312,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             if(runtime!=null&&isFinishing()&&window!=0)runtime.closeWindow(window);
         }
         super.onDestroy();
-        if(WINDOWS.destroyed(this,isFinishing(),isChangingConfigurations())) {
-            // The runtime and native callbacks are owned by this process.
-            // Ending the last Android window must end that whole session:
-            // The loader parent-death signal and Android app cgroup end
-            // the Linux tree with the stub. Reopening gets a fresh process.
-            // A grace period lets the app open a new window first (cancelled
-            // when one opens); the close request already went to the app.
-            MAIN.postDelayed(END_SESSION,LAST_WINDOW_GRACE_MS);
-        }
+        if(WINDOWS.destroyed(this))
+            StubService.updateWindowNotification(this, false);
     }
 }

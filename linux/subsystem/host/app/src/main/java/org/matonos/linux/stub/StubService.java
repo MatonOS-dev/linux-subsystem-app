@@ -19,11 +19,35 @@ import java.io.File;
  * parsing the app's D-Bus.
  */
 public final class StubService extends Service {
+    private static final String ACTION_QUIT = "org.matonos.linuxhost.action.QUIT";
+    private static final int NOTIFICATION_ID = 1;
     private PerAppRuntime runtime;
     // Same process as the stub's activity; exposed so the activity can drive its
     // windows/Surface/input from the in-process runtime.
     private static volatile PerAppRuntime sRuntime;
     static PerAppRuntime runtime() { return sRuntime; }
+
+    static void updateWindowNotification(android.content.Context context, boolean hasWindows) {
+        try {
+            android.app.NotificationManager manager = context.getSystemService(android.app.NotificationManager.class);
+            String channel = "linux-runtime";
+            android.app.Notification.Builder builder = new android.app.Notification.Builder(context, channel)
+                    .setContentTitle(context.getApplicationInfo().loadLabel(context.getPackageManager()))
+                    .setSmallIcon(android.R.drawable.stat_sys_download)
+                    .setOngoing(true);
+            if (!hasWindows) {
+                android.content.Intent quit = new android.content.Intent(context, StubService.class).setAction(ACTION_QUIT);
+                android.app.PendingIntent action = android.app.PendingIntent.getService(context, NOTIFICATION_ID,
+                        quit, android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+                builder.setContentText("is still running")
+                        .addAction(new android.app.Notification.Action.Builder(
+                                android.R.drawable.ic_menu_close_clear_cancel, "Quit", action).build());
+            }
+            manager.notify(NOTIFICATION_ID, builder.build());
+        } catch (Exception error) {
+            Log.w("MatonStub", "Cannot update runtime notification", error);
+        }
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -39,13 +63,17 @@ public final class StubService extends Service {
                     .setSmallIcon(android.R.drawable.stat_sys_download)
                     .setOngoing(true)
                     .build();
-            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         } catch (Exception error) {
             Log.w("MatonStub", "foreground service not allowed; running as a plain service", error);
         }
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_QUIT.equals(intent.getAction())) {
+            V3Launcher.requestQuit();
+            return START_NOT_STICKY;
+        }
         String ref = intent != null ? intent.getStringExtra(HostContract.EXTRA_FLATPAK_REF) : null;
         if (ref == null) {
             try {

@@ -10,23 +10,23 @@ public final class WindowLifetimeTest {
         Object first = new Object(), second = new Object(), replacement = new Object();
         lifetime.opened(first);
         lifetime.opened(second);
-        expect(lifetime.destroyed(first, true, false), false, "One of two windows closed the session");
-        expect(lifetime.destroyed(second, true, false), true, "Last explicit close did not end the session");
-        expect(lifetime.destroyed(second, true, false), false, "Duplicate destruction ended it twice");
+        expect(lifetime.destroyed(first), false, "One of two windows was mistaken for the last window");
+        expect(lifetime.destroyed(second), true, "Last close did not report the windowless state");
+        expect(lifetime.destroyed(second), false, "Duplicate destruction reported a second last window");
 
         lifetime.opened(first);
-        expect(lifetime.destroyed(first, false, true), false, "Configuration recreation ended the session");
+        expect(lifetime.destroyed(first), true, "Configuration recreation did not report the temporary windowless state");
         lifetime.opened(replacement);
-        expect(lifetime.destroyed(replacement, true, false), true, "Recreated window's close did not end the session");
+        expect(lifetime.destroyed(replacement), true, "Recreated window's close did not report the windowless state");
 
         lifetime.opened(first);
         lifetime.opened(replacement);
-        expect(lifetime.destroyed(first, false, true), false, "Overlapping recreation ended the session");
-        expect(lifetime.destroyed(replacement, false, false), false, "Non-finishing destruction ended the session");
+        expect(lifetime.destroyed(first), false, "Overlapping recreation was mistaken for the last window");
+        expect(lifetime.destroyed(replacement), true, "Last recreated activity did not report the windowless state");
 
         lifetime.opened(first);
         lifetime.opened(first);
-        expect(lifetime.destroyed(first, true, false), true, "Duplicate registration leaked a window");
-        System.out.println("PASS: last-window close, multiple windows, recreation and duplicate callbacks");
+        expect(lifetime.destroyed(first), true, "Duplicate registration leaked a window");
+        System.out.println("PASS: windowless notification state, multiple windows, recreation and duplicate callbacks");
     }
 }
