@@ -25,7 +25,8 @@ public final class ExtraImageValidator {
     public static void checkImage(File fsck,File image,File extracted,Iterable<Entry> committed)throws IOException,InterruptedException {
         if(extracted.exists())throw new IOException("EROFS validation directory already exists");
         if(!extracted.mkdirs())throw new IOException("Cannot create EROFS validation directory");
-        Process process=new ProcessBuilder(fsck.getAbsolutePath(),"--extract="+extracted.getAbsolutePath(),image.getAbsolutePath())
+        Process process=new ProcessBuilder(fsck.getAbsolutePath(),"--extract="+extracted.getAbsolutePath(),
+                "--preserve-perms",image.getAbsolutePath())
                 .redirectErrorStream(true).start();
         byte[] output;
         try(java.io.InputStream in=process.getInputStream()) { output=in.readAllBytes(); }
@@ -83,7 +84,9 @@ public final class ExtraImageValidator {
                 Entry entry=expected.remove(relative);
                 if(entry==null)throw new IOException("EROFS image contains uncommitted path: "+relative);
                 boolean symlink=Files.isSymbolicLink(item),directory=Files.isDirectory(item,LinkOption.NOFOLLOW_LINKS),file=Files.isRegularFile(item,LinkOption.NOFOLLOW_LINKS);
-                if(mode(item)!=(entry.mode&07777))throw new IOException("EROFS mode differs from commit: "+relative);
+                int actualMode=mode(item), expectedMode=entry.mode&07777;
+                if(actualMode!=expectedMode)throw new IOException(String.format(java.util.Locale.ROOT,
+                        "EROFS mode differs from commit: %s (expected %04o, actual %04o)",relative,expectedMode,actualMode));
                 if(entry.kind.equals("dir")) {
                     if(!directory)throw new IOException("EROFS type differs from commit: "+relative);
                     walk(base,item,expected);

@@ -315,3 +315,33 @@ TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
 CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round6 \
 bash tests/chrome-sol/verify-device.sh
 ```
+
+## Round 9: preserve committed modes during image validation
+
+The `/app` mode mismatch came from `fsck.erofs` inheriting the Android app
+process's restrictive umask and applying it during extraction. The EROFS
+image carries the correct mode; the temporary extracted tree did not. The
+validator now invokes stock fsck with `--preserve-perms`, so validation sees
+the image's exact modes regardless of the caller's umask. Mode mismatch
+errors include both expected and actual octal modes.
+
+The host regression runs the shipped mkfs/fsck pair under umask `077` and
+checks directory and executable modes. The Java validator test also asserts
+that `--preserve-perms` is passed and checks the expected/actual diagnostic.
+Both the targeted tests and `MATON_AOSP_ROOT=/mnt/data/aosp bash
+tests/run.sh /mnt/data/aosp/out/pc-logs/chrome-sol-round9/full-tests` passed.
+No VM was started for this change.
+
+Coordinator: rebuild the subsystem APK and test on a freshly booted image.
+Exact device test:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round9/device \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Keep the full logcat. Confirm image validation passes, the second package
+install publishes the image/index/launcher splits, install staging is cleaned
+up, and Chrome launches with `--ozone-platform=wayland` from its stock
+`chrome-flags.conf`.

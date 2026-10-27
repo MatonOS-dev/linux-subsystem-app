@@ -108,7 +108,11 @@ def main():
         run(fsck, str(image))
         extracted = root / "fsck-extracted"
         extracted.mkdir()
-        run(fsck, "--extract=" + str(extracted), "--preserve-perms", str(image))
+        # Android app processes commonly run with umask 077. The validator
+        # must still observe the exact image modes after fsck extraction.
+        subprocess.run([fsck, "--extract=" + str(extracted), "--preserve-perms", str(image)],
+                       check=True, text=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, preexec_fn=lambda: os.umask(0o077))
         assert tree_signature(source) == tree_signature(extracted)
         inode = run(dump, "--path=/bin/tool", str(image)).stdout
         assert re.search(r"Xattr size:\s*[1-9][0-9]*", inode), inode
