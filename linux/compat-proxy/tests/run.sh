@@ -145,6 +145,9 @@ cc -no-pie -O2 -Wall -Wextra -Werror tests/personality.c -o build/personality
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/personality" >build/personality.out 2>build/personality.log
 cat build/personality.out
 
+cc -no-pie -O2 -Wall -Wextra -Werror tests/passwd-map.c -o build/passwd-map
+python3 tests/passwd-map-host.py "$PWD/build/linux-layer-v3" "$PWD/build/passwd-map"
+
 cc -no-pie -O2 -Wall -Wextra -Werror tests/net.c -o build/net-test
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/net-test" >build/net-test.out 2>build/net-test.log
 cat build/net-test.out

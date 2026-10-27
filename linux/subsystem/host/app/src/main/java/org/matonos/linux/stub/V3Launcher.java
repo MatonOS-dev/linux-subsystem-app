@@ -68,6 +68,9 @@ final class V3Launcher {
         WorkDirs.sweep(WorkDirs.root(context));
         File launchWork = WorkDirs.directory(context,"launch-data");
         WorkDirs.keep(launchWork); // Loader pack mappings live until process exit.
+        File passwd = new File(launchWork,"v3-passwd");
+        File group = new File(launchWork,"v3-group");
+        StubPasswd.write(passwd, group, android.os.Process.myUid(), android.os.Process.myGid(), home);
         File resolv = new File(launchWork, "v3-resolv.conf");
         String dns = LoaderCommand.resolverAddress();
         LoaderCommand.writeResolv(resolv, dns);
@@ -89,6 +92,13 @@ final class V3Launcher {
         command.add("--host-command");command.add(commandSocket.getAbsolutePath());
         command.add("--parent-pid"); command.add(Integer.toString(android.os.Process.myPid()));
         LoaderCommand.addResolvMaps(command, resolv);
+        // Flatpak's pre-bwrap CLI calls getpwuid() for the Android app UID.
+        // Expose the stub's actual Linux home until bwrap installs its runtime
+        // passwd file, which then supplies the ordinary in-sandbox account.
+        command.add("--map"); command.add(passwd.getAbsolutePath()); command.add("/etc/passwd");
+        command.add("--map"); command.add(passwd.getAbsolutePath()); command.add("/system/etc/passwd");
+        command.add("--map"); command.add(group.getAbsolutePath()); command.add("/etc/group");
+        command.add("--map"); command.add(group.getAbsolutePath()); command.add("/system/etc/group");
         File x11 = new File(runtime.directory(), "x11");
         if (x11.isDirectory()) {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
