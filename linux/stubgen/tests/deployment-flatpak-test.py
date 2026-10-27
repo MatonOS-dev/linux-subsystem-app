@@ -45,6 +45,8 @@ public class ScaffoldProbe {
     for flag, expected in [('--show-commit', commit), ('--show-origin', 'flathub')]:
         value = run('flatpak', 'info', '--user', flag, 'app/org.test.App/x86_64/stable', env=env)
         assert value == expected, (flag, value)
+    installed = run('flatpak', 'list', '--user', '--app', '--columns=ref', env=env).splitlines()
+    assert 'org.test.App/x86_64/stable' in installed, installed
     # The lookup tree has metadata only: no shared store or copied app payload.
-    assert (installation / 'app/org.test.App/x86_64/stable' / commit / 'files').is_symlink()
+    assert (installation / 'app/org.test.App/x86_64/stable' / commit / 'files').is_dir()
     print('PASS stock Flatpak reads commit and origin from package-derived deployment metadata')

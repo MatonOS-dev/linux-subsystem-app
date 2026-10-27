@@ -1,5 +1,6 @@
 import org.matonos.linuxhost.stubgen.*;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
@@ -53,6 +54,9 @@ public final class DeploymentRecordTest {
         Path version=scratch.resolve(record.ref).resolve(commit);
         if(!Files.isDirectory(version.resolve("files"),LinkOption.NOFOLLOW_LINKS))throw new AssertionError("Deployment files must be a real directory");
         if(!Files.readSymbolicLink(version.getParent().resolve("active")).toString().equals(commit))throw new AssertionError();
+        Path deployedRef=scratch.resolve("repo/refs/heads/deploy").resolve(record.ref);
+        if(!Files.readString(deployedRef,StandardCharsets.US_ASCII).equals(commit+"\n"))
+            throw new AssertionError("Flatpak deployed ref does not name the active commit");
         if(!Arrays.equals(Files.readAllBytes(version.resolve("metadata")),record.metadata))throw new AssertionError();
         rejects(()->DeploymentRecord.decode(Arrays.copyOf(bytes,bytes.length-1)));
         rejects(()->DeploymentRecord.decode(Arrays.copyOf(bytes,bytes.length+1)));
