@@ -404,3 +404,40 @@ Confirm the returned image is accepted, the second package install publishes
 the image/index/launcher splits, install staging is cleaned up, and Chrome
 launches with `--ozone-platform=wayland` from its stock
 `chrome-flags.conf`.
+
+## Round 14: compare the deployed `/files` subtree
+
+Attempt 22 returned a valid stub-built EROFS image, then the subsystem rejected
+`/app/include` as uncommitted. Flatpak commits contain a top-level `files/`
+deployment tree; Flatpak exposes that tree as the deployment's `files/`
+directory, which the subsystem maps to `/app` (or to the runtime branch root).
+The validator had compared commit-root paths directly with deployment-root
+paths. It now projects only committed `/files` entries onto the target root.
+Commit metadata and exports are not deployment files, while every path inside
+`/files`, including empty directories, remains exact. Extra data is still
+allowed only under `/app/extra`.
+
+OSTree inspection of Flathub Chrome stable commit
+`34a83e470564192554ad103904cc56564c876f0032522199c6d3838e091cbf9e` showed
+the commit root's `/files` tree and its `/files/include` directory and header
+files. That commit's parent is `c20cf3297793d37541b82098d83bf2586c347c3b14bad332a5d27df75fe89276`,
+the Chrome commit used by attempt 22. This establishes that `/include` is in
+the committed deployment subtree, not a path created outside `/app/extra` by
+stock `apply_extra`. The host regression builds a deployment containing
+`/app/include/header.h`, projects a Flatpak commit fixture containing
+`/files/include/header.h`, and validates it; it also confirms `/export` and
+`/metadata` are excluded and that a commit without `/files` is rejected.
+
+`MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh
+/mnt/data/aosp/out/pc-logs/chrome-sol-round13-host-tests` passed. No VM was run.
+Coordinator device check remains:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round14 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Confirm the returned image passes commit validation, the second PackageInstaller
+pass publishes image/index/launcher splits, staging is removed, and Chrome
+launches using `--ozone-platform=wayland` from `chrome-flags.conf`.

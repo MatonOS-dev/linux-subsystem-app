@@ -74,15 +74,14 @@ public final class StagedPacks {
         long mkfsStarted=System.nanoTime();long imageBytes;
         File returnedImage=new File(installation,"extra-data-image.erofs");
         if(returnedImage.isFile()) {
-            List<ExtraImageValidator.Entry> trusted=new ArrayList<>();
+            List<ExtraImageValidator.Entry> committed=new ArrayList<>();
             String trustedPrefix=manifest.getString("appRef").startsWith("runtime/")
                     ? "/"+manifest.getString("appRef").substring(manifest.getString("appRef").lastIndexOf('/')+1)
                     : "/app";
-            for(ObjectPacks.Entry sourceEntry:original.entries) {
-                String path=sourceEntry.path.equals("/")?trustedPrefix:trustedPrefix+sourceEntry.path;
-                trusted.add(new ExtraImageValidator.Entry(path,sourceEntry.kind,sourceEntry.mode,
+            for(ObjectPacks.Entry sourceEntry:original.entries)
+                committed.add(new ExtraImageValidator.Entry(sourceEntry.path,sourceEntry.kind,sourceEntry.mode,
                         sourceEntry.target,sourceEntry.checksum,sourceEntry.source));
-            }
+            List<ExtraImageValidator.Entry> trusted=ExtraImageValidator.flatpakFiles(committed,trustedPrefix);
             File extracted=new File(installation,"extra-image-validated");
             try {
                 ExtraImageValidator.checkImage(

@@ -23,12 +23,27 @@ public final class ExtraImageValidatorTest {
 
             Path root=Files.createDirectories(temp.resolve("good/app/bin"));
             Files.writeString(root.resolve("run"),"trusted");mode(root.resolve("run"),0755);
+            Path include=Files.createDirectories(temp.resolve("good/app/include"));
+            Files.writeString(include.resolve("header.h"),"committed-header");mode(include.resolve("header.h"),0644);
             Path extra=Files.createDirectories(temp.resolve("good/app/extra"));Files.writeString(extra.resolve("blob"),"downloaded");mode(extra.resolve("blob"),0644);
-            mode(root.getParent(),0755);mode(root,0755);mode(extra,0755);mode(temp.resolve("good/app"),0755);mode(temp.resolve("good"),0755);
-            List<ExtraImageValidator.Entry> expected=Arrays.asList(
-                    entry("/app","dir",0755,null,null),entry("/app/bin","dir",0755,null,null),
-                    entry("/app/bin/run","file",0755,sha("trusted"),null));
+            mode(root.getParent(),0755);mode(root,0755);mode(include,0755);mode(extra,0755);
+            mode(temp.resolve("good/app"),0755);mode(temp.resolve("good"),0755);
+            List<ExtraImageValidator.Entry> commit=Arrays.asList(
+                    entry("/files","dir",0755,null,null),entry("/files/bin","dir",0755,null,null),
+                    entry("/files/bin/run","file",0755,sha("trusted"),null),
+                    entry("/files/include","dir",0755,null,null),
+                    entry("/files/include/header.h","file",0644,sha("committed-header"),null),
+                    entry("/export","dir",0755,null,null),entry("/metadata","file",0644,null,null));
+            List<ExtraImageValidator.Entry> expected=ExtraImageValidator.flatpakFiles(commit,"/app");
             ExtraImageValidator.validate(temp.resolve("good").toFile(),expected);
+            if(expected.size()!=5||!expected.stream().anyMatch(e->e.path.equals("/app/include/header.h")))
+                throw new AssertionError("Flatpak /files subtree was not projected onto /app");
+            try {
+                ExtraImageValidator.flatpakFiles(Arrays.asList(entry("/metadata","file",0644,null,null)),"/app");
+                throw new AssertionError("accepted Flatpak commit without /files");
+            } catch(java.io.IOException goodCommitFailure) {
+                if(!goodCommitFailure.getMessage().contains("no /files"))throw goodCommitFailure;
+            }
 
             Path wrongMode=temp.resolve("wrong-mode");copy(temp.resolve("good"),wrongMode);mode(wrongMode.resolve("app"),0700);
             rejects(wrongMode,expected,"wrong committed mode", "expected 0755", "actual 0700");

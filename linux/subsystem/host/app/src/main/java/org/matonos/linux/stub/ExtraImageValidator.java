@@ -58,6 +58,26 @@ public final class ExtraImageValidator {
     }
 
     /** Commit entries are exact outside /app/extra. That subtree is only type/mode checked. */
+    public static java.util.List<Entry> flatpakFiles(java.lang.Iterable<Entry> commitEntries,String targetRoot)
+            throws IOException {
+        if(targetRoot==null||!targetRoot.startsWith("/")||targetRoot.equals("/")
+                ||targetRoot.endsWith("/")||targetRoot.contains("//"))
+            throw new IOException("Invalid Flatpak deployment target");
+        java.util.List<Entry> result=new java.util.ArrayList<>();
+        boolean foundFilesRoot=false;
+        for(Entry entry:commitEntries) {
+            if(entry.path.equals("/files")) {
+                foundFilesRoot=true;
+                result.add(new Entry(targetRoot,entry.kind,entry.mode,entry.target,entry.sha256,entry.content));
+            } else if(entry.path.startsWith("/files/")) {
+                result.add(new Entry(targetRoot+entry.path.substring("/files".length()),entry.kind,
+                        entry.mode,entry.target,entry.sha256,entry.content));
+            }
+        }
+        if(!foundFilesRoot)throw new IOException("Flatpak commit has no /files deployment tree");
+        return result;
+    }
+
     public static void validate(File root, Iterable<Entry> committed) throws IOException {
         Path base=root.toPath().toRealPath(LinkOption.NOFOLLOW_LINKS);
         Map<String,Entry> expected=new HashMap<>();
