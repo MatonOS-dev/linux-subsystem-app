@@ -216,7 +216,7 @@ final class V3Launcher {
         env.put("FLATPAK_USER_DIR",deployment.getAbsolutePath());
         // adb (root): touch <cache>/v3-no-rewrite to run without syscall-site patching (A/B debugging).
         if (new File(cache, "v3-no-rewrite").exists()) env.put("MATON_PROXY_REWRITE","0");
-        process = SPAWNER.submit(builder::start).get();
+        process = SPAWNER.submit(() -> GuiProcess.start(builder)).get();
         final Process child = process;
         if(trace)Log.i("MatonV3","v3-trace stub started loader supervisor process; waitFor targets this process");
         Log.i("MatonV3", "Started v3 loader for " + context.getPackageName());

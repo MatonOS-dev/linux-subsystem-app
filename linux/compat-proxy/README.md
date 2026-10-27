@@ -725,3 +725,83 @@ zygote SOCK_STREAM/credentials framing fixture; the identical failure was
 reproduced with unmodified main (`fork-adopt-r18-main-zygote.log`), and the
 final full run passed it. Captured EROFS/i386-musl fixture skips remain as
 reported by the suite. Device window rendering remains unverified.
+Steam round 12: nested display probe and last child (2026-10-27)
+---------------------------------------------------------------
+The day-r15 trace confirms the portal's nested `flatpak run` reaches the
+display probe command (`/bin/sh -euc 'echo "${DISPLAY+DISPLAY_is_set}"'`),
+but bwrap exits before running that command: its stderr says it cannot create
+a new namespace because unprivileged user namespaces are unavailable. So the
+probe is attempted, not successful, and it does not establish whether the
+display socket works. Steam then starts `zenity` with the generic D-Bus / portal
+error. Zenity aborts because its glycin image loader exits early; the trace
+shows the nested `flatpak-spawn ... prlimit ... glycin-image-rs` request and a
+loader failure, followed by Steam's `xterm: command not found` fallback. The
+last traced helper is `cat /tmp/tmp.2frL9mdVbV`; no `steamwebhelper` exec is
+present. The capture does not include that helper's collected exit status, so
+it does not yet establish whether Steam waits on `cat` or what it reads.
+
+The proxy trace does not report the parent application's wait status because
+wait4 is passed through the Android app filter without entering the proxy
+handler. The trace proves the namespace probe blocker and zenity's GTK loader
+failure, but does not prove either is the final reason Steam does not reach
+`steamwebhelper`. Re-run a fresh-image Steam launch with v3-trace and payload
+stderr enabled. While the window is black, capture the Linux process tree and
+for the `cat` PID and its parent capture `/proc/<pid>/{status,wchan,syscall}`
+and `/proc/<pid>/fd` symlink targets; preserve the temporary file's contents
+and Steam's `~/.var/app/com.valvesoftware.Steam/logs/`. This will distinguish
+a still-running `cat`, a completed child whose parent is blocked elsewhere,
+and a parent waiting on another helper. No VM was started for this diagnostic
+round.
+
+Steam round 13: GUI launch stdin EOF (2026-10-27)
+-------------------------------------------------
+Rebased on main, preserving both the Obsidian round 16/17 notes and Steam
+round 12 notes in the README conflict. The day-r17 process snapshot identifies
+`pipe:[1198044]` as stdin for the loader/Flatpak/Steam tree. The Java stub
+7121 retains fd 203 for that pipe: this is ProcessBuilder's parent-side stdin
+writer, exposed as Process.getOutputStream(). V3Launcher never wrote to or
+closed it. No proxy-reserved duplicate of that pipe appears in the snapshot.
+The other holders shown are stdin readers, including Steam 7176 and 7351.
+
+7351 has no exec-argv event: it forks from 7176's bash running steam.sh
+(`-srt-logger-opened -no-cef-sandbox`). It first forks 7352, which execs
+`cat /tmp/tmp.TWgk5hayqP`, then remains in read(0) while 7176 waits for it.
+This is consistent with the shell's error-dialog fallback reading stdin:
+zenity 7323 aborts (steam.sh line 103), xterm 7350 is missing (line 138),
+and 7351 writes 25 bytes before blocking. The trace does not record the shell
+builtin's source line or buffer contents, so those details are inference.
+The last exec is cat, not steamwebhelper; 7351 itself is the inherited shell.
+
+GuiProcess.start now starts the GUI child and immediately closes its stdin
+writer, on the persistent spawner thread. GUI launches have no input producer;
+EOF is the normal noninteractive result, propagated to all inherited readers.
+It destroys the child if closing the writer fails. V3Launcher uses this common
+launch helper; no Steam-specific rules or proxy syscall changes are needed.
+Stdout/stderr draining and the supervisor lifetime remain unchanged.
+
+The regression uses a shell parent waiting on a forked cat reading stdin.
+Its control verifies an open Java writer blocks; closing it releases both
+processes. The production helper must complete the same command with EOF.
+It runs directly in tests/run.sh and through the proxy supervisor with the
+Android filter in compat-proxy/tests/run.sh. Focused runs pass in both modes.
+
+Fresh-image check for the coordinator (no VM run here): launch stock Steam
+with v3-trace, capture stderr and process/fd state after 10 and 30 seconds.
+Verify the Java stub no longer holds the app stdin pipe writer, the error
+fallback reader does not remain in anon_pipe_read, and the parent continues
+or exits. This fixes the evidenced EOF deadlock; it does not establish that
+Steam reaches steamwebhelper. Preserve any requirement/dialog error now
+printed before exit: zenity's abort and missing xterm preceded this wait.
+No shared device-tree changes or kernel changes are required.
+
+Validation: repository host suite, Android `compileDebugJavaWithJavac` and
+`testDebugUnitTest`, and device-tree preflight passed. The full compat-proxy
+suite passed on retry; its first run failed in the existing zygote-startup
+boot framing check (13 bytes instead of the expected 12), before the new test.
+A copied helper retaining the old open writer fails the new regression with
+`stdin EOF never reached child`. Logs are under the AOSP checkout's
+`out/pc-logs/steam-personality-r13/` (`host-tests.log`, `android.log`,
+`proxy-tests.log`, `proxy-tests-retry.log`, `negative.log`, `preflight.log`).
+Android validation compiled Java and ran unit tests without native preBuild
+tasks; this change adds no native code. No host-smoke installation or VM was
+used in this round.
