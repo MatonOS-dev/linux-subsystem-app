@@ -483,6 +483,8 @@ failed:
     vfs_free(av);vfs_free(ev);return r;
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
+    char *exec_alias=vfs_exec_alias(path);
+    if(exec_alias)path=exec_alias;
     proxy_log_bwrap_args(path,argv);
 #if defined(__i386__)
     proxy_i386_sysinfo_configure(env);
@@ -499,6 +501,7 @@ int proxy_load(const char *path,char *const *argv,char *const *env,struct image 
     int r=load_inner(path,argv,env,image,0);
     if(!r)r=proxy_i386_tls_prepare_payload();
     if(!r)vfs_executable(path);
+    vfs_free(exec_alias);
     return r;
 }
 #ifndef PROXY_LIBRARY

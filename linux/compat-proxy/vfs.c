@@ -665,6 +665,14 @@ static int self_proc(const char *path){
     struct proxy_stat st;int own=!arch_stat_at(AT_FDCWD,task,&st,0) && S_ISDIR(st.st_mode);
     vfs_free(task);return own;
 }
+/* Preserve the payload identity when it re-execs through its proc magic link.
+ * Recording the alias itself makes the next /proc/self/exe readlink (and
+ * glibc's $ORIGIN lookup) point into /proc instead of beside the payload. */
+char *vfs_exec_alias(const char *path){
+    if(!path || !self_proc(path))return NULL;
+    const char *tail=path+6;while(*tail && *tail!='/')tail++;
+    return p_equal(tail,"/exe")?vfs_exe():NULL;
+}
 char *vfs_proc_fd_name(const char *path){
     if(!self_proc(path))return NULL;
     for(size_t i=0;path[i];i++)if(path[i]=='/' && path[i+1]=='f' && path[i+2]=='d' && path[i+3]=='/'){

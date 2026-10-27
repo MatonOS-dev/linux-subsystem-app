@@ -1037,3 +1037,31 @@ Device validation remains with the coordinator: freshly launch Obsidian with
 v3-trace and capture its log plus compositor toplevel events. Verify the
 `proc_util.cc` fatal and GPU retry loop disappear and a window appears; use
 Kate as the rendering control. No VM was run for this change.
+
+### Payload re-exec through /proc/self/exe (fork-adopt round 23)
+
+The GPU-process loader failure was caused by publishing the exec request's
+literal `/proc/self/exe` as the new payload identity. Opening the ELF already
+followed that magic link correctly, but AT_EXECFN and the subsequent emulated
+readlink exposed the alias. glibc consequently searched `/proc/self` for
+`$ORIGIN` libraries such as libffmpeg.so. `proxy_load` now substitutes the
+saved payload pathname for self proc exe aliases before loading, state handoff,
+auxv construction and identity publication; argv is preserved. This applies to
+all payloads, with no application-specific rules.
+
+`tests/exec-origin.sh` builds an ELF with a mandatory adjacent shared library
+and RPATH `$ORIGIN`, maps it at `/app/payload`, and re-execs `/proc/self/exe`.
+It checks readlink and AT_EXECFN, both directly and through nested bwrap with
+an inherited Flatpak seccomp filter. The previous loader exits 127 on the same
+fixture because the adjacent library cannot be found; the fixed loader passes.
+
+Device validation (coordinator; no VM run by this agent): launch Obsidian with
+v3-trace and capture payload stderr, exec-argv and compositor events. Confirm
+GPU self-execs no longer report missing libffmpeg.so, then check whether a
+Wayland/X11 connection and toplevel appear. Re-run Kate as the control.
+
+Validation: native x86_64/i386 builds and full `tests/run.sh` passed, including
+Android loader packaging, mixed-class exec, Flatpak/musl, apply-extra and rewrite
+checks. Suite log: `/mnt/data/aosp/out/pc-logs/fork-adopt-r23-suite.log`.
+Both direct and nested regressions fail with exit 127 using the pre-fix loader;
+the fixed versions pass. No image, kernel or shared-device-tree changes needed.
