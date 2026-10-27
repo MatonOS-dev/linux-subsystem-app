@@ -70,7 +70,8 @@ def flatpak_filter_bytes(diagnostic=False):
         os.lseek(fd,0,0);return os.read(fd,65536)
     finally:os.close(fd);lib.seccomp_release(ctx)
 
-def phase(name, payload=False):
+def phase(name, payload=False, compat=False, backing=True):
+    launch_proxy=list(proxy)
     opened=[]
     def data(content):
         fd=os.memfd_create('flatpak-'+name, os.MFD_ALLOW_SEALING); opened.append(fd)
@@ -95,6 +96,22 @@ def phase(name, payload=False):
           '--ro-bind-data',data(b'user:x:1000:1000:User:/home/user:/bin/bash\n'),'/etc/passwd',
           '--ro-bind-data',data(b'user:x:1000:\n'),'/etc/group',
           '--ro-bind-data',data(b'user-config: none\n'),'/etc/pkcs11/pkcs11.conf']
+    if compat:
+        # Optional extensions have a disposable files/ path separate from the
+        # immutable image. bwrap must reach the image through that path before
+        # creating tmpfs and GL32 destinations below its app-side bind alias.
+        (fixture/'app/lib/i386-linux-gnu').mkdir(parents=True,exist_ok=True)
+        deployment=fixture/'compat-deployment/files'
+        image=fixture/'compat-image/26.08'
+        deployment.mkdir(parents=True,exist_ok=True)
+        image.mkdir(parents=True,exist_ok=True)
+        launch_proxy+=['--map-ro',str(deployment),str(deployment),
+                       '--erofs-mount','/usr/lib/i386-linux-gnu',str(image)]
+        if backing:
+            launch_proxy+=['--erofs-backing','/usr/lib/i386-linux-gnu',str(deployment)]
+        args+=['--ro-bind',str(deployment),'/app/lib/i386-linux-gnu',
+               '--tmpfs','/app/lib/i386-linux-gnu/GL',
+               '--dir','/app/lib/i386-linux-gnu/GL/default']
     for path in ['/sys/block','/sys/bus','/sys/class','/sys/dev','/sys/devices']:
         args+=['--ro-bind',path,path]
     for path in ['bin','lib','lib64','sbin']:
@@ -143,7 +160,7 @@ def phase(name, payload=False):
         command=ldconfig_command
     args+=['--seccomp',data(flatpak_filter_bytes(payload))]
     bundle=data(b'\0'.join(x.encode() for x in args)+b'\0')
-    argv=proxy+[bwrap,'--args',bundle]+command
+    argv=launch_proxy+[bwrap,'--args',bundle]+command
     (fixture/(name+'.argv.json')).write_text(json.dumps({'expanded_bwrap': [bwrap]+args+command,'exec':argv},indent=2)+'\n')
     try:
         with open(build/('musl-flatpak-'+name+'.out'),'wb') as out,open(build/('musl-flatpak-'+name+'.log'),'wb') as log:
@@ -167,6 +184,11 @@ def phase(name, payload=False):
                 if proc.poll() is None:proc.kill();proc.wait()
         bundle_log=(build/('musl-flatpak-'+name+'.log')).read_text()
         assert 'v3 bwrap bundle begin\n' in bundle_log and 'v3 bwrap bundle end\n' in bundle_log
+        if compat and not backing:
+            diagnostic=(build/('musl-flatpak-'+name+'.log')).read_text()
+            assert result==1 and "Can't create file /app/lib/i386-linux-gnu/GL" in diagnostic,diagnostic
+            print('PASS missing optional extension backing reproduces bwrap failure before ldconfig')
+            return
         if result: raise RuntimeError(f'{name}: exit {result}; see musl-flatpak-{name}.log')
         for flag,fd in checks.items():
             os.lseek(fd,0,0);content=os.read(fd,65536).decode()
@@ -187,5 +209,7 @@ def phase(name, payload=False):
         if payload and block_write>=0:os.close(block_write)
         for fd in opened:os.close(fd)
 if __name__ == '__main__':
+    phase('compat-missing-backing',compat=True,backing=False)
+    phase('compat-ldconfig',compat=True)
     phase('ldconfig')
     phase('payload',True)

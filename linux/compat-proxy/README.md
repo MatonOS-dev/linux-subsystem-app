@@ -354,3 +354,34 @@ rewrite tests. The prior apply-extra exit 4 does not reproduce here.
 Logs and baseline strace: `/mnt/data/aosp/out/pc-logs/fork-adopt/r5-*`,
 `baseline-zygote.log`, and `baseline-trace.*`. No complete-suite pass is
 claimed while the independent zygote credential fixture remains failing.
+
+Steam ldconfig follow-up (2026-10-27): the night-r5 trace already captures
+bwrap's stderr, interleaved with syscall diagnostics: `Can't create file
+/app/lib/i386-linux-gnu/GL: Read-only file system`. The child fails during
+bwrap setup before executing ldconfig. Operation 27 is close (`-9` is EBADF
+from bwrap's fd cleanup), and 135 is ioctl, not personality.
+
+The optional Compat.i386 preparation path now pairs its EROFS mount with
+`--erofs-backing` for the disposable Flatpak files directory, just as declared
+packages do. Stock bwrap binds that directory under both /app and /usr;
+resolving it to the image lets the existing per-launch destination shadows
+handle its tmpfs/GL32 mountpoints. No personality policy or per-app rule is
+needed. The normal immutable payload view stays read-only.
+
+`tests/flatpak-bwrap-host.py` now reproduces the missing-backing setup failure
+and verifies that the mapping lets ldconfig write a nonempty cache under the
+Android filter plus Flatpak's payload filter. It also passes with
+`COMPAT_HOST_RUNTIME` pointing at the extracted FreeDesktop 26.08 runtime in
+`/mnt/data2/matonos-host-smoke/mnt/matonos/1000/`.
+The eight PackageDeployment Java tests pass, including the optional-extension
+argument regression. The Steam host smoke passes its ldconfig probe and
+continues beyond cache creation under the pre-handler filter; Steam later
+exits 71 without a diagnostic, which remains unresolved.
+
+Device recheck: rebuild/update the subsystem APK (the fix is in Java, so a
+loader-only replacement is insufficient), relaunch Steam on the coordinator's
+fresh image with v3-trace enabled, and retain the full stderr stream. Verify
+that bwrap resolves Compat.i386 files to its /mnt/matonos image, creates the
+GL tmpfs destination, executes ldconfig, and no longer reports exit status
+256. No VM was used for this follow-up; no kernel or shared image policy
+changes are required.
