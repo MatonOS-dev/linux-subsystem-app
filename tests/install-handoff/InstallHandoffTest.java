@@ -85,6 +85,36 @@ public final class InstallHandoffTest {
             throw new AssertionError("subpath deploy resolved to the wrong directory");
         System.out.println("PASS subpath pull completion, transaction row, package handoff, and deployedir resolution");
 
+        // Chrome's isolated extra-data pull uses --no-deploy. Before the
+        // returned image is handed back there is no deploy record to scan;
+        // materialize the verified commit, record its identity, then use the
+        // ordinary manifest and planned-deployment validation path.
+        String extraApp="app/com.google.Chrome/x86_64/stable";
+        File extraInstallation=new File(out,"extra-data/installation");
+        String extraCommit="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        byte[] extraMetadata="[Application]\nname=Chrome\n".getBytes(StandardCharsets.UTF_8);
+        File extraDeployment=new File(extraInstallation,extraApp+"/"+extraCommit);
+        Files.createDirectories(new File(extraDeployment,"files/extra").toPath());
+        Files.write(new File(extraDeployment,"metadata").toPath(),extraMetadata);
+        Files.write(new File(extraDeployment,"files/extra/returned-image.marker").toPath(),new byte[]{1});
+        try {
+            DeployManifest.build(extraInstallation,extraApp,"fixture","extra-op");
+            throw new AssertionError("--no-deploy pull unexpectedly had a deploy manifest");
+        } catch (java.io.IOException expected) {
+            if(!expected.getMessage().contains("authorized application was not deployed"))throw expected;
+        }
+        DeployManifest.recordVerifiedPull(extraInstallation,extraApp,"fixture",extraCommit,
+                Collections.emptyList(),extraMetadata);
+        JSONObject extraManifest=DeployManifest.build(extraInstallation,extraApp,"fixture","extra-op");
+        DependencyPlan.Info extraInfo=new DependencyPlan.Info(extraCommit,extraMetadata,"",Collections.emptyList());
+        DependencyPlan.Node extraNode=new DependencyPlan.Node(extraApp,"fixture",extraInfo,false);
+        DeployManifest.verifyPlanned(extraInstallation,extraManifest,extraNode.ref,extraNode.info.commit,
+                extraNode.info.metadata,extraNode.subpaths);
+        if(!extraCommit.equals(extraManifest.getString("appCommit"))
+                ||!extraDeployment.equals(DeployManifest.stagedDeployment(extraInstallation,extraManifest)))
+            throw new AssertionError("verified --no-deploy commit was not carried into the staged manifest");
+        System.out.println("PASS extra-data handback, verified no-deploy checkout, and manifest commit handoff");
+
         String appName=DeployManifest.packageForPublic(APP), runtimeName=DeployManifest.packageForPublic(RUNTIME);
         if(!frameworkName(appName)||!frameworkName(runtimeName)) throw new AssertionError("invalid framework package name");
         // ef97ca4's transformation left a numeric branch segment beginning with a digit.

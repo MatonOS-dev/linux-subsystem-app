@@ -104,6 +104,7 @@ mkdir -p "$WORK/classes"
 javac -cp "$ANDROID_JAR:$JSON_JAR:$APKSIG" -d "$WORK/classes" \
   "$ROOT"/linux/stubgen/src/org/matonos/linuxhost/stubgen/*.java \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployManifest.java" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployRecord.java" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/PackageMounts.java" \
   "$PACKER"
 cc -O2 -Wall -Wextra -Werror "$FILTER_SRC" -o "$WORK/prehandler-filter"

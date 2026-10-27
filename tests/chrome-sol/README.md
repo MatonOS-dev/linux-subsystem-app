@@ -375,3 +375,32 @@ bash tests/chrome-sol/verify-device.sh
 Confirm image validation passes, the second package install publishes the
 image/index/launcher splits, install staging is cleaned up, and Chrome launches
 with `--ozone-platform=wayland` from its stock `chrome-flags.conf`.
+
+## Round 13: materialize the verified no-deploy commit for staging
+
+The stub returns the extra-data image before any Flatpak app deployment exists:
+the pull used `--no-deploy`. The transaction checks out the already verified
+`node.info.commit` into the normal deployment path, verifies the checked-out
+metadata against the inspected commit, writes its staging deploy record with
+the pulled origin and subpaths, then continues through the usual manifest
+validation and second install pass. This keeps the returned extra data separate
+while restoring the deployment metadata expected by the existing pipeline.
+
+The host regression reproduced the missing deploy record, recorded the
+verified identity, and passed `DeployManifest.build` plus `verifyPlanned`.
+`MATON_AOSP_ROOT=/mnt/data/aosp bash tests/run.sh
+/mnt/data/aosp/out/pc-logs/chrome-sol/round12-host-tests` passed. No VM was run.
+
+Coordinator: rebuild the subsystem APK and verify on a freshly booted image.
+Exact device test:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round13 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Confirm the returned image is accepted, the second package install publishes
+the image/index/launcher splits, install staging is cleaned up, and Chrome
+launches with `--ozone-platform=wayland` from its stock
+`chrome-flags.conf`.

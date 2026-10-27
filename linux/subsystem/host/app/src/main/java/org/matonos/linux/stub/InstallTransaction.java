@@ -400,6 +400,20 @@ public final class InstallTransaction {
                 File deployment=DeployManifest.stagedDeploymentPath(installation,
                         new JSONObject().put("appRef",node.ref).put("appCommit",node.info.commit).put("subpaths",paths));
                 buildExtraDataImage(node,installation);
+                // --no-deploy leaves the verified commit in repo/ without a
+                // Flatpak deployment record. Materialize that exact commit for
+                // the normal manifest and pack pipeline after the stub has
+                // returned its separately validated extra-data image.
+                File parent=deployment.getParentFile();
+                if(!parent.isDirectory()&&!parent.mkdirs())throw new java.io.IOException("Cannot create verified deployment parent");
+                if(deployment.exists())throw new java.io.IOException("Verified deployment path already exists");
+                java.util.List<String> checkout=new ArrayList<>();checkout.add("checkout");checkout.add("--user-mode");
+                for(String subpath:node.subpaths)checkout.add("--subpath="+subpath);
+                checkout.add(node.info.commit);checkout.add(deployment.getAbsolutePath());
+                StagedPacks.command(context,root,new File(installation,"repo"),()->cancelled.get())
+                        .run(checkout.toArray(new String[0]));
+                DeployManifest.recordVerifiedPull(installation,node.ref,origin.name,node.info.commit,
+                        node.subpaths,node.info.metadata);
             }
             JSONObject manifest=DeployManifest.build(installation,node.ref,origin.name,operationId);
             Log.i(TAG,"phase=pull ref="+node.ref+" ms="+

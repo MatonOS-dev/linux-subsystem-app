@@ -60,6 +60,36 @@ public final class DeployManifest {
                 .put("deployments", list).put("requiredPackages", requiredPackages);
     }
 
+    /**
+     * Records a deployment materialized from a previously verified --no-deploy
+     * pull. Flatpak deliberately leaves no deploy record for that pull, so the
+     * verified commit identity and metadata supplied by the transaction are the
+     * authority for this staging record.
+     */
+    public static File recordVerifiedPull(File installation, String ref, String remote,
+            String commit, List<String> subpaths, byte[] expectedMetadata) throws Exception {
+        if (!validRef(ref) || remote == null || remote.isEmpty()
+                || commit == null || !commit.matches("[0-9a-f]{64}"))
+            throw new IOException("Invalid verified Flatpak pull identity");
+        JSONObject identity = new JSONObject().put("appRef", ref).put("appCommit", commit);
+        JSONArray paths = new JSONArray();
+        for (String path : subpaths) paths.put(path);
+        identity.put("subpaths", paths);
+        File deployment = stagedDeploymentPath(installation, identity);
+        if (!Files.isDirectory(deployment.toPath(), LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(deployment.toPath()))
+            throw new IOException("Verified Flatpak checkout is missing");
+        File metadata = new File(deployment, "metadata");
+        if (Files.isSymbolicLink(metadata.toPath()) || !metadata.isFile()
+                || !java.util.Arrays.equals(expectedMetadata, PlaceholderFiles.readAllBytes(metadata)))
+            throw new IOException("Verified Flatpak checkout metadata differs from the inspected commit");
+        File deploy = new File(deployment, "deploy");
+        if (deploy.exists() || Files.isSymbolicLink(deploy.toPath()))
+            throw new IOException("Verified Flatpak checkout already has a deploy record");
+        Files.write(deploy.toPath(), DeployRecord.subpaths(remote, commit, subpaths));
+        return deployment;
+    }
+
     public static String packageForPublic(String ref) throws Exception {
         return packageFor(ref);
     }

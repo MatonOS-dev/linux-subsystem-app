@@ -47,6 +47,7 @@ APKSIG_JAR=${MATON_APKSIG_JAR:-$ROOT/linux/stubgen/prebuilt/apksig.jar}
 javac -cp "$ANDROID_JAR:$APKSIG_JAR" -d "$CLASSES" \
     "$ROOT"/linux/stubgen/src/org/matonos/linuxhost/stubgen/*.java \
     "$ROOT"/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployManifest.java \
+    "$ROOT"/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployRecord.java \
     "$ROOT"/tests/placeholder/PlaceholderFilesTest.java \
     "$ROOT"/tests/placeholder/PlaceholderFixtureTest.java
 

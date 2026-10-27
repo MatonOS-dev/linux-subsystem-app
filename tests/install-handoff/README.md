@@ -16,6 +16,13 @@ builder used by `InstallTransaction`, and verifies that the subpath reaches
 against dropping locale subsets between pull verification, plan rows, and pack
 staging.
 
+For isolated extra-data installs, Flatpak pulls with `--no-deploy`, so scanning
+for a deploy record immediately after the stub returns its EROFS image cannot
+find the app. The regression starts with that absent record, records a
+deployment from the verified pull identity after checkout, and verifies that
+`DeployManifest.build` and `verifyPlanned` carry the inspected commit through
+the normal staging manifest path.
+
 Package-name validation mirrors
 `/mnt/data/aosp/frameworks/base/core/java/android/content/pm/parsing/FrameworkParsingPackageUtils.java`,
 `validateName(name, true, true)` (lines 72–103 in this checkout). In
