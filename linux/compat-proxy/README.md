@@ -1037,3 +1037,39 @@ Device validation remains with the coordinator: freshly launch Obsidian with
 v3-trace and capture its log plus compositor toplevel events. Verify the
 `proc_util.cc` fatal and GPU retry loop disappear and a window appears; use
 Kate as the rendering control. No VM was run for this change.
+
+### Steam round 16: preserve nested launch mount precedence
+
+Rebased on main. The supplied day-r23/steam.txt does not contain an X11
+ENOTDIR failure: its nested socket bind succeeds at 19:34:33.541. The
+recorded failure is pid 13567 opening /dev/shm/flatpak-com.valvesoftware.Steam-J182X3
+at 19:34:33.995 (ENOENT). Flatpak created it beneath the outer sandbox's
+private shared-memory directory, but bwrap's initial pivot exposed the older
+bootstrap /dev/shm instead. The trace shows the newer oldroot/dev/shm alias
+being overwritten by the bootstrap alias at 19:34:33.550.
+
+Recursive bind and pivot snapshots now omit covered mounts at identical
+targets. During pivot, a mount inside the current root also takes precedence
+over a bootstrap alias outside it for the same visible target. This keeps
+the existing bootstrap fallback without resurrecting old mounts. No app
+names, fixed mount counts, new syscall emulation, or Flatpak changes.
+
+The new bwrap-socket.py case runs two nested shipped musl bwrap invocations
+under the Android syscall filter, binds the mapped X11 socket each time,
+and narrows /dev/shm to successive subdirectories. It fails on main with
+"Can't open source /dev/shm/inner: No such file or directory" and passes with
+the fix, including reading a marker from the innermost shared-memory mount.
+The first-level socket regression remains in place.
+
+Device follow-up (coordinator; no VM run here): rebuild the subsystem loader,
+fresh launch Kate as a control, then Steam with v3-trace and payload stderr.
+Verify the nested DISPLAY probe's /dev/shm bind succeeds; capture its exit,
+portal Spawn replies, and subsequent exec-argv lines through steamwebhelper.
+The supplied trace cannot establish what Steam does after this failing probe.
+No shared-device-tree or kernel changes are required.
+
+Validation: full tests/run.sh passed (including nested socket/shm, pipe
+readlink, growing fd tracking, musl Flatpak/ldconfig, i386, and rewrite
+checks). Production build-android.sh passed with an isolated output directory;
+device-tree preflight and git diff --check passed. Logs:
+/mnt/data/aosp/out/pc-logs/agents/steam-r16-{suite,android,preflight}.log.
