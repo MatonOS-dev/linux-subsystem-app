@@ -413,6 +413,13 @@ static struct mount *lookup(const char *path){
     for(struct mount *m=table;m;m=m->next){size_t k=p_len(m->target);if(prefix(path,m->target)&&k>n){n=k;best=m;}}
     return best;
 }
+/* Snapshot copying must keep the newest mount at each target. Prepending
+ * every historical entry reverses stacked mounts and resurrects covered ones. */
+static int mount_visible(struct mount *head,struct mount *entry){
+    for(struct mount *m=head;m!=entry;m=m->next)
+        if(p_equal(m->target,entry->target))return 0;
+    return 1;
+}
 static char *physical(const char *path){
     struct mount *m=lookup(path);size_t erofs_len=erofs_prefix_length(path,root);
     if(root&&oldroot_view){char *oldroot=join(root,oldroot_view);
@@ -988,7 +995,7 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
             e=proxy_mount(src,dest);
         }
         if(!e){table->flags=flags;table->pack_shadow=!(flags&MS_BIND);}
-        if(!e && virtual_source && (flags&MS_REC))for(struct mount *m=prior;m;m=m->next){if(prefix(m->target,virtual_source) && !p_equal(m->target,virtual_source)){
+        if(!e && virtual_source && (flags&MS_REC))for(struct mount *m=prior;m;m=m->next){if(mount_visible(prior,m) && prefix(m->target,virtual_source) && !p_equal(m->target,virtual_source)){
             char *child=join(dest,m->target+p_len(virtual_source));if(!child){e=-ENOMEM;break;}e=proxy_mount(m->source,child);vfs_free(child);if(e)break;table->flags=m->flags;table->pack_shadow=m->pack_shadow;
         }}
         vfs_free(virtual_source);
@@ -1009,6 +1016,15 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
         if(!dest || !oldhost){vfs_free(next);vfs_free(dest);vfs_free(oldhost);return -ENOMEM;}struct mount *prior=table;
         e=proxy_mount(oldhost,dest);
         if(!e)for(struct mount *m=prior;m;m=m->next){
+            if(!mount_visible(prior,m))continue;
+            /* Bootstrap aliases outside the current root are fallbacks only.
+             * A mount inside it owns the same visible pathname after pivot. */
+            if(root && !prefix(m->target,root)){
+                char *inside=join(root,m->target);if(!inside){e=-ENOMEM;break;}
+                int covered=0;for(struct mount *n=prior;n;n=n->next)
+                    if(p_equal(n->target,inside)){covered=1;break;}
+                vfs_free(inside);if(covered)continue;
+            }
             const char *relative=m->target;
             /* Preserve the complete pre-pivot pathname view. Most entries
              * are stored below root; bootstrap roots can also have explicit
