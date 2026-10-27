@@ -171,6 +171,11 @@ rm -f build/publication-a/{run-environ,empty,new,different}
 timeout 15 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/publication" "$PWD/build/publication-a" "$PWD/build/publication-b" >build/publication.out 2>build/publication.log
 cat build/publication.out
 
+# A valid i386 mmap result above 2 GiB is a pointer, not a negative errno.
+cc -m32 -nostdlib -static -no-pie tests/i386-dns-start.S -o build/i386-dns-start
+timeout 15 build/linux-layer-v3-i386 --android-filter --dns-forwarder 127.0.0.53:53 \
+    "$PWD/build/i386-dns-start" >build/i386-dns-start.out 2>build/i386-dns-start.log
+printf 'PASS i386 DNS helper startup with high-address stack mapping\n'
 cc -O2 -Wall -Wextra -Werror -Wno-array-bounds -Wno-stringop-overflow -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-translation.c -o build/dns-translation
 build/dns-translation
 cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/dns-host.c -o build/dns-host

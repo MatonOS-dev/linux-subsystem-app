@@ -1100,3 +1100,51 @@ readlink, growing fd tracking, musl Flatpak/ldconfig, i386, and rewrite
 checks). Production build-android.sh passed with an isolated output directory;
 device-tree preflight and git diff --check passed. Logs:
 /mnt/data/aosp/out/pc-logs/agents/steam-r16-{suite,android,preflight}.log.
+
+### Steam round 17: i386 DNS helper startup
+
+Rebased on main. day-r25/steam.txt reaches ubuntu12_32/steam (pid 17111)
+at 20:31:35.533, not steamwebhelper. The updater reports manifest download
+failure (HTTP status 0), exhausted hosts, and "Steam needs to be online to
+update" at 20:31:36.187–.194. Before that, the resolver's i386 socketcall
+connects return -EIO twice at 20:31:35.965–.966. Trace operation 29 means
+connect, not kernel syscall 29. The runtime first tries the absent systemd
+resolver socket, then the configured DNS endpoint.
+
+The proxy's DNS helper startup wrongly classified a valid mmap pointer as
+an error whenever its signed value was negative. On i386, ordinary mappings
+above 2 GiB have precisely that representation. It now tests Linux's actual
+reserved errno range (-4095 through -1), as the VFS allocator already does.
+No DNS protocol, resolver selection, Flatpak or application rules changed.
+
+The new freestanding i386-dns-start.S regression uses socketcall to create
+and connect a UDP socket to the configured resolver under the Android filter.
+This starts the actual proxy worker with a kernel-allocated stack; no external
+DNS service or network is needed. It exits 1 with the pre-fix loader and 0
+with the fix. This guards startup, not netd's device-side response.
+
+The updater UI subprocess has a separate failure: pid 17114 execs /bin/sh
+for steam -child-update-ui, then the supervisor records wait status 31
+(SIGSYS). The updater logs ECONNRESET reading its UI socket, then EPIPE and
+"error communicating with child process, detaching". The supplied trace has
+no child fatal report identifying its syscall. This is not evidence of a CEF
+sandbox failure: no steamwebhelper exec occurs. Do not infer that fixing DNS
+alone restores the UI.
+
+Coordinator follow-up (no VM run here): rebuild both loader ABIs, freshly
+launch Steam, retain payload stderr and v3-trace through the manifest download.
+Check that resolver connects no longer return EIO and the update downloads,
+then follow exec-argv to steamwebhelper. If the updater UI still dies, capture
+the SIGSYS siginfo (si_syscall, si_arch, si_call_addr) for the /bin/sh child
+running -child-update-ui, alongside its exec/adoption trace. No kernel or
+shared-device-tree changes are required.
+
+Validation: production x86_64/i386 build-android.sh and device preflight
+passed. tests/run.sh passed through musl/nested proc-dirfd, then returned
+143 (SIGTERM) before the Chrome per-app-dir checks; no assertion failure
+was printed. The remaining Chrome per-app-dir, apply-extra, loader-maps and
+site-rewrite checks were run separately and all passed, using an isolated
+steam-r17-tail directory for the Chrome/apply-extra fixtures. Suite/build
+logs: /mnt/data/aosp/out/pc-logs/agents/steam-r17-{suite,android,preflight}.log.
+The new regression's before/after logs are steam-r17-{before,after}.log in
+the same directory. No VM or shared host-smoke fixture was used.
