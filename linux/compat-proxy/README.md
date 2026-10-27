@@ -545,3 +545,22 @@ or add a Steam override to bypass that failing nested launch.
 Host evidence: out/pc-logs/steam-personality/r8-host/zenity.log (the attempt
 hit its 180-second timeout while processing the slow archived runtime;
 it is not a passing GUI test). All new test output/scratch was under out.
+
+Steam round 9: host identity and glycin spawn (2026-10-27)
+---------------------------------------------------------
+The day-r12 capture proves the pre-bwrap Flatpak CLI asks getpwuid_r() for
+the stub's Android UID (10137), but the host `/system/etc/passwd` has no such
+entry. The v3 launcher now maps a generated passwd/group view over both
+`/etc` and its canonical `/system/etc` paths. Its passwd home is the canonical
+stub `home` directory, which is also the launch HOME. bwrap overlays its normal
+runtime passwd/group files inside the application sandbox. Host regressions
+check account serialization and getpwuid() through the proxy's Android filter.
+
+The same capture proves zenity aborts because its glycin decoder exits 1 when
+started by `flatpak-spawn --sandbox`; it reports the missing GTK fallback image
+as a consequence. It records both helper execs and the forwarded fd, but no
+portal Spawn reply, nested bwrap stderr, or helper exit diagnostic. The reason
+for the nested launch failure is therefore still unproven; do not disable
+glycin isolation or add a Steam-specific override. The next device capture
+should retain upstream Flatpak portal debug output plus the nested bwrap argv,
+stderr and exit status for both helper calls. No VM was started for this round.
