@@ -65,6 +65,17 @@ public final class PackageDeploymentTest {
         String stderr=new String(process.getErrorStream().readAllBytes(),StandardCharsets.UTF_8);
         assertEquals("Stock Flatpak lookup failed in "+installation+": "+stderr,0,process.waitFor());
         assertEquals("Flatpak must resolve the exact deployed commit from either installation",app.commit,stdout);
+        ProcessBuilder pinned=new ProcessBuilder("flatpak",
+                installation.equals(user)?"--user":"--system","run","--commit="+app.commit,app.ref);
+        pinned.environment().put("FLATPAK_USER_DIR",user.toString());
+        pinned.environment().put("FLATPAK_SYSTEM_DIR",system.toString());
+        pinned.environment().put("LC_ALL","C");
+        Process exact=pinned.start();
+        String exactError=new String(exact.getErrorStream().readAllBytes(),StandardCharsets.UTF_8);
+        assertNotEquals("Fixture deliberately lacks runtime metadata, so Flatpak must proceed past commit lookup",
+                0,exact.waitFor());
+        assertTrue("Flatpak failed before/at exact commit lookup: "+exactError,
+                exactError.contains("Key file does not have key")&&!exactError.contains("(commit "+app.commit+") not installed"));
     }
     private static org.matonos.linuxhost.stubgen.DeploymentRecord appRecord(String ref,
             java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency> dependencies) throws Exception {
