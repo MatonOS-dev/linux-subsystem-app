@@ -2,6 +2,7 @@
 #include "proxy.h"
 #include "state.h"
 #include "vfs.h"
+#include "links.h"
 #if defined(__i386__)
 #include "arch/i386/sysinfo.h"
 #define PROXY_SYSINFO_AUX(inherited) proxy_i386_sysinfo_value(inherited)
@@ -138,7 +139,12 @@ static int supervise_launch(int argc,char **argv,char **environ) {
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
-static long loader_open(const char *path){return RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);}
+/* OSTree checkouts can be emulated hardlink names. Read the same backing
+ * inode as payload openat, including its executable mode and ELF/shebang. */
+static long loader_open(const char *path){
+    proxy_arg_t args[6]={AT_FDCWD,(proxy_arg_t)path,O_RDONLY|O_CLOEXEC,0,0,0};
+    return links_path_call(PROXY_SC_openat,args,path);
+}
 static void loader_close(int fd){RAW(PROXY_SC_close,fd,0,0,0,0,0);}
 /* File mappings use ordinary kernel descriptors and retain page-cache sharing.
  * Only permission refusals permit the private copy fallback. */

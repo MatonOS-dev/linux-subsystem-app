@@ -21,9 +21,9 @@ log_pid=$!
 trap 'kill "$log_pid" 2>/dev/null || true; wait "$log_pid" 2>/dev/null || true' EXIT
 "${adb[@]}" shell am start -n org.matonos.linux/.DebugExtraInstallActivity \
     -a org.matonos.linux.DEBUG_INSTALL_CHROME
-until grep -qE 'Chrome extra-data install (succeeded|failed)' "$CHROME_TEST_OUT/logcat.txt"; do sleep 1; done
-if grep -q 'Chrome extra-data install failed' "$CHROME_TEST_OUT/logcat.txt"; then
-    grep -E 'create-denied|create-dirfd|v3 create (input|backing)|Creating temp file|Race condition binding dirfd|v3 mount|Chrome extra-data install failed' "$CHROME_TEST_OUT/logcat.txt" || true
+until grep -qE 'Chrome extra-data install (succeeded|failed)|Could not start Chrome install|Could not bind store service|Store service disconnected' "$CHROME_TEST_OUT/logcat.txt"; do sleep 1; done
+if grep -qE 'Chrome extra-data install failed|Could not start Chrome install|Could not bind store service|Store service disconnected' "$CHROME_TEST_OUT/logcat.txt"; then
+    grep -E 'create-denied|create-dirfd|v3 create (input|backing)|Creating temp file|Race condition binding dirfd|v3 mount|v3 exec|execvp|avc: denied|Chrome extra-data install failed|Could not start Chrome install' "$CHROME_TEST_OUT/logcat.txt" || true
     echo "Install failed; return logcat.txt to chrome-sol. Do not call this a launch pass." >&2
     exit 1
 fi

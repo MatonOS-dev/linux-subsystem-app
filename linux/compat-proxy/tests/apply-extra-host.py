@@ -43,6 +43,9 @@ script.chmod(0o755)
 app_tmp = tempfile.TemporaryDirectory(prefix='maton-apply-extra-',
                                       dir=os.environ['MATON_NOEXEC_DIR'])
 app = pathlib.Path(app_tmp.name)/'app'
+app.mkdir(parents=True, exist_ok=True)
+(app/'.v3-store-root').touch()
+app.chmod(0o700)
 (app/'extra').mkdir(parents=True, exist_ok=True)
 (app/'bin').mkdir(parents=True, exist_ok=True)
 (app/'bin/apply_extra').write_bytes(script.read_bytes())
@@ -58,7 +61,30 @@ if os.access(app/'bin/sh', os.X_OK):
 bound_file = out/'bound-file'
 bound_file.write_text('bind-fd-file\n')
 launcher_source = out/'bind-fd-launcher.c'
-launcher_source.write_text('#define _GNU_SOURCE\n#include <fcntl.h>\n#include <unistd.h>\nint main(int argc,char **argv){if(argc<7)return 2;for(int i=0;i<4;i++){int fd=open(argv[i+1],O_PATH);if(fd<0||dup2(fd,100+i)<0)return 3;close(fd);}execv(argv[5],argv+5);return 4;}\n')
+# Force the Android-denied linkat fallback for both the script and ELF
+# interpreter before bwrap opens the deployment fd, as OSTree does.
+launcher_source.write_text(r'''#define _GNU_SOURCE
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+    if (argc < 7) return 2;
+    char src[4096], dst[4102];
+    for (int i = 0; i < 2; i++) {
+        if (snprintf(src, sizeof(src), "%s/bin/%s", argv[2],
+                     i ? "sh" : "apply_extra") >= (int)sizeof(src)) return 5;
+        snprintf(dst, sizeof(dst), "%s.link", src);
+        if (link(src, dst)) return 5;
+    }
+    for (int i = 0; i < 4; i++) {
+        int fd = open(argv[i+1], O_PATH);
+        if (fd < 0 || dup2(fd, 100+i) < 0) return 3;
+        close(fd);
+    }
+    execv(argv[5], argv+5);
+    return 4;
+}
+''')
 launcher = out/'bind-fd-launcher'
 subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(launcher_source), '-o', str(launcher)], check=True)
 # Open inside the proxy so fd tracking matches Flatpak; include a regular-file
@@ -73,7 +99,7 @@ fd = os.memfd_create('apply-extra-flatpak-filter', 0)
 try:
     os.write(fd, fixture.flatpak_filter_bytes())
     os.lseek(fd, 0, 0)
-    args = fixture.proxy + (["--trace"] if os.environ.get("COMPAT_TRACE") else []) + [str(launcher), "/usr", str(app), str(extra), str(bound_file), fixture.bwrap, '--unshare-user', '--unshare-pid',
+    args = [str(base/'build/link-deny')] + fixture.proxy + (["--trace"] if os.environ.get("COMPAT_TRACE") else []) + [str(launcher), "/usr", str(app), str(extra), str(bound_file), fixture.bwrap, '--unshare-user', '--disable-userns', '--unshare-pid',
         '--unshare-net', '--unshare-ipc', '--cap-drop', 'ALL',
         '--ro-bind-fd', str(mount_fds[0]), '/usr', '--symlink', 'usr/bin', '/bin',
         '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
@@ -86,11 +112,16 @@ try:
     with (out/'stdout.txt').open('wb') as stdout, (out/'stderr.txt').open('wb') as stderr:
         result = subprocess.run(args, pass_fds=[fd], stdout=stdout, stderr=stderr,
             env={'PATH': '/usr/bin:/bin', 'TMPDIR': str(tmp_alias/'tmp')}, timeout=40)
+    # Inspect outside the proxy: these must be emulated names, not native
+    # hardlinks (which would hide the loader's raw-open bug).
+    for name in ['apply_extra', 'sh']:
+        st = (app/'bin'/name).stat()
+        assert st.st_size == 0 and st.st_mode & 0o1777 == 0o1600
     if result.returncode: raise RuntimeError(f'apply_extra exit {result.returncode}: see {out}/stderr.txt')
     assert (extra/'browser/browser').read_text() == 'extra-data-extracted\n'
     assert (extra/'browser/browser').stat().st_mode & 0o777 == 0o755
     assert not (extra/'payload.deb').exists()
-    print('PASS apply_extra: noexec deployment script and interpreter, bind-fd, Debian/xz extraction, rename and cleanup under Flatpak seccomp without /proc')
+    print('PASS apply_extra: emulated-hardlink noexec script and interpreter, bind-fd, Debian/xz extraction, rename and cleanup under Flatpak seccomp without /proc')
 finally:
     os.close(fd)
     app_tmp.cleanup()

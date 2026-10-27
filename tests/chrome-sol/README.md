@@ -151,3 +151,53 @@ Keep the full `logcat.txt`. On failure, correlate the `v3 exec resolved` path,
 the bwrap `execvp` message, and any SELinux AVCs for the same PID. On success,
 continue through image handback, package split publication, stock
 `chrome-flags.conf`, and the Wayland launch/render checks in the script.
+
+## Round 4: execute emulated OSTree hardlinks
+
+Attempt 13 did not enable full `--trace` in the final bwrap child. Absence of
+`v3 exec resolved` therefore did not prove that execve bypassed the proxy.
+The previous host fixture used ordinary copied files; it missed OSTree's
+emulated hardlinks. The revised fixture denies host linkat with EACCES and
+creates links for both apply_extra and its ELF interpreter before stock bwrap
+opens the deployment directory. It also uses `--disable-userns`, as Flatpak
+does, alongside bind-fd, noexec backing, and the Flatpak seccomp filter.
+
+Before the loader change, the fixture fails with bwrap's identical Permission
+denied message. Full tracing identifies `execve("/app/bin/apply_extra")` returning
+-13 after path resolution (`ours 47 -13`; 47 is the proxy's internal syscall
+ID). `load_inner()` raw-opened the empty 01600 hardlink placeholder and rejected
+its missing execute bits. Payload openat already resolves that name to the
+stored 0755 inode. The loader now uses the same hardlink-aware open, for scripts,
+ELFs and interpreters. The fixture independently inspects the placeholders
+outside the proxy to ensure real hardlinks cannot mask this regression.
+Before/after traces: `/mnt/data/aosp/out/pc-logs/chrome-round4-{before,final}/`.
+
+The store's local debug activity uses the subsystem UID, not a generated stub
+UID. Android's checkCallingPermission rejects local calls. Store submission now
+accepts its own UID explicitly before checking external callers' installer
+permission; external stub authentication is unchanged. The device script also
+stops on debug-trigger errors rather than waiting forever for an install result.
+
+Coordinator: build the updated loader and host APK into a fresh image, then run:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-round4-device \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Retry the existing minimal stub so TRACE=1 can place its cache/v3-trace marker.
+Capture the full log, including exec resolution, bwrap errors and SELinux AVCs.
+On success the script checks publication and cleanup, writes stock
+chrome-flags.conf, and launches the resolved activity. Verify a rendered browser,
+a web page, the Wayland flag in its command line, and close/relaunch before
+calling this complete. No VM was started here. No kernel or shared device-tree
+changes are requested; unknown-user getpwuid_r remains a separate warning.
+
+Round 4 validation: complete compat-proxy tests/run.sh passed (including the
+Android library build/packaging and revised apply-extra regression); repository
+tests/run.sh passed with MATON_AOSP_ROOT=/mnt/data/aosp and SDK 36 tools set.
+The changed store service and debug activity compile with javac against SDK 36,
+JSON/apksig and the existing generated host/AIDL classes. Device-tree preflight
+and git diff --check pass. Logs: chrome-round4-proxy-tests.log,
+chrome-round4-suite.log, chrome-round4-preflight.log under out/pc-logs.
