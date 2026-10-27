@@ -585,3 +585,28 @@ OSTree commit object in both roots. Re-run the Round 10 fresh-image capture to
 confirm the portal probes and glycin decoder launch, then inspect whether
 `steamwebhelper` starts and connects to the display. No VM was started for
 this change.
+
+Steam round 11: nested stock Flatpak installation view (2026-10-27)
+-------------------------------------------------------------------
+The day-r14 trace shows Steam's final pre-webhelper display probe going
+through the upstream Flatpak portal's `Spawn`: it runs `flatpak run` for the
+same app with `echo "${DISPLAY+DISPLAY_is_set}"`. That nested Flatpak process
+reports the app commit as not installed. The trace shows why the Round 10
+metadata duplication alone was insufficient: lookups of both
+`flatpak-launch/app/...` and `flatpak-launch/system/app/...` resolve as
+missing from inside the caller's `--nofilesystem=host` sandbox. Steam then
+shows the generic D-Bus/portal error and never executes `steamwebhelper`.
+
+The launcher now explicitly exposes only that launch's generated Flatpak
+installation tree read-only to its own sandbox. Stock Flatpak and the stock
+portal keep their normal lookup and Spawn behavior; the portal's nested CLI
+can read the already materialized refs through the normal filesystem view.
+The regression verifies that the launcher grants exactly the generated root
+as `:ro`. The host smoke installed and packed Steam, and its `ldconfig` probe
+passed under the Android pre-handler filter. Its separate `steam --version`
+probe stopped at the host adapter's missing `/usr/lib/os-release` symlink,
+before testing the portal lookup. The subsystem Java unit suite, repository
+host suite and compat-proxy suite passed. Re-run Steam on a fresh device image:
+confirm the nested display probe exits successfully, `steamwebhelper` executes,
+and it connects to the Wayland/X11 display. This round used the coordinator's
+trace and did not start a VM.
