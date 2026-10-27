@@ -43,6 +43,7 @@ cc -O2 -Wall -Wextra -Werror tests/supervise-child.c -o build/supervise-child
 timeout 15 build/prehandler-filter build/linux-layer-v3 --supervise --android-filter "$PWD/build/supervise-child" >build/prehandler-filter.out 2>build/prehandler-filter.log
 printf 'PASS loader supervisor starts under the generated Android app syscall allowlist\n'
 python3 tests/supervise.py build/linux-layer-v3 build/linux-layer-v3-i386
+bash ../../tests/gui-process.sh "${TMPDIR:-/mnt/data/aosp/out/pc-logs}/steam-personality-gui-process" "$PWD/build/linux-layer-v3" --supervise --android-filter
 python3 tests/stderr-trace.py
 cc -no-pie -O2 -Wall -Wextra -Werror tests/fcntl-native.c -o build/fcntl-native
 timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/fcntl-native" >build/fcntl-native.out 2>build/fcntl-native.log
