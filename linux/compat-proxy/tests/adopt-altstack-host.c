@@ -6,6 +6,15 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+/* C reference raw gateway for this unfiltered unit; the filtered companion
+ * links the production assembly gateway and BPF. */
+long proxy_raw(long n,long a,long b,long c,long d,long e,long f) {
+    register long r10 __asm__("r10")=d,r8 __asm__("r8")=e,r9 __asm__("r9")=f;
+    long result;
+    __asm__ volatile("syscall":"=a"(result):"a"(n),"D"(a),"S"(b),"d"(c),
+                     "r"(r10),"r"(r8),"r"(r9):"rcx","r11","memory");
+    return result;
+}
 extern long proxy_sigaltstack_on_stack(stack_t *,void *);
 static void *replacement;
 static size_t stack_size=65536;

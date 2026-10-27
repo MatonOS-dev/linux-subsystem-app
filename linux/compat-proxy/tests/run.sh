@@ -131,6 +131,11 @@ timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/flatpak-seccomp-for
 cat build/flatpak-seccomp-fork.out
 cc -O2 -Wall -Wextra -Werror tests/adopt-altstack-host.c arch/x86_64/altstack.S -o build/adopt-altstack-host
 timeout 15 build/adopt-altstack-host
+cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-altstack-filter.c loader.c vfs.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S arch/x86_64/altstack.S -o build/adopt-altstack-filter
+timeout 15 build/adopt-altstack-filter
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-rebase-filter.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-rebase-filter
+timeout 15 build/adopt-rebase-filter
+printf 'PASS resident adoption rebase inside SIGSYS and outside altstack, main and fork child\n'
 cc -no-pie -O2 -Wall -Wextra -Werror tests/personality.c -o build/personality
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/personality" >build/personality.out 2>build/personality.log
 cat build/personality.out

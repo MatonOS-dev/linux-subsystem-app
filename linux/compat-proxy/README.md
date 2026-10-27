@@ -267,3 +267,51 @@ EGL/GLX pixel readback, matching alpha pixels and Vulkan's actual GPU name;
 then repeat the x86_64 probes and Tux Racer. Repeat on the RX 6600, Surface
 Pro 3 Intel GPU and HP ProDesk Haswell GPU; the VM result does not establish
 those native-driver paths. Keep SELinux enforcing and disable VM idle sleep.
+
+### Adopted fork altstack regression (2026-10-27, round 4)
+
+Host isolation identifies `d2de7fa`, rather than Chrome's `9c55e20`, as
+introducing a nested SIGSYS in altstack replacement. The new helper issued
+`sigaltstack` at an unapproved `.text` PC. The real proxy BPF traps that PC;
+inside the non-reentrant adoption SIGSYS action, Linux kills the process
+because SIGSYS is already blocked. The earlier unfiltered assembly test
+could not detect this. A filtered probe built against `091429f` returns
+EPERM at the old install, `d2de7fa` dies with signal 31, and the parallel
+Chrome commit `9c55e20` retains the old EPERM behavior. The latter two
+baseline probes supply a raw-call reference because they predate the helper.
+This isolates the helper failure; the exact device main-process death still
+needs a fresh-image confirmation (no VM was run in this round).
+
+The helper now calls the existing approved `proxy_raw` gateway from its
+scratch stack. Rebase first tries the ordinary raw registration: clone retry
+already executes outside the signal stack and must not switch onto that
+same registered mapping. An active signal frame needs a fresh mapping and
+an off-stack registration; detect the live stack using the kernel query as
+well as the saved adoption mapping, since proxy thread state can register a
+different stack. Keep the active ucontext's stack registration synchronized
+for `rt_sigreturn`. No app-specific behavior or seccomp exemptions are added.
+
+`tests/run.sh` runs the unfiltered assembly reference, a freestanding probe
+with both production filters, and the real resident rebase implementation
+inside SIGSYS in the main process and a fork child. Both filtered probes
+perform mprotect after returning from the reinstallation; the resident
+probe also exercises registration from a clone-retry-style continuation
+outside the stack. The existing Flatpak-filter fork/clone3 fallback/clone/
+exec fixture and stock staged musl bwrap-to-exec tests pass. The full suite,
+including the previously failing apply-extra fixture, passes on this host.
+Logs are in `/mnt/data/aosp/out/pc-logs/fork-adopt-r4/` (machine local).
+
+Trace numbers after `ours` are internal operation IDs: 135 is ioctl,
+181 mmap, 187 mprotect (not native syscall numbers). ioctl -25 is ENOTTY,
+-13 is EACCES; these lines alone do not establish the fatal cause.
+`lifecycle-clone 4113` is 0x1011 = CLONE_PIDFD | SIGCHLD, after the proxy
+strips CLONE_VM | CLONE_VFORK from the original spawn request.
+
+Device follow-up: rebuild the subsystem APK with these loader sources and
+fresh-boot the coordinator's image. Enable v3-trace and launch stock Kate,
+Obsidian and Steam separately. Check fork children through exec, absence of
+`adopt-fork-altstack-install` errors, and supervisor raw status 31/34048.
+Kate should get past the clone3 fallback and PIDFD clone; Obsidian's zypak
+children should get past signal setup; Steam's bwrap ldconfig should finish.
+Collect the complete trace including main-process startup and raw-call tail.
+No shared device-tree changes or kernel changes are needed.

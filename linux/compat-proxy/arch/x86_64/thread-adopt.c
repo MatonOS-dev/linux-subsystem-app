@@ -238,8 +238,11 @@ static void fork_rebase(struct adopt_thread *self) {
     uintptr_t stack_pointer;
     __asm__ volatile("mov %%rsp,%0":"=r"(stack_pointer));
     void *signal_stack=self->signal_stack;
-    uintptr_t inherited=(uintptr_t)signal_stack;
-    if(stack_pointer>=inherited && stack_pointer-inherited<signal_stack_size) {
+    uintptr_t inherited=(uintptr_t)current.ss_sp;
+    uintptr_t saved=(uintptr_t)signal_stack;
+    if((!(current.ss_flags&SS_DISABLE) && stack_pointer>=inherited &&
+        stack_pointer-inherited<current.ss_size) ||
+       (stack_pointer>=saved && stack_pointer-saved<signal_stack_size)) {
         /* A stackless fork can be adopted while its SIGSYS frame is still on
          * the inherited stack. Register a fresh stack so that this live
          * frame remains untouched until rt_sigreturn consumes it. */
@@ -259,7 +262,12 @@ static void fork_rebase(struct adopt_thread *self) {
      * Execute the raw syscall on the new mapping so the current RSP is outside
      * the old stack; the live signal frame remains on the inherited mapping
      * until sigreturn consumes it. */
-    long stack_result=proxy_sigaltstack_on_stack(&resident,
+    long stack_result=R(sigaltstack,&resident,0,0,0,0,0);
+    /* Retry continuations are already outside the inherited stack. Moving
+     * those onto that same registered stack would itself cause EPERM.
+     * Only an active-frame adoption needs the fresh-stack trampoline. */
+    if(stack_result==-EPERM && signal_stack!=self->signal_stack)
+        stack_result=proxy_sigaltstack_on_stack(&resident,
                         (char *)signal_stack+signal_stack_size-128);
     if(stack_result) {
         proxy_log("adopt-fork-altstack-install",R(gettid,0,0,0,0,0,0),

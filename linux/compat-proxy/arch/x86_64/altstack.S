@@ -11,11 +11,17 @@ proxy_sigaltstack_on_stack:
     mov %rsp,%rbx
     mov %rsi,%rsp
     and $-16,%rsp
-    mov $131,%eax
-    xor %esi,%esi
+    /* Reuse the exact raw syscall PC approved by both proxy filters.
+     * An inline syscall here would TRAP with SIGSYS already blocked. */
+    mov %rdi,%rsi
+    mov $131,%edi
     xor %edx,%edx
-    xor %r10d,%r10d
-    syscall
+    xor %ecx,%ecx
+    xor %r8d,%r8d
+    xor %r9d,%r9d
+    sub $16,%rsp
+    movq $0,(%rsp)
+    call proxy_raw
     mov %rbx,%rsp
     pop %rbx
     ret
