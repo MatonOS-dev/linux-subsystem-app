@@ -438,7 +438,7 @@ miss_record_logged:
     }
     else if(n==SYS_brk) result=app_brk;
     else if(n==SYS_rt_sigaction) {
-        if(g[REG_RDI]==SIGSYS && g[REG_RSI]) {
+        if(g[REG_RDI]==SIGSYS) {
             /* The proxy owns the kernel SIGSYS action and emulates payload
              * registrations by chaining them. Let its dispatcher update the
              * chained action; rejecting this here makes apps that install a
@@ -450,24 +450,13 @@ miss_record_logged:
             result=-EINVAL;
         } else result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
     } else if(n==SYS_rt_sigprocmask) {
-        unsigned long old=*(unsigned long *)&uc->uc_sigmask, next=old;
-        if(g[REG_R10]!=8) result=-EINVAL;
-        else {
-            result=0;
-            if(g[REG_RSI]) {
-                unsigned long mask=*(unsigned long *)g[REG_RSI];
-                switch(g[REG_RDI]) {
-                case SIG_SETMASK: next=mask; break;
-                case SIG_BLOCK: next|=mask; break;
-                case SIG_UNBLOCK: next&=~mask; break;
-                default: result=-EINVAL;
-                }
-            }
-            if(!result) {
-                if(g[REG_RDX]) *(unsigned long *)g[REG_RDX]=old;
-                *(unsigned long *)&uc->uc_sigmask=next & ~(1UL<<(SIGSYS-1));
-            }
+        /* The dispatcher owns the payload's virtual SIGSYS mask as well as
+         * its disposition. Never expose the resident handler's kernel mask. */
+        if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+            ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+            return;
         }
+        result=-EINVAL;
     }
     else if(n==SYS_clone3 || n==SYS_clone) {
         unsigned long flags,stack,tls,ptid,ctid;

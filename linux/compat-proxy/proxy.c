@@ -62,6 +62,12 @@ static unsigned payload_seccomp_count;
 static unsigned payload_seccomp_active_count;
 static int payload_current_bwrap;
 static long payload_filter(long,proxy_arg_t *);
+static uint32_t payload_seccomp_action(long,proxy_arg_t *,uintptr_t);
+/* RET_ERRNO data zero skips the syscall and returns zero, like Linux. */
+static inline long payload_seccomp_errno_value(uint32_t action) {
+    unsigned error=action&SECCOMP_RET_DATA;
+    return -(long)(error>4095?4095:error);
+}
 #ifdef HOST_COMMAND_TEST
 static int hc_test_fd=-1;
 #endif
@@ -191,6 +197,7 @@ struct thread_state {
     unsigned direct_depth;
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
     unsigned int personality,personality_valid;
+    proxy_sigmask_t app_sigsys_mask;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     struct tls_entry tls[PROXY_TLS_ENTRIES];
     unsigned reserved;
@@ -274,6 +281,7 @@ static struct thread_state *thread_state(void) {
     struct thread_node *p=vfs_palloc(sizeof(*p));if(!p)return NULL;
     p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
     p->state.personality_valid=0;
+    p->state.app_sigsys_mask=0;
     stack_t current={0};
     if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0)) {
         p->state.signal_stack=current.ss_sp;p->state.signal_stack_size=current.ss_size;
@@ -558,8 +566,12 @@ static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
         return;
     }
     if(action.flags&SA_RESETHAND)chained_segv.handler=0;
-    proxy_sigmask_t old=0,mask=action.mask&~SIGSYS_BIT;
-    RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
+    proxy_sigmask_t old=0;
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&old,8,0,0);
+    proxy_sigmask_t mask=(old|action.mask)&~SIGSYS_BIT;
+    /* The adoption handler itself blocks real SIGSYS on entry. Unblock it
+     * here so payload-handler syscalls can recurse through the proxy. */
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
     if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
     else ((void (*)(int))action.handler)(sig);
     old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
@@ -1384,6 +1396,17 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
      * may rewrite arguments, but syscall-preserved registers restore verbatim. */
     proxy_args args;p_copy(args,saved,sizeof(args));proxy_arg_t *a=args;
     nr=arch_decode_syscall(nr);
+    /* Evaluate the payload operation before its VFS implementation enters
+     * the exempt raw gateway. For TRAP use a real payload syscall frame;
+     * the kernel supplies siginfo and preserves the app handler's edits. */
+    if(payload_seccomp_active_count) {
+        uint32_t action=payload_seccomp_action(arch_encode_syscall(nr),a,
+                                             (uintptr_t)__builtin_return_address(0));
+        uint32_t kind=action&SECCOMP_RET_ACTION_FULL;
+        if(kind==SECCOMP_RET_ERRNO)
+            return payload_seccomp_errno_value(action);
+        if(kind!=SECCOMP_RET_ALLOW && kind!=SECCOMP_RET_LOG)return rewrite_slow(nr,a);
+    }
 #if defined(__i386__)
     /* i386 stat64 is the legacy path form; feed the same normalized
      * newfstatat path handling used by the trapped dispatcher. */
@@ -1429,8 +1452,12 @@ static void rewrite_segv_handler(int sig,siginfo_t *info,void *context){
     struct kernel_action action=chained_segv;
     if(action.handler<=1){crash_report(sig,info,context);return;}
     if(action.flags&SA_RESETHAND)chained_segv.handler=0;
-    proxy_sigmask_t old=0,mask=action.mask&~SIGSYS_BIT;
-    RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
+    proxy_sigmask_t old=0;
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&old,8,0,0);
+    proxy_sigmask_t mask=(old|action.mask)&~SIGSYS_BIT;
+    /* The adoption handler itself blocks real SIGSYS on entry. Unblock it
+     * here so payload-handler syscalls can recurse through the proxy. */
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
     if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,context);
     else ((void (*)(int))action.handler)(sig);
     old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
@@ -1624,17 +1651,17 @@ static uint32_t payload_filter_action(const struct payload_seccomp_filter *filte
     }
     return SECCOMP_RET_ALLOW;
 }
-static long payload_seccomp_errno(long syscall_nr,proxy_arg_t *args,uintptr_t ip) {
+static uint32_t payload_seccomp_action(long syscall_nr,proxy_arg_t *args,uintptr_t ip) {
     struct seccomp_data data={.nr=(int)syscall_nr,.arch=ARCH_AUDIT,.instruction_pointer=ip};
     for(unsigned i=0;i<6;i++)data.args[i]=(uint64_t)args[i];
-    for(unsigned i=0;i<payload_seccomp_active_count;i++) {
-        uint32_t action=payload_filter_action(&payload_seccomp[i],&data);
-        if((action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_ERRNO) {
-            unsigned error=action&SECCOMP_RET_DATA;
-            return -(long)(error?error:EPERM);
-        }
+    /* Newest filter wins equal precedence, as in the kernel. */
+    uint32_t selected=SECCOMP_RET_ALLOW;
+    for(unsigned i=payload_seccomp_active_count;i>0;i--) {
+        uint32_t action=payload_filter_action(&payload_seccomp[i-1],&data);
+        if((int32_t)(action&SECCOMP_RET_ACTION_FULL)<
+           (int32_t)(selected&SECCOMP_RET_ACTION_FULL))selected=action;
     }
-    return 0;
+    return selected;
 }
 static long personality_call(proxy_arg_t *args,struct thread_state *thread) {
     /* Flatpak's filter denies personality requests before the syscall would
@@ -1663,6 +1690,32 @@ static long personality_call(proxy_arg_t *args,struct thread_state *thread) {
         trace_word(" tid=",RAW(PROXY_SC_gettid,0,0,0,0,0,0));emit("\n");}
     return result;
 }
+/* Resident raw calls implement the proxy, not the payload operation. In
+ * particular, tracing getpid must not run Chromium's getpid TRAP handler.
+ * The original program is still interpreted for emulated payload calls and
+ * installed for native payload sites. Only our exact raw return PC bypasses it. */
+static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fprog *original) {
+    uint64_t pc=arch_gateway_pc(0);
+    struct sock_filter prefix[]={
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)+4),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,(uint32_t)(pc>>32),0,3),
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,(uint32_t)pc,0,1),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_LD|BPF_IMM,0),
+    };
+    size_t count=sizeof(prefix)/sizeof(prefix[0]);
+    if(original->len>4096-count)return -EINVAL;
+    struct sock_filter *code=vfs_alloc((original->len+count)*sizeof(*code));
+    if(!code)return -ENOMEM;
+    p_copy(code,prefix,sizeof(prefix));
+    p_copy(code+count,original->filter,original->len*sizeof(*code));
+    struct sock_fprog program={.len=original->len+count,.filter=code};
+    proxy_arg_t forwarded[6];p_copy(forwarded,args,sizeof(forwarded));
+    forwarded[2]=(uintptr_t)&program;
+    long result=payload_filter(nr,forwarded);
+    vfs_free(code);return result;
+}
 static long payload_seccomp_install(long nr,proxy_arg_t *args) {
     int install=(nr==PROXY_SC_prctl && args[0]==PR_SET_SECCOMP && args[1]==SECCOMP_MODE_FILTER) ||
                 (nr==PROXY_SC_seccomp && args[0]==SECCOMP_SET_MODE_FILTER);
@@ -1680,7 +1733,8 @@ static long payload_seccomp_install(long nr,proxy_arg_t *args) {
         payload_seccomp[payload_seccomp_count++]=next;
         return 0;
     }
-    long result=payload_filter(nr,args);
+    struct sock_fprog kernel_program={.len=next.len,.filter=next.insns};
+    long result=payload_kernel_filter(nr,args,&kernel_program);
     if(!result) {
         payload_seccomp[payload_seccomp_count++]=next;
         payload_seccomp_active_count=payload_seccomp_count;
@@ -1691,8 +1745,8 @@ static long payload_seccomp_activate(void) {
     if(payload_seccomp_active_count>=payload_seccomp_count)return 0;
     for(unsigned i=payload_seccomp_active_count;i<payload_seccomp_count;i++) {
         struct sock_fprog program={.len=payload_seccomp[i].len,.filter=payload_seccomp[i].insns};
-        long result=RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,payload_seccomp[i].flags,
-                        (long)&program,0,0,0);
+        proxy_arg_t args[6]={SECCOMP_SET_MODE_FILTER,payload_seccomp[i].flags,(uintptr_t)&program,0,0,0};
+        long result=payload_kernel_filter(PROXY_SC_seccomp,args,&program);
         if(result<0)return result;
     }
     payload_seccomp_active_count=payload_seccomp_count;
@@ -1821,7 +1875,7 @@ static int ours(long n) {
     case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:case PROXY_SC_modify_ldt:
 #endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
-    case PROXY_SC_prctl:case PROXY_SC_prlimit64:case PROXY_SC_setrlimit:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
+    case PROXY_SC_seccomp:case PROXY_SC_prctl:case PROXY_SC_prlimit64:case PROXY_SC_setrlimit:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
     case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:
@@ -1846,10 +1900,26 @@ static void dispatch_app(int sig,siginfo_t *info,void *ctx) {
     if(action.flags&SA_RESETHAND) chained.handler=0;
     /* Keep SIGSYS deliverable even during app chaining. Do not implement SA_ONSTACK
      * by switching stacks here; the proxy never depends on an app-owned altstack. */
-    proxy_sigmask_t old=0,mask=action.mask&~SIGSYS_BIT;
-    RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,&old,8,0,0);
+    struct thread_state *thread=thread_state();
+    ucontext_t *uc=ctx;
+    /* The callback sees the interrupted payload mask in its ucontext and
+     * the handler mask in sigprocmask queries, while real SIGSYS stays free
+     * for nested proxy calls. sigreturn restores any callback context edits. */
+    if(thread) {
+        (*arch_signal_mask(uc))|=thread->app_sigsys_mask;
+        thread->app_sigsys_mask|=(action.mask&SIGSYS_BIT) |
+            ((action.flags&SA_NODEFER)?0:SIGSYS_BIT);
+    }
+    proxy_sigmask_t old=0;
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&old,8,0,0);
+    proxy_sigmask_t mask=(old|action.mask)&~SIGSYS_BIT;
+    /* The adoption handler itself blocks real SIGSYS on entry. Unblock it
+     * here so payload-handler syscalls can recurse through the proxy. */
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
     if(action.flags&SA_SIGINFO) ((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
     else ((void (*)(int))action.handler)(sig);
+    if(thread)thread->app_sigsys_mask=(*arch_signal_mask(uc))&SIGSYS_BIT;
+    (*arch_signal_mask(uc))&=~SIGSYS_BIT;
     old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
 }
 static void exec_close_fds(void){
@@ -2056,8 +2126,23 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     int virtual_namespace_setup=payload_current_bwrap &&
         (nr==PROXY_SC_unshare || nr==PROXY_SC_mount || nr==PROXY_SC_umount2 ||
          nr==PROXY_SC_pivot_root || (nr==PROXY_SC_clone && (a[0]&NS_FLAGS)));
-    result=virtual_namespace_setup?0:payload_seccomp_errno(info->si_syscall,a,(uintptr_t)info->si_call_addr);
-    if(result){if(proxy_trace)proxy_log("flatpak-seccomp-deny",info->si_syscall,result);goto finish;}
+    uint32_t filter_action=virtual_namespace_setup?SECCOMP_RET_ALLOW:
+        payload_seccomp_action(info->si_syscall,a,(uintptr_t)info->si_call_addr);
+    if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_TRAP) {
+        /* Deliver against the interrupted payload frame, never a resident raw
+         * syscall frame. Handler register edits must survive our epilogue. */
+        siginfo_t trap={0};
+        trap.si_signo=SIGSYS;trap.si_code=SYS_SECCOMP;
+        trap.si_errno=filter_action&SECCOMP_RET_DATA;
+        trap.si_syscall=info->si_syscall;trap.si_arch=ARCH_AUDIT;
+        trap.si_call_addr=info->si_call_addr;
+        dispatch_app(SIGSYS,&trap,uc);
+        goto clean_mask;
+    }
+    result=0;
+    if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_ERRNO)
+        result=payload_seccomp_errno_value(filter_action);
+    if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_ERRNO){if(proxy_trace)proxy_log("flatpak-seccomp-deny",info->si_syscall,result);goto finish;}
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
     extern int adopt_i386_syscall(long,proxy_arg_t *,void *,long *);
     if(adopt_i386_syscall(nr,a,uc,&result))goto finish;
@@ -2171,7 +2256,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             struct kernel_action next=chained;
             if(a[1]) p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
             if(a[2]) p_copy((void *)(uintptr_t)a[2],&chained,sizeof(chained));
-            if(a[1]) {normalize_payload_action(&next);chained=next;}result=0;
+            if(a[1]) {proxy_sigmask_t mask=next.mask;normalize_payload_action(&next);next.mask=mask;chained=next;}result=0;
         }
         else if(a[0]==SIGSEGV) {
             if(a[3]!=8){result=-EINVAL;break;}
@@ -2193,10 +2278,25 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         }break;
     case PROXY_SC_rt_sigprocmask: {
         if(a[3]!=8) {result=-EINVAL;break;}
-        proxy_sigmask_t mask;
-        if(a[1]) {p_copy(&mask,(void *)(uintptr_t)a[1],8);mask&=~SIGSYS_BIT;a[1]=(long)&mask;}
-        result=RAW(nr,a[0],a[1],a[2],8,0,0);
-        if(!result && a[1])RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&(*arch_signal_mask(uc)),8,0,0);
+        if(!thread){result=-ENOMEM;break;}
+        proxy_sigmask_t old=(*arch_signal_mask(uc))|thread->app_sigsys_mask,next=old;
+        if(a[1]) {
+            proxy_sigmask_t mask;
+            if(proxy_copy(&mask,(void *)(uintptr_t)a[1],8)){result=-EFAULT;break;}
+            switch(a[0]) {
+            case SIG_SETMASK:next=mask;break;
+            case SIG_BLOCK:next|=mask;break;
+            case SIG_UNBLOCK:next&=~mask;break;
+            default:result=-EINVAL;goto finish;
+            }
+        }
+        if(a[2] && proxy_copy((void *)(uintptr_t)a[2],&old,8)){result=-EFAULT;break;}
+        /* Keep the resident SIGSYS route deliverable while reporting the
+         * payload's requested mask. Other bits are restored by sigreturn. */
+        thread->app_sigsys_mask=next&SIGSYS_BIT;
+        (*arch_signal_mask(uc))=next&~(SIGSYS_BIT | (UINT64_C(1)<<(SIGKILL-1)) |
+                                     (UINT64_C(1)<<(SIGSTOP-1)));
+        result=0;
         break;
     }
 #if ARCH_AUDIT == AUDIT_ARCH_I386

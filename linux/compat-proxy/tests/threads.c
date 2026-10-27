@@ -9,7 +9,7 @@
 static void *worker(void *unused) {
     (void)unused;stack_t ss;if(sigaltstack(NULL,&ss))return (void *)4;sigset_t set,got;sigfillset(&set);
     if(pthread_sigmask(SIG_SETMASK,&set,NULL)) return (void *)1;
-    if(pthread_sigmask(SIG_SETMASK,NULL,&got) || sigismember(&got,SIGSYS)) return (void *)2;
+    if(pthread_sigmask(SIG_SETMASK,NULL,&got) || !sigismember(&got,SIGSYS)) return (void *)2;
     errno=0;if(syscall(SYS_getpgrp)!=getpgid(0)) return (void *)3;
     return NULL;
 }

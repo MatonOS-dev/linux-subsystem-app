@@ -1273,3 +1273,50 @@ works. The broker still never reconnects a lost Java portal backend channel,
 so only the Desktop (Java) portal interfaces would be affected by such a
 loss; the Flatpak portal (what Steam's check uses) is served by the separate
 restarted process and is unaffected.
+### Chromium SIGSYS ownership (fork-adopt round 24)
+
+The resident x86_64 adoption handler forwarded SIGSYS registrations to the
+proxy, but sent read-only `rt_sigaction(SIGSYS, NULL, old, 8)` queries to the
+kernel. Chromium therefore saw the resident handler instead of the payload's
+initial SIG_DFL and refused to start its GPU sandbox. Both query and update
+now use the proxy's virtual thread-group disposition. Adopted sigprocmask
+calls also use the proxy, which reports the payload's requested SIGSYS mask
+while keeping the resident route deliverable; app altstacks remain virtual.
+During a payload SIGSYS callback the virtual handler mask blocks SIGSYS as
+Linux requires, but the real mask explicitly unblocks it: the adoption
+handler entered with real SIGSYS blocked, and callback syscalls must still
+re-enter the proxy. The interrupted ucontext retains the pre-handler mask.
+
+The retained payload filter evaluator now selects the highest-precedence
+stacked action (newest wins ties) and delivers RET_TRAP against the interrupted
+payload ucontext, with SYS_SECCOMP, syscall, architecture, RET_DATA errno and
+call address. Handler register edits survive the proxy epilogue. The kernel
+copy of each payload filter exempts the exact resident raw syscall return PC:
+proxy bookkeeping and trace getpid calls must never invoke the payload trap
+handler. Rewritten payload calls evaluate the original filter before entering
+that exempt gateway; TRAP uses the dedicated payload syscall gateway instead.
+The direct seccomp syscall is now routed through this same installation
+path (it previously bypassed the dispatcher despite having a case there).
+No app names or Chromium-specific policy are involved.
+
+`tests/sigsys-virtual.c` checks initial/default and installed dispositions,
+virtual mask/altstack queries (including the handler mask and interrupted
+ucontext mask), RET_TRAP siginfo and RAX edits for getpid and a
+warmed libc openat path, both prctl and seccomp filter-installation APIs,
+and RET_ERRNO data-zero equivalence, in a parent
+and adopted fork child. `tests/run.sh`
+runs it through both static and resident-adoption launchers, including trace
+mode. The old main adoption handler reproduces the initial-disposition failure
+in a host comparison. Validation logs on this machine:
+`/mnt/data/aosp/out/pc-logs/agents/fork-adopt-r24-{suite,android,baseline}.log`.
+The native test also passes without the proxy; in particular RET_ERRNO data
+zero skips the syscall and returns zero, rather than manufacturing EPERM.
+
+Device validation remains pending (no VM started for this task). Rebuild the
+subsystem and fresh-boot the coordinator's image, then launch stock Obsidian
+and Chrome with v3-trace for 90 seconds each. Capture full logcat and a window
+snapshot: check that the "Existing signal handler" diagnostic disappears,
+GPU/renderer processes stay alive, and each browser creates a toplevel. Keep
+Kate as the working control. If a browser still fails, retain its first GPU
+failure and preceding syscall/signal trace, rather than just the final GPU
+manager fatal. No shared-device-tree or kernel changes are required.

@@ -37,8 +37,9 @@ fi
 if [[ ${1:-} == --i386-p1 ]]; then
     exec bash tests/i386-p1.sh
 fi
-for test in signals threads spawn binder zygote-startup; do
+for test in signals threads spawn binder zygote-startup sigsys-virtual; do
     cc -no-pie -O2 -Wall -Wextra -Werror -pthread "tests/$test.c" -o "build/$test"
+    if [[ $test == sigsys-virtual ]]; then timeout 15 "build/$test"; fi
     timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/$test" >"build/$test.out" 2>"build/$test.log"
     cat "build/$test.out"
 done
@@ -152,6 +153,11 @@ timeout 15 build/adopt-rebase-filter
 printf 'PASS resident adoption rebase inside SIGSYS and outside altstack, main and fork child\n'
 cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-fork-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-fork-launch
 timeout 20 build/adopt-fork-launch "$PWD/build/flatpak-seccomp-fork"
+timeout 20 build/adopt-fork-launch "$PWD/build/sigsys-virtual"
+timeout 20 build/adopt-fork-launch --trace "$PWD/build/sigsys-virtual" >build/sigsys-adopt-trace.out 2>build/sigsys-adopt-trace.log
+cat build/sigsys-adopt-trace.out
+timeout 20 build/linux-layer-v3 --trace --android-filter "$PWD/build/sigsys-virtual" >build/sigsys-trace.out 2>build/sigsys-trace.log
+cat build/sigsys-trace.out
 cc -no-pie -O2 -Wall -Wextra -Werror tests/personality.c -o build/personality
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/personality" >build/personality.out 2>build/personality.log
 cat build/personality.out

@@ -49,7 +49,7 @@ int main(void) {
     CHECK(local_raw(SYS_close,fd,0,0,0,0)==0);CHECK(!unexpected_seccomp);
     sigset_t mask,got;sigfillset(&mask);
     CHECK(pthread_sigmask(SIG_SETMASK,&mask,NULL)==0);
-    CHECK(pthread_sigmask(SIG_SETMASK,NULL,&got)==0);CHECK(!sigismember(&got,SIGSYS));CHECK(sigismember(&got,SIGCHLD));
+    CHECK(pthread_sigmask(SIG_SETMASK,NULL,&got)==0);CHECK(sigismember(&got,SIGSYS));CHECK(sigismember(&got,SIGCHLD));
     errno=0;CHECK(syscall(SYS_getpgrp)==getpgid(0));CHECK(!unexpected);
     CHECK(sigprocmask(SIG_BLOCK,&mask,NULL)==0);
     errno=0;CHECK(syscall(SYS_getpgrp)==getpgid(0));
