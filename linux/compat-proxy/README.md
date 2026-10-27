@@ -214,6 +214,13 @@ lifecycle behavior. Do not use remount or hot-patching as a pass.
 
 ## Changelog
 
+- **2026-10-27:** Allow Linux `dup2`/`dup3` to replace a descriptor previously
+  owned by a resident Android library. After a successful replacement, update
+  ownership from the source descriptor; an ordinary source releases the old
+  resident ownership record. This fixes adopted children whose Flatpak/zypak
+  setup duplicates onto a low fd held by a resident library. The resident-fd
+  regression now forks under the proxy, replaces that descriptor in the child,
+  and checks the parent's descriptor remains intact.
 - **2026-10-24:** Investigated 32-bit LDT code segments for Steam. The proxy's
   raw `modify_ldt` attempt is trapped again by the inherited Android app
   filter; a focused `strace` shows the blocked syscall and recursive SIGSYS.

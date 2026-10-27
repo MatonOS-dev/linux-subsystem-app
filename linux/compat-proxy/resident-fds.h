@@ -87,11 +87,22 @@ static void resident_fd_rights(struct msghdr *msg) {
     }
 }
 static long resident_fd_native(long n,proxy_arg_t a[6]) {
+    int duplicate_target=-1,duplicate_source_owned=0;
+    if(n==PROXY_SC_dup2 || n==PROXY_SC_dup3) {
+        duplicate_target=(int)a[1];
+        duplicate_source_owned=resident_fd_owned((int)a[0]);
+    }
     /* Publish release before close makes this number available to a new
      * native open on another thread. Linux closes the fd even on EINTR. */
     if(n==PROXY_SC_close && resident_fds_enabled)resident_fd_set((int)a[0],0);
     long r=RAW(n,a[0],a[1],a[2],a[3],a[4],a[5]);
     if(r<0 || !resident_fds_enabled || !resident_fd_call(n))return r;
+    /* dup2/dup3 may replace a resident descriptor with an ordinary payload
+     * descriptor. Once the kernel has performed that replacement, retire the
+     * old ownership record; preserve it only when duplicating another resident
+     * descriptor into the target. */
+    if(duplicate_target>=0 && duplicate_target!=(int)a[0])
+        resident_fd_set(duplicate_target,duplicate_source_owned?2:0);
     int fd=-1,error=0;
     switch(n) {
     case PROXY_SC_close:break;
@@ -104,6 +115,7 @@ static long resident_fd_native(long n,proxy_arg_t a[6]) {
         int *pair=(void *)(uintptr_t)a[n==PROXY_SC_socketpair?3:0];
         error=resident_fd_set(pair[0],2);if(!error)error=resident_fd_set(pair[1],2);break;
     }
+    case PROXY_SC_dup2:case PROXY_SC_dup3:break;
     case PROXY_SC_fcntl:if(a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)fd=(int)r;break;
     default:fd=(int)r;break;
     }

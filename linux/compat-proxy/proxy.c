@@ -1136,18 +1136,23 @@ static long rewrite_slow(long,proxy_arg_t *);
 static long modernize(long,proxy_arg_t *,long *);
 static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     long result;
+    int source_resident=resident_fd_owned((int)a[0]);
     /* dup3 may replace a sysctl descriptor; apply its written limit first. */
     if(nr==PROXY_SC_dup3 && sysctl_fds)sysctl_sync();
     if(vfs_private_fd((int)a[0]))return -EBADF;
     long target=-1;
     if(nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3)target=a[1];
     else if(nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))target=a[2];
-    if(target>=0 && !proxy_fd_is_private(target) && private_close_fd((int)target))return -EBADF;
+    if(target>=0 && !proxy_fd_is_private(target) && private_close_fd((int)target) &&
+       !resident_fd_owned((int)target))return -EBADF;
     if(target>=0 && proxy_fd_is_private(target)){
         long moved=proxy_private_fd_move(target);if(moved<0)return moved;
         proxy_fd_number_moved((int)target,(int)moved);
     }
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(result>=0 && target>=0 && target!=(int)a[0]) {
+        resident_fd_set(target,source_resident?2:0);
+    }
         if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
     return result;
 }
@@ -1827,7 +1832,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         else if((nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) && proxy_fd_is_private(a[1]))result=descriptor_dup_dispatch(nr,a);
         else if(nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC) && proxy_fd_is_private(a[2]))result=descriptor_dup_dispatch(nr,a);
         else if(nr==PROXY_SC_close && resident_fd_owned((int)a[0]))result=0;
-        else if((nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) && resident_fd_owned((int)a[1]))result=-EBADF;
         else if(nr==PROXY_SC_close_range)result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);
         else result=resident_fd_native(nr,a);
         if(proxy_trace && (nr==PROXY_SC_mmap || nr==PROXY_SC_ioctl)) {
