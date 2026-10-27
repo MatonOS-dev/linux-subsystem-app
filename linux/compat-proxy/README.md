@@ -178,6 +178,13 @@ descriptor and then performs the app operation. The old fd-window tiers and
 general data-call fd checks are gone. EROFS descriptors use the kernel's
 native behavior after the package prefix swap.
 
+When a dup target lands in the reserve and every other reserve slot is
+occupied, the displaced proxy descriptor spills to the first free ordinary
+fd and stays in the private-fd table. `F_DUPFD` and `F_DUPFD_CLOEXEC` use the
+requested minimum as a target only when it is private; the app still receives
+the exact kernel-selected result. This keeps high fds below the reported soft
+limit usable by Flatpak launchers such as zypak.
+
 ## Current limitations and device validation
 
 - Host checks do not replace a fresh-image boot or app-UID testing.
@@ -353,6 +360,21 @@ image configuration, kernel change, VM run or push is part of this fix.
 
 Host validation for this change: the complete `tests/run.sh` stops at the
 zygote-startup credential fixture (`bytes=13`, correct child PID, flags=0).
+
+Round-8 fd reserve regression: the Obsidian trace reported `RLIMIT_NOFILE` of
+32768 and zypak failed to `dup(32750)`. Zypak's stock spawn path enumerates
+`/proc/self/fd`, then duplicates every listed descriptor. The proxy's fd
+reserve occupied that number, and its intentional `EBADF` for duplicating a
+private fd exposed that the proc listing included proxy-owned entries. The
+proxy now omits private descriptors from `/proc/self/fd` and
+`/proc/thread-self/fd`. The host fixture runs with the same soft limit in the
+adopted clone-retry child, checks zypak's enumerate-then-dup sequence, then
+allocates fd 32750 with `F_DUPFD_CLOEXEC`, moves it to fd 4 and verifies it
+survives exec. If no spare reserve slot remains, `proxy_private_fd_move`
+relocates the displaced private fd below the reserve instead of rejecting the
+app's request. The full `tests/run.sh` passes on the host. Re-run Kate and
+Obsidian on a fresh coordinator image with v3-trace to verify the device path;
+no VM was used for this change.
 A separate loader built with the unchanged DNS implementation fails the same
 fixture identically. With only that fixture omitted in an external runner,
 all remaining suite checks pass, including x86_64/i386, Android NDK loader

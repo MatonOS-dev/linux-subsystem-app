@@ -80,13 +80,21 @@ long proxy_private_fd_move(long fd){
  unsigned target_slot=PROXY_PRIVATE_FD_COUNT;
  for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)
   if(i!=source_slot && private_slots[i]>=0 && !private_slot_used[i]){target_slot=i;break;}
- if(target_slot==PROXY_PRIVATE_FD_COUNT)return -EMFILE;
  long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);if(flags<0)return flags;
- long moved=RAW(PROXY_SC_dup3,fd,private_slots[target_slot],(flags&FD_CLOEXEC)?O_CLOEXEC:0,0,0,0);
+ long moved;
+ if(target_slot<PROXY_PRIVATE_FD_COUNT)
+  moved=RAW(PROXY_SC_dup3,fd,private_slots[target_slot],(flags&FD_CLOEXEC)?O_CLOEXEC:0,0,0,0);
+ else {
+  /* An app may request any descriptor below RLIMIT_NOFILE, including every
+   * slot in our reserve. If the reserve is full, spill one private fd into
+   * the first ordinary hole instead of making the app's dup fail. */
+  moved=RAW(PROXY_SC_fcntl,fd,(flags&FD_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,3,0,0,0);
+ }
  if(moved<0)return moved;
- private_slot_used[target_slot]=1;
+ if(target_slot<PROXY_PRIVATE_FD_COUNT)private_slot_used[target_slot]=1;
  if(source_slot<PROXY_PRIVATE_FD_COUNT){private_slots[source_slot]=-1;private_slot_used[source_slot]=2;}
  else for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd){private_moved[i]=private_moved[--private_moved_count];break;}
+ if(target_slot==PROXY_PRIVATE_FD_COUNT)private_moved[private_moved_count++]=(int)moved;
  RAW(PROXY_SC_close,fd,0,0,0,0,0);return moved;
 }
 long proxy_private_fd_limit(uint64_t soft){

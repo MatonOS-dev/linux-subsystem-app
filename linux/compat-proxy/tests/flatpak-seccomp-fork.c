@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <assert.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <spawn.h>
@@ -11,13 +12,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 static const size_t child_stack_size=1024*1024;
 static volatile uintptr_t signal_stack_local;
+static int reserve_fd;
 
 static void chained_syscall(int signal, siginfo_t *info, void *context) {
     (void)signal;(void)info;(void)context;
@@ -28,8 +32,37 @@ static void stack_probe(int signal) {
     signal_stack_local=(uintptr_t)&local;
 }
 
+static void duplicate_proc_fds(void) {
+    DIR *directory=opendir("/proc/self/fd");
+    assert(directory);
+    int directory_fd=dirfd(directory),fds[128],count=0;
+    struct dirent *entry;
+    while((entry=readdir(directory))) {
+        char *end=NULL;
+        long fd=strtol(entry->d_name,&end,10);
+        if(!entry->d_name[0] || *end || fd<0 || fd==directory_fd)continue;
+        assert(count<(int)(sizeof(fds)/sizeof(fds[0])));
+        fds[count++]=(int)fd;
+    }
+    assert(closedir(directory)==0);
+    for(int i=0;i<count;i++) {
+        int copy=dup(fds[i]);
+        if(copy<0)fprintf(stderr,"listed fd %d failed dup errno=%d\n",fds[i],errno);
+        assert(copy>=0);
+        close(copy);
+    }
+}
+
 static int exec_child(void *arg) {
-    assert(dup2(15,4)==4);
+    /* Zypak's spawn path snapshots /proc/self/fd and dup()s every entry. */
+    duplicate_proc_fds();
+    /* Match Chromium/zypak when it allocates at the top of the soft limit.
+     * This target is the first private reserve fd (limit - 18). */
+    int allocated=fcntl(15,F_DUPFD_CLOEXEC,reserve_fd);
+    if(allocated!=reserve_fd)fprintf(stderr,"reserved fcntl got=%d wanted=%d errno=%d\n",allocated,reserve_fd,errno);
+    assert(allocated==reserve_fd);
+    duplicate_proc_fds();
+    assert(dup2(reserve_fd,4)==4);
     char byte=0;
     assert(read(4,&byte,1)==1 && byte=='x');
     stack_t current_stack;
@@ -51,9 +84,16 @@ static int exec_child(void *arg) {
 }
 
 int main(int argc,char **argv) {
+    struct rlimit limit;
+    assert(getrlimit(RLIMIT_NOFILE,&limit)==0 && limit.rlim_cur>=64);
+    reserve_fd=(int)limit.rlim_cur-18;
     if(argc==2) {
         errno=0;
         assert(syscall(SYS_unshare,CLONE_NEWUSER)==-1 && errno==EPERM);
+        if(!strcmp(argv[1],"after-clone-exec")) {
+            char byte=0;
+            assert(read(4,&byte,1)==1 && byte=='x');
+        }
         puts("PASS Flatpak filter survives fork, clone retry, and exec");
         return 0;
     }
@@ -72,7 +112,7 @@ int main(int argc,char **argv) {
     int pipefd[2];
     assert(pipe(pipefd)==0);
     assert(dup2(pipefd[0],15)==15);
-    assert(write(pipefd[1],"x",1)==1);
+    assert(write(pipefd[1],"xx",2)==2);
     pid_t forked=fork();
     assert(forked>=0);
     if(!forked) {

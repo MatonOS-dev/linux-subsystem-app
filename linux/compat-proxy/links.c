@@ -413,7 +413,34 @@ void links_stat(const char *object,struct proxy_stat *st){if(component(object) &
 static long dents_locked(long fd,void *buf,long size){
  long n;do{n=RAW(PROXY_SC_getdents64,fd,buf,size,0,0,0);if(n<=0)return n;long used=0;for(long off=0;off<n;){unsigned char *d=(unsigned char *)buf+off;unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n)return -EIO;char *name=(void *)(d+19);if(!p_equal(name,".v3-inodes")){for(unsigned short i=0;i<len;i++)((unsigned char *)buf)[used+i]=d[i];used+=len;}off+=len;}if(used)return used;}while(n>0);return n;
 }
+static int proc_self_fd_directory(long fd){
+ char *name=vfs_fd_name((int)fd);if(!name)return 0;
+ int match=p_equal(name,"/proc/self/fd")||p_equal(name,"proc/self/fd")||
+           p_equal(name,"/proc/thread-self/fd")||p_equal(name,"proc/thread-self/fd");
+ vfs_free(name);return match;
+}
+static long proc_self_fd_dents(long fd,void *buf,long size){
+ long n;do{
+  n=RAW(PROXY_SC_getdents64,fd,buf,size,0,0,0);if(n<=0)return n;
+  long used=0;
+  for(long off=0;off<n;){
+   unsigned char *d=(unsigned char *)buf+off;unsigned short len=*(unsigned short *)(d+16);
+   if(len<20 || off+len>n)return -EIO;
+   const char *name=(const char *)(d+19);unsigned value=0;int numeric=*name!=0,private=0;
+   for(const char *p=name;*p;p++){
+    if(*p<'0'||*p>'9'||value>(2147483647U-(unsigned)(*p-'0'))/10){numeric=0;break;}
+    value=value*10+(unsigned)(*p-'0');
+   }
+   if(numeric && vfs_private_fd((int)value))private=1;
+   if(!private){for(unsigned short i=0;i<len;i++)((unsigned char *)buf)[used+i]=d[i];used+=len;}
+   off+=len;
+  }
+  if(used)return used;
+ }while(n>0);
+ return n;
+}
 long links_dents(long fd,void *buf,long size){
+ if(proc_self_fd_directory(fd))return proc_self_fd_dents(fd,buf,size);
  char path[PATH_MAX],root[PATH_MAX],store[PATH_MAX];long lock=-1;struct proxy_stat st,fdst;
  char *tracked=vfs_fd_name_cached((int)fd);
  if(!tracked && !arch_stat_fd((int)fd,&fdst))

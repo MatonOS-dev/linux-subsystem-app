@@ -127,7 +127,9 @@ cc -no-pie -O2 -Wall -Wextra -Werror tests/flatpak-seccomp.c -o build/flatpak-se
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/flatpak-seccomp" >build/flatpak-seccomp.out 2>build/flatpak-seccomp.log
 cat build/flatpak-seccomp.out
 cc -no-pie -O2 -Wall -Wextra -Werror tests/flatpak-seccomp-fork.c -o build/flatpak-seccomp-fork
-timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/flatpak-seccomp-fork" >build/flatpak-seccomp-fork.out 2>build/flatpak-seccomp-fork.log
+bash -c 'ulimit -n 32768; exec timeout 15 "$@"' _ \
+    build/linux-layer-v3 --android-filter "$PWD/build/flatpak-seccomp-fork" \
+    >build/flatpak-seccomp-fork.out 2>build/flatpak-seccomp-fork.log
 cat build/flatpak-seccomp-fork.out
 cc -O2 -Wall -Wextra -Werror tests/adopt-altstack-host.c arch/x86_64/altstack.S -o build/adopt-altstack-host
 timeout 15 build/adopt-altstack-host
