@@ -540,6 +540,8 @@ int vfs_openat2_path_fd(int fd,const char *path,int follow,int *outfd,char **out
     vfs_free(marker);PROFILE_END(5);return 0;
 }
 char *vfs_reverse(const char *path){
+    /* proc fd pseudo-targets are labels, not relative filesystem paths. */
+    if(path[0]!='/')return dupstr(path);
     char *erofs=erofs_reverse(path);if(erofs)return erofs;
     struct mount *best=NULL;size_t n=0;
     /* Prefer names reachable in this process's current root. Detached old
@@ -669,6 +671,9 @@ char *vfs_proc_fd_name(const char *path){
         const char *n=path+i+4;unsigned fd=0;if(!*n)return NULL;
         while(*n>='0' && *n<='9'){unsigned digit=(unsigned)(*n++-'0');if(fd>(2147483647U-digit)/10)return NULL;fd=fd*10+digit;}
         if(*n)return NULL;
+        /* A tracked open through /proc/fd must not turn a pipe/socket label
+         * into a pathname. Let readlink return the kernel text for these. */
+        struct proxy_stat st;if(arch_stat_fd((int)fd,&st)<0 || (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode) || !(st.st_mode&S_IFMT)))return NULL;
         return vfs_fd_name((int)fd);
     }
 return NULL;
@@ -772,7 +777,9 @@ restart:;
             int magic=0;
             for(size_t j=0;host[j];j++)if(host[j]=='/'&&host[j+1]=='f'&&host[j+2]=='d'&&host[j+3]=='/')magic=1;
             if(magic){
-                char *answer=join(target,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);
+                /* pipe:[N], socket:[N] and anon_inode labels cannot be
+                 * opened as paths. Keep the proc magic link for the kernel. */
+                char *answer=join(target[0]=='/'?target:host,input+i);vfs_free(target);vfs_free(host);vfs_free(input);vfs_free(out);
                 if(!answer)*error=-ENOMEM;
                 return answer;
             }
