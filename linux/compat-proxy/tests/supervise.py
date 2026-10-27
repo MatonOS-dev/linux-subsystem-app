@@ -31,3 +31,11 @@ for loader in loaders:
                   b"supervisor-descendant-status",b"lifecycle-clone",b"lifecycle-exit-group"):
         assert event in trace, f"{loader}: missing {event!r} lifecycle event: {trace.decode(errors='replace')}"
     print(f"PASS {os.path.basename(loader)} v3-trace records supervisor and payload lifecycle")
+
+    live=subprocess.run([loader,"--supervise","--trace","--android-filter",child,"live"],
+                        stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=10)
+    assert live.returncode==23,(loader,live.returncode,live.stderr.decode(errors="replace"))
+    trace=live.stderr
+    assert trace.index(b"supervisor-descendant-status")<trace.index(b"supervisor-main-status"),trace
+    assert b" 9472" in trace,trace # adopted child's exit 37, in wait-status encoding
+    print(f"PASS {os.path.basename(loader)} reaps adopted child while main lives, preserves main exit 23")
