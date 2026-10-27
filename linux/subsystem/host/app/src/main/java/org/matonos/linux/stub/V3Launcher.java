@@ -150,6 +150,10 @@ final class V3Launcher {
                 "--no-documents-portal",
                 "--no-a11y-bus", "--nofilesystem=host", "--nofilesystem=/tmp",
                 "--filesystem="+nativeTools.getAbsolutePath()+":ro",
+                // Portal Spawn may re-enter stock Flatpak to query this app's
+                // ref. Expose only its generated install view, after host paths
+                // are denied, so the child can resolve refs without host access.
+                PackageDeployment.installationReadOnlyOption(deployment),
                 "--nodevice=all", "--device=dri",
                 "--env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1", "--env=GTK_CSD=0",
                 "--env=NO_AT_BRIDGE=1",

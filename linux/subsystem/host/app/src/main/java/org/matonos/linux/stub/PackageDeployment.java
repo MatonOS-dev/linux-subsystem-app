@@ -70,6 +70,15 @@ final class PackageDeployment {
         app.materialize(userRoot,mount);
         app.materialize(systemRoot,mount);
     }
+    /**
+     * The stock Flatpak portal re-enters Flatpak from inside the caller's
+     * sandbox for Spawn. Expose only this launch's generated installation
+     * view, so that nested stock Flatpak can resolve its app/runtime refs
+     * after the caller's `--nofilesystem=host` policy is applied.
+     */
+    static String installationReadOnlyOption(File installation) {
+        return "--filesystem="+installation.getAbsolutePath()+":ro";
+    }
     /** Add the subsystem's bundled GL driver as a normal Flatpak runtime extension deployment. */
     static File prepareGlExtension(File systemRoot,File archive,String branch) throws Exception {
         return prepareBundledExtension(systemRoot,archive,branch,"assets/gl-maton",

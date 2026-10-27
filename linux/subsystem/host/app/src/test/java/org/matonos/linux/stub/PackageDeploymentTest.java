@@ -77,6 +77,11 @@ public final class PackageDeploymentTest {
         assertTrue("Flatpak failed before/at exact commit lookup: "+exactError,
                 exactError.contains("Key file does not have key")&&!exactError.contains("(commit "+app.commit+") not installed"));
     }
+    @Test public void nestedPortalSpawnCanReadOnlySeeItsGeneratedInstallView() throws Exception {
+        Path root=Files.createTempDirectory("maton-flatpak-install-view");
+        assertEquals("--filesystem="+root.toFile().getAbsolutePath()+":ro",
+                PackageDeployment.installationReadOnlyOption(root.toFile()));
+    }
     private static org.matonos.linuxhost.stubgen.DeploymentRecord appRecord(String ref,
             java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency> dependencies) throws Exception {
         byte[] object={7,3,1};
