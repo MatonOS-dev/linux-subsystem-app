@@ -14,6 +14,7 @@
 #include <sys/time.h>
 #include <sys/ioctl.h>
 #include <sys/inotify.h>
+#include "inotify-read.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/un.h>
@@ -1278,6 +1279,58 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
     default:return -ENOSYS;
     }
 }
+static long fd_link_target(int fd,char *link,size_t capacity) {
+    static const char prefix[]="/proc/self/fd/";
+    char path[sizeof(prefix)+11];
+    size_t used=sizeof(prefix)-1;
+    p_copy(path,prefix,used);
+    unsigned value=fd<0?0U:(unsigned)fd;
+    char digits[10];size_t count=0;
+    do {digits[count++]=(char)('0'+value%10);value/=10;} while(value && count<sizeof(digits));
+    while(count)path[used++]=digits[--count];
+    path[used]=0;
+    if(!capacity)return -EINVAL;
+    return RAW(PROXY_SC_readlinkat,AT_FDCWD,path,link,capacity,0,0);
+}
+static int fd_is_inotify(int fd) {
+    static const char target[]="anon_inode:inotify";
+    char link[sizeof(target)];
+    long n=fd_link_target(fd,link,sizeof(link)-1);
+    if(n!=(long)sizeof(target)-1)return 0;
+    link[n]=0;
+    return p_equal(link,target);
+}
+static void trace_zero_read(const char *operation,int fd,uint64_t count) {
+    if(!proxy_trace)return;
+    char target[128];long n=fd_link_target(fd,target,sizeof(target));
+    emit("v3 zero-read op=");emit(operation);emit(" fd=");trace_number((uint64_t)fd);
+    emit(" count=");trace_number(count);emit(" target=");
+    if(n<=0)emit("<unavailable>");
+    else RAW(PROXY_SC_write,proxy_diagnostic_fd,target,(size_t)n,0,0,0);
+    emit("\n");
+}
+static long payload_read(int fd,void *buffer,size_t count) {
+    long result=RAW(PROXY_SC_read,fd,(long)buffer,count,0,0,0);
+    int inotify_fd=result==0 && count && fd_is_inotify(fd);
+    result=proxy_inotify_read_result(count,result,inotify_fd);
+    if(result==-EAGAIN && inotify_fd)trace_zero_read("read-inotify",fd,count);
+    else if(!result && count)trace_zero_read("read-other",fd,count);
+    return result;
+}
+static long payload_readv(int fd,const struct proxy_iovec *iov,unsigned long iovcnt) {
+    uint64_t count=0;
+    for(unsigned long i=0;i<iovcnt;i++){
+        struct proxy_iovec v=arch_iovec_read((void *)(uintptr_t)iov,i);
+        if(v.len>UINT64_MAX-count){count=UINT64_MAX;break;}
+        count+=v.len;
+    }
+    long result=RAW(PROXY_SC_readv,fd,(long)iov,iovcnt,0,0,0);
+    int inotify_fd=result==0 && count && fd_is_inotify(fd);
+    result=proxy_inotify_read_result((size_t)count,result,inotify_fd);
+    if(result==-EAGAIN && inotify_fd)trace_zero_read("readv-inotify",fd,count);
+    else if(!result && count)trace_zero_read("readv-other",fd,count);
+    return result;
+}
 /* Both entries use the same VFS dispatch; no ucontext is fabricated. */
 static int fd_creator(long n) {
     switch(n) {
@@ -1970,7 +2023,9 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     switch(nr) {
     case PROXY_SC_mprotect:case PROXY_SC_munmap:case PROXY_SC_mremap:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
-    case PROXY_SC_read:case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_readv:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:
+    case PROXY_SC_read:result=payload_read((int)a[0],(void *)(uintptr_t)a[1],(size_t)a[2]);break;
+    case PROXY_SC_readv:result=payload_readv((int)a[0],(const struct proxy_iovec *)(uintptr_t)a[1],(unsigned long)a[2]);break;
+    case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
     case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_sendfile:case PROXY_SC_copy_file_range:case PROXY_SC_splice:case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
         if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
