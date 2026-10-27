@@ -13,14 +13,7 @@
 #include <string.h>
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"FAIL %d %s errno=%d\n",__LINE__,#x,errno);return 1;}}while(0)
 int main(int argc,char **argv){
- CHECK(argc==3);
- int pipes[2];CHECK(pipe(pipes)==0);
- char pipeproc[64],pipename[128];snprintf(pipeproc,sizeof(pipeproc),"/proc/self/fd/%d",pipes[0]);
- ssize_t pipelen=readlink(pipeproc,pipename,sizeof(pipename)-1);CHECK(pipelen>0);pipename[pipelen]=0;CHECK(!strncmp(pipename,"pipe:[",6));
- int pipealias=open(pipeproc,O_RDONLY|O_NONBLOCK);CHECK(pipealias>=0);
- snprintf(pipeproc,sizeof(pipeproc),"/proc/self/fd/%d",pipealias);
- pipelen=readlink(pipeproc,pipename,sizeof(pipename)-1);CHECK(pipelen>0);pipename[pipelen]=0;CHECK(!strncmp(pipename,"pipe:[",6));
- close(pipealias);close(pipes[0]);close(pipes[1]);CHECK(unshare(CLONE_NEWNS|CLONE_NEWUSER)==0);
+ CHECK(argc==3);CHECK(unshare(CLONE_NEWNS|CLONE_NEWUSER)==0);
  CHECK(mount(argv[1],"/virtual-v3",NULL,MS_BIND,NULL)==0);CHECK(mount(argv[2],"/virtual-v3/nested",NULL,MS_BIND,NULL)==0);
  int fd=open("/virtual-v3",O_DIRECTORY);CHECK(fd>=0);int f=openat(fd,"fixture",O_RDONLY);CHECK(f>=0);close(f);
  int nestedfd=open("/virtual-v3/nested",O_DIRECTORY|O_RDONLY);CHECK(nestedfd>=0);

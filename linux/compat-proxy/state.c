@@ -18,17 +18,8 @@ long proxy_fd_reserve=LONG_MAX,proxy_fd_reserve_end=LONG_MAX;
 int proxy_fd_reserve_ready;
 static int private_slots[PROXY_PRIVATE_FD_COUNT];
 static unsigned char private_slot_used[PROXY_PRIVATE_FD_COUNT];
-static int *private_moved;
-static unsigned private_moved_capacity,private_moved_count;
-static int private_capacity(unsigned count){
- if(count<=private_moved_capacity)return 0;
- size_t capacity=count>INT_MAX/2?(size_t)count:(size_t)count*2;
- if(capacity>SIZE_MAX/sizeof(int))return -ENOMEM;
- int *next=vfs_palloc(capacity*sizeof(int));if(!next)return -ENOMEM;
- if(private_moved_count)p_copy(next,private_moved,private_moved_count*sizeof(int));
- vfs_free(private_moved);private_moved=next;private_moved_capacity=(unsigned)capacity;return 0;
-}
-
+static int private_moved[PROXY_PRIVATE_FD_COUNT];
+static unsigned private_moved_count;
 /* Eighteen descriptors occupy the top of the actual soft limit. The first is
  * kept as a permanent /dev/null placeholder; the other slots can hold private
  * state fds as they are created. */
@@ -62,13 +53,7 @@ long proxy_private_fd(long fd){
  if(fd<0 || !proxy_fd_reserve_ready || proxy_fd_is_private(fd))return fd;
  unsigned slot=PROXY_PRIVATE_FD_COUNT;
  for(unsigned i=1;i<PROXY_PRIVATE_FD_COUNT;i++)if(!private_slot_used[i]){slot=i;break;}
- if(slot==PROXY_PRIVATE_FD_COUNT){
-  /* Nested bwrap tmpfs ownership locks grow with the mount tree. The reserve
-   * is an optimization, not an artificial descriptor limit. */
-  int e=private_capacity(private_moved_count+1);
-  if(e){RAW(PROXY_SC_close,fd,0,0,0,0,0);return e;}
-  private_moved[private_moved_count++]=(int)fd;return fd;
- }
+ if(slot==PROXY_PRIVATE_FD_COUNT){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -EMFILE;}
  long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);
  long target=private_slots[slot];
  long moved=RAW(PROXY_SC_dup3,fd,target,(flags>=0 && (flags&FD_CLOEXEC))?O_CLOEXEC:0,0,0,0);
@@ -95,7 +80,6 @@ long proxy_private_fd_move(long fd){
  unsigned target_slot=PROXY_PRIVATE_FD_COUNT;
  for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)
   if(i!=source_slot && private_slots[i]>=0 && !private_slot_used[i]){target_slot=i;break;}
- if(target_slot==PROXY_PRIVATE_FD_COUNT){int e=private_capacity(private_moved_count+1);if(e)return e;}
  long flags=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);if(flags<0)return flags;
  long moved;
  if(target_slot<PROXY_PRIVATE_FD_COUNT)
@@ -135,7 +119,7 @@ void proxy_fd_state(struct state *s){
  if(!s->reading){state_word(s,proxy_fd_reserve);state_word(s,proxy_fd_reserve_end);state_word(s,proxy_fd_reserve_ready);for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++){state_word(s,private_slots[i]);state_word(s,private_slot_used[i]);}state_word(s,private_moved_count);for(unsigned i=0;i<private_moved_count;i++)state_word(s,private_moved[i]);return;}
  proxy_fd_reserve=state_word(s,0);proxy_fd_reserve_end=state_word(s,0);proxy_fd_reserve_ready=state_word(s,0);
  for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++){private_slots[i]=(int)state_word(s,0);private_slot_used[i]=(unsigned char)state_word(s,0);if(private_slots[i]>=0&&RAW(PROXY_SC_fcntl,private_slots[i],F_GETFD,0,0,0,0)<0)s->error=-EBADF;}
- uint64_t count=state_word(s,0);if(count>INT_MAX){s->error=-EINVAL;return;}if(private_capacity((unsigned)count)){s->error=-ENOMEM;return;}private_moved_count=(unsigned)count;
+ uint64_t count=state_word(s,0);if(count>PROXY_PRIVATE_FD_COUNT){s->error=-EINVAL;return;}private_moved_count=(unsigned)count;
  for(unsigned i=0;i<private_moved_count;i++){private_moved[i]=(int)state_word(s,0);if(RAW(PROXY_SC_fcntl,private_moved[i],F_GETFD,0,0,0,0)<0)s->error=-EBADF;}
 }
 int state_live(int fd){long f=RAW(PROXY_SC_fcntl,fd,F_GETFD,0,0,0,0);return f>=0 && !(f&FD_CLOEXEC);}
