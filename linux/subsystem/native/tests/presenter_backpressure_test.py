@@ -2,6 +2,8 @@
 """Guard SHM backpressure and bound unchanged-frame Binder traffic."""
 
 from pathlib import Path
+import subprocess
+import tempfile
 
 
 source = Path(__file__).resolve().parents[1] / "compositor_core.c"
@@ -43,5 +45,23 @@ assert "ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, pending->contr
 assert "maton_transaction_track_replaced(control, replaced, pending)" in android_output
 
 assert "maton_presenter_layer_state_update" in presenter
+
+# Pool selection scans all entries for an unlocked, size-matched buffer before
+# trying allocation, and grows on demand instead of imposing a four-buffer cap.
+pool_fn = presenter.split("static struct wlr_buffer* free_pool_buffer(", 1)[1].split(
+    "/* Copies shared-memory content", 1)[0]
+assert "SHM_POOL" not in presenter
+assert pool_fn.index("if (b->width == width && b->height == height) return b") < pool_fn.index(
+    "wlr_allocator_create_buffer")
+assert "entry->next = l->pool" in pool_fn
+
+# SurfaceControl owns a Binder-backed surface. Simulate node replacement over
+# 10k frames and count new surfaces through the same production identity helper.
+test_source = Path(__file__).with_name("presenter_identity_test.c")
+with tempfile.TemporaryDirectory(prefix="maton-presenter-test-") as temp:
+    binary = Path(temp) / "presenter-identity-test"
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", str(test_source),
+                    "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
 
 print("presenter backpressure and 10k-frame transaction bound: PASS")

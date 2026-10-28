@@ -6,6 +6,7 @@
 #include "ahb_buffer.h"
 #include "maton_renderer.h"
 #include "presenter_state.h"
+#include "presenter_identity.h"
 
 #include <android/data_space.h>
 #include <android/log.h>
@@ -20,10 +21,9 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_scene.h>
 
-#define SHM_POOL 4  /* SurfaceFlinger can hold three at once (shown, queued, releasing) */
-
 struct Layer {
   struct wlr_scene_buffer* node;
+  struct wlr_surface* surface;
   ASurfaceControl* control;
   struct wl_listener node_destroy;
   struct Layer* next;
@@ -33,8 +33,13 @@ struct Layer {
   uint32_t shown_seq;             /* surface commit the shm copy was made from */
   bool visible, seen;
   /* Copies of shared-memory content; each is locked while SurfaceFlinger holds it. */
-  struct wlr_buffer* pool[SHM_POOL];
+  struct PoolBuffer* pool;
   struct MatonPresenterLayerState state;
+};
+
+struct PoolBuffer {
+  struct wlr_buffer* buffer;
+  struct PoolBuffer* next;
 };
 
 struct MatonPresenter {
@@ -52,7 +57,12 @@ struct MatonPresenter {
 };
 
 static void layer_free(struct Layer* l) {
-  for (int i = 0; i < SHM_POOL; ++i) if (l->pool[i]) wlr_buffer_drop(l->pool[i]);
+  while (l->pool) {
+    struct PoolBuffer* entry = l->pool;
+    l->pool = entry->next;
+    if (entry->buffer) wlr_buffer_drop(entry->buffer);
+    free(entry);
+  }
   if (l->control) ASurfaceControl_release(l->control);
   free(l);
 }
@@ -64,13 +74,24 @@ static void on_node_destroy(struct wl_listener* listener, void* data) {
   l->node = NULL;
 }
 
-static struct Layer* find_layer(struct MatonPresenter* p, struct wlr_scene_buffer* node) {
-  for (struct Layer* l = p->layers; l; l = l->next) if (l->node == node) return l;
+static struct Layer* find_layer(struct MatonPresenter* p, struct wlr_scene_buffer* node,
+                                struct wlr_surface* surface) {
+  for (struct Layer* l = p->layers; l; l = l->next) {
+    if (!maton_presenter_identity_matches(l->surface, l->node, surface, node)) continue;
+    if (l->node != node) {
+      if (l->node) wl_list_remove(&l->node_destroy.link);
+      l->node = node;
+      l->node_destroy.notify = on_node_destroy;
+      wl_signal_add(&node->node.events.destroy, &l->node_destroy);
+    }
+    return l;
+  }
   struct Layer* l = calloc(1, sizeof(*l));
   if (!l) return NULL;
   l->control = ASurfaceControl_create(p->parent, "maton-surface");
   if (!l->control) { free(l); return NULL; }
   l->node = node;
+  l->surface = surface;
   l->node_destroy.notify = on_node_destroy;
   wl_signal_add(&node->node.events.destroy, &l->node_destroy);
   l->next = p->layers;
@@ -82,22 +103,34 @@ static struct Layer* find_layer(struct MatonPresenter* p, struct wlr_scene_buffe
  * without a lock (wlroots' "dropped" flag), so a free buffer has no locks;
  * maton_transaction_set_buffer locks one until SurfaceFlinger releases it. */
 static struct wlr_buffer* free_pool_buffer(struct MatonPresenter* p, struct Layer* l, int width, int height) {
-  for (int i = 0; i < SHM_POOL; ++i) {
-    struct wlr_buffer* b = l->pool[i];
-    if (b && b->n_locks == 0 && (b->width != width || b->height != height)) {
-      wlr_buffer_drop(b);
-      l->pool[i] = b = NULL;
-    }
-    if (b && b->n_locks == 0) return b;
-    if (!b) {
-      struct wlr_drm_format format = {.format = DRM_FORMAT_ARGB8888, .len = 1, .capacity = 1};
-      uint64_t linear = DRM_FORMAT_MOD_LINEAR;
-      format.modifiers = &linear;
-      l->pool[i] = wlr_allocator_create_buffer(p->allocator, width, height, &format);
-      return l->pool[i];
-    }
+  /* Search the whole pool before asking the allocator. A failed allocation in
+   * an early hole must not hide a free buffer later in the list. */
+  struct PoolBuffer* reusable = NULL;
+  for (struct PoolBuffer* entry = l->pool; entry; entry = entry->next) {
+    struct wlr_buffer* b = entry->buffer;
+    if (!b || b->n_locks != 0) continue;
+    if (b->width == width && b->height == height) return b;
+    if (!reusable) reusable = entry;
   }
-  return NULL;
+  struct wlr_drm_format format = {.format = DRM_FORMAT_ARGB8888, .len = 1, .capacity = 1};
+  uint64_t linear = DRM_FORMAT_MOD_LINEAR;
+  format.modifiers = &linear;
+  struct wlr_buffer* replacement = wlr_allocator_create_buffer(p->allocator, width, height, &format);
+  if (!replacement) return NULL;
+  if (reusable) {
+    wlr_buffer_drop(reusable->buffer);
+    reusable->buffer = replacement;
+    return replacement;
+  }
+  struct PoolBuffer* entry = calloc(1, sizeof(*entry));
+  if (!entry) {
+    wlr_buffer_drop(replacement);
+    return NULL;
+  }
+  entry->buffer = replacement;
+  entry->next = l->pool;
+  l->pool = entry;
+  return replacement;
 }
 
 /* Copies shared-memory content into a pool buffer. It is read from the
@@ -141,12 +174,13 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   struct MatonPresenter* p = walk->p;
   struct wlr_buffer* buffer = node->buffer;
   if (!buffer) return;
-  struct Layer* l = find_layer(p, node);
+  struct wlr_scene_surface* scene_surface = wlr_scene_surface_try_from_buffer(node);
+  struct wlr_surface* surface = scene_surface ? scene_surface->surface : NULL;
+  struct Layer* l = find_layer(p, node, surface);
   if (!l) return;
   l->seen = true;
   ASurfaceTransaction* t = walk->t;
 
-  struct wlr_scene_surface* scene_surface = wlr_scene_surface_try_from_buffer(node);
   uint32_t seq = scene_surface ? scene_surface->surface->current.seq : 0;
   AHardwareBuffer* ahb = maton_ahb_buffer_get(buffer);
   bool direct_ahb = ahb != NULL;
