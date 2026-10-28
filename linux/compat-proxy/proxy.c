@@ -2154,6 +2154,30 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
      * Infinite poll must wait outside the SIGSYS frame, with the application's
      * mask restored, rather than nesting the wait in a signal handler. */
     if(nr==PROXY_SC_poll && (int)a[2]<0){
+        if(proxy_trace){
+            proxy_sigmask_t kernel_mask=0,pending=0;
+            struct kernel_action child_action={0};
+            RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,0,&kernel_mask,8,0,0);
+            RAW(PROXY_SC_rt_sigpending,&pending,8,0,0,0,0);
+            RAW(PROXY_SC_rt_sigaction,SIGCHLD,0,&child_action,8,0,0);
+            emit("v3 poll-signal-state");
+            trace_word(" pid=",RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+            trace_word(" tid=",RAW(PROXY_SC_gettid,0,0,0,0,0,0));
+            trace_word(" kernel-mask=",kernel_mask);
+            trace_word(" return-mask=",*arch_signal_mask(uc));
+            trace_word(" pending=",pending);
+            trace_word(" chld-handler=",child_action.handler);
+            trace_word(" chld-flags=",child_action.flags);emit("\n");
+            /* Inspect only the supplied poll array; no descriptor mutation or
+             * child wait that could consume the application's notification. */
+            for(unsigned long i=0;i<(unsigned long)a[1];i++){
+                struct pollfd fd;
+                if(proxy_copy(&fd,(char *)(uintptr_t)a[0]+i*sizeof(fd),sizeof(fd)))break;
+                emit("v3 poll-descriptor");
+                trace_word(" pid=",RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+                trace_word(" fd=",fd.fd);trace_word(" events=",fd.events);emit("\n");
+            }
+        }
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_encode_syscall(PROXY_SC_ppoll);
         ARCH_CONTEXT(uc,ARCH_ARG2)=0;ARCH_CONTEXT(uc,ARCH_ARG3)=0;
         ARCH_CONTEXT(uc,ARCH_ARG4)=8;arch_restart_syscall(uc);

@@ -449,7 +449,14 @@ miss_record_logged:
                 return;
             }
             result=-EINVAL;
-        } else result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
+        } else {
+            result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
+            if(proxy_trace && g[REG_RDI]==SIGCHLD){
+                struct {uintptr_t handler,flags,restorer;uint64_t mask;} current={0};
+                R(rt_sigaction,SIGCHLD,0,&current,8,0,0);
+                proxy_log("adopt-chld-action",current.handler,current.flags);
+            }
+        }
     } else if(n==SYS_rt_sigprocmask) {
         /* The dispatcher owns the payload's virtual SIGSYS mask as well as
          * its disposition. Never expose the resident handler's kernel mask. */
