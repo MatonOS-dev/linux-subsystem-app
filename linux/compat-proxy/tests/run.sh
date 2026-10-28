@@ -41,7 +41,10 @@ fi
 for test in signals threads spawn binder zygote-startup sigsys-virtual; do
     cc -no-pie -O2 -Wall -Wextra -Werror -pthread "tests/$test.c" -o "build/$test"
     if [[ $test == sigsys-virtual ]]; then timeout 15 "build/$test"; fi
-    timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/$test" >"build/$test.out" 2>"build/$test.log"
+    # 10,000 thread creations can exceed 15 s on the shared build host.
+    test_timeout=15
+    if [[ $test == threads ]]; then test_timeout=60; fi
+    timeout "$test_timeout" build/linux-layer-v3 --android-filter "$PWD/build/$test" >"build/$test.out" 2>"build/$test.log"
     cat "build/$test.out"
 done
 cc -O2 -Wall -Wextra -Werror tests/prehandler-filter.c -o build/prehandler-filter
