@@ -153,21 +153,55 @@ cc -O2 -Wall -Wextra -Werror tests/adopt-altstack-host.c arch/x86_64/altstack.S 
 timeout 15 build/adopt-altstack-host
 cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-altstack-filter.c loader.c vfs.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S arch/x86_64/altstack.S -o build/adopt-altstack-filter
 timeout 15 build/adopt-altstack-filter
-cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-rebase-filter.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-rebase-filter
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-rebase-filter.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-rebase-filter
 timeout 15 build/adopt-rebase-filter
 printf 'PASS resident adoption rebase inside SIGSYS and outside altstack, main and fork child\n'
-cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-fork-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-fork-launch
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-fork-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-fork-launch
+cc -O2 -Wall -Wextra -Werror -pthread tests/exec-signalfd.c -o build/exec-signalfd
+build/exec-signalfd
+for mode in monitor nonleader; do
+    timeout 20 build/adopt-fork-launch "$PWD/build/exec-signalfd" "$mode" >"build/exec-signalfd-$mode.out" 2>"build/exec-signalfd-$mode.log"
+    cat "build/exec-signalfd-$mode.out"
+done
+# No argument creates the pre-exec sibling in the group leader.
+timeout 20 build/adopt-fork-launch "$PWD/build/exec-signalfd" >build/exec-signalfd-adopt.out 2>build/exec-signalfd-adopt.log
+cat build/exec-signalfd-adopt.out
+for mode in sigwait handler readv secondary ignore nocldwait; do
+    timeout 20 build/exec-signalfd "launch-$mode"
+    timeout 20 build/adopt-fork-launch "$PWD/build/exec-signalfd" "launch-$mode" >"build/exec-signalfd-$mode.out" 2>"build/exec-signalfd-$mode.log"
+    cat "build/exec-signalfd-$mode.out"
+done
 cc -O2 -Wall -Wextra -Werror tests/signalfd-child.c -o build/signalfd-child
 build/signalfd-child
 timeout 15 build/linux-layer-v3 --trace --android-filter "$PWD/build/signalfd-child" >build/signalfd-child.out 2>build/signalfd-child.log
 cat build/signalfd-child.out
 timeout 15 build/adopt-fork-launch --trace "$PWD/build/signalfd-child" >build/signalfd-adopt.out 2>build/signalfd-adopt.log
 cat build/signalfd-adopt.out
-cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-signalfd-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/resident-signalfd-launch
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-signalfd-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/resident-signalfd-launch
 timeout 15 build/linux-layer-v3 --supervise --android-filter "$PWD/build/signalfd-child" >build/signalfd-supervised.out 2>build/signalfd-supervised.log
 cat build/signalfd-supervised.out
 timeout 15 build/resident-signalfd-launch "$PWD/build/signalfd-child" >build/signalfd-resident.out 2>build/signalfd-resident.log
 cat build/signalfd-resident.out
+# Exercise upstream Flatpak and bwrap, with the supervisor and resident
+# pthread present. Runtime-only command avoids launching an unrelated GUI app.
+if command -v flatpak >/dev/null && flatpak info org.freedesktop.Platform//26.08 >/dev/null 2>&1; then
+    ln -sf "$(command -v flatpak)" build/libmatonos-app-flatpak.so
+    for fork_mode in normal inherited; do
+        fork_args=()
+        if [[ $fork_mode == inherited ]]; then fork_args=(--raw-fork); fi
+        timeout 30 build/resident-signalfd-launch "${fork_args[@]}" "$PWD/build/libmatonos-app-flatpak.so" run \
+            --nosocket=x11 --nosocket=wayland --nosocket=session-bus --nosocket=system-bus \
+            --no-a11y-bus --no-documents-portal --command=true org.freedesktop.Platform//26.08 \
+            >"build/flatpak-resident-$fork_mode.out" 2>"build/flatpak-resident-$fork_mode.log"
+    done
+    echo "PASS real app-flatpak -> flatpak run -> bwrap -> true with resident workers"
+else
+    echo "SKIP real Flatpak launch: installed FreeDesktop 26.08 runtime required"
+fi
+cc -O2 -Wall -Wextra -Werror tests/exec-wayland.c -pthread $(pkg-config --cflags --libs wayland-client) -o build/exec-wayland
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-wayland-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl $(pkg-config --cflags --libs wayland-server) -o build/resident-wayland-launch
+timeout 20 build/resident-wayland-launch "$PWD/build/exec-wayland" >build/exec-wayland.out 2>build/exec-wayland.log
+echo "PASS threaded resident exec connects and completes Wayland roundtrip"
 timeout 20 build/adopt-fork-launch "$PWD/build/flatpak-seccomp-fork"
 timeout 20 build/adopt-fork-launch "$PWD/build/sigsys-virtual"
 timeout 20 build/adopt-fork-launch --trace "$PWD/build/sigsys-virtual" >build/sigsys-adopt-trace.out 2>build/sigsys-adopt-trace.log
@@ -353,7 +387,7 @@ javac -d "$chrome_out/classes" \
     "$PWD/../../tests/chrome-sol/FlatpakPerAppDirsTest.java"
 java -cp "$chrome_out/classes" FlatpakPerAppDirsTest "$chrome_out/runtime"
 python3 "$PWD/../../tests/chrome-sol/per-app-dirs-ref-host.py" "$chrome_out/runtime" "$chrome_out"
-bash tests/apply-extra-host.sh /mnt/data/aosp/out/pc-logs/chrome-sol-host
+bash tests/apply-extra-host.sh "${MATON_APPLY_EXTRA_TEST_OUT:-/mnt/data/aosp/out/pc-logs/chrome-sol-host}"
 
 python3 tests/loader-maps.py
 

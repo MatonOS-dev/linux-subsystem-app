@@ -33,6 +33,7 @@
 #include <sys/mman.h>
 #include <sys/auxv.h>
 #include <sys/uio.h>
+#include "../../resident-pthread.h"
 extern long proxy_raw(long,long,long,long,long,long,long);
 extern long proxy_sigaltstack_on_stack(stack_t *,void *);
 extern void proxy_log(const char *,long,long);
@@ -340,6 +341,8 @@ static void *start(void *arg) {
     R(rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
     backend_fs_write(t->app_fs);
     adopt_run(t);
+    uint64_t cleanup_mask;
+    if(proxy_resident_signals_begin(&cleanup_mask))__builtin_trap();
     /* Exit gate restored our own stack and FS. Resident libc owns cleanup. */
     vfs_trap_thread_exit(t->signal_stack,signal_stack_size);
     signal_stack_release(t);
@@ -439,11 +442,10 @@ miss_record_logged:
     }
     else if(n==SYS_brk) result=app_brk;
     else if(n==SYS_rt_sigaction) {
-        if(g[REG_RDI]==SIGSYS) {
-            /* The proxy owns the kernel SIGSYS action and emulates payload
-             * registrations by chaining them. Let its dispatcher update the
-             * chained action; rejecting this here makes apps that install a
-             * SIGSYS handler after fork/exec fail their signal setup. */
+        if(g[REG_RDI]==SIGSYS || g[REG_RDI]==SIGCHLD) {
+            /* The proxy owns the SIGSYS and SIGCHLD delivery gates. Its
+             * dispatcher retains the payload dispositions and routes child
+             * notifications to the current image's waiter after exec. */
             if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
                 ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
                 return;
@@ -538,6 +540,8 @@ miss_record_logged:
                 else {
                     while(!atomic_load_explicit(&t->ready,memory_order_acquire)) R(futex,&t->ready,0,0,0,0,0);
                     result=atomic_load(&t->tid);
+                    extern void proxy_payload_thread_created(long) __attribute__((weak));
+                    if(proxy_payload_thread_created)proxy_payload_thread_created(result);
                     if(flags&CLONE_PARENT_SETTID) *(int *)ptid=result;
                     if(flags&CLONE_CHILD_SETTID) *(int *)ctid=result;
                     atomic_store_explicit(&t->ready,2,memory_order_release);
@@ -618,6 +622,8 @@ _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     app_brk=R(brk,0,0,0,0,0,0);
     backend_fs_write(0);
     adopt_run(t);
+    uint64_t cleanup_mask;
+    if(proxy_resident_signals_begin(&cleanup_mask))__builtin_trap();
     signal_stack_release(t);
     adopt_map_unbind(t->resident_fs,t);
     adopt_map_unbind(atomic_load(&t->app_fs),t);

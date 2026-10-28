@@ -9,7 +9,9 @@
 static atomic_int ready;
 static void *worker(void *unused) {
     (void)unused;
-    atomic_store(&ready,1);
+    uint64_t mask=0;
+    R(rt_sigprocmask,SIG_SETMASK,0,&mask,8,0,0);
+    atomic_store(&ready,(mask&(UINT64_C(1)<<(SIGCHLD-1)))?1:-1);
     for(;;)pause();
     return NULL;
 }
@@ -30,9 +32,10 @@ int main(int argc,char **argv) {
             if(child==payload)result=WIFEXITED(status)?WEXITSTATUS(status):96;
         return result;
     }
+    if(proxy_resident_signals_end(previous))return 91;
     pthread_t thread;
     if(pthread_create(&thread,NULL,worker,NULL))return 90;
     while(!atomic_load(&ready))sched_yield();
-    if(proxy_resident_signals_end(previous))return 91;
+    if(atomic_load(&ready)!=1)return 97;
     return payload_main(argc,argv);
 }

@@ -24,8 +24,19 @@ int main(void) {
         struct pollfd p={.fd=fd,.events=POLLIN};
         long n;do {n=syscall(SYS_poll,&p,1,-1);}while(n<0&&errno==EINTR);
         CHECK(n==1&&(p.revents&POLLIN));
-        struct signalfd_siginfo info;CHECK(read(fd,&info,sizeof(info))==sizeof(info));
+        struct signalfd_siginfo info;
+        for(;;){
+            long got=read(fd,&info,sizeof(info));
+            /* Match upstream bwrap: readiness is advisory when another
+             * thread takes a process-pending signal before this read. */
+            if(got<0 && (errno==EINTR || errno==EAGAIN)){
+                do {n=syscall(SYS_poll,&p,1,-1);}while(n<0&&errno==EINTR);
+                CHECK(n==1&&(p.revents&POLLIN));continue;
+            }
+            CHECK(got==sizeof(info));break;
+        }
         CHECK(info.ssi_signo==SIGCHLD&&info.ssi_pid==(unsigned)child);
+        CHECK(info.ssi_code==CLD_EXITED&&info.ssi_status==i);
         int status;CHECK(waitpid(child,&status,0)==child);
         CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==i);
     }

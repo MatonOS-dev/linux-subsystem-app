@@ -11,6 +11,7 @@
 #include <unistd.h>
 #ifdef MATON_GPU_BRIDGE
 #include "../../proxy.h"
+#include "../../resident-pthread.h"
 #include "../../vfs.h"
 #include <ucontext.h>
 #include <linux/futex.h>
@@ -330,6 +331,8 @@ static void *thread_start(void *arg) {
     atomic_store_explicit(&self->thread.scope_state,0,memory_order_release);
     load_gs((unsigned short)((self->app_tls.entry_number<<3)|3));
     adopt_i386_run(self->regs,&self->resident_sp,self->fp,self->xfeatures);
+    uint64_t cleanup_mask;
+    if(proxy_resident_signals_begin(&cleanup_mask))__builtin_trap();
     record_exit(self);
     return NULL;
 }
@@ -379,6 +382,8 @@ static long thread_clone(ucontext_t *uc,proxy_arg_t *a) {
     while(!atomic_load_explicit(&r->ready,memory_order_acquire))
         RAW(PROXY_SC_futex,&r->ready,FUTEX_WAIT,0,0,0,0);
     int tid=atomic_load_explicit(&r->thread.tid,memory_order_relaxed);
+    extern void proxy_payload_thread_created(long) __attribute__((weak));
+    if(proxy_payload_thread_created)proxy_payload_thread_created(tid);
     if(flags&CLONE_PARENT_SETTID)*(int *)(uintptr_t)a[2]=tid;
     if(flags&CLONE_CHILD_SETTID)*(int *)(uintptr_t)a[4]=tid;
     atomic_store_explicit(&r->ready,2,memory_order_release);

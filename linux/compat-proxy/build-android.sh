@@ -21,7 +21,7 @@ cp "$source_dir/../gpu-forward-spike/spike3/adopt.h" "$output/freestanding/gpu-f
 mkdir -p "$output/freestanding/gpu-bridge-common"
 cp "$source_dir/../gpu-bridge-common/"{bootstrap.h,bridge.h,adopt.h} "$output/freestanding/gpu-bridge-common/"
 python3 "$build_source/gen-policy.py"
-"$compiler" "${counter_flags[@]}" -march=x86-64-v2 -DMATON_GPU_BRIDGE -fPIE -pie -mcmodel=large -Wl,--image-base=0x600000000000 -Wl,-z,now -Wl,--section-start=.proxy_gateway=0x600000300000 \
+"$compiler" "${counter_flags[@]}" -march=x86-64-v2 -DMATON_GPU_BRIDGE -fPIE -pie -mcmodel=large -Wl,--image-base=0x600000000000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -Wl,--section-start=.proxy_gateway=0x600000300000 \
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
   "$build_source"/adopt-map.c "$build_source"/arch/x86_64/thread-adopt.c \

@@ -158,9 +158,10 @@ static void crash_report(int sig,siginfo_t *info,void *context) {
     RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),RAW(PROXY_SC_gettid,0,0,0,0,0,0),sig,0,0,0);
     RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);
 }
+static void child_exec(void);
 static void exec_signals(void) {
     for(int sig=1;sig<=64;sig++){
-        if(sig==SIGKILL || sig==SIGSTOP || sig==SIGSYS)continue;
+        if(sig==SIGKILL || sig==SIGSTOP || sig==SIGSYS || sig==SIGCHLD)continue;
         struct kernel_action old={0},next={0};
         if(RAW(PROXY_SC_rt_sigaction,sig,0,&old,8,0,0)<0)continue;
         if(old.handler==1 && sig!=SIGSEGV)continue; /* synchronous SIGSEGV still needs proxy handling */
@@ -173,6 +174,7 @@ static void exec_signals(void) {
 #endif
         RAW(PROXY_SC_rt_sigaction,sig,&next,0,8,0,0);
     }
+    child_exec();
 }
 /* Spike supports a single user-dispatch owner; configuration is per-thread. */
 static volatile unsigned char *dispatch_selector;
@@ -304,6 +306,7 @@ static struct thread_state *thread_state(void) {
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
     thread_stack_cache_add(page,&p->state);return &p->state;
 }
+#include "child-signals.h"
 static long personality_call(proxy_arg_t *args,struct thread_state *thread);
 #if ARCH_AUDIT == AUDIT_ARCH_I386
 static int tls_slot_for_real(struct thread_state *thread, int real_entry) {
@@ -1282,7 +1285,7 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     if(result>=0 && target>=0 && target!=(int)a[0]) {
         resident_fd_set(target,source_resident?2:0);
     }
-        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
+        if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}child_fd_dup((int)a[0],(int)result);dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
     return result;
 }
 static long file_dispatch(long nr,proxy_arg_t *a) {
@@ -1296,7 +1299,7 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
         /* A written limit must apply before its last descriptor goes away. */
         if(sysctl_fds)sysctl_sync();
         long r=RAW(PROXY_SC_close,a[0],0,0,0,0,0);
-        if(!r){dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}
+        if(!r){child_fd_close((int)a[0]);dns_close((int)a[0]);vfs_fd_close((int)a[0]);net_close((int)a[0]);sysctl_close((int)a[0]);}
         return r;
     }
     case PROXY_SC_fstat:{
@@ -1341,8 +1344,31 @@ static void trace_zero_read(const char *operation,int fd,uint64_t count) {
     else RAW(PROXY_SC_write,proxy_diagnostic_fd,target,(size_t)n,0,0,0);
     emit("\n");
 }
+static int child_fd_is_signalfd(int fd) {
+    char target[32];long n=fd_link_target(fd,target,sizeof(target)-1);
+    if(n<=0)return 0;
+    target[n]=0;return p_equal(target,"anon_inode:[signalfd]");
+}
+/* readv may split one signalfd record across several application buffers.
+ * Use one ABI-sized record on the handler stack, independent of iov count. */
+static long child_iov_copy(const struct proxy_iovec *iov,unsigned long count,
+                           size_t offset,void *record,size_t bytes,int output) {
+    size_t used=0;
+    for(unsigned long i=0;i<count && used<bytes;i++){
+        struct proxy_iovec v=arch_iovec_read((void *)(uintptr_t)iov,i);
+        if(offset>=v.len){offset-=v.len;continue;}
+        size_t n=v.len-offset;if(n>bytes-used)n=bytes-used;
+        void *app=(char *)(uintptr_t)v.base+offset;
+        if(proxy_copy(output?app:(char *)record+used,output?(char *)record+used:app,n))return -EFAULT;
+        used+=n;offset=0;
+    }
+    return used==bytes?0:-EFAULT;
+}
 static long payload_read(int fd,void *buffer,size_t count) {
+    child_fd_claim(fd);
     long result=RAW(PROXY_SC_read,fd,(long)buffer,count,0,0,0);
+    if(result>=(long)sizeof(struct signalfd_siginfo) && __atomic_load_n(&child_pending,__ATOMIC_ACQUIRE) && child_fd_is_signalfd(fd))
+        child_read_result(buffer,result);
     int inotify_fd=result==0 && count && fd_is_inotify(fd);
     result=proxy_inotify_read_result(count,result,inotify_fd);
     if(result==-EAGAIN && inotify_fd)trace_zero_read("read-inotify",fd,count);
@@ -1356,7 +1382,16 @@ static long payload_readv(int fd,const struct proxy_iovec *iov,unsigned long iov
         if(v.len>UINT64_MAX-count){count=UINT64_MAX;break;}
         count+=v.len;
     }
+    child_fd_claim(fd);
     long result=RAW(PROXY_SC_readv,fd,(long)iov,iovcnt,0,0,0);
+    if(result>=(long)sizeof(struct signalfd_siginfo) && __atomic_load_n(&child_pending,__ATOMIC_ACQUIRE) && child_fd_is_signalfd(fd)){
+        for(long off=0;off+(long)sizeof(struct signalfd_siginfo)<=result;off+=sizeof(struct signalfd_siginfo)){
+            struct signalfd_siginfo info;
+            if(child_iov_copy(iov,iovcnt,off,&info,sizeof(info),0))return -EFAULT;
+            child_read_result(&info,sizeof(info));
+            if(child_iov_copy(iov,iovcnt,off,&info,sizeof(info),1))return -EFAULT;
+        }
+    }
     int inotify_fd=result==0 && count && fd_is_inotify(fd);
     result=proxy_inotify_read_result((size_t)count,result,inotify_fd);
     if(result==-EAGAIN && inotify_fd)trace_zero_read("readv-inotify",fd,count);
@@ -1834,7 +1869,7 @@ static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
                 if(count==sizeof(protected)/sizeof(protected[0])){n=-E2BIG;goto done;}
                 protected[count++]=value;
             } else if(!(flags&4u) && value>=first && value<=last){
-                dns_close((int)value);vfs_fd_close((int)value);net_close((int)value);sysctl_close((int)value);
+                child_fd_close((int)value);dns_close((int)value);vfs_fd_close((int)value);net_close((int)value);sysctl_close((int)value);
             }
         }
     }
@@ -1878,6 +1913,7 @@ static int ours(long n) {
     case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:case PROXY_SC_modify_ldt:
 #endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
+    case PROXY_SC_signalfd4:case PROXY_SC_rt_sigtimedwait:
     case PROXY_SC_seccomp:case PROXY_SC_prctl:case PROXY_SC_prlimit64:case PROXY_SC_setrlimit:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
@@ -1932,7 +1968,7 @@ static void exec_close_fds(void){
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20 || off+len>n)break;char *name=buf+off+19;long v=0;int valid=*name!=0;for(;*name;name++){if(*name<'0'||*name>'9'){valid=0;break;}v=v*10+*name-'0';}
             /* Proxy-private descriptors back resident state and diagnostics;
              * payload F_SETFD is native now, but must not tear these down. */
-            if(valid && v!=fd && !private_close_fd((int)v)){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(PROXY_SC_close,v,0,0,0,0,0);dns_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
+            if(valid && v!=fd && !private_close_fd((int)v)){long flags=RAW(PROXY_SC_fcntl,v,F_GETFD,0,0,0,0);if(flags>=0 && (flags&FD_CLOEXEC)){RAW(PROXY_SC_close,v,0,0,0,0,0);child_fd_close((int)v);dns_close((int)v);vfs_fd_close((int)v);net_close((int)v);sysctl_close((int)v);}}off+=len;
         }
     }
     vfs_free(buf);RAW(PROXY_SC_close,fd,0,0,0,0,0);
@@ -1952,6 +1988,10 @@ static void unhandled_once(long id,long kernel_nr){
 struct android_pc_cache_entry {volatile uintptr_t begin,end;volatile unsigned long epoch;int state;};
 static struct android_pc_cache_entry android_pc_cache[256];
 static volatile unsigned long android_pc_cache_epoch=1;
+/* Keep these two /proc parsing buffers out of the long-lived SIGSYS frame.
+ * Inlining adds 8 KiB to every path, including nested link-tree traversal on
+ * the production-sized handler stack, even after this query has returned. */
+__attribute__((noinline))
 static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end) {
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
     if(fd<0)return 0;
@@ -2153,6 +2193,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     /* signalfd readiness is evaluated against the thread's signal state.
      * Infinite poll must wait outside the SIGSYS frame, with the application's
      * mask restored, rather than nesting the wait in a signal handler. */
+    if(nr==PROXY_SC_poll || nr==PROXY_SC_ppoll)child_poll_claim((void *)(uintptr_t)a[0],a[1]);
     if(nr==PROXY_SC_poll && (int)a[2]<0){
         if(proxy_trace){
             proxy_sigmask_t kernel_mask=0,pending=0;
@@ -2279,7 +2320,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(proxy_trace) {emit("result=");crash_hex(result);emit("\n");}
         break;
     case PROXY_SC_rt_sigaction:
-        if(a[0]==SIGSYS) {
+        if(a[0]==SIGCHLD)result=child_sigaction(a);
+        else if(a[0]==SIGSYS) {
             if(a[3]!=8) {result=-EINVAL;break;}
             struct kernel_action next=chained;
             if(a[1]) p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));
@@ -2304,6 +2346,27 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));normalize_payload_action(&action);a[1]=(long)&action;}
             result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
         }break;
+    case PROXY_SC_signalfd4: {
+        proxy_sigmask_t mask=0;
+        if(a[2]!=8){result=-EINVAL;break;}
+        if(proxy_copy(&mask,(void *)(uintptr_t)a[1],8)){result=-EFAULT;break;}
+        result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
+        if(result>=0){child_fd_close((int)result);if(mask&CHLD_BIT)child_wait_begin((int)result);}
+        break;
+    }
+    case PROXY_SC_rt_sigtimedwait: {
+        proxy_sigmask_t mask=0;
+        if(a[3]!=8){result=-EINVAL;break;}
+        if(proxy_copy(&mask,(void *)(uintptr_t)a[0],8)){result=-EFAULT;break;}
+        struct child_waiter *w=(mask&CHLD_BIT)?child_wait_begin(-1):NULL;
+        if((mask&CHLD_BIT) && !w){result=-ENOMEM;break;}
+        siginfo_t info={0};
+        result=RAW(nr,a[0],&info,a[2],a[3],0,0);
+        if(w)__atomic_store_n(&w->active,0,__ATOMIC_RELEASE);
+        if(result==SIGCHLD)child_unwrap(&info);
+        if(result>0 && a[1] && proxy_copy((void *)(uintptr_t)a[1],&info,sizeof(info)))result=-EFAULT;
+        break;
+    }
     case PROXY_SC_rt_sigprocmask: {
         if(a[3]!=8) {result=-EINVAL;break;}
         if(!thread){result=-ENOMEM;break;}

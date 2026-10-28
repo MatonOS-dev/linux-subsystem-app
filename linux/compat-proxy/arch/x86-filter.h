@@ -277,6 +277,13 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1])+4);
     ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,0);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
+    /* SIGCHLD is also proxy-owned: old resident payload threads may receive
+     * the kernel notification after exec. Queries must see the payload action. */
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,encode(PROXY_SC_rt_sigaction));
+    ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
+    ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,SIGCHLD);
+    ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     /* FD_CLOEXEC is kernel-owned state: let F_GETFD/F_SETFD reach Linux
      * directly so libc's million-descriptor spawn sweep does not trap.
      * Check the command's high word too; only the exact 32-bit commands

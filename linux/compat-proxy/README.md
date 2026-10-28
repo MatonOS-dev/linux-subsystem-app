@@ -1845,3 +1845,65 @@ i386/cross-exec, hard-link stores, signalfd, bwrap and site-rewrite checks).
 Focused home-links test passed again after adding the failing-before assertion.
 `:app:compileDebugJavaWithJavac -x :app:preBuild` passed against SDK 36
 (native packaging tasks excluded; no APK or device test claimed).
+
+### Steam round 34: route SIGCHLD without retiring resident threads
+
+Based on main `dd37f21`. The new `tests/exec-signalfd.c` reproduces the
+threaded resident-exec failure on that revision: the monitor times out
+(exit 124) because an unblocked pre-exec sibling consumes SIGCHLD. The
+routing implementation leaves every thread alive and does not change
+waitpid/wait4/waitid or the supervisor's adopted-child reaping.
+
+`child-signals.h` retains the payload's SIGCHLD disposition while installing
+a resident delivery gate. A notification received on the wrong thread is
+sent with `rt_tgsigqueueinfo` to an active sigwait waiter, an open signalfd's
+owner, or the current image's main thread. Clone publication records each
+payload thread's image generation before releasing its startup gate, so a
+late-starting pre-exec sibling cannot register as a current-image waiter.
+Signalfd dup/close/CLOEXEC and reads/polls update ownership. Kernel-created
+signalfds remain real descriptors. Forwarded notifications use a private
+SI_QUEUE envelope; read/readv, sigwaitinfo and ordinary handlers receive
+the original PID, UID, CLD code, exit status and CPU times. One outstanding
+forward per target preserves standard-signal coalescing. No wait status is
+consumed and no scheduling sleep, retry loop or timeout is introduced.
+Ignored dispositions and SA_NOCLDWAIT retain kernel auto-reaping semantics.
+
+The resident public pthread_create wrapper extends the existing EGL warmup
+mask rule to lazy native workers on both ABIs: they inherit blocked SIGCHLD.
+Adopted payload threads restore the caller's payload mask before entering
+Linux code and block SIGCHLD again when returning to resident cleanup.
+The wrapper does not mark or retire threads. The clone registry, graphics
+workers and compositor connections keep their existing lifetimes.
+
+The change exposed compiler inlining of the two 4 KiB /proc/maps buffers
+into the long-lived SIGSYS frame. With the real 0x10d30 handler stack this
+broke the hard-link fallback's subsequent lazy symbol resolution. Keeping
+that parser out of line fixes the stack regression; the existing corrupt
+link-count and bwrap pivot-root handler-stack tests exercise it.
+
+Required host coverage in `tests/run.sh`: leader/nonleader threaded exec;
+signalfd notification metadata plus untouched wait status; sigwaitinfo;
+split readv buffers and fd aliases; a secondary-thread signalfd waiter;
+ordinary handlers; SIG_IGN/SA_NOCLDWAIT; real host Flatpak 26.08 runtime →
+bwrap → true with a continuously reaping supervisor and a lazy resident
+worker (including inherited raw-fork identity); and a real Wayland socket
+roundtrip across threaded payload exec with the resident server still alive.
+The stock nonblocking signalfd fixture handles advisory poll readiness and
+EAGAIN as upstream bwrap does. Tests have external watchdogs; production
+routing has none. No VM was started.
+
+Coordinator follow-up: build the updated loaders into the subsystem APK,
+then freshly launch Kate, Obsidian and Chrome and verify they draw. Launch
+Steam with tracing, verify its portal probe completes without timeout, and
+retain any `chld-route` failures, steamwebhelper exec/exit records and
+steamui_html.txt. Host routing tests do not establish that Steam renders.
+No shared device-tree or kernel changes are needed.
+
+Validation: full `bash tests/run.sh` passed with task-specific TMPDIR,
+MATON_CHROME_TEST_OUT and MATON_APPLY_EXTRA_TEST_OUT (exit 0), including the
+NDK x86_64 resident, i386 resident and static peer loader builds and packaging
+checks. Log: `/mnt/data/aosp/out/pc-logs/agents/steam-r34-suite-final.log`.
+The unchanged-main adoption launcher times out on the new threaded-exec
+fixture (exit 124), recorded in `steam-r34-baseline-regression.log`; the
+routing build completes it. A separate Android build also passed. No APK
+was installed and no device rendering result is claimed.
