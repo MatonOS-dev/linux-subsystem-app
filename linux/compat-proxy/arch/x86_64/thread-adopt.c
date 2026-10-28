@@ -324,6 +324,15 @@ void adopt_fork_child(void) {
     identity_mutex=(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
     backend_fs_write(app_fs);
 }
+/* A host-command snapshot forks from the payload handler, then forks its
+ * server/worker/command without the normal clone-return continuation. Only
+ * rebase if this process inherited adoption; freestanding snapshots have none.
+ * Rebase NOW, while the inherited FS still identifies the caller, rather than
+ * trying to guess a live record after the fresh linker clears/replaces TLS. */
+__attribute__((target("general-regs-only")))
+void proxy_host_fork_child(void) {
+    if(adopt_map_lookup(backend_fs_read()))adopt_fork_child();
+}
 extern void adopt_run(struct adopt_thread *);
 extern char adopt_exit_return[];
 static void *start(void *arg) {

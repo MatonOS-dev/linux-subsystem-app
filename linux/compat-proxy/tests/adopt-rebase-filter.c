@@ -44,6 +44,23 @@ static void exercise(void) {
 int main(void) {
     CHECK(adopt_install()==0);
     record=adopt_current(); CHECK(record);
+    /* Host-command's raw monitor forks can inherit more than one record.
+     * Once hc_exec clears TLS, the singleton recovery cannot choose a caller.
+     * Rebase at fork time, while the inherited FS identifies it. */
+    struct adopt_thread *stale=reserve();CHECK(stale);
+    atomic_store(&stale->tid,INT_MAX);
+    long monitor=R(clone,SIGCHLD,0,0,0,0,0);CHECK(monitor>=0);
+    if(!monitor){
+        proxy_host_fork_child();
+        uintptr_t fs=backend_fs_read();backend_fs_write(0);
+        CHECK(adopt_current()==record);
+        backend_fs_write(fs);
+        CHECK(live()==1 && atomic_load(&record->tid)==R(gettid,0,0,0,0,0,0));
+        R(exit_group,0,0,0,0,0,0);__builtin_unreachable();
+    }
+    int monitor_status=0;
+    CHECK(R(wait4,monitor,&monitor_status,0,0,0,0)==monitor && monitor_status==0);
+    atomic_store(&stale->tid,0);
     CHECK(proxy_install(1)==0);
     /* Inherit the same errno policy shape as Flatpak, in addition to both
      * production proxy filters. Raw gateway calls must respect it too. */

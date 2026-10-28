@@ -2,7 +2,19 @@
 """Same resident worker over inherited socketpair (runner disallows connect)."""
 import array, os, pathlib, socket, struct, subprocess, tempfile, time, pty, select
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-subprocess.run(['cc','-DHOST_COMMAND_TEST','-nostdlib','-static','-no-pie','-mcmodel=large','-Wl,-Ttext-segment=0x600000000000','-Wl,--section-start=.proxy_gateway=0x600000300000','-O2','-fno-stack-protector','-fno-builtin','-Wall','-Wextra','-Werror',*[str(ROOT/s) for s in ['loader.c','proxy.c','vfs.c','links.c','net.c','sysvipc.c', 'state.c','raw.S','entry.S']],'-o',str(ROOT/'build/host-command-loader')],check=True)
+resident=os.environ.get('MATON_HC_RESIDENT')=='1'
+if resident:
+    subprocess.run(['cc','-DHOST_COMMAND_TEST','-DPROXY_LIBRARY','-fPIE','-pie','-mcmodel=large',
+        '-Wl,--no-relax','-Wl,-Ttext-segment=0x600000000000',
+        '-Wl,--section-start=.proxy_gateway=0x600000300000','-Wl,-z,now',
+        '-Wl,--export-dynamic-symbol=pthread_create','-O2','-fno-stack-protector',
+        '-fno-builtin','-Wall','-Wextra','-Werror',
+        *[str(ROOT/s) for s in ['tests/host-command-resident.c','loader.c','proxy.c','vfs.c',
+            'links.c','net.c','sysvipc.c','state.c','adopt-map.c','arch/x86_64/raw.S',
+            'arch/x86_64/adopt.S','arch/x86_64/altstack.S']],'-pthread','-ldl',
+        '-o',str(ROOT/'build/host-command-loader')],check=True)
+else:
+    subprocess.run(['cc','-DHOST_COMMAND_TEST','-nostdlib','-static','-no-pie','-mcmodel=large','-Wl,-Ttext-segment=0x600000000000','-Wl,--section-start=.proxy_gateway=0x600000300000','-O2','-fno-stack-protector','-fno-builtin','-Wall','-Wextra','-Werror',*[str(ROOT/s) for s in ['loader.c','proxy.c','vfs.c','links.c','net.c','sysvipc.c', 'state.c','raw.S','entry.S']],'-o',str(ROOT/'build/host-command-loader')],check=True)
 def read_int(s):
     b=b''
     while len(b)<4:
@@ -23,11 +35,15 @@ with tempfile.TemporaryDirectory(prefix='hc-pair-',dir='/mnt/data/aosp/out') as 
     d=pathlib.Path(tmp);(d/'app').mkdir();(d/'app'/'marker').write_text('sandbox-marker\n');(d/'info').write_text('[Application]\nname=test\n')
     reserved=os.open("/dev/null",os.O_RDONLY);assert reserved==3
     active=[]
+    if resident:
+        subprocess.run(['cc','-pthread','-O2','-Wall','-Wextra','-Werror',
+            str(ROOT/'tests/host-command-seed.c'),'-o',str(d/'seed')],check=True)
+    prefix=[str(d/'seed')] if resident else []
     def spawn(argv,cwd='/app',env=None,fds=None,flags=0):
         env=env or {};fds=fds or {};a,b=socket.socketpair();os.dup2(b.fileno(),3);b.close();a.settimeout(5)
         original=os.environ.copy();original['HC_INHERIT']='inherited'
         log=open(d/'log','ab')
-        p=subprocess.Popen([str(ROOT/'build/host-command-loader'),'--android-filter','--trace','--host-command-fd','3','/usr/bin/bwrap','--sync-fd','3','--tmpfs','/','--ro-bind','/usr','/usr','--symlink','usr/bin','/bin','--symlink','usr/lib','/lib','--symlink','usr/lib64','/lib64','--proc','/proc','--dev','/dev','--bind',str(d/'app'),'/app','--ro-bind',str(d/'info'),'/.flatpak-info','--chdir','/app','/bin/sleep','60'],pass_fds=[3],env=original,stdout=log,stderr=log);os.close(3);assert os.open("/dev/null",os.O_RDONLY)==3;active.append((p,log))
+        p=subprocess.Popen([str(ROOT/'build/host-command-loader'),'--android-filter','--trace','--host-command-fd','3',*prefix,'/usr/bin/bwrap','--sync-fd','3','--tmpfs','/','--ro-bind','/usr','/usr','--symlink','usr/bin','/bin','--symlink','usr/lib','/lib','--symlink','usr/lib64','/lib64','--proc','/proc','--dev','/dev','--bind',str(d/'app'),'/app','--ro-bind',str(d/'info'),'/.flatpak-info','--chdir','/app','/bin/sleep','60'],pass_fds=[3],env=original,stdout=log,stderr=log);os.close(3);assert os.open("/dev/null",os.O_RDONLY)==3;active.append((p,log))
         body=b''.join(struct.pack('<I',n) for n in fds)+cwd.encode()+b'\0'+b''.join(x.encode()+b'\0' for x in argv)+b''.join((k+'='+v).encode()+b'\0' for k,v in env.items())
         packet=struct.pack('<6I',0x314d4348,len(body),len(argv),len(env),len(fds),flags)+body
         a.sendmsg([packet],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',fds.values()))] if fds else [])
@@ -67,6 +83,10 @@ with tempfile.TemporaryDirectory(prefix='hc-pair-',dir='/mnt/data/aosp/out') as 
         assert pid>0,pid
         assert read_int(s)==0;s.close()
         assert 'HC_PORTAL_STDERR' in (d/'log').read_text()
+        if resident:
+            trace=(d/'log').read_text()
+            assert 'adopt-fork-child' in trace,trace
+            assert 'adopt-miss-tid' not in trace,trace
         master,slave=pty.openpty()
         try:
             s,pid,p=spawn(['/app/hc-child'],env={'EXPECTED_UID':str(os.getuid())},fds={0:slave,1:slave,2:slave,42:slave})

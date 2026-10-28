@@ -366,6 +366,7 @@ rm -r "$temp_fixture"
 python3 tests/pty-host.py
 
 python3 tests/host-command-pair.py
+MATON_HC_RESIDENT=1 python3 tests/host-command-pair.py
 bash tests/sysvipc-host.sh
 
 python3 tests/host-command-threads.py

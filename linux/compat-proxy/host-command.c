@@ -6,6 +6,9 @@
 #include <limits.h>
 #include <sys/wait.h>
 #define HC_FDS 253 /* Linux SCM_MAX_FD */
+/* Raw monitor forks bypass the payload clone continuation. Rebase optional
+ * resident adoption before clearing TLS or entering a new payload image. */
+__attribute__((weak)) void proxy_host_fork_child(void) {}
 static const char *host_command_socket;
 static char host_command_short[sizeof(((struct sockaddr_un *)0)->sun_path)];
 static char host_command_name[NAME_MAX+1];
@@ -56,6 +59,7 @@ static void hc_close_except(const int *keep,int count) {
     }RAW(PROXY_SC_close,directory,0,0,0,0,0);
 }
 static void hc_parent(long parent) {
+    proxy_host_fork_child();
     struct kernel_action action={(uintptr_t)hc_stop,SA_RESTORER,(uintptr_t)proxy_restore,0};
     RAW(PROXY_SC_rt_sigaction,SIGTERM,&action,0,8,0,0);
     struct kernel_action pipe_ignore={1,0,0,0};RAW(PROXY_SC_rt_sigaction,SIGPIPE,&pipe_ignore,0,8,0,0);
@@ -158,6 +162,7 @@ static void hc_worker(int socket,char *const *original,long server) {
     if((unsigned)pipe[1]<high){long safe=RAW(PROXY_SC_fcntl,pipe[1],F_DUPFD_CLOEXEC,high,0,0,0);if(safe<0){error=(int)safe;goto fail;}RAW(PROXY_SC_close,pipe[1],0,0,0,0,0);pipe[1]=(int)safe;}
     long worker=RAW(PROXY_SC_getpid,0,0,0,0,0,0),child=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);if(child<0){error=(int)child;goto fail;}
     if(!child){
+        proxy_host_fork_child();
         RAW(PROXY_SC_close,pipe[0],0,0,0,0,0);RAW(PROXY_SC_prctl,PR_SET_PDEATHSIG,SIGKILL,0,0,0,0);
         if(RAW(PROXY_SC_getppid,0,0,0,0,0,0)!=worker)RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
         RAW(PROXY_SC_setsid,0,0,0,0,0,0);

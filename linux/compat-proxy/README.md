@@ -2013,3 +2013,53 @@ Android x86_64 resident/static and i386 loader builds and device-tree
 preflight passed. Optional external i386 musl/foreign-owner probes retain
 the suite's documented skips. Device confirmation and the portal crash fix
 remain outstanding.
+
+### Steam return-ABI startup and portal snapshots (2026-10-28, round 37)
+
+The day-r44 warning is current, not just accumulated webhelper output:
+helper 6642 enters its ELF32 peer at 14:05:07.153, never imports state, and
+pressure-vessel 6533 reports signal 31. Earlier i386-native filters remain
+installed after the intermediate ELF64 exec. Allowing only the peer branch
+of the latest filter cannot exempt the older filter's native branch.
+
+Ship a freestanding i386 peer (`libmatonos-v3-loader-i386-static.so`) and
+select it for cross-ABI exec, symmetrically with the existing ELF64 static
+peer. Both start exclusively through the fixed raw gateway until installing
+SIGSYS. Keep the bionic i386 loader available for explicit initial resident
+launches. Cross-ABI peers use the freestanding path, without resident bionic
+GPU thread adoption, as the ELF64 peer already does; the existing forwarding
+interfaces remain available. Device GL32 verification remains necessary.
+The negative round-trip fixture installs an early mmap2 linker stub on the
+return leg and verifies SIGSYS; the real static peers complete the round trip.
+Packaging tests execute the actual extracted NDK static peers through both
+ABIs and reject an interpreter in either static peer.
+
+Portal 6335 exits with status 11 at 14:05:24.203. Immediately beforehand its
+thread 6649 reports adoption misses with zero live records. Host-command's
+raw snapshot/server/worker/command forks bypassed normal clone-return
+adoption. Rebase each child while inherited FS still identifies its caller,
+before hc_exec clears TLS. This changes only child-local registry/altstack
+bookkeeping; it does not retire payload siblings or change signal routing.
+The guard starts with multiple inherited records, clears TLS after the raw
+monitor fork and checks that the caller alone remains discoverable. Removing
+the hook makes it fail (exit 62); with the hook it passes. The resident
+HostCommand integration also runs the stock nested bwrap display probe,
+SCM_RIGHTS, environment, exit-status, signal and teardown cases, including a
+pre-exec payload sibling. The original singleton fixture self-healed without
+the hook and was insufficient as a regression.
+
+The capture contains no portal fatal PC/tombstone, so this fixes a proven
+bookkeeping defect, not a symbolized explanation of that SIGSEGV. Another
+failure remains: nested bwrap 6654 resolves fd 34 to a backing `.v3-inodes`
+path outside its current logical home, then exits 1 (14:05:08.954). This can
+still prevent CEF from starting after the two fixes; do not interpret absence
+of a window as proof either fix failed.
+
+Validation: repository host suite (MATON_AOSP_ROOT=/mnt/data/aosp), full
+compat-proxy suite, extracted NDK peer execution/packaging, NDK x86_64
+resident/static and i386 resident/static builds, SDK-36 Java compilation,
+and device-tree preflight passed. No VM, kernel, shared-device-tree or AOSP
+changes. Coordinator: freshly launch traced Steam; verify the ELF32 helper
+imports state, follow the host-command adoption lines for each portal fork,
+and check for portal status 11. Retain portal crash PC/maps if it recurs and
+the fd-34/bwrap argument bundle if that independent source-path failure remains.
