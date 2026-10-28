@@ -16,6 +16,21 @@
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"FAIL %d %s errno=%d\n",__LINE__,#x,errno);return 1;}}while(0)
 int main(int argc,char **argv){
  CHECK(argc>=2);CHECK(chdir(argv[1])==0);
+ if(argc==4 && !strcmp(argv[2],"--bind")){
+  int source=open("source",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(source>=0 && write(source,"logical",7)==7);close(source);
+  CHECK(link("source","alias")==0);source=open("alias",O_RDONLY);CHECK(source>=0);
+  struct stat st;CHECK(fstat(source,&st)==0 && st.st_nlink==2);
+  char proc[80],number[32],destination[4096];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",source);snprintf(number,sizeof(number),"%d",source);
+  snprintf(destination,sizeof(destination),"%s/bound",argv[1]);
+  int bound=open(destination,O_CREAT|O_RDWR,0600);CHECK(bound>=0);close(bound);
+  for(int mode=0;mode<2;mode++){
+   pid_t child=fork();CHECK(child>=0);
+   if(!child){execl(argv[3],argv[3],"--ro-bind","/","/",mode?"--ro-bind-fd":"--ro-bind",mode?number:proc,destination,
+     "/bin/sh","-ec","test \"$(cat \"$1\")\" = logical; ! grep -q /[.]v3-inodes/ /proc/self/mountinfo","sh",destination,NULL);_exit(3);}
+   int status;CHECK(waitpid(child,&status,0)==child && status==0);
+  }
+  close(source);puts("PASS logical hardlink proc-fd and bind-fd sources through stock bwrap");return 0;
+ }
  if(argc==4 && !strcmp(argv[2],"--link")){CHECK(link("c",argv[3])==0);return 0;}
  if(argc==3 && !strcmp(argv[2],"--recover")){struct stat st;CHECK(stat("restored",&st)==0 && S_ISREG(st.st_mode));CHECK(stat("survivor",&st)==0 && st.st_nlink==1);int fd=open("restored",O_RDONLY);char buf[32]={0};CHECK(fd>=0 && read(fd,buf,31)==22 && !strcmp(buf,"interrupted conversion"));close(fd);puts("PASS crash conversion restoration and orphan collection");return 0;}
  if(argc==3 && !strcmp(argv[2],"--prepare")){int t=open("c",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);return 0;}
@@ -72,6 +87,10 @@ int main(int argc,char **argv){
   CHECK(fstatat(probe,"",&b,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)==0 && S_ISREG(b.st_mode) && b.st_nlink==2);
   CHECK(fstat(probe,&b)==0 && S_ISREG(b.st_mode) && b.st_nlink==2);
   char proc[80],content[8];snprintf(proc,sizeof(proc),"/proc/self/fd/%d",probe);
+  char logical[4096],expected[4096];ssize_t length=readlink(proc,logical,sizeof(logical)-1);CHECK(length>0);logical[length]=0;
+  snprintf(expected,sizeof(expected),"%s/b",argv[1]);CHECK(!strcmp(logical,expected));
+  char short_name[3];CHECK(readlink(proc,short_name,sizeof(short_name))==3 && !memcmp(short_name,expected,3));
+  char *canonical=realpath(proc,NULL);CHECK(canonical && !strcmp(canonical,expected));free(canonical);
   int reopened=open(proc,O_RDONLY|O_CLOEXEC);CHECK(reopened>=0);CHECK(read(reopened,content,5)==5 && !memcmp(content,"first",5));close(reopened);
   errno=0;CHECK(readlinkat(probe,"",content,sizeof(content))==-1 && errno==ENOENT);close(probe);
  }

@@ -405,8 +405,7 @@ end:if(lock>=0)unlock(lock);return r;
 static void refresh(const char *object){char root[PATH_MAX],store[PATH_MAX];size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock>=0){if(!recover(root,store)){struct proxy_stat st;if(!arch_stat_at(AT_FDCWD,object,&st,0))ensure_count(root,store,object);}unlock(lock);}}
 void links_recover_path(const char *path){char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;if(!tree(root,path) || !catpath(store,root,".v3-inodes") || arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return;long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock);}}
 /* Only regular files can be store objects; skip the /proc lookup for the rest. */
-static char *fd_path(int fd,uint64_t dev,uint64_t ino){
- char *tracked=vfs_fd_name_identity(fd,dev,ino);if(tracked)return tracked;
+static char *fd_backing_path(int fd){
  char proc[80]="/proc/self/fd/",path[PATH_MAX];size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;
  long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-1,0,0);
  if(n<=0)return NULL;
@@ -414,9 +413,15 @@ static char *fd_path(int fd,uint64_t dev,uint64_t ino){
  if(copy)p_copy(copy,path,length);
  return copy;
 }
+static char *fd_path(int fd,uint64_t dev,uint64_t ino){
+ char *tracked=vfs_fd_name_identity(fd,dev,ino);
+ return tracked?tracked:fd_backing_path(fd);
+}
 void links_fd_stat(int fd,struct proxy_stat *st){
  if(!S_ISREG(st->st_mode))return;
- char *path=fd_path(fd,(uint64_t)st->st_dev,(uint64_t)st->st_ino);
+ /* Link counts belong to the open kernel inode, even if the logical
+  * name has been unlinked or replaced. Never substitute its tracked name. */
+ char *path=fd_backing_path(fd);
  if(path){links_stat(path,st);vfs_free(path);}
 }
 void links_stat(const char *object,struct proxy_stat *st){if(component(object) && S_ISREG(st->st_mode)){refresh(object);st->st_nlink=read_count(object);}}

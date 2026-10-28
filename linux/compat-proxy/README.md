@@ -2332,3 +2332,45 @@ Kate/Obsidian/Chrome still draw, then capture traced Steam with exec argv,
 payload stderr and current webhelper logs. Confirm the GPU-bootstrap warnings
 are gone, and retain `/proc/self/fd/37`'s readlink plus bwrap argv if its ENOENT
 persists. No AOSP, kernel, shared image configuration or VM changes were made.
+
+
+### Steam round 43: keep hard-link backing names out of proc-fd results
+
+The fd-name table recorded inode identity only for directory opens. A regular
+file's first fstat compared its real inode against the table's zero identity,
+dropped its logical name, and exposed the kernel's `.v3-inodes/i-*` name on
+readlink of `/proc/self/fd/N`. Stock bwrap then tried to resolve that hidden
+name and failed with `Can't find source path /proc/self/fd/N`.
+
+Capture identity for every successfully statted open and reconstruct it for
+live descriptors imported across kernel exec. Proc-fd lookup validates that
+identity before returning its logical name. Keep link-count lookup separate:
+it must inspect the kernel inode's backing path, even after the logical name
+has been unlinked or replaced. No reverse tree scans or per-app rules were
+added. Cwd and mountinfo remain virtual paths; neither needs to expose the
+regular-file store to implement a bind.
+
+`tests/hardlinks.c` checks O_PATH/ordinary opens, relative dirfds/absolute
+paths, fstat before proc-fd readlink, truncated readlink, and realpath. Its
+`--bind` mode runs stock bwrap after fork/exec, using both `/proc/self/fd/N`
+and `--ro-bind-fd`, checks the bound file's content and ensures mountinfo has
+no store path. The existing tests retain coverage of last-unlink, shared
+writes, replacement, recovery and concurrent processes. Negative control
+using main 434e39c fails both the logical-name assertion and stock bwrap's
+source lookup (exit 1); the fixed build passes both.
+
+Coordinator device check: rebuild the subsystem and launch traced Steam on
+a fresh boot. Check nested bwrap no longer reports a missing proc-fd source,
+then retain current webhelper-linux/steamui_html logs and exec argv to see
+whether the real CEF binary and its children start. Raw diagnostic lines
+such as `zero-read ... target=.../.v3-inodes/...` describe internal backing
+fds and are not payload readlink results; counting all store mentions is
+not a valid pass/fail check. No Steam UI success is claimed without that
+fresh-device run. No AOSP, kernel, shared configuration or VM changes.
+
+Validation: full `tests/run.sh` passed with the final sources, including the
+production Android loader builds, stock Flatpak/bwrap launch-chain tests,
+X11 socket and nested-shm binds, SIGCHLD/signalfd, mixed-ABI exec, hard-link
+recovery and the new bind regression. Device preflight passed. Evidence:
+`/mnt/data/aosp/out/pc-logs/agents/steam-r43-suite-final.log`,
+`steam-r43-preflight.log`, and `steam-r43-negative/{direct,bind}.log`.

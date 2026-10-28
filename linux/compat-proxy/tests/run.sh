@@ -391,6 +391,11 @@ python3 tests/erofs-single-backing-host.py
 python3 tests/erofs-ldconfig-host.py
 python3 tests/icd-dup-host.py
 bash tests/musl-host.sh
+logical_bind_fixture=$(mktemp -d "$PWD/build/logical-bind.XXXXXX")
+touch "$logical_bind_fixture/.v3-store-root"
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$logical_bind_fixture" --bind "$PWD/build/musl-host-root/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/bwrap" >build/logical-bind.out 2>build/logical-bind.log
+cat build/logical-bind.out
+rm -r "$logical_bind_fixture"
 chrome_out=${MATON_CHROME_TEST_OUT:-/mnt/data/aosp/out/pc-logs/chrome-sol-host-launch}
 mkdir -p "$chrome_out/classes" "$chrome_out/runtime"
 javac -d "$chrome_out/classes" \

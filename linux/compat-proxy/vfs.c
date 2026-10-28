@@ -695,7 +695,7 @@ char *vfs_proc_fd_name(const char *path){
         struct proxy_stat st;if(arch_stat_fd((int)fd,&st)<0 ||
             (!(flags>=0 && (flags&O_PATH)) &&
              (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode) || !(st.st_mode&S_IFMT))))return NULL;
-        return vfs_fd_name((int)fd);
+        return vfs_fd_name_identity((int)fd,(uint64_t)st.st_dev,(uint64_t)st.st_ino);
     }
 return NULL;
 }
@@ -940,7 +940,10 @@ void vfs_fd_record(int fd,int dirfd,const char *path,int capture_identity){
     }
     vfs_free(alias);
     if(!global)return;
-    struct proxy_stat st={0};long stat_result=capture_identity?arch_stat_fd(fd,&st):-ENOSYS;
+    /* Regular-file fstat consults this identity too. Leaving it zero used
+     * to discard the logical name on the first fstat, exposing .v3-inodes
+     * through the next proc-fd readlink. */
+    struct proxy_stat st={0};long stat_result=arch_stat_fd(fd,&st);
     proxy_sigmask_t mask=fd_names_lock();
     if(!fd_name_set_locked(fd,global)){
         struct fd_name *entry=&fd_names[fd];
@@ -1271,6 +1274,9 @@ void vfs_state(struct state *s){
   struct fd_name *d=&fd_names[fd];size_t n=p_len(path)+1;
   if(d->path && n<=d->capacity){p_copy(d->path,path,n);d->length=n;vfs_free(path);}
   else {vfs_free(d->path);d->path=path;d->capacity=n;d->length=n;}
+  struct proxy_stat st;
+  d->identity_valid=arch_stat_fd(fd,&st)==0;
+  if(d->identity_valid){d->dev=st.st_dev;d->ino=st.st_ino;}
   if(!state_live(fd))s->error=-EBADF;
  }else for(size_t fd=0;fd<fd_names_capacity;fd++)if(fd_names[fd].length && state_live((int)fd)){state_word(s,fd);state_string(s,&fd_names[fd].path);}
  count=0;for(struct temp_lock *l=temp_locks;l;l=l->next)count++;
