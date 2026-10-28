@@ -515,6 +515,13 @@ int main(int argc,char **argv,char **environ) {
     for(unsigned e=0;environ[e];e++){const char *s=environ[e];if(s[0]=='T' && s[1]=='M' && s[2]=='P' && s[3]=='D' && s[4]=='I' && s[5]=='R' && s[6]=='=')proxy_tmpdir=s+7;}
     int resumed=argc>4 && p_equal(argv[1],"--resident-state");
     if(resumed){
+        /* A kernel exec replaced this image's globals: the trace flag is zero
+         * and the imported sink does not exist yet, so a resident that dies
+         * before import is completely silent. Report entry on fd 2, the pipe
+         * the app-side launcher relays for the whole process, and record
+         * whether a seccomp filter chain crossed the exec (mode 2 = FILTER).
+         * Absent this line the failure is in the kernel-to-bionic startup. */
+        proxy_log("resident-enter",argc,RAW(PROXY_SC_prctl,PR_GET_SECCOMP,0,0,0,0,0));
         if(state_import(argv[2],argv[3]))return 2;
         environ=state_environment;
         /* Do not leave the bearer token in the kernel's original cmdline after

@@ -171,20 +171,38 @@ static void transfer(struct state *s){
 }
 static unsigned decimal(char *p,uint64_t value){char r[24];unsigned n=0,k=0;do{r[n++]=value%10+'0';value/=10;}while(value);while(n)p[k++]=r[--n];p[k]=0;return k;}
 static int parse(const char *p,uint64_t *v){*v=0;if(!*p)return -EINVAL;for(;*p;p++){if(*p<'0'||*p>'9'||*v>(UINT64_MAX-9)/10)return -EINVAL;*v=*v*10+*p-'0';}return 0;}
+/* A rejected handoff used to leave status 2 behind with no trace at all: the
+ * fresh resident still has its zero-initialised trace flag and the payload's
+ * sink has not been imported yet. Every check that runs before the sink can be
+ * restored therefore reports on the descriptor the kernel cleared for exec,
+ * fd 2, which the app-side launcher relays for the whole process lifetime. */
+static void import_reject(const char *stage,long first,long second){
+ proxy_log(stage,first,second);
+}
 /* A sealed anonymous FD and a random bearer nonce bind the stream to this
  * handoff. The FD is private while payload code runs; no filesystem state
  * filename or environment-selected executable is accepted. */
 int state_import(const char *number,const char *token){
- uint64_t fd,nonce;if(parse(number,&fd)||fd>INT32_MAX||parse(token,&nonce))return -EINVAL;
+ uint64_t fd,nonce;
+ if(parse(number,&fd)||fd>INT32_MAX){import_reject("resident-import-fd",(long)fd,0);return -EINVAL;}
+ /* The nonce is the bearer credential; never write its value to a log. */
+ if(parse(token,&nonce)){import_reject("resident-import-token",0,0);return -EINVAL;}
  private_fd=fd;
  long seals=RAW(PROXY_SC_fcntl,fd,F_GET_SEALS,0,0,0,0);
- if(seals!=(F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE))return -EPERM;
- struct proxy_stat st;if(arch_stat_fd(fd,&st)||st.st_size<32||(uint64_t)st.st_size>SIZE_MAX)return -EINVAL;
+ const long wanted=F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE;
+ if(seals!=wanted){import_reject("resident-import-seals",seals,wanted);return -EPERM;}
+ struct proxy_stat st;long stat_error=arch_stat_fd(fd,&st);
+ if(stat_error||st.st_size<32||(uint64_t)st.st_size>SIZE_MAX){
+  import_reject("resident-import-size",stat_error,stat_error?0:(long)st.st_size);return -EINVAL;}
  long data=RAW(PROXY_SC_mmap,0,st.st_size,PROT_READ,MAP_PRIVATE,fd,0);
- if((unsigned long)data>=(unsigned long)-4095)return data;
+ if((unsigned long)data>=(unsigned long)-4095){import_reject("resident-import-mmap",data,st.st_size);return data;}
  struct state s={.fd=fd,.reading=1,.size=st.st_size,.data=(void *)data};
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
- if(magic!=UINT64_C(0x335854454e4f544d)||version!=11||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
+ uint64_t self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+ if(magic!=UINT64_C(0x335854454e4f544d)){import_reject("resident-import-magic",(long)magic,(long)version);s.error=-EPERM;}
+ else if(version!=11){import_reject("resident-import-version",(long)version,11);s.error=-EPERM;}
+ else if(pid!=self){import_reject("resident-import-pid",(long)pid,(long)self);s.error=-EPERM;}
+ else if(key!=nonce){import_reject("resident-import-nonce",0,0);s.error=-EPERM;}
  /* Restore the diagnostic sink before importing VFS/fd state. Payload stderr
   * may be redirected (Steam uses steamui_html.txt), and import can fail before
   * proxy_state reaches the saved sink. Keep that failure observable. */
@@ -199,7 +217,9 @@ int state_import(const char *number,const char *token){
    if(!s.error){state_environment[count]=NULL;transfer(&s);}}
  }
  if(!s.error && s.pos!=s.size)s.error=-EINVAL;
- if(proxy_trace)proxy_log("exec-state-import",ARCH_AUDIT,s.error);
+ /* A failed import must be visible even when the payload asked for no tracing:
+  * the new resident is the only observer of its own rejected handoff. */
+ if(proxy_trace || s.error)proxy_log("exec-state-import",ARCH_AUDIT,s.error);
  RAW(PROXY_SC_munmap,data,st.st_size,0,0,0,0);proxy_private_fd_release((int)fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);private_fd=-1;
  return s.error;
 }
