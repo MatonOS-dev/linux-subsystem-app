@@ -29,3 +29,16 @@ for base in 0x10001000 0x37a53000 0x4ffff000; do
  unshare -Urpf --mount-proc env LD_LIBRARY_PATH="$runtime/lib/bionic" \
   timeout 15 "$output/start" "$output/peer" "$base"
 done
+
+# Without the inherited exemption, the linker dies before a handler exists.
+set +e
+unshare -Urpf --mount-proc env LD_LIBRARY_PATH="$runtime/lib/bionic" \
+ MATON_TEST_NO_NATIVE_EXEMPT=1 timeout 15 "$output/start" "$output/peer" 0x30000000 \
+ >"$output/no-exemption.log" 2>&1
+negative_status=$?
+set -e
+if (( negative_status != 159 )); then
+ echo "FAIL expected linker SIGSYS without native exemption, got $negative_status" >&2
+ exit 1
+fi
+echo 'PASS negative control: inherited filter without bionic32 exemption kills linker with SIGSYS'

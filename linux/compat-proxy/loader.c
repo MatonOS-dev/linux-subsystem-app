@@ -45,6 +45,7 @@ static const char *gpu_bridge_error(void) { return dlerror(); }
 #define STACK_SIZE (4UL<<20)
 struct mapped { uintptr_t entry, phdr, base, area, size, target; unsigned phnum; char interp[4096]; };
 static int resident_collision(uintptr_t low,uintptr_t high) {
+    if(proxy_native_overlap(low,high-low))return 1;
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
     /* ELF32 PIE is relocated into the kernel's available address space. Its
      * link-time 0x70000000 layout is not its live reservation after ASLR. */
@@ -598,6 +599,8 @@ int main(int argc,char **argv,char **environ) {
     if(gpu_bridge_enabled)proxy_i386_tls_reservation(1);
 #endif
 #endif
+    int prepared=proxy_native_prepare();
+    if(prepared){proxy_log("native-reservation-error",0,prepared);return 1;}
     vfs_gpu_init();
     struct image image; int r=proxy_load(argv[i],argv+i+(resumed?1:0),environ,&image);
     if(r) {proxy_log("load-error",0,r);return 1;}

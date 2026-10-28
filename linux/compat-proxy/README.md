@@ -2195,3 +2195,80 @@ run's temporary test repositories because the output filesystem had less than
 3% free; the production configuration was untouched. Java compilation used a
 compile-only version code and excluded native preBuild tasks already checked
 separately. No APK was published and no VM was started.
+
+### Steam round 41: pre-placed dynamic ELF32 bionic startup
+
+A kernel ABI exec retains seccomp filters but drops SIGSYS handlers and old
+bionic mappings. Random ELF32 linker startup therefore cannot use the previous
+ELF64 process's native IP exemptions. The dynamic i386 peer now enters a small
+freestanding ET_EXEC bootstrap without PT_INTERP. Before bionic executes, all
+bootstrap syscalls use the inherited fixed i386 gateway at 0x70300042.
+
+The initial resident chooses a random page-aligned 256 MiB native region below
+4 GiB, reserves it PROT_NONE, and includes an AUDIT_ARCH_I386-only exemption in
+every routing, Android-policy and installed payload filter. The chosen base
+crosses kernel exec in the private state plus the native startup environment.
+The ELF32 bootstrap maps the stock bionic linker there with NOREPLACE collision
+checks. During initial linking it temporarily occupies outside holes so stock
+bionic's normal dependency allocator stays in this region. It then releases
+those temporary holes and reserves the remaining holes inside the native
+region before entering the production resident. There is no static-libdl GPU
+substitute: the real dynamic peer, bionic TLS, adoption and GPU bootstrap remain.
+
+The bootstrap preserves the original auxv pointer across linker constructors,
+which may compact/change the environment. It releases temporary outside holes
+before growing its maps scratch buffer for the final reservation pass: a full
+native dependency graph can produce more maps entries than the initial buffer.
+These cases are covered by the production-peer GPU fixture.
+
+Every IP exemption is scoped to its audit architecture, including both raw
+PCs prepended to payload filters. The unused i386 gateway page stays reserved
+in ELF64 processes. The native executable ranges captured by earlier residents
+are serialized in exec state (wire version 13) and reserved before loading a
+payload in a new address space; ranges outside the ABI's address space need no
+mapping. No collision is silently ignored. Payload MAP_FIXED/NOREPLACE,
+munmap, mprotect, fixed mremap and SysV SHM_REMAP cannot replace or expose these
+ranges; fixed ELF loads also reject them. Native internal gateway operations
+retain access for the actual linker/driver implementation. This preserves
+routing correctness rather than adding a Linux security boundary.
+
+Host regressions (no VM):
+
+* `tests/bionic32-start.sh OUTPUT` performs a real ELF64 kernel exec into the
+  bionic ELF32 bootstrap under two inherited restrictive filters, at three
+  different bases. Bionic getpid/allocator/fork syscalls remain untrapped,
+  generated payload getpid traps, and removing the native exemption kills the
+  linker with SIGSYS before a handler exists.
+* `tests/native-reservation.sh OUTPUT` tests the production filter/dispatch:
+  a syscall with x86_64 audit arch inside the i386 region still traps; payload
+  mappings are rejected; a stale native IP range stays PROT_NONE across real
+  ELF64 -> ELF32 -> ELF64 kernel exec, including rejected payload mmap,
+  munmap and mprotect after both ELF64 entries. SysV recovery tests also check
+  SHM_REMAP refusal for a native reservation.
+* `tests/bionic32-gpu.sh OUTPUT VULKAN_HEADERS` uses the actual Android-linked
+  dynamic resident, real GPU bootstrap/adoption and freestanding i386 Vulkan
+  ICD after the inherited-filter kernel exec. A small host-only bionic Vulkan
+  driver stand-in returns a successful vkCreateInstance; EGL initialization
+  is suppressed because the host has no Android GPU service. This verifies
+  cross-ABI startup and GPU bootstrap mechanics, not a physical GPU driver.
+* The separate Vulkan suite retains fork -> fresh ICD -> real lavapipe
+  vkCreateInstance and both direct-gateway regressions. This run measured
+  100,000 -> 0 SIGSYS trips and 2441 -> 315 ns/call on ELF64; ELF32 direct calls
+  were 426 ns/call. These are syscall microbenchmarks, not GPU frame times.
+
+Coordinator device follow-up: package all four loader files (including the
+new `libmatonos-v3-peer-i386.so` dependency), fresh-boot the image, verify
+Kate/Obsidian/Chrome still render, then trace Steam through its i386 ld.so and
+capsule probes, steamsysinfo/vulkandriverquery and steamwebhelper. Check for
+absence of early SIGSYS and missing GPU bootstrap messages, and collect the
+current-run webhelper/CEF logs if its restart loop remains. No kernel, AOSP or
+shared device-tree changes are needed. No VM was run by this agent.
+
+Final round-41 validation passed: full compat-proxy suite (including resident
+signalfd, real launch-chain and Wayland tests), full repository host suite,
+Android NDK ELF64/dynamic ELF32/static ELF64 builds and APK extraction checks,
+SDK-36 Java compilation, full Vulkan suite, production-peer ELF32 GPU fixture,
+and device-tree preflight. OSTree's free-space reserve was disabled only in
+this run's disposable test repositories because the output filesystem has less
+than 3% free. Java compilation used a compile-only version code and excluded
+native preBuild work verified by the NDK scripts. No APK was published.

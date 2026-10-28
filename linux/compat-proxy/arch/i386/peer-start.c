@@ -23,6 +23,7 @@ extern long peer_raw(long,long,long,long,long,long,long);
 extern void _start(void);
 extern void peer_enter(void *,void *);
 static uint32_t region;
+static Elf32_auxv_t *saved_aux;
 static unsigned down(unsigned x){return x&~4095u;}
 static unsigned up(unsigned x){return (x+4095)&~4095u;}
 static unsigned length(const char *s){unsigned n=0;while(s[n])n++;return n;}
@@ -161,7 +162,8 @@ static unsigned load_linker(const char *path){
 }
 void peer_start(unsigned *stack){
  unsigned argc=*stack;char **av=(void *)(stack+1),**env=av+argc+1,**end=env;while(*end)end++;
- Elf32_auxv_t *aux=(void *)(end+1),*atbase=0;
+ Elf32_auxv_t *aux=saved_aux?saved_aux:(void *)(end+1),*atbase=0;
+ saved_aux=aux;
  for(Elf32_auxv_t *a=aux;a->a_type;a++)if(a->a_type==AT_BASE)atbase=a;
  if(!atbase)fail("missing AT_BASE");
  if(!atbase->a_un.a_val){
@@ -196,8 +198,10 @@ void peer_start(unsigned *stack){
  }
  /* Stock bionic has relocated us and initialized libc/TLS/DT_NEEDED peers. */
  region=atbase->a_un.a_val;
- occupy_holes(1);
+ /* Free the temporary outside holes first: a large dependency graph can
+  * grow /proc/self/maps past the scratch capacity. No payload exists yet. */
  release_holes();
+ occupy_holes(1);
  void *(*lookup)(void *,const char *,const void *)=symbol(region,"__loader_dlsym");
  uint32_t *base=lookup((void *)-1,"proxy_bionic32_base",_start);
  int (*run)(int,char **,char **)=lookup((void *)-1,"main",_start);

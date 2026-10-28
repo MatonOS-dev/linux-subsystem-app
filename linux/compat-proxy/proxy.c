@@ -1426,12 +1426,14 @@ static long creator_finish(long nr,proxy_arg_t *a,long result){
         vfs_fd_close((int)result);
     return result;
 }
+static int native_mapping_denied(long, const proxy_arg_t *);
 long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     PROFILE_BEGIN();
     /* The entry's save area must remain immutable: modernize/pack dispatch
      * may rewrite arguments, but syscall-preserved registers restore verbatim. */
     proxy_args args;p_copy(args,saved,sizeof(args));proxy_arg_t *a=args;
     nr=arch_decode_syscall(nr);
+    if(native_mapping_denied(nr,a))return -EACCES;
     /* Evaluate the payload operation before its VFS implementation enters
      * the exempt raw gateway. For TRAP use a real payload syscall frame;
      * the kernel supplies siginfo and preserves the app handler's edits. */
@@ -1733,15 +1735,65 @@ static long personality_call(proxy_arg_t *args,struct thread_state *thread) {
  * installed for native payload sites. Only our exact raw return PC bypasses it. */
 #include "bionic32.h"
 uint32_t proxy_bionic32_base;
+static struct arch_ip_range *inherited_native;
+static size_t inherited_native_count;
+static int native_prepared;
+int proxy_native_overlap(uint64_t lo,uint64_t size) {
+    uint64_t hi=lo+size;if(hi<lo)return 1;
+    if(lo<UINT64_C(0x70301000) && hi>UINT64_C(0x70300000))return 1;
+    if(proxy_bionic32_base && lo<(uint64_t)proxy_bionic32_base+BIONIC32_SIZE && hi>proxy_bionic32_base)return 1;
+    for(size_t i=0;i<inherited_native_count;i++)
+        if(lo<inherited_native[i].end && hi>inherited_native[i].begin)return 1;
+    return 0;
+}
+static int native_mapping_denied(long nr,const proxy_arg_t *a) {
+    if(nr==PROXY_SC_mmap)return (a[3]&(MAP_FIXED|0x100000)) && proxy_native_overlap(a[0],a[1]);
+    if(nr==PROXY_SC_munmap || nr==PROXY_SC_mprotect || nr==PROXY_SC_mremap) {
+        if(proxy_native_overlap(a[0],a[1]))return 1;
+        if(nr==PROXY_SC_mremap && (a[3]&2) && proxy_native_overlap(a[4],a[2]))return 1;
+    }
+    return 0;
+}
+/* Called before loading any payload ELF. A kernel exec has discarded every
+ * old bionic mapping but not its seccomp IP exemptions. Occupy those addresses
+ * before an allocator or ELF loader can place payload code there. */
+int proxy_native_prepare(void) {
+    if(native_prepared)return 0;
+    if(state_gpu_bridge && !proxy_bionic32_base) {
+        uint32_t random;
+        if(RAW(PROXY_SC_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return -EIO;
+        proxy_bionic32_base=UINT32_C(0x10000000)+(random%UINT32_C(0x40000))*4096;
+    }
+#if !defined(__i386__)
+    /* The foreign gateway is also inherited by older filters. Keep its page
+     * occupied until a kernel ABI exec replaces this address space. */
+    long gateway=RAW(PROXY_SC_mmap,UINT32_C(0x70300000),4096,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0);
+    if(gateway!=(long)UINT32_C(0x70300000))return gateway<0?(int)gateway:-EEXIST;
+    if(proxy_bionic32_base) {
+        long r=RAW(PROXY_SC_mmap,proxy_bionic32_base,BIONIC32_SIZE,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0);
+        if(r!=(long)proxy_bionic32_base)return r<0?(int)r:-EEXIST;
+    }
+#endif
+    for(size_t i=0;i<inherited_native_count;i++) {
+        uint64_t lo=inherited_native[i].begin, size=inherited_native[i].end-lo;
+        if(lo>UINTPTR_MAX)continue; /* Other ABI: cannot be mapped here. */
+        if(proxy_bionic32_base && lo>=proxy_bionic32_base && lo+size<=(uint64_t)proxy_bionic32_base+BIONIC32_SIZE)continue;
+        long r=RAW(PROXY_SC_mmap,lo,size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0);
+        if(r!=(long)lo)return r<0?(int)r:-EEXIST;
+    }
+    native_prepared=1;return 0;
+}
 static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fprog *original) {
     /* Both fixed gateways survive the filter across a kernel ABI handoff.
      * Exempting only this ABI leaves the next resident's internal calls
      * subject to an earlier payload policy. No payload syscall site is added. */
     const uint64_t pcs[]={arch_gateway_pc(0),
         ARCH_AUDIT==AUDIT_ARCH_I386?UINT64_C(0x600000300042):UINT64_C(0x70300042)};
-    struct sock_filter prefix[20];unsigned at=bionic32_filter(prefix);
+    struct sock_filter prefix[32];unsigned at=bionic32_filter(prefix);
     for(unsigned i=0;i<2;i++) {
         uint64_t pc=pcs[i];
+        prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,arch));
+        prefix[at++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,pc>UINT32_MAX?AUDIT_ARCH_X86_64:AUDIT_ARCH_I386,0,5);
         prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)+4);
         prefix[at++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,(uint32_t)(pc>>32),0,3);
         prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer));
@@ -1900,6 +1952,8 @@ done:
     RAW(PROXY_SC_close,fd,0,0,0,0,0);return n<0?n:result;
 }
 static int ours(long n) {
+    if((native_prepared || inherited_native_count || proxy_bionic32_base) &&
+       (n==PROXY_SC_mprotect || n==PROXY_SC_munmap || n==PROXY_SC_mremap))return 1;
     if(n==PROXY_SC_uname && proxy_trace)return 1;
     if(proxy_rewrite_traps(n))return 1;
     if(ipc_ours(n))return 1;
@@ -2235,6 +2289,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
+    if(native_mapping_denied(nr,a)){result=-EACCES;goto finish;}
     if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
@@ -2696,11 +2751,7 @@ static struct arch_ip_range *resident_bionic_ranges(size_t *count, int *error) {
     return ranges;
 }
 int proxy_install(int android) {
-    if(state_gpu_bridge && !proxy_bionic32_base) {
-        uint32_t random;
-        if(RAW(PROXY_SC_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return -EIO;
-        proxy_bionic32_base=UINT32_C(0x10000000)+(random%UINT32_C(0x40000))*4096;
-    }
+    int prepared=proxy_native_prepare();if(prepared)return prepared;
     ipc_init(); /* IPC failure must never prevent payload startup. */
     int diagnostics=proxy_diagnostics_init();if(diagnostics)return diagnostics;
     /* Android has no /dev/shm. Give this app proxy instance a private
@@ -2725,6 +2776,23 @@ int proxy_install(int android) {
         }
     }
     int result=arch_filter_install(libc,libc_count);
+    if(!result && libc_count) {
+        size_t total=inherited_native_count+libc_count;
+        struct arch_ip_range *all=RESIDENT_ALLOC(total*sizeof(*all));
+        if(!all)result=-ENOMEM;
+        else {
+            p_copy(all,inherited_native,inherited_native_count*sizeof(*all));
+            size_t used=inherited_native_count;
+            for(size_t i=0;i<libc_count;i++) {
+                if(proxy_bionic32_base && libc[i].begin>=proxy_bionic32_base &&
+                   libc[i].end<=(uint64_t)proxy_bionic32_base+BIONIC32_SIZE)continue;
+                size_t j=0;
+                for(;j<used;j++)if(all[j].begin==libc[i].begin && all[j].end==libc[i].end)break;
+                if(j==used)all[used++]=libc[i];
+            }
+            RESIDENT_FREE(inherited_native);inherited_native=all;inherited_native_count=used;
+        }
+    }
     RESIDENT_FREE(libc);
     return result;
 }
@@ -2733,6 +2801,18 @@ int proxy_install(int android) {
 void proxy_state(struct state *s){
  extern const char *proxy_tmpdir;
  proxy_bionic32_base=(uint32_t)state_word(s,proxy_bionic32_base);
+ uint64_t native_count=state_count(s,inherited_native_count);
+ if(s->reading) {
+     if(native_count>SIZE_MAX/sizeof(*inherited_native)){s->error=-EOVERFLOW;return;}
+     inherited_native=RESIDENT_ALLOC(native_count*sizeof(*inherited_native));
+     if(native_count && !inherited_native){s->error=-ENOMEM;return;}
+     inherited_native_count=native_count;
+ }
+ for(size_t i=0;i<inherited_native_count;i++) {
+     inherited_native[i].begin=state_word(s,inherited_native[i].begin);
+     inherited_native[i].end=state_word(s,inherited_native[i].end);
+     if(inherited_native[i].begin>=inherited_native[i].end)s->error=-EINVAL;
+ }
  uint64_t count;
  /* A kernel exec enters bionic before us; its ELF32 startup replaces the
   * persona with PER_LINUX32. Preserve the payload caller's persona instead,

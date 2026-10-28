@@ -38,9 +38,11 @@ int main(int argc,char **argv,char **env){
  unsigned char *site=mmap((void *)0x09000000,4096,3,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
  assert(site==(void *)0x09000000);
  const unsigned char code[]={0xb8,20,0,0,0,0xcd,0x80,0xc3};memcpy(site,code,sizeof(code));
- assert(!mprotect(site,4096,5));assert(((int (*)(void))site)()==12345 && traps==1);
+ assert(!mprotect(site,4096,5));
+ int (*volatile invoke)(void)=(void *)site;
+ assert(invoke()==12345 && traps==1);
  pid_t child=fork();assert(child>=0);
  if(!child){assert(getpid()>0);_exit(0);}
  int status;assert(waitpid(child,&status,0)==child && status==0);
- puts("PASS kernel ELF64 -> ELF32 bionic startup: libc native, payload trapped, fork works");return 0;
+ puts("PASS kernel ELF64 -> ELF32 bionic startup: libc native, payload trapped, fork works");fflush(stdout);return 0;
 }

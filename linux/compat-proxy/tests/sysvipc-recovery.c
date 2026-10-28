@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include "../sysvipc.c"
 const char *proxy_tmpdir;
+static uint64_t reserved_native;
+int proxy_native_overlap(uint64_t lo,uint64_t size){return reserved_native && lo<reserved_native+4096 && lo+size>reserved_native;}
 void *vfs_alloc(size_t n){return calloc(1,n);}
 void *vfs_palloc(size_t n){return calloc(1,n);}
 void vfs_free(void *p){free(p);}
@@ -38,7 +40,9 @@ int main(void){
   }
   /* A grandchild can remain unscheduled after clone while its parent dies.
    * Its inherited ticket must keep the segment alive through root's RMID. */
-  assert(!prctl(PR_SET_CHILD_SUBREAPER,1));int sh=(int)call(PROXY_SC_shmget,0,4096,0600,0);assert(sh>=0);char *mapping=(void *)call(PROXY_SC_shmat,sh,0,0,0);assert((long)mapping>=0);strcpy(mapping,"inherited-through-death");
+  assert(!prctl(PR_SET_CHILD_SUBREAPER,1));int sh=(int)call(PROXY_SC_shmget,0,4096,0600,0);assert(sh>=0);reserved_native=0x40000000;
+  assert(call(PROXY_SC_shmat,sh,reserved_native,SHM_REMAP,0)==-EACCES);reserved_native=0;
+  char *mapping=(void *)call(PROXY_SC_shmat,sh,0,0,0);assert((long)mapping>=0);strcpy(mapping,"inherited-through-death");
   int ready[2],release[2],finished[2];assert(!pipe(ready)&&!pipe(release)&&!pipe(finished));pid_t worker=fork();assert(worker>=0);
   if(!worker){ipc_fork();assert(!ipc_fork_prepare());pid_t grandchild=fork();assert(grandchild>=0);
     if(!grandchild){char ch;assert(read(release[0],&ch,1)==1);ipc_fork_result(0);assert(!strcmp(mapping,"inherited-through-death"));struct shmid64_ds d;assert(!call(PROXY_SC_shmctl,sh,IPC_STAT,(long)&d,0));assert(d.shm_nattch==1);assert(!call(PROXY_SC_shmdt,(long)mapping,0,0,0));pid_t me=getpid();assert(write(finished[1],&me,sizeof(me))==sizeof(me));_exit(0);}

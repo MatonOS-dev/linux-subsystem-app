@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+native_out=$(mktemp -d "${TMPDIR:-/mnt/data/aosp/out/pc-logs}/steam-personality-native.XXXXXX")
+bash tests/native-reservation.sh "$native_out/guards" >"$native_out/guards.log" 2>&1
+grep '^PASS ' "$native_out/guards.log"
+bash tests/bionic32-start.sh "$native_out/bionic32"
 bash tests/home-links.sh
 bash tests/exec-origin.sh
 cc -O2 -Wall -Wextra -Werror tests/reopen-dirfd.c -o build/reopen-dirfd

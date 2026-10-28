@@ -56,6 +56,8 @@ void proxy_rewrite_cache_init(const char *);
 void proxy_rewrite_relocate(uintptr_t,uintptr_t,size_t);
 void proxy_rewrite_mapping(int, uintptr_t, size_t, uint64_t);
 int proxy_install(int);
+int proxy_native_prepare(void);
+int proxy_native_overlap(uint64_t,uint64_t);
 void proxy_i386_tls_reservation(int);
 int proxy_i386_tls_prepare_payload(void);
 int proxy_tls_claim_reserved(const struct user_desc *, unsigned *);

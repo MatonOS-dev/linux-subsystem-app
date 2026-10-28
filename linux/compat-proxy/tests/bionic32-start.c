@@ -18,10 +18,16 @@ int main(int argc,char **argv){
  if(argc>2)proxy_bionic32_base=(uint32_t)strtoul(argv[2],NULL,0);
  char value[64];snprintf(value,sizeof(value),"%u",proxy_bionic32_base);
  assert(!setenv("MATON_V3_BIONIC32_BASE",value,1));
+ const char *provider=getenv("MATON_TEST_GPU_PROVIDER");
+ if(provider)assert(!setenv("LD_PRELOAD",provider,1));
  struct sock_filter code[32];unsigned n=bionic32_filter(code);
+ if(getenv("MATON_TEST_NO_NATIVE_EXEMPT"))n=0;
  struct sock_filter rest[]={
   BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,arch)),
-  BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,AUDIT_ARCH_I386,0,7),
+  BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,AUDIT_ARCH_I386,0,10),
+  BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
+  BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,173,0,1),
+  BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
   BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)+4),
   BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,0,0,4),
   BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)),
@@ -38,5 +44,7 @@ int main(int argc,char **argv){
   * both must exempt internal startup, not just the newest filter. */
  assert(!prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&filter));
  assert(!prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&filter));
- execl(argv[1],argv[1],NULL);perror("peer exec");return 1;
+ if(argc>3)execv(argv[1],argv+3);
+ else execl(argv[1],argv[1],NULL);
+ perror("peer exec");return 1;
 }

@@ -989,6 +989,7 @@ static long dispatch(struct ctx *c, long nr, proxy_arg_t *a, off *wr) {
     int id = p->id;
     off o = objoff(c, p);
     size_t len = (p->size + 4095) & ~4095UL;
+    if (addr && proxy_native_overlap((unsigned long)addr,len))return -EACCES;
     if (flags & SHM_REMAP)
       for (struct local_attach *la = attached; la; la = la->next)
         if (la->addr < (unsigned long)addr + len &&

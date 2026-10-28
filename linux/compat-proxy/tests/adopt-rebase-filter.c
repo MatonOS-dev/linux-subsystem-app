@@ -18,7 +18,14 @@ static struct adopt_thread *record;
 static volatile int delivered;
 #define CHECK(x) do {if(!(x)) {R(exit_group,__LINE__,0,0,0,0,0);__builtin_unreachable();}} while(0)
 static void rebase_probe(int sig,siginfo_t *info,void *opaque) {
-    CHECK(sig==SIGSYS && info->si_syscall==SYS_sigaltstack);
+    CHECK(sig==SIGSYS);
+    /* Native reservations route payload mprotect through the proxy too.
+     * This fixture replaces its handler only to inspect adoption/altstack. */
+    if(info->si_syscall==SYS_mprotect) {
+        greg_t *r=((ucontext_t *)opaque)->uc_mcontext.gregs;
+        r[REG_RAX]=R(mprotect,r[REG_RDI],r[REG_RSI],r[REG_RDX],0,0,0);return;
+    }
+    CHECK(info->si_syscall==SYS_sigaltstack);
     void *previous=record->signal_stack;
     record->fork_context=opaque;
     fork_rebase(record);
