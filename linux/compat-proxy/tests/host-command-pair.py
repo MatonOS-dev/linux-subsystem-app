@@ -61,6 +61,12 @@ with tempfile.TemporaryDirectory(prefix='hc-pair-',dir='/mnt/data/aosp/out') as 
             os.close(read_fd)
             if write_fd>=0:os.close(write_fd)
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',str(ROOT/'tests/host-command-child.c'),'-o',str(d/'app/hc-child')],check=True)
+        # portal diagnostics survive the worker's close-all-fds setup even
+        # when no stdio SCM_RIGHTS mappings were supplied.
+        s,pid,p=spawn(['/app/hc-child','portal'])
+        assert pid>0,pid
+        assert read_int(s)==0;s.close()
+        assert 'HC_PORTAL_STDERR' in (d/'log').read_text()
         master,slave=pty.openpty()
         try:
             s,pid,p=spawn(['/app/hc-child'],env={'EXPECTED_UID':str(os.getuid())},fds={0:slave,1:slave,2:slave,42:slave})

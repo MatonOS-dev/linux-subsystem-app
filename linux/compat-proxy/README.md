@@ -1961,3 +1961,55 @@ passed. The suite includes the real Flatpak/bwrap launch with resident workers,
 SIGCHLD routing, Wayland roundtrip, nested Unix-socket binds and cross-ABI exec.
 Optional foreign-owner (root) and external i386 musl probes were skipped by
 the suite. No VM was started.
+
+### Steam pressure-vessel peer startup (2026-10-28, round 36)
+
+In day-r43, pressure-vessel PID 4434 forks helper 4498 with argv
+`i386-linux-gnu-capsule-capture-libs --print-ld.so`. At 13:33:28.319
+it validates the ELF32 and `/lib/ld-linux.so.2`, then emits
+`exec-peer-enter 3221225534 36`; no peer state-import/handler trace follows.
+The parent immediately reports SIGSYS. This is before payload syscall
+handling, not an unimplemented helper syscall. The freestanding ELF64
+resident installed a peer-ABI TRAP branch, whereas the bionic resident
+already allowed peer startup. Kernel exec resets SIGSYS handlers, so an
+Android-linked i386 peer cannot run its linker through that branch.
+
+Allow peer startup in both resident builds. The new peer installs its own
+routing before payload entry; Android's app filter remains in force. This
+uses the same rule as the existing bionic resident and app-filter peer
+branch, without helper/application exceptions. The early-linker regression
+in `cross-exec.sh` kernel-execs an ELF32 sibling which deliberately calls
+mmap2 outside the raw gateway before importing state, then enters the real
+resident and completes both ABI handoffs with VFS, descriptors and SysV
+state intact. Against the old filter, host strace identifies
+`AUDIT_ARCH_I386 / __NR_mmap2 (192)` followed by SIGSYS; the fixed filter
+passes. The device capture does not identify its first linker syscall.
+
+The destination disconnect is a separate failure: the upstream portal
+4108 is reaped with status 11 at 13:33:00.669; its replacement 4472 receives
+the Spawn body and seven SCM_RIGHTS fds at 13:33:29.859 and is reaped with
+status 11 at .958. Launch-client 4434 exits 125 after reporting connection
+closed. There is no fatal PC report in this capture, so its SIGSEGV cause
+is not established. Earlier nested bwrap 4433 separately reports missing
+`/proc/self/fd/34` at 13:32:45.356. CEF itself has not been shown to start.
+
+The worker also had a concrete diagnostic bug: its fd sweep closes original
+stderr, then its portal setup skipped restoring fd 2. Restore it from the
+saved diagnostic sink before applying caller fd mappings. A host-command
+regression starts a portal-shaped child with no stdio mappings and checks
+that fd 2 exists and the stderr write succeeds. This restores diagnostics;
+it is not a claim to fix the portal SIGSEGV.
+
+Coordinator verification: freshly launch traced Steam, confirm the ELF32
+`--print-ld.so` helper imports state and the SIGSYS warning disappears.
+Retain portal stderr and capture the Android crash buffer/tombstone for any
+portal SIGSEGV (include executable, PC and maps); also retain the nested
+bwrap argument bundle around any missing fd source. No VM was started.
+
+Validation: the full repository host suite passed with SDK 36; compat-proxy
+suite includes the new peer-startup and portal-stderr regressions, stock
+Flatpak/bwrap resident-worker launch, SIGCHLD routing and Wayland roundtrip.
+Android x86_64 resident/static and i386 loader builds and device-tree
+preflight passed. Optional external i386 musl/foreign-owner probes retain
+the suite's documented skips. Device confirmation and the portal crash fix
+remain outstanding.

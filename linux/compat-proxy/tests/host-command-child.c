@@ -5,7 +5,13 @@
 #include <stdlib.h>
 #include <termios.h>
 #include <signal.h>
-int main(void) {
+#include <string.h>
+int main(int argc,char **argv) {
+    if(argc==2 && !strcmp(argv[1],"portal")) {
+        const char text[]="HC_PORTAL_STDERR\n";
+        if(fcntl(2,F_GETFD)<0 || write(2,text,sizeof(text)-1)!=(ssize_t)sizeof(text)-1)return 7;
+        return 0;
+    }
     struct sigaction action;sigaction(SIGPIPE,NULL,&action);if(action.sa_handler!=SIG_DFL)return 6;
     if(!isatty(0)||!isatty(42))return 1;
     if(getsid(0)!=getpid()||tcgetpgrp(0)!=getpgrp())return 2;

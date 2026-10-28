@@ -168,7 +168,13 @@ static void hc_worker(int socket,char *const *original,long server) {
          * output; other host commands remain silent as before. */
         int portal=argv[1]&&p_len(argv[1])==6&&argv[1][0]=='p'&&argv[1][1]=='o'&&
                    argv[1][2]=='r'&&argv[1][3]=='t'&&argv[1][4]=='a'&&argv[1][5]=='l';
-        for(int i=0;i<3;i++)if(null!=i&&!(portal&&i==2))RAW(PROXY_SC_dup3,null,i,0,0,0,0);
+        /* hc_close_except already closed the original stdio. Restore the
+         * saved sink explicitly: leaving fd 2 closed lets the portal reuse it
+         * for a bus/socket and loses stderr (or writes diagnostics into it). */
+        for(int i=0;i<3;i++) {
+            long source=portal&&i==2?proxy_diagnostic_fd:null;
+            if(source!=i)RAW(PROXY_SC_dup3,source,i,0,0,0,0);
+        }
         if(null>2)RAW(PROXY_SC_close,null,0,0,0,0,0);
         for(int i=0;i<nfds;i++){long r=RAW(PROXY_SC_dup3,copies[i],targets[i],0,0,0,0);if(r<0){error=(int)r;goto child_fail;}RAW(PROXY_SC_close,copies[i],0,0,0,0,0);vfs_fd_close((int)targets[i]);}
         for(int i=0;i<nfds;i++)if(targets[i]<3){struct termios tty;if(RAW(PROXY_SC_ioctl,targets[i],TCGETS,&tty,0,0,0)==0){RAW(PROXY_SC_ioctl,targets[i],TIOCSCTTY,0,0,0,0);break;}}
