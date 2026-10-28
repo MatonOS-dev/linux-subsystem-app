@@ -30,6 +30,11 @@ javac -d "$OUT/chrome-per-app-dirs/classes" \
   "$ROOT/tests/chrome-sol/FlatpakPerAppDirsTest.java"
 java -cp "$OUT/chrome-per-app-dirs/classes" FlatpakPerAppDirsTest \
   "$OUT/chrome-per-app-dirs/runtime"
+mkdir -p "$OUT/machine-id/classes" "$OUT/machine-id/files"
+javac -d "$OUT/machine-id/classes" \
+  "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/MachineId.java" \
+  "$ROOT/linux/subsystem/host/app/src/test/java/org/matonos/linux/stub/MachineIdTest.java"
+java -cp "$OUT/machine-id/classes" org.matonos.linux.stub.MachineIdTest "$OUT/machine-id/files"
 mkdir -p "$OUT/flatpak-output"
 javac -d "$OUT/flatpak-output" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/FlatpakOutput.java" \

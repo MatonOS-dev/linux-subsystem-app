@@ -1429,3 +1429,49 @@ Validation: full proxy suite (private external fixture roots), nested
 host-command-pair display probe, native uname comparison/EFAULT, both
 production Android loader builds, device-tree preflight and diff checks pass.
 Device confirmation remains pending with the coordinator; no Java changed.
+
+### Chrome PCI enumeration (fork-adopt round 26)
+
+The day-r30 Chrome trace is not silent: PIDs 29107 and 29129 end their
+traced operations by opening `/sys/bus/pci/devices`, then writing
+`pcilib: Cannot open /sys/bus/pci/devices`. The browser subsequently reports
+GPU exit_code=256. The generated GPU tree had `/bus/pci` but no `devices`
+subdirectory; its DRM device and PCI attributes already existed elsewhere
+in the same tree. Publish the standard bus directory and its device symlink
+to that existing synthetic device. No host PCI access, app-specific flags,
+GL selection changes or sandbox exceptions are needed.
+
+Obsidian day-r29 also has this diagnostic (PID 26086), despite rendering;
+its working UI is not evidence that PCI enumeration succeeded. Chrome uses
+`--ozone-platform=wayland`, while Obsidian starts with
+`--ozone-platform-hint=auto` and its captured child uses X11. The captures
+do not expose GPU fork argv sufficiently to establish a GL/ANGLE difference.
+Repair the demonstrated missing sysfs interface rather than changing those
+choices. Device confirmation of the GPU exit loop remains necessary.
+
+`tests/gpu-sysfs.c` now enumerates the bus with opendir/readdir and opens its
+entry relative to the directory fd, checks identity attributes and verifies
+that the bus and DRM aliases identify the same inode. This failed before the
+fix with ENOENT. `tests/gpu-host.sh` additionally runs real `lspci -n` when
+installed, and checks the same fixture after bwrap root binding/pivot. GPU,
+no-device, software and invalid-property cases pass. Android x86_64/i386
+loader builds pass. Logs are under
+`/mnt/data/aosp/out/pc-logs/fork-adopt-round26-{gpu,android}.log`.
+
+Coordinator: rebuild the loader/APK and capture Chrome and Obsidian with
+v3-trace for 90 seconds on the fresh image. Check that PCI enumeration no
+longer prints the pcilib error, Chrome retains its toplevel without the GPU
+exit loop, and Obsidian still renders. Preserve stderr, exec argv, compositor
+messages and screenshots. No VM was run; no kernel, AOSP or shared device-tree
+changes are required.
+
+Round-26 final verification: full `bash linux/compat-proxy/tests/run.sh`
+passed, including i386, mixed exec, apply-extra, GPU/bwrap, SIGSYS and rewrite
+checks. The preexisting zygote stream test now requests precisely each fixed
+message length with MSG_WAITALL; an oversized read had intermittently consumed
+the next message's first byte. Its corrected form passed ten consecutive runs.
+The 10,000-thread stress passed with a 60-second deadline after the shared
+host exceeded its previous 15-second deadline (standalone retry passed within
+30 seconds). No worker count was reduced. Android app Java compilation,
+MachineIdTest and device-tree preflight also passed. Logs:
+`/mnt/data/aosp/out/pc-logs/fork-adopt-round26-{tests,java,preflight,baseline}.log`.

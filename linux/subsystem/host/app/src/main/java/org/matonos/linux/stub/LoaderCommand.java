@@ -58,8 +58,13 @@ final class LoaderCommand {
         command.add("--dns-forwarder"); command.add(dns + ":53");
     }
 
-    /** Maps the resolver view over both host locations of /etc/resolv.conf. */
-    static void addResolvMaps(List<String> command, File resolv) {
+    /** Supplies the Linux host resolver and stable identity that Flatpak binds into sandboxes. */
+    static void addResolvMaps(Context context, List<String> command, File resolv) throws Exception {
+        File machineId = MachineId.ensure(context.getFilesDir());
+        for (String target : new String[]{"/etc/machine-id", "/system/etc/machine-id",
+                "/var/lib/dbus/machine-id"}) {
+            command.add("--map"); command.add(machineId.getAbsolutePath()); command.add(target);
+        }
         // On the host /etc is a symlink to /system/etc. The VFS walks that
         // ancestor before selecting the leaf map. Flatpak's SessionHelper
         // fallback tests this canonical host path, then binds it into the app.

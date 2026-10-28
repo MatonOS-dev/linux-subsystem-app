@@ -57,6 +57,13 @@ prop=u:object_r:vendor_maton_graphics_prop:s0
 cp "$fixture/hardware" "$fixture/props/$prop"
 TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter "${gpu_profile_args[@]}" --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$PWD/build/gpu-sysfs" >build/gpu-sysfs.out 2>build/gpu-sysfs.log
 cat build/gpu-sysfs.out
+# Chromium uses libpci's sysfs backend before initializing GL. Exercise the
+# actual system tool when available as well as the deterministic C fixture.
+if command -v lspci >/dev/null; then
+    TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$(command -v lspci)" -n >build/gpu-lspci.out 2>build/gpu-lspci.log
+    grep -q '00:00.0 0300: 8086:5912' build/gpu-lspci.out
+    printf 'PASS libpci enumerates the published GPU through the PCI bus alias\n'
+fi
 if command -v bwrap >/dev/null && [[ ${COMPAT_GPU_SKIP_BWRAP:-0} != 1 ]]; then
     TMPDIR="$fixture/tmp" timeout 30 build/gpu-loader --android-filter --map "$fixture/props" /dev/__properties__ --map "$fixture/dri" /dev/dri "$(command -v bwrap)" --ro-bind / / --proc /proc --dev /dev "$PWD/build/gpu-sysfs" >build/gpu-bwrap.out 2>build/gpu-bwrap.log
     cat build/gpu-bwrap.out

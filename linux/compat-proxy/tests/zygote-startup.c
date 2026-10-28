@@ -133,8 +133,11 @@ int main(void) {
         memset(credential_control, 0, sizeof(credential_control));
         msg.msg_controllen = sizeof(credential_control);
         msg.msg_flags = 0;
-        iov.iov_len = expected_size[i] + 1;
-        ssize_t received = recvmsg(fds[0], &msg, 0);
+        /* SOCK_STREAM preserves byte order, not sendmsg boundaries. Chromium
+         * requests the fixed message size; asking for an extra byte races the
+         * next hello write and spuriously rejects a valid coalesced stream. */
+        iov.iov_len = expected_size[i];
+        ssize_t received = recvmsg(fds[0], &msg, MSG_WAITALL);
         struct ucred cred = {.pid = -1};
         int saw_rights = 0;
         for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg;

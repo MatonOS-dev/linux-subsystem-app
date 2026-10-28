@@ -1150,7 +1150,7 @@ static long gpu_node(const char *base,const char *name,unsigned minor){
 /* Separate entry point also lets host fixtures exercise precisely the tree
  * publication code without requiring a host GPU or Android property service. */
 long vfs_gpu_publish(const char *base,const char *vendor,const char *device,const char *driver,const char *render,unsigned render_minor,const char *card,unsigned card_minor){
-    const char *dirs[]={"dev","dev/char","devices","devices/pci0000:00","devices/pci0000:00/0000:00:00.0","devices/pci0000:00/0000:00:00.0/drm","bus","bus/pci","class","class/drm"};
+    const char *dirs[]={"dev","dev/char","devices","devices/pci0000:00","devices/pci0000:00/0000:00:00.0","devices/pci0000:00/0000:00:00.0/drm","bus","bus/pci","bus/pci/devices","class","class/drm"};
     long r=0;for(unsigned i=0;i<sizeof(dirs)/sizeof(*dirs);i++)if((r=gpu_dir(base,dirs[i])))return r;
     char *pci=join(base,"devices/pci0000:00/0000:00:00.0");if(!pci)return -ENOMEM;
     const char *names[]={"vendor","device","subsystem_vendor","subsystem_device","revision","class"};
@@ -1162,6 +1162,9 @@ long vfs_gpu_publish(const char *base,const char *vendor,const char *device,cons
     if(!r)r=gpu_file(pci,"uevent",event);
     if(!r)r=gpu_link(pci,"subsystem","../../../bus/pci");
     vfs_free(pci);
+    /* libpci enumerates this bus alias before reading device attributes.
+     * Point at the same device as the DRM aliases, so identity stays coherent. */
+    if(!r)r=gpu_link(base,"bus/pci/devices/0000:00:00.0","../../../devices/pci0000:00/0000:00:00.0");
     if(!r)r=gpu_node(base,render,render_minor);
     if(!r && card)r=gpu_node(base,card,card_minor);
     return r;
