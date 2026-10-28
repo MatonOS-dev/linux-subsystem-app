@@ -10,6 +10,7 @@ source = Path(__file__).resolve().parents[1] / "compositor_core.c"
 text = source.read_text()
 presenter = (source.parent / "presenter.c").read_text()
 android_output = (source.parent / "android_output.c").read_text()
+compositor_build = source.parents[1] / "build-compositor.sh"
 
 assert "struct wl_event_source* retry" not in text
 assert "on_present_retry" not in text
@@ -34,15 +35,20 @@ assert "schedule_pending_presentations()" in immediate_release
 # lifetime. Re-applying identical presenter state must not call SurfaceFlinger.
 present_fn = presenter.split("bool maton_presenter_present(", 1)[1].split("void maton_presenter_destroy(", 1)[0]
 assert "ASurfaceTransaction* t = p->transaction" in present_fn
-assert "if (walk.changed) maton_transaction_apply(t, &p->pending_release)" in present_fn
+assert "if (walk.changed) maton_transaction_apply(t)" in present_fn
 assert "ASurfaceTransaction_create()" not in present_fn
 assert "p->transaction = ASurfaceTransaction_create()" in presenter
 assert "output->transaction = output->control ? ASurfaceTransaction_create() : NULL" in android_output
 surface_present = android_output.split("bool maton_surface_output_present(", 1)[1]
 assert "ASurfaceTransaction_create()" not in surface_present
-assert "ASurfaceTransaction_setOnComplete(transaction, *pending, on_transaction_complete)" in android_output
-assert "ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, pending->control)" in android_output
-assert "maton_transaction_track_replaced(control, replaced, pending)" in android_output
+assert "ASurfaceTransaction_setBufferWithRelease(transaction, control, buffer, acquire_fence_fd" in android_output
+assert "ASurfaceTransaction_setOnComplete" not in android_output
+assert "ASurfaceTransactionStats_getPreviousReleaseFenceFd" not in android_output
+assert "maton_transaction_track_replaced" not in android_output
+# API 36 is required for per-buffer release callbacks. No frame transaction
+# can register an IRemoteCallback with system_server, including startup bursts.
+assert "API=36" in compositor_build.read_text()
+assert android_output.count("ASurfaceTransaction_setBufferWithRelease(") == 1
 
 assert "maton_presenter_layer_state_update" in presenter
 
@@ -66,7 +72,7 @@ assert "ASURFACE_TRANSACTION_VISIBILITY_HIDE" in orphan_fn
 assert "link = &l->next" in orphan_fn
 assert "*link = l->next" in retire_fn
 assert "ASurfaceTransaction_reparent(p->transaction, l->control, NULL)" in retire_fn
-assert "maton_transaction_apply(p->transaction, &p->pending_release)" in retire_fn
+assert "maton_transaction_apply(p->transaction)" in retire_fn
 assert "layer_free(l)" in retire_fn
 assert "remove_listener(&l->surface_destroy)" in presenter.split(
     "void maton_presenter_destroy(", 1)[1]

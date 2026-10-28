@@ -48,7 +48,6 @@ struct MatonPresenter {
   ASurfaceControl* parent;
   ASurfaceControl* background;
   ASurfaceTransaction* transaction;
-  struct MatonPendingBufferRelease* pending_release;
   struct wlr_allocator* allocator;
   struct MatonEglUploader* uploader;
   struct Layer* layers;
@@ -86,9 +85,8 @@ static void retire_layer(struct MatonPresenter* p, struct Layer* l) {
   while (*link && *link != l) link = &(*link)->next;
   if (!*link) return;
   *link = l->next;
-  maton_transaction_track_replaced(l->control, l->shown, &p->pending_release);
   ASurfaceTransaction_reparent(p->transaction, l->control, NULL);
-  maton_transaction_apply(p->transaction, &p->pending_release);
+  maton_transaction_apply(p->transaction);
   remove_listener(&l->node_destroy);
   remove_listener(&l->surface_destroy);
   l->node = NULL;
@@ -258,8 +256,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
     if (wlr_buffer_get_dmabuf(buffer, &attrs)) opaque = maton_dmabuf_format_opaque(attrs.format);
     if (buffer != l->shown || seq != l->shown_seq) {
       int acquire_fence=scene_surface?maton_sync_take_acquire(scene_surface->surface):-1;
-      maton_transaction_set_buffer(t, l->control, ahb, buffer, l->shown,
-                                   &p->pending_release, acquire_fence);
+      maton_transaction_set_buffer(t, l->control, ahb, buffer, acquire_fence);
       walk->changed = true;
       l->shown = buffer;
       l->shown_source = NULL;
@@ -277,8 +274,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
       } else walk->pending = true;
       return;
     }
-    maton_transaction_set_buffer(t, l->control, maton_ahb_from_wlr_buffer(copy), copy, l->shown,
-                                 &p->pending_release, -1);
+    maton_transaction_set_buffer(t, l->control, maton_ahb_from_wlr_buffer(copy), copy, -1);
     walk->changed = true;
     l->shown = copy;
     l->shown_source = buffer;
@@ -385,7 +381,6 @@ bool maton_presenter_present(struct MatonPresenter* p, struct wlr_scene* scene, 
         link = &l->next;
         continue;
       }
-      maton_transaction_track_replaced(l->control, l->shown, &p->pending_release);
       ASurfaceTransaction_reparent(t, l->control, NULL);
       walk.changed = true;
       *link = l->next;
@@ -400,7 +395,7 @@ bool maton_presenter_present(struct MatonPresenter* p, struct wlr_scene* scene, 
     }
     link = &l->next;
   }
-  if (walk.changed) maton_transaction_apply(t, &p->pending_release);
+  if (walk.changed) maton_transaction_apply(t);
   /* Detached layers' controls are off screen once the transaction applied. */
   while (p->dead) {
     struct Layer* l = p->dead;
@@ -413,16 +408,14 @@ bool maton_presenter_present(struct MatonPresenter* p, struct wlr_scene* scene, 
 void maton_presenter_destroy(struct MatonPresenter* p) {
   if (!p) return;
   ASurfaceTransaction* t = ASurfaceTransaction_create();
-  struct MatonPendingBufferRelease* pending_release = NULL;
   for (struct Layer* l = p->layers; l; l = l->next) {
     remove_listener(&l->node_destroy);
     remove_listener(&l->surface_destroy);
     if (t) {
-      maton_transaction_track_replaced(l->control, l->shown, &pending_release);
       ASurfaceTransaction_reparent(t, l->control, NULL);
     }
   }
-  if (t) { ASurfaceTransaction_reparent(t,p->background,NULL); maton_transaction_apply(t,&pending_release); ASurfaceTransaction_delete(t); }
+  if (t) { ASurfaceTransaction_reparent(t,p->background,NULL); maton_transaction_apply(t); ASurfaceTransaction_delete(t); }
   ASurfaceControl_release(p->background);
   ASurfaceTransaction_delete(p->transaction);
   while (p->layers) { struct Layer* l = p->layers; p->layers = l->next; layer_free(l); }
