@@ -147,7 +147,6 @@ def buildV3Loader = tasks.register('buildV3Loader', Exec) {
     outputs.file new File(v3Output, 'libmatonos-v3-loader.so')
     outputs.file new File(v3Output, 'libmatonos-v3-loader-i386.so')
     outputs.file new File(v3Output, 'libmatonos-v3-loader-static.so')
-    outputs.file new File(v3Output, 'libmatonos-v3-loader-i386-static.so')
     outputs.upToDateWhen { false }
     environment 'MATON_AOSP_ROOT', aospRoot
     environment 'MATON_V3_ANDROID_OUT', v3Output
@@ -237,7 +236,6 @@ android {
             keepDebugSymbols += '**/libmatonos-v3-loader.so'
             keepDebugSymbols += '**/libmatonos-v3-loader-i386.so'
             keepDebugSymbols += '**/libmatonos-v3-loader-static.so'
-            keepDebugSymbols += '**/libmatonos-v3-loader-i386-static.so'
             keepDebugSymbols += '**/libmatonos-flatpak.so'
             keepDebugSymbols += '**/libmatonos-app-flatpak.so'
             keepDebugSymbols += '**/libmatonos-app-bwrap.so'

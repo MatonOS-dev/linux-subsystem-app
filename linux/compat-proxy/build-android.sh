@@ -29,9 +29,6 @@ python3 "$build_source/gen-policy.py"
   -o "$output/libmatonos-v3-loader.so"
 
 MATON_I386_GPU_BRIDGE=1 bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"
-# A return to i386 inherits earlier i386-native TRAP filters too. The peer
-# must start using only the fixed raw gateway, just like the ELF64 peer.
-MATON_I386_GPU_BRIDGE=0 bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386-static.so"
 
 # Freestanding ELF64 peer loader. The i386 client hands x86_64 execs (bash,
 # steamwebhelper, driver queries) to the peer loader through a kernel exec;
