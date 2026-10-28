@@ -4,6 +4,12 @@ cd "$(dirname "$0")/.."
 ./build.sh
 bash tests/home-links.sh
 bash tests/exec-origin.sh
+cc -O2 -Wall -Wextra -Werror tests/reopen-dirfd.c -o build/reopen-dirfd
+reopen_fixture=$(mktemp -d "$PWD/build/reopen-dirfd.XXXXXX")
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/reopen-dirfd" "$reopen_fixture/dir" >build/reopen-dirfd.out 2>build/reopen-dirfd.log
+timeout 15 build/linux-layer-v3 --android-filter --map "$reopen_fixture" /reopened-dirfd "$PWD/build/reopen-dirfd" /reopened-dirfd/dir >build/reopen-dirfd-map.out 2>build/reopen-dirfd-map.log
+rmdir "$reopen_fixture"
+cat build/reopen-dirfd.out build/reopen-dirfd-map.out
 bash tests/uname-trace.sh
 cc -O2 -Wall -Wextra -Werror tests/proc-dirfd.c -o build/proc-dirfd
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/proc-dirfd" >build/proc-dirfd.out 2>build/proc-dirfd.log

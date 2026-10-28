@@ -926,12 +926,19 @@ static char *global_target(const char *target,long *error){
 }
 void vfs_fd_record(int fd,int dirfd,const char *path,int capture_identity){
     PROFILE_BEGIN();
+    /* Reopening /proc/self/fd/N creates an independent descriptor. Keeping
+     * that alias as its name makes later relative lookups depend on N staying
+     * open (pressure-vessel closes its O_PATH source immediately). Snapshot
+     * the source's logical name while the proc alias still exists. */
+    char *alias=vfs_proc_fd_name(path);
+    if(alias)path=alias;
     long e=0;char *global=global_target(path,&e);
     if(path[0]!='/'){
         char *base=basepath(dirfd,&e);vfs_free(global);
         char *relative=base?join(base,path):NULL;vfs_free(base);
         global=relative?global_target(relative,&e):NULL;vfs_free(relative);
     }
+    vfs_free(alias);
     if(!global)return;
     struct proxy_stat st={0};long stat_result=capture_identity?arch_stat_fd(fd,&st):-ENOSYS;
     proxy_sigmask_t mask=fd_names_lock();

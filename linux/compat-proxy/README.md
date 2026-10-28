@@ -1924,3 +1924,40 @@ The unchanged-main adoption launcher times out on the new threaded-exec
 fixture (exit 124), recorded in `steam-r34-baseline-regression.log`; the
 routing build completes it. A separate Android build also passed. No APK
 was installed and no device rendering result is claimed.
+
+### Steam pressure-vessel proc-dirfd reopen (2026-10-28, round 35)
+
+The day-r42 trace reaches the webhelper shell wrappers, but PID 32586 is
+still pressure-vessel preparing its mutable runtime when it crashes. At
+12:32:43.907 it reopens O_PATH directory fd 39 (`usr/lib/x86_64-linux-gnu`)
+through `/proc/self/fd/39` as readable fd 40, then closes the original. We
+recorded that temporary proc alias as fd 40's logical name. Subsequent
+`readlinkat(40, "libicutu.so.67", ...)` and all other library symlink reads
+failed during path resolution. Linux's reopened descriptor remains attached
+to the directory after closing/reusing fd 39.
+
+At 12:32:44.765 the process faults at bundled GLib offset 0x3ddb0:
+`g_str_hash`, instruction `movzbl (%rdi),%edx`, with a null argument. The
+upstream pressure-vessel `pv_runtime_remove_overridden_libraries` second
+pass passes the failed `glnx_readlinkat_malloc` result to its string hash
+lookup without checking NULL. PID 32697 repeats the same fault. No actual
+CEF binary exec, CEF child, or client/webhelper IPC handshake is reached
+in either lifetime; the client waits for initialization and restarts the
+wrapper. The host reproduction fails with ENOENT before the VFS fix.
+
+`vfs_fd_record` now snapshots the source descriptor's logical name when
+recording a reopened proc-fd alias. No application rule or upstream patch
+is needed. `tests/reopen-dirfd.c` exercises O_PATH → proc reopen → source
+close → readlinkat/lstat, then source-number reuse, both directly and through
+a virtual directory map under the app seccomp filter. Re-run a fresh traced
+Steam launch on the coordinator image: the relative reads on the reopened
+fd should resolve, both GLib crashes should disappear, and the next capture
+should show the actual `steamwebhelper` ELF and any CEF children. Rendering
+and the later IPC handshake still require device verification.
+
+Validation: full compat-proxy suite and repository host suite passed; Android
+x86_64 resident/static and i386 loader builds passed; device-tree preflight
+passed. The suite includes the real Flatpak/bwrap launch with resident workers,
+SIGCHLD routing, Wayland roundtrip, nested Unix-socket binds and cross-ABI exec.
+Optional foreign-owner (root) and external i386 musl probes were skipped by
+the suite. No VM was started.
