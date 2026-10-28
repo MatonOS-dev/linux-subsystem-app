@@ -2633,6 +2633,18 @@ int proxy_install(int android) {
 void proxy_state(struct state *s){
  extern const char *proxy_tmpdir;
  uint64_t count;
+ /* A kernel exec enters bionic before us; its ELF32 startup replaces the
+  * persona with PER_LINUX32. Preserve the payload caller's persona instead,
+  * including virtual flags Android refused to install. */
+ struct thread_state *thread=thread_state();
+ if(!thread){s->error=-ENOMEM;return;}
+ proxy_arg_t query[6]={UINT32_MAX,0,0,0,0,0};
+ unsigned int persona=(unsigned int)state_word(s,s->reading?0:personality_call(query,thread));
+ if(s->reading && !s->error){
+  long r=RAW(PROXY_SC_personality,persona,0,0,0,0,0);
+  if(r<0 && r!=-EACCES && r!=-EPERM){s->error=(int)r;return;}
+  thread->personality=persona;thread->personality_valid=1;
+ }
  chained.handler=state_word(s,chained.handler==1?1:0);
  proxy_trace=state_word(s,proxy_trace);proxy_diagnostic_fd=state_word(s,proxy_diagnostic_fd);
  namespaces=state_word(s,namespaces);userns_remaining=state_word(s,userns_remaining);

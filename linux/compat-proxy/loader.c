@@ -520,6 +520,18 @@ int main(int argc,char **argv,char **environ) {
          * payload entry. Import closed the private state FD already. */
         for(unsigned j=2;j<4;j++)for(char *p=argv[j];*p;p++)*p=0;
     }
+#if defined(__i386__) && defined(MATON_GPU_BRIDGE)
+    /* A fresh Linux launch uses PER_LINUX on a 64-bit kernel. Bionic's
+     * unconditional ELF32 PER_LINUX32 selection is loader implementation
+     * state, not a payload request. Resumed exec restores its caller instead. */
+    if(!resumed) {
+        long persona=RAW(PROXY_SC_personality,UINT32_MAX,0,0,0,0,0);
+        if(persona>=0) {
+            long r=RAW(PROXY_SC_personality,(unsigned int)persona & ~0xffU,0,0,0,0,0);
+            if(r<0){proxy_log("startup-personality",0,r);return 1;}
+        }
+    }
+#endif
     if(proxy_diagnostics_init())return 1;
     vfs_temp_gc();
     int android=0,i=resumed?4:1; long parent=0;

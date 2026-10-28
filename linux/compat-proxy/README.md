@@ -1429,3 +1429,37 @@ Validation: full proxy suite (private external fixture roots), nested
 host-command-pair display probe, native uname comparison/EFAULT, both
 production Android loader builds, device-tree preflight and diff checks pass.
 Device confirmation remains pending with the coordinator; no Java changed.
+
+### Steam round 22: preserve the caller's persona across resident ABI exec
+
+The day-r30 display probe completes and Steam enters the i386 client, PID
+29800 (resident import at 23:58:28.660). Its first uname answers, and all
+later answers around the Is64BitOS assertions, report kernel persona 8,
+`machine=i686`. Bionic's `__initialize_personality` unconditionally selects
+PER_LINUX32 for ELF32; our cross-ABI exec stream omitted personality. The
+Linux payload thus inherited an implementation detail of its resident loader.
+This proves the incorrect machine view; the proprietary Is64BitOS function's
+exact implementation is not established by syscall tracing alone.
+
+The private exec stream now transfers the calling thread's persona (wire
+version 9) and restores it after bionic startup, retaining virtual state when
+Android refuses flags. Fresh Android ELF32 loader launches clear bionic's
+base-persona selection to PER_LINUX, retaining the other flags. Explicit
+payload PER_LINUX32 requests remain valid and survive exec; uname is not
+hardcoded to x86_64. No Steam-specific rule is involved.
+
+The mixed-class regression now transfers a virtual ADDR_NO_RANDOMIZE plus
+PER_LINUX32 through both ABI changes, checks query semantics, switches back
+to PER_LINUX and verifies uname reports x86_64. Before this change the virtual
+flags disappear on the first resident exec. Both production Android loader
+ABIs are compiled. Device validation remains necessary: rerun Steam traced,
+retain uname/personality and exec-import lines, stderr and bootstrap/client
+logs. PID ubuntu12_32/steam should report persona 0 and machine=x86_64 until
+it explicitly changes persona; check whether Is64BitOS disappears and whether
+steamwebhelper executes. No VM was run; no shared, kernel or AOSP change.
+
+Validation: full `bash linux/compat-proxy/tests/run.sh` passed, including
+mixed-class exec in both directions and bwrap, uname/EFAULT, personality,
+i386, nested launch and rewrite regressions. Both production Android loader
+builds passed. Evidence: `/mnt/data/aosp/out/pc-logs/steam-r22-tests.log`,
+`steam-r22-cross.log`, `steam-r22-android.log`.
