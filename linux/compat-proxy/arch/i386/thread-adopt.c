@@ -16,6 +16,7 @@
 #include <linux/futex.h>
 #include <linux/sched.h>
 #include <limits.h>
+#include "../../resident-pthread.h"
 #endif
 
 extern int proxy_tls_claim_reserved(const struct user_desc *, unsigned *);
@@ -30,6 +31,7 @@ struct adopt_record {
     struct user_desc app_tls;
     uint64_t mask;
     _Atomic int ready;
+    _Atomic int exec_kicked;
     _Alignas(64) unsigned char fp[16384];
     uint64_t xfeatures;
     uintptr_t app_base;
@@ -40,6 +42,7 @@ static _Atomic(struct adopt_record *) records;
 static struct adopt_api api;
 #ifdef MATON_GPU_BRIDGE
 static int resident_pid;
+static _Atomic int exec_owner;
 static struct adopt_record *record_alloc(void) {
     long p=RAW(PROXY_SC_mmap,0,sizeof(struct adopt_record),3,0x22,-1,0);
     return (unsigned long)p>=(unsigned long)-4095?NULL:(void *)p;
@@ -85,6 +88,7 @@ struct adopt_thread *adopt_current(void) {
             if(self) {
                 for(struct adopt_record *r=atomic_load(&records);r;r=r->next)
                     atomic_store(&r->thread.tid,r==self?tid:0);
+                atomic_store(&exec_owner,0);atomic_store(&self->exec_kicked,0);
                 resident_pid=pid;return &self->thread;
             }
         }
@@ -388,6 +392,42 @@ static long thread_clone(ucontext_t *uc,proxy_arg_t *a) {
         RAW(PROXY_SC_futex,&r->ready,FUTEX_WAIT,2,0,0,0);
     RAW(PROXY_SC_munmap,r,sizeof(*r),0,0,0,0);
     return tid;
+}
+int adopt_exec_active(void){return adopt_i386_enabled;}
+int adopt_exec_retire(void) {
+    int self=current_tid(),zero=0;
+    if(!adopt_i386_enabled)return 0;
+    (void)record_current();
+    if(!atomic_compare_exchange_strong(&exec_owner,&zero,self) && zero!=self)return -EINTR;
+    int pending;
+    do {
+        pending=0;
+        for(struct adopt_record *r=atomic_load(&records);r;r=r->next) {
+            int tid=atomic_load(&r->thread.tid);
+            if(!tid || tid==self)continue;
+            pending=1;
+            if(!atomic_exchange(&r->exec_kicked,1))
+                RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),tid,SIGSYS,0,0,0);
+        }
+        if(pending)RAW(PROXY_SC_sched_yield,0,0,0,0,0,0);
+    }while(pending);
+    atomic_store(&exec_owner,0);return 0;
+}
+int adopt_exec_signal(void *opaque) {
+    int owner=atomic_load(&exec_owner);
+    if(!owner || owner==current_tid())return 0;
+    struct adopt_record *r=record_current();
+    if(!r || !atomic_load(&exec_owner))return 0;
+    if(atomic_load(&r->thread.scope_state)!=0 || (((ucontext_t *)opaque)->uc_stack.ss_flags&SS_ONSTACK)){atomic_store(&r->exec_kicked,0);return 2;}
+    ucontext_t *uc=opaque;robust_exit(r);
+    struct adopt_scope scope;
+    if(adopt_switch_in(&scope))RAW(PROXY_SC_exit_group,195,0,0,0,0,0);
+    *(uint64_t *)&uc->uc_sigmask|=UINT64_C(1)<<(SIGCHLD-1);
+    uc->uc_mcontext.gregs[REG_GS]=r->thread.android_selector;
+    uc->uc_mcontext.gregs[REG_ESP]=r->resident_sp;
+    uc->uc_mcontext.gregs[REG_UESP]=r->resident_sp;
+    uc->uc_mcontext.gregs[REG_EIP]=(uintptr_t)adopt_i386_return;
+    return 1;
 }
 /* Called only for payload sites by the proxy's common SIGSYS dispatcher.
  * Android library syscalls have already taken their native route. */

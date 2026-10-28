@@ -2,6 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+cc -O2 -Wall -Wextra -Werror -DRESIDENT_PTHREAD_DSO -fPIC -shared tests/resident-pthread.c -pthread -o build/resident-pthread-dso.so
+cc -O2 -Wall -Wextra -Werror tests/resident-pthread.c -pthread -ldl -Wl,--export-dynamic-symbol=pthread_create -o build/resident-pthread
+build/resident-pthread "$PWD/build/resident-pthread-dso.so"
 bash tests/home-links.sh
 bash tests/exec-origin.sh
 bash tests/uname-trace.sh
@@ -153,17 +156,28 @@ cc -O2 -Wall -Wextra -Werror tests/adopt-altstack-host.c arch/x86_64/altstack.S 
 timeout 15 build/adopt-altstack-host
 cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-altstack-filter.c loader.c vfs.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S arch/x86_64/altstack.S -o build/adopt-altstack-filter
 timeout 15 build/adopt-altstack-filter
-cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-rebase-filter.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-rebase-filter
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-rebase-filter.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-rebase-filter
 timeout 15 build/adopt-rebase-filter
 printf 'PASS resident adoption rebase inside SIGSYS and outside altstack, main and fork child\n'
-cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-fork-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-fork-launch
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-fork-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-fork-launch
+cc -O2 -Wall -Wextra -Werror -pthread tests/exec-signalfd.c -o build/exec-signalfd
+build/exec-signalfd
+timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/exec-signalfd" >build/exec-signalfd.out 2>build/exec-signalfd.log
+cat build/exec-signalfd.out
+timeout 20 build/adopt-fork-launch "$PWD/build/exec-signalfd" >build/exec-signalfd-adopt.out 2>build/exec-signalfd-adopt.log
+cat build/exec-signalfd-adopt.out
+build/exec-signalfd nonleader
+timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/exec-signalfd" nonleader >build/exec-signalfd-nonleader.out 2>build/exec-signalfd-nonleader.log
+cat build/exec-signalfd-nonleader.out
+timeout 20 build/adopt-fork-launch "$PWD/build/exec-signalfd" nonleader >build/exec-signalfd-nonleader-adopt.out 2>build/exec-signalfd-nonleader-adopt.log
+cat build/exec-signalfd-nonleader-adopt.out
 cc -O2 -Wall -Wextra -Werror tests/signalfd-child.c -o build/signalfd-child
 build/signalfd-child
 timeout 15 build/linux-layer-v3 --trace --android-filter "$PWD/build/signalfd-child" >build/signalfd-child.out 2>build/signalfd-child.log
 cat build/signalfd-child.out
 timeout 15 build/adopt-fork-launch --trace "$PWD/build/signalfd-child" >build/signalfd-adopt.out 2>build/signalfd-adopt.log
 cat build/signalfd-adopt.out
-cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-signalfd-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/resident-signalfd-launch
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-signalfd-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/resident-signalfd-launch
 timeout 15 build/linux-layer-v3 --supervise --android-filter "$PWD/build/signalfd-child" >build/signalfd-supervised.out 2>build/signalfd-supervised.log
 cat build/signalfd-supervised.out
 timeout 15 build/resident-signalfd-launch "$PWD/build/signalfd-child" >build/signalfd-resident.out 2>build/signalfd-resident.log

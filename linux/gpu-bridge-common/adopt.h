@@ -23,7 +23,7 @@ struct adopt_thread {
     uint64_t xfeatures;
     stack_t prior_signal_stack;
     void *signal_stack;
-    _Atomic int exec_kicked; /* Resident exec: at most two wakeups, never a signal flood. */
+    _Atomic int exec_kicked; /* Resident exec: one acknowledged wakeup outstanding per thread. */
     void *fork_context; /* Active SIGSYS ucontext, consumed by process-clone child. */
 };
 struct adopt_api {

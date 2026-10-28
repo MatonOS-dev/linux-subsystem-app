@@ -223,15 +223,42 @@ int state_import(const char *number,const char *token){
  RAW(PROXY_SC_munmap,data,st.st_size,0,0,0,0);proxy_private_fd_release((int)fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);private_fd=-1;
  return s.error;
 }
-/* Return zero for this loader's class; otherwise kernel-exec only the verified
- * sibling. Open it once and use execveat(AT_EMPTY_PATH), closing rename races. */
+/* An emulated exec cannot leave any sibling runnable: even an idle pthread
+ * can consume SIGCHLD before the new image's signalfd. Use the existing sealed
+ * kernel-exec handoff when the resident has siblings. The kernel atomically
+ * de-threads the group (also for a non-leader caller), rather than signalling
+ * individual threads that may own libc/driver locks or be blocked in syscalls.
+ * Fresh resident workers are recreated with SIGCHLD blocked by the loader. */
+extern int adopt_exec_active(void) __attribute__((weak));
+static int exec_has_siblings(void) {
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/task",O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
+ if(fd<0)return (int)fd;
+ char buf[4096];long n;unsigned count=0;int result=0;
+ while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(buf),0,0,0))>0){
+  for(long off=0;off<n;){
+   unsigned short len=*(unsigned short *)(buf+off+16);
+   if(len<20 || off+len>n){result=-EIO;goto done;}
+   const char *name=buf+off+19;off+=len;
+   if(*name>='0' && *name<='9' && ++count>1){result=1;goto done;}
+  }
+ }
+ if(n<0)result=(int)n;
+done:
+ RAW(PROXY_SC_close,fd,0,0,0,0,0);return result;
+}
+/* Same-class single-threaded exec stays resident; other execs use the sealed
+ * handoff to a verified loader, preserving virtual filesystem/process state. */
 int state_exec(const char *path,char *const *args,char *const *env){
  long error=0;char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);if(!resolved)return error;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(resolved);if(fd<0)return fd;
  unsigned char elf[20];long got=proxy_pread_fd(fd,elf,sizeof(elf),0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
  if(got!=sizeof(elf)||elf[0]!=127||elf[1]!='E'||elf[2]!='L'||elf[3]!='F')return 0;
- int target=arch_handoff_class(elf);if(!target)return 0;
+ int target=arch_handoff_class(elf);
  if(target<0)return -ENOEXEC;
+ if(!target){
+  if(adopt_exec_active && adopt_exec_active())return 0;
+  int siblings=exec_has_siblings();if(siblings<=0)return siblings;
+ }
  char self[4096];long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,"/proc/self/exe",self,sizeof(self)-1,0,0);if(n<=0)return -ENOEXEC;self[n]=0;
  while(n && self[n-1]!='/')n--;
  if(!n)return -ENOEXEC;
@@ -241,13 +268,19 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(parent<0)return parent;
  int unsafe=arch_stat_fd(parent,&dir)||(dir.st_mode&0022);
  RAW(PROXY_SC_close,parent,0,0,0,0,0);if(unsafe)return -EPERM;
- const char *peer=arch_peer_loader(self+n);
+ /* Same-class static residents re-exec their own verified inode. */
+ const char *peer=target?arch_peer_loader(self+n):self+n;
+#if defined(MATON_GPU_BRIDGE) && defined(__x86_64__)
+ /* A bionic resident without adoption still needs the startup-safe static
+  * loader after kernel exec under the inherited payload filter. */
+ if(!target)peer="libmatonos-v3-loader-static.so";
+#endif
  if((size_t)n+p_len(peer)>=sizeof(self))return -ENAMETOOLONG;
- p_copy(self+n,peer,p_len(peer)+1);
+ if(peer!=self+n)p_copy(self+n,peer,p_len(peer)+1);
  fd=RAW(PROXY_SC_openat,AT_FDCWD,self,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;
  struct proxy_stat running,chosen;
  if(arch_stat_at(AT_FDCWD,"/proc/self/exe",&running,0)||arch_stat_fd(fd,&chosen)||!S_ISREG(chosen.st_mode)||chosen.st_uid!=running.st_uid||(chosen.st_mode&0022)||!(chosen.st_mode&0111))error=-EPERM;
- unsigned char header[20];if(!error && (RAW(PROXY_SC_pread64,fd,header,20,0,0,0)!=20||arch_handoff_class(header)!=1))error=-ENOEXEC;
+ unsigned char header[20];if(!error && (RAW(PROXY_SC_pread64,fd,header,20,0,0,0)!=20||arch_handoff_class(header)!=target))error=-ENOEXEC;
  if(error){RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  private_fd=proxy_private_fd(RAW(PROXY_SC_memfd_create,"matonos-v3-exec",MFD_ALLOW_SEALING,0,0,0,0));
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}

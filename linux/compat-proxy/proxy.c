@@ -2028,7 +2028,14 @@ static void android_pc_cache_invalidate_range(uintptr_t lo,uintptr_t hi){
     }
 }
 #include "payload-filter.h"
+extern int adopt_exec_signal(void *) __attribute__((weak));
 static void handler(int sig,siginfo_t *info,void *opaque) {
+    if(adopt_exec_signal) {
+        if(info->si_code==SI_TKILL){proxy_sigmask_t block=SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&block,0,8,0,0);}
+        int retired=adopt_exec_signal(opaque);
+        if(retired==1 || (retired==2 && info->si_code==SI_TKILL &&
+                info->si_pid==RAW(PROXY_SC_getpid,0,0,0,0,0,0)))return;
+    }
     void *paused_direct=vfs_direct_pause();
     uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
     ucontext_t *uc=opaque;

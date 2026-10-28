@@ -475,6 +475,11 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     *v++=ac; for(unsigned i=0;i<ac;i++) *v++=av[i]; *v++=0;
     for(unsigned i=0;i<ec;i++) *v++=ev[i];
     *v++=0; p_copy(v,aux,sizeof(aux));
+    /* Everything fallible is staged before retiring the old payload threads.
+     * The adopted backend must preserve resident libc/GPU workers; static
+     * residents already took state_exec's kernel handoff when threaded. */
+    extern int adopt_exec_retire(void) __attribute__((weak));
+    if(adopt_exec_retire){r=adopt_exec_retire();if(r)goto failed;}
     vfs_free(av);vfs_free(ev);commit_elf(&main);commit_elf(&interp);
     image->entry=entry;image->stack=sp;
 #ifdef MATON_GPU_BRIDGE

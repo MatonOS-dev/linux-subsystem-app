@@ -33,6 +33,7 @@
 #include <sys/mman.h>
 #include <sys/auxv.h>
 #include <sys/uio.h>
+#include "../../resident-pthread.h"
 extern long proxy_raw(long,long,long,long,long,long,long);
 extern long proxy_sigaltstack_on_stack(stack_t *,void *);
 extern void proxy_log(const char *,long,long);
@@ -48,6 +49,7 @@ struct thread_chunk {
     struct adopt_thread entries[CHUNK_THREADS];
 };
 static _Atomic(struct thread_chunk *) chunks;
+static _Atomic int exec_owner;
 /* Two independent glibc allocators cannot share sbrk: one can shrink the
  * other's live heap. Freeze only the app's program break; its malloc uses
  * mmap fallback without an imposed memory cap. Resident brk remains native. */
@@ -207,6 +209,8 @@ static size_t live(void) {
     return count;
 }
 static void fork_rebase(struct adopt_thread *self) {
+    atomic_store(&exec_owner,0);
+    atomic_store(&self->exec_kicked,0);
     /* Retain mappings (including the caller's parked resident stack) but
      * discard every vanished identity/reservation. No parent memory changes. */
     for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
@@ -378,7 +382,60 @@ static void robust_exit(struct adopt_thread *t) {
     }
     owner_died(pending,copy.futex_offset,atomic_load(&t->tid));
 }
+/* Exec retirement uses our existing thread-exit gate, never pthread_cancel
+ * or raw exit with a live resident pthread record. SIGSYS is reserved and
+ * cannot be blocked by the payload. A thread interrupted inside resident
+ * code finishes that call and retires at its next payload trap. */
+int adopt_exec_active(void){return atomic_load(&chunks)!=NULL;}
+int adopt_exec_retire(void) {
+    (void)adopt_current(); /* Rebase inherited retirement state after fork. */
+    int self=R(gettid,0,0,0,0,0,0),zero=0;
+    if(!atomic_compare_exchange_strong(&exec_owner,&zero,self) && zero!=self) {
+        /* The competing exec's kick will take this caller through its exit
+         * gate after the current signal frame returns. */
+        return -EINTR;
+    }
+    int pending;
+    do {
+        pending=0;
+        for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
+            for(unsigned i=0;i<CHUNK_THREADS;i++) {
+                struct adopt_thread *t=&c->entries[i];int tid=atomic_load(&t->tid);
+                if(!tid || tid==self)continue;
+                pending=1;
+                if(tid>0 && !atomic_exchange(&t->exec_kicked,1))
+                    R(tgkill,R(getpid,0,0,0,0,0,0),tid,SIGSYS,0,0,0);
+            }
+        if(pending)R(sched_yield,0,0,0,0,0,0);
+    } while(pending);
+    atomic_store(&exec_owner,0);
+    return 0;
+}
+static int exec_retire_signal(void *opaque) {
+    int owner=atomic_load(&exec_owner);
+    if(!owner || owner==R(gettid,0,0,0,0,0,0))return 0;
+    struct adopt_thread *self=adopt_current();
+    if(!self || !atomic_load(&exec_owner))return 0;
+    /* Do not abandon a resident library with its locks held. */
+    if(backend_fs_read()==self->resident_fs || (((ucontext_t *)opaque)->uc_stack.ss_flags&SS_ONSTACK)){
+        /* Acknowledge this wakeup. Keep at most one kick outstanding, and
+         * retry after the resident call/clone startup has made progress. */
+        atomic_store(&self->exec_kicked,0);return 0;
+    }
+    robust_exit(self);
+    uint64_t block=UINT64_C(1)<<(SIGCHLD-1);
+    R(rt_sigprocmask,SIG_BLOCK,&block,0,8,0,0);
+    ucontext_t *uc=opaque;greg_t *g=uc->uc_mcontext.gregs;
+    *(uint64_t *)&uc->uc_sigmask|=block;
+    backend_fs_write(self->resident_fs);
+    g[REG_RDI]=(uintptr_t)self;g[REG_RSP]=self->resident_sp;
+    g[REG_RIP]=(uintptr_t)adopt_exit_return;g[REG_RAX]=0;
+    return 1;
+}
 static void trap(int sig,siginfo_t *info,void *opaque) {
+    if(info->si_code!=SYS_SECCOMP){uint64_t block=UINT64_C(1)<<(SIGSYS-1);R(rt_sigprocmask,SIG_BLOCK,&block,0,8,0,0);}
+    if(exec_retire_signal(opaque))return;
+    if(info->si_code==SI_TKILL && info->si_pid==R(getpid,0,0,0,0,0,0) && atomic_load(&exec_owner))return;
     if(info->si_code!=SYS_SECCOMP) {
         if(prior_sigsys.handler>1) {
             if(prior_sigsys.flags&SA_SIGINFO)
@@ -564,6 +621,7 @@ miss_record_logged:
     } else if(n==SYS_rseq) result=-ENOSYS;
     else if(n==SYS_set_tid_address) { self->child_tid=g[REG_RDI]; result=R(gettid,0,0,0,0,0,0); }
     else if(n==SYS_exit) {
+        *(uint64_t *)&uc->uc_sigmask|=UINT64_C(1)<<(SIGCHLD-1);
         robust_exit(self);
         /* Consume the signal frame before publishing exit: join may unmap
          * the entire application stack as soon as the tid becomes zero. */
@@ -618,6 +676,7 @@ _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     app_brk=R(brk,0,0,0,0,0,0);
     backend_fs_write(0);
     adopt_run(t);
+    vfs_trap_thread_exit(t->signal_stack,signal_stack_size);
     signal_stack_release(t);
     adopt_map_unbind(t->resident_fs,t);
     adopt_map_unbind(atomic_load(&t->app_fs),t);
@@ -653,7 +712,7 @@ int adopt_install(void) {
         unsigned long flags;
         void (*restorer)(void);
         unsigned long mask;
-    } action={trap,SA_SIGINFO|SA_ONSTACK|0x04000000UL,proxy_restore,0};
+    } action={trap,SA_SIGINFO|SA_ONSTACK|SA_NODEFER|0x04000000UL,proxy_restore,0};
     if(R(rt_sigaction,SIGSYS,&action,0,8,0,0)) return -1;
     return 0;
 }

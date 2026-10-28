@@ -18,7 +18,7 @@ backend_sources=(
   "$source_dir/arch/i386/sysinfo.c"
 )
 if [[ ${MATON_I386_GPU_BRIDGE:-0} == 1 ]]; then
-  link_flags=(-DMATON_GPU_BRIDGE -fPIE -pie -Wl,-z,now)
+  link_flags=(-DMATON_GPU_BRIDGE -fPIE -pie -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create)
   backend_sources=(
     "$source_dir/arch/i386/sysinfo.S"
     "$source_dir/arch/i386/sysinfo.c"

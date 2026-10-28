@@ -1845,3 +1845,47 @@ i386/cross-exec, hard-link stores, signalfd, bwrap and site-rewrite checks).
 Focused home-links test passed again after adding the failing-before assertion.
 `:app:compileDebugJavaWithJavac -x :app:preBuild` passed against SDK 36
 (native packaging tasks excluded; no APK or device test claimed).
+
+### Steam round 31: retire payload siblings before resident exec
+
+`tests/exec-signalfd.c` reproduces the flaky portal probe without Steam: a
+threaded payload execs a monitor which blocks SIGCHLD, forks a child and polls
+its signalfd indefinitely. Resident exec retained the old unblocked pthread,
+which consumed SIGCHLD before the monitor could read it. Re-registering the
+portal name cannot repair that lost notification.
+
+Freestanding residents now use the existing sealed state/kernel-exec handoff
+to their own loader when `/proc/self/task` contains siblings. Kernel exec
+retires the entire old thread group, including exec from a non-leader.
+Single-threaded resident exec and existing cross-ABI handoff stay unchanged.
+
+Adopted residents cannot kernel-exec bionic under the inherited payload filter.
+After staging the next ELF and stack, they retire adopted siblings through
+the existing robust-futex/pthread exit gates. A reserved SIGSYS wakeup interrupts
+blocking proxy calls; retirement waits for proxy/native frames to unwind so
+resident locks are not abandoned. Each thread has one acknowledged wakeup
+outstanding. The adoption SIGSYS action now retains the proxy's SA_NODEFER,
+which permits these wakeups while a proxied syscall is blocked. Cleanup blocks
+SIGCHLD before publishing a retired thread. An exited group leader may remain
+visible as a kernel zombie until group exit, but cannot receive signals or run.
+
+All resident pthread creation now blocks SIGCHLD around the real resident
+libc `pthread_create`, exporting that interposition point for native libraries.
+Thus lazy EGL/Vulkan/Binder workers have the same blocked inheritance as EGL
+warmup workers. Adopted payload start gates still restore the Linux caller's
+mask. This changes thread creation, not the per-call GPU forwarding hot path.
+The regression also calls pthread_create from a separately loaded DSO and
+checks that the creator's original mask is restored.
+
+Validation: native, freestanding Android-filter and resident-adoption exec
+regressions cover both leader and non-leader callers; each monitor reads 20
+SIGCHLD notifications and obtains the corresponding original waitpid status.
+The full compat suite and both Android NDK loader builds passed. The native
+GPU-forwarding benchmark remains within its 40 ns budget (25.27 ns single
+thread, 25.27 ns with 64 resident registrations, 29.66 ns concurrent). No VM is
+started by this task. Coordinator follow-up: rebuild both loader ABIs and the
+static peer, launch traced Steam immediately after force-stop several times,
+check that the nested display probe always completes and no D-Bus requirement
+dialog appears, then collect steamwebhelper logs/exit statuses if its restart
+loop remains. Also smoke Kate and Obsidian. No kernel or shared image-policy
+changes are needed; a Steam rendering fix is not claimed.
