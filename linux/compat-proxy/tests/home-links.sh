@@ -38,3 +38,18 @@ java -cp "$fixture/classes" org.matonos.linux.stub.HomeLinksTest "$fixture/home"
 timeout 20 build/link-deny "$PWD/build/linux-layer-v3" --android-filter \
     "$PWD/build/home-links-test" "$fixture/home" >"$fixture/out" 2>"$fixture/log"
 cat "$fixture/out"
+if command -v google-chrome >/dev/null; then
+    mkdir -p "$fixture/chrome-home"
+    chmod 700 "$fixture/chrome-home"
+    java -cp "$fixture/classes" org.matonos.linux.stub.HomeLinksTest "$fixture/chrome-home"
+    HOME="$fixture/chrome-home" \
+        XDG_CONFIG_HOME="$fixture/chrome-home/.var/app/com.google.Chrome/config" \
+        XDG_CACHE_HOME="$fixture/chrome-home/.cache" timeout 60 build/link-deny \
+        "$PWD/build/linux-layer-v3" --android-filter "$(command -v google-chrome)" \
+        --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
+        --disable-background-networking \
+        --user-data-dir="$fixture/chrome-home/.var/app/com.google.Chrome/config/google-chrome" \
+        --dump-dom about:blank >"$fixture/chrome.out" 2>"$fixture/chrome.log"
+    grep -q '<html>' "$fixture/chrome.out"
+    printf 'PASS host Chrome starts with its profile and Singleton symlinks inside the HOME link store\n'
+fi

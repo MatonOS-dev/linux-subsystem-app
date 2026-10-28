@@ -1843,5 +1843,22 @@ fix or the old restart loop's cause is not claimed. No VM was started.
 Validation: full `bash tests/run.sh` passed (including Android NDK packaging,
 i386/cross-exec, hard-link stores, signalfd, bwrap and site-rewrite checks).
 Focused home-links test passed again after adding the failing-before assertion.
+
+### Chrome HOME store and detached payload lifetime (Round 30)
+
+`tests/home-links.sh` now pairs the persistent HOME hard-link marker with
+Chrome-shaped profile operations: `SingletonLock`, `SingletonSocket` and
+`SingletonCookie` symlinks coexist with linked Crashpad data across create,
+unlink, rename and read. When `google-chrome` is installed, it also launches
+the real host Chrome through the proxy under a kernel filter that denies raw
+`linkat`, and checks the headless document output. This host run passed with
+Chrome 156.0.8078.47; it did not reproduce the device's blank window, so the
+device-side cause remains open pending a trace of the failing HOME syscall.
+
+`tests/supervise-child.c` and `tests/supervise.py` cover the session boundary
+directly: a parent exits successfully while a detached child holds a
+`window-open` sentinel, and the supervisor must remain alive until that child
+exits. Both x86_64 and i386 loader checks pass. The Android stub's
+`V3Launcher` waits on this supervisor process before ending the task/session.
 `:app:compileDebugJavaWithJavac -x :app:preBuild` passed against SDK 36
 (native packaging tasks excluded; no APK or device test claimed).
