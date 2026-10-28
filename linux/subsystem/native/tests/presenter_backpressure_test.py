@@ -46,18 +46,30 @@ assert "maton_transaction_track_replaced(control, replaced, pending)" in android
 
 assert "maton_presenter_layer_state_update" in presenter
 
-# Destroyed scene buffers must release their SurfaceControl even when the
-# client schedules no further output frame. Otherwise a burst of short-lived
-# subsurfaces/popup buffers leaves SurfaceFlinger holding old Binder proxies.
+# A scene-buffer node can be rebuilt while the Wayland surface survives. Keep
+# that SurfaceControl reusable, then retire it on the underlying surface's
+# destroy event; generic scene buffers retire with their node.
 destroy_fn = presenter.split("static void on_node_destroy(", 1)[1].split(
+    "static void on_surface_destroy(", 1)[0]
+surface_destroy_fn = presenter.split("static void on_surface_destroy(", 1)[1].split(
     "static void bind_layer_node(", 1)[0]
 retire_fn = presenter.split("static void retire_layer(", 1)[1].split(
     "static void on_node_destroy(", 1)[0]
-assert "retire_layer(l->presenter, l)" in destroy_fn
+assert "l->node = NULL" in destroy_fn
+assert "if (!l->surface) retire_layer(l->presenter, l)" in destroy_fn
+assert "retire_layer(l->presenter, l)" in surface_destroy_fn
+assert "wl_signal_add(&surface->events.destroy, &l->surface_destroy)" in presenter
+orphan_fn = presenter.split("/* Hide layers not drawn this frame", 1)[1].split(
+    "if (!l->seen && l->visible)", 1)[0]
+assert "if (l->surface)" in orphan_fn
+assert "ASURFACE_TRANSACTION_VISIBILITY_HIDE" in orphan_fn
+assert "link = &l->next" in orphan_fn
 assert "*link = l->next" in retire_fn
 assert "ASurfaceTransaction_reparent(p->transaction, l->control, NULL)" in retire_fn
 assert "maton_transaction_apply(p->transaction, &p->pending_release)" in retire_fn
 assert "layer_free(l)" in retire_fn
+assert "remove_listener(&l->surface_destroy)" in presenter.split(
+    "void maton_presenter_destroy(", 1)[1]
 
 # Pool selection scans all entries for an unlocked, size-matched buffer before
 # trying allocation, and grows on demand instead of imposing a four-buffer cap.

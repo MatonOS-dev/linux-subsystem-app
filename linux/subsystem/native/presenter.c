@@ -27,6 +27,7 @@ struct Layer {
   struct wlr_surface* surface;
   ASurfaceControl* control;
   struct wl_listener node_destroy;
+  struct wl_listener surface_destroy;
   struct Layer* next;
   /* What SurfaceFlinger currently shows. */
   struct wlr_buffer* shown;       /* client buffer (dma-buf) or pool buffer (shm copy) */
@@ -68,9 +69,18 @@ static void layer_free(struct Layer* l) {
   free(l);
 }
 
+static void remove_listener(struct wl_listener* listener) {
+  if (listener->link.next && listener->link.next != &listener->link) {
+    wl_list_remove(&listener->link);
+    wl_list_init(&listener->link);
+  }
+}
+
 /* A scene node can be destroyed without scheduling another output frame.
  * Detach its Android layer here so SurfaceFlinger does not retain a Binder
- * proxy for a layer which is no longer live. */
+ * proxy for a layer which is no longer live. Surface-backed scene nodes may
+ * be rebuilt while their wl_surface stays alive; those keep their layer and
+ * can reuse it when the replacement node appears. */
 static void retire_layer(struct MatonPresenter* p, struct Layer* l) {
   struct Layer** link = &p->layers;
   while (*link && *link != l) link = &(*link)->next;
@@ -79,6 +89,8 @@ static void retire_layer(struct MatonPresenter* p, struct Layer* l) {
   maton_transaction_track_replaced(l->control, l->shown, &p->pending_release);
   ASurfaceTransaction_reparent(p->transaction, l->control, NULL);
   maton_transaction_apply(p->transaction, &p->pending_release);
+  remove_listener(&l->node_destroy);
+  remove_listener(&l->surface_destroy);
   l->node = NULL;
   l->next = NULL;
   layer_free(l);
@@ -87,15 +99,31 @@ static void retire_layer(struct MatonPresenter* p, struct Layer* l) {
 static void on_node_destroy(struct wl_listener* listener, void* data) {
   (void)data;
   struct Layer* l = (struct Layer*)((char*)listener - offsetof(struct Layer, node_destroy));
-  wl_list_remove(&l->node_destroy.link);
+  remove_listener(&l->node_destroy);
+  l->node = NULL;
+  if (!l->surface) retire_layer(l->presenter, l);
+}
+
+static void on_surface_destroy(struct wl_listener* listener, void* data) {
+  (void)data;
+  struct Layer* l = (struct Layer*)((char*)listener - offsetof(struct Layer, surface_destroy));
+  remove_listener(&l->surface_destroy);
+  l->surface = NULL;
   retire_layer(l->presenter, l);
 }
 
 static void bind_layer_node(struct Layer* l, struct wlr_scene_buffer* node,
                             struct wlr_surface* surface) {
-  if (l->node) wl_list_remove(&l->node_destroy.link);
+  if (l->node) remove_listener(&l->node_destroy);
+  if (l->surface != surface) {
+    remove_listener(&l->surface_destroy);
+    l->surface = surface;
+    if (surface) {
+      l->surface_destroy.notify = on_surface_destroy;
+      wl_signal_add(&surface->events.destroy, &l->surface_destroy);
+    }
+  }
   l->node = node;
-  l->surface = surface;
   l->node_destroy.notify = on_node_destroy;
   wl_signal_add(&node->node.events.destroy, &l->node_destroy);
 }
@@ -345,6 +373,18 @@ bool maton_presenter_present(struct MatonPresenter* p, struct wlr_scene* scene, 
   while (*link) {
     struct Layer* l = *link;
     if (!l->node) {
+      /* A wlr_scene_buffer can disappear while its wl_surface is still
+       * alive. Hide its layer and leave the SurfaceControl reusable for that
+       * surface's next scene node (or for another unused slot). */
+      if (l->surface) {
+        if (l->visible) {
+          ASurfaceTransaction_setVisibility(t, l->control, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
+          l->visible = false;
+          walk.changed = true;
+        }
+        link = &l->next;
+        continue;
+      }
       maton_transaction_track_replaced(l->control, l->shown, &p->pending_release);
       ASurfaceTransaction_reparent(t, l->control, NULL);
       walk.changed = true;
@@ -375,7 +415,8 @@ void maton_presenter_destroy(struct MatonPresenter* p) {
   ASurfaceTransaction* t = ASurfaceTransaction_create();
   struct MatonPendingBufferRelease* pending_release = NULL;
   for (struct Layer* l = p->layers; l; l = l->next) {
-    if (l->node) wl_list_remove(&l->node_destroy.link);
+    remove_listener(&l->node_destroy);
+    remove_listener(&l->surface_destroy);
     if (t) {
       maton_transaction_track_replaced(l->control, l->shown, &pending_release);
       ASurfaceTransaction_reparent(t, l->control, NULL);

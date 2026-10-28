@@ -72,12 +72,33 @@ int main(void) {
   assert(unique_binders_parcelled == 2); /* release listener + one layer slot */
   assert(parcelled_binders[0] == release_listener_binder);
 
+  /* A scene-buffer node may be replaced while its wl_surface survives. Across
+   * those replacements the identity test above keeps one control. Once a
+   * short-lived surface itself dies, the presenter retires its control from
+   * that surface's destroy listener. Model repeated popup/subsurface lifetime
+   * and assert held Binder controls track concurrent surfaces, not all-time
+   * allocations. */
+  unsigned held_controls = 0;
+  unsigned peak_held_controls = 0;
+  unsigned control_allocations = 0;
+  for (unsigned popup = 0; popup < 10000; ++popup) {
+    ++held_controls; /* ASurfaceControl_create() for this live surface */
+    ++control_allocations;
+    if (held_controls > peak_held_controls) peak_held_controls = held_controls;
+    assert(maton_presenter_identity_matches(NULL, (const void*)(uintptr_t)(popup + 1),
+                                            NULL, (const void*)(uintptr_t)(popup + 1)));
+    --held_controls; /* on_surface_destroy -> retire_layer -> layer_free */
+  }
+  assert(control_allocations == 10000);
+  assert(held_controls == 0);
+  assert(peak_held_controls == 1);
+
   /* Non-surface scene nodes retain node identity semantics. */
   const void* node_a = (const void*)(uintptr_t)0x4000;
   const void* node_b = (const void*)(uintptr_t)0x5000;
   assert(maton_presenter_identity_matches(NULL, node_a, NULL, node_a));
   assert(!maton_presenter_identity_matches(NULL, node_a, NULL, node_b));
 
-  puts("PASS presenter bounds Binder-backed SurfaceControls to live layer slots across 10k replacements");
+  puts("PASS presenter reuses stable-surface layers and retires dead surfaces across 10k lifetimes");
   return 0;
 }
