@@ -3,6 +3,7 @@
  * No separate loader invocation: payload exec goes through resident handoff. */
 #define _GNU_SOURCE
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/personality.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -49,7 +50,12 @@ int main(int argc,char **argv,char **env){
   char words[7][24];int values[]={sem,shm,msg,fd,alias,dead,tmpalias};for(unsigned i=0;i<7;i++)number(words[i],values[i]);
   pid_t child=fork();CHECK(child>=0);
   if(!child){char *args[]={argv[1],argv[2],argv[1],"one",words[0],words[1],words[2],words[3],words[4],words[5],words[6],NULL};execve(args[0],args,env);_exit(101);}
-  int status;CHECK(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+  int status;CHECK(waitpid(child,&status,0)==child);
+  if(getenv("MATON_TEST_RETURN_PEER")){
+   CHECK(WIFSIGNALED(status)&&WTERMSIG(status)==31);
+   return 0;
+  }
+  CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==0);
   CHECK(*memory==42);CHECK(semctl_(sem,12,0)==3);CHECK(receive_(msg,&m)==16&&!strcmp(m.text,"from child"));
   CHECK(!semctl_(sem,0,0)&&!shmctl_(shm)&&!msgctl_(msg));close(fd);close(alias);close(dead);close(tmp);close(tmpalias);
   static const char ok[]="PASS mixed-class exec, VFS/fds and sem/shm/msg/SEM_UNDO\n";CHECK(write(1,ok,sizeof(ok)-1)==sizeof(ok)-1);return 0;
@@ -78,6 +84,11 @@ int main(int argc,char **argv,char **env){
  struct stat st;CHECK(!syscall(sizeof(long)==4?195:4,"/v3-cross-file",&st)&&st.st_size==6);
  int *memory=shmat_(shm);CHECK(memory!=(void *)-1);
  if(!strcmp(argv[3],"one")){
+  /* Replace only the trusted fixture sibling, immediately before the return
+   * ABI handoff. This models a dynamically linked resident's early startup. */
+  const char *startup=getenv("MATON_TEST_RETURN_PEER");
+  const char *sibling=getenv("MATON_TEST_RETURN_SIBLING");
+  if(startup && sibling)CHECK(!rename(startup,sibling));
   CHECK(*memory==19);*memory=23;
   int removed=shmget_();CHECK(removed>=0&&shmat_(removed)!=(void *)-1);
   memory[1]=removed;CHECK(!shmctl_(removed));
