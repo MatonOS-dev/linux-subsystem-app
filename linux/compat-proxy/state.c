@@ -12,6 +12,7 @@
 #include <elf.h>
 #include <linux/memfd.h>
 int state_android, state_gpu_bridge;
+char **state_environment;
 static int private_fd=-1;
 enum { PROXY_PRIVATE_FD_COUNT=18 };
 long proxy_fd_reserve=LONG_MAX,proxy_fd_reserve_end=LONG_MAX;
@@ -183,7 +184,7 @@ int state_import(const char *number,const char *token){
  if((unsigned long)data>=(unsigned long)-4095)return data;
  struct state s={.fd=fd,.reading=1,.size=st.st_size,.data=(void *)data};
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
- if(magic!=UINT64_C(0x335854454e4f544d)||version!=10||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
+ if(magic!=UINT64_C(0x335854454e4f544d)||version!=11||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
  /* Restore the diagnostic sink before importing VFS/fd state. Payload stderr
   * may be redirected (Steam uses steamui_html.txt), and import can fail before
   * proxy_state reaches the saved sink. Keep that failure observable. */
@@ -191,7 +192,11 @@ int state_import(const char *number,const char *token){
   int trace=(int)state_word(&s,0),diagnostic=(int)state_word(&s,0);
   if(!s.error){proxy_trace=trace;proxy_diagnostic_fd=diagnostic;
    if(proxy_trace)proxy_log("exec-state-enter",ARCH_AUDIT,s.size);
-   transfer(&s);}
+   uint64_t count=state_count(&s,0);
+   if(!s.error && count>SIZE_MAX/sizeof(char *)-1)s.error=-E2BIG;
+   if(!s.error){state_environment=vfs_palloc(((size_t)count+1)*sizeof(char *));if(!state_environment)s.error=-ENOMEM;}
+   for(uint64_t i=0;i<count && !s.error;i++){state_string(&s,&state_environment[i]);if(!state_environment[i])s.error=-EINVAL;}
+   if(!s.error){state_environment[count]=NULL;transfer(&s);}}
  }
  if(!s.error && s.pos!=s.size)s.error=-EINVAL;
  if(proxy_trace)proxy_log("exec-state-import",ARCH_AUDIT,s.error);
@@ -228,9 +233,23 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};
- state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,10);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
+ state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,11);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
  state_word(&s,proxy_trace);state_word(&s,proxy_diagnostic_fd);
+ /* The resident is an Android executable, not the Linux payload. Its linker
+  * must not consume payload LD_* settings (paths are still virtual here).
+  * Carry the exact environment, including order/duplicates, in the stream. */
+ size_t ec=0;while(env && env[ec])ec++;
+ state_word(&s,ec);
+ for(size_t i=0;i<ec;i++){char *value=env[i];state_string(&s,&value);}
  transfer(&s);error=s.error;
+ char **native_env=NULL;
+ if(!error && ec>SIZE_MAX/sizeof(char *)-1)error=-E2BIG;
+ if(!error){native_env=vfs_alloc((ec+1)*sizeof(char *));if(!native_env)error=-ENOMEM;}
+ if(!error){size_t n=0;for(size_t i=0;i<ec;i++){
+  const char *value=env[i];
+  if(value[0]=='L' && value[1]=='D' && value[2]=='_')continue;
+  native_env[n++]=env[i];
+ }native_env[n]=NULL;if(proxy_trace)proxy_log("exec-native-env",ec,ec-n);}
  if(!error)error=RAW(PROXY_SC_fcntl,private_fd,F_ADD_SEALS,F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE,0,0,0);
  char num[24],key[24];decimal(num,private_fd);decimal(key,nonce);
  size_t count=0;while(args&&args[count]){if(count==SIZE_MAX){error=-EOVERFLOW;break;}count++;}
@@ -245,10 +264,10 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(handoff_flags<0)error=handoff_flags;
  else if((handoff_flags&FD_CLOEXEC) && RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags&~FD_CLOEXEC,0,0,0)<0)error=-EIO;
  else {if(proxy_trace)proxy_log("exec-peer-enter",ARCH_AUDIT,fd);
-  error=RAW(PROXY_SC_execveat,fd,"",av,env,0x1000,0);
+  error=RAW(PROXY_SC_execveat,fd,"",av,native_env,0x1000,0);
   if(proxy_trace)proxy_log("exec-peer-return",ARCH_AUDIT,error);
   /* A failed exec leaves the caller alive; restore its private descriptor's
    * original kernel flag along with the rest of its state. */
   if(error<0 && (handoff_flags&FD_CLOEXEC))RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags,0,0,0);}}
- vfs_free(av);proxy_private_fd_release(private_fd);RAW(PROXY_SC_close,private_fd,0,0,0,0,0);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
+ vfs_free(native_env);vfs_free(av);proxy_private_fd_release(private_fd);RAW(PROXY_SC_close,private_fd,0,0,0,0,0);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
 }

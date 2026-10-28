@@ -516,6 +516,7 @@ int main(int argc,char **argv,char **environ) {
     int resumed=argc>4 && p_equal(argv[1],"--resident-state");
     if(resumed){
         if(state_import(argv[2],argv[3]))return 2;
+        environ=state_environment;
         /* Do not leave the bearer token in the kernel's original cmdline after
          * payload entry. Import closed the private state FD already. */
         for(unsigned j=2;j<4;j++)for(char *p=argv[j];*p;p++)*p=0;

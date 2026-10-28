@@ -8,7 +8,7 @@ for loader in ('linux-layer-v3','linux-layer-v3-i386'):
         if pid==0:
             fd=os.memfd_create('invalid-exec-state',os.MFD_ALLOW_SEALING)
             os.set_inheritable(fd,True)
-            data=struct.pack('<4Q',0x335854454e4f544d,2 if case=='version' else 3,
+            data=struct.pack('<4Q',0x335854454e4f544d,2 if case=='version' else 11,
                              os.getpid()+1 if case=='pid' else os.getpid(),19)
             os.write(fd,data[:20] if case=='truncated' else data)
             if case=='oversize':os.ftruncate(fd,(64<<20)+1)
@@ -28,7 +28,7 @@ for loader in ('linux-layer-v3','linux-layer-v3-i386'):
         os.set_inheritable(writefd,True)
         fd=os.memfd_create('truncated-vfs-state',os.MFD_ALLOW_SEALING)
         os.set_inheritable(fd,True)
-        os.write(fd,struct.pack('<6Q',0x335854454e4f544d,10,os.getpid(),19,1,writefd))
+        os.write(fd,struct.pack('<7Q',0x335854454e4f544d,11,os.getpid(),19,1,writefd,0))
         fcntl.fcntl(fd,fcntl.F_ADD_SEALS,fcntl.F_SEAL_SEAL|fcntl.F_SEAL_SHRINK|fcntl.F_SEAL_GROW|fcntl.F_SEAL_WRITE)
         null=os.open('/dev/null',os.O_WRONLY)
         os.dup2(null,2)
