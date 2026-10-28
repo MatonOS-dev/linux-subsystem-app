@@ -1548,3 +1548,52 @@ stderr malformed-state regression passed for both ABIs. Production Android
 x86_64/i386 loader builds and device-tree preflight passed. Evidence:
 `/mnt/data/aosp/out/pc-logs/steam-r23-{tests,cross,android,preflight}.log`.
 Device compatibility remains unverified; this round supplies diagnostics.
+
+### Steam round 24: separate resident-linker and payload environments
+
+In day-r32, ELF32 PID 3130 requests the ELF64 shell with `exec
+.../ubuntu12_64/steamwebhelper.sh ...` at 01:32:01.044, reaches
+`exec-peer-enter 1073741827 8` at 01:32:01.052, and never reports
+`exec-state-enter`, import failure, or peer-return. PID 3055 and the later
+ELF32-to-ELF64 children stop at the same boundary. The successful imports
+are in the other direction. This capture still does not prove a CEF binary
+has started; it localizes the missing transition before authenticated import.
+
+The handoff passed the Linux payload environment directly to kernel exec
+of the Android resident. Consequently bionic's linker consumed payload
+`LD_LIBRARY_PATH`/`LD_PRELOAD` before main, before VFS import, and with native
+path semantics. That is an independent generic startup bug: those settings
+belong to the Linux linker, and can name incompatible libraries or virtual
+paths. Wire version 11 preserves the exact payload environment (including
+order and duplicate keys) in sealed state. Native resident startup excludes
+`LD_*`; main restores the saved environment for proxy_load and the Linux
+linker. No payload environment setting is dropped, and no app is special-cased.
+`exec-native-env <total> <excluded>` records the boundary without logging values.
+Both resident ABIs must be updated together.
+
+The new cross-exec regression inserts a native peer that inspects the kernel
+startup environment before importing state, then execs the real resident.
+It uses the fixed raw gateway because host filters cannot start an arbitrary
+native dynamic linker. Both payload ABIs check the restored LD_LIBRARY_PATH
+and LD_BIND_NOW after exec. An isolated negative control with only native
+filtering disabled fails with `native resident received payload LD_*`; the
+fixed round trip passes. Ordinary static-loader round trips alone hid this
+boundary. Header rejection tests now use the current version when testing
+other header fields.
+
+This is a tested environment-boundary fix, not device confirmation that it
+caused Steam's missing handoff: day-r32 has no redirected linker stderr or
+process snapshot. Coordinator: rerun Steam traced with both rebuilt loaders;
+follow the steamwebhelper.sh shell PID through exec-native-env,
+exec-state-enter/import and subsequent exec-argv. Capture Steam's
+steamui_html.txt, webhelper-linux.txt, cef_log.txt and console-linux.txt,
+plus cmdline/status/wchan/syscall/fds for that PID if import remains absent.
+Those logs are essential because native linker stderr can be redirected by
+Steam. No VM was run; no kernel, AOSP, device-tree or per-app change.
+
+Validation: full `bash linux/compat-proxy/tests/run.sh` passed, including
+native-startup environment regression, ABI round trips, bwrap, malformed
+state, production Android x86_64/i386 compilation and packaging, EROFS,
+ldconfig and rewrite tests. Negative control, device-tree preflight and
+`git diff --check` passed. Evidence:
+`/mnt/data/aosp/out/pc-logs/steam-r24-{tests,cross,android,negative,preflight}.log`.

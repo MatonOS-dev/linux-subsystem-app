@@ -55,6 +55,10 @@ int main(int argc,char **argv,char **env){
   static const char ok[]="PASS mixed-class exec, VFS/fds and sem/shm/msg/SEM_UNDO\n";CHECK(write(1,ok,sizeof(ok)-1)==sizeof(ok)-1);return 0;
  }
  CHECK(argc==11);
+ if(getenv("MATON_TEST_RESIDENT_ENV")){
+  CHECK(getenv("LD_LIBRARY_PATH") && !strcmp(getenv("LD_LIBRARY_PATH"),"/virtual-resident-libraries"));
+  CHECK(getenv("LD_BIND_NOW") && !strcmp(getenv("LD_BIND_NOW"),"1"));
+ }
  CHECK(personality(0xffffffffUL)==(ADDR_NO_RANDOMIZE|PER_LINUX32));
  CHECK(personality(PER_LINUX)>=0);
  struct utsname uts;CHECK(!uname(&uts)&&!strcmp(uts.machine,"x86_64"));

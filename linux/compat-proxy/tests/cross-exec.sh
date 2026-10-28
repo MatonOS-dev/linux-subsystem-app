@@ -27,3 +27,22 @@ if command -v bwrap >/dev/null; then
 fi
 
 python3 tests/state-reject.py
+
+# Inspect native startup before importing state. Ordinary static resident
+# tests only observe the restored payload environment, hiding LD_* leakage.
+peer_dir=$(mktemp -d "$PWD/build/resident-env.XXXXXX")
+trap 'rm -rf "$peer_dir"' EXIT
+cp build/linux-layer-v3-i386 "$peer_dir/linux-layer-v3-i386"
+cc -nostdlib -static -no-pie -mcmodel=large -fno-stack-protector -fno-builtin \
+ -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 \
+ -O2 -Wall -Wextra -Werror tests/resident-env-peer.c arch/x86_64/entry.S \
+ -o "$peer_dir/linux-layer-v3"
+chmod 0755 "$peer_dir/linux-layer-v3"
+MATON_TEST_REAL_RESIDENT="$PWD/build/linux-layer-v3" MATON_TEST_RESIDENT_ENV=1 \
+ LD_LIBRARY_PATH=/virtual-resident-libraries LD_BIND_NOW=1 \
+ timeout 20 "$peer_dir/linux-layer-v3-i386" --android-filter --trace \
+ --map "$PWD/build/cross-file" /v3-cross-file --map "$PWD/build/cross-dir" /v3-cross-dir \
+ "$PWD/build/cross32" "$PWD/build/cross64" "$PWD/build/cross32" \
+ >build/cross-native-env.out 2>build/cross-native-env.log
+cat build/cross-native-env.out
+printf 'PASS native resident excludes LD_* while both payload ABIs retain them\n'
