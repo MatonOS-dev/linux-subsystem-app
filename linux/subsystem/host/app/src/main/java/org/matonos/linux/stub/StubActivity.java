@@ -74,6 +74,10 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             return;
         }
         if (state == STATE_MINIMIZE) { moveTaskToBack(true); return; }
+        // Decoration/geometry notifications are not fullscreen requests. Falling
+        // through here sends a fresh IRemoteCallback to system_server on every
+        // attach/configure and confirms fullscreen back into the compositor.
+        if (state != STATE_FULLSCREEN_ON && state != STATE_FULLSCREEN_OFF) return;
         boolean on = state == STATE_FULLSCREEN_ON;
         android.view.WindowInsetsController bars = getWindow().getInsetsController();
         if (bars != null) {

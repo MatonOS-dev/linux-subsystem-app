@@ -608,3 +608,48 @@ Verify the lock bind no longer produces `ENOENT`, Chrome opens a Wayland
 window, and `/proc/<Chrome PID>/cmdline` contains
 `--ozone-platform=wayland`. Keep logcat running while opening a page and
 closing/relaunching Chrome.
+
+### Round 29: window-state dispatch callback storm
+
+The supplied day-r33 kill log already contains the decisive descriptor dumps:
+Kate UID 10130 reaches 6000 proxies (04:20:22.408), histogram
+`android.os.IRemoteCallback x5932`; Chrome UID 10166 reaches 6000
+(04:21:29.320), histogram `android.os.IRemoteCallback x5965`.
+These are both stub UIDs, not isolated GPU children. AMS's native per-sender-UID
+watermark callback starts an asynchronous dump/kill thread; five-second count
+samples do not exclude an intervening burst.
+
+`StubActivity.applyState` treated every state other than minimize/capture as
+fullscreen-off, including decoration (6/7) and geometry (16+). Its public
+`requestFullscreenMode` call allocates an IRemoteCallback (see AOSP
+FullscreenRequestHandler); the confirmation configures the Linux window again.
+Only explicit fullscreen-on/off events now reach that path. No quota change,
+timer, per-app rule, or AOSP modification is needed.
+
+`python3 tests/chrome-sol/window-state-dispatch.py` extracts and compiles the
+production dispatch method with counting stand-ins: 70,000 decoration/geometry/
+unknown notifications create zero fullscreen callbacks; enter and exit still
+invoke their callbacks. This runs in tests/run.sh.
+
+Coordinator device verification (no VM run by this agent): fresh image/APK,
+untraced Kate and Chrome, collect full logcat through startup and 140 seconds.
+Sample `dumpsys activity binder-proxies` every second for the first 20 seconds,
+then every five seconds; retain the complete dump, UID mapping from
+`cmd package list packages -U`, and any AMS descriptor histogram. Check neither
+stub is killed, counts stay bounded by live windows, and opening/resizing/closing
+windows plus fullscreen enter/exit work. Specifically confirm no repeated
+fullscreen transitions from decoration changes. If another quota breach occurs,
+retain `Too many binder proxy objects`, `Uid ... sent too many`, and the following
+`BinderProxy descriptor histogram` together; a low later sample is insufficient.
+
+Exact collection command (coordinator's VM serial, packages already installed):
+`bash tests/chrome-sol/verify-binder-peak.sh localhost:5556 /mnt/data/aosp/out/pc-logs/chrome-r29-device`.
+This disables each stub's trace marker, launches each app separately for 140 s,
+records UID mappings/counts/full logcat, and force-stops that app afterward.
+
+Round 29 host results: production-dispatch regression PASS; full tests/run.sh
+PASS; Android :app:assembleRelease PASS; signed APK dependency closure (81
+libraries) and bootstrap package/embedded APK checks PASS. Build output:
+`/mnt/data/aosp/out/pc-logs/chrome-sol-round29/`; build log:
+`/mnt/data/aosp/out/pc-logs/chrome-sol-round29-build.log`. Device-tree preflight
+PASS. No device run, kernel change, shared-tree change, or push.

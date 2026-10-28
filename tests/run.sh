@@ -4,6 +4,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:?output directory outside the repository required}
 mkdir -p "$OUT"
 bash "$ROOT/tests/gui-process.sh" "$OUT/gui-process"
+python3 "$ROOT/tests/chrome-sol/window-state-dispatch.py"
 python3 "$ROOT/tests/bootstrap-version-rule.py"
 python3 "$ROOT/tests/cleanup-job-contract.py"
 python3 "$ROOT/linux/subsystem/native/tests/presenter_backpressure_test.py"
