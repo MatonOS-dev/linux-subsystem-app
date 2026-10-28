@@ -74,26 +74,44 @@ static void on_node_destroy(struct wl_listener* listener, void* data) {
   l->node = NULL;
 }
 
+static void bind_layer_node(struct Layer* l, struct wlr_scene_buffer* node,
+                            struct wlr_surface* surface) {
+  if (l->node) wl_list_remove(&l->node_destroy.link);
+  l->node = node;
+  l->surface = surface;
+  l->node_destroy.notify = on_node_destroy;
+  wl_signal_add(&node->node.events.destroy, &l->node_destroy);
+}
+
 static struct Layer* find_layer(struct MatonPresenter* p, struct wlr_scene_buffer* node,
                                 struct wlr_surface* surface) {
   for (struct Layer* l = p->layers; l; l = l->next) {
     if (!maton_presenter_identity_matches(l->surface, l->node, surface, node)) continue;
     if (l->node != node) {
-      if (l->node) wl_list_remove(&l->node_destroy.link);
-      l->node = node;
-      l->node_destroy.notify = on_node_destroy;
-      wl_signal_add(&node->node.events.destroy, &l->node_destroy);
+      bind_layer_node(l, node, surface);
     }
     return l;
   }
+
+  /* Some scene clients replace their buffer nodes as they render while the
+   * number of simultaneously visible nodes stays fixed. Keep one native
+   * SurfaceControl per visible slot and recycle an unused slot before making
+   * another Binder-backed SurfaceControl. Exact surface/node matches above
+   * still win, so stable Wayland surfaces retain their own layer and SHM pool. */
+  for (struct Layer* l = p->layers; l; l = l->next) {
+    /* A still-visible node may occur later in this frame's traversal. Do not
+     * steal its control before its exact-identity lookup gets a chance. */
+    if (l->seen || (l->visible && l->node)) continue;
+    bind_layer_node(l, node, surface);
+    l->state.valid = false;
+    return l;
+  }
+
   struct Layer* l = calloc(1, sizeof(*l));
   if (!l) return NULL;
   l->control = ASurfaceControl_create(p->parent, "maton-surface");
   if (!l->control) { free(l); return NULL; }
-  l->node = node;
-  l->surface = surface;
-  l->node_destroy.notify = on_node_destroy;
-  wl_signal_add(&node->node.events.destroy, &l->node_destroy);
+  bind_layer_node(l, node, surface);
   l->next = p->layers;
   p->layers = l;
   return l;
