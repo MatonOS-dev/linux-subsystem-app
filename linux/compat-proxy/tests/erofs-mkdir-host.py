@@ -21,12 +21,50 @@ source.write_text(r'''#define _GNU_SOURCE
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #define CHECK(c) do { if(!(c)){fprintf(stderr,"FAIL %d %s errno=%d\n",__LINE__,#c,errno);return 1;} } while(0)
 int main(int argc,char **argv){
- CHECK(argc==3 || (argc==4 && (!strcmp(argv[2],"bwrap-symlink") || !strcmp(argv[2],"bwrap-root-alias") || !strcmp(argv[2],"bwrap-app-dest"))));
+ CHECK(argc==3 || (argc==4 && (!strcmp(argv[2],"bwrap-symlink") || !strcmp(argv[2],"bwrap-root-alias") || !strcmp(argv[2],"bwrap-app-dest") || !strcmp(argv[2],"bwrap-root-alias-passed"))));
+ if(!strcmp(argv[2],"bwrap-root-alias-passed")){
+  struct stat st;
+  CHECK(mount("/usr","/newroot/usr",NULL,MS_BIND,NULL)==0);
+  CHECK(mkdir("/newroot/run",0755)==0 || errno==EEXIST);
+  CHECK(mkdir("/newroot/run/parent",0755)==0 || errno==EEXIST);
+  CHECK(mount("/usr","/newroot/run/parent/usr",NULL,MS_BIND,NULL)==0);
+  int libfd=open("/newroot/run/parent/usr/lib",O_RDONLY|O_DIRECTORY|O_CLOEXEC);CHECK(libfd>=0);
+  /* pressure-vessel hands bwrap a directory descriptor over SCM_RIGHTS. The
+   * receiver's proxy never recorded a logical name for it, so path
+   * translation must fall back to the physical fd text — and the shadow must
+   * still cover the alias bwrap actually checks. */
+  int sv[2];CHECK(socketpair(AF_UNIX,SOCK_DGRAM,0,sv)==0);
+  struct msghdr send={0};char byte='x';char control[CMSG_SPACE(sizeof(int))];
+  send.msg_control=control;send.msg_controllen=sizeof(control);
+  struct cmsghdr *c=CMSG_FIRSTHDR(&send);c->cmsg_level=SOL_SOCKET;c->cmsg_type=SCM_RIGHTS;c->cmsg_len=CMSG_LEN(sizeof(int));memcpy(CMSG_DATA(c),&libfd,sizeof(libfd));
+  send.msg_iov=(struct iovec[]){{&byte,1}};send.msg_iovlen=1;
+  CHECK(sendmsg(sv[0],&send,0)==1);
+  struct msghdr recvmsg_h={0};char rbyte=0,rc[CMSG_SPACE(sizeof(int))];
+  recvmsg_h.msg_control=rc;recvmsg_h.msg_controllen=sizeof(rc);
+  recvmsg_h.msg_iov=(struct iovec[]){{&rbyte,1}};recvmsg_h.msg_iovlen=1;
+  CHECK(recvmsg(sv[1],&recvmsg_h,0)==1);close(sv[0]);close(sv[1]);
+  int passed=-1;
+  for(struct cmsghdr *r=CMSG_FIRSTHDR(&recvmsg_h);r;r=CMSG_NXTHDR(&recvmsg_h,r))
+   if(r->cmsg_level==SOL_SOCKET && r->cmsg_type==SCM_RIGHTS){memcpy(&passed,CMSG_DATA(r),sizeof(passed));}
+  CHECK(passed>=0);close(libfd);
+  CHECK(mkdirat(passed,"i386-linux-gnu",0755)==0);
+  /* The sibling alias (/newroot/usr) points at the same image; bwrap checks
+   * the destination through whichever spelling it used. Both must be
+   * directories now, not EROFS symlinks. */
+  CHECK(fstatat(passed,"i386-linux-gnu",&st,AT_SYMLINK_NOFOLLOW)==0 && S_ISDIR(st.st_mode));
+  CHECK(stat("/newroot/usr/lib/i386-linux-gnu",&st)==0 && S_ISDIR(st.st_mode));
+  int destfd=openat(passed,"i386-linux-gnu",O_PATH|O_NOFOLLOW|O_CLOEXEC);CHECK(destfd>=0);
+  CHECK(fstat(destfd,&st)==0 && S_ISDIR(st.st_mode));close(destfd);
+  CHECK(mount(argv[3],"/newroot/run/parent/usr/lib/i386-linux-gnu",NULL,MS_BIND,NULL)==0);
+  CHECK(stat("/newroot/run/parent/usr/lib/i386-linux-gnu/marker",&st)==0 && S_ISREG(st.st_mode));
+  close(passed);puts("PASS passed-fd bind target shadows EROFS symlink across aliases");return 0;
+ }
  if(!strcmp(argv[2],"bwrap-app-dest")){
   int root=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);CHECK(root>=0);
   CHECK(mkdirat(root,"app/lib/i386-linux-gnu/GL",0755)==0);
@@ -138,6 +176,15 @@ print(result.stdout.strip())
 
 cmd=[str(base/'build/linux-layer-v3'),'--android-filter','--erofs-mount','/usr',str(mount),
      '--root',str(root),'/bwrap',str(root),'bwrap-root-alias','/usr/lib/x86_64-linux-gnu/extension']
+result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+if result.returncode:
+    raise RuntimeError(result.stdout+'\n'+result.stderr)
+print(result.stdout.strip())
+
+# The same setup with the destination directory descriptor arriving over
+# SCM_RIGHTS, so the receiver's proxy must recover the alias another way.
+cmd=[str(base/'build/linux-layer-v3'),'--android-filter','--erofs-mount','/usr',str(mount),
+     '--root',str(root),'/bwrap',str(root),'bwrap-root-alias-passed','/usr/lib/x86_64-linux-gnu/extension']
 result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
 if result.returncode:
     raise RuntimeError(result.stdout+'\n'+result.stderr)

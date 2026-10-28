@@ -276,6 +276,8 @@ int proxy_mount(const char *,const char *);
 static int stacked_oldroot;
 static int hide_resolver;
 static int prefix(const char *,const char *);
+struct erofs_mount { struct erofs_mount *next; char *target, *directory, *backing; };
+static struct erofs_mount *erofs_find_directory(const char *);
 struct resolve_cache_entry {
     unsigned valid;
     int follow;
@@ -385,6 +387,18 @@ int vfs_bwrap_tmpdir_mkdir(const char *path){
     size_t n=p_len(path);return p_equal(path,"var/tmp") || p_equal(path,"/var/tmp") ||
         (n>8 && p_equal(path+n-8,"/var/tmp"));
 }
+/* bwrap's bind-destination search probes several aliases of the same
+ * immutable destination (/usr and /run/parent/usr in a pressure-vessel
+ * staging root). The VFS only shadows the caller's dirfd view if that fd was
+ * tracked; an inherited/passed fd falls back to the erofs/backing spelling,
+ * which is not the alias bwrap checks. Shadow every alias that reaches the
+ * same backing object so whichever spelling bwrap uses sees a directory. */
+static long bwrap_shadow_alias(char *source,const char *virtual,long *error){
+    long e=0;char *target=global_target(virtual,error);if(!target)return *error?*error:-ENOMEM;
+    for(struct mount *m=table;m;m=m->next)
+        if(p_equal(m->target,target) && p_equal(m->source,source)){vfs_free(target);return 0;}
+    e=proxy_mount(source,target);vfs_free(target);return e;
+}
 static long vfs_bwrap_erofs_destination(const char *path,int fd,const char *name,int directory,unsigned mode){
     if(!vfs_is_bwrap() || !path)return -ENOSYS;
     char *view=erofs_reverse(path);if(!view)return -ENOSYS;
@@ -394,22 +408,52 @@ static long vfs_bwrap_erofs_destination(const char *path,int fd,const char *name
     long error=0;
     char *logical=NULL;
     if(name[0]=='/')logical=dupstr(name);
-    else {char *base=basepath(fd,&error);if(base){logical=join(base,name);vfs_free(base);}}
-    char *target=logical?global_target(logical,&error):NULL;
-    vfs_free(logical);vfs_free(view);
-    if(!target)return error?error:-ENOMEM;
+    else {char *base=basepath(fd,&error);if(base){logical=join(base,name);vfs_free(base);}else error=0;}
     char *source=vfs_temp_create(&error);
     if(source && !directory){
         char *file=join(source,"destination");
         if(!file)error=-ENOMEM;
         else{
-            long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,mode,0,0);
-            if(fd<0)error=fd;else RAW(PROXY_SC_close,fd,0,0,0,0,0);
+            long ofd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,mode,0,0);
+            if(ofd<0)error=ofd;else RAW(PROXY_SC_close,ofd,0,0,0,0,0);
             vfs_free(source);source=file;
         }
     }
-    if(source){if(!error)error=proxy_mount(source,target);vfs_free(source);}
-    vfs_free(target);return error;
+    if(source && !error){
+        if(logical)error=bwrap_shadow_alias(source,logical,&error);
+        /* The erofs prefix alias is the spelling readlink of an untracked
+         * dirfd falls back to; the backing alias is the old-root view. */
+        if(!error && view)error=bwrap_shadow_alias(source,view,&error);
+        struct erofs_mount *image=erofs_find_directory(path);
+        if(!error && image){
+            /* Sibling staged-root aliases (e.g. /newroot/usr beside
+             * /newroot/run/parent/usr) bind the same image directory. Mount
+             * targets are stored in global form; shadow_alias expects the
+             * rootless spelling again. */
+            struct mount *m;
+            for(m=table;m;m=m->next){
+                size_t source_length=p_len(m->source);
+                if(!prefix(path,m->source))continue;
+                /* A whole-root bind (--ro-bind / /newroot) nominally contains
+                 * every image; its synthetic alias is never checked. A mount
+                 * whose source IS the destination would replace the bind. */
+                if(source_length==1 || !path[source_length])continue;
+                const char *t=m->target;
+                if(root && prefix(t,root))t+=p_len(root);
+                char *alias=join(t,path+source_length);
+                if(alias){error=bwrap_shadow_alias(source,alias,&error);vfs_free(alias);}
+                if(error)break;
+            }
+            if(!error && image->backing){
+                const char *b=image->backing;
+                if(root && prefix(b,root))b+=p_len(root);
+                char *alias=join(b,path+p_len(image->directory));
+                if(alias){error=bwrap_shadow_alias(source,alias,&error);vfs_free(alias);}
+            }
+        }
+    }
+    if(source){vfs_free(source);}
+    vfs_free(logical);vfs_free(view);return error;
 }
 long vfs_bwrap_erofs_mkdir(const char *path,int fd,const char *name){return vfs_bwrap_erofs_destination(path,fd,name,1,0755);}
 long vfs_bwrap_erofs_file(const char *path,int fd,const char *name,unsigned mode){return vfs_bwrap_erofs_destination(path,fd,name,0,mode);}

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Prefix swaps for init-mounted, single-image package deployments.
  * Included by vfs.c. The kernel EROFS mount owns all filesystem metadata and
- * descriptor behaviour; this table only translates package paths. */
-struct erofs_mount { struct erofs_mount *next; char *target, *directory, *backing; };
+ * descriptor behaviour; this table only translates package paths.
+ * struct erofs_mount is declared in vfs.c. */
 static struct erofs_mount *erofs_mounts;
 
 static int erofs_prefix(const char *path,const char *prefix){
@@ -22,6 +22,13 @@ static struct erofs_mount *erofs_find_backing(const char *path){
         size_t n=m->backing?p_len(m->backing):0;
         if(n>length&&erofs_prefix(path,m->backing)){best=m;length=n;}
     }
+    return best;
+}
+/* Longest image mount whose physical directory holds this path. Used to
+ * enumerate every alias under which an immutable destination is visible. */
+static struct erofs_mount *erofs_find_directory(const char *path){
+    struct erofs_mount *best=NULL;size_t length=0;
+    for(struct erofs_mount *m=erofs_mounts;m;m=m->next){size_t n=p_len(m->directory);if(n>length&&erofs_prefix(path,m->directory)){best=m;length=n;}}
     return best;
 }
 static const char *erofs_root_view(const char *path,const char *root){
