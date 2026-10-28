@@ -165,6 +165,8 @@ def emit_group(path, items, prefix, library):
                   "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
                   *([f"    {ret} ret = fn({args});"] if ret != "void" else [f"    fn({args});"]),
                   "    switch_back(&scope);",
+                  *([f'    if (!ret) mv_image_failure("{name}", dpy, ctx, target, buffer);']
+                    if name in ("eglCreateImage", "eglCreateImageKHR") else []),
                   "    " + ("return;" if ret == "void" else f"return ({ret})ret;"), "}"]
         names.append(name)
     pathlib.Path(path).write_text("\n".join(lines) + "\n")
@@ -238,3 +240,42 @@ extension_lines += ["};", f"#define MV_EGL_EXTENSION_COUNT {len(egl_extensions)}
     f"{len(eglnames)} EGL 1.5 commands; {len(glesnames)} GLES 2.0–3.2 commands; {len(desktopnames)} desktop GL 1.0–4.6 compatibility commands\n" +
     "EGL: " + ", ".join(eglnames) + "\nGLES: " + ", ".join(glesnames) + "\n")
 print(f"generated {len(eglnames)} EGL and {len(glesnames)} GLES thunks")
+
+# Extension dispatch is vendor-neutral. A process may use Mesa for GBM and
+# Maton for Wayland: never send another vendor's display to resident EGL.
+dispatch = []
+entries = []
+for name, target in sorted(proc_names.items()):
+    cmd = egl_commands.get(target)
+    if cmd is None: continue
+    params = cmd.findall("param")
+    if not params: continue
+    kind = params[0].findtext("ptype")
+    if kind not in ("EGLDisplay", "EGLDeviceEXT"): continue
+    ret = decl(cmd.find("proto")); ret = ret[:ret.rfind(target)].strip()
+    proto = ", ".join(decl(p) for p in params)
+    args = ", ".join(p.findtext("name") for p in params)
+    first = params[0].findtext("name")
+    lookup = "getVendorFromDisplay" if kind == "EGLDisplay" else "getVendorFromDevice"
+    error = "EGL_BAD_DISPLAY" if kind == "EGLDisplay" else "EGL_BAD_DEVICE_EXT"
+    failure = "return;" if ret == "void" else f"return ({ret})0;"
+    dispatch += [f"static int mv_index_{name} = -1;",
+        f"static {ret} mv_dispatch_{name}({proto}) {{",
+        f"    if (!mv_exports) {{ {failure} }}",
+        "    mv_exports->threadInit();",
+        f"    __EGLvendorInfo *vendor = mv_exports->{lookup}({first});",
+        f"    if (!vendor) {{ mv_exports->setEGLError({error}); {failure} }}",
+        f"    typedef {ret} (*fn_t)({proto});",
+        f"    fn_t fn = mv_index_{name} < 0 ? 0 : (fn_t)mv_exports->fetchDispatchEntry(vendor, mv_index_{name});",
+        f"    if (!fn) {{ mv_exports->setEGLError(EGL_BAD_ACCESS); {failure} }}",
+        f"    if (!mv_exports->setLastVendor(vendor)) {{ {failure} }}",
+        (f"    fn({args});" if ret == "void" else f"    return fn({args});"), "}"]
+    entries.append(name)
+dispatch += ["static void *mv_vendor_get_dispatch(const char *name) {"]
+for name in entries:
+    dispatch.append(f'    if (!strcmp(name, "{name}")) return (void *)mv_dispatch_{name};')
+dispatch += ["    return 0;", "}", "static void mv_vendor_set_dispatch(const char *name, int index) {"]
+for name in entries:
+    dispatch.append(f'    if (!strcmp(name, "{name}")) mv_index_{name} = index;')
+dispatch += ["}"]
+(outdir / "egl_dispatch.inc").write_text("\n".join(dispatch) + "\n")

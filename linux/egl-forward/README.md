@@ -146,3 +146,55 @@ swap interval 0 and 1, and surface destruction. If neither app is present,
 use a small EGL client that creates a `wl_egl_window`, draws a changing GLES
 triangle, and resizes the window. Collect logcat and compositor logs; host
 protocol tests do not establish runtime success.
+
+## Chrome shared-image investigation (2026-10-28, round 27)
+
+Rebased fork-adopt on main 0ef302b. day-r31/chrome.txt shows resident
+`EGL_BAD_DISPLAY` followed by ANGLE image creation failure and Ozone GL
+representation failure. GBM's Mesa backend and both Maton/Mesa EGL vendors
+load in the GPU process. This identifies image creation as the failure,
+but does not establish that the target is DMA_BUF rather than a GL texture.
+
+Fixed a GLVND ABI violation: getDispatchAddress previously returned the
+resident implementation directly and setDispatchIndex discarded its index.
+The generated extension dispatch now initializes GLVND thread bookkeeping,
+resolves the display/device owner, fetches that owner's indexed entry, and
+sets last vendor for error routing. It runs on Linux TLS; only the selected
+Maton implementation switches to resident TLS. Client extensions without a
+display/device dispatch key return NULL from getDispatchAddress.
+
+Validation: vendor-dispatch.c fails against pre-fix main and passes with the
+fix, including foreign display ownership and invalid-display error routing.
+The GBM dma-buf → EGLImage → texture → FBO red-pixel readback passes on this
+host renderD128 with Maton first and Mesa second. **That integration test also
+passes against pre-fix main on this host GLVND**, so it does not prove this
+change fixes Chrome. x86_64/i386 freestanding builds and arm64 compile checks
+pass. Existing ABI/extension checks, the complete compat-proxy suite and device
+preflight pass; musl desktop harness unavailable.
+No VM was started and no device rendering success is claimed.
+
+Host commands (after the build above):
+
+```sh
+cc -Wall -Wextra -Werror tests/dmabuf-import.c \
+  $(pkg-config --cflags --libs gbm egl glesv2) -o "$OUT/dmabuf-import"
+__EGL_VENDOR_LIBRARY_FILENAMES="$OUT/10_maton.json:/usr/share/glvnd/egl_vendor.d/50_mesa.json" \
+  LD_LIBRARY_PATH="$OUT" "$OUT/dmabuf-import" /dev/dri/renderD128
+```
+
+The C fixture exits 77 if the render node cannot be opened; other failures
+are failures. Run from this directory, with OUT the built vendor directory.
+
+Next device capture: rebuild the GL.maton extension/host APK with this vendor,
+then launch stock Chrome with v3-trace for 90 seconds and capture logcat.
+Keep the `matonos-egl: image-failed NAME DISPLAY CONTEXT TARGET BUFFER` lines
+beside resident EGL errors, ANGLE errors and GPU exits. Target 0x3270 means
+dma-buf import; other targets identify a different image path. These failure
+lines deliberately do not consume eglGetError. Confirm Obsidian still renders.
+On Ryzen/RX6600, Surface Pro 3 and Haswell, also run dmabuf-import through the
+normal adopted runtime (runtime libgbm/EGL/GLES), then Chrome and Obsidian;
+check red readback, rendering, resize and repeated GPU process launches.
+
+No kernel or shared device-tree changes are requested. Chrome's device
+failure remains unverified until that capture; Android-native dma-buf import
+support is not inferred from a Mesa host pass.
