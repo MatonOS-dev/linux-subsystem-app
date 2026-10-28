@@ -393,6 +393,14 @@ int adopt_exec_retire(void) {
     /* proxy_load also stages the initial image, before any payload exists. */
     if(!caller || !atomic_load(&caller->payload))return 0;
     int self=R(gettid,0,0,0,0,0,0),zero=0;
+    /* FS identities survive a raw process clone. The fast lookup can return
+     * the caller's copied record with its parent's TID. Discard vanished
+     * siblings before retirement, or even a single-threaded bwrap exec waits
+     * forever trying to kick the nonexistent parent TID. */
+    if(atomic_load(&caller->tid)!=self) {
+        fork_rebase(caller);
+        identity_mutex=(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    }
     if(!atomic_compare_exchange_strong(&exec_owner,&zero,self) && zero!=self) {
         /* The competing exec's kick will take this caller through its exit
          * gate after the current signal frame returns. */

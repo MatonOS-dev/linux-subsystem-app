@@ -1918,3 +1918,30 @@ exec-signalfd and the resident Wayland roundtrip); build-android.sh and
 MATON_I386_GPU_BRIDGE=1 build-i386.sh passed with the Android NDK. Device-tree
 preflight passed. The Wayland fixture needs wayland-client/server development
 packages through pkg-config. Logs are in out/pc-logs/agents/steam-r32-*.log.
+
+### Steam round 33: inherited fork identity before exec retirement
+
+The rejected retirement changes could hang before the first application ELF
+started. In day-r39, bwrap's child 26954 stops after `exec-map-interp`; the
+polling process 26944 is its waiting ancestor. Its early `0x1204` mask does
+not contain SIGCHLD and does not establish a signalfd failure. No retirement
+trace was emitted by the old implementation, so its absence was inconclusive.
+
+A host reproduction deliberately retains the parent's adoption record across
+a raw fork, then loads `/bin/true`. Before this fix it times out: the FS lookup
+returns the caller's copied record with the parent's TID, and retirement loops
+trying to signal that nonexistent sibling. Exec now compares the record with
+the kernel TID and runs the existing fork rebase before enumerating siblings.
+This discards vanished records while retaining actual resident workers in the
+current process. Thread ownership and signal-mask policy are otherwise unchanged.
+The i386 lookup already detects a changed process and rebases its records.
+
+Tests include the stale-record reproduction, leader/nonleader threaded exec
+with signalfd, and a resident Wayland server surviving payload exec/roundtrip.
+When FreeDesktop 26.08 is installed, the suite also runs real upstream
+`app-flatpak -> flatpak run -> bwrap -> true`, both normally and after the
+inherited-record raw fork, with the resident worker and subreaper present.
+The normal test does not need a display or host session bus. These host checks
+cannot establish rendering on bionic/Android: the coordinator must freshly boot
+Kate, Obsidian and Chrome before accepting these previously rejected commits,
+then retry traced Steam and check its portal probe and webhelper progression.

@@ -166,6 +166,8 @@ timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/exec-signalfd" >bui
 cat build/exec-signalfd.out
 timeout 20 build/adopt-fork-launch "$PWD/build/exec-signalfd" >build/exec-signalfd-adopt.out 2>build/exec-signalfd-adopt.log
 cat build/exec-signalfd-adopt.out
+timeout 15 build/adopt-fork-launch --raw-fork /bin/true >build/exec-stale-fork.out 2>build/exec-stale-fork.log
+echo "PASS resident exec rebases inherited caller TID before retiring siblings"
 build/exec-signalfd nonleader
 timeout 20 build/linux-layer-v3 --android-filter "$PWD/build/exec-signalfd" nonleader >build/exec-signalfd-nonleader.out 2>build/exec-signalfd-nonleader.log
 cat build/exec-signalfd-nonleader.out
@@ -182,6 +184,22 @@ timeout 15 build/linux-layer-v3 --supervise --android-filter "$PWD/build/signalf
 cat build/signalfd-supervised.out
 timeout 15 build/resident-signalfd-launch "$PWD/build/signalfd-child" >build/signalfd-resident.out 2>build/signalfd-resident.log
 cat build/signalfd-resident.out
+# Exercise upstream Flatpak and bwrap, with the supervisor and resident
+# pthread present. Runtime-only command avoids launching an unrelated GUI app.
+if command -v flatpak >/dev/null && flatpak info org.freedesktop.Platform//26.08 >/dev/null 2>&1; then
+    ln -sf "$(command -v flatpak)" build/libmatonos-app-flatpak.so
+    for fork_mode in normal inherited; do
+        fork_args=()
+        if [[ $fork_mode == inherited ]]; then fork_args=(--raw-fork); fi
+        timeout 30 build/resident-signalfd-launch "${fork_args[@]}" "$PWD/build/libmatonos-app-flatpak.so" run \
+            --nosocket=x11 --nosocket=wayland --nosocket=session-bus --nosocket=system-bus \
+            --no-a11y-bus --no-documents-portal --command=true org.freedesktop.Platform//26.08 \
+            >"build/flatpak-resident-$fork_mode.out" 2>"build/flatpak-resident-$fork_mode.log"
+    done
+    echo "PASS real app-flatpak -> flatpak run -> bwrap -> true with resident workers"
+else
+    echo "SKIP real Flatpak launch: installed FreeDesktop 26.08 runtime required"
+fi
 cc -O2 -Wall -Wextra -Werror tests/exec-wayland.c -pthread $(pkg-config --cflags --libs wayland-client) -o build/exec-wayland
 cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-wayland-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl $(pkg-config --cflags --libs wayland-server) -o build/resident-wayland-launch
 timeout 20 build/resident-wayland-launch "$PWD/build/exec-wayland" >build/exec-wayland.out 2>build/exec-wayland.log
