@@ -17,3 +17,31 @@ for loader in ('linux-layer-v3','linux-layer-v3-i386'):
         _,status=os.waitpid(pid,0)
         assert os.waitstatus_to_exitcode(status)==2,(loader,case,status)
     print('PASS '+loader+' rejects invalid private exec state')
+
+# A valid handoff header followed by a truncated VFS body must report failure
+# to the preserved sink even when the exec caller redirected fd 2.
+for loader in ('linux-layer-v3','linux-layer-v3-i386'):
+    readfd,writefd=os.pipe()
+    pid=os.fork()
+    if pid==0:
+        os.close(readfd)
+        os.set_inheritable(writefd,True)
+        fd=os.memfd_create('truncated-vfs-state',os.MFD_ALLOW_SEALING)
+        os.set_inheritable(fd,True)
+        os.write(fd,struct.pack('<6Q',0x335854454e4f544d,10,os.getpid(),19,1,writefd))
+        fcntl.fcntl(fd,fcntl.F_ADD_SEALS,fcntl.F_SEAL_SEAL|fcntl.F_SEAL_SHRINK|fcntl.F_SEAL_GROW|fcntl.F_SEAL_WRITE)
+        null=os.open('/dev/null',os.O_WRONLY)
+        os.dup2(null,2)
+        os.close(null)
+        os.execv(str(root/'build'/loader),[loader,'--resident-state',str(fd),'19','/bin/true','/bin/true'])
+    os.close(writefd)
+    output=b''
+    while True:
+        block=os.read(readfd,4096)
+        if not block:break
+        output+=block
+    os.close(readfd)
+    _,status=os.waitpid(pid,0)
+    assert os.waitstatus_to_exitcode(status)==2,(loader,status)
+    assert b'exec-state-enter' in output and b'exec-state-vfs-error' in output,(loader,output)
+    print('PASS '+loader+' reports early import failure through redirected stderr')

@@ -1508,3 +1508,43 @@ mixed-class exec in both directions and bwrap, uname/EFAULT, personality,
 i386, nested launch and rewrite regressions. Both production Android loader
 builds passed. Evidence: `/mnt/data/aosp/out/pc-logs/steam-r22-tests.log`,
 `steam-r22-cross.log`, `steam-r22-android.log`.
+
+### Steam round 23: localize the missing webhelper handoff
+
+The day-r31 capture does not yet demonstrate a CEF executable starting.
+PID 31913 logs `sh -c exec .../ubuntu12_64/steamwebhelper.sh ...` at
+00:33:40.173, validates its ELF64 shell, then logs `exec-peer-enter
+1073741827 8` at 00:33:40.179. There is no peer-return, state-import,
+subsequent exec-argv, or fatal report for that PID. Other ELF32-to-ELF64
+children (31836, 31908, 31910, 31912, 31935 and later) also stop at
+peer-enter; the last successful imported resident is ELF32 PID 31833.
+Steam remains alive, with nonblocking socket reads returning EAGAIN. The
+libudev netlink permission errors are not evidence of a CEF graphics failure.
+
+Import previously restored its diagnostic fd only in proxy_state, after
+VFS/IPC/network import. A failure earlier silently returned status 2, while
+payload stderr could point at Steam's steamui_html.txt. The private wire
+format (version 10) now restores trace/sink immediately after authenticated
+header validation and logs entry plus the failing import section/cursor.
+This fixes observability, not a demonstrated client compatibility fault.
+The malformed-body regression uses a valid sealed header and redirects fd 2
+to /dev/null; both ABIs must report the VFS failure through the inherited
+sink. Existing mixed-class round trips exercise the updated stream.
+
+Coordinator next capture: run Steam traced on a fresh image with both new
+loaders. Preserve exec-state-enter, exec-state-*-error, exec-state-import,
+exec-peer-return and stderr. Around 110 seconds capture every Steam-UID
+process's cmdline, status, wchan, syscall and fd targets, plus Steam logs
+steamui_html.txt, webhelper-linux.txt and cef_log.txt if present. In
+particular follow the pid whose argv names steamwebhelper.sh: if no import
+entry appears, inspect whether it remains in the Android linker, is dead,
+or has rejected the header; if an import error appears, its section and
+cursor identify the failing state. Do not infer a SIGSYS clash or shared
+Ozone/dma-buf failure without a CEF exec or matching diagnostic. No VM,
+per-app behavior, shared device-tree changes, kernel changes or AOSP patch.
+
+Validation: full proxy suite passed; mixed-class exec and the redirected
+stderr malformed-state regression passed for both ABIs. Production Android
+x86_64/i386 loader builds and device-tree preflight passed. Evidence:
+`/mnt/data/aosp/out/pc-logs/steam-r23-{tests,cross,android,preflight}.log`.
+Device compatibility remains unverified; this round supplies diagnostics.
