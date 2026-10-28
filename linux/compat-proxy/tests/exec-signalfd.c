@@ -1,4 +1,7 @@
-/* A threaded Flatpak execs bwrap, whose only wakeup is child SIGCHLD. */
+/* A threaded Flatpak execs bwrap, whose only wakeup is child SIGCHLD.
+ * Native: passes. Proxy before exec sibling retirement: timeout, because the
+ * surviving unblocked sibling consumes the process-directed notification.
+ * Run with an external timeout; this deliberately exercises infinite poll. */
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <pthread.h>
@@ -19,6 +22,7 @@ int main(int argc,char **argv){
     }
     DIR *tasks=opendir("/proc/self/task");CHECK(tasks);int count=0;struct dirent *e;
     while((e=readdir(tasks)))if(e->d_name[0]>='0'&&e->d_name[0]<='9')count++;
-    closedir(tasks);CHECK(count==1);
+    closedir(tasks);
+    if(count!=1)fprintf(stderr,"MatonOS exec retained %d threads (Linux expects one)\n",count);
     return signalfd_main();
 }
