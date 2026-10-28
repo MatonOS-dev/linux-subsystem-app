@@ -49,6 +49,10 @@ SCAN_FILES = [
 # (file, pattern) -> (allowed occurrences, reason). Every raw read must be
 # either routed through PlaceholderFiles on the same line or justified here.
 ALLOW = {
+    ("MachineId.java", "filechannel-open"): (
+        1, "opens the lock file for the stub's own machine-id in its private files dir, not an app/deploy tree"),
+    ("MachineId.java", "files-readAllBytes"): (
+        1, "reads the stub's own generated machine-id from its private files dir, not an app/deploy tree"),
     ("ErofsImage.java", "fileinputstream"): (
         1, "sha() hashes the finished EROFS image in the app-owned output directory, not staged deployment files"),
     ("StagedPacks.java", "zipfile"): (
