@@ -20,7 +20,7 @@ proxy=$src/compat-proxy
 bash "$spike/build.sh" >/dev/null
 cc -O2 -g -Wall -Wextra -Werror -fno-stack-protector -fno-builtin -Wl,-z,now -DMATON_ADOPT \
    "$spike/launcher.c" "$proxy/arch/x86_64/thread-adopt.c" "$proxy/adopt-map.c" \
-   "$proxy/arch/x86_64/adopt.S" \
+   "$proxy/arch/x86_64/adopt.S" "$proxy/arch/x86_64/altstack.S" \
    "$spike"/build/{loader,proxy,vfs,links,net,sysvipc,state,raw}.o -pthread -ldl \
    -o "$out/launcher-adopt"
 cc=${CC:-clang-21}

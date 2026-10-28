@@ -2063,3 +2063,45 @@ changes. Coordinator: freshly launch traced Steam; verify the ELF32 helper
 imports state, follow the host-command adoption lines for each portal fork,
 and check for portal status 11. Retain portal crash PC/maps if it recurs and
 the fd-34/bwrap argument bundle if that independent source-path failure remains.
+
+### Steam round 38: distinguish fork inheritance from peer GPU loss
+
+The round-45 capture's missing-bootstrap warnings come from PID 8587 after
+an ELF64 -> ELF32 peer kernel exec (14:33:06.895 / 14:33:06.943), with a
+freestanding i386 handler stack. They do not demonstrate that the raw
+host-command fork rebase removed a bootstrap pointer. Kernel exec removes
+the old mappings; the new i386 static peer has no MATON_GPU_BRIDGE startup
+and never creates the named GPU bootstrap. Keeping old pointer strings
+across that exec would produce dangling addresses, not working adoption.
+The r37 SIGSYS startup fix remains on this branch, but its loss of resident
+GPU support is **unresolved**. Do not merge the r37 series as a complete
+Steam fix based on these host tests.
+
+A separate proven overhead is fixed: Vulkan bootstrap discovery reads maps
+in blocks instead of one byte per trapped syscall. The day-r45 capture ends
+while PID 8587 is still doing one-byte reads; missing-bootstrap retries scan
+maps repeatedly. No negative discovery cache is introduced, because a
+resident can publish the bootstrap later. The regression checks chunk
+boundaries, bounded backend reads and discovery following a previous miss;
+its old-runtime negative control fails. A second regression forks before
+loading the actual Maton Vulkan ICD in the child and creates/destroys a real
+lavapipe instance using the inherited named bootstrap. This validates fork
+mapping inheritance and ICD discovery with a host bridge/adoption fixture;
+it does not validate the Android resident adoption backend or cross-ABI GPU
+reinitialisation.
+
+Validation: full compat-proxy suite, Vulkan-forward suite, NDK loader builds,
+NDK compilation of changed runtime.c for both ABIs, and device-tree preflight
+pass. Vulkan's benchmark harness needed its existing altstack assembly added
+to the launcher link. A separate full NDK Vulkan build hits the existing
+ELF64_ST_VISIBILITY dependency in wayland_resolve.c (missing from NDK elf.h).
+The repository suite stops at OSTree's 3% free-space threshold on /mnt/data;
+no shared fixtures or other jobs' files were deleted. No VM or push.
+
+Coordinator follow-up: the buffered scanner commit can be cherry-picked
+independently of the rejected r37 series. A GPU-capable cross-ABI resident
+startup needs a design that starts bionic under inherited native-ABI TRAP
+filters; simply selecting the bionic peer again restores the earlier SIGSYS.
+The present work does not meet that requirement and does not claim to fix
+the webhelper restart loop. A traced fresh Steam launch can establish how
+much of the steamsysinfo delay was the maps scan after this isolated change.

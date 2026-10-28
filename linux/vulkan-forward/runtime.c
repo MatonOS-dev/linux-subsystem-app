@@ -30,9 +30,18 @@ const char *mv_env(const char *key) {
     const struct maton_gpu_bootstrap *cached=__atomic_load_n(&cached_bootstrap,__ATOMIC_ACQUIRE);
     if(cached)return bootstrap_field(cached,key);
     long fd=mv_open("/proc/self/maps");if(fd<0)return 0;
-    char line[4096];size_t n=0;const char *result=0;
+    char line[4096],input[4096];size_t n=0,at=0,available=0;const char *result=0;
     for(;;) {
-        char c;if(mv_read(fd,&c,1)!=1)break;
+        /* Proc maps can be large and each read crosses the compatibility layer.
+         * Keep line assembly independent of read boundaries. Do not cache a
+         * miss: a resident may publish its bootstrap later. */
+        if(at==available) {
+            long got=mv_read(fd,input,sizeof(input));
+            if(got==-4)continue; /* EINTR; no libc errno dependency. */
+            if(got<=0)break;
+            at=0;available=(size_t)got;
+        }
+        char c=input[at++];
         if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
         line[n]=0;
         const char *tag="[anon:maton-gpu-bootstrap-v2]";int found=0;
