@@ -647,6 +647,66 @@ Exact collection command (coordinator's VM serial, packages already installed):
 This disables each stub's trace marker, launches each app separately for 140 s,
 records UID mappings/counts/full logcat, and force-stops that app afterward.
 
+### Round 30: Chrome HOME operations and process-tree lifetime
+
+The new HOME link store did not reproduce the reported blank Chrome window on
+this host. Chrome 156.0.8078.47 launched through the proxy with a marked HOME,
+created its profile and Singleton symlinks, and rendered the headless
+`about:blank` document. The host regression also runs the real `HomeLinkStore`
+setup under a kernel filter that denies `linkat`, then exercises Chrome-like
+Singleton symlinks together with linked Crashpad data through create, unlink,
+rename and read. This validates those operations, but it does not establish the
+cause of the device-only blank window; keep the device proxy trace and inspect
+failed `linkat`, rename, open and symlink operations beneath the app HOME if it
+persists.
+
+The Android stub waits on the `--supervise` loader process. That subreaper's
+exit is the end-of-session signal after its main loader and adopted Linux
+payload descendants have exited. It no longer treats Flatpak's first app
+process exiting during a restart as the end of Chrome. The supervisor host
+test makes the parent exit while a detached child holds a `window-open`
+sentinel; the Android-visible session remains alive until that child removes
+the sentinel and exits.
+
+Host checks for this round:
+
+```sh
+bash linux/compat-proxy/tests/home-links.sh
+python3 linux/compat-proxy/tests/supervise.py \
+  linux/compat-proxy/build/linux-layer-v3 \
+  linux/compat-proxy/build/linux-layer-v3-i386
+MATON_BUILD_ROOT=/mnt/data/aosp MATON_AOSP_ROOT=/mnt/data/aosp \
+  MATON_SUBSYSTEM_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-r30-android-compile \
+  MATON_ANDROID_JAR=/mnt/data/aosp/prebuilts/sdk/current/public/android.jar \
+  MATON_AAPT2=/mnt/data/aosp/out/host/linux-x86/bin/aapt2 \
+  MATON_COMPOSITOR_JNI_LIBS=/mnt/data/aosp/out/pc-logs/chrome-sol-round22/deps/compositor/jniLibs \
+  MATON_V3_ANDROID_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round22/deps/linux-subsystem-app/loader \
+  MATON_PIPEWIRE_BUILD=/mnt/data/aosp/out/pc-logs/chrome-sol-round22/deps/pipewire \
+  MATON_SIGNING_STORE_FILE=/mnt/data/aosp/out/pc-logs/chrome-sol-r30-android-compile/no-signing-used.jks \
+  MATON_SIGNING_KEY_ALIAS=unused MATON_SIGNING_STORE_PASSWORD=unused \
+  MATON_SIGNING_KEY_PASSWORD=unused ANDROID_HOME=/home/hanro50/Documents/matonos-android-sdk \
+  ANDROID_SDK_ROOT=/home/hanro50/Documents/matonos-android-sdk \
+  /home/hanro50/Documents/gradle-9.4.1/bin/gradle -p linux/subsystem/host \
+  --no-daemon --project-cache-dir /mnt/data/aosp/out/pc-logs/chrome-sol-r30-android-compile/gradle-cache \
+  -PrealVersionCode=9999 :app:compileDebugJavaWithJavac -x :app:preBuild
+```
+
+Coordinator device check (no VM run by this agent), including the Chrome
+self-relaunch after accepting the first-run dialog:
+
+```sh
+TRACE=1 ADB_SERIAL=127.0.0.1:5556 \
+CHROME_TEST_OUT=/mnt/data/aosp/out/pc-logs/chrome-sol-round30 \
+bash tests/chrome-sol/verify-device.sh
+```
+
+Confirm Chrome renders before and after accepting the dialog, the replacement
+browser process stays alive after its parent exits, and its command line keeps
+`--ozone-platform=wayland`. Also check that the stub stays alive until the last
+Chrome payload process exits. Capture `logcat.txt`, `spawn-deployment.txt`, the
+screenshot and the HOME link-store files if the device-only blank window
+continues. No VM, kernel change, or shared-tree change was made.
+
 Round 29 host results: production-dispatch regression PASS; full tests/run.sh
 PASS; Android :app:assembleRelease PASS; signed APK dependency closure (81
 libraries) and bootstrap package/embedded APK checks PASS. Build output:

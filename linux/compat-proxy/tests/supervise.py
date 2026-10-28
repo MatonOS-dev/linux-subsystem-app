@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 root=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,6 +32,21 @@ for loader in loaders:
                   b"supervisor-descendant-status",b"lifecycle-clone",b"lifecycle-exit-group"):
         assert event in trace, f"{loader}: missing {event!r} lifecycle event: {trace.decode(errors='replace')}"
     print(f"PASS {os.path.basename(loader)} v3-trace records supervisor and payload lifecycle")
+
+    with tempfile.TemporaryDirectory(prefix="v3-supervise-window-") as directory:
+        window=os.path.join(directory,"window-open")
+        session=subprocess.Popen([loader,"--supervise","--android-filter",child,"detached",window],
+                                 stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        deadline=time.monotonic()+3
+        while not os.path.exists(window) and session.poll() is None and time.monotonic()<deadline:
+            time.sleep(0.01)
+        assert os.path.exists(window), f"{loader}: detached child did not open its window"
+        assert session.poll() is None, f"{loader}: session ended when its parent exited"
+        while os.path.exists(window) and session.poll() is None and time.monotonic()<deadline:
+            time.sleep(0.01)
+        assert not os.path.exists(window), f"{loader}: detached window owner did not exit"
+        assert session.wait(timeout=3)==0, f"{loader}: final payload tree status was not preserved"
+    print(f"PASS {os.path.basename(loader)} keeps the session until its detached window owner exits")
 
     live=subprocess.run([loader,"--supervise","--trace","--android-filter",child,"live"],
                         stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=10)

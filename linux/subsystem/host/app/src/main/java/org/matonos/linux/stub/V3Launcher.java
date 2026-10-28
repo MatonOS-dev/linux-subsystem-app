@@ -230,26 +230,34 @@ final class V3Launcher {
         new Thread(() -> drain(child.getInputStream(),false,null), "v3-output").start();
         CountDownLatch stderrDrained=new CountDownLatch(1);
         new Thread(() -> drain(child.getErrorStream(),true,stderrDrained), "v3-stderr").start();
-        new Thread(() -> {
-            try {
-                int status = child.waitFor();
-                stderrDrained.await(2,TimeUnit.SECONDS);
-                if(trace)Log.i("MatonV3","v3-trace stub waitFor completed status="+status);
-                synchronized (V3Launcher.class) { exit = status; }
-                notifyLaunchStatusChanged();
-                if(status==0) {
-                    Log.i("MatonV3", "Loader exited: 0");
-                } else {
-                    Log.e("MatonV3", launchErrorMessage(status));
-                }
-                endWithLinuxApp(context);
-            } catch (InterruptedException failure) {
-                Thread.currentThread().interrupt();
-                synchronized (V3Launcher.class) { error = "Interrupted while waiting for loader"; }
-                notifyLaunchStatusChanged();
-            }
-        }, "v3-exit").start();
+        new Thread(() -> awaitPayloadTreeExit(context, child, stderrDrained, trace), "v3-exit").start();
         return getLaunchStatus();
+    }
+
+    /**
+     * The Process is the loader's --supervise parent, not Flatpak's first
+     * launcher process. Its exit means the subreaper has reaped the main
+     * process and every adopted Linux payload descendant.
+     */
+    private static void awaitPayloadTreeExit(Context context, Process supervisor,
+            CountDownLatch stderrDrained, boolean trace) {
+        try {
+            int status = supervisor.waitFor();
+            stderrDrained.await(2,TimeUnit.SECONDS);
+            if(trace)Log.i("MatonV3","v3-trace payload tree exited status="+status);
+            synchronized (V3Launcher.class) { exit = status; }
+            notifyLaunchStatusChanged();
+            if(status==0) {
+                Log.i("MatonV3", "Linux payload tree exited: 0");
+            } else {
+                Log.e("MatonV3", launchErrorMessage(status));
+            }
+            endAfterPayloadTreeExit(context);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            synchronized (V3Launcher.class) { error = "Interrupted while waiting for Linux payload tree"; }
+            notifyLaunchStatusChanged();
+        }
     }
 
     private static void drain(java.io.InputStream stream,boolean stderr,CountDownLatch complete) {
@@ -269,9 +277,8 @@ final class V3Launcher {
         finally { if(complete!=null)complete.countDown(); }
     }
 
-    /** The Android process lives exactly as long as its Linux app: when the
-     *  loader exits (clean exit or crash), close this app's tasks and end. */
-    private static void endWithLinuxApp(Context context) {
+    /** The Android process ends only after the supervisor reports an empty Linux process tree. */
+    private static void endAfterPayloadTreeExit(Context context) {
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
             try {
                 android.app.ActivityManager am = context.getSystemService(android.app.ActivityManager.class);

@@ -8,6 +8,19 @@
 #include <string.h>
 
 int main(int argc,char **argv) {
+    if(argc>2 && !strcmp(argv[1],"detached")) {
+        pid_t child=fork();if(child<0)return 20;
+        if(!child) {
+            FILE *window=fopen(argv[2],"w");if(!window)_exit(21);
+            fputs("open\n",window);fclose(window);
+            usleep(500000);
+            if(unlink(argv[2]))_exit(22);
+            _exit(0);
+        }
+        /* The launcher's main process exits while its detached window owner
+         * is still alive. --supervise must remain the Android-visible child. */
+        return 0;
+    }
     if(argc>1 && !strcmp(argv[1],"live")) {
         int pipefd[2];if(pipe(pipefd))return 10;
         pid_t middle=fork();if(middle<0)return 11;
