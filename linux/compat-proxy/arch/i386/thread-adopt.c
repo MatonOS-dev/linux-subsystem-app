@@ -32,6 +32,7 @@ struct adopt_record {
     uint64_t mask;
     _Atomic int ready;
     _Atomic int exec_kicked;
+    _Atomic int payload;
     _Alignas(64) unsigned char fp[16384];
     uint64_t xfeatures;
     uintptr_t app_base;
@@ -316,6 +317,7 @@ static void *thread_start(void *arg) {
     /* Register uses its own published node. Copy the kernel-ABI launch data
      * into that node while all allocation and pthread calls still use bionic. */
     struct adopt_record *self=record_current();
+    atomic_store(&self->payload,1);
     self->app_tls=r->app_tls;self->mask=r->mask;self->child_tid=r->child_tid;
     p_copy(self->regs,r->regs,sizeof(self->regs));
     p_copy(self->fp,r->fp,sizeof(self->fp));self->xfeatures=r->xfeatures;
@@ -397,14 +399,15 @@ int adopt_exec_active(void){return adopt_i386_enabled;}
 int adopt_exec_retire(void) {
     int self=current_tid(),zero=0;
     if(!adopt_i386_enabled)return 0;
-    (void)record_current();
+    struct adopt_record *caller=record_current();
+    if(!caller || !atomic_load(&caller->payload))return 0;
     if(!atomic_compare_exchange_strong(&exec_owner,&zero,self) && zero!=self)return -EINTR;
     int pending;
     do {
         pending=0;
         for(struct adopt_record *r=atomic_load(&records);r;r=r->next) {
             int tid=atomic_load(&r->thread.tid);
-            if(!tid || tid==self)continue;
+            if(!tid || tid==self || !atomic_load(&r->payload))continue;
             pending=1;
             if(!atomic_exchange(&r->exec_kicked,1))
                 RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),tid,SIGSYS,0,0,0);
@@ -417,7 +420,7 @@ int adopt_exec_signal(void *opaque) {
     int owner=atomic_load(&exec_owner);
     if(!owner || owner==current_tid())return 0;
     struct adopt_record *r=record_current();
-    if(!r || !atomic_load(&exec_owner))return 0;
+    if(!r || !atomic_load(&r->payload) || !atomic_load(&exec_owner))return 0;
     if(atomic_load(&r->thread.scope_state)!=0 || (((ucontext_t *)opaque)->uc_stack.ss_flags&SS_ONSTACK)){atomic_store(&r->exec_kicked,0);return 2;}
     ucontext_t *uc=opaque;robust_exit(r);
     struct adopt_scope scope;
@@ -474,6 +477,7 @@ int adopt_i386_syscall(long nr,proxy_arg_t *a,void *opaque,long *result) {
 _Noreturn void adopt_launch(uintptr_t entry, uintptr_t stack) {
     struct adopt_record *r=record_current();
     if(!r)RAW(PROXY_SC_exit_group,196,0,0,0,0,0);
+    atomic_store(&r->payload,1);
     r->regs[REG_EIP]=entry;r->regs[REG_ESP]=stack;
     r->regs[REG_EFL]=0x202;
     __asm__ volatile("fxsave %0":"=m"(r->fp));

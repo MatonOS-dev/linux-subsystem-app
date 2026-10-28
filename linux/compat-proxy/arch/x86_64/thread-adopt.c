@@ -185,6 +185,7 @@ static struct adopt_thread *reserve(void) {
             int zero=0;
             if(atomic_compare_exchange_strong(&c->entries[i].tid,&zero,-1)) {
                 c->entries[i].resident_sp=0;
+                atomic_store(&c->entries[i].payload,0);
                 atomic_store(&c->entries[i].exec_kicked,0);
                 return &c->entries[i];
             }
@@ -388,7 +389,9 @@ static void robust_exit(struct adopt_thread *t) {
  * code finishes that call and retires at its next payload trap. */
 int adopt_exec_active(void){return atomic_load(&chunks)!=NULL;}
 int adopt_exec_retire(void) {
-    (void)adopt_current(); /* Rebase inherited retirement state after fork. */
+    struct adopt_thread *caller=adopt_current(); /* Rebase after fork. */
+    /* proxy_load also stages the initial image, before any payload exists. */
+    if(!caller || !atomic_load(&caller->payload))return 0;
     int self=R(gettid,0,0,0,0,0,0),zero=0;
     if(!atomic_compare_exchange_strong(&exec_owner,&zero,self) && zero!=self) {
         /* The competing exec's kick will take this caller through its exit
@@ -401,7 +404,7 @@ int adopt_exec_retire(void) {
         for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
             for(unsigned i=0;i<CHUNK_THREADS;i++) {
                 struct adopt_thread *t=&c->entries[i];int tid=atomic_load(&t->tid);
-                if(!tid || tid==self)continue;
+                if(!tid || tid==self || !atomic_load(&t->payload))continue;
                 pending=1;
                 if(tid>0 && !atomic_exchange(&t->exec_kicked,1))
                     R(tgkill,R(getpid,0,0,0,0,0,0),tid,SIGSYS,0,0,0);
@@ -414,8 +417,13 @@ int adopt_exec_retire(void) {
 static int exec_retire_signal(void *opaque) {
     int owner=atomic_load(&exec_owner);
     if(!owner || owner==R(gettid,0,0,0,0,0,0))return 0;
-    struct adopt_thread *self=adopt_current();
-    if(!self || !atomic_load(&exec_owner))return 0;
+    /* Signal-time lookup must not run fork recovery on resident workers. */
+    int tid=R(gettid,0,0,0,0,0,0);
+    struct adopt_thread *self=NULL;
+    for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
+        for(unsigned i=0;i<CHUNK_THREADS;i++)
+            if(atomic_load(&c->entries[i].tid)==tid)self=&c->entries[i];
+    if(!self || !atomic_load(&self->payload) || !atomic_load(&exec_owner))return 0;
     /* Do not abandon a resident library with its locks held. */
     if(backend_fs_read()==self->resident_fs || (((ucontext_t *)opaque)->uc_stack.ss_flags&SS_ONSTACK)){
         /* Acknowledge this wakeup. Keep at most one kick outstanding, and
@@ -565,6 +573,7 @@ miss_record_logged:
             struct adopt_thread *t=reserve();
             if(!t) result=-EAGAIN;
             else {
+                atomic_store(&t->payload,1);
                 t->app_fs=tls; t->child_tid=(flags&CLONE_CHILD_CLEARTID)?ctid:0;
                 adopt_map_bind(tls,t);
                 t->mask=*(unsigned long *)&uc->uc_sigmask;
@@ -668,6 +677,7 @@ static long identity(uintptr_t *p) {
 }
 _Noreturn void adopt_launch(uintptr_t entry,uintptr_t stack) {
     struct adopt_thread *t=adopt_current();
+    atomic_store(&t->payload,1);
     t->regs[REG_RIP]=entry; t->regs[REG_RCX]=entry; t->regs[REG_RSP]=stack;
     t->regs[REG_EFL]=0x202;
     /* Initial linker entry does not inherit an application FP state. */

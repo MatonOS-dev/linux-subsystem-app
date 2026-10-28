@@ -1889,3 +1889,32 @@ check that the nested display probe always completes and no D-Bus requirement
 dialog appears, then collect steamwebhelper logs/exit statuses if its restart
 loop remains. Also smoke Kate and Obsidian. No kernel or shared image-policy
 changes are needed; a Steam rendering fix is not claimed.
+
+### Steam r32: preserve resident workers during payload exec
+
+The r31 retirement change was rejected after Kate, Obsidian and Chrome stopped
+drawing on device. Retirement now uses an explicit payload marker, set only by
+the initial payload launch and payload CLONE_THREAD gates, on both ABIs.
+Native-only adoption records are excluded from both the retirement scan and
+the signal exit gate. Initial image staging does not retire threads at all.
+The x86_64 signal hook looks up the actual TID without fork recovery: an
+unregistered native worker must not be mistaken for the single adopted thread
+copied into a fork child. Resident pthread SIGCHLD masking remains in place.
+
+The regression launches a threaded payload that execs into a real libwayland
+client. A resident libwayland server worker, with a native-only adoption record,
+must remain alive for the new client to complete wl_display_roundtrip().
+Removing the payload checks makes this test time out, including when the
+initial-load guard remains enabled. This covers a real display connection and
+protocol reply; it does not claim GPU rendering or device validation.
+
+Coordinator verification remains necessary: rebuild both loaders, check Kate,
+Obsidian and Chrome draw, then repeatedly force-stop/start traced Steam and
+check the nested signalfd/portal probe completes before following webhelper.
+No VM was used, and no kernel/image-policy changes are required.
+
+r32 validation: full tests/run.sh passed (including leader/non-leader
+exec-signalfd and the resident Wayland roundtrip); build-android.sh and
+MATON_I386_GPU_BRIDGE=1 build-i386.sh passed with the Android NDK. Device-tree
+preflight passed. The Wayland fixture needs wayland-client/server development
+packages through pkg-config. Logs are in out/pc-logs/agents/steam-r32-*.log.

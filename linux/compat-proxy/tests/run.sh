@@ -182,6 +182,10 @@ timeout 15 build/linux-layer-v3 --supervise --android-filter "$PWD/build/signalf
 cat build/signalfd-supervised.out
 timeout 15 build/resident-signalfd-launch "$PWD/build/signalfd-child" >build/signalfd-resident.out 2>build/signalfd-resident.log
 cat build/signalfd-resident.out
+cc -O2 -Wall -Wextra -Werror tests/exec-wayland.c -pthread $(pkg-config --cflags --libs wayland-client) -o build/exec-wayland
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-wayland-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl $(pkg-config --cflags --libs wayland-server) -o build/resident-wayland-launch
+timeout 20 build/resident-wayland-launch "$PWD/build/exec-wayland" >build/exec-wayland.out 2>build/exec-wayland.log
+echo "PASS threaded resident exec connects and completes Wayland roundtrip"
 timeout 20 build/adopt-fork-launch "$PWD/build/flatpak-seccomp-fork"
 timeout 20 build/adopt-fork-launch "$PWD/build/sigsys-virtual"
 timeout 20 build/adopt-fork-launch --trace "$PWD/build/sigsys-virtual" >build/sigsys-adopt-trace.out 2>build/sigsys-adopt-trace.log

@@ -24,6 +24,7 @@ struct adopt_thread {
     stack_t prior_signal_stack;
     void *signal_stack;
     _Atomic int exec_kicked; /* Resident exec: one acknowledged wakeup outstanding per thread. */
+    _Atomic int payload; /* Set only by payload launch/CLONE_THREAD gates. */
     void *fork_context; /* Active SIGSYS ucontext, consumed by process-clone child. */
 };
 struct adopt_api {
