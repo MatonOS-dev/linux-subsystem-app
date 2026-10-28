@@ -156,6 +156,12 @@ cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0
 timeout 15 build/adopt-rebase-filter
 printf 'PASS resident adoption rebase inside SIGSYS and outside altstack, main and fork child\n'
 cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/adopt-fork-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/adopt-fork-launch
+cc -O2 -Wall -Wextra -Werror tests/signalfd-child.c -o build/signalfd-child
+build/signalfd-child
+timeout 15 build/linux-layer-v3 --trace --android-filter "$PWD/build/signalfd-child" >build/signalfd-child.out 2>build/signalfd-child.log
+cat build/signalfd-child.out
+timeout 15 build/adopt-fork-launch --trace "$PWD/build/signalfd-child" >build/signalfd-adopt.out 2>build/signalfd-adopt.log
+cat build/signalfd-adopt.out
 timeout 20 build/adopt-fork-launch "$PWD/build/flatpak-seccomp-fork"
 timeout 20 build/adopt-fork-launch "$PWD/build/sigsys-virtual"
 timeout 20 build/adopt-fork-launch --trace "$PWD/build/sigsys-virtual" >build/sigsys-adopt-trace.out 2>build/sigsys-adopt-trace.log

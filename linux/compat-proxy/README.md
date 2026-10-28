@@ -1720,3 +1720,44 @@ rewrites and the strengthened host-command-pair regression. The adopted
 SIGSYS regression logs adopt-exit-group for parent and children. Evidence:
 `/mnt/data/aosp/out/pc-logs/agents/steam-r26-suite.log` and
 `steam-r26-pair.log`. No Java or image app code changed.
+
+### Steam round 27: completed shell, stuck bwrap signalfd monitor
+
+Rebased on main 61311e6. day-r35 proves that the display-probe shell
+(12887) writes 15 bytes and calls exit_group(0) at 04:51:53.538; bwrap's
+inner reaper (12886) calls exit_group(0) at .542. The outer bwrap monitor
+(12881) last created signalfd4 fd 3 and restarted infinite poll as ppoll at
+04:51:52.738. It never resumes before SpawnSignal(SIGTERM) at 04:52:02.489.
+The portal sends and routes SpawnExited(12881, 15) at .498. The host-command
+worker only reaps adopted 12886 at .549, after the monitor dies. This rules
+out the shell remaining alive and missing portal exit forwarding. It does
+not establish why the monitor fails to receive its child's SIGCHLD.
+
+No functional fix is claimed. Host reproduction with both stock glibc bwrap
+and the bundled static musl bwrap completes under resident adoption. New
+signalfd-child coverage deliberately omits the --unshare-pid eventfd escape
+path: twenty immediate/delayed child exits must wake raw infinite poll,
+read the matching signalfd notification and reap the matching status. It
+passes natively, under the Android-filter freestanding proxy and under
+resident adoption. Opt-in poll traces now record kernel/return signal masks,
+pending signals, SIGCHLD disposition and each polled fd; adoption logs
+SIGCHLD disposition updates. These diagnostics do not consume notifications
+or reap children.
+
+Next coordinator capture: run traced and capture the nested probe's bwrap
+monitor **5–8 seconds after launch, before the ten-second probe timeout**.
+Retain the new poll-signal-state, poll-descriptor and adopt-chld-action lines.
+For the monitor and every task in /proc/PID/task, retain status (especially
+SigBlk/SigPnd/ShdPnd), syscall, wchan and children; retain monitor fd targets
+and fdinfo for all polled fds (signalfd's sigmask in particular). Also retain
+the inner reaper's status/PPid. This distinguishes an incorrect restored
+mask, an unblocked resident thread consuming SIGCHLD, a wrong signalfd mask,
+and a reparented child. Do not infer one of these causes from the present
+capture. No VM, image build, app-specific workaround or kernel change.
+
+Validation: full `bash linux/compat-proxy/tests/run.sh` exits zero, including
+Android loader compilation/packaging, both ABI suites, host-command-pair,
+stock nested bwrap and staged static musl bwrap tests. Evidence:
+`/mnt/data/aosp/out/pc-logs/agents/steam-r27-suite.log`. The added signalfd
+coverage passes on the unchanged behavior; it is not a reproduction of the
+device failure and does not justify changing wait/signal semantics.
