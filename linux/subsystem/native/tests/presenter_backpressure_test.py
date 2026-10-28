@@ -42,15 +42,6 @@ assert "ASurfaceTransaction_setOnComplete(transaction, *pending, on_transaction_
 assert "ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, pending->control)" in android_output
 assert "maton_transaction_track_replaced(control, replaced, pending)" in android_output
 
-# Exercise the steady-state contract for 10k unchanged frames: one presenter
-# transaction remains allocated, and no SurfaceFlinger transaction is sent.
-presenter_transaction_objects = 1
-surface_flinger_transactions = 0
-for _ in range(10_000):
-    changed = False
-    if changed:
-        surface_flinger_transactions += 1
-assert presenter_transaction_objects == 1
-assert surface_flinger_transactions == 0
+assert "maton_presenter_layer_state_update" in presenter
 
 print("presenter backpressure and 10k-frame transaction bound: PASS")

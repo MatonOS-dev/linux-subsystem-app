@@ -5,6 +5,7 @@
 #include "dmabuf_import.h"
 #include "ahb_buffer.h"
 #include "maton_renderer.h"
+#include "presenter_state.h"
 
 #include <android/data_space.h>
 #include <android/log.h>
@@ -33,11 +34,7 @@ struct Layer {
   bool visible, seen;
   /* Copies of shared-memory content; each is locked while SurfaceFlinger holds it. */
   struct wlr_buffer* pool[SHM_POOL];
-  bool geometry_valid;
-  ARect src, dst;
-  int z;
-  float opacity;
-  enum ASurfaceTransactionTransparency transparency;
+  struct MatonPresenterLayerState state;
 };
 
 struct MatonPresenter {
@@ -208,22 +205,25 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   int z = walk->z++;
   enum ASurfaceTransactionTransparency transparency = opaque && node->opacity >= 1.0f
       ? ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE : ASURFACE_TRANSACTION_TRANSPARENCY_TRANSLUCENT;
-  if (!l->geometry_valid || memcmp(&l->src, &src, sizeof(src)) || memcmp(&l->dst, &dst, sizeof(dst))) {
+  int src_values[] = {src.left, src.top, src.right, src.bottom};
+  int dst_values[] = {dst.left, dst.top, dst.right, dst.bottom};
+  unsigned state_changes = maton_presenter_layer_state_update(
+      &l->state, src_values, dst_values, z, node->opacity, transparency);
+  if (state_changes & MATON_PRESENTER_GEOMETRY_CHANGED) {
     ASurfaceTransaction_setGeometry(t, l->control, &src, &dst, ANATIVEWINDOW_TRANSFORM_IDENTITY);
-    l->src = src; l->dst = dst; walk->changed = true;
+    walk->changed = true;
   }
-  if (!l->geometry_valid || l->z != z) {
-    ASurfaceTransaction_setZOrder(t, l->control, z); l->z = z; walk->changed = true;
+  if (state_changes & MATON_PRESENTER_Z_CHANGED) {
+    ASurfaceTransaction_setZOrder(t, l->control, z); walk->changed = true;
   }
-  if (!l->geometry_valid || l->opacity != node->opacity) {
+  if (state_changes & MATON_PRESENTER_OPACITY_CHANGED) {
     ASurfaceTransaction_setBufferAlpha(t, l->control, node->opacity);
-    l->opacity = node->opacity; walk->changed = true;
+    walk->changed = true;
   }
-  if (!l->geometry_valid || l->transparency != transparency) {
+  if (state_changes & MATON_PRESENTER_TRANSPARENCY_CHANGED) {
     ASurfaceTransaction_setBufferTransparency(t, l->control, transparency);
-    l->transparency = transparency; walk->changed = true;
+    walk->changed = true;
   }
-  l->geometry_valid = true;
   if (!l->visible) {
     ASurfaceTransaction_setVisibility(t, l->control, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
     l->visible = true;
