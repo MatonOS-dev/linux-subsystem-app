@@ -46,6 +46,19 @@ assert "maton_transaction_track_replaced(control, replaced, pending)" in android
 
 assert "maton_presenter_layer_state_update" in presenter
 
+# Destroyed scene buffers must release their SurfaceControl even when the
+# client schedules no further output frame. Otherwise a burst of short-lived
+# subsurfaces/popup buffers leaves SurfaceFlinger holding old Binder proxies.
+destroy_fn = presenter.split("static void on_node_destroy(", 1)[1].split(
+    "static void bind_layer_node(", 1)[0]
+retire_fn = presenter.split("static void retire_layer(", 1)[1].split(
+    "static void on_node_destroy(", 1)[0]
+assert "retire_layer(l->presenter, l)" in destroy_fn
+assert "*link = l->next" in retire_fn
+assert "ASurfaceTransaction_reparent(p->transaction, l->control, NULL)" in retire_fn
+assert "maton_transaction_apply(p->transaction, &p->pending_release)" in retire_fn
+assert "layer_free(l)" in retire_fn
+
 # Pool selection scans all entries for an unlocked, size-matched buffer before
 # trying allocation, and grows on demand instead of imposing a four-buffer cap.
 pool_fn = presenter.split("static struct wlr_buffer* free_pool_buffer(", 1)[1].split(

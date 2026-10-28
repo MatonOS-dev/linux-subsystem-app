@@ -22,6 +22,7 @@
 #include <wlr/types/wlr_scene.h>
 
 struct Layer {
+  struct MatonPresenter* presenter;
   struct wlr_scene_buffer* node;
   struct wlr_surface* surface;
   ASurfaceControl* control;
@@ -67,11 +68,27 @@ static void layer_free(struct Layer* l) {
   free(l);
 }
 
+/* A scene node can be destroyed without scheduling another output frame.
+ * Detach its Android layer here so SurfaceFlinger does not retain a Binder
+ * proxy for a layer which is no longer live. */
+static void retire_layer(struct MatonPresenter* p, struct Layer* l) {
+  struct Layer** link = &p->layers;
+  while (*link && *link != l) link = &(*link)->next;
+  if (!*link) return;
+  *link = l->next;
+  maton_transaction_track_replaced(l->control, l->shown, &p->pending_release);
+  ASurfaceTransaction_reparent(p->transaction, l->control, NULL);
+  maton_transaction_apply(p->transaction, &p->pending_release);
+  l->node = NULL;
+  l->next = NULL;
+  layer_free(l);
+}
+
 static void on_node_destroy(struct wl_listener* listener, void* data) {
   (void)data;
   struct Layer* l = (struct Layer*)((char*)listener - offsetof(struct Layer, node_destroy));
   wl_list_remove(&l->node_destroy.link);
-  l->node = NULL;
+  retire_layer(l->presenter, l);
 }
 
 static void bind_layer_node(struct Layer* l, struct wlr_scene_buffer* node,
@@ -111,6 +128,7 @@ static struct Layer* find_layer(struct MatonPresenter* p, struct wlr_scene_buffe
   if (!l) return NULL;
   l->control = ASurfaceControl_create(p->parent, "maton-surface");
   if (!l->control) { free(l); return NULL; }
+  l->presenter = p;
   bind_layer_node(l, node, surface);
   l->next = p->layers;
   p->layers = l;
