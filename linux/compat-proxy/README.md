@@ -1670,9 +1670,12 @@ Chrome/Obsidian as controls. No VM was run; the host suite (below) passed
 with the new `arch_app_install` peer branch and diagnostics.
 
 Validation: full `bash linux/compat-proxy/tests/run.sh` passed, including the
-redirected-stderr early-import regressions for both ABIs and the mixed-class
-exec round trips; `tests/state-reject.py` covers `resident-enter` plus each
-rejection stage. Host evidence: `/tmp/opencode/r25-tests-final.log`. The
-Android build (`build-android.sh`) cannot be compiled on this machine (no
-NDK); its new static section mirrors the proven host x86_64 freestanding
-build, and the coordinator's build validates it.
+redirected-stderr early-import regressions for both ABIs, the mixed-class exec
+round trips and the three-loader packaging check; `tests/state-reject.py`
+covers `resident-enter` plus each rejection stage. Host evidence:
+`/tmp/opencode/r25-tests-final.log` (pre-rebase) and
+`/tmp/opencode/r25-tests-rebased.log` (post-rebase, exit 0). The Android
+`build-android.sh` ran inside the suite and produced all three loaders,
+including the new freestanding peer (ELF64 EXEC at 0x600000000000,
+`.proxy_gateway` at 0x600000300000); the coordinator's device build still
+validates the packaged result.
