@@ -13,15 +13,30 @@ static int arch_app_install(void) {
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,AUDIT_ARCH_I386);
     unsigned compat_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
+    /* Branch 0 is always the x86_64 ABI and branch 1 the i386 ABI, while the
+     * encoders, gateways and the DNS-helper trampoline describe the compiling
+     * ABI. Select the native helpers for whichever branch this build runs. */
+    const unsigned native_branch=ARCH_AUDIT==AUDIT_ARCH_X86_64?0:1;
     for(unsigned branch=0;branch<2;branch++) {
         unsigned jump=branch?compat_jump:native_jump;bpf[jump].k=n-jump-1;
+        const int native=branch==native_branch;
+        /* Kernel exec discards the SIGSYS handler before the peer's Android
+         * linker can start, and its bionic syscall sites are not mapped yet so
+         * they cannot be listed here. Any TRAP this branch emits therefore
+         * kills the fresh peer resident the moment its startup uses that
+         * syscall (mmap, openat, ... are all routed through the proxy). Let
+         * the peer ABI start under the inherited app filter alone, exactly as
+         * arch_filter_install already exempts it with MATON_GPU_BRIDGE; the
+         * peer installs its own compatibility routing before payload entry.
+         * The dead branch is harmless after that: the resident's own filters
+         * are newer and already cover ioctl, fd guards and emulation. */
+        if(!native){ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);continue;}
         const int *allowed=branch?android_i386_allowed:android_x86_64_allowed;
         unsigned count=branch?sizeof(android_i386_allowed)/sizeof(int):sizeof(android_x86_64_allowed)/sizeof(int);
-        long (*encode_ioctl)(long)=branch?arch_peer_encode_syscall:arch_encode_syscall;
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
         /* Route interface ioctls through the proxy even when the Android
          * syscall allowlist would otherwise let ioctl reach the kernel. */
-        ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,encode_ioctl(PROXY_SC_ioctl));
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,1,0,arch_encode_syscall(PROXY_SC_ioctl));
         ADD(BPF_JMP|BPF_JA,0,0,0);unsigned ioctl_jump=n-1;
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[1]));
         const unsigned ifreqs[]={SIOCGIFNAME,SIOCGIFCONF,SIOCGIFFLAGS,SIOCSIFFLAGS,
@@ -37,10 +52,9 @@ static int arch_app_install(void) {
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         }
         bpf[ioctl_jump].k=n-ioctl_jump-1;
-        uint64_t raw_gateway=branch?UINT64_C(0x70300000):UINT64_C(0x600000300000);
-        for(unsigned g=0;g<(branch?2u:3u);g++){
+        for(unsigned g=0;g<3;g++){
             /* seccomp reports the return PC after syscall, not its opcode. */
-            uint64_t raw_ip=branch?raw_gateway+(g==0?0x42:0x102):arch_gateway_pc(g);
+            uint64_t raw_ip=arch_gateway_pc(g);
             ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
             ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(raw_ip>>32));
             ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
@@ -54,7 +68,7 @@ static int arch_app_install(void) {
                 {PROXY_SC_close,0},{PROXY_SC_dup2,1},{PROXY_SC_dup3,1}
             };
             for(unsigned i=0;i<sizeof(guards)/sizeof(guards[0]);i++){
-                long nr=encode_ioctl(guards[i].id);if(nr<0)continue;
+                long nr=arch_encode_syscall(guards[i].id);if(nr<0)continue;
                 unsigned off=offsetof(struct seccomp_data,args[guards[i].arg]);
                 ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
                 ADD(BPF_JMP|BPF_JEQ|BPF_K,0,8,nr);
@@ -67,7 +81,7 @@ static int arch_app_install(void) {
                 ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
                 ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
             }
-            long nr=encode_ioctl(PROXY_SC_close_range);if(nr>=0){
+            long nr=arch_encode_syscall(PROXY_SC_close_range);if(nr>=0){
                 ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
                 ADD(BPF_JMP|BPF_JEQ|BPF_K,0,8,nr);
                 ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
@@ -80,18 +94,16 @@ static int arch_app_install(void) {
                 ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
             }
         }
-        if(!branch) {
-            /* The DNS helper clone trampoline needs its kernel-selected child
-             * stack. Do not route this one clone through clone_retry. */
-            uint64_t clone_ip=arch_gateway_pc(2);
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,arch_encode_syscall(PROXY_SC_clone));
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
-            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(clone_ip>>32));
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
-            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)clone_ip);
-            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-        }
+        /* The DNS helper clone trampoline needs its kernel-selected child
+         * stack. Do not route this one clone through clone_retry. */
+        uint64_t clone_ip=arch_gateway_pc(2);
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,5,arch_encode_syscall(PROXY_SC_clone));
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(clone_ip>>32));
+        ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer));
+        ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,(uint32_t)clone_ip);
+        ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
         for(unsigned i=0;i<count;i++) {
             ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,allowed[i]);ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);

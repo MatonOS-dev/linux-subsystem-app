@@ -147,6 +147,10 @@ _Static_assert(sizeof(struct cmsghdr)==12,"cmsg wire size");
 
 #define ARCH_PEER_ELF_CLASS ELFCLASS64
 #define ARCH_PEER_ELF_MACHINE EM_X86_64
-#define ARCH_PEER_LOADER "libmatonos-v3-loader.so"
+/* Freestanding peer (see build-android.sh): the bionic x86_64 loader cannot
+ * start under the inherited native x86_64 payload filter (unhandled SIGSYS on
+ * its first mmap); the static loader survives until it installs its own
+ * filter and only lacks bionic GPU adoption, which peer execs do not pass. */
+#define ARCH_PEER_LOADER "libmatonos-v3-loader-static.so"
 #define ARCH_PEER_HOST_LOADER "linux-layer-v3"
 #include "../exec.h"
