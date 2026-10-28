@@ -2105,3 +2105,29 @@ filters; simply selecting the bionic peer again restores the earlier SIGSYS.
 The present work does not meet that requirement and does not claim to fix
 the webhelper restart loop. A traced fresh Steam launch can establish how
 much of the steamsysinfo delay was the maps scan after this isolated change.
+
+### Steam round 39: static-peer GPU startup remains unresolved
+
+Rebased on main (`fbdd2bd`; already an ancestor). No production change was
+made in this round, and this branch is still not ready to merge as a Steam
+fix. The static i386 peer's symbol table has no `gpu_bootstrap`,
+`adopt_install` or `adopt_api_address`; the bionic peer has all three and
+an undefined `dlopen@LIBC` resolved by Android's dynamic linker. This is a
+missing native runtime, not merely a missing environment variable.
+
+The local AOSP source `bionic/libdl/libdl_static.cpp` also rules out simply
+linking the static peer against libdl: its `dlopen` and `dlsym` return null
+and its error identifies libdl.a as a stub. A correct implementation needs
+to start a fresh bionic runtime after the freestanding gateway has made
+inherited TRAP filters safe, then install real adoption/bridge callbacks.
+It must keep the gateway used by those callbacks exempt from every older
+filter, including filters from the original ABI on a return exec. Merely
+mapping the dynamic peer at an arbitrary address would relocate its raw
+gateway and risk recursive SIGSYS when its handler calls RAW. Passing old
+bootstrap addresses over kernel exec would instead reference unmapped memory.
+
+Re-ran the fork-to-fresh-ICD lavapipe test: it passes. That host fixture uses
+a host bridge/adoption provider and preserves mappings across fork; it is
+not evidence that a static peer can recreate Android GPU state after exec.
+The required x86_64-to-static-i386-to-ICD `vkCreateInstance` acceptance test
+and working bootstrap implementation remain undone. No VM was started.
