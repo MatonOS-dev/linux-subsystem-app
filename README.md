@@ -199,3 +199,35 @@ removed; trigger boot cleanup during an install and confirm its live staging and
 artifacts survive. Launch a stub, clear its cache, and verify resolver/pack maps
 remain available. These checks still require a device; no kernel or shared
 image changes are needed.
+
+Steam pressure-vessel follow-up (2026-10-28, round 44): bwrap destination
+creation now retains the original dirfd/path alias. The same immutable `/usr`
+image is also bound at `/run/parent/usr`; reversing the physical image pathname
+previously created its temporary i386 directory under a different alias,
+leaving bwrap's actual `O_PATH|O_NOFOLLOW` destination a symlink. The regression
+binds both aliases and checks the destination through fstatat and O_PATH/fstat
+before binding the extension. Stock bwrap's refusal of symlink targets stays.
+
+The mixed-ABI EGL JSON now names the absolute installed i386 library under
+`/usr/lib/x86_64-linux-gnu/GL/maton/lib/i386-linux-gnu/`. pressure-vessel treats
+relative names containing a slash as relative to the JSON, including after
+Flatpak merge-dirs relocation; the previous value pointed into egl_vendor.d.
+GL32's separate extension still uses its own library basename. The layout test
+checks that the absolute mixed-ABI name resolves to an actual packaged file.
+
+Setup profiling from day-r49: pressure-vessel pid 22892 made 43,385 successful
+openat calls, 9,617 unlinkat calls and 6,597 linkat calls. Mount lookup now caches
+immutable target lengths and skips shorter candidates before comparison. The
+512-mount, 10,000-open directory-relative scan measured 51.3 us/iteration before
+and 39.2 us after on this host (about 24% lower). The traced capture also contains
+1,128,773 zero-only raw-counter lines: counter-disabled builds no longer emit
+these. This reduces logging overhead, but seconds-level setup on the device is
+not yet demonstrated; a coordinator capture should compare traced and untraced
+setup durations and collect `--count` data if setup is still slow.
+
+Validation for this change is host-only, with no VM started. The EROFS alias
+regression, GL-extension layout tests and Android loader builds pass. Rebuild
+the loaders and GL extensions, then verify Kate/Obsidian/Chrome still draw and
+Steam passes `/run/parent/usr/lib/i386-linux-gnu` setup without the EGL resolved-
+path warning. Check pressure-vessel setup duration and webhelper initialization;
+no kernel or shared device-tree changes are needed.

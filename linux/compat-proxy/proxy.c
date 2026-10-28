@@ -1133,7 +1133,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
          * path in its tmpfs view before binding the extension over it. Give
          * that mkdir the same shadowing behaviour as a missing EROFS target. */
         if(path_is_symlink(p)){
-            e=vfs_bwrap_erofs_mkdir(p);
+            e=vfs_bwrap_erofs_mkdir(p,fd,original_path);
             if(e!=-ENOSYS)goto done;
         }
         if(vfs_bwrap_shm_mkdir(original_path)){e=0;goto done;}
@@ -1144,7 +1144,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
      * bwrap uses mkdir-parents for bind targets, so give it a temporary VFS
      * directory that the following virtual bind can replace. */
     if(nr==PROXY_SC_mkdirat){char *package_path=erofs_reverse(p);
-        if(package_path){vfs_free(package_path);e=vfs_bwrap_erofs_mkdir(p);if(e==-ENOSYS)e=-EROFS;goto done;}
+        if(package_path){vfs_free(package_path);e=vfs_bwrap_erofs_mkdir(p,fd,original_path);if(e==-ENOSYS)e=-EROFS;goto done;}
     }
     /* bwrap creates absent regular-file bind destinations with open(O_CREAT)
      * before mounting over them. Give that operation a per-launch writable
@@ -1153,7 +1153,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         char *package_path=erofs_reverse(p);
         if(package_path){
             vfs_free(package_path);
-            e=vfs_bwrap_erofs_file(p,(unsigned)a[3]&07777);
+            e=vfs_bwrap_erofs_file(p,fd,original_path,(unsigned)a[3]&07777);
             if(e!=-ENOSYS){
                 if(e)goto done;
                 /* The shadow file now exists by design, so this O_EXCL
@@ -2709,7 +2709,10 @@ finish:
     }
     else if(result==-ENOSYS)unhandled_once(original,info->si_syscall);
 clean_mask:
-    if(proxy_trace){
+    /* Counter-disabled builds return zero here. Emitting a line of eight
+     * zeroes cost dozens of log writes per filesystem syscall during runtime
+     * scans, without providing any diagnostic information. */
+    if(proxy_trace && proxy_raw_count_now()!=raw_calls_at_entry){
         uint64_t raw_calls=proxy_raw_count_now()-raw_calls_at_entry;
         emit("v3 raw-calls syscall=");crash_hex((uint64_t)info->si_syscall);
         emit(" count=");crash_hex(raw_calls);

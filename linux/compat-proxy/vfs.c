@@ -265,12 +265,13 @@ void vfs_temp_gc(void){
 
 static char *dupstr(const char *s){size_t n=p_len(s);char *p=vfs_alloc(n+1);if(p)p_copy(p,s,n+1);return p;}
 static char *pdupstr(const char *s){size_t n=p_len(s);char *p=vfs_palloc(n+1);if(p)p_copy(p,s,n+1);return p;}
-struct mount {struct mount *next;char *source,*target;unsigned long flags;/* Own backing filesystem hides an index even at its root. */int pack_shadow;};
+struct mount {struct mount *next;char *source,*target;size_t target_len;unsigned long flags;/* Own backing filesystem hides an index even at its root. */int pack_shadow;};
 static struct mount *table;
 static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
 static char *oldroot_view;
 static char *global_target(const char *,long *);
+static char *basepath(int,long *);
 int proxy_mount(const char *,const char *);
 static int stacked_oldroot;
 static int hide_resolver;
@@ -359,35 +360,19 @@ int vfs_bwrap_tmpdir_mkdir(const char *path){
     size_t n=p_len(path);return p_equal(path,"var/tmp") || p_equal(path,"/var/tmp") ||
         (n>8 && p_equal(path+n-8,"/var/tmp"));
 }
-static long vfs_bwrap_erofs_destination(const char *path,int directory,unsigned mode){
+static long vfs_bwrap_erofs_destination(const char *path,int fd,const char *name,int directory,unsigned mode){
     if(!vfs_is_bwrap() || !path)return -ENOSYS;
     char *view=erofs_reverse(path);if(!view)return -ENOSYS;
-    long error=0;char *target=NULL;struct mount *alias=NULL;size_t source_length=0;
-    /* During bwrap setup, an EROFS image may be bind-mounted below a staged
-     * root such as /tmp/newroot/usr while the process root is still /tmp.
-     * Reversing the backing path to /usr and applying root would shadow
-     * /tmp/usr instead. Preserve the active virtual bind alias when the
-     * backing object is exposed through one. */
-    size_t alias_target_length=SIZE_MAX;int alias_in_root=0;
-    for(struct mount *m=table;m;m=m->next){
-        size_t n=p_len(m->source);
-        if(!prefix(path,m->source))continue;
-        char *source_view=erofs_reverse(m->source);
-        int source_is_erofs=source_view!=NULL;
-        vfs_free(source_view);
-        if(source_is_erofs){
-            int in_root=root&&prefix(m->target,root);
-            size_t target_length=p_len(m->target);
-            if(n>source_length || (n==source_length && in_root && !alias_in_root) ||
-                    (n==source_length && in_root==alias_in_root && target_length<alias_target_length)){
-                alias=m;source_length=n;alias_in_root=in_root;alias_target_length=target_length;
-            }
-        }
-    }
-    if(alias){target=join(alias->target,path+source_length);if(!target)error=-ENOMEM;}
-    else target=global_target(view,&error);
-    vfs_free(view);
-    if(!target)return error;
+    /* The backing inode can have several staged-root aliases. Reversing it
+     * cannot recover which alias mkdirat/openat addressed (pressure-vessel
+     * uses both /usr and /run/parent/usr). Preserve the caller's dirfd view. */
+    long error=0;
+    char *logical=NULL;
+    if(name[0]=='/')logical=dupstr(name);
+    else {char *base=basepath(fd,&error);if(base){logical=join(base,name);vfs_free(base);}}
+    char *target=logical?global_target(logical,&error):NULL;
+    vfs_free(logical);vfs_free(view);
+    if(!target)return error?error:-ENOMEM;
     char *source=vfs_temp_create(&error);
     if(source && !directory){
         char *file=join(source,"destination");
@@ -401,8 +386,8 @@ static long vfs_bwrap_erofs_destination(const char *path,int directory,unsigned 
     if(source){if(!error)error=proxy_mount(source,target);vfs_free(source);}
     vfs_free(target);return error;
 }
-long vfs_bwrap_erofs_mkdir(const char *path){return vfs_bwrap_erofs_destination(path,1,0755);}
-long vfs_bwrap_erofs_file(const char *path,unsigned mode){return vfs_bwrap_erofs_destination(path,0,mode);}
+long vfs_bwrap_erofs_mkdir(const char *path,int fd,const char *name){return vfs_bwrap_erofs_destination(path,fd,name,1,0755);}
+long vfs_bwrap_erofs_file(const char *path,int fd,const char *name,unsigned mode){return vfs_bwrap_erofs_destination(path,fd,name,0,mode);}
 /* Worker SIGSYS handlers resolve paths concurrently. A shared cache cannot
  * free/replace keys while another thread reads them, or publish a key before
  * its mount identity. Walk the small mount list instead; no per-call shared
@@ -410,7 +395,9 @@ long vfs_bwrap_erofs_file(const char *path,unsigned mode){return vfs_bwrap_erofs
 static int prefix(const char *p,const char *s){size_t n=p_len(s);size_t i=0;while(i<n && p[i]==s[i])i++;return i==n && (n==1 || !p[n] || p[n]=='/');}
 static struct mount *lookup(const char *path){
     struct mount *best=NULL;size_t n=0;
-    for(struct mount *m=table;m;m=m->next){size_t k=p_len(m->target);if(prefix(path,m->target)&&k>n){n=k;best=m;}}
+    /* A mount name is immutable. Cache its length once, and reject shorter
+     * candidates before comparing any bytes (newest equal target wins). */
+    for(struct mount *m=table;m;m=m->next){size_t k=m->target_len;if(k>n && prefix(path,m->target)){n=k;best=m;}}
     return best;
 }
 /* Snapshot copying must keep the newest mount at each target. Prepending
@@ -908,7 +895,7 @@ static char *mount_source_name(const char *source){
     long error=0;char *name=readlink_dynamic(proc,&error);
     RAW(PROXY_SC_close,fd,0,0,0,0,0);return name;
 }
-int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_palloc(sizeof(*m));if(!m)return -ENOMEM;m->source=vfs_palloc(p_len(source)+1);m->target=vfs_palloc(p_len(target)+1);if(m->source)p_copy(m->source,source,p_len(source)+1);if(m->target)p_copy(m->target,target,p_len(target)+1);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->next=table;table=m;vfs_resolve_cache_invalidate();
+int proxy_mount(const char *source,const char *target){if(!source || !target || target[0]!='/')return -EINVAL;struct mount *m=vfs_palloc(sizeof(*m));if(!m)return -ENOMEM;m->source=vfs_palloc(p_len(source)+1);m->target=vfs_palloc(p_len(target)+1);if(m->source)p_copy(m->source,source,p_len(source)+1);if(m->target)p_copy(m->target,target,p_len(target)+1);m->flags=0;m->pack_shadow=0;if(!m->source || !m->target){vfs_free(m->source);vfs_free(m->target);vfs_free(m);return -ENOMEM;}size_t n=p_len(m->target);while(n>1 && m->target[n-1]=='/')m->target[--n]=0;m->target_len=n;m->next=table;table=m;vfs_resolve_cache_invalidate();
     proxy_log("mount-owner",PROXY_SC_mount,0);
     RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 mount ",9,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,source,p_len(source),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd," -> ",4,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,target,p_len(target),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);return 0;}
 long vfs_mount_readonly_map(const char *source,const char *target){int r=proxy_mount(source,target);if(r)return r;table->flags=MS_RDONLY;return 0;}
@@ -1262,7 +1249,7 @@ void vfs_state(struct state *s){
  for(uint64_t i=0;i<count&&!s->error;i++){
   struct mount *m=s->reading?vfs_palloc(sizeof(*m)):*tail;
   if(!m){s->error=-ENOMEM;return;}if(s->reading){*tail=m;m->next=NULL;m->source=m->target=NULL;}
-  state_string(s,&m->source);state_string(s,&m->target);m->flags=state_word(s,m->flags);m->pack_shadow=state_word(s,m->pack_shadow);tail=&m->next;
+  state_string(s,&m->source);state_string(s,&m->target);if(s->reading && m->target)m->target_len=p_len(m->target);m->flags=state_word(s,m->flags);m->pack_shadow=state_word(s,m->pack_shadow);tail=&m->next;
  }
  count=0;for(size_t fd=0;fd<fd_names_capacity;fd++)if(fd_names[fd].length && state_live((int)fd))count++;
  count=state_count(s,count);if(s->error)return;

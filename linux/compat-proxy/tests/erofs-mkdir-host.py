@@ -38,11 +38,16 @@ int main(int argc,char **argv){
  if(!strcmp(argv[2],"bwrap-root-alias")){
   struct stat st;
   CHECK(mount("/usr","/newroot/usr",NULL,MS_BIND,NULL)==0);
-  int libfd=open("/newroot/usr/lib",O_RDONLY|O_DIRECTORY|O_CLOEXEC);CHECK(libfd>=0);
+  CHECK(mkdir("/newroot/run",0755)==0 || errno==EEXIST);
+  CHECK(mkdir("/newroot/run/parent",0755)==0 || errno==EEXIST);
+  CHECK(mount("/usr","/newroot/run/parent/usr",NULL,MS_BIND,NULL)==0);
+  int libfd=open("/newroot/run/parent/usr/lib",O_RDONLY|O_DIRECTORY|O_CLOEXEC);CHECK(libfd>=0);
   CHECK(mkdirat(libfd,"i386-linux-gnu",0755)==0);
   CHECK(fstatat(libfd,"i386-linux-gnu",&st,AT_SYMLINK_NOFOLLOW)==0 && S_ISDIR(st.st_mode));
-  CHECK(mount(argv[3],"/newroot/usr/lib/i386-linux-gnu",NULL,MS_BIND,NULL)==0);
-  CHECK(stat("/newroot/usr/lib/i386-linux-gnu/marker",&st)==0 && S_ISREG(st.st_mode));
+  int destfd=openat(libfd,"i386-linux-gnu",O_PATH|O_NOFOLLOW|O_CLOEXEC);CHECK(destfd>=0);
+  CHECK(fstat(destfd,&st)==0 && S_ISDIR(st.st_mode));close(destfd);
+  CHECK(mount(argv[3],"/newroot/run/parent/usr/lib/i386-linux-gnu",NULL,MS_BIND,NULL)==0);
+  CHECK(stat("/newroot/run/parent/usr/lib/i386-linux-gnu/marker",&st)==0 && S_ISREG(st.st_mode));
   close(libfd);puts("PASS bwrap staged-root bind target shadows EROFS symlink");return 0;
  }
  char oldroot[4096];CHECK(snprintf(oldroot,sizeof(oldroot),"%s/oldroot",argv[1])>0);
@@ -67,6 +72,8 @@ int main(int argc,char **argv){
   int libfd=open("/usr/lib",O_RDONLY|O_DIRECTORY|O_CLOEXEC);CHECK(libfd>=0);
   CHECK(mkdirat(libfd,"i386-linux-gnu",0755)==0);
   CHECK(fstatat(libfd,"i386-linux-gnu",&st,AT_SYMLINK_NOFOLLOW)==0 && S_ISDIR(st.st_mode));
+  int destfd=openat(libfd,"i386-linux-gnu",O_PATH|O_NOFOLLOW|O_CLOEXEC);CHECK(destfd>=0);
+  CHECK(fstat(destfd,&st)==0 && S_ISDIR(st.st_mode));close(destfd);
   CHECK(stat("/usr/lib/i386-linux-gnu",&st)==0 && S_ISDIR(st.st_mode));
   /* Flatpak then binds the extension onto the directory bwrap created. The
    * virtual bind must shadow the original EROFS symlink too. */
@@ -88,6 +95,8 @@ cmd=[str(base/'build/linux-layer-v3'),'--android-filter','--trace','--erofs-moun
 result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
 if result.returncode:
     raise RuntimeError(result.stdout+'\n'+result.stderr)
+assert 'v3 trap ' in result.stderr
+assert 'v3 raw-calls syscall=' not in result.stderr  # counters disabled: no zero-only log spam
 print(result.stdout.strip())
 bwrap=root/'bwrap'
 shutil.copyfile(probe,bwrap)

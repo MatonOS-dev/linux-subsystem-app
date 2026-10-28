@@ -53,7 +53,7 @@ def build(out, vulkan, egl, glx, branch, vulkan_i386, egl_i386, glx_i386):
     if egl_i386:
         (files / "glvnd/egl_vendor.d/10_maton_i386.json").write_text(
             '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
-            '    "library_path": "i386-linux-gnu/libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
+            '    "library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/i386-linux-gnu/libEGL_maton.so"\n  }\n}\n', encoding="utf-8")
 
     metadata = (ROOT / "linux/gpu-bridge-common/flatpak/metadata.in").read_text()
     metadata = metadata.replace("@RUNTIME_BRANCH@", branch)

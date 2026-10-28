@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import pathlib
 import sys
 import zipfile
@@ -54,7 +55,7 @@ assert '"library_path": "libmaton_vulkan.so"' in payload(
 assert '"library_path": "libmaton_vulkan_i386.so"' in payload(
     "/vulkan/icd.d/maton_icd_i386.json")
 assert '"library_path": "libEGL_maton.so"' in payload("/glvnd/egl_vendor.d/10_maton.json")
-assert '"library_path": "i386-linux-gnu/libEGL_maton.so"' in payload(
+assert '"library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/i386-linux-gnu/libEGL_maton.so"' in payload(
     "/glvnd/egl_vendor.d/10_maton_i386.json")
 assert (root / "objects.ostree").read_bytes().startswith(b"MTPKOBJ1")
 
@@ -75,3 +76,13 @@ assert {
 } <= gl32_paths
 assert "/lib/i386-linux-gnu/libEGL_maton.so" not in gl32_paths
 assert "/glvnd/egl_vendor.d/10_maton.json" not in gl32_paths
+
+# pressure-vessel resolves names containing '/' against the JSON directory,
+# rather than searching ld.so's library path. The mixed-ABI JSON must name
+# the installed i386 object, including after merge-dirs relocates the JSON.
+i386_json = json.loads(payload("/glvnd/egl_vendor.d/10_maton_i386.json"))
+library = i386_json["ICD"]["library_path"]
+mount = "/usr/lib/x86_64-linux-gnu/GL/maton"
+assert library.startswith(mount + "/")
+assert library[len(mount):] in paths
+assert (root / "tree" / library[len(mount)+1:]).is_file()

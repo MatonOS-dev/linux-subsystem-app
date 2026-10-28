@@ -44,7 +44,7 @@ for arch in aarch64; do
   "$cc" --target="$target" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$deps/include" -I"$out/gen" -I"$here/arch/$arch" -I"$here" -I"$here/../vulkan-forward" -I"$here/../wayland-client" -c "$here/egl_vendor.c" -o "$out/vendor-$arch.o"
 done
 cp "$here/10_maton.json" "$out/10_maton.json"
-sed 's|"library_path": "libEGL_maton.so"|"library_path": "i386-linux-gnu/libEGL_maton.so"|' \
+sed 's|"library_path": "libEGL_maton.so"|"library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/i386-linux-gnu/libEGL_maton.so"|' \
   "$here/10_maton.json" > "$out/i386/10_maton_i386.json"
 cat "$out/gen/coverage.txt"
 echo 'PASS: x86_64 and i386 EGL vendors are freestanding with expected exports and no DT_NEEDED; arm64 stub compile'

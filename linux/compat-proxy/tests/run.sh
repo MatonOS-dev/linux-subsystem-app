@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+python3 tests/mount-scan.py
 native_out=$(mktemp -d "${TMPDIR:-/mnt/data/aosp/out/pc-logs}/steam-personality-native.XXXXXX")
 bash tests/native-reservation.sh "$native_out/guards" >"$native_out/guards.log" 2>&1
 grep '^PASS ' "$native_out/guards.log"
