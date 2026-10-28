@@ -52,7 +52,10 @@ int main(int argc,char **argv,char **env){
   if(!child){char *args[]={argv[1],argv[2],argv[1],"one",words[0],words[1],words[2],words[3],words[4],words[5],words[6],NULL};execve(args[0],args,env);_exit(101);}
   int status;CHECK(waitpid(child,&status,0)==child);
   if(getenv("MATON_TEST_RETURN_PEER")){
-   CHECK(WIFSIGNALED(status)&&WTERMSIG(status)==31);
+   fprintf(stderr,"return startup status=%d expected=%s\n",status,getenv("MATON_TEST_RETURN_PEER_EXPECT"));
+   if(!strcmp(getenv("MATON_TEST_RETURN_PEER_EXPECT")?:"sigsys","success"))
+    CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==0);
+   else CHECK(WIFSIGNALED(status)&&WTERMSIG(status)==31);
    return 0;
   }
   CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==0);

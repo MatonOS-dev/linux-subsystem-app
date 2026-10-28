@@ -68,16 +68,28 @@ cp build/linux-layer-v3-i386 "$peer_dir/linux-layer-v3-i386"
  -DREAL_PEER=\"$PWD/build/linux-layer-v3-i386\" tests/resident-start-peer.S \
  -o "$peer_dir/return-linker"
 chmod 0755 "$peer_dir/return-linker"
-set +e
-MATON_TEST_RETURN_PEER="$peer_dir/return-linker" \
- MATON_TEST_RETURN_SIBLING="$peer_dir/linux-layer-v3-i386" \
- timeout 20 "$peer_dir/linux-layer-v3-i386" --android-filter --trace \
- --map "$PWD/build/cross-file" /v3-cross-file --map "$PWD/build/cross-dir" /v3-cross-dir \
- "$PWD/build/cross32" "$PWD/build/cross64" "$PWD/build/cross32" \
- >build/cross-return-linker.out 2>build/cross-return-linker.log
-status=$?
-set -e
-[[ $status == 0 ]] # fixture parent verifies child SIGSYS before a handler exists
+# Neither invocation installs a Flatpak/payload filter. The plain run also
+# omits the synthetic Android app filter: a failure there isolates the proxy's
+# own irreversible kernel routing filter from both other policies.
+for mode in plain android; do
+    cp build/linux-layer-v3-i386 "$peer_dir/linux-layer-v3-i386"
+    "$compiler" -nostdlib -static -Wl,-no-pie \
+     -DREAL_PEER=\"$PWD/build/linux-layer-v3-i386\" tests/resident-start-peer.S \
+     -o "$peer_dir/return-linker"
+    flags=()
+    expected=success
+    if [[ $mode == android ]]; then flags+=(--android-filter); expected=sigsys; fi
+    MATON_TEST_RETURN_PEER_EXPECT="$expected" \
+    MATON_TEST_RETURN_PEER="$peer_dir/return-linker" \
+     MATON_TEST_RETURN_SIBLING="$peer_dir/linux-layer-v3-i386" \
+     timeout 20 "$peer_dir/linux-layer-v3-i386" "${flags[@]}" --trace \
+     --map "$PWD/build/cross-file" /v3-cross-file --map "$PWD/build/cross-dir" /v3-cross-dir \
+     "$PWD/build/cross32" "$PWD/build/cross64" "$PWD/build/cross32" \
+     >"build/cross-return-linker-$mode.out" 2>"build/cross-return-linker-$mode.log"
+    # The fixture parent checks WIFSIGNALED/SIGSYS, rather than mistaking a
+    # timeout, startup error, or payload assertion for the reproduced failure.
+    printf 'PASS return startup without payload filter: %s -> %s\n' "$mode" "$expected"
+done
 cp build/linux-layer-v3-i386 "$peer_dir/linux-layer-v3-i386"
 timeout 20 "$peer_dir/linux-layer-v3-i386" --android-filter --trace \
  --map "$PWD/build/cross-file" /v3-cross-file --map "$PWD/build/cross-dir" /v3-cross-dir \
