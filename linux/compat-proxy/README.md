@@ -1805,3 +1805,43 @@ Validation: full `bash linux/compat-proxy/tests/run.sh` exited 0, including
 both ABI suites, Android loader compilation/packaging, stock nested bwrap,
 and the new resident-worker/supervisor signalfd cases. Full evidence:
 `/mnt/data/aosp/out/pc-logs/agents/steam-r28-suite-fixed.log`.
+
+### Steam round 29: downloaded runtime hard links in HOME
+
+Rebased on main 348382c. The supplied day-r36 capture does **not** show nine
+CEF restarts: steamui_html.txt has old restart records at 02:31, followed by
+one current start at 06:29:30 (PID 17028). In steam.txt this PID execs
+steamwebhelper.sh, then the steamrt64 entry point/run/pressure-vessel wrapper.
+It is still preparing that runtime at the end of the capture; no actual CEF
+steamwebhelper executable or --type= child is reached. The early
+lifecycle-exit 49/0 is a thread exit, not exit_group or evidence that the
+webhelper parent died. There is no captured CEF exit status/IPC failure to fix.
+
+The trace proves an earlier platform gap: PID 17028 gets 5,960 linkat
+(PROXY_SC 151) EACCES results; stderr contains 6,000 hard-link warnings and
+copy fallbacks, continuing until 06:30:54. Downloaded runtime source and
+preparation destination are both under the stub HOME, outside existing
+installation link-store roots. Android denies the real hard links there.
+The launcher now establishes the existing .v3-store-root marker in HOME,
+using the same persistent inode-store implementation as deployment trees.
+No Steam setting, CEF switch or per-app rule is added. Existing homes acquire
+the marker before launch; repeated launches preserve it and the backing store.
+
+Regression: tests/home-links.sh compiles the actual Java setup helper, proves
+that the runtime-shaped linkat operation fails without its marker under a
+kernel EACCES filter, then passes with the marker. It checks shared inode,
+link counts, writes through an open source fd, surviving destination after
+source unlink, and idempotent setup. Included in tests/run.sh.
+
+Device follow-up (coordinator only): rebuild the host APK, fresh launch with
+v3-trace, retain steamui_html.txt with timestamps, and verify runtime linkat
+EACCES/copy fallbacks disappear. Allow runtime preparation to finish and then
+capture actual steamwebhelper binary exec, --type= children, stderr and any
+exit_group/wait status. This fixes the observed preparation gap; a rendering
+fix or the old restart loop's cause is not claimed. No VM was started.
+
+Validation: full `bash tests/run.sh` passed (including Android NDK packaging,
+i386/cross-exec, hard-link stores, signalfd, bwrap and site-rewrite checks).
+Focused home-links test passed again after adding the failing-before assertion.
+`:app:compileDebugJavaWithJavac -x :app:preBuild` passed against SDK 36
+(native packaging tasks excluded; no APK or device test claimed).

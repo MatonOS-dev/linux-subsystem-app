@@ -71,6 +71,7 @@ final class V3Launcher {
         for (File directory : new File[]{home, cache, new File(home, ".config"), new File(home, ".local/share")})
             if (!directory.isDirectory() && !directory.mkdirs())
                 throw new java.io.IOException("Cannot create application directory " + directory);
+        HomeLinkStore.prepare(home);
         WorkDirs.sweep(WorkDirs.root(context));
         File launchWork = WorkDirs.directory(context,"launch-data");
         WorkDirs.keep(launchWork); // Loader pack mappings live until process exit.

@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+bash tests/home-links.sh
 bash tests/exec-origin.sh
 bash tests/uname-trace.sh
 cc -O2 -Wall -Wextra -Werror tests/proc-dirfd.c -o build/proc-dirfd
