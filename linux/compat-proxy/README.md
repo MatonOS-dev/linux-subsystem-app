@@ -1464,3 +1464,14 @@ longer prints the pcilib error, Chrome retains its toplevel without the GPU
 exit loop, and Obsidian still renders. Preserve stderr, exec argv, compositor
 messages and screenshots. No VM was run; no kernel, AOSP or shared device-tree
 changes are required.
+
+Round-26 final verification: full `bash linux/compat-proxy/tests/run.sh`
+passed, including i386, mixed exec, apply-extra, GPU/bwrap, SIGSYS and rewrite
+checks. The preexisting zygote stream test now requests precisely each fixed
+message length with MSG_WAITALL; an oversized read had intermittently consumed
+the next message's first byte. Its corrected form passed ten consecutive runs.
+The 10,000-thread stress passed with a 60-second deadline after the shared
+host exceeded its previous 15-second deadline (standalone retry passed within
+30 seconds). No worker count was reduced. Android app Java compilation,
+MachineIdTest and device-tree preflight also passed. Logs:
+`/mnt/data/aosp/out/pc-logs/fork-adopt-round26-{tests,java,preflight,baseline}.log`.
