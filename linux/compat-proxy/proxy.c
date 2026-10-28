@@ -2144,6 +2144,13 @@ static void android_pc_cache_invalidate_range(uintptr_t lo,uintptr_t hi){
     }
 }
 #include "payload-filter.h"
+/* The alt-stack placement is fixed per thread once installed. Emitting its
+ * full line on every trap cost ~17 log writes per handled syscall (the
+ * dominant tracer expense during pressure-vessel setup) for bytes that only
+ * change when the stack is (re)installed. Emit only on a base/size/flags
+ * transition; the per-trap local/interrupted detail is kept for that line. */
+static unsigned long trace_stack_base,trace_stack_size;
+static long trace_stack_flags;
 static void handler(int sig,siginfo_t *info,void *opaque) {
     void *paused_direct=vfs_direct_pause();
     uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
@@ -2165,10 +2172,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     struct thread_state *thread=NULL;
     if(proxy_trace) {
         stack_t ss={0};RAW(PROXY_SC_sigaltstack,0,&ss,0,0,0,0);
-        emit("v3 handler-stack ");trace_word("local=",(uintptr_t)&ss);
-        trace_word("interrupted=",ARCH_CONTEXT(uc,ARCH_STACK));
-        trace_word("base=",(uintptr_t)ss.ss_sp);trace_word("size=",ss.ss_size);
-        trace_word("flags=",ss.ss_flags);emit("\n");
+        if((uintptr_t)ss.ss_sp!=trace_stack_base || ss.ss_size!=trace_stack_size ||
+                ss.ss_flags!=trace_stack_flags){
+            trace_stack_base=(uintptr_t)ss.ss_sp;trace_stack_size=ss.ss_size;trace_stack_flags=ss.ss_flags;
+            emit("v3 handler-stack ");trace_word("local=",(uintptr_t)&ss);
+            trace_word("interrupted=",ARCH_CONTEXT(uc,ARCH_STACK));
+            trace_word("base=",trace_stack_base);trace_word("size=",trace_stack_size);
+            trace_word("flags=",trace_stack_flags);emit("\n");
+        }
     }
     uintptr_t internal_pc=(uintptr_t)info->si_call_addr;
     struct thread_state *direct=NULL;
