@@ -179,7 +179,7 @@ int state_import(const char *number,const char *token){
  if((unsigned long)data>=(unsigned long)-4095)return data;
  struct state s={.fd=fd,.reading=1,.size=st.st_size,.data=(void *)data};
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
- if(magic!=UINT64_C(0x335854454e4f544d)||version!=8||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
+ if(magic!=UINT64_C(0x335854454e4f544d)||version!=9||pid!=(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0)||key!=nonce)s.error=-EPERM;
  if(!s.error)transfer(&s);
  if(proxy_trace)proxy_log("exec-state-import",ARCH_AUDIT,s.error);
  if(s.pos!=s.size)s.error=-EINVAL;
@@ -216,7 +216,7 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};
- state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,8);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
+ state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,9);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
  transfer(&s);error=s.error;
  if(!error)error=RAW(PROXY_SC_fcntl,private_fd,F_ADD_SEALS,F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE,0,0,0);
  char num[24],key[24];decimal(num,private_fd);decimal(key,nonce);

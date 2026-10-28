@@ -3,6 +3,8 @@
  * No separate loader invocation: payload exec goes through resident handoff. */
 #define _GNU_SOURCE
 #include <stdint.h>
+#include <sys/personality.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <fcntl.h>
@@ -35,6 +37,9 @@ static int fail(int line){char b[24];number(b,line);if(write(2,b,strlen(b))<0)re
 int main(int argc,char **argv,char **env){
  CHECK(argc>=3);
  if(argc==3){
+  /* Android/host policy denies ADDR_NO_RANDOMIZE, so this persona is virtual.
+   * It must cross both resident ABI execs along with an explicit Linux32. */
+  CHECK(personality(ADDR_NO_RANDOMIZE|PER_LINUX32)>=0);
   int sem=semget_(0),shm=shmget_(),msg=msgget_();CHECK(sem>=0&&shm>=0&&msg>=0);
   CHECK(!semctl_(sem,16,3));int *memory=shmat_(shm);CHECK(memory!=(void *)-1);*memory=19;
   int fd=open("/v3-cross-file",O_RDONLY),alias=dup(fd),dead=open("/v3-cross-file",O_RDONLY|O_CLOEXEC);CHECK(fd>=0&&alias>=0&&dead>=0);
@@ -50,6 +55,10 @@ int main(int argc,char **argv,char **env){
   static const char ok[]="PASS mixed-class exec, VFS/fds and sem/shm/msg/SEM_UNDO\n";CHECK(write(1,ok,sizeof(ok)-1)==sizeof(ok)-1);return 0;
  }
  CHECK(argc==11);
+ CHECK(personality(0xffffffffUL)==(ADDR_NO_RANDOMIZE|PER_LINUX32));
+ CHECK(personality(PER_LINUX)>=0);
+ struct utsname uts;CHECK(!uname(&uts)&&!strcmp(uts.machine,"x86_64"));
+ CHECK(personality(ADDR_NO_RANDOMIZE|PER_LINUX32)>=0);
  CHECK(ioctl(-1,0xc0306201UL,0)==-1&&errno==EBADF);
  int sem=atoi(argv[4]),shm=atoi(argv[5]),msg=atoi(argv[6]),fd=atoi(argv[7]),alias=atoi(argv[8]),dead=atoi(argv[9]),tmpalias=atoi(argv[10]);
  char inode[5];CHECK(pread(tmpalias,inode,5,0)==5&&!memcmp(inode,"inode",5));
