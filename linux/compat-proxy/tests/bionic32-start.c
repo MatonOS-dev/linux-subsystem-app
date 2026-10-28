@@ -13,6 +13,7 @@
 #include <sys/prctl.h>
 #include "../bionic32.h"
 uint32_t proxy_bionic32_base=0x40000000;
+uint64_t proxy_bionic64_base;
 int main(int argc,char **argv){
  assert(argc>=2);
  if(argc>2)proxy_bionic32_base=(uint32_t)strtoul(argv[2],NULL,0);

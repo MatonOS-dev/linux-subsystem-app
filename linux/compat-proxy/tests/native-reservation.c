@@ -8,7 +8,15 @@ static void inspect(int sig,siginfo_t *info,void *opaque) {
 }
 int main(void) {
     proxy_bionic32_base=0x40000000;
+    proxy_bionic64_base=UINT64_C(0x2000000000);
     CHECK(proxy_native_prepare()==0);
+    CHECK(RAW(PROXY_SC_mmap,proxy_bionic64_base,BIONIC64_SIZE,PROT_READ,
+        MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0)==-EEXIST);
+    proxy_arg_t native64_args[6]={proxy_bionic64_base,4096,PROT_READ|PROT_EXEC,
+        MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,(proxy_arg_t)-1,0};
+    CHECK(proxy_direct_dispatch(arch_encode_syscall(PROXY_SC_mmap),native64_args)==-EACCES);
+    CHECK(proxy_direct_dispatch(arch_encode_syscall(PROXY_SC_mprotect),native64_args)==-EACCES);
+    CHECK(proxy_direct_dispatch(arch_encode_syscall(PROXY_SC_munmap),native64_args)==-EACCES);
     CHECK(RAW(PROXY_SC_mmap,proxy_bionic32_base,4096,PROT_READ,
         MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0)==-EEXIST);
     proxy_arg_t args[6]={proxy_bionic32_base,4096,PROT_READ|PROT_EXEC,

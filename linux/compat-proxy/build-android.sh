@@ -30,25 +30,28 @@ python3 "$build_source/gen-policy.py"
 
 MATON_I386_GPU_BRIDGE=1 bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"
 
-# Freestanding ELF64 peer loader. The i386 client hands x86_64 execs (bash,
-# steamwebhelper, driver queries) to the peer loader through a kernel exec;
-# that exec inherits the x86_64-native payload filter from the launcher chain,
-# which TRAPs bionic startup syscalls (mmap, openat, ...) before the resident
-# can install its own SIGSYS handler (exec discards handlers), killing the
-# fresh resident silently. A freestanding loader starts at its own entry and
-# makes only gateway-exempt raw syscalls until proxy_install runs, so the
-# inherited TRAPs never fire. The bionic loader stays the v3 launch path where
-# GPU thread adoption needs it.
-static_builtins=$("$compiler" --print-libgcc-file-name)
-"$compiler" -m64 -march=x86-64-v2 -mcmodel=large "${counter_flags[@]}" \
-  -DPROXY_ARCH_BACKEND='"x86_64/backend.h"' \
-  -nostdlib -static -Wl,-no-pie -Wl,--image-base=0x600000000000 \
-  -Wl,--section-start=.proxy_gateway=0x600000300000 \
-  -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
-  "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
-  "$build_source"/arch/x86_64/raw.S "$build_source"/arch/x86_64/entry.S \
-  "$static_builtins" -o "$output/libmatonos-v3-loader-static.so"
-
-chmod 0755 "$output/libmatonos-v3-loader.so"
-chmod 0755 "$output/libmatonos-v3-loader-static.so"
-
+# The ELF64 peer enters a no-libc stub first, then starts bionic inside the
+# session's reserved native region. Keep the historical entry filename.
+"$compiler" -march=x86-64-v2 -DMATON_GPU_BRIDGE -fPIC -shared -mcmodel=large \
+ -Wl,-Bsymbolic -Wl,-z,now -Wl,--export-dynamic-symbol=pthread_create \
+ -Wl,--image-base=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 \
+ -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
+ "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
+ "$build_source"/adopt-map.c "$build_source"/arch/x86_64/thread-adopt.c \
+ "$build_source"/arch/x86_64/{raw.S,adopt.S,altstack.S} -pthread -ldl -lEGL -lGLESv2 \
+ -Wl,-soname,libmatonos-v3-peer-x86_64.so -o "$output/libmatonos-v3-peer-x86_64.so"
+"$compiler" -nostdlib -fPIC -pie -mcmodel=large -Wl,--no-dynamic-linker \
+ -Wl,--image-base=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 \
+ -Wl,--no-as-needed -Wl,-rpath,'$ORIGIN' -L"$output" -l:libmatonos-v3-peer-x86_64.so \
+ -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
+ "$source_dir/arch/x86_64/peer-start.c" "$source_dir/arch/x86_64/peer-start.S" \
+ -o "$output/libmatonos-v3-loader-static.so"
+python3 - "$output/libmatonos-v3-loader-static.so" <<'PYCODE'
+import sys
+with open(sys.argv[1],'r+b') as f:
+    f.seek(16)
+    assert f.read(2)==b'\x03\x00'
+    f.seek(16)
+    f.write(b'\x02\x00')
+PYCODE
+chmod 0755 "$output"/libmatonos-v3-*.so

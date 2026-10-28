@@ -4,6 +4,7 @@
 int main(int argc,char **argv,char **env) {
     CHECK(argc==4);
     proxy_trace=1;
+    proxy_bionic64_base=UINT64_C(0x2000000000);
     inherited_native=RESIDENT_ALLOC(sizeof(*inherited_native));CHECK(inherited_native);
     inherited_native[0]=(struct arch_ip_range){.begin=UINT64_C(0x730000000000),.end=UINT64_C(0x730000001000)};
     inherited_native_count=1;

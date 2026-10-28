@@ -6,6 +6,11 @@
 #include <sys/mman.h>
 int main(int argc,char **argv) {
     if(sizeof(void *)==8) {
+        void *native=(void *)(uintptr_t)UINT64_C(0x2000000000);
+        errno=0;
+        if(mmap(native,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0)!=MAP_FAILED || errno!=EACCES)return 7;
+        errno=0;if(mprotect(native,4096,PROT_READ|PROT_EXEC)!=-1 || errno!=EACCES)return 8;
+        errno=0;if(munmap(native,4096)!=-1 || errno!=EACCES)return 9;
         FILE *maps=fopen("/proc/self/maps","r");if(!maps)return 1;
         char line[4096];int found=0;
         while(fgets(line,sizeof(line),maps))if(strstr(line,"730000000000-730000001000 ---p"))found=1;

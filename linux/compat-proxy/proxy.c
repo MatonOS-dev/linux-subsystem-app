@@ -1735,12 +1735,15 @@ static long personality_call(proxy_arg_t *args,struct thread_state *thread) {
  * installed for native payload sites. Only our exact raw return PC bypasses it. */
 #include "bionic32.h"
 uint32_t proxy_bionic32_base;
+uint64_t proxy_bionic64_base;
+int proxy_bionic64_active;
 static struct arch_ip_range *inherited_native;
 static size_t inherited_native_count;
 static int native_prepared;
 int proxy_native_overlap(uint64_t lo,uint64_t size) {
     uint64_t hi=lo+size;if(hi<lo)return 1;
     if(lo<UINT64_C(0x70301000) && hi>UINT64_C(0x70300000))return 1;
+    if(proxy_bionic64_base && lo<proxy_bionic64_base+BIONIC64_SIZE && hi>proxy_bionic64_base)return 1;
     if(proxy_bionic32_base && lo<(uint64_t)proxy_bionic32_base+BIONIC32_SIZE && hi>proxy_bionic32_base)return 1;
     for(size_t i=0;i<inherited_native_count;i++)
         if(lo<inherited_native[i].end && hi>inherited_native[i].begin)return 1;
@@ -1759,6 +1762,12 @@ static int native_mapping_denied(long nr,const proxy_arg_t *a) {
  * before an allocator or ELF loader can place payload code there. */
 int proxy_native_prepare(void) {
     if(native_prepared)return 0;
+    if(state_gpu_bridge && !proxy_bionic64_base) {
+        uint32_t random;
+        if(RAW(PROXY_SC_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return -EIO;
+        /* 4-GiB aligned interval; Scudo reserves several GiB of virtual space. */
+        proxy_bionic64_base=(UINT64_C(0x20)+(random%0x1000))*UINT64_C(0x100000000);
+    }
     if(state_gpu_bridge && !proxy_bionic32_base) {
         uint32_t random;
         if(RAW(PROXY_SC_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return -EIO;
@@ -1773,10 +1782,15 @@ int proxy_native_prepare(void) {
         long r=RAW(PROXY_SC_mmap,proxy_bionic32_base,BIONIC32_SIZE,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0);
         if(r!=(long)proxy_bionic32_base)return r<0?(int)r:-EEXIST;
     }
+    if(proxy_bionic64_base && !proxy_bionic64_active) {
+        long r=RAW(PROXY_SC_mmap,proxy_bionic64_base,BIONIC64_SIZE,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0);
+        if(r!=(long)proxy_bionic64_base)return r<0?(int)r:-EEXIST;
+    }
 #endif
     for(size_t i=0;i<inherited_native_count;i++) {
         uint64_t lo=inherited_native[i].begin, size=inherited_native[i].end-lo;
         if(lo>UINTPTR_MAX)continue; /* Other ABI: cannot be mapped here. */
+        if(proxy_bionic64_base && lo>=proxy_bionic64_base && lo+size<=proxy_bionic64_base+BIONIC64_SIZE)continue;
         if(proxy_bionic32_base && lo>=proxy_bionic32_base && lo+size<=(uint64_t)proxy_bionic32_base+BIONIC32_SIZE)continue;
         long r=RAW(PROXY_SC_mmap,lo,size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|0x100000,-1,0);
         if(r!=(long)lo)return r<0?(int)r:-EEXIST;
@@ -1789,7 +1803,7 @@ static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fp
      * subject to an earlier payload policy. No payload syscall site is added. */
     const uint64_t pcs[]={arch_gateway_pc(0),
         ARCH_AUDIT==AUDIT_ARCH_I386?UINT64_C(0x600000300042):UINT64_C(0x70300042)};
-    struct sock_filter prefix[32];unsigned at=bionic32_filter(prefix);
+    struct sock_filter prefix[48];unsigned at=bionic32_filter(prefix);
     for(unsigned i=0;i<2;i++) {
         uint64_t pc=pcs[i];
         prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,arch));
@@ -2784,6 +2798,7 @@ int proxy_install(int android) {
             p_copy(all,inherited_native,inherited_native_count*sizeof(*all));
             size_t used=inherited_native_count;
             for(size_t i=0;i<libc_count;i++) {
+                if(proxy_bionic64_base && libc[i].begin>=proxy_bionic64_base && libc[i].end<=proxy_bionic64_base+BIONIC64_SIZE)continue;
                 if(proxy_bionic32_base && libc[i].begin>=proxy_bionic32_base &&
                    libc[i].end<=(uint64_t)proxy_bionic32_base+BIONIC32_SIZE)continue;
                 size_t j=0;
@@ -2801,6 +2816,7 @@ int proxy_install(int android) {
 void proxy_state(struct state *s){
  extern const char *proxy_tmpdir;
  proxy_bionic32_base=(uint32_t)state_word(s,proxy_bionic32_base);
+ proxy_bionic64_base=state_word(s,proxy_bionic64_base);
  uint64_t native_count=state_count(s,inherited_native_count);
  if(s->reading) {
      if(native_count>SIZE_MAX/sizeof(*inherited_native)){s->error=-EOVERFLOW;return;}

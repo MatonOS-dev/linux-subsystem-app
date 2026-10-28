@@ -11,6 +11,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 uint32_t proxy_bionic32_base;
+uint64_t proxy_bionic64_base;
 static volatile sig_atomic_t traps;
 static void trap(int sig,siginfo_t *info,void *context){
  (void)sig;assert(info->si_syscall==20);traps++;

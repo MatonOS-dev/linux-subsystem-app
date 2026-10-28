@@ -147,6 +147,7 @@ def buildV3Loader = tasks.register('buildV3Loader', Exec) {
     outputs.file new File(v3Output, 'libmatonos-v3-loader.so')
     outputs.file new File(v3Output, 'libmatonos-v3-loader-i386.so')
     outputs.file new File(v3Output, 'libmatonos-v3-peer-i386.so')
+    outputs.file new File(v3Output, 'libmatonos-v3-peer-x86_64.so')
     outputs.file new File(v3Output, 'libmatonos-v3-loader-static.so')
     outputs.upToDateWhen { false }
     environment 'MATON_AOSP_ROOT', aospRoot

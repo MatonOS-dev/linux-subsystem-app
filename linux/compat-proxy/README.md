@@ -2272,3 +2272,63 @@ and device-tree preflight. OSTree's free-space reserve was disabled only in
 this run's disposable test repositories because the output filesystem has less
 than 3% free. Java compilation used a compile-only version code and excluded
 native preBuild work verified by the NDK scripts. No APK was published.
+
+### Steam round 42: GPU bootstrap after i386 → x86_64 kernel exec
+
+In day-r47 all twelve `bootstrap adoption pointer missing` messages belong to
+PID 17846, `ubuntu12_64/vulkandriverquery`. It execs `/bin/sh` from the i386
+client, enters the freestanding ELF64 peer, and resident-execs the query.
+That peer had no bionic, adoption API or GPU bridge. Fork did not lose a
+pointer; kernel exec discarded it and this loader never recreated it.
+
+The historical `libmatonos-v3-loader-static.so` filename now contains a
+freestanding ELF64 entry linked to `libmatonos-v3-peer-x86_64.so`. Like the
+ELF32 entry, it starts the stock bionic linker itself using only the fixed
+syscall gateway, then enters the ordinary GPU-enabled resident. Both ABI
+kernel-exec paths now publish fresh bootstrap pointers; fork inherits them
+and resident exec updates the payload headers in the existing bootstrap.
+Package all **five** loader files together. The private exec-state format is
+now version 14; mismatched peers fail explicitly.
+
+A randomized, 4-GiB-aligned 16-GiB native region is selected per app tree and
+carried through exec state and the sanitized native startup environment.
+The size accommodates bionic64 Scudo's approximately 8.25-GiB virtual arena;
+256 MiB, adequate for bionic32, fails during libc startup. Temporary PROT_NONE
+mappings constrain initial bionic dependency allocation to this region and
+are removed before payload loading. Unused region space remains reserved.
+The exemption is x86_64-only; payload fixed mapping, protection and unmapping
+operations cannot replace the reservation. Existing ELF32 exemptions remain
+arch-scoped too. No thread retirement or signal routing changes are involved.
+
+Verification (host only, no VM), logs under `/mnt/data/aosp/out/steam-r42/`:
+
+* `tests/bionic64-gpu.sh OUTPUT VULKAN_HEADERS`: actual i386 → ELF64 kernel
+  exec under an inherited restrictive filter, production bionic/adoption,
+  fresh ICD discovery, fork and resident exec, successful vkCreateInstance.
+  Removing the native exemption is a negative control: linker SIGSYS (159).
+* `tests/bionic32-gpu.sh`: the opposite ABI direction, now also checking fork
+  and resident exec with the real bootstrap. Both GPU fixtures use a small
+  synthetic native Vulkan provider because host Linux has no Android GPU
+  service; they do not validate a physical GPU.
+* `tests/native-reservation.sh`: both native regions reject payload mapping,
+  mprotect and munmap; the ELF64 region survives ELF64 → ELF32 → ELF64 exec.
+* Full compat-proxy suite, Vulkan suite (including fork → fresh ICD → real
+  lavapipe), Android native build, Android Java compile and device preflight
+  passed. The additional repository-wide suite reached the unrelated OSTree
+  deployment fixture, then stopped at its host `min-free-space-percent=3%`
+  threshold. No disk policy was changed.
+
+The remaining webhelper restart is separately visible in the existing trace:
+PID 17784 runs pressure-vessel and becomes steam-runtime-launch-client. Its
+nested bwrap PID 17919 exits 1 at 18:32:03.645: `Can't find source path
+/proc/self/fd/37`. Its path walk follows that descriptor into the stub HOME's
+hidden `.v3-inodes` backing store, then reports ENOENT. The next webhelper
+wrapper starts at 18:32:04. This is before the CEF binary/children start, so
+this capture does not establish a CEF IPC or renderer failure. No fix for
+that independent proc-fd/backing-path issue is claimed here.
+
+Coordinator follow-up: fresh build containing all five loader files; verify
+Kate/Obsidian/Chrome still draw, then capture traced Steam with exec argv,
+payload stderr and current webhelper logs. Confirm the GPU-bootstrap warnings
+are gone, and retain `/proc/self/fd/37`'s readlink plus bwrap argv if its ENOENT
+persists. No AOSP, kernel, shared image configuration or VM changes were made.

@@ -11,8 +11,8 @@ __attribute__((constructor)) static void native_environment(void) {
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display) {(void)display;return EGL_NO_DISPLAY;}
 void *dlopen(const char *path,int flags) {
     void *(*next)(const char *,int)=dlsym(RTLD_NEXT,"dlopen");
-    if(path && !strcmp(path,"/system/lib/libvulkan.so"))path=getenv("MATON_TEST_GPU_PROVIDER");
-    if(path && !strcmp(path,"/system/lib/libandroid.so"))return NULL;
+    if(path && (!strcmp(path,"/system/lib/libvulkan.so") || !strcmp(path,"/system/lib64/libvulkan.so")))path=getenv("MATON_TEST_GPU_PROVIDER");
+    if(path && (!strcmp(path,"/system/lib/libandroid.so") || !strcmp(path,"/system/lib64/libandroid.so")))return NULL;
     return next(path,flags);
 }
 static VkResult create(const VkInstanceCreateInfo *info,const VkAllocationCallbacks *a,VkInstance *out) {
