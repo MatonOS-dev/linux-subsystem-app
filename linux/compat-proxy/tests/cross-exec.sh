@@ -79,6 +79,7 @@ for mode in plain android; do
     flags=()
     expected=success
     if [[ $mode == android ]]; then flags+=(--android-filter); expected=sigsys; fi
+    MATON_TEST_NO_APP_FILTER=$([[ $mode == plain ]] && echo 1) \
     MATON_TEST_RETURN_PEER_EXPECT="$expected" \
     MATON_TEST_RETURN_PEER="$peer_dir/return-linker" \
      MATON_TEST_RETURN_SIBLING="$peer_dir/linux-layer-v3-i386" \

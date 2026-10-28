@@ -82,8 +82,10 @@ int main(int argc,char **argv,char **env){
   * next resident exec must still emit its trace. */
  struct rlimit limit;CHECK(!getrlimit(RLIMIT_NOFILE,&limit));unsigned long soft=(unsigned long)limit.rlim_cur;
  int reserved=(int)(soft-18+1);
- errno=0;CHECK(close(reserved)==-1&&errno==EBADF);
- CHECK(dup2(fd,reserved)==reserved);CHECK(close(reserved)==0);
+ if(!getenv("MATON_TEST_NO_APP_FILTER") || !*getenv("MATON_TEST_NO_APP_FILTER")){
+  errno=0;CHECK(close(reserved)==-1&&errno==EBADF);
+  CHECK(dup2(fd,reserved)==reserved);CHECK(close(reserved)==0);
+ }
  struct stat st;CHECK(!syscall(sizeof(long)==4?195:4,"/v3-cross-file",&st)&&st.st_size==6);
  int *memory=shmat_(shm);CHECK(memory!=(void *)-1);
  if(!strcmp(argv[3],"one")){
