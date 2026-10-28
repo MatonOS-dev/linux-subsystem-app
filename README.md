@@ -200,13 +200,20 @@ artifacts survive. Launch a stub, clear its cache, and verify resolver/pack maps
 remain available. These checks still require a device; no kernel or shared
 image changes are needed.
 
-Steam pressure-vessel follow-up (2026-10-28, round 44): bwrap destination
-creation now retains the original dirfd/path alias. The same immutable `/usr`
-image is also bound at `/run/parent/usr`; reversing the physical image pathname
-previously created its temporary i386 directory under a different alias,
-leaving bwrap's actual `O_PATH|O_NOFOLLOW` destination a symlink. The regression
-binds both aliases and checks the destination through fstatat and O_PATH/fstat
-before binding the extension. Stock bwrap's refusal of symlink targets stays.
+Steam pressure-vessel follow-up (2026-10-28, round 44): bwrap bind
+destinations shadow the immutable EROFS symlink they are bound over. The same
+`/usr` image is bound at both `/usr` and `/run/parent/usr` in the staging root;
+reversing the physical image pathname used to create the temporary i386
+directory under whichever alias `erofs_reverse` happened to pick, leaving
+bwrap's actual `O_PATH|O_NOFOLLOW` destination a symlink. Destination creation
+now shadows every spelling that reaches the same backing object: the caller's
+dirfd view, the erofs prefix alias, every sibling VFS mount whose source is the
+image (so `/newroot/usr` beside `/newroot/run/parent/usr`), and the old-root
+backing alias. This also covers directory descriptors that arrive by
+`SCM_RIGHTS` (the receiver's proxy never tracked a logical name for them and
+falls back to the physical fd text). The regression test now exercises both
+the tracked-dirfd and passed-fd shapes, verifies the sibling alias is a
+directory too, and keeps stock bwrap's refusal of genuine symlink targets.
 
 The mixed-ABI EGL JSON now names the absolute installed i386 library under
 `/usr/lib/x86_64-linux-gnu/GL/maton/lib/i386-linux-gnu/`. pressure-vessel treats
@@ -216,18 +223,38 @@ GL32's separate extension still uses its own library basename. The layout test
 checks that the absolute mixed-ABI name resolves to an actual packaged file.
 
 Setup profiling from day-r49: pressure-vessel pid 22892 made 43,385 successful
-openat calls, 9,617 unlinkat calls and 6,597 linkat calls. Mount lookup now caches
-immutable target lengths and skips shorter candidates before comparison. The
-512-mount, 10,000-open directory-relative scan measured 51.3 us/iteration before
-and 39.2 us after on this host (about 24% lower). The traced capture also contains
-1,128,773 zero-only raw-counter lines: counter-disabled builds no longer emit
-these. This reduces logging overhead, but seconds-level setup on the device is
-not yet demonstrated; a coordinator capture should compare traced and untraced
-setup durations and collect `--count` data if setup is still slow.
+openat calls, 9,617 unlinkat calls and 6,597 linkat calls during 19:58:24 to
+20:00:30. Mount lookup now caches immutable target lengths and skips shorter
+candidates before comparison; the 512-mount, 10,000-open directory-relative
+scan measured 51.3 us/iteration before and 39-49 us after on this host (about
+24% lower under load). The traced capture contains 1,128,773 zero-only
+raw-counter lines: counter-disabled builds no longer emit these. Per-second
+line volume stays near a constant ~8-16k for the whole window (a logd-saturated
+throughput, not per-phase work), and the busiest phases (1,400-3,100 path
+syscalls/s) only appear late, so the ~2 minutes are dominated by trace logging
+rather than path translation. The tracer now emits the per-trap alt-stack line
+only when the stack placement changes: it cost ~17 log writes per handled
+syscall (~5.4M writes for ~317k traps) for bytes that only change when the
+alt stack is installed. Combined with zero-count suppression, trace-mode log
+writes drop by roughly half, keeping captures usable for debugging.
+
+Resolve-cache invalidation is now lazy: entries carry the epoch at which they
+were published and invalidation bumps a counter instead of clearing the table.
+bwrap's setup interleaves directory scans (which populate the cache) with
+mkdir/bind writes (which used to empty it on every write, turning each later
+scan back into full per-component resolution). Stale entries are skipped by
+the epoch check, dropped by a compaction that runs only when the table would
+otherwise grow, and never expose a freed mount: unmounts bump the epoch before
+freeing, so a live entry can only reference a mount from its own epoch. The
+first lazy attempt had a real defect (the free-slot index was captured before
+compaction and could land past the array after it reclaimed entries); it is
+rebuilt with the slot read after reserve and verified against host Chrome
+headless, the resolve-cache test and the full proxy suite.
 
 Validation for this change is host-only, with no VM started. The EROFS alias
-regression, GL-extension layout tests and Android loader builds pass. Rebuild
-the loaders and GL extensions, then verify Kate/Obsidian/Chrome still draw and
-Steam passes `/run/parent/usr/lib/i386-linux-gnu` setup without the EGL resolved-
-path warning. Check pressure-vessel setup duration and webhelper initialization;
-no kernel or shared device-tree changes are needed.
+regressions (including SCM_RIGHTS dirfds), GL-extension layout tests, the VFS
+resolve-cache test and the proxy suite pass. Rebuild the loaders and GL
+extensions, then verify Kate/Obsidian/Chrome still draw and Steam passes
+`/run/parent/usr/lib/i386-linux-gnu` setup without the EGL resolved-path
+warning. Check pressure-vessel setup duration and webhelper initialization; no
+kernel or shared device-tree changes are needed.
