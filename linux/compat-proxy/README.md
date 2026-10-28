@@ -1597,3 +1597,82 @@ state, production Android x86_64/i386 compilation and packaging, EROFS,
 ldconfig and rewrite tests. Negative control, device-tree preflight and
 `git diff --check` passed. Evidence:
 `/mnt/data/aosp/out/pc-logs/steam-r24-{tests,cross,android,negative,preflight}.log`.
+
+### Steam round 25: the peer exec barrier is the inherited native filter
+
+Day-r33 (180 s v3-trace, VM main b9bd3d8 including the round-24 environment
+fix) still never starts a CEF process. Steam's i386 client forks each
+webhelper, and every i386-to-x86_64 exec dies at the same boundary as
+rounds 23-24: `exec-peer-enter 1073741827 <fd>` is logged, then nothing —
+no `exec-state-enter`, no import rejection, no `exec-peer-return`, no fatal
+report, no Android crash. The webhelper PIDs (5980, 6027, 6033, 6039, 6045,
+6051, 6057) each log exactly `sh`, `-c` and the `steamwebhelper.sh` exec and
+then vanish; Steam restarts them every 10 s (its webhelper log shows
+"Restart webhelper process, counter 2"). `gldriverquery`, `vulkandriverquery`,
+`steamsysinfo`, `lspci` and `steam-runtime-launcher-service` (all x86_64,
+spawned from the i386 client) stop at the same line. The capture contains 8
+peer-enters from i386 with **zero** imports, and 5 peer-enters from x86_64
+(the steam client and its `steamui` verify helpers) with 5 successful i386
+imports. Chrome and Obsidian render because they are native x86_64 and never
+cross ABIs; the Steam client is the first process to hand an exec to the
+x86_64 peer.
+
+Root cause. The i386 client is a fresh resident created by a kernel exec
+from the x86_64 launcher chain (flatpak → bwrap → bash all run in one loader
+process). Seccomp filters survive kernel exec, so the launcher's **native
+x86_64 payload filter** (`arch_filter_install`, whose number-only fast path
+still TRAPs every `ours()` syscall: mmap, read, openat, pread64, fstat,
+close, ioctl, ...) is in every descendant's chain. When the i386 client
+kernel-execs the x86_64 peer loader, the fresh resident starts its **bionic
+startup under that inherited native filter**. Its very first mmap is TRAP'd,
+and kernel exec discarded the SIGSYS handler, so the process dies silently —
+no handler, no tombstone, no proxy report. The reverse direction works
+because the launcher filter's i386 branch is the *peer* branch, which
+`MATON_GPU_BRIDGE` builds already exempt with a blanket ALLOW
+("Let that ABI start under Android's inherited app filter"). The peer exec
+from i386 is thus the only path that runs the x86_64 payload under a native
+x86_64 proxy filter before the resident installs its own routing. Earlier
+evidence already pointed here: round 17's update-UI child (`/bin/sh` exec
+from the i386 client) died with wait status 31 (SIGSYS), and round 21
+recorded the same boundary.
+
+Fix. A freestanding ELF64 peer loader (`libmatonos-v3-loader-static.so`,
+built in `build-android.sh` with the same flags as the host `linux-layer-v3`:
+`-nostdlib -static -no-pie --image-base=0x600000000000` plus the
+`.proxy_gateway` section at 0x600000300000). It starts at its own `_start`,
+so there is no bionic startup to run under the inherited native filter: every
+syscall before `proxy_install` is a gateway-exempt raw call, the inherited
+TRAPs never fire, and it installs its own SIGSYS handler and filter before
+loading the payload. The i386 backend's `ARCH_PEER_LOADER` now names this
+static loader; the bionic x86_64 loader remains the v3 launch path where GPU
+thread adoption needs it. Peer-exec'd x86_64 payloads run without the bionic
+GPU bridge, which those execs never requested; their GL is a separate concern
+for the next round. `arch_app_install` additionally exempts the peer ABI
+branch with the same blanket ALLOW the payload filter already uses, so a peer
+ABI's bionic startup can never hit that filter's ioctl/fd/non-allowlist TRAPs
+either.
+
+Diagnostics. A resident that died before import was completely silent: the
+fresh image has a zero trace flag and no imported sink. Resident entry now
+logs `resident-enter <argc> <PR_GET_SECCOMP>` on the inherited fd 2 (the
+app-side relay), and every pre-header import check reports its stage
+(`resident-import-fd/seals/size/mmap/magic/version/pid/nonce`) instead of
+returning status 2 silently. `exec-state-import` is also logged on failure
+even when the payload disabled tracing. This distinguishes a kernel-to-bionic
+startup death (no `resident-enter`) from a rejected handoff (stage named).
+
+Device follow-up: rebuild the APK (all three loaders), fresh-boot, launch
+Steam with v3-trace, and follow the webhelper PID past `exec-peer-enter`:
+expect `resident-enter`, `exec-state-enter/import`, then exec-argv for the
+CEF binary and its `--type=` children. If the webhelper still restarts, the
+next failure is after the exec barrier (GL/display), not the handoff. Keep
+Chrome/Obsidian as controls. No VM was run; the host suite (below) passed
+with the new `arch_app_install` peer branch and diagnostics.
+
+Validation: full `bash linux/compat-proxy/tests/run.sh` passed, including the
+redirected-stderr early-import regressions for both ABIs and the mixed-class
+exec round trips; `tests/state-reject.py` covers `resident-enter` plus each
+rejection stage. Host evidence: `/tmp/opencode/r25-tests-final.log`. The
+Android build (`build-android.sh`) cannot be compiled on this machine (no
+NDK); its new static section mirrors the proven host x86_64 freestanding
+build, and the coordinator's build validates it.
