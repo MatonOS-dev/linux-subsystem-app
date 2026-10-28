@@ -1731,13 +1731,15 @@ static long personality_call(proxy_arg_t *args,struct thread_state *thread) {
  * particular, tracing getpid must not run Chromium's getpid TRAP handler.
  * The original program is still interpreted for emulated payload calls and
  * installed for native payload sites. Only our exact raw return PC bypasses it. */
+#include "bionic32.h"
+uint32_t proxy_bionic32_base;
 static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fprog *original) {
     /* Both fixed gateways survive the filter across a kernel ABI handoff.
      * Exempting only this ABI leaves the next resident's internal calls
      * subject to an earlier payload policy. No payload syscall site is added. */
     const uint64_t pcs[]={arch_gateway_pc(0),
         ARCH_AUDIT==AUDIT_ARCH_I386?UINT64_C(0x600000300042):UINT64_C(0x70300042)};
-    struct sock_filter prefix[11];unsigned at=0;
+    struct sock_filter prefix[20];unsigned at=bionic32_filter(prefix);
     for(unsigned i=0;i<2;i++) {
         uint64_t pc=pcs[i];
         prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)+4);
@@ -1747,11 +1749,11 @@ static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fp
         prefix[at++]=(struct sock_filter)BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW);
     }
     prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_IMM,0);
-    size_t count=sizeof(prefix)/sizeof(prefix[0]);
+    size_t count=at;
     if(original->len>4096-count)return -EINVAL;
     struct sock_filter *code=vfs_alloc((original->len+count)*sizeof(*code));
     if(!code)return -ENOMEM;
-    p_copy(code,prefix,sizeof(prefix));
+    p_copy(code,prefix,count*sizeof(*prefix));
     p_copy(code+count,original->filter,original->len*sizeof(*code));
     struct sock_fprog program={.len=original->len+count,.filter=code};
     proxy_arg_t forwarded[6];p_copy(forwarded,args,sizeof(forwarded));
@@ -2694,6 +2696,11 @@ static struct arch_ip_range *resident_bionic_ranges(size_t *count, int *error) {
     return ranges;
 }
 int proxy_install(int android) {
+    if(state_gpu_bridge && !proxy_bionic32_base) {
+        uint32_t random;
+        if(RAW(PROXY_SC_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return -EIO;
+        proxy_bionic32_base=UINT32_C(0x10000000)+(random%UINT32_C(0x40000))*4096;
+    }
     ipc_init(); /* IPC failure must never prevent payload startup. */
     int diagnostics=proxy_diagnostics_init();if(diagnostics)return diagnostics;
     /* Android has no /dev/shm. Give this app proxy instance a private
@@ -2725,6 +2732,7 @@ int proxy_install(int android) {
 
 void proxy_state(struct state *s){
  extern const char *proxy_tmpdir;
+ proxy_bionic32_base=(uint32_t)state_word(s,proxy_bionic32_base);
  uint64_t count;
  /* A kernel exec enters bionic before us; its ELF32 startup replaces the
   * persona with PER_LINUX32. Preserve the payload caller's persona instead,

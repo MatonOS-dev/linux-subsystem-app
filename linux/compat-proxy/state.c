@@ -200,7 +200,7 @@ int state_import(const char *number,const char *token){
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
  uint64_t self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
  if(magic!=UINT64_C(0x335854454e4f544d)){import_reject("resident-import-magic",(long)magic,(long)version);s.error=-EPERM;}
- else if(version!=11){import_reject("resident-import-version",(long)version,11);s.error=-EPERM;}
+ else if(version!=12){import_reject("resident-import-version",(long)version,12);s.error=-EPERM;}
  else if(pid!=self){import_reject("resident-import-pid",(long)pid,(long)self);s.error=-EPERM;}
  else if(key!=nonce){import_reject("resident-import-nonce",0,0);s.error=-EPERM;}
  /* Restore the diagnostic sink before importing VFS/fd state. Payload stderr
@@ -253,23 +253,28 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};
- state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,11);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
+ state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,12);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
  state_word(&s,proxy_trace);state_word(&s,proxy_diagnostic_fd);
  /* The resident is an Android executable, not the Linux payload. Its linker
   * must not consume payload LD_* settings (paths are still virtual here).
   * Carry the exact environment, including order/duplicates, in the stream. */
+ extern uint32_t proxy_bionic32_base;
  size_t ec=0;while(env && env[ec])ec++;
  state_word(&s,ec);
  for(size_t i=0;i<ec;i++){char *value=env[i];state_string(&s,&value);}
  transfer(&s);error=s.error;
+ char native_base[64];
+ const char *base_key="MATON_V3_BIONIC32_BASE=";
+ p_copy(native_base,base_key,p_len(base_key));decimal(native_base+p_len(base_key),proxy_bionic32_base);
  char **native_env=NULL;
- if(!error && ec>SIZE_MAX/sizeof(char *)-1)error=-E2BIG;
- if(!error){native_env=vfs_alloc((ec+1)*sizeof(char *));if(!native_env)error=-ENOMEM;}
+ if(!error && ec>SIZE_MAX/sizeof(char *)-2)error=-E2BIG;
+ if(!error){native_env=vfs_alloc((ec+2)*sizeof(char *));if(!native_env)error=-ENOMEM;}
  if(!error){size_t n=0;for(size_t i=0;i<ec;i++){
   const char *value=env[i];
   if(value[0]=='L' && value[1]=='D' && value[2]=='_')continue;
+  size_t k=0;while(base_key[k] && base_key[k]==value[k])k++;if(!base_key[k])continue;
   native_env[n++]=env[i];
- }native_env[n]=NULL;if(proxy_trace)proxy_log("exec-native-env",ec,ec-n);}
+ }if(proxy_bionic32_base)native_env[n++]=native_base;native_env[n]=NULL;if(proxy_trace)proxy_log("exec-native-env",ec,ec-n);}
  if(!error)error=RAW(PROXY_SC_fcntl,private_fd,F_ADD_SEALS,F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE,0,0,0);
  char num[24],key[24];decimal(num,private_fd);decimal(key,nonce);
  size_t count=0;while(args&&args[count]){if(count==SIZE_MAX){error=-EOVERFLOW;break;}count++;}

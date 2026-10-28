@@ -5,7 +5,7 @@
  * the native table. JA (32-bit offset) avoids classic BPF's 8-bit branch limit. */
 #include <linux/sockios.h>
 static int arch_app_install(void) {
-    struct sock_filter bpf[2048];unsigned n=0;
+    struct sock_filter bpf[2048];unsigned n=bionic32_filter(bpf);
 #define ADD(code,jt,jf,k) do {if(n>=sizeof(bpf)/sizeof(bpf[0])) return -E2BIG; bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,AUDIT_ARCH_X86_64);
@@ -116,7 +116,7 @@ static int arch_app_install(void) {
 static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t libc_count) {
     /* The kernel's per-filter instruction limit is 4096. Grow to that limit
      * and fail cleanly if the process has more ranges than one filter can hold. */
-    struct sock_filter bpf[4096];unsigned n=0;
+    struct sock_filter bpf[4096];unsigned n=bionic32_filter(bpf);
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT);
     unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
