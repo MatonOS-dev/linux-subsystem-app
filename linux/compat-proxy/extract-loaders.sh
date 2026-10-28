@@ -20,8 +20,10 @@ while IFS= read -r entry; do
     trap - EXIT
 done < <(unzip -Z1 "$apk" | sed -n '\|^lib/x86_64/lib[^/]*\.so$|p')
 # Both ELF classes are required for cross-class exec. Reject incomplete APKs
-# even if another native library was extracted successfully.
-for name in libmatonos-v3-loader.so libmatonos-v3-loader-i386.so; do
+# even if another native library was extracted successfully. The static x86_64
+# peer (i386-to-x86_64 execs) is required too; without it those execs cannot
+# hand off at all.
+for name in libmatonos-v3-loader.so libmatonos-v3-loader-i386.so libmatonos-v3-loader-static.so; do
     unzip -Z1 "$apk" | grep -Fx "lib/x86_64/$name" >/dev/null || {
         echo "host APK has no $name" >&2
         exit 1

@@ -1670,9 +1670,53 @@ Chrome/Obsidian as controls. No VM was run; the host suite (below) passed
 with the new `arch_app_install` peer branch and diagnostics.
 
 Validation: full `bash linux/compat-proxy/tests/run.sh` passed, including the
-redirected-stderr early-import regressions for both ABIs and the mixed-class
-exec round trips; `tests/state-reject.py` covers `resident-enter` plus each
-rejection stage. Host evidence: `/tmp/opencode/r25-tests-final.log`. The
-Android build (`build-android.sh`) cannot be compiled on this machine (no
-NDK); its new static section mirrors the proven host x86_64 freestanding
-build, and the coordinator's build validates it.
+redirected-stderr early-import regressions for both ABIs, the mixed-class exec
+round trips and the three-loader packaging check; `tests/state-reject.py`
+covers `resident-enter` plus each rejection stage. Host evidence:
+`/tmp/opencode/r25-tests-final.log` (pre-rebase) and
+`/tmp/opencode/r25-tests-rebased.log` (post-rebase, exit 0). The Android
+`build-android.sh` ran inside the suite and produced all three loaders,
+including the new freestanding peer (ELF64 EXEC at 0x600000000000,
+`.proxy_gateway` at 0x600000300000); the coordinator's device build still
+validates the packaged result.
+
+
+### Steam round 26: nested display probe writes, completion remains unknown
+
+Rebased steam-personality on main (bc2c3d3, already up to date). In day-r34,
+the portal accepts the display probe and returns PID 11140 at 04:29:38.175.
+Its nested bwrap forks PID 11144, which starts `/bin/sh -euc
+'echo "${DISPLAY+DISPLAY_is_set}"'` as PID 11146. The shell writes 15 bytes
+successfully at 04:29:39.423. At 04:29:48.487 the caller sends
+SpawnSignal(11140, SIGTERM, false); the portal routes SpawnExited(11140, 15)
+at 04:29:48.496. Thus the bus, Spawn reply and exit-signal forwarding work;
+this is a timeout after the shell writes, not a missing portal or evidence
+that the peer loader lost DBUS_SESSION_BUS_ADDRESS. It is not yet established
+whether the shell exits, the bwrap init/monitor fails to finish, or a pipe
+writer prevents the launch client from observing EOF. No functional fix is
+claimed from these traces.
+
+The host-command regression now includes nested stock bwrap --unshare-pid
+(the init/reaper plus outer monitor), checking output, EOF, zero status,
+worker reaping and successful status transmission. This passes on the host;
+the host resident-adoption launcher also completes this nested probe.
+Trace-only diagnostics identify each host-command worker/child pair, reaped
+PID/raw wait status and status-send result, and adopted exit_group PID/code.
+No per-app behavior, portal routing or wait semantics change.
+
+Next coordinator capture: launch Steam with v3-trace and collect the usual
+log plus the Steam UID process tree at about 6 seconds, before the ten-second
+probe timeout. For each process retain argv, PPid, State, SigBlk, SigPnd,
+ShdPnd, wchan, syscall and every fd target plus fdinfo flags. Match the
+stdout pipe inode of the display-probe shell and report all holders with
+write access. Retain host-command-child/reap/status, adopt-exit-group,
+lifecycle-exit-group, SpawnSignal and SpawnExited. This distinguishes an
+alive shell from bwrap wait/monitor blockage and a leaked stdout writer in
+one capture. No VM was used; Android/device confirmation remains pending.
+
+Validation: full `bash linux/compat-proxy/tests/run.sh` exits zero, including
+all three Android loader builds, mixed-ABI exec/import, traced adoption,
+rewrites and the strengthened host-command-pair regression. The adopted
+SIGSYS regression logs adopt-exit-group for parent and children. Evidence:
+`/mnt/data/aosp/out/pc-logs/agents/steam-r26-suite.log` and
+`steam-r26-pair.log`. No Java or image app code changed.

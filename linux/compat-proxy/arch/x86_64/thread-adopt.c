@@ -36,6 +36,7 @@
 extern long proxy_raw(long,long,long,long,long,long,long);
 extern long proxy_sigaltstack_on_stack(stack_t *,void *);
 extern void proxy_log(const char *,long,long);
+extern int proxy_trace;
 extern char proxy_clone_entry[];
 extern void proxy_restore(void);
 #define R(n,a,b,c,d,e,f) proxy_raw(SYS_##n,(long)(a),(long)(b),(long)(c),(long)(d),(long)(e),(long)(f))
@@ -563,7 +564,10 @@ miss_record_logged:
         g[REG_RDI]=(uintptr_t)self;
         g[REG_RSP]=self->resident_sp; g[REG_RIP]=(uintptr_t)adopt_exit_return;
         g[REG_RAX]=0; return;
-    } else if(n==SYS_exit_group) R(exit_group,g[REG_RDI],0,0,0,0,0);
+    } else if(n==SYS_exit_group) {
+        if(proxy_trace)proxy_log("adopt-exit-group",R(getpid,0,0,0,0,0,0),g[REG_RDI]);
+        R(exit_group,g[REG_RDI],0,0,0,0,0);
+    }
     else {
         /* The app may move its TLS base (glibc does this at startup). Rekey
          * the FS map before the syscall makes the new base live. */

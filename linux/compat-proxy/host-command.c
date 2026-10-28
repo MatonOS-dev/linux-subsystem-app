@@ -184,13 +184,16 @@ child_fail:
     /* Child closes its handshake on successful load in hc_exec. */
     error=0;n=RAW(PROXY_SC_read,pipe[0],&error,4,0,0,0);RAW(PROXY_SC_close,pipe[0],0,0,0,0,0);
     if(n!=0){if(n<0){error=(int)n;RAW(PROXY_SC_kill,child,SIGKILL,0,0,0,0);}RAW(PROXY_SC_wait4,child,0,0,0,0,0);goto fail;}
-    int pid=(int)child;int lost=hc_io(socket,&pid,4,1)!=0;
+    int pid=(int)child;if(proxy_trace)proxy_log("host-command-child",child,worker);
+    int lost=hc_io(socket,&pid,4,1)!=0;
     timeout=(struct timeval){0,0};RAW(PROXY_SC_setsockopt,socket,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout),0);
     int connected=!lost,status=0,exited=0,killing=lost;uint32_t command[2];size_t command_bytes=0;
     for(;;){
         long waited;
         while((waited=RAW(PROXY_SC_wait4,-1,&status,WNOHANG,0,0,0))>0){
-            if(waited==child&&!exited){exited=1;if(connected)hc_io(socket,&status,4,1);}
+            if(proxy_trace)proxy_log("host-command-reap",waited,status);
+            if(waited==child&&!exited){exited=1;int sent=connected?hc_io(socket,&status,4,1):-ENOTCONN;
+                if(proxy_trace)proxy_log("host-command-status",child,sent);}
         }
         if(waited==-ECHILD)break;
         if(hc_stopping||RAW(PROXY_SC_getppid,0,0,0,0,0,0)!=server)killing=1;
