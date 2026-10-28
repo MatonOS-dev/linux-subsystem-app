@@ -279,6 +279,7 @@ static int prefix(const char *,const char *);
 struct resolve_cache_entry {
     unsigned valid;
     int follow;
+    unsigned long epoch;
     size_t key_len, value_len;
     void *identity;
     uint64_t hash;
@@ -289,6 +290,14 @@ static struct resolve_cache_entry *resolve_cache;
 static size_t resolve_cache_count,resolve_cache_capacity;
 static size_t *resolve_cache_buckets;
 static size_t resolve_cache_bucket_count;
+/* Entries carry the epoch at which they were published. Invalidation bumps
+ * the counter instead of clearing the table: bwrap's setup interleaves
+ * directory scans (which populate the cache) with mkdir/bind writes (which
+ * previously emptied it on every write, turning every later scan back into
+ * full per-component resolution). Stale entries are skipped by the epoch
+ * comparison and reclaimed by compaction on growth, so invalidation is O(1)
+ * and a full table never needs a clearance pass. */
+static volatile unsigned long resolve_cache_epoch;
 static volatile int resolve_cache_lock;
 static void resolve_cache_acquire(void) {
     int unlocked=0;
@@ -303,10 +312,25 @@ static void resolve_cache_release(void) {
 }
 void vfs_resolve_cache_invalidate(void) {
     resolve_cache_acquire();
-    for(size_t i=0;i<resolve_cache_count;i++)resolve_cache[i].valid=0;
-    for(size_t i=0;i<resolve_cache_bucket_count;i++)resolve_cache_buckets[i]=0;
-    resolve_cache_count=0;
+    resolve_cache_epoch++;
     resolve_cache_release();
+}
+/* Drop entries published before the current epoch and rebuild the buckets
+ * over the survivors. Called under the cache lock, guarded by "would grow". */
+static void resolve_cache_compact(void){
+    unsigned long epoch=resolve_cache_epoch;size_t write=0;
+    for(size_t i=0;i<resolve_cache_count;i++){
+        if(!resolve_cache[i].valid || resolve_cache[i].epoch!=epoch)continue;
+        if(write!=i)resolve_cache[write]=resolve_cache[i];
+        write++;
+    }
+    resolve_cache_count=write;
+    for(size_t i=0;i<resolve_cache_bucket_count;i++)resolve_cache_buckets[i]=0;
+    for(size_t i=0;i<resolve_cache_count;i++){
+        size_t slot=(size_t)resolve_cache[i].hash&(resolve_cache_bucket_count-1);
+        resolve_cache[i].next=resolve_cache_buckets[slot];
+        resolve_cache_buckets[slot]=i+1;
+    }
 }
 static int resolve_cacheable_path(const char *path) {
     return path && path[0]=='/' && !prefix(path,"/sys") &&
@@ -330,7 +354,8 @@ static int resolve_cache_reserve(size_t needed){
         while(needed>buckets-buckets/4){if(buckets>SIZE_MAX/2)return 0;buckets*=2;}
         if(buckets>SIZE_MAX/sizeof(*resolve_cache_buckets))return 0;
         size_t *table=vfs_palloc(buckets*sizeof(*table));if(!table)return 0;
-        for(size_t i=0;i<resolve_cache_count;i++)if(resolve_cache[i].valid){size_t slot=(size_t)resolve_cache[i].hash&(buckets-1);resolve_cache[i].next=table[slot];table[slot]=i+1;}
+        unsigned long epoch=resolve_cache_epoch;
+        for(size_t i=0;i<resolve_cache_count;i++)if(resolve_cache[i].valid && resolve_cache[i].epoch==epoch){size_t slot=(size_t)resolve_cache[i].hash&(buckets-1);resolve_cache[i].next=table[slot];table[slot]=i+1;}
         vfs_free(resolve_cache_buckets);resolve_cache_buckets=table;resolve_cache_bucket_count=buckets;
     }
     return 1;
@@ -810,10 +835,11 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
     size_t key_len=path?p_len(path):0;
     if(fd==AT_FDCWD && follow && resolve_cacheable_path(path) && key_len<PATH_MAX){
         resolve_cache_acquire();
+        unsigned long epoch=resolve_cache_epoch;
         uint64_t hash=resolve_cache_hash(path,key_len,follow);
         if(resolve_cache_bucket_count){size_t index=resolve_cache_buckets[(size_t)hash&(resolve_cache_bucket_count-1)];
           while(index){struct resolve_cache_entry *entry=&resolve_cache[index-1];
-            if(entry->valid && entry->hash==hash && entry->follow==follow && entry->key_len==key_len && p_equal(entry->key,path)){
+            if(entry->valid && entry->epoch==epoch && entry->hash==hash && entry->follow==follow && entry->key_len==key_len && p_equal(entry->key,path)){
                 char *answer=vfs_alloc(entry->value_len+1);
                 if(answer){p_copy(answer,entry->value,entry->value_len+1);if(identity)*identity=entry->identity;}
                 resolve_cache_release();
@@ -839,11 +865,16 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
         size_t value_len=p_len(answer);
         if(value_len<PATH_MAX){
             resolve_cache_acquire();
-            size_t slot=resolve_cache_count;
+            /* Compaction drops entries from an older epoch when the table
+             * would otherwise grow, so capacity tracks the live working set.
+             * slot is taken last: compaction (and any growth it enables) may
+             * move survivors, so the free index must be read after both. */
+            if(resolve_cache_count+1>resolve_cache_capacity)resolve_cache_compact();
             if(resolve_cache_reserve(resolve_cache_count+1)){
+                size_t slot=resolve_cache_count;
                 resolve_cache_count++;
                 struct resolve_cache_entry *entry=&resolve_cache[slot];size_t bucket=(size_t)hash&(resolve_cache_bucket_count-1);
-                entry->valid=0;entry->follow=follow;entry->key_len=key_len;
+                entry->valid=0;entry->follow=follow;entry->epoch=resolve_cache_epoch;entry->key_len=key_len;
                 entry->value_len=value_len;entry->identity=identity?*identity:NULL;entry->hash=hash;entry->next=resolve_cache_buckets[bucket];
                 p_copy(entry->key,path,key_len+1);p_copy(entry->value,answer,value_len+1);
                 entry->valid=1;resolve_cache_buckets[bucket]=slot+1;
