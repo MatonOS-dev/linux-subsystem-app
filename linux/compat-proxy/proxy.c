@@ -1732,15 +1732,21 @@ static long personality_call(proxy_arg_t *args,struct thread_state *thread) {
  * The original program is still interpreted for emulated payload calls and
  * installed for native payload sites. Only our exact raw return PC bypasses it. */
 static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fprog *original) {
-    uint64_t pc=arch_gateway_pc(0);
-    struct sock_filter prefix[]={
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)+4),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,(uint32_t)(pc>>32),0,3),
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,(uint32_t)pc,0,1),
-        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
-        BPF_STMT(BPF_LD|BPF_IMM,0),
-    };
+    /* Both fixed gateways survive the filter across a kernel ABI handoff.
+     * Exempting only this ABI leaves the next resident's internal calls
+     * subject to an earlier payload policy. No payload syscall site is added. */
+    const uint64_t pcs[]={arch_gateway_pc(0),
+        ARCH_AUDIT==AUDIT_ARCH_I386?UINT64_C(0x600000300042):UINT64_C(0x70300042)};
+    struct sock_filter prefix[11];unsigned at=0;
+    for(unsigned i=0;i<2;i++) {
+        uint64_t pc=pcs[i];
+        prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer)+4);
+        prefix[at++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,(uint32_t)(pc>>32),0,3);
+        prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,instruction_pointer));
+        prefix[at++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,(uint32_t)pc,0,1);
+        prefix[at++]=(struct sock_filter)BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW);
+    }
+    prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_IMM,0);
     size_t count=sizeof(prefix)/sizeof(prefix[0]);
     if(original->len>4096-count)return -EINVAL;
     struct sock_filter *code=vfs_alloc((original->len+count)*sizeof(*code));

@@ -33,7 +33,8 @@ struct mv_scope { struct adopt_api *api; struct adopt_scope adopt; };
 
 /* Linux i386 syscall ABI. Keep EBX/EBP intact for PIC code and place syscall
  * argument six in EBP from a stack-independent argument array. */
-static inline long mv_sys(long n,long a,long b,long c,long d,long e,long f) {
+long mv_sys(long,long,long,long,long,long,long);
+static inline long mv_native_sys(long n,long a,long b,long c,long d,long e,long f) {
     long args[6]={a,b,c,d,e,f}, result;
     __asm__ volatile("pushl %%ebx\n\tpushl %%ebp\n\t"
                      "pushl %1\n\tpushl %%eax\n\t"

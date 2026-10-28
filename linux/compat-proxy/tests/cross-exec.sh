@@ -17,6 +17,11 @@ for arch in 64 32; do
         "$PWD/build/cross$arch" "$PWD/build/cross$peer" "$PWD/build/cross$arch" \
         >"build/cross$arch.out" 2>"build/cross$arch.log"
     cat "build/cross$arch.out"
+    MATON_TEST_CROSS_FILTER=1 timeout 20 "build/$loader" --android-filter \
+        --map "$PWD/build/cross-file" /v3-cross-file --map "$PWD/build/cross-dir" /v3-cross-dir \
+        "$PWD/build/cross$arch" "$PWD/build/cross$peer" "$PWD/build/cross$arch" \
+        >"build/cross$arch-filter.out" 2>"build/cross$arch-filter.log"
+    cat "build/cross$arch-filter.out"
 done
 
 if command -v bwrap >/dev/null; then
@@ -76,8 +81,9 @@ for mode in plain android; do
     "$compiler" -nostdlib -static -Wl,-no-pie \
      -DREAL_PEER=\"$PWD/build/linux-layer-v3-i386\" tests/resident-start-peer.S \
      -o "$peer_dir/return-linker"
+    chmod 0755 "$peer_dir/return-linker"
     flags=()
-    expected=success
+    expected=sigsys
     if [[ $mode == android ]]; then flags+=(--android-filter); expected=sigsys; fi
     MATON_TEST_NO_APP_FILTER=$([[ $mode == plain ]] && echo 1) \
     MATON_TEST_RETURN_PEER_EXPECT="$expected" \
@@ -97,4 +103,4 @@ timeout 20 "$peer_dir/linux-layer-v3-i386" --android-filter --trace \
  "$PWD/build/cross32" "$PWD/build/cross64" "$PWD/build/cross32" \
  >build/cross-return-static.out 2>build/cross-return-static.log
 cat build/cross-return-static.out
-printf 'PASS i386 round-trip requires gateway-only static peer startup\n'
+printf 'PASS freestanding i386 round-trip control\n'

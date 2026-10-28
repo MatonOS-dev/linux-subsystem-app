@@ -343,11 +343,7 @@ static VkResult mv_vkGetSwapchainImagesKHR(VkDevice device,VkSwapchainKHR swapch
 static uint64_t mv_wsi_now_ns(void) {
 #if defined(__x86_64__)
     struct { long tv_sec, tv_nsec; } ts;
-    register long nr __asm__("rax")=228;
-    register long a __asm__("rdi")=1;
-    register long b __asm__("rsi")=(long)&ts;
-    long r;
-    __asm__ volatile("syscall":"=a"(r):"a"(nr),"D"(a),"S"(b):"rcx","r11","memory");
+    long r=mv_sys(228,1,(long)&ts,0,0,0,0);
     if(r<0)return 0;
     return (uint64_t)ts.tv_sec*1000000000ull+(uint64_t)ts.tv_nsec;
 #else

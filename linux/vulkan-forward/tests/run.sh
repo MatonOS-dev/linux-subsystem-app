@@ -4,13 +4,14 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?external build directory}
 headers=${2:?Vulkan-Headers v1.4.341 source}
 bash "$here/build.sh" "$out" "$headers"
+bash "$here/tests/syscall-gateway.sh" "$out/gateway-tests"
 cc=${CC:-clang-21}
 flags=(-std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -fno-stack-protector -I"$here" -I"$here/arch/x86_64")
 "$cc" "${flags[@]}" "$here/runtime.c" "$here/tests/runtime-test.c" -pthread -o "$out/runtime-test"
 "$out/runtime-test"
 "$cc" "${flags[@]}" "$here/tests/bootstrap-scan-test.c" -o "$out/bootstrap-scan-test"
 "$out/bootstrap-scan-test"
-"$cc" "${flags[@]}" -I"$headers/include" "$here/tests/bootstrap-fork-test.c" -ldl -o "$out/bootstrap-fork-test"
+"$cc" "${flags[@]}" -I"$headers/include" "$here/tests/bootstrap-fork-test.c" "$here/runtime.c" -ldl -o "$out/bootstrap-fork-test"
 VK_DRIVER_FILES=${MATON_TEST_VK_DRIVER:-/usr/share/vulkan/icd.d/lvp_icd.json} "$out/bootstrap-fork-test" "$out/libmaton_vulkan.so"
 "$cc" "${flags[@]}" "$here/tests/abi-test.c" -o "$out/abi-test"
 "$out/abi-test"

@@ -2131,3 +2131,57 @@ a host bridge/adoption provider and preserves mappings across fork; it is
 not evidence that a static peer can recreate Android GPU state after exec.
 The required x86_64-to-static-i386-to-ICD `vkCreateInstance` acceptance test
 and working bootstrap implementation remain undone. No VM was started.
+
+### Steam round 40: dynamic-peer restoration, direct GPU syscalls, startup blocker
+
+The static i386 peer selection and its APK packaging were removed: production
+cross-ABI exec again selects the dynamic i386 resident, which can host Bionic
+GPU adoption. This restoration is **not a completed Steam startup fix**.
+
+The saved round-40 fixture needed `chmod 0755` after rebuilding its replacement
+peer; without it, trusted-peer validation returned EPERM before kernel exec.
+With that corrected, the return-linker fixture dies with SIGSYS on **both**
+plain and `--android-filter` runs. Neither installs a Flatpak payload filter.
+It performs raw i386 mmap2 (192) outside the gateway before importing state.
+The original i386 routing filter remains in the kernel across both execs;
+its native branch traps mmap2, and kernel exec has already discarded SIGSYS's
+handler. The emulated payload filter has not run. Consequently, exempting
+proxy-internal calls from the emulated Flatpak policy alone cannot fix this
+startup death. The fixture retains explicit expected-SIGSYS negative controls;
+these are evidence of the remaining bug, not successful dynamic-linker tests.
+
+One independently fixed filter defect: installed payload filters exempted only
+the installing ABI's raw gateway. They now exempt both resident gateways, so
+an earlier filter cannot reject the other ABI's internal calls after exec.
+The mixed-ABI regression denies payload getpid for both ABIs, traverses both
+handoffs, and verifies the denial still applies to the payload. The resident's
+identity/state import must work throughout. Against main's old implementation,
+the same regression fails; both fixed directions pass.
+
+GPU forwarders now call the resident raw gateway directly after discovering
+the named bootstrap mapping. Its appended `syscall` field contains a native
+C ABI function pointer (native syscall numbers, six native words, negative
+kernel errno). Vulkan and EGL share the runtime, for x86_64 and i386. The
+standalone Vulkan WSI clock call uses it too. Before discovery, or with an
+older bootstrap whose appended field is zero, the existing syscall route is
+retained. This is an internal implementation path, not payload-policy or
+Android sandbox emulation. No process/thread lifetime changes were made.
+
+`tests/syscall-gateway.sh` checks real named-mapping discovery, denied payload
+mmap versus successful internal allocation, fork inheritance and raw errno
+on both ABIs. On x86_64 its syscall microbenchmark counts 100,000 SIGSYS
+round trips before versus zero after, approximately 2.4 us versus 0.31 us
+per call on this host. This is syscall overhead, not a GPU frame-time claim.
+The i386 test uses a denied-syscall control and checks successful direct
+calls, rather than claiming a SIGSYS timing comparison. The fork/fresh-ICD
+regression also verifies that real lavapipe vkCreateInstance uses the gateway.
+
+Still required: a design for dynamic resident/linker startup under inherited
+native-ABI TRAP filters. A possible small freestanding startup trampoline must
+install handling before entering the dynamic linker; it must retain the GPU
+bootstrap and avoid replacing the dynamic resident with the static peer.
+No such trampoline is implemented here. The requested dynamic cross-ABI ->
+i386 ICD -> vkCreateInstance acceptance test therefore remains blocked.
+Do not merge this branch as a resolved Steam fix or claim that the original
+SIGSYS has been fixed. No VM was used; no shared device-tree, kernel, or AOSP
+changes are needed by the direct gateway work.

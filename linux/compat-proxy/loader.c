@@ -676,6 +676,7 @@ int main(int argc,char **argv,char **environ) {
                                       MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
         if(bootstrap==MAP_FAILED) return 6;
         bootstrap->magic=MATON_GPU_BOOTSTRAP_MAGIC;
+        snprintf(bootstrap->syscall,sizeof(bootstrap->syscall),"%lx",(unsigned long)proxy_raw);
         snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",value);
         snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%lx",(unsigned long)adopt_api_address());
         snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",(unsigned long)(getauxval(AT_HWCAP2)&2));

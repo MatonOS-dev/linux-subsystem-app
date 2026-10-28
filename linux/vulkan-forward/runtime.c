@@ -16,6 +16,14 @@ void *mv_alloc(size_t n) {
 void mv_free(void *p) {if(p){union block *h=(union block *)p-1;mv_unmap(h,h->length);}}
 /* Named read-only launcher mapping: no libc data/code dependency. */
 static const struct maton_gpu_bootstrap *cached_bootstrap;
+#if defined(__x86_64__) || defined(__i386__)
+typedef long (*mv_gateway_fn)(long,long,long,long,long,long,long);
+static mv_gateway_fn syscall_gateway;
+long mv_sys(long n,long a,long b,long c,long d,long e,long f) {
+    mv_gateway_fn gateway=__atomic_load_n(&syscall_gateway,__ATOMIC_ACQUIRE);
+    return gateway?gateway(n,a,b,c,d,e,f):mv_native_sys(n,a,b,c,d,e,f);
+}
+#endif
 static const char *bootstrap_field(const struct maton_gpu_bootstrap *p,const char *key) {
     return !strcmp(key,"MATON_GPU_BRIDGE")?p->bridge:
            !strcmp(key,"MATON_THREAD_ADOPT")?p->adopt:
@@ -50,6 +58,12 @@ const char *mv_env(const char *key) {
             size_t j=0;while(line[j] && line[j]!='-')j++;line[j]=0;
             const struct maton_gpu_bootstrap *p=(void *)mv_hex(line);
             if(p && p->magic==MATON_GPU_BOOTSTRAP_MAGIC) {
+#if defined(__x86_64__) || defined(__i386__)
+                /* Discovery itself uses the existing syscall route. Once the
+                 * named mapping is known, forwarder internals use the same
+                 * exempt gateway as the resident, preserving the caller TLS. */
+                __atomic_store_n(&syscall_gateway,(mv_gateway_fn)mv_hex(p->syscall),__ATOMIC_RELEASE);
+#endif
                 __atomic_store_n(&cached_bootstrap,p,__ATOMIC_RELEASE);
                 result=bootstrap_field(p,key);
             }

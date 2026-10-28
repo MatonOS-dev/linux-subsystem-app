@@ -3,6 +3,10 @@
  * No separate loader invocation: payload exec goes through resident handoff. */
 #define _GNU_SOURCE
 #include <stdint.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <sys/personality.h>
 #include <sys/utsname.h>
@@ -38,6 +42,20 @@ static int fail(int line){char b[24];number(b,line);if(write(2,b,strlen(b))<0)re
 int main(int argc,char **argv,char **env){
  CHECK(argc>=3);
  if(argc==3){
+  if(getenv("MATON_TEST_CROSS_FILTER")) {
+   /* Deny payload getpid in both ABIs. The resident's own gateway must
+    * remain usable on BOTH legs, including through older kernel filters. */
+   struct sock_filter code[]={
+    BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
+    BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,20,1,0),
+    BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,39,0,1),
+    BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|EACCES),
+    BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
+   };
+   struct sock_fprog program={sizeof(code)/sizeof(code[0]),code};
+   CHECK(!prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0));
+   CHECK(!prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&program));
+  }
   /* Android/host policy denies ADDR_NO_RANDOMIZE, so this persona is virtual.
    * It must cross both resident ABI execs along with an explicit Linux32. */
   CHECK(personality(ADDR_NO_RANDOMIZE|PER_LINUX32)>=0);
@@ -64,6 +82,9 @@ int main(int argc,char **argv,char **env){
   static const char ok[]="PASS mixed-class exec, VFS/fds and sem/shm/msg/SEM_UNDO\n";CHECK(write(1,ok,sizeof(ok)-1)==sizeof(ok)-1);return 0;
  }
  CHECK(argc==11);
+ if(getenv("MATON_TEST_CROSS_FILTER")) {
+  errno=0;CHECK(syscall(sizeof(long)==4?20:39)==-1 && errno==EACCES);
+ }
  if(getenv("MATON_TEST_RESIDENT_ENV")){
   CHECK(getenv("LD_LIBRARY_PATH") && !strcmp(getenv("LD_LIBRARY_PATH"),"/virtual-resident-libraries"));
   CHECK(getenv("LD_BIND_NOW") && !strcmp(getenv("LD_BIND_NOW"),"1"));

@@ -41,6 +41,7 @@ int main(int argc, char **argv) {
                            MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (bootstrap == MAP_FAILED) return 6;
     bootstrap->magic=MATON_GPU_BOOTSTRAP_MAGIC;
+    snprintf(bootstrap->syscall,sizeof(bootstrap->syscall),"%lx",(unsigned long)proxy_raw);
     snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",getenv("MATON_GPU_BRIDGE"));
     snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%s",getenv("MATON_QUERY_NO_ADOPT") ? "0" : (getenv("MATON_THREAD_ADOPT") ? getenv("MATON_THREAD_ADOPT") : "0"));
     snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",getauxval(AT_HWCAP2)&2);

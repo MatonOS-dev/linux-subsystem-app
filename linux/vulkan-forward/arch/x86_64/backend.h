@@ -10,7 +10,8 @@ struct adopt_thread {
 };
 struct adopt_api { unsigned version; struct adopt_thread *(*current)(void);
                   struct adopt_thread *(*lookup)(uintptr_t fs); };
-static inline long mv_sys(long n,long a,long b,long c,long d,long e,long f) {
+long mv_sys(long,long,long,long,long,long,long);
+static inline long mv_native_sys(long n,long a,long b,long c,long d,long e,long f) {
     register long r10 __asm__("r10")=d;
     register long r8 __asm__("r8")=e;
     register long r9 __asm__("r9")=f;

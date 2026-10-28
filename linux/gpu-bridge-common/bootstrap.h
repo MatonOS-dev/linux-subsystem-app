@@ -11,6 +11,9 @@ struct maton_gpu_bootstrap {
     char phdr[32], phnum[32];
     char egl[32], gles[32];
     char egl_cache[256];
+    /* Appended ABI: native syscall-number/word ABI, raw negative errno.
+     * Internal forwarder operations call this without a SIGSYS round trip. */
+    char syscall[32];
 };
 /* No libc: also called from the resident exec syscall path. */
 static inline void maton_gpu_payload(struct maton_gpu_bootstrap *b,
