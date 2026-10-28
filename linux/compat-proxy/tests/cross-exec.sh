@@ -46,3 +46,17 @@ MATON_TEST_REAL_RESIDENT="$PWD/build/linux-layer-v3" MATON_TEST_RESIDENT_ENV=1 \
  >build/cross-native-env.out 2>build/cross-native-env.log
 cat build/cross-native-env.out
 printf 'PASS native resident excludes LD_* while both payload ABIs retain them\n'
+
+# A static x86_64 peer must not trap the next i386 Android linker's startup.
+# This models pressure-vessel's ELF64 -> ELF32 helper after an earlier peer exec.
+cp build/linux-layer-v3 "$peer_dir/linux-layer-v3"
+"$compiler" -nostdlib -static -Wl,-no-pie \
+ -DREAL_PEER=\"$PWD/build/linux-layer-v3-i386\" tests/resident-start-peer.S \
+ -o "$peer_dir/linux-layer-v3-i386"
+chmod 0755 "$peer_dir/linux-layer-v3-i386"
+timeout 20 "$peer_dir/linux-layer-v3" --android-filter --trace \
+ --map "$PWD/build/cross-file" /v3-cross-file --map "$PWD/build/cross-dir" /v3-cross-dir \
+ "$PWD/build/cross64" "$PWD/build/cross32" "$PWD/build/cross64" \
+ >build/cross-peer-start.out 2>build/cross-peer-start.log
+cat build/cross-peer-start.out
+printf 'PASS peer linker mmap before state import survives static resident filter\n'

@@ -128,14 +128,12 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         long (*encode)(long)=peer?arch_peer_encode_syscall:arch_encode_syscall;
         long (*decode)(long)=peer?arch_peer_decode_syscall:arch_decode_syscall;
         unsigned audit=peer?(ARCH_AUDIT==AUDIT_ARCH_I386?AUDIT_ARCH_X86_64:AUDIT_ARCH_I386):ARCH_AUDIT;
-#ifdef MATON_GPU_BRIDGE
         /* Kernel exec discards the SIGSYS handler before the peer's Android
          * linker can start. Its bionic syscall sites are not mapped yet and
          * cannot be listed here. Let that ABI start under Android's inherited
          * app filter; the peer installs its own compatibility routing before
          * payload entry. This proxy is an emulation layer, not a sandbox. */
         if(peer) { ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);continue; }
-#endif
         uint64_t gateway=audit==AUDIT_ARCH_I386?UINT64_C(0x70300000):UINT64_C(0x600000300000);
     /* x32 is unsupported independently of ioctl routing. */
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
