@@ -2185,3 +2185,13 @@ i386 ICD -> vkCreateInstance acceptance test therefore remains blocked.
 Do not merge this branch as a resolved Steam fix or claim that the original
 SIGSYS has been fixed. No VM was used; no shared device-tree, kernel, or AOSP
 changes are needed by the direct gateway work.
+
+Round-40 validation: full compat-proxy suite, full repository host suite,
+Vulkan suite (both ICD builds, fork/lavapipe creation and adoption benchmark),
+EGL x86_64/i386 builds, Android resident/static x86_64 and dynamic i386 NDK
+builds, SDK-36 Java compilation, and device-tree preflight passed. The
+repository suite required disabling OSTree's free-space reserve only in this
+run's temporary test repositories because the output filesystem had less than
+3% free; the production configuration was untouched. Java compilation used a
+compile-only version code and excluded native preBuild tasks already checked
+separately. No APK was published and no VM was started.
