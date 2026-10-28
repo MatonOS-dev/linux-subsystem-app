@@ -420,8 +420,12 @@ struct ReleaseFence {
   struct wl_event_source* source;
 };
 static void schedule_pending_presentations(void) {
-  for(struct Window* w=server.windows;w;w=w->next)
-    if(w->present_pending&&w->output&&!w->stopped)wlr_output_schedule_frame(w->output);
+  for(struct Window* w=server.windows;w;w=w->next) {
+    if(w->present_pending&&w->output&&!w->stopped) {
+      w->present_pending=false;
+      wlr_output_schedule_frame(w->output);
+    }
+  }
 }
 static int on_release_fence(int fd,uint32_t mask,void* data) {
   struct ReleaseFence* release=data;
@@ -477,7 +481,12 @@ static void on_frame(struct wl_listener* l,void* data) {
     /* Retry failed shm copies only after a buffer becomes available (release
      * fence) or another client commit schedules a frame. A periodic timer
      * drives an unbounded transaction stream when allocation cannot recover. */
-    w->present_pending=maton_presenter_present(w->presenter,w->scene,window_fit(w),w->width,w->height);
+    /* Once the presenter reports backpressure, commits may keep scheduling
+     * frames while SurfaceFlinger still owns every SHM copy. Complete client
+     * frame callbacks, but do not submit another Android transaction until a
+     * release makes a pool buffer available. */
+    if(!w->present_pending)
+      w->present_pending=maton_presenter_present(w->presenter,w->scene,window_fit(w),w->width,w->height);
     struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);wlr_scene_output_send_frame_done(w->scene_output,&now);
   }
 }

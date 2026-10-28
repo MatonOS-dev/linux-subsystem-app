@@ -33,14 +33,23 @@ struct Layer {
   bool visible, seen;
   /* Copies of shared-memory content; each is locked while SurfaceFlinger holds it. */
   struct wlr_buffer* pool[SHM_POOL];
+  bool geometry_valid;
+  ARect src, dst;
+  int z;
+  float opacity;
+  enum ASurfaceTransactionTransparency transparency;
 };
 
 struct MatonPresenter {
   ASurfaceControl* parent;
   ASurfaceControl* background;
+  ASurfaceTransaction* transaction;
+  struct MatonPendingBufferRelease* pending_release;
   struct wlr_allocator* allocator;
   struct MatonEglUploader* uploader;
   struct Layer* layers;
+  int background_width, background_height;
+  bool background_state_valid, background_visibility_valid, background_visible;
   /* Layers whose scene node is gone; their controls leave the screen in the next transaction. */
   struct Layer* dead;
 };
@@ -128,7 +137,7 @@ static struct wlr_buffer* copy_shm(struct MatonPresenter* p, struct Layer* l, st
   return target;
 }
 
-struct Walk { struct MatonPresenter* p; ASurfaceTransaction* t; int z; bool pending; struct MatonFit fit; };
+struct Walk { struct MatonPresenter* p; ASurfaceTransaction* t; int z; bool pending, changed; struct MatonFit fit; };
 
 static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* data) {
   struct Walk* walk = data;
@@ -154,7 +163,9 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
     if (wlr_buffer_get_dmabuf(buffer, &attrs)) opaque = maton_dmabuf_format_opaque(attrs.format);
     if (buffer != l->shown || seq != l->shown_seq) {
       int acquire_fence=scene_surface?maton_sync_take_acquire(scene_surface->surface):-1;
-      maton_transaction_set_buffer(t, l->control, ahb, buffer, acquire_fence);
+      maton_transaction_set_buffer(t, l->control, ahb, buffer, l->shown,
+                                   &p->pending_release, acquire_fence);
+      walk->changed = true;
       l->shown = buffer;
       l->shown_source = NULL;
       l->shown_seq = seq;
@@ -171,7 +182,9 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
       } else walk->pending = true;
       return;
     }
-    maton_transaction_set_buffer(t, l->control, maton_ahb_from_wlr_buffer(copy), copy, -1);
+    maton_transaction_set_buffer(t, l->control, maton_ahb_from_wlr_buffer(copy), copy, l->shown,
+                                 &p->pending_release, -1);
+    walk->changed = true;
     l->shown = copy;
     l->shown_source = buffer;
     l->shown_seq = seq;
@@ -192,15 +205,29 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
                maton_fit_edge(walk->fit.y,walk->fit.scale,sy),
                maton_fit_edge(walk->fit.x,walk->fit.scale,sx+width),
                maton_fit_edge(walk->fit.y,walk->fit.scale,sy+height)};
-  ASurfaceTransaction_setGeometry(t, l->control, &src, &dst, ANATIVEWINDOW_TRANSFORM_IDENTITY);
-  ASurfaceTransaction_setZOrder(t, l->control, walk->z++);
-  ASurfaceTransaction_setBufferAlpha(t, l->control, node->opacity);
-  ASurfaceTransaction_setBufferTransparency(t, l->control,
-      opaque && node->opacity >= 1.0f ? ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE
-                                      : ASURFACE_TRANSACTION_TRANSPARENCY_TRANSLUCENT);
+  int z = walk->z++;
+  enum ASurfaceTransactionTransparency transparency = opaque && node->opacity >= 1.0f
+      ? ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE : ASURFACE_TRANSACTION_TRANSPARENCY_TRANSLUCENT;
+  if (!l->geometry_valid || memcmp(&l->src, &src, sizeof(src)) || memcmp(&l->dst, &dst, sizeof(dst))) {
+    ASurfaceTransaction_setGeometry(t, l->control, &src, &dst, ANATIVEWINDOW_TRANSFORM_IDENTITY);
+    l->src = src; l->dst = dst; walk->changed = true;
+  }
+  if (!l->geometry_valid || l->z != z) {
+    ASurfaceTransaction_setZOrder(t, l->control, z); l->z = z; walk->changed = true;
+  }
+  if (!l->geometry_valid || l->opacity != node->opacity) {
+    ASurfaceTransaction_setBufferAlpha(t, l->control, node->opacity);
+    l->opacity = node->opacity; walk->changed = true;
+  }
+  if (!l->geometry_valid || l->transparency != transparency) {
+    ASurfaceTransaction_setBufferTransparency(t, l->control, transparency);
+    l->transparency = transparency; walk->changed = true;
+  }
+  l->geometry_valid = true;
   if (!l->visible) {
     ASurfaceTransaction_setVisibility(t, l->control, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
     l->visible = true;
+    walk->changed = true;
   }
 }
 
@@ -209,8 +236,13 @@ struct MatonPresenter* maton_presenter_create(ASurfaceControl* parent, struct wl
   if (!parent || !allocator) return NULL;
   struct MatonPresenter* p = calloc(1, sizeof(*p));
   if (!p) return NULL;
+  p->transaction = ASurfaceTransaction_create();
   p->background=ASurfaceControl_create(parent,"maton-background");
-  if(!p->background){free(p);return NULL;}
+  if(!p->background || !p->transaction){
+    if(p->background)ASurfaceControl_release(p->background);
+    if(p->transaction)ASurfaceTransaction_delete(p->transaction);
+    free(p);return NULL;
+  }
   p->parent = parent;
   p->allocator = allocator;
   p->uploader = uploader;
@@ -219,23 +251,33 @@ struct MatonPresenter* maton_presenter_create(ASurfaceControl* parent, struct wl
 
 bool maton_presenter_present(struct MatonPresenter* p, struct wlr_scene* scene, struct MatonFit fit, int width, int height) {
   if (!p || !scene) return false;
-  ASurfaceTransaction* t = ASurfaceTransaction_create();
+  ASurfaceTransaction* t = p->transaction;
   if (!t) return true;
   for (struct Layer* l = p->layers; l; l = l->next) l->seen = false;
   ARect bounds={0,0,width,height};
-  ASurfaceTransaction_setColor(t,p->background,0,0,0,1,ADATASPACE_SRGB);
-  ASurfaceTransaction_setCrop(t,p->background,&bounds);
-  ASurfaceTransaction_setZOrder(t,p->background,-1);
-  ASurfaceTransaction_setVisibility(t,p->background,
-      fit.scale==1&&fit.x==0&&fit.y==0?ASURFACE_TRANSACTION_VISIBILITY_HIDE:ASURFACE_TRANSACTION_VISIBILITY_SHOW);
-  struct Walk walk = {p, t, 0, false, fit};
+  bool changed = false;
+  if (!p->background_state_valid || p->background_width != width || p->background_height != height) {
+    ASurfaceTransaction_setColor(t,p->background,0,0,0,1,ADATASPACE_SRGB);
+    ASurfaceTransaction_setCrop(t,p->background,&bounds);
+    ASurfaceTransaction_setZOrder(t,p->background,-1);
+    p->background_width = width; p->background_height = height;
+    p->background_state_valid = true; changed = true;
+  }
+  bool show_background = !(fit.scale==1&&fit.x==0&&fit.y==0);
+  if (!p->background_visibility_valid || p->background_visible != show_background) {
+    ASurfaceTransaction_setVisibility(t,p->background,show_background?ASURFACE_TRANSACTION_VISIBILITY_SHOW:ASURFACE_TRANSACTION_VISIBILITY_HIDE);
+    p->background_visible = show_background; p->background_visibility_valid = true; changed = true;
+  }
+  struct Walk walk = {p, t, 0, false, changed, fit};
   wlr_scene_node_for_each_buffer(&scene->tree.node, present_node, &walk);
   /* Hide layers not drawn this frame; detach those whose node is gone. */
   struct Layer** link = &p->layers;
   while (*link) {
     struct Layer* l = *link;
     if (!l->node) {
+      maton_transaction_track_replaced(l->control, l->shown, &p->pending_release);
       ASurfaceTransaction_reparent(t, l->control, NULL);
+      walk.changed = true;
       *link = l->next;
       l->next = p->dead;
       p->dead = l;
@@ -244,11 +286,11 @@ bool maton_presenter_present(struct MatonPresenter* p, struct wlr_scene* scene, 
     if (!l->seen && l->visible) {
       ASurfaceTransaction_setVisibility(t, l->control, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
       l->visible = false;
+      walk.changed = true;
     }
     link = &l->next;
   }
-  ASurfaceTransaction_apply(t);
-  ASurfaceTransaction_delete(t);
+  if (walk.changed) maton_transaction_apply(t, &p->pending_release);
   /* Detached layers' controls are off screen once the transaction applied. */
   while (p->dead) {
     struct Layer* l = p->dead;
@@ -261,12 +303,17 @@ bool maton_presenter_present(struct MatonPresenter* p, struct wlr_scene* scene, 
 void maton_presenter_destroy(struct MatonPresenter* p) {
   if (!p) return;
   ASurfaceTransaction* t = ASurfaceTransaction_create();
+  struct MatonPendingBufferRelease* pending_release = NULL;
   for (struct Layer* l = p->layers; l; l = l->next) {
     if (l->node) wl_list_remove(&l->node_destroy.link);
-    if (t) ASurfaceTransaction_reparent(t, l->control, NULL);
+    if (t) {
+      maton_transaction_track_replaced(l->control, l->shown, &pending_release);
+      ASurfaceTransaction_reparent(t, l->control, NULL);
+    }
   }
-  if (t) { ASurfaceTransaction_reparent(t,p->background,NULL); ASurfaceTransaction_apply(t); ASurfaceTransaction_delete(t); }
+  if (t) { ASurfaceTransaction_reparent(t,p->background,NULL); maton_transaction_apply(t,&pending_release); ASurfaceTransaction_delete(t); }
   ASurfaceControl_release(p->background);
+  ASurfaceTransaction_delete(p->transaction);
   while (p->layers) { struct Layer* l = p->layers; p->layers = l->next; layer_free(l); }
   free(p);
 }
