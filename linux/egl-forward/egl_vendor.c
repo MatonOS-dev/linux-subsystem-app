@@ -70,6 +70,24 @@ static void mv_fail(void) {
     mv_egl_diagnostic(message, sizeof(message) - 1);
 }
 
+/* Keep resident EGL's error pending for the caller: diagnostics must not
+ * consume eglGetError. These arguments distinguish dma-buf import from GL
+ * image creation and identify which resident display received the call. */
+static void mv_image_failure(const char *name, EGLDisplay dpy, EGLContext ctx,
+                             EGLenum target, EGLClientBuffer buffer) {
+    char line[256]; size_t n=0;
+    const char *prefix="matonos-egl: image-failed ";
+    while (*prefix) line[n++]=*prefix++;
+    while (*name && n<160) line[n++]=*name++;
+    uintptr_t values[]={(uintptr_t)dpy,(uintptr_t)ctx,(uintptr_t)target,(uintptr_t)buffer};
+    for (unsigned i=0;i<4;i++) {
+        line[n++]=' ';line[n++]='0';line[n++]='x';
+        for (int shift=(int)(sizeof(uintptr_t)*8)-4;shift>=0;shift-=4)
+            line[n++]="0123456789abcdef"[(values[i]>>shift)&15];
+    }
+    line[n++]='\n';mv_egl_diagnostic(line,n);
+}
+
 static int mv_ready(void) {
     int state = __atomic_load_n(&mv_state, __ATOMIC_ACQUIRE);
     if (state == 2) return 1;
@@ -689,15 +707,15 @@ static const char *mv_vendor_string(int name) {
     return "MatonOS Android EGL passthrough";
 }
 static void *mv_vendor_get_proc(const char *name) { return mv_lookup_proc(name); }
-static void *mv_vendor_get_dispatch(const char *name) { return mv_lookup_proc(name); }
-static void mv_vendor_set_dispatch(const char *name, int index) { (void)name; (void)index; }
+static const __EGLapiExports *mv_exports;
+#include "egl_dispatch.inc"
 
 EXPORT EGLBoolean __egl_Main(uint32_t version, const __EGLapiExports *exports,
                              __EGLvendorInfo *vendor, __EGLapiImports *imports) {
-    (void)exports;
     (void)vendor;
     if (!imports || EGL_VENDOR_ABI_GET_MAJOR_VERSION(version) != EGL_VENDOR_ABI_MAJOR_VERSION ||
         EGL_VENDOR_ABI_GET_MINOR_VERSION(version) < 2) return EGL_FALSE;
+    mv_exports = exports;
     imports->getPlatformDisplay = mv_vendor_get_platform_display;
     imports->getSupportsAPI = mv_vendor_supports_api;
     imports->getVendorString = mv_vendor_string;

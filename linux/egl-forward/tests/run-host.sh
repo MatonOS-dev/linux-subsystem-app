@@ -9,6 +9,11 @@ mkdir -p "$out"
 cc=${CC:-cc}
 "$cc" -I"$deps/include" "$here/tests/abi-test.c" -ldl -o "$out/abi-test"
 "$out/abi-test" "$build/libEGL_maton.so"
+"$cc" -Wall -Wextra -Werror -I"$deps/include" "$here/tests/vendor-dispatch.c" -ldl -o "$out/vendor-dispatch"
+"$out/vendor-dispatch" "$build/libEGL_maton.so"
+if pkg-config --exists gbm egl glesv2; then
+  "$cc" -Wall -Wextra -Werror "$here/tests/dmabuf-import.c" $(pkg-config --cflags --libs gbm egl glesv2) -o "$out/dmabuf-import"
+fi
 "$cc" -I"$deps/include" "$here/tests/offscreen.c" -Wl,-l:libEGL.so.1 -Wl,-l:libGLESv2.so.2 -ldl -o "$out/offscreen"
 "$cc" -I"$deps/include" "$here/tests/desktop.c" -ldl -o "$out/desktop-glibc"
 if [[ -n ${MUSL_CC:-} ]]; then
