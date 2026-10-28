@@ -144,6 +144,19 @@ static int supervise_launch(int argc,char **argv,char **environ) {
 }
 #endif
 
+/* Resident workers must not consume a payload parent's SIGCHLD. Linux
+ * signalfd observes process-pending signals, but an unblocked EGL/Binder
+ * thread can take (and discard, with SIG_DFL) that notification first.
+ * Create native workers with CHLD blocked, then restore the launch thread's
+ * mask so the payload retains ordinary Linux signal semantics. */
+int proxy_resident_signals_begin(uint64_t *previous) {
+    uint64_t child=UINT64_C(1)<<(SIGCHLD-1);
+    return (int)RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&child,previous,8,0,0);
+}
+int proxy_resident_signals_end(uint64_t previous) {
+    return (int)RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&previous,0,8,0,0);
+}
+
 size_t p_len(const char *s) { size_t n=0; while(s[n]) n++; return n; }
 void p_copy(void *d,const void *s,size_t n) { unsigned char *a=d; const unsigned char *b=s; while(n--) *a++=*b++; }
 int p_equal(const char *a,const char *b) { while(*a && *a==*b) {a++;b++;} return *a==*b; }
@@ -589,6 +602,8 @@ int main(int argc,char **argv,char **environ) {
     struct image image; int r=proxy_load(argv[i],argv+i+(resumed?1:0),environ,&image);
     if(r) {proxy_log("load-error",0,r);return 1;}
 #ifdef MATON_GPU_BRIDGE
+    uint64_t resident_signal_mask=0;
+    if(gpu_bridge_enabled && proxy_resident_signals_begin(&resident_signal_mask))return 7;
     static struct gpu_bridge bridge;
     if(gpu_bridge_enabled) {
         bridge.version=2;
@@ -637,6 +652,7 @@ int main(int argc,char **argv,char **environ) {
             }
         }
         if(proxy_resident_fds_snapshot(1)) return 7;
+        if(proxy_resident_signals_end(resident_signal_mask))return 7;
     }
 #endif
     r=proxy_install(android);

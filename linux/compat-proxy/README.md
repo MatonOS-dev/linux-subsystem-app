@@ -1761,3 +1761,47 @@ stock nested bwrap and staged static musl bwrap tests. Evidence:
 `/mnt/data/aosp/out/pc-logs/agents/steam-r27-suite.log`. The added signalfd
 coverage passes on the unchanged behavior; it is not a reproduction of the
 device failure and does not justify changing wait/signal semantics.
+
+### Steam round 28: resident workers can steal signalfd SIGCHLD
+
+Rebased `steam-personality` on main. The existing bwrap-style signalfd test
+also passes through `linux-layer-v3 --supervise --android-filter`: the
+continuous supervisor reaper does not consume children of a living payload
+parent. Its waitid(P_ALL) only covers its own direct/adopted children.
+
+A host fixture with a resident pthread, created before the payload blocks
+SIGCHLD and retained across the emulated exec, reproduces notification loss.
+Before the fix, the fixture failed at signalfd read with EAGAIN after poll
+reported readiness. Linux can deliver process-directed SIGCHLD to the
+unblocked resident worker and discard it under SIG_DFL; bwrap then polls
+again forever even though its child has exited. The wait status remains
+available, but bwrap relies on signalfd to decide when to reap.
+
+The loader now blocks SIGCHLD before native EGL initialization, so its
+EGL/Binder workers inherit that blocked bit, and restores the launch
+thread's exact previous mask after initialization. Payload signal masks,
+signalfd descriptors, dispositions and wait statuses retain kernel Linux
+semantics. No synthetic SIGCHLD, status stealing, per-app rule, polling
+interval or change to the continuous supervisor reaper is needed.
+
+`tests/resident-signalfd-launch.c` retains a resident worker while the real
+adoption/proxy route launches the bwrap-style signalfd test. A continuously
+waiting subreaper also reaps a separate child while the monitored payload
+forks 20 children, reads the matching SIGCHLD notifications and obtains each
+original waitpid status. The suite additionally runs the same monitor under
+the production `--supervise` path. The unprotected resident-worker fixture
+fails; the protected fixture passes with the Android syscall filter active.
+
+No VM was run. Coordinator follow-up: rebuild both loader ABIs and launch
+traced Steam; confirm the display-probe bwrap exits 0 and SpawnExited is
+forwarded without its 10-second timeout, then follow steamwebhelper. This
+host reproduction identifies a real notification-loss bug; the supplied
+capture does not establish the device workers' masks. If the timeout
+persists, retain `/proc/<bwrap>/task/*/status` and its signalfd fdinfo while
+blocked. Workers created later by native code that explicitly changes its
+mask would require separate evidence/handling.
+
+Validation: full `bash linux/compat-proxy/tests/run.sh` exited 0, including
+both ABI suites, Android loader compilation/packaging, stock nested bwrap,
+and the new resident-worker/supervisor signalfd cases. Full evidence:
+`/mnt/data/aosp/out/pc-logs/agents/steam-r28-suite-fixed.log`.

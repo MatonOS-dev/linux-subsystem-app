@@ -162,6 +162,11 @@ timeout 15 build/linux-layer-v3 --trace --android-filter "$PWD/build/signalfd-ch
 cat build/signalfd-child.out
 timeout 15 build/adopt-fork-launch --trace "$PWD/build/signalfd-child" >build/signalfd-adopt.out 2>build/signalfd-adopt.log
 cat build/signalfd-adopt.out
+cc -DPROXY_LIBRARY -fPIE -pie -mcmodel=large -Wl,--no-relax -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -Wl,-z,now -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-signalfd-launch.c loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c adopt-map.c arch/x86_64/raw.S arch/x86_64/adopt.S arch/x86_64/altstack.S -pthread -ldl -o build/resident-signalfd-launch
+timeout 15 build/linux-layer-v3 --supervise --android-filter "$PWD/build/signalfd-child" >build/signalfd-supervised.out 2>build/signalfd-supervised.log
+cat build/signalfd-supervised.out
+timeout 15 build/resident-signalfd-launch "$PWD/build/signalfd-child" >build/signalfd-resident.out 2>build/signalfd-resident.log
+cat build/signalfd-resident.out
 timeout 20 build/adopt-fork-launch "$PWD/build/flatpak-seccomp-fork"
 timeout 20 build/adopt-fork-launch "$PWD/build/sigsys-virtual"
 timeout 20 build/adopt-fork-launch --trace "$PWD/build/sigsys-virtual" >build/sigsys-adopt-trace.out 2>build/sigsys-adopt-trace.log
