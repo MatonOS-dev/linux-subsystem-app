@@ -16,10 +16,10 @@ Each GLX window is rendered to an EGL pbuffer sized to the X window, then
 replaces the pbuffer. This does not use DRI3/Present or shared GPU buffers.
 
 The current implementation is intentionally limited to one EGL config, direct
-contexts, a single current context per thread, and window drawables. GLX configs
+contexts, a single current context per thread, and window/pbuffer drawables. GLX configs
 expose the server’s RGB8 TrueColor 24/32-bit visuals; legacy visual selection
-returns the screen’s default visual. Pixmap and pbuffer GLX drawables,
-context sharing, and full GLX attribute negotiation remain unsupported. EGL
+returns the screen’s default visual. Pixmap GLX drawables and full GLX
+attribute negotiation remain unsupported. EGL
 must expose desktop OpenGL; GLES-only devices do not provide this GLX vendor.
 
 Build output and fetched headers belong outside the repository:
@@ -122,3 +122,51 @@ on Ryzen/RX6600, Surface Pro 3 and Haswell: repeat the visual/context/swap test
 through the adopted runtime on Xwayland, then Steam resize/relaunch. No VM
 was started. Steam rendering and its setup delay remain device-verification
 items; no shared device-tree or kernel changes are requested.
+
+
+## ANGLE initialization pbuffers and ES profiles (2026-10-29, round 57)
+
+`day-r66/webhelper-linux.txt:62` reports “Could not create the initialization
+pbuffer”; line 66 reports the missing `GLX_EXT_create_context_es_profile`.
+The shim advertised window-only FBConfigs, returned zero from
+`glXCreatePbuffer`, and rejected the ES context profile bit. These are GLX
+capability gaps before ANGLE can initialize its dummy drawable.
+
+FBConfigs now include `GLX_PBUFFER_BIT`. Pbuffer creation accepts the GLX
+creation dimensions (`GLX_PBUFFER_WIDTH`/`HEIGHT`, distinct from the query
+attributes `GLX_WIDTH`/`HEIGHT`) and creates a persistent EGL surface.
+A server-allocated 1x1 pixmap supplies a collision-free XID, while all drawing
+uses EGL; it is never queried as an X window or uploaded with XPutImage.
+Reference counting keeps surfaces alive across context switches and deletion
+while current. QueryDrawable reports the pbuffer dimensions before binding.
+The two ES profile extensions are advertised; profile bit 4 selects
+`EGL_OPENGL_ES_API`, preserving the requested version/debug attributes and
+restoring the caller's bound EGL API. Actual version support comes from the
+resident EGL implementation. Desktop GL retains its existing profile checks.
+No application-specific overrides or software-renderer fallback were added.
+
+The extended `tests/visual.c` uses Xvfb and the real Mesa EGL direct-table
+adapter. It checks desktop GL and ES 2/3 green-pixel rendering on a 3x2
+pbuffer, dimensions before make-current, persistence after switching to a
+window and back, swap avoiding the X window path, and deletion while current.
+The existing X11 visual/window red-pixel test remains included. The regression
+fails against c0bf466 at pbuffer FBConfig selection and passes with this fix.
+ES 1 is not exercised by this host's resident implementation.
+
+Coordinator/device checks: rebuild/package both GLX vendor DSOs in GL.maton,
+fresh-launch Steam, and confirm both initialization errors disappear and the
+CEF GPU process stays alive. Verify a Steam window draws and resizes; repeat
+Kate/Obsidian/Chrome checks. On Ryzen/RX6600, Surface Pro 3 and Haswell, repeat
+the pbuffer/ES pixel regression through the installed GLX vendor on Xwayland.
+Host Mesa/Xvfb coverage does not establish device rendering. No VM was run,
+and no kernel or shared device-tree changes are requested. Steam's setup delay
+is outside this change.
+
+Validation logs are under `/mnt/data/aosp/out/pc-logs/steam-personality-r57/`.
+GLX host regressions, x86_64/i386 freestanding GLX builds, Android loader
+builds, Vulkan core/WSI suites, repository tests/run.sh and device preflight
+pass. The complete compat-proxy suite was run but stops at the unchanged
+marker-cache.py assertion (1,291 ancestry probes, expected fewer than 128).
+A separate run of every remaining compat check passes (`compat-rest.log`);
+this is not a claim that the full suite passes. No compat-proxy source was
+changed by this round.

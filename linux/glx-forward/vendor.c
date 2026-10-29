@@ -46,8 +46,13 @@
 #define GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB 2
 #define GLX_CONTEXT_CORE_PROFILE_BIT_ARB 1
 #define GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB 2
+#define GLX_CONTEXT_ES_PROFILE_BIT_EXT 4
 #define GLX_WIDTH 0x801D
 #define GLX_HEIGHT 0x801E
+#define GLX_PBUFFER_HEIGHT 0x8040
+#define GLX_PBUFFER_WIDTH 0x8041
+#define GLX_PRESERVED_CONTENTS 0x801B
+#define GLX_LARGEST_PBUFFER 0x801C
 #define GLX_SWAP_INTERVAL_EXT 0x20F1
 #define EGL_CONTEXT_MAJOR_VERSION 0x3098
 #define EGL_CONTEXT_MINOR_VERSION 0x30FB
@@ -108,10 +113,29 @@ static int init_configs(Display *d,int screen){
     configs_acquire();for(struct fb *c=configs;c;c=c->next)if(c->display==d&&c->visual.screen==screen){configs_release();while(head){struct fb *next=head->next;free(head);head=next;}return 1;}
     while(head){struct fb *next=head->next;head->next=configs;configs=head;head=next;}configs_release();return 1;
 }
-struct ctx { int magic,width,height,direct,swap_interval; unsigned long long last_present_ns; EGLContext egl; EGLSurface surface; GLXDrawable drawable; struct ctx *next; };
+struct ctx { int magic,width,height,direct,swap_interval; EGLenum api; struct pbuffer *pbuffer; unsigned long long last_present_ns; EGLContext egl; EGLSurface surface; GLXDrawable drawable; struct ctx *next; };
+/* Server-allocated XIDs keep pbuffer handles disjoint from window IDs. */
+extern unsigned long XCreatePixmap(Display*,unsigned long,unsigned int,unsigned int,unsigned int);
+extern unsigned long XRootWindow(Display*,int);
+extern int XFreePixmap(Display*,unsigned long);
+struct pbuffer { Display *display; GLXPbuffer id; int width,height; EGLSurface surface; unsigned refs; struct pbuffer *next; };
+static struct pbuffer *pbuffers;
 static struct ctx *contexts; static volatile int contexts_lock;
 static void contexts_lock_acquire(void){while(__atomic_exchange_n(&contexts_lock,1,__ATOMIC_ACQUIRE)){} }
-static void contexts_lock_release(void){__atomic_store_n(&contexts_lock,0,__ATOMIC_RELEASE);} static const char exts[]="GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control GLX_EXT_visual_info";
+static void contexts_lock_release(void){__atomic_store_n(&contexts_lock,0,__ATOMIC_RELEASE);} static const char exts[]="GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control GLX_EXT_visual_info";
+/* The list owns one reference, and each context using a pbuffer owns one.
+ * Destroying a current pbuffer defers its EGL destruction until it is detached. */
+static struct pbuffer *find_pbuffer(Display *d,GLXDrawable id){
+    contexts_lock_acquire();struct pbuffer *p=pbuffers;
+    while(p&&(p->display!=d||p->id!=id))p=p->next;
+    if(p)p->refs++;
+    contexts_lock_release();return p;
+}
+static void put_pbuffer(struct pbuffer *p){
+    if(!p)return;
+    contexts_lock_acquire();unsigned refs=--p->refs;contexts_lock_release();
+    if(!refs){eglDestroySurface(edpy,p->surface);free(p);}
+}
 extern long write(int,const void*,unsigned long);
 static void egl_diag(const char*s){size_t n=0;while(s[n])n++;(void)write(2,s,n);}
 #include "timing.h"
@@ -156,7 +180,7 @@ static Bool supported(Display*d,int s){return d&&s>=0&&s<XScreenCount(d)&&init_e
 static void *dispatch(const GLubyte*n);
 static int init_egl(void);
 static void *getproc(const GLubyte*n){if(!n)return 0;void*p=dispatch(n);if(p)return p;if(!init_egl())return 0;return (void*)eglGetProcAddress((const char*)n);}
-static int cfgattr(Display*d,GLXFBConfig c,int a,int*v){struct fb *f=find_config(d,c);if(!f||!v)return 1;switch(a){case GLX_FBCONFIG_ID:case GLX_VISUAL_ID:*v=(int)f->visual.visualid;break;case GLX_X_VISUAL_TYPE:*v=GLX_TRUE_COLOR;break;case GLX_X_RENDERABLE:*v=1;break;case GLX_DRAWABLE_TYPE:*v=GLX_WINDOW_BIT;break;case GLX_RENDER_TYPE:*v=GLX_RGBA_BIT;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*v=8;break;case GLX_DEPTH_SIZE:*v=24;break;case GLX_STENCIL_SIZE:*v=8;break;case GLX_DOUBLEBUFFER:*v=1;break;default:*v=0;}return 0;}
+static int cfgattr(Display*d,GLXFBConfig c,int a,int*v){struct fb *f=find_config(d,c);if(!f||!v)return 1;switch(a){case GLX_FBCONFIG_ID:case GLX_VISUAL_ID:*v=(int)f->visual.visualid;break;case GLX_X_VISUAL_TYPE:*v=GLX_TRUE_COLOR;break;case GLX_X_RENDERABLE:*v=1;break;case GLX_DRAWABLE_TYPE:*v=GLX_WINDOW_BIT|GLX_PBUFFER_BIT;break;case GLX_RENDER_TYPE:*v=GLX_RGBA_BIT;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*v=8;break;case GLX_DEPTH_SIZE:*v=24;break;case GLX_STENCIL_SIZE:*v=8;break;case GLX_DOUBLEBUFFER:*v=1;break;default:*v=0;}return 0;}
 static Bool glXQueryExtension(Display*d,int*e,int*v){if(e)*e=0;if(v)*v=0;return d&&init_egl();}
 static Bool glXQueryVersion(Display*d,int*a,int*b){if(!d||!init_egl())return 0;if(a)*a=1;if(b)*b=4;return 1;}
 static const char *glXGetClientString(Display*d,int n){(void)d;return n==GLX_VENDOR?"MatonOS":n==GLX_VERSION?"1.4":exts;}
@@ -195,16 +219,47 @@ static GLXFBConfig config_for_visual(Display *d,XVisualInfo *v){
 static XVisualInfo *glXChooseVisual(Display*d,int s,int*a){(void)a;if(!supported(d,s))return 0;Visual *v=XDefaultVisual(d,s);if(!v)return 0;XVisualInfo wanted={.screen=s,.visualid=v->visualid};return glXGetVisualFromFBConfig(d,config_for_visual(d,&wanted));}
 static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:*out=24;break;case GLX_STENCIL_SIZE:*out=8;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
 static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){struct fb *f=find_config(d,c);if(!f||!direct||!supported(d,f->visual.screen))return 0;EGLContext share_egl=EGL_NO_CONTEXT;if(share){struct ctx *parent=(struct ctx *)share;if(parent->magic!=0x4d415443)return 0;share_egl=parent->egl;}struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->direct=direct;x->surface=EGL_NO_SURFACE;EGLint ea[16],n=0,major=0,minor=0,profile=0,flags=0;int seen_major=0,seen_minor=0,seen_profile=0,seen_flags=0;
-    if(a)for(const int*p=a;*p!=0;p+=2){int v=p[1];switch(p[0]){case GLX_CONTEXT_MAJOR_VERSION_ARB:if(seen_major++||v<1)goto bad_attr;major=v;break;case GLX_CONTEXT_MINOR_VERSION_ARB:if(seen_minor++||v<0)goto bad_attr;minor=v;break;case GLX_CONTEXT_PROFILE_MASK_ARB:if(seen_profile++||(v!=GLX_CONTEXT_CORE_PROFILE_BIT_ARB&&v!=GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB))goto bad_attr;profile=v;break;case GLX_CONTEXT_FLAGS_ARB:if(seen_flags++||(v&~(GLX_CONTEXT_DEBUG_BIT_ARB|GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)))goto bad_attr;flags=v;break;default:goto bad_attr;}}
-    if((major<3&&profile)||(major==3&&minor<2&&profile)||(major==3&&minor<2&&(flags&GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)))goto bad_attr;
+    if(a)for(const int*p=a;*p!=0;p+=2){int v=p[1];switch(p[0]){case GLX_CONTEXT_MAJOR_VERSION_ARB:if(seen_major++||v<1)goto bad_attr;major=v;break;case GLX_CONTEXT_MINOR_VERSION_ARB:if(seen_minor++||v<0)goto bad_attr;minor=v;break;case GLX_CONTEXT_PROFILE_MASK_ARB:if(seen_profile++||(v!=GLX_CONTEXT_CORE_PROFILE_BIT_ARB&&v!=GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB&&v!=GLX_CONTEXT_ES_PROFILE_BIT_EXT))goto bad_attr;profile=v;break;case GLX_CONTEXT_FLAGS_ARB:if(seen_flags++||(v&~(GLX_CONTEXT_DEBUG_BIT_ARB|GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)))goto bad_attr;flags=v;break;default:goto bad_attr;}}
+    int es=profile==GLX_CONTEXT_ES_PROFILE_BIT_EXT;
+    if(!es&&((major<3&&profile)||(major==3&&minor<2&&profile)||(major==3&&minor<2&&(flags&GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB))))goto bad_attr;
+    if(es&&(flags&GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB))goto bad_attr;
     if(seen_major||seen_minor){ea[n++]=EGL_CONTEXT_MAJOR_VERSION;ea[n++]=seen_major?major:1;ea[n++]=EGL_CONTEXT_MINOR_VERSION;ea[n++]=seen_minor?minor:0;}
-    if(profile){ea[n++]=EGL_CONTEXT_OPENGL_PROFILE_MASK;ea[n++]=profile==GLX_CONTEXT_CORE_PROFILE_BIT_ARB?1:2;}
+    if(profile&&!es){ea[n++]=EGL_CONTEXT_OPENGL_PROFILE_MASK;ea[n++]=profile==GLX_CONTEXT_CORE_PROFILE_BIT_ARB?1:2;}
     if(flags){ea[n++]=EGL_CONTEXT_FLAGS;ea[n++]=flags;}ea[n++]=EGL_NONE;
-    EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;if(!eglBindAPI(EGL_OPENGL_API)){free(x);return 0;}x->egl=eglCreateContext(edpy,ecfg,share_egl,ea);eglBindAPI(previous_api);if(x->egl==EGL_NO_CONTEXT){free(x);return 0;}contexts_lock_acquire();x->next=contexts;contexts=x;contexts_lock_release();return (GLXContext)x;bad_attr:free(x);return 0;}
+    EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;x->api=es?EGL_OPENGL_ES_API:EGL_OPENGL_API;if(!eglBindAPI(x->api)){free(x);return 0;}x->egl=eglCreateContext(edpy,ecfg,share_egl,ea);eglBindAPI(previous_api);if(x->egl==EGL_NO_CONTEXT){free(x);return 0;}contexts_lock_acquire();x->next=contexts;contexts=x;contexts_lock_release();return (GLXContext)x;bad_attr:free(x);return 0;}
 static GLXContext glXCreateNewContext(Display*d,GLXFBConfig c,int r,GLXContext s,Bool direct){(void)r;return create_context(d,c,s,direct,0);}
 static GLXContext glXCreateContext(Display*d,XVisualInfo*v,GLXContext s,Bool direct){return create_context(d,config_for_visual(d,v),s,direct,0);}
 static GLXContext glXCreateContextAttribsARB(Display*d,GLXFBConfig c,GLXContext s,Bool direct,const int*a){return create_context(d,c,s,direct,a);}
-static Bool glXMakeContextCurrent(Display*d,GLXDrawable draw,GLXDrawable read,GLXContext c){if(!d)return 0;if(read!=draw)return 0;if(!c){if(!eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT))return 0;current=0;current_display=0;return 1;}struct ctx*x=(struct ctx*)c;XWindowAttributes w;if(!draw||!XGetWindowAttributes(d,draw,&w)||!w.width||!w.height)return 0;EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;if(!eglBindAPI(EGL_OPENGL_API))return 0;if(current==(GLXContext)x&&x->surface!=EGL_NO_SURFACE&&x->drawable==draw&&x->width==(int)w.width&&x->height==(int)w.height){Bool same=eglMakeCurrent(edpy,x->surface,x->surface,x->egl);eglBindAPI(previous_api);return same;}EGLint a[]={EGL_WIDTH,(EGLint)w.width,EGL_HEIGHT,(EGLint)w.height,EGL_NONE};EGLSurface replacement=eglCreatePbufferSurface(edpy,ecfg,a);if(replacement==EGL_NO_SURFACE){egl_diag("maton GLX: pbuffer creation failed\n");return 0;}if(!eglMakeCurrent(edpy,replacement,replacement,x->egl)){eglDestroySurface(edpy,replacement);eglBindAPI(previous_api);egl_diag("maton GLX: eglMakeCurrent failed\n");return 0;}eglBindAPI(previous_api);EGLSurface previous=x->surface;x->surface=replacement;x->width=w.width;x->height=w.height;current=(GLXContext)x;current_display=d;x->drawable=draw;if(previous!=EGL_NO_SURFACE)eglDestroySurface(edpy,previous);return 1;}
+static Bool glXMakeContextCurrent(Display*d,GLXDrawable draw,GLXDrawable read,GLXContext c){
+    if(!d||read!=draw)return 0;
+    if(!c){
+        if(!eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT))return 0;
+        current=0;current_display=0;return 1;
+    }
+    struct ctx *x=(struct ctx *)c;XWindowAttributes w={0};
+    struct pbuffer *pb=find_pbuffer(d,draw);
+    if(pb){w.width=pb->width;w.height=pb->height;}
+    else if(!draw||!XGetWindowAttributes(d,draw,&w)||!w.width||!w.height)return 0;
+    EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;
+    if(!eglBindAPI(x->api)){put_pbuffer(pb);return 0;}
+    if(x->surface!=EGL_NO_SURFACE&&x->pbuffer==pb&&x->drawable==draw&&x->width==(int)w.width&&x->height==(int)w.height){
+        Bool ok=eglMakeCurrent(edpy,x->surface,x->surface,x->egl);
+        eglBindAPI(previous_api);put_pbuffer(pb);
+        if(ok){current=c;current_display=d;}return ok;
+    }
+    EGLint attrs[]={EGL_WIDTH,(EGLint)w.width,EGL_HEIGHT,(EGLint)w.height,EGL_NONE};
+    EGLSurface replacement=pb?pb->surface:eglCreatePbufferSurface(edpy,ecfg,attrs);
+    if(replacement==EGL_NO_SURFACE){eglBindAPI(previous_api);put_pbuffer(pb);return 0;}
+    if(!eglMakeCurrent(edpy,replacement,replacement,x->egl)){
+        if(!pb)eglDestroySurface(edpy,replacement);
+        eglBindAPI(previous_api);put_pbuffer(pb);return 0;
+    }
+    eglBindAPI(previous_api);
+    if(x->pbuffer)put_pbuffer(x->pbuffer);
+    else if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);
+    x->pbuffer=pb;x->surface=replacement;x->width=w.width;x->height=w.height;
+    x->drawable=draw;current=c;current_display=d;return 1;
+}
 static Bool glXMakeCurrent(Display*d,GLXDrawable w,GLXContext c){return glXMakeContextCurrent(d,w,w,c);}
 static GLXContext glXGetCurrentContext(void){return (GLXContext)current;}
 static Display *glXGetCurrentDisplay(void){return current_display;}
@@ -212,6 +267,7 @@ static GLXDrawable glXGetCurrentDrawable(void){return current?((struct ctx*)curr
 static GLXDrawable glXGetCurrentReadDrawable(void){return glXGetCurrentDrawable();}
 static void glXSwapBuffers(Display*d,GLXDrawable w){
     if(!d||!w||!current)return;
+    if(((struct ctx*)current)->pbuffer)return;
     struct ctx*x=(struct ctx*)current;XWindowAttributes a;
     if(!XGetWindowAttributes(d,w,&a)||!a.width||!a.height)return;
     pace_present(x);
@@ -265,10 +321,10 @@ static void glXSwapBuffers(Display*d,GLXDrawable w){
     }else free(p);
     XFlush(d);
 }
-static void glXDestroyContext(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx*)c;if(!x||x->magic!=0x4d415443)return;if(current==(GLXContext)x){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);current=0;}if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);eglDestroyContext(edpy,x->egl);contexts_lock_acquire();struct ctx**p=&contexts;while(*p&&*p!=x)p=&(*p)->next;if(*p)*p=x->next;x->magic=0;contexts_lock_release();free(x);}
+static void glXDestroyContext(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx*)c;if(!x||x->magic!=0x4d415443)return;if(current==(GLXContext)x){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);current=0;}if(x->pbuffer)put_pbuffer(x->pbuffer);else if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);eglDestroyContext(edpy,x->egl);contexts_lock_acquire();struct ctx**p=&contexts;while(*p&&*p!=x)p=&(*p)->next;if(*p)*p=x->next;x->magic=0;contexts_lock_release();free(x);}
 static Bool glXIsDirect(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx *)c;return x&&x->magic==0x4d415443&&x->direct;}
 static void glXWaitGL(void){if(current){void (*finish)(void)=(void (*)(void))eglGetProcAddress("glFinish");if(finish)finish();}} static void glXWaitX(void){}
-static void glXQueryDrawable(Display*d,GLXDrawable w,int a,unsigned int*v){if(!v)return;*v=0;if(!d||!current)return;struct ctx*x=(struct ctx*)current;if(x->drawable!=w)return;XWindowAttributes wa;if(a==GLX_SWAP_INTERVAL_EXT){*v=(unsigned)x->swap_interval;return;}if((a==GLX_WIDTH||a==GLX_HEIGHT)&&XGetWindowAttributes(d,w,&wa))*v=a==GLX_WIDTH?wa.width:wa.height;}
+static void glXQueryDrawable(Display*d,GLXDrawable w,int a,unsigned int*v){if(!v)return;*v=0;struct pbuffer *pb=find_pbuffer(d,w);if(pb){if(a==GLX_WIDTH)*v=pb->width;if(a==GLX_HEIGHT)*v=pb->height;put_pbuffer(pb);return;}if(!d||!current)return;struct ctx*x=(struct ctx*)current;if(x->drawable!=w)return;XWindowAttributes wa;if(a==GLX_SWAP_INTERVAL_EXT){*v=(unsigned)x->swap_interval;return;}if((a==GLX_WIDTH||a==GLX_HEIGHT)&&XGetWindowAttributes(d,w,&wa))*v=a==GLX_WIDTH?wa.width:wa.height;}
 static void glXSwapIntervalEXT(Display*d,GLXDrawable w,int i){(void)d;if(!current||i<0)return;struct ctx*x=(struct ctx*)current;if(x->drawable!=w)return;if(eglSwapInterval&&eglSwapInterval(edpy,i))x->swap_interval=i;}
 static int glXSwapIntervalMESA(unsigned int i){if(!current)return 1;if(i>2147483647u)return 2;glXSwapIntervalEXT(current_display,((struct ctx*)current)->drawable,(int)i);return ((struct ctx*)current)->swap_interval==(int)i?0:2;}
 static int glXGetSwapIntervalMESA(void){return current?((struct ctx*)current)->swap_interval:0;}
@@ -282,8 +338,28 @@ static GLXWindow glXCreateWindow(Display*d,GLXFBConfig c,unsigned long w,const i
 static void glXDestroyWindow(Display*d,GLXWindow w){(void)d;(void)w;}
 static GLXPixmap glXCreatePixmap(Display*d,GLXFBConfig c,unsigned long p,const int*a){(void)d;(void)c;(void)p;(void)a;return 0;}
 static void glXDestroyPixmap(Display*d,GLXPixmap p){(void)d;(void)p;}
-static GLXPbuffer glXCreatePbuffer(Display*d,GLXFBConfig c,const int*a){(void)d;(void)c;(void)a;return 0;}
-static void glXDestroyPbuffer(Display*d,GLXPbuffer p){(void)d;(void)p;}
+static GLXPbuffer glXCreatePbuffer(Display*d,GLXFBConfig c,const int*a){
+    struct fb *f=find_config(d,c);if(!f||!init_egl())return 0;
+    int width=0,height=0;for(const int *q=a;q&&*q;q+=2){
+        if(*q==GLX_PBUFFER_WIDTH)width=q[1];else if(*q==GLX_PBUFFER_HEIGHT)height=q[1];
+        else if(*q!=GLX_PRESERVED_CONTENTS&&*q!=GLX_LARGEST_PBUFFER)return 0;
+    }
+    if(width<=0||height<=0)return 0;
+    struct pbuffer *p=calloc(1,sizeof(*p));if(!p)return 0;
+    EGLint attrs[]={EGL_WIDTH,width,EGL_HEIGHT,height,EGL_NONE};
+    p->surface=eglCreatePbufferSurface(edpy,ecfg,attrs);
+    if(p->surface==EGL_NO_SURFACE){free(p);return 0;}
+    p->id=XCreatePixmap(d,XRootWindow(d,f->visual.screen),1,1,f->visual.depth);
+    if(!p->id){eglDestroySurface(edpy,p->surface);free(p);return 0;}
+    p->display=d;p->width=width;p->height=height;p->refs=1;
+    contexts_lock_acquire();p->next=pbuffers;pbuffers=p;contexts_lock_release();return p->id;
+}
+static void glXDestroyPbuffer(Display*d,GLXPbuffer id){
+    contexts_lock_acquire();struct pbuffer **link=&pbuffers;
+    while(*link&&((*link)->display!=d||(*link)->id!=id))link=&(*link)->next;
+    struct pbuffer *p=*link;if(p)*link=p->next;contexts_lock_release();
+    if(p){XFreePixmap(d,id);put_pbuffer(p);}
+}
 static int glXQueryContext(Display*d,GLXContext c,int a,int*v){(void)d;if(!c||!v)return 1;*v=a==GLX_RENDER_TYPE?GLX_RGBA_BIT:0;return 0;}
 static void glXSelectEvent(Display*d,GLXDrawable w,unsigned long m){(void)d;(void)w;(void)m;}
 static void glXGetSelectedEvent(Display*d,GLXDrawable w,unsigned long*m){(void)d;(void)w;if(m)*m=0;}
