@@ -32,7 +32,10 @@ void proxy_profile_raw_site(long nr,uintptr_t site,uint64_t cycles){if(!cycles){
 #ifdef PROXY_RAW_COUNTER
 proxy_raw_count_one(nr);
 #endif
-}size_t i=((site>>4)^(site>>13))&1023;for(size_t n=0;n<1024;n++,i=(i+1)&1023){struct profile_site *p=&profile_sites[i];if(!p->site){p->site=site;p->nr=nr;}if(p->site==site){if(cycles)__atomic_fetch_add(&p->cycles,cycles,__ATOMIC_RELAXED);else __atomic_fetch_add(&p->calls,1,__ATOMIC_RELAXED);return;}}}
+}/* A handler return address can issue several raw operations. Keep the
+ * operation in the key so a first prlimit probe cannot label all later
+ * sigaltstack/file calls at that return address as prlimit. */
+size_t i=((site>>4)^(site>>13)^(uintptr_t)nr)&1023;for(size_t n=0;n<1024;n++,i=(i+1)&1023){struct profile_site *p=&profile_sites[i];if(!p->site){p->site=site;p->nr=nr;}if(p->site==site && p->nr==nr){if(cycles)__atomic_fetch_add(&p->cycles,cycles,__ATOMIC_RELAXED);else __atomic_fetch_add(&p->calls,1,__ATOMIC_RELAXED);return;}}}
 void proxy_profile_section(unsigned section,uint64_t cycles){if(section<16){__atomic_fetch_add(&profile_sections[section],cycles,__ATOMIC_RELAXED);__atomic_fetch_add(&profile_section_calls[section],1,__ATOMIC_RELAXED);}}
 static size_t profile_num(char *b,size_t n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[n++]=d[--k];return n;}
 void vfs_profile_dump(void){char b[128];for(size_t i=0;i<1024;i++){struct profile_site *p=&profile_sites[i];if(!p->site)continue;size_t n=0;b[n++]='S';b[n++]='I';b[n++]='T';b[n++]='E';b[n++]=' ';n=profile_num(b,n,(uint64_t)p->nr);b[n++]=' ';n=profile_num(b,n,p->site);b[n++]=' ';n=profile_num(b,n,p->calls);b[n++]=' ';n=profile_num(b,n,p->cycles);b[n++]='\n';proxy_internal_write(2,b,n);}for(unsigned i=0;i<16;i++)if(profile_section_calls[i]){size_t n=0;b[n++]='S';b[n++]='E';b[n++]='C';b[n++]=' ';n=profile_num(b,n,i);b[n++]=' ';n=profile_num(b,n,profile_section_calls[i]);b[n++]=' ';n=profile_num(b,n,profile_sections[i]);b[n++]='\n';proxy_internal_write(2,b,n);}}

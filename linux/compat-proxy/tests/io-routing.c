@@ -3,6 +3,11 @@
 #include "../proxy.c"
 static volatile unsigned traps;
 #define CHECK(x) do {if(!(x))RAW(PROXY_SC_exit_group,__LINE__,0,0,0,0,0);} while(0)
+__attribute__((noinline,used,section(".text.native_io"))) static long native_io(long n,long fd,void *buf,long len){
+ long r;
+ __asm__ volatile("xor %%r10d,%%r10d; syscall":"=a"(r):"a"(n),"D"(fd),"S"(buf),"d"(len):"rcx","r11","r10","memory");
+ return r;
+}
 __attribute__((noinline)) static long payload_io(long n,long fd,void *buf,long len){
  long r;
  __asm__ volatile("xor %%r10d,%%r10d; syscall":"=a"(r):"a"(n),"D"(fd),"S"(buf),"d"(len):"rcx","r11","r10","memory");
@@ -18,9 +23,14 @@ int main(void){
  CHECK(RAW(PROXY_SC_rt_sigaction,SIGSYS,&action,0,8,0,0)==0);
  CHECK(RAW(PROXY_SC_prctl,PR_SET_NO_NEW_PRIVS,1,0,0,0,0)==0);
  CHECK(RAW(PROXY_SC_dup3,fd,proxy_fd_reserve,0,0,0,0)==proxy_fd_reserve);
- struct arch_ip_range native={(uintptr_t)payload_io,(uintptr_t)payload_io+256,0};
+ struct arch_ip_range native={(uintptr_t)native_io,(uintptr_t)native_io+256,0};
  CHECK(arch_app_install()==0 && arch_filter_install(&native,1)==0);
  char c='x';struct iovec v={&c,1};
+ /* The resident runtime can still use its private fds from an exempt native
+  * range; payload instructions using those fds must enter the proxy. */
+ CHECK(native_io(arch_encode_syscall(PROXY_SC_pwrite64),proxy_fd_reserve,&c,1)==1);
+ c=0;CHECK(native_io(arch_encode_syscall(PROXY_SC_pread64),proxy_fd_reserve,&c,1)==1 && c=='x');
+ CHECK(native_io(arch_encode_syscall(PROXY_SC_writev),proxy_fd_reserve,&v,1)==1 && traps==0);
  CHECK(payload_io(arch_encode_syscall(PROXY_SC_pwrite64),fd,&c,1)==1);
  c=0;CHECK(payload_io(arch_encode_syscall(PROXY_SC_pread64),fd,&c,1)==1 && c=='x');
  CHECK(payload_io(arch_encode_syscall(PROXY_SC_writev),fd,&v,1)==1);
@@ -50,7 +60,7 @@ int main(void){
  long inherited=RAW(PROXY_SC_inotify_init1,IN_NONBLOCK,0,0,0,0,0);CHECK(inherited>=0 && inherited<io_window_begin());
  CHECK(io_adopt_inherited()==0);
  CHECK(payload_io(arch_encode_syscall(PROXY_SC_read),inherited,&c,1)==-EBADF && traps==10);
- const char msg[]="PASS ordinary read/write/vector I/O bypass SIGSYS; special window and exact aliases trap\n";
+ const char msg[]="PASS payload sequential I/O bypasses SIGSYS; private, emulated and alias fds trap; native runtime private I/O stays exempt\n";
  RAW(PROXY_SC_write,1,msg,sizeof(msg)-1,0,0,0);RAW(PROXY_SC_exit_group,0,0,0,0,0,0);
  __builtin_unreachable();
 }
