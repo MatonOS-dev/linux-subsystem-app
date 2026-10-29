@@ -258,3 +258,23 @@ extensions, then verify Kate/Obsidian/Chrome still draw and Steam passes
 `/run/parent/usr/lib/i386-linux-gnu` setup without the EGL resolved-path
 warning. Check pressure-vessel setup duration and webhelper initialization; no
 kernel or shared device-tree changes are needed.
+
+### Steam round 45: pressure-vessel setup and CEF adoption
+
+In day-r50, pressure-vessel PID 26366 starts at 21:08:51.028 and execs its
+container/launch-client at 21:10:28.422: **97.394 seconds**. Its setup window
+contains 42,627 openat, 44,691 close, 6,599 linkat, 7,867 fchmod and 6,719
+utimensat results (counts exclude interleaved/corrupt records). The trace has
+no per-call elapsed times, so these are operation counts, not a CPU profile;
+r44's logd-saturation caveat still applies. Do not claim an untraced setup time
+or a sub-ten-second device result from this capture.
+
+Ordinary file creation/link/unlink invalidated the marker-ancestry cache on
+every sibling, repeating the same root walk throughout runtime copying.
+Those operations cannot change directory ancestry, and mutation of marker
+names is already rejected. Keep invalidation for directory removal/creation,
+rename, symlink and directory metadata operations. The host regression copies,
+links, stats and removes 128 siblings under a marked root, counting raw marker
+opens with strace: main makes **3,588** probes; the fix makes **11**. It checks
+real link counts too. Full compatibility and recovery tests remain required;
+this count reduction is not a prediction of device wall time.

@@ -2374,3 +2374,14 @@ X11 socket and nested-shm binds, SIGCHLD/signalfd, mixed-ABI exec, hard-link
 recovery and the new bind regression. Device preflight passed. Evidence:
 `/mnt/data/aosp/out/pc-logs/agents/steam-r43-suite-final.log`,
 `steam-r43-preflight.log`, and `steam-r43-negative/{direct,bind}.log`.
+
+### Steam round 45: preserve marker ancestry across sibling copies
+
+`tests/marker-cache.py` drives create/link/stat/unlink under the production
+proxy and counts native marker probes with strace. Ordinary file names do
+not change a directory's nearest marker, so those mutations retain the cache;
+directory/symlink/rename/metadata mutations still invalidate it. Marker-name
+mutation remains forbidden. The same 128-file regression makes 3,588 probes
+on main and 11 with this change. Full suite passes, including marker ownership,
+link-store crash recovery, nested bwrap bind-fd, mixed-ABI exec and Android
+loader compilation. No device speedup is claimed until a fresh image is run.

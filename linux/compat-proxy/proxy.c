@@ -1219,7 +1219,15 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     else if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     else e=links_path_call(nr,a,p);
     if(e>=0 && q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2))vfs_fd_rename(p,q);
-    if(e>=0 && ((nr==PROXY_SC_openat && (a[2]&O_CREAT)) || nr==PROXY_SC_linkat || nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat || nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))links_cache_invalidate();
+    /* Marker ancestry changes with directories/symlinks and their metadata,
+     * never with ordinary file creation, linking or removal. Marker names
+     * themselves are immutable above. Do not throw away every sibling's
+     * cached ancestry while pressure-vessel copies a runtime tree. */
+    if(e>=0 && ((nr==PROXY_SC_unlinkat && (a[2]&AT_REMOVEDIR)) ||
+       nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 ||
+       nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat ||
+       nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))
+        links_cache_invalidate();
     /* Native closes bypass proxy cleanup. A successful open starts a new fd
      * lifetime, so retire pathname metadata left by the prior occupant. */
     if(e>=0 && nr==PROXY_SC_openat){vfs_fd_close((int)e);vfs_fd_record((int)e,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
