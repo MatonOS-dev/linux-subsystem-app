@@ -135,6 +135,7 @@ static void *mv_new(struct mv_instance *i,size_t n) {
 static void mv_delete(struct mv_instance *i,void *p) {
     if(i->custom)i->allocator.pfnFree(i->allocator.pUserData,p);else mv_free(p);
 }
+#include "wsi_requirements.h"
 #include "wsi_vulkan.inc"
 static VkPhysicalDevice mv_wrap(struct mv_instance *i,VkPhysicalDevice raw) {
     while(__atomic_exchange_n(&i->lock,1,__ATOMIC_ACQUIRE)){}
@@ -253,7 +254,9 @@ static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physica
     if(r!=VK_SUCCESS){mv_free(all);return r;}
     uint32_t written=0,capacity=out?*n:0;
     for(uint32_t j=0;j<count;j++)if(mv_extension_allowed(all[j].extensionName)){if(out && written<capacity)out[written]=all[j];written++;}
-    if(h->instance->wsi_wayland_enabled||h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled) {
+    if((h->instance->wsi_wayland_enabled||h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled) &&
+       (!h->instance->wsi_wayland_enabled||mv_wsi_has_requirements(mv_wsi_wayland_requirements,5,all,count)) &&
+       (!(h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled)||mv_wsi_has_requirements(mv_wsi_x11_requirements,5,all,count))) {
         if(out && written<capacity) {
             memset(&out[written],0,sizeof(out[written]));
             memcpy(out[written].extensionName,VK_KHR_SWAPCHAIN_EXTENSION_NAME,sizeof(VK_KHR_SWAPCHAIN_EXTENSION_NAME));

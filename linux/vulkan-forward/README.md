@@ -247,3 +247,29 @@ DRI3/Present, linear BGRA dma-buf exports, a private Present event queue,
 and completion/idle-controlled FIFO/reuse. See [WSI.md](WSI.md) for driver
 requirements, host regression evidence and pending device verification.
 This is GPU rendering and shared-buffer presentation, with no CPU readback.
+
+## X11 swapchain prerequisites (Steam round 56)
+
+The round-65 capture reaches resident vkCreateDevice and returns
+VK_ERROR_EXTENSION_NOT_PRESENT. Its ANGLE fallback label is “SwANGLE”, but
+that label does not prove that SwiftShader was loaded: the Maton resident
+create/enumerate/device records show that this attempt reached our bridge.
+The log does not identify the particular missing device extension.
+
+Device extension enumeration now advertises VK_KHR_swapchain only if the
+resident device exposes the private extensions required by the instance's
+enabled WSI backends. device.inc and enumeration share one requirements
+list, so discovery cannot promise a backend that device creation cannot
+provide. X11 requires external-memory-fd, external-memory-dma-buf, DRM format
+modifiers, image-format-list and external-semaphore-fd. No extension is
+fabricated or silently dropped at device creation. This lets clients reject
+an unsupported resident WSI backend during discovery. It does not implement
+a software Vulkan renderer or force SwiftShader onto the bridge.
+
+Regression: instance-extensions-test.c supplies a mock resident device,
+removes each X11 dependency in turn, and checks the actual device extension
+enumeration no longer advertises swapchain. Complete dependencies advertise
+it; a mixed-backend instance also requires its Wayland dependencies.
+Vulkan core and WSI suites, x86_64/i386 builds and arm64 compile pass.
+Steam's normal GL/GLES initialization failure is separately fixed in the
+GLX vendor (real visual IDs); device rendering is pending coordinator testing.

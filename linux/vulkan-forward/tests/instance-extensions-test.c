@@ -2,8 +2,19 @@
 #include "../icd.c"
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 static struct adopt_thread thread;
 static int expect_x11;
+static VkExtensionProperties available[5];
+static VkResult VKAPI_CALL device_extensions(VkPhysicalDevice p,const char *layer,uint32_t *count,VkExtensionProperties *out){
+    (void)p;assert(!layer);if(out){assert(*count>=5);memcpy(out,available,sizeof(available));}*count=5;return VK_SUCCESS;
+}
+static int advertises_swapchain(struct mv_handle *physical){
+    VkExtensionProperties props[16];uint32_t count=16;
+    assert(mv_vkEnumerateDeviceExtensionProperties((VkPhysicalDevice)physical,0,&count,props)==VK_SUCCESS);
+    for(uint32_t i=0;i<count;i++)if(!strcmp(props[i].extensionName,VK_KHR_SWAPCHAIN_EXTENSION_NAME))return 1;
+    return 0;
+}
 static struct adopt_thread *current(void) {return &thread;}
 static VkResult VKAPI_CALL capture_device(VkPhysicalDevice physical,const VkDeviceCreateInfo *info,
                                          const VkAllocationCallbacks *a,VkDevice *out) {
@@ -42,5 +53,13 @@ int main(void) {
     assert(mv_vkCreateDevice((VkPhysicalDevice)&physical,&ci,0,&device)==VK_ERROR_DEVICE_LOST);
     expect_x11=1;instance.wsi_wayland_enabled=0;instance.wsi_xcb_enabled=1;
     assert(mv_vkCreateDevice((VkPhysicalDevice)&physical,&ci,0,&device)==VK_ERROR_DEVICE_LOST);
+    instance.extensions=device_extensions;
+    for(unsigned i=0;i<5;i++)memcpy(available[i].extensionName,mv_wsi_x11_requirements[i],strlen(mv_wsi_x11_requirements[i])+1);
+    assert(advertises_swapchain(&physical));
+    for(unsigned i=0;i<5;i++){
+        char saved=available[i].extensionName[0];available[i].extensionName[0]=0;
+        assert(!advertises_swapchain(&physical));available[i].extensionName[0]=saved;
+    }
+    instance.wsi_wayland_enabled=1;assert(!advertises_swapchain(&physical));
     puts("PASS WSI discovery before Wayland dlopen and private device dependencies without duplicates");
 }
