@@ -23,5 +23,4 @@ exec /usr/bin/bwrap \
   --setenv HOME /root \
   --setenv ARCH "$ARCH" \
   --setenv FLATPAK_REPO /scratch/flatpak-work \
-  --setenv FLATPAK_COMMIT 03e6b205d01c9560a829941d95065a7c683d9667 \
   "$@"
