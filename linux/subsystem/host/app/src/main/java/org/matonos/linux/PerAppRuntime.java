@@ -126,7 +126,12 @@ public final class PerAppRuntime implements AutoCloseable {
 
     /** Called from native when the app requests a window. */
     @SuppressWarnings("unused") private synchronized void onNativeToplevel(int session, int id, int width, int height) {
-        windows.put(id, new int[]{width, height});
+        int[] previous = windows.put(id, new int[]{width, height});
+        if (previous != null) {
+            if (previous[0] != width || previous[1] != height)
+                org.matonos.linux.stub.StubActivity.resizeWindow(id, width, height);
+            return;
+        }
         WindowHost h = host;
         if (h != null) h.windowOpened(id, width, height);
         else {

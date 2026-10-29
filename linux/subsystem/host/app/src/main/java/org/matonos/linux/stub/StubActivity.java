@@ -60,6 +60,31 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     /* Window id -> the activity showing it, for window-state requests. */
     private static final java.util.Map<Integer, StubActivity> SHOWING = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** Fixed X11 hints changed after mapping. Public APIs can set task bounds
+     * on launch, so replace the hosting activity while retaining the Linux
+     * window and runtime. Route by id: another window may be the current host. */
+    public static void resizeWindow(int id, int width, int height) {
+        MAIN.post(() -> {
+            StubActivity activity = SHOWING.get(id);
+            if (activity == null || activity.destroyed || activity.isFinishing()
+                    || !activity.isInMultiWindowMode()) return;
+            Bundle bounds = launchBounds(activity, width, height);
+            if (bounds == null) return;
+            activity.startActivity(windowIntent(activity, id), bounds);
+            // Detach before the replacement activity can attach. Finishing a
+            // normal host closes its Linux window; this is an ownership
+            // handoff, so clear that identity before onDestroy runs.
+            if (activity.attached && activity.runtime != null) activity.runtime.detach(id);
+            activity.attached = false;
+            if (activity.view != null) activity.view.getHolder().removeCallback(activity);
+            activity.surface = null;
+            SHOWING.remove(id, activity);
+            activity.window = 0;
+            activity.getIntent().removeExtra(WINDOW);
+            activity.finish();
+        });
+    }
+
     /** The app asked for a window state (MATON_STATE_* in compositor_core.h). */
     public static void windowState(int id, int state) {
         StubActivity activity = SHOWING.get(id);

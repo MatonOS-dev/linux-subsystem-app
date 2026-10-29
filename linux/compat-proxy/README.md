@@ -64,6 +64,11 @@ Optional diagnostics:
   resident and cross-ABI kernel exec. Fork children reset inherited operation
   totals. Each exec/exit emits `PID=<pid> T=<monotonic ns> H=<handler ns>
   V=<resolution ns>` and `OP <pid> <operation id> <calls> <nanoseconds>` lines.
+  Rewritten/direct calls emit `DOP <pid> <operation id> <calls> <nanoseconds>`.
+  These inclusive direct-call times are separate from trapped `OP` times: a
+  direct fallback can itself trap, so do not blindly sum both as exclusive CPU
+  time. Earlier counters omitted the direct path entirely. Both paths are
+  measured only with `--count`; disabled counters add no clock syscalls.
   Operation IDs are the enum in `arch/syscalls.h`, never kernel syscall numbers.
   Blocking waits count toward operation time; distinguish them from resolution
   work before attributing CPU cost. Records are individually PID-tagged because
@@ -2743,3 +2748,49 @@ repair, stock bwrap pivot-root, mixed-ABI exec, resident-worker/Wayland launch,
 and both production Android loader builds. Log:
 `/mnt/data/aosp/out/pc-logs/agents/steam-r59-verified-suite.log`.
 Benchmark output: `/mnt/data/aosp/out/pc-logs/agents/steam-r59-bench.txt`.
+
+
+### Steam round 60: profile both dispatch routes; resize late fixed dialogs
+
+Day-r69's 6.2 s is **trapped-dispatch time only**, not total proxy time.
+`proxy_direct_dispatch` previously did not update the counters at all.
+The new `DOP` records measure rewritten calls separately (inclusive of any
+fallback), retaining the old `OP` format. Count-disabled dispatch has no
+additional clock syscalls. The enabled/disabled rewrite regression proves
+that 99+ repeated openat calls appear in DOP only when rewritten.
+
+The 43,708 recvmsg calls are not evidence of a pressure-vessel recvmsg loop:
+PID 17599 contributes 4.091 s of the 6.2 s recorded time and is distinct from
+pressure-vessel PID 17653. PID 17653's last dump is at its exec into
+pressure-vessel-wrap (11:46:31); it never dumps a completed setup in this
+capture. Its live blocked call, thread state and subsequent direct-call work
+are absent. The 2,121 recorded reads take only 0.422 s across all processes,
+so they cannot by themselves explain the 43 s checksum-verification phase.
+No speculative read fast path or timeout change is made.
+
+The same log contains 203,388 SELinux-denied TCGETS calls (`ioctlcmd=0x5401`),
+mostly CSteamController probing generated mountinfo memfds, plus 44 denied
+TIOCGPGRP calls (`0x540f`). Extend the existing TIOCGWINSZ non-character-fd
+check to these terminal queries: Linux returns ENOTTY before reading the
+argument. This avoids a known-invalid raw ioctl and its audit work, while
+character devices retain their native handling. The regression installs a
+real inherited kernel filter returning EACCES for these commands: memfd,
+directory, pipe and socket queries must still return ENOTTY (including a bad
+argument pointer); /dev/null must retain the filter's EACCES. This is a
+proven Linux-result mismatch/audit hot path, not proof it caused the webhelper
+wait. Device timing must be measured again.
+
+The fixed-dialog bug was independent: X11 changed its drawable from an
+initial placeholder to 700x330, but Android retained the placeholder task
+bounds. Initial fixed hints now select the launch size; changed fixed hints
+notify Java once. Java replaces that window's activity with new launch bounds
+using public APIs, detaching the old surface before handing over and clearing
+the old activity's window identity so onDestroy cannot close the Linux window.
+Fullscreen tasks are not relaunched for fixed hints. Host tests run the real
+native hint callback and Java handoff method, including repeated properties
+and destroyed/finishing/non-freeform hosts. Device size remains unverified.
+
+The webhelper wait and device read/openat cost remain unresolved pending a
+live process snapshot and complete counters. Coordinator recipe and exact
+capture script: `/mnt/data/aosp/out/pc-logs/agents/steam-personality.deepseek.md`
+and `/mnt/data/aosp/out/pc-logs/agents/steam-r60-procs.sh`. No VM was run.

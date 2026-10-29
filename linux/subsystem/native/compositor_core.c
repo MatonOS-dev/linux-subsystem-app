@@ -783,6 +783,11 @@ static void on_xsize_hints(struct wl_listener* l,void* data) {
   if(previous.min_width==w->hints.min_width&&previous.min_height==w->hints.min_height&&
      previous.max_width==w->hints.max_width&&previous.max_height==w->hints.max_height)return;
   configure_window(w);
+  /* Android's task was opened using the initial drawable size. A fixed
+   * dialog can publish its final hints later; resizing only the X drawable
+   * scales that larger dialog into the old tiny Android surface. */
+  if(w->activity && !w->xsurface->fullscreen && maton_size_fixed(w->hints))
+    maton_java_request_window(w->session,w->id,w->hints.min_width,w->hints.min_height);
   __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: min=%dx%d max=%dx%d",w->id,w->hints.min_width,w->hints.min_height,w->hints.max_width,w->hints.max_height);
 }
 static void on_xdecorations(struct wl_listener* l,void* data) {
@@ -824,6 +829,9 @@ static struct Window* xwayland_window(struct wlr_xwayland_surface* xs,int sessio
       xs->parent?"yes":"no",xs->modal,xs->minimized,xs->withdrawn,xs->skip_taskbar,xs->skip_pager,w->hints.min_width,w->hints.min_height,w->hints.max_width,w->hints.max_height);
   __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: WM_PROTOCOLS count=%zu",w->id,xs->protocols_len);
   for(size_t i=0;i<xs->protocols_len;i++)__android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: WM_PROTOCOLS[%zu]=%u",w->id,i,xs->protocols[i]);
+  if(!xs->fullscreen && maton_size_fixed(w->hints)){
+    w->width=w->hints.min_width;w->height=w->hints.min_height;
+  }
   w->activity=1;maton_java_request_window(session,w->id,w->width,w->height);
   /* Windows mapped already fullscreen (e.g. Steam Big Picture) ask now. */
   if(xs->fullscreen)maton_java_window_state(w->id,MATON_STATE_FULLSCREEN_ON);
