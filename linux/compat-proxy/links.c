@@ -196,7 +196,8 @@ static int target_locked(const char *store,const char *name,char *out){
 }
 int links_target(const char *name,char *out){
  struct proxy_stat st;char root[PATH_MAX],*store=vfs_alloc(PATH_MAX);if(!store)return 0;
- if(arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !tree(root,name) || !catpath(store,root,".v3-inodes"))return 0;
+ /* The cached marker ancestry excludes ordinary trees without getattr. */
+ if(!tree(root,name) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes"))return 0;
  return target_index(store,&st,out);
 }
 static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=links_euid() || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
@@ -392,6 +393,11 @@ long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
 }
 long links_path_call(long nr,proxy_arg_t *args,const char *p){
  char root[PATH_MAX],store[PATH_MAX],object[PATH_MAX];struct proxy_stat st;long lock=-1,r;
+ /* No placeholder can exist outside a marked store. Keep metadata-changing
+  * operations below, where their sticky-bit translation is applied. */
+ if((nr==PROXY_SC_openat || nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx ||
+     nr==PROXY_SC_faccessat || nr==PROXY_SC_faccessat2) && !tree(root,p))
+  return RAW(nr,args[0],args[1],args[2],args[3],args[4],args[5]);
  /* Non-regular, non-symlink inodes cannot be link-store placeholders.
   * Keep symlinks on the slow path: this syscall may follow their target. */
  if(!arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode))
@@ -422,8 +428,8 @@ static void refresh(const char *object){char root[PATH_MAX],store[PATH_MAX];size
  * Missing names still need recovery (conversion may have moved their inode). */
 void links_recover_path(const char *path){
  char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;
- if(!arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode))return;
  if(!tree(root,path) || !catpath(store,root,".v3-inodes"))return;
+ if(!arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode))return;
  /* Recovery is needed only for a published transaction or a dirty count.
   * Do not open/create/flock the lock inode just to discover three absent
   * journals on every path component. Check shared filesystem state, rather

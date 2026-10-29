@@ -1141,31 +1141,8 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         proxy_log("path-input",nr,fd);
         emit("v3 path input ");emit(original_path);emit("\n");
     }
-    long stat_flags=nr==PROXY_SC_newfstatat?a[3]:nr==PROXY_SC_statx?a[2]:0;
-    if((nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx) && fd==AT_FDCWD &&
-            original_path && *original_path && !(stat_flags&AT_NO_AUTOMOUNT) &&
-            (nr!=PROXY_SC_statx || (a[3]&STATX_MODE))){
-        int fastfd=-1;char *fastpath=NULL;
-        if(!vfs_openat2_path_fd(fd,original_path,follow,&fastfd,&fastpath)){
-            long fast_result;
-            if(nr==PROXY_SC_newfstatat)
-                fast_result=RAW(nr,fastfd,"",a[2],a[3]|AT_EMPTY_PATH,0,0);
-            else
-                fast_result=RAW(nr,fastfd,"",a[2]|AT_EMPTY_PATH,a[3],a[4],0);
-            int fallback=0;
-            if(!fast_result && nr==PROXY_SC_newfstatat){
-                struct stat *st=(void *)(uintptr_t)a[2];
-                fallback=S_ISREG(st->st_mode) && (st->st_mode&S_ISVTX);
-                if(!fallback)links_payload_path_stat(fastpath,st,0);
-            }else if(!fast_result){
-                struct statx *sx=(void *)(uintptr_t)a[4];
-                fallback=S_ISREG(sx->stx_mode) && (sx->stx_mode&S_ISVTX);
-                if(!fallback)links_payload_path_stat(fastpath,sx,1);
-            }
-            RAW(PROXY_SC_close,fastfd,0,0,0,0,0);
-            vfs_free(fastpath);if(!fallback)return fast_result;
-        }
-    }
+    /* Stat shares the resolver cache with open/access. An unconditional
+     * O_PATH open + fstat + close bypasses it on every repeated lookup. */
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path,(int)a[2]);if(synthetic!=-ENOSYS)return synthetic;}
     long e=0;void *pm=NULL,*qm=NULL;char *p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];proxy_diagnostic_write("v3 unresolved ",14);proxy_diagnostic_write(in,p_len(in));proxy_diagnostic_write("\n",1);}create_denied(nr,a[2],e,fd,original_path,NULL);return e;}
     char *q=NULL;

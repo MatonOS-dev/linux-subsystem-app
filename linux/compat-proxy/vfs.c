@@ -558,7 +558,7 @@ struct proxy_open_how {uint64_t flags,mode,resolve;};
 #define PROXY_RESOLVE_IN_ROOT       0x10
 /* Resolve ordinary names in one kernel path walk. Keep symlinks on the
  * component walker because a link can cross an emulated mapping. */
-static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd,char **outpath){
+static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd,char **outpath,int *cacheable){
     if(outfd)*outfd=-1;
     if(outpath)*outpath=NULL;
     if(!path || !*path)return NULL;
@@ -598,6 +598,15 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
      * that name directly avoids opening and closing a helper root fd on every
      * trapped lookup; NO_SYMLINKS keeps this fast path conservative. */
     long targetfd=RAW(PROXY_SC_openat2,AT_FDCWD,host_path,&how,sizeof(how),0,0);
+    /* ENOENT/ENOTDIR prove that the existing prefix contained no symlinks:
+     * NO_SYMLINKS would have stopped with ELOOP first. Avoid a component walk,
+     * but do not cache this translation: a newly created symlink may cross a
+     * virtual mount. The next call must resolve that link in our namespace. */
+    if(!outfd && (targetfd==-ENOENT || targetfd==-ENOTDIR)){
+        if(cacheable)*cacheable=0;
+        if(identity)*identity=m;
+        vfs_free(global);return host_path;
+    }
     if(targetfd<0){vfs_free(host_path);vfs_free(global);return NULL;}
     if(outfd){char *marker=dupstr("");if(marker){*outfd=(int)targetfd;if(outpath)*outpath=host_path;else vfs_free(host_path);vfs_free(global);return marker;}}
     if(outfd&&outpath){RAW(PROXY_SC_close,targetfd,0,0,0,0,0);vfs_free(host_path);vfs_free(global);return NULL;}
@@ -618,7 +627,7 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
 int vfs_openat2_path_fd(int fd,const char *path,int follow,int *outfd,char **outpath){
     PROFILE_BEGIN();
     if(!outfd)return -EINVAL;
-    *outfd=-1;if(outpath)*outpath=NULL;char *marker=resolve_openat2_fast(fd,path,follow,NULL,outfd,outpath);
+    *outfd=-1;if(outpath)*outpath=NULL;char *marker=resolve_openat2_fast(fd,path,follow,NULL,outfd,outpath,NULL);
     if(!marker){PROFILE_END(5);return -ENOSYS;}
     vfs_free(marker);PROFILE_END(5);return 0;
 }
@@ -830,7 +839,7 @@ static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *err
             int hit=m && p_equal(m->target,global) && p_equal(m->source,gpu_poll_sources[slot]);vfs_free(global);
             if(hit){if(identity)*identity=m;char *answer=dupstr(m->source);if(!answer)*error=-ENOMEM;return answer;}}
     }
-    if(allow_fast){char *fast=resolve_openat2_fast(fd,path,follow,identity,NULL,NULL);if(fast)return fast;}
+    if(allow_fast){char *fast=resolve_openat2_fast(fd,path,follow,identity,NULL,NULL,cacheable);if(fast)return fast;}
     char *input;
     if(path[0]=='/')input=dupstr(path);else {char *base=basepath(fd,error);if(!base)return NULL;input=join(base,path);vfs_free(base);}
     if(!input){*error=-ENOMEM;return NULL;}
@@ -903,7 +912,7 @@ fail:vfs_free(input);vfs_free(out);return NULL;
 }
 char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **identity){
     size_t key_len=path?p_len(path):0;
-    if(fd==AT_FDCWD && follow && resolve_cacheable_path(path) && key_len<PATH_MAX){
+    if(fd==AT_FDCWD && resolve_cacheable_path(path) && key_len<PATH_MAX){
         resolve_cache_acquire();
         unsigned long epoch=resolve_cache_epoch;
         uint64_t hash=resolve_cache_hash(path,key_len,follow);
@@ -930,7 +939,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
     char *answer=vfs_resolve_mount_impl(fd,path,follow,error,identity,&cacheable,1);
     uint64_t ended=proxy_count_now();
     if(started && ended>=started)proxy_count_resolution(ended-started);
-    if(answer && cacheable && fd==AT_FDCWD && follow &&
+    if(answer && cacheable && fd==AT_FDCWD &&
             resolve_cacheable_path(path) && key_len<PATH_MAX){
         size_t value_len=p_len(answer);
         if(value_len<PATH_MAX){

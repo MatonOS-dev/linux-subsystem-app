@@ -2794,3 +2794,12 @@ The webhelper wait and device read/openat cost remain unresolved pending a
 live process snapshot and complete counters. Coordinator recipe and exact
 capture script: `/mnt/data/aosp/out/pc-logs/agents/steam-personality.deepseek.md`
 and `/mnt/data/aosp/out/pc-logs/agents/steam-r60-procs.sh`. No VM was run.
+
+## Host I/O performance (2026-10-29)
+
+[IO-PERF.md](IO-PERF.md) records the reproducible native/proxy benchmark,
+probe reductions, production-filter regression tests and retained emulation
+cases. Ordinary positional I/O and writev bypass SIGSYS outside the private
+fd window when tracing is off. Sequential read/write and the requested
+<=2x-native target remain unfinished; host gains do not establish device or
+Steam bootstrap latency. No VM or image build was used for this work.
