@@ -178,17 +178,26 @@ static int index_path(char *out,const char *store,const struct proxy_stat *st){
  for(unsigned i=0;i<16;i++){key[2+i]=hex[(st->st_dev>>(60-4*i))&15];key[19+i]=hex[(st->st_ino>>(60-4*i))&15];}
  key[18]='-';key[35]=0;return catpath(out,store,key);
 }
-int links_target(const char *name,char *out){
- /* Keep the caller-visible root on its existing storage; internal index
-  * paths are scratch and must not consume more signal-handler stack. */
- struct proxy_stat st;char root[PATH_MAX],id[36],*scratch=vfs_alloc(2*PATH_MAX);if(!scratch)return 0;
- char *store=scratch,*entry=store+PATH_MAX;
- if(!tree(root,name) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes") || !index_path(entry,store,&st))return 0;
+/* With the store lock held, the root and its ownership have already been
+ * checked. Reuse that store during replay instead of re-walking the marker
+ * ancestry for every before/after reference in the same transaction. */
+static int target_index(const char *store,const struct proxy_stat *identity,char *out){
+ struct proxy_stat st;char id[36],*entry=vfs_alloc(PATH_MAX);if(!entry || !index_path(entry,store,identity))return 0;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return 0;
  long n=RAW(PROXY_SC_read,fd,id,sizeof(id),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
  if(n!=35 || id[0]!='i' || id[1]!='-' || id[34])return 0;
  for(unsigned i=2;i<34;i++)if(!((id[i]>='0' && id[i]<='9') || (id[i]>='a' && id[i]<='f')))return 0;
  return catpath(out,store,id) && !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);
+}
+static int target_locked(const char *store,const char *name,char *out){
+ struct proxy_stat st;
+ return !arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) &&
+  (st.st_mode&S_ISVTX) && target_index(store,&st,out);
+}
+int links_target(const char *name,char *out){
+ struct proxy_stat st;char root[PATH_MAX],*store=vfs_alloc(PATH_MAX);if(!store)return 0;
+ if(arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !tree(root,name) || !catpath(store,root,".v3-inodes"))return 0;
+ return target_index(store,&st,out);
 }
 static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=links_euid() || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
 static void unlock(long fd){RAW(PROXY_SC_flock,fd,LOCK_UN,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
@@ -254,7 +263,7 @@ static long ensure_count(const char *root,const char *store,const char *object){
  * namespace entries involved in the operation are inspected during replay. */
 struct intent { uint64_t magic, count[2], before[2]; char object[2][PATH_MAX], name[2][PATH_MAX]; struct proxy_stat placeholder[2]; };
 static int terminated(const char *p){for(size_t i=0;i<PATH_MAX;i++)if(!p[i])return 1;return 0;}
-static unsigned present(const char *name,const char *object){char target[PATH_MAX];return name[0] && links_target(name,target) && p_equal(target,object);}
+static unsigned present(const char *store,const char *name,const char *object){char target[PATH_MAX];return name[0] && target_locked(store,name,target) && p_equal(target,object);}
 static long finish_intent(const char *store){
 
  char path[PATH_MAX];if(!catpath(path,store,"intent"))return -ENAMETOOLONG;
@@ -274,7 +283,7 @@ static long finish_intent(const char *store){
   if(valid && (j->object[i][prefix]!='/' || j->object[i][prefix+1]!='i' || j->object[i][prefix+2]!='-'))valid=0;
   for(size_t k=prefix+3;valid && k<length;k++)if(j->object[i][k]=='/')valid=0;
   if(!valid || j->before[i]>2){r=-EIO;break;}
-  uint64_t now=present(j->name[0],j->object[i])+(!p_equal(j->name[0],j->name[1])?present(j->name[1],j->object[i]):0);
+  uint64_t now=present(store,j->name[0],j->object[i])+(!p_equal(j->name[0],j->name[1])?present(store,j->name[1],j->object[i]):0);
   if(j->before[i]>j->count[i] || j->count[i]-j->before[i]>UINT64_MAX-now){r=-EOVERFLOW;break;}
   uint64_t count=j->count[i]-j->before[i]+now;
   r=write_count(j->object[i],count);
@@ -291,13 +300,13 @@ static long finish_intent(const char *store){
 static long begin_intent(const char *root,const char *store,const char *p,const char *q,const char *extra){
  struct intent *j=vfs_alloc(sizeof(*j));if(!j)return -ENOMEM;*j=(struct intent){.magic=0x76336c696e6b0002ULL};
  p_copy(j->name[0],p,p_len(p)+1);if(q)p_copy(j->name[1],q,p_len(q)+1);
- if(!links_target(p,j->object[0]))j->object[0][0]=0;
- if(q && !links_target(q,j->object[1]))j->object[1][0]=0;
+ if(!target_locked(store,p,j->object[0]))j->object[0][0]=0;
+ if(q && !target_locked(store,q,j->object[1]))j->object[1][0]=0;
  if(j->object[0][0])arch_stat_at(AT_FDCWD,p,&j->placeholder[0],AT_SYMLINK_NOFOLLOW);
  if(j->object[1][0])arch_stat_at(AT_FDCWD,q,&j->placeholder[1],AT_SYMLINK_NOFOLLOW);
  if(extra)p_copy(j->object[0],extra,p_len(extra)+1);
  if(p_equal(j->object[0],j->object[1]))j->object[1][0]=0;
- long r=0;for(int i=0;i<2;i++)if(j->object[i][0]){r=ensure_count(root,store,j->object[i]);if(r)break;j->count[i]=read_count(j->object[i]);j->before[i]=present(p,j->object[i])+(q && !p_equal(p,q)?present(q,j->object[i]):0);if(extra && j->count[i]==UINT64_MAX){r=-EOVERFLOW;break;}}
+ long r=0;for(int i=0;i<2;i++)if(j->object[i][0]){r=checked_count(j->object[i],&j->count[i]);if(r || !j->count[i]){r=ensure_count(root,store,j->object[i]);if(!r)r=checked_count(j->object[i],&j->count[i]);}if(r)break;j->before[i]=present(store,p,j->object[i])+(q && !p_equal(p,q)?present(store,q,j->object[i]):0);if(extra && j->count[i]==UINT64_MAX){r=-EOVERFLOW;break;}}
  if(!r && (j->object[0][0] || j->object[1][0]))r=journal_write(store,"intent",j,sizeof(*j));
  vfs_free(j);return r;
 }
@@ -350,7 +359,7 @@ static long store_link(const char *source,const char *target){
  long lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r)goto end;
  r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(S_ISLNK(src.st_mode)){r=-EPERM;goto end;}
  struct proxy_stat exists;if(!arch_stat_at(AT_FDCWD,target,&exists,AT_SYMLINK_NOFOLLOW)){r=-EEXIST;goto end;}
- if(!links_target(source,object)){
+ if(!target_locked(store,source,object)){
   r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(!S_ISREG(src.st_mode) || src.st_uid!=links_euid()){r=-EPERM;goto end;}
   char id[35]="i-";unsigned char nonce[16];long random=RAW(PROXY_SC_getrandom,nonce,sizeof(nonce),0,0,0,0);if(random!=sizeof(nonce)){r=random<0?random:-EIO;goto end;}const char hex[]="0123456789abcdef";for(size_t k=0;k<sizeof(nonce);k++){id[2+2*k]=hex[nonce[k]>>4];id[3+2*k]=hex[nonce[k]&15];}id[34]=0;if(!catpath(object,store,id)){r=-ENAMETOOLONG;goto end;}
   char journal[PATH_MAX];if(!catpath(journal,store,"conversion")){r=-ENAMETOOLONG;goto end;}char data[PATH_MAX*2];size_t sn=p_len(source)+1,on=p_len(object)+1;p_copy(data,source,sn);p_copy(data+sn,object,on);r=journal_write(store,"conversion",data,sn+on);if(r)goto end;
@@ -383,6 +392,10 @@ long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
 }
 long links_path_call(long nr,proxy_arg_t *args,const char *p){
  char root[PATH_MAX],store[PATH_MAX],object[PATH_MAX];struct proxy_stat st;long lock=-1,r;
+ /* Non-regular, non-symlink inodes cannot be link-store placeholders.
+  * Keep symlinks on the slow path: this syscall may follow their target. */
+ if(!arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode))
+  return RAW(nr,args[0],args[1],args[2],args[3],args[4],args[5]);
  if(tree(root,p) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){
   lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r){unlock(lock);return r;}
  }
@@ -403,7 +416,30 @@ long links_path_call(long nr,proxy_arg_t *args,const char *p){
 end:if(lock>=0)unlock(lock);return r;
 }
 static void refresh(const char *object){char root[PATH_MAX],store[PATH_MAX];size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock>=0){if(!recover(root,store)){struct proxy_stat st;if(!arch_stat_at(AT_FDCWD,object,&st,0))ensure_count(root,store,object);}unlock(lock);}}
-void links_recover_path(const char *path){char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;if(!tree(root,path) || !catpath(store,root,".v3-inodes") || arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return;long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock);}}
+/* Conversion can hide only a regular file, never a directory, symlink or
+ * device. The component walker calls this for every ancestor: avoid taking
+ * the store lock and replaying its journals for an existing non-regular inode.
+ * Missing names still need recovery (conversion may have moved their inode). */
+void links_recover_path(const char *path){
+ char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;
+ if(!arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode))return;
+ if(!tree(root,path) || !catpath(store,root,".v3-inodes"))return;
+ /* Recovery is needed only for a published transaction or a dirty count.
+  * Do not open/create/flock the lock inode just to discover three absent
+  * journals on every path component. Check shared filesystem state, rather
+  * than caching a process-local clean bit: another process may have crashed.
+  * A writer starting after these checks is no different from one starting
+  * immediately after the old recovery lock was released. */
+ char *journal=vfs_alloc(PATH_MAX);if(!journal)return;
+ const char *names[]={"intent","conversion","dirty"};int needed=0;
+ for(unsigned i=0;i<3;i++){
+  if(!catpath(journal,store,names[i])){needed=1;break;}
+  long r=arch_stat_at(AT_FDCWD,journal,&st,AT_SYMLINK_NOFOLLOW);
+  if(r!=-ENOENT){needed=1;break;}
+ }
+ if(!needed)return;
+ long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock);}
+}
 /* Only regular files can be store objects; skip the /proc lookup for the rest. */
 static char *fd_backing_path(int fd){
  char proc[80]="/proc/self/fd/",path[PATH_MAX];size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;

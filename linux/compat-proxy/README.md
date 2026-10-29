@@ -2685,3 +2685,61 @@ tids alive at the first `__android_log_*` write is the control; check the
 reserve-protected logd socket in the fd sweep and absence of the
 `writev(fd 5, vlen 4)` EPIPE death. No shared device-tree or kernel changes
 are needed.
+
+### Steam round 59: avoid link-store recovery on directory ancestry
+
+The day-r68 counter capture attributes 63.6 s of proxy work to pressure-vessel
+PID 15573. The main operations are openat (21.78 s), linkat (20.49 s) and
+unlinkat (15.86 s). There is no fsync in this implementation. Existing recovery
+regressions establish that normal transactions do not rescan the inode store.
+The avoidable work is repeated marker lookup, lock acquisition and journal
+replay for directory ancestors, plus repeated root validation/count reads
+inside a transaction that already holds its store lock.
+
+`links_recover_path` now skips existing non-regular inodes, and checks the
+shared on-disk intent/conversion/dirty journals before taking a recovery lock.
+Missing names still recover interrupted conversions. `links_path_call` skips
+store handling for non-regular, non-symlink inodes; symlinks retain normal
+follow semantics. Placeholder recognition checks the inode type/sticky bit
+before walking marker ancestry. Locked transactions reuse their validated
+store and read each healthy count once. No persistent format changes or
+process-local assumptions about another process's recovery state are added.
+Relative cwd paths use the existing openat2 fast path with the tracked cwd;
+symlinks and hidden resolver names retain the component-walk fallback.
+
+`tests/links-walk-cost.py` fails on the parent revision: 603 exclusive store
+locks for 64 eight-component directory stats. The new implementation uses 24
+(startup probes), with no lock per directory stat. `tests/links-bench.py`
+compiles `links-bench.c`, creates 3,000 files beneath an eight-directory path,
+links each, opens each stored destination, then unlinks each destination and
+checks the surviving link count. All fixtures/output live under AOSP out.
+Run it with optional before/after standalone loader paths:
+
+```
+python3 tests/links-bench.py /path/to/before-loader /path/to/after-loader
+```
+
+One serial host run (microseconds/op; open includes close):
+
+| operation | native | before | after |
+|---|---:|---:|---:|
+| create | 20.30 | 127.04 | 85.79 |
+| link | 14.89 | 904.71 | 565.23 |
+| open | 2.40 | 327.35 | 66.72 |
+| unlink | 6.87 | 422.47 | 255.79 |
+
+Host mutation cost is still above the requested 10x-native target; it includes
+persistent count/intent/index/placeholder updates. This is not evidence of
+seconds-level device setup. Coordinator follow-up: rebuild both loader ABIs,
+verify Kate/Obsidian/Chrome still draw, then repeat day-r68's fresh Steam run
+with cache `v3-count` present and `v3-trace` absent; clear `v3-counts.txt` first.
+Collect counts, webhelper-linux and steamui_html; compare pressure-vessel-wrap
+to pv-adverb timestamps and PID-specific openat/linkat/unlinkat totals. No VM,
+AOSP patches, kernel or shared device-tree changes are used here.
+
+Validation: the final `tests/run.sh` exits 0, including marker-cache, the new
+walk-cost regression, independent writers, killed-intent replay, corrupt count
+repair, stock bwrap pivot-root, mixed-ABI exec, resident-worker/Wayland launch,
+and both production Android loader builds. Log:
+`/mnt/data/aosp/out/pc-logs/agents/steam-r59-verified-suite.log`.
+Benchmark output: `/mnt/data/aosp/out/pc-logs/agents/steam-r59-bench.txt`.

@@ -565,8 +565,10 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     char *global=NULL;
     if(path[0]=='/')global=root?join(root,path):dupstr(path);
     else {
-        if(fd==AT_FDCWD)return NULL;
-        char *base=vfs_fd_name(fd);
+        /* cwd is tracked in the same logical namespace as a directory fd.
+         * Relative pressure-vessel scans need the same single kernel walk;
+         * falling back here multiplies store probes by pathname depth. */
+        long error=0;char *base=basepath(fd,&error);
         if(!base)return NULL;
         global=root?join(root,base):dupstr(base);
         vfs_free(base);
@@ -576,8 +578,10 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     for(size_t i=0;path[i];){while(path[i]=='/')i++;size_t start=i;while(path[i]&&path[i]!='/')i++;size_t n=i-start;
         if((n==1&&path[start]=='.')||(n==2&&path[start]=='.'&&path[start+1]=='.')){vfs_free(global);return NULL;}
     }
-    if((hide_resolver && (path[0]!='/' || p_equal(path,"/etc/resolv.conf") ||
-            p_equal(path,"/run/host/monitor/resolv.conf")))){vfs_free(global);return NULL;}
+    const char *visible=global;
+    if(root && prefix(global,root))visible=global+p_len(root);
+    if(hide_resolver && (prefix(visible,"/etc/resolv.conf") ||
+            prefix(visible,"/run/host/monitor/resolv.conf"))){vfs_free(global);return NULL;}
     for(size_t i=0;global[i];){while(global[i]=='/')i++;size_t start=i;while(global[i]&&global[i]!='/')i++;
         if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
     struct mount *m=lookup(global);
