@@ -150,6 +150,8 @@ public final class PerAppRuntime implements AutoCloseable {
         if (h != null) h.windowClosed(id);
     }
 
+    public synchronized boolean hasWindows() { return !windows.isEmpty(); }
+
     public void attach(int id, Surface surface, int width, int height) { NativeCompositor.nativeAttach(id, surface, width, height); }
     public void detach(int id) { NativeCompositor.nativeDetach(id); }
     public void resize(int id, int width, int height) { NativeCompositor.nativeResize(id, width, height); }

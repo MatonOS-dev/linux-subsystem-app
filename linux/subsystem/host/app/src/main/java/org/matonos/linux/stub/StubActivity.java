@@ -152,7 +152,23 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         });
     }
     @Override public void windowClosed(int id) {
-        runOnUiThread(() -> { if (!destroyed && window == id) finish(); });
+        runOnUiThread(() -> {
+            if (destroyed || window != id) return;
+            // A bootstrap/updater can close its last X/Wayland window long
+            // before opening the main UI. Keep its visible task as a waiting
+            // view: once finished, Android correctly denies a service's later
+            // background activity launch. User dismissal still destroys this
+            // activity normally; never bring a background task forward here.
+            if (!foreground || runtime == null || runtime.hasWindows()) { finish(); return; }
+            SHOWING.remove(id, this);
+            if (attached) runtime.detach(id);
+            attached=false;surface=null;
+            if (view != null) view.getHolder().removeCallback(this);
+            view=null;window=0;
+            getIntent().removeExtra(WINDOW);
+            status.setText("Waiting for the application window…");
+            setContentView(status);
+        });
     }
     private void launchLocally() {
         new Thread(() -> {

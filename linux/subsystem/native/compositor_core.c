@@ -302,15 +302,19 @@ static struct MatonFit window_fit(struct Window* w) {
   return maton_fit(w->width,w->height,width,height);
 }
 static void configure_window(struct Window* w) {
-  /* Xwayland activates RandR viewport emulation only when the X drawable
+  /* Fixed dialogs still need their requested dimensions (some map a tiny
+   * placeholder before publishing their final hints); retain their X origin.
+   * Xwayland activates RandR viewport emulation only when the X drawable
    * matches the requested mode. Forcing a fullscreen 1280x720 drawable to
    * 1600x900 disables that path and leaves the GL viewport in one corner. */
-  if(maton_size_fixed(w->hints)||(w->xsurface&&w->xsurface->fullscreen))return;
+  if((!w->xsurface&&maton_size_fixed(w->hints))||(w->xsurface&&w->xsurface->fullscreen))return;
   int width=maton_size_clamp(w->width,w->hints.min_width,w->hints.max_width);
   int height=maton_size_clamp(w->height,w->hints.min_height,w->hints.max_height);
   if(w->toplevel&&w->toplevel->base->initialized)wlr_xdg_toplevel_set_size(w->toplevel,width,height);
-  else if(w->xsurface&&(w->xsurface->width!=width||w->xsurface->height!=height||w->xsurface->x||w->xsurface->y))
-    wlr_xwayland_surface_configure(w->xsurface,0,0,width,height);
+  else if(w->xsurface&&(w->xsurface->width!=width||w->xsurface->height!=height||(!maton_size_fixed(w->hints)&&(w->xsurface->x||w->xsurface->y))))
+    wlr_xwayland_surface_configure(w->xsurface,
+      maton_size_fixed(w->hints)?w->xsurface->x:0,
+      maton_size_fixed(w->hints)?w->xsurface->y:0,width,height);
 }
 struct PointerButtonEvent { uint32_t time; int window; };
 static void notify_pointer_button(void* data, uint32_t code, bool pressed) {
@@ -772,7 +776,13 @@ static void read_xsize_hints(struct Window* w) {
 }
 static void on_xsize_hints(struct wl_listener* l,void* data) {
   (void)data;struct Window* w=window_from_listener(l,offsetof(struct Window,size_hints));
-  read_xsize_hints(w);configure_window(w);
+  struct MatonSizeHints previous=w->hints;
+  read_xsize_hints(w);
+  /* WM_NORMAL_HINTS can be republished after every ConfigureNotify. Do not
+   * configure (or log) identical constraints back to the same X client. */
+  if(previous.min_width==w->hints.min_width&&previous.min_height==w->hints.min_height&&
+     previous.max_width==w->hints.max_width&&previous.max_height==w->hints.max_height)return;
+  configure_window(w);
   __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: min=%dx%d max=%dx%d",w->id,w->hints.min_width,w->hints.min_height,w->hints.max_width,w->hints.max_height);
 }
 static void on_xdecorations(struct wl_listener* l,void* data) {

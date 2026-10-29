@@ -187,3 +187,29 @@ stability, concurrent launches and empty-file repair; Android app Java
 compilation passes. Device verification: read both sandbox machine-id paths,
 check 32 lowercase hex digits plus newline, then relaunch and update the host
 APK and verify that the value stays the same. No VM was run here.
+
+### Replacement windows and X11 dialog hints (2026-10-29)
+
+A client may close its bootstrap window and spend minutes preparing a replacement.
+When its last window closes while its activity is visible, the activity retains a
+waiting view and the runtime's window host. The replacement then opens from that
+visible task. Finishing the activity here made Android deny the later dialog as a
+background activity launch (Steam capture day-r67/compositor.txt:9124, BAL_BLOCK).
+User dismissal and background-window closure still finish normally. No framework
+changes or background-launch exemption are needed. Verify a client that closes its
+initial window, delays, then creates a dialog; dismissing its Android task must
+still work.
+
+Identical X11 size hints cause no configure/log action. A fixed dialog changing
+from placeholder hints to its final dimensions is configured within those hints,
+retaining its X origin. Fullscreen drawable modes and Wayland fixed-window sizing
+are unchanged. Host callbacks cover the 128x66 -> 700x330 dialog, 12,908 repeated
+hints, and resizable/fullscreen transitions; Android compilation passes. Device
+rendering/Android task visibility remain coordinator checks (no VM used).
+
+For cheap setup profiling create the stub cache marker `v3-count`, remove
+`v3-trace`, clear `v3-counts.txt`, then fresh-launch. The counter output survives
+nested cross-ABI exec and identifies per-PID operation counts/time. See the compat
+proxy README for record fields. The existing untraced day-r67 logs do not contain
+these counters: pressure-vessel's setup bottleneck has not yet been measured or
+fixed. Do not infer operation costs from log volume or host timings.
