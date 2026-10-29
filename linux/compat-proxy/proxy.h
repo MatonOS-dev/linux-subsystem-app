@@ -2,6 +2,8 @@
 #define PROXY_H
 #include <stdint.h>
 #include <stddef.h>
+#include <errno.h>
+#include <signal.h>
 #include "arch/arch.h"
 long proxy_raw(long, long, long, long, long, long, long);
 void proxy_restore(void);
@@ -70,6 +72,22 @@ int proxy_host_command(const char *);
 void proxy_host_snapshot(char *const *);
 extern int proxy_diagnostic_fd;
 int proxy_diagnostics_init(void);
+/* Logging must not deliver a proxy-generated SIGPIPE to the payload. Keep
+ * its disposition/mask and any already pending SIGPIPE unchanged. No libc,
+ * allocation, or large buffers: this also runs on the SIGSYS stack. */
+static inline long proxy_diagnostic_write(const void *data,size_t size) {
+    uint64_t bit=UINT64_C(1)<<(SIGPIPE-1),old=0,pending=0;
+    long r=RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&bit,&old,8,0,0);
+    if(r<0)return r;
+    RAW(PROXY_SC_rt_sigpending,&pending,8,0,0,0,0);
+    r=RAW(PROXY_SC_write,proxy_diagnostic_fd,data,size,0,0,0);
+    if(r==-EPIPE && !(pending&bit)) { /* EPIPE: consume only our new signal. */
+        struct {long sec,nsec;} zero={0,0};
+        RAW(PROXY_SC_rt_sigtimedwait,&bit,0,&zero,8,0,0);
+    }
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
+    return r;
+}
 int proxy_dns_forwarder(const char *);
 int proxy_mount(const char *, const char *);
 const char *proxy_path(const char *, char *, size_t);

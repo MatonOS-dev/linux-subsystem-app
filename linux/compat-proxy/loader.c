@@ -217,9 +217,9 @@ static int bad(long n) { return (unsigned long)n >= (unsigned long)-4095; }
  * openat and make pack lookup failures visible in the Android trace. */
 static void loader_trace_path(const char *tag,const char *path){
     if(!proxy_trace)return;
-    RAW(PROXY_SC_write,proxy_diagnostic_fd,tag,p_len(tag),0,0,0);
-    if(path)RAW(PROXY_SC_write,proxy_diagnostic_fd,path,p_len(path),0,0,0);
-    RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
+    proxy_diagnostic_write(tag,p_len(tag));
+    if(path)proxy_diagnostic_write(path,p_len(path));
+    proxy_diagnostic_write("\n",1);
 }
 static void loader_trace_resolve(const char *path,const char *stage){
     if(!proxy_trace)return;

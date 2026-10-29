@@ -113,9 +113,9 @@ int proxy_diagnostics_init(void) {
 static void crash_hex(uint64_t value) {
     char out[18]="0x";static const char digits[]="0123456789abcdef";
     for(unsigned i=0;i<16;i++)out[2+i]=digits[(value>>(60-4*i))&15];
-    RAW(PROXY_SC_write,proxy_diagnostic_fd,out,sizeof(out),0,0,0);
+    proxy_diagnostic_write(out,sizeof(out));
 }
-static void crash_text(const char *s){RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p_len(s),0,0,0);}
+static void crash_text(const char *s){proxy_diagnostic_write(s,p_len(s));}
 static uintptr_t maps_hex(const char **p){return resident_maps_hex(p);}
 struct image_map {uintptr_t lo,hi,offset;char *path;struct image_map *next;};
 static struct image_map *image_maps;
@@ -827,7 +827,7 @@ void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*64+
     RAW(PROXY_SC_write,proxy_count_fd,b,n,0,0,0);
     vfs_profile_dump();
 }
-static void emit(const char *s) { RAW(PROXY_SC_write,proxy_diagnostic_fd,s,p_len(s),0,0,0); }
+static void emit(const char *s) { proxy_diagnostic_write(s,p_len(s)); }
 static void trace_word(const char *label,uint64_t value) {
     emit(label); crash_hex(value); emit(" ");
 }
@@ -846,7 +846,7 @@ void proxy_log(const char *kind,long nr,long result) {
     const char *label="pid=";while(*label)line[n++]=*label++;
     unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);char digits[24];unsigned d=0;
     do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)line[n++]=digits[--d];line[n++]='\n';
-    RAW(PROXY_SC_write,proxy_diagnostic_fd,line,n,0,0,0);
+    proxy_diagnostic_write(line,n);
 }
 void proxy_trace_clone_result(long child,long flags) {
     if(proxy_trace)proxy_log("lifecycle-clone",flags,child);
@@ -854,7 +854,7 @@ void proxy_trace_clone_result(long child,long flags) {
 static void trace_number(uint64_t value) {
     char digits[24];unsigned n=0;
     do {digits[n++]=(char)('0'+value%10);value/=10;} while(value);
-    while(n)RAW(PROXY_SC_write,proxy_diagnostic_fd,&digits[--n],1,0,0,0);
+    while(n)proxy_diagnostic_write(&digits[--n],1);
 }
 /* The kernel's /proc/<pid>/cmdline continues to show the resident loader
  * after an emulated exec. In opt-in trace mode, publish a bounded, escaped
@@ -917,7 +917,7 @@ static void trace_exec_argv(char *const argv[]) {
             copied+=amount;
         }
         if(!terminated && copied>=192) {line[used++]='.';line[used++]='.';line[used++]='.';}
-        line[used++]='\n';RAW(PROXY_SC_write,proxy_diagnostic_fd,line,used,0,0,0);
+        line[used++]='\n';proxy_diagnostic_write(line,used);
     }
     emit("v3 exec-argv truncated\n");
 }
@@ -930,13 +930,13 @@ static void trace_stderr(long nr,proxy_arg_t a[6],long result) {
        (nr!=PROXY_SC_write && nr!=PROXY_SC_writev))return;
     emit("v3 payload-stderr pid=");trace_number(RAW(PROXY_SC_getpid,0,0,0,0,0,0));
     emit(" bytes=");trace_number((uint64_t)result);emit(" begin\n");
-    if(nr==PROXY_SC_write)RAW(PROXY_SC_write,proxy_diagnostic_fd,a[1],result,0,0,0);
+    if(nr==PROXY_SC_write)proxy_diagnostic_write((void *)(uintptr_t)a[1],result);
     else {
         size_t left=(size_t)result;
         for(size_t i=0;i<(size_t)a[2] && left;i++) {
             struct proxy_iovec v=arch_iovec_read((void *)(uintptr_t)a[1],i);
             size_t count=v.len<left?v.len:left;
-            RAW(PROXY_SC_write,proxy_diagnostic_fd,v.base,count,0,0,0);left-=count;
+            proxy_diagnostic_write((void *)(uintptr_t)v.base,count);left-=count;
         }
     }
     emit("\nv3 payload-stderr end\n");
@@ -1119,7 +1119,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         }
     }
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path,(int)a[2]);if(synthetic!=-ENOSYS)return synthetic;}
-    long e=0;void *pm=NULL,*qm=NULL;char *p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 unresolved ",14,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,in,p_len(in),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}create_denied(nr,a[2],e,fd,original_path,NULL);return e;}
+    long e=0;void *pm=NULL,*qm=NULL;char *p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];proxy_diagnostic_write("v3 unresolved ",14);proxy_diagnostic_write(in,p_len(in));proxy_diagnostic_write("\n",1);}create_denied(nr,a[2],e,fd,original_path,NULL);return e;}
     char *q=NULL;
     if(proxy_trace){emit("v3 path resolved ");emit(p);emit("\n");}
     int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
@@ -1208,7 +1208,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
             p_copy(ptmx,"/dev/ptmx",10);vfs_free(p);p=ptmx;
         }
     }
-    if(proxy_trace){RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 path ",8,0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,p,p_len(p),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);}
+    if(proxy_trace){proxy_diagnostic_write("v3 path ",8);proxy_diagnostic_write(p,p_len(p));proxy_diagnostic_write("\n",1);}
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
     if(nr==PROXY_SC_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
     if(nr==PROXY_SC_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
@@ -1349,7 +1349,7 @@ static void trace_zero_read(const char *operation,int fd,uint64_t count) {
     emit("v3 zero-read op=");emit(operation);emit(" fd=");trace_number((uint64_t)fd);
     emit(" count=");trace_number(count);emit(" target=");
     if(n<=0)emit("<unavailable>");
-    else RAW(PROXY_SC_write,proxy_diagnostic_fd,target,(size_t)n,0,0,0);
+    else proxy_diagnostic_write(target,(size_t)n);
     emit("\n");
 }
 static int child_fd_is_signalfd(int fd) {
@@ -1518,19 +1518,19 @@ void proxy_log_bwrap_args(const char *path,char *const *argv){
     const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
     if(!p_equal(base,"matonos-app-bwrap") && !p_equal(base,"libmatonos-app-bwrap.so") && !p_equal(base,"bwrap"))return;
     for(size_t i=0;argv && argv[i];i++){
-        RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 bwrap argv ",14,0,0,0);
-        RAW(PROXY_SC_write,proxy_diagnostic_fd,argv[i],p_len(argv[i]),0,0,0);RAW(PROXY_SC_write,proxy_diagnostic_fd,"\n",1,0,0,0);
+        proxy_diagnostic_write("v3 bwrap argv ",14);
+        proxy_diagnostic_write(argv[i],p_len(argv[i]));proxy_diagnostic_write("\n",1);
         if(!p_equal(argv[i],"--args") || !argv[i+1])continue;
         const char *n=argv[i+1];unsigned fd=0;int valid=*n!=0;
         for(;*n;n++){if(*n<'0'||*n>'9'||fd>(2147483647U-(unsigned)(*n-'0'))/10){valid=0;break;}fd=fd*10+(*n-'0');}
         if(!valid)continue;
-        RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 bwrap bundle begin\n",sizeof("v3 bwrap bundle begin\n")-1,0,0,0);
+        proxy_diagnostic_write("v3 bwrap bundle begin\n",sizeof("v3 bwrap bundle begin\n")-1);
         char bytes[4096];long offset=0,count;
         while((count=RAW(PROXY_SC_pread64,fd,bytes,sizeof(bytes),offset,0,0))>0){
             for(long j=0;j<count;j++)if(!bytes[j])bytes[j]='\n';
-            RAW(PROXY_SC_write,proxy_diagnostic_fd,bytes,count,0,0,0);offset+=count;
+            proxy_diagnostic_write(bytes,count);offset+=count;
         }
-        RAW(PROXY_SC_write,proxy_diagnostic_fd,"v3 bwrap bundle end\n",sizeof("v3 bwrap bundle end\n")-1,0,0,0);
+        proxy_diagnostic_write("v3 bwrap bundle end\n",sizeof("v3 bwrap bundle end\n")-1);
     }
 }
 static long dns_poll(void *,unsigned long,struct timespec *,const void *,unsigned long);
@@ -1597,14 +1597,14 @@ static int unix_call(long nr,proxy_arg_t a[6],long *result) {
         crash_text("v3 unix ");
         if(in->sun_path[0]) {
             size_t n=0;while(n<limit && in->sun_path[n])n++;
-            RAW(PROXY_SC_write,proxy_diagnostic_fd,in->sun_path,n,0,0,0);
+            proxy_diagnostic_write(in->sun_path,n);
         } else {
             /* Abstract names are binary, including embedded/trailing NULs. */
             static const char hex[]="0123456789abcdef";
             for(size_t n=0;n<limit;n++) {
                 unsigned char c=(unsigned char)in->sun_path[n];
                 char escaped[4]={'\\','x',hex[c>>4],hex[c&15]};
-                RAW(PROXY_SC_write,proxy_diagnostic_fd,escaped,sizeof(escaped),0,0,0);
+                proxy_diagnostic_write(escaped,sizeof(escaped));
             }
         }
         crash_text("\n");

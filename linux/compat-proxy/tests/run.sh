@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 python3 tests/mount-scan.py
 python3 tests/walk-components.py
 python3 tests/marker-cache.py
+python3 tests/exec-sigpipe.py
 python3 tests/child-status.py
 native_out=$(mktemp -d "${TMPDIR:-/mnt/data/aosp/out/pc-logs}/steam-personality-native.XXXXXX")
 bash tests/native-reservation.sh "$native_out/guards" >"$native_out/guards.log" 2>&1

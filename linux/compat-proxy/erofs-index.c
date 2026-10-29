@@ -84,7 +84,7 @@ long erofs_mount(const char *target,const char *directory){
     struct erofs_mount *m=vfs_palloc(sizeof(*m));if(!m){vfs_free(t);vfs_free(d);return -ENOMEM;}
     m->target=erofs_dup(t);m->directory=erofs_dup(d);m->backing=NULL;m->next=erofs_mounts;erofs_mounts=m;
     vfs_free(t);vfs_free(d);if(!m->target||!m->directory)return -ENOMEM;
-    if(proxy_trace){const char *a[]={"v3 erofs prefix-swap ",m->target," -> ",m->directory,"\n"};for(size_t i=0;i<5;i++)RAW(PROXY_SC_write,proxy_diagnostic_fd,a[i],p_len(a[i]),0,0,0);}
+    if(proxy_trace){const char *a[]={"v3 erofs prefix-swap ",m->target," -> ",m->directory,"\n"};for(size_t i=0;i<5;i++)proxy_diagnostic_write(a[i],p_len(a[i]));}
     return 0;
 }
 static void erofs_state(struct state *s){

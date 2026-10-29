@@ -2503,3 +2503,37 @@ real launch-chain and signalfd coverage); optional i386 musl probe skipped
 without its interpreter fixture. build-android.sh exit 0, all five production
 loader/peer outputs compiled. Device-tree preflight exit 0. Logs live in
 /mnt/data/aosp/out/pc-logs/agents/steam-r49-{suite,android,preflight}.log.
+
+### Steam round 50: diagnostic writes must not raise payload SIGPIPE
+
+Based on main `76a115d`. In day-r56/steam.txt, lines 2655317–2655318
+report `chld-code 15620 2` / `chld-status 15620 13`; lines
+2655694–2655695 report the same for zygote 15621. Both are real SIGPIPE
+deaths. The terminating write itself is NOT recorded: an interrupted raw
+write cannot emit its result, and proxy diagnostic writes had no result
+record. Consequently this capture cannot prove which fd raised it.
+
+The fork/exec SIG_IGN hypothesis does not reproduce: a parent ignores
+SIGPIPE, forks, execs itself, and writes to a pipe with no readers; native,
+proxied and traced runs all get EPIPE and survive. `exec_signals()` already
+preserves ignored dispositions. Chromium also resets dispositions before
+zygote exec, so proxy code must remain safe with SIGPIPE default.
+
+A separate regression DOES fail on unchanged main: close the trace pipe's
+only reader while a payload with default SIGPIPE waits on stdin; release
+stdin and the proxy's next diagnostic write kills it with SIGPIPE (-13).
+The fixed diagnostic writer temporarily blocks SIGPIPE in the calling
+thread, writes, consumes a newly generated SIGPIPE on EPIPE, and restores
+the original mask. It preserves an already pending SIGPIPE and never
+changes the disposition. All writes to the reserved diagnostic fd use it,
+including loader/VFS/EROFS diagnostics and stderr trace copies. The helper
+uses only small fixed locals and raw syscalls on the handler stack.
+Payload writes retain ordinary SIGPIPE behavior, including default death.
+
+`tests/exec-sigpipe.py` covers fork/exec SIG_IGN, default payload SIGPIPE,
+closed diagnostics, and preservation of masks and pending SIGPIPE, native
+and proxied with/without trace. It is part of `tests/run.sh`. No VM is run.
+The coordinator must rebuild all loaders and repeat traced Steam, checking
+zygote termination status, error 1002, and whether the GPU process starts;
+this is a proven proxy bug, not a claim that the device's unseen write has
+been conclusively identified.
