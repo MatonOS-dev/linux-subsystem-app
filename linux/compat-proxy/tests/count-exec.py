@@ -23,3 +23,4 @@ int main(int argc,char **argv){if(argc>1){char *a[]={argv[1],0};execv(argv[1],a)
 print('PASS counter-only x86_64 to i386 kernel exec, PID/timestamp and per-op records')
 
 subprocess.run(["python3",str(root/"tests/count-direct.py")],check=True)
+subprocess.run(["python3",str(root/"tests/tty-nondevice.py")],check=True)

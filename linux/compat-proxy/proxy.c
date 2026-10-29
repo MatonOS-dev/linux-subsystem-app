@@ -2424,10 +2424,13 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         result=descriptor_dup_dispatch(nr,a);break;
     case PROXY_SC_epoll_ctl:case PROXY_SC_ioctl:case PROXY_SC_socket:case PROXY_SC_bind:case PROXY_SC_getsockname:case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:case PROXY_SC_connect:case PROXY_SC_getpeername:case PROXY_SC_sendmmsg:case PROXY_SC_setsockopt:case PROXY_SC_getsockopt:
         if(nr==PROXY_SC_ioctl && vfs_private_fd((int)a[0])){result=-EBADF;break;}
-        /* Linux reports ENOTTY for TIOCGWINSZ on pipes and other non-device
-         * fds. Android SELinux may reject the ioctl first with EACCES; decide
-         * from fd type so callers such as bwrap see Linux's result. */
-        if(nr==PROXY_SC_ioctl && (unsigned long)a[1]==TIOCGWINSZ){
+        /* Linux rejects terminal queries on non-character fds before copying
+         * the argument. Android SELinux can return EACCES first (and audit
+         * every isatty probe of a mountinfo memfd). Match Linux without
+         * issuing a known-invalid ioctl; character devices still go native. */
+        if(nr==PROXY_SC_ioctl && ((unsigned long)a[1]==TIOCGWINSZ ||
+                (unsigned long)a[1]==0x5401 /* TCGETS */ ||
+                (unsigned long)a[1]==0x540f /* TIOCGPGRP */)){
             struct proxy_stat st;
             if(!arch_stat_fd((int)a[0],&st) && !S_ISCHR(st.st_mode)){result=-ENOTTY;break;}
         }
