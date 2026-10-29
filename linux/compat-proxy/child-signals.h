@@ -176,6 +176,13 @@ static int child_unwrap(siginfo_t *info) {
 static void child_signal(int sig,siginfo_t *info,void *context) {
     long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0),tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
     child_unwrap(info);
+    /* Observe kernel child termination before routing/coalescing can hide it.
+     * Use the existing small atomic logger: this runs on a signal stack.
+     * No wait/reap and no syscall-routing changes are needed for this record. */
+    if(proxy_trace && info->si_code>0) {
+        proxy_log("chld-code",info->si_pid,info->si_code);
+        proxy_log("chld-status",info->si_pid,info->si_status);
+    }
     long target=child_image_pid==pid?child_image_tid:pid;
     /* An active synchronous waiter takes precedence over an idle signalfd.
      * Otherwise choose an open signalfd belonging to the current image. */

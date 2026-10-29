@@ -2462,3 +2462,44 @@ steam-r46-{suite,android,preflight}.log`. No VM was run. Rebuild every peer
 together, verify Kate/Obsidian/Chrome draw, then capture traced Steam to
 check CEF GPU-child launch and pressure-vessel wall time. The separate
 shared-runtime ldso mismatch above remains unresolved.
+
+### Steam round 49: direct CEF zygotes lose both launch channels
+
+Main 96e95c0 (r47 reverted) reaches CEF in the fresh day-r55 capture. Browser
+14214 clones 14218 at steam.txt:2120940 and 14219 at :2121050; their exec argv
+at :2121019 and :2121115 identifies steamwebhelper --type=zygote. The former
+also has --no-zygote-sandbox. Browser fd 22 accepts its initial eight-byte
+sendmsg at :2120947. The sibling channel fd 23's four-byte read returns
+EINTR at :2132204, then ECONNRESET at :2133400. The first fd-22 launch request
+(1152 bytes, three SCM_RIGHTS descriptors) returns ECONNRESET at :2143236;
+fd 23's 1072-byte request returns EPIPE at :2162386. Error 1002 follows at
+:2180397. Thus neither GPU initialization nor a GPU child's Vulkan import is
+the first failure: both zygote channels are lost before accepting launch requests.
+
+The last complete operation records for 14218/14219 are reads (internal op
+246) at :2132088/:2133172; both recently opened /proc/self/maps. No lifecycle
+exit, fatal report, or child wait status establishes whether either terminates or only closes its socket.
+The interleaved path text is insufficient to identify the reader or faulting
+library. A SIGSEGV in a forwarder/bootstrap parser is a hypothesis, not a
+finding. Working day-r53 Obsidian instead starts Zypak through portal Spawn
+(:48241) and its later child uses --no-zygote (:104350); it does not exercise
+the same direct CEF zygote startup. No fix to launch semantics is claimed.
+
+Add only `chld-code CHILD CLD_CODE` and `chld-status CHILD STATUS` at the
+existing SIGCHLD router, after unwrapping forwarded notifications. These use
+proxy_log's existing 128-byte atomic record, no new large stack buffer, no
+new routing-table entries, and no wait/reap. CLD_EXITED status is the exit
+code; CLD_KILLED/CLD_DUMPED status is the terminating signal. child-status.py
+checks exit 23 and SIGTERM, traced/untraced notification plus original waitpid
+status. This deliberately avoids reinstating r47's 2048-byte handler frame.
+
+Next coordinator capture: traced Steam through the first CEF error, preserving
+`chld-code` and `chld-status` for the two --type=zygote PIDs and their exec argv.
+If the status is a signal, capture its fault PC/maps using the existing crash
+capture; this run supplies no fault PC to symbolize. NO VM was run here.
+
+Validation: full tests/run.sh exit 0 (including marker-cache, handler-stack,
+real launch-chain and signalfd coverage); optional i386 musl probe skipped
+without its interpreter fixture. build-android.sh exit 0, all five production
+loader/peer outputs compiled. Device-tree preflight exit 0. Logs live in
+/mnt/data/aosp/out/pc-logs/agents/steam-r49-{suite,android,preflight}.log.
