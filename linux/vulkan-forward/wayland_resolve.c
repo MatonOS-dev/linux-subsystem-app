@@ -119,13 +119,12 @@ static void *lookup_dynamic(const struct mv_object *o, const char *wanted) {
     return 0;
 }
 
-static int wayland_name(const char *s) {
-    static const char needle[]="libwayland-client.so.0";
+static int library_name(const char *s, const char *needle) {
     for (;*s;s++) { size_t i=0; while (needle[i] && s[i]==needle[i]) i++; if (!needle[i]) return 1; }
     return 0;
 }
 
-static void *from_link_map(const char *name) {
+static void *from_link_map(const char *name,const char *library) {
     struct mv_aux aux;
     Elf64_Addr phdr=mv_hex(mv_env("MATON_LINUX_PHDR"));
     size_t phnum=mv_hex(mv_env("MATON_LINUX_PHNUM"));
@@ -149,7 +148,7 @@ static void *from_link_map(const char *name) {
     for(Elf64_Dyn *d=dynamic;d->d_tag!=DT_NULL;d++)if(d->d_tag==DT_DEBUG)debug=(void *)d->d_un.d_ptr;
     if(!debug || debug->version<1)return 0;
     for(struct mv_link_map *m=debug->map;m;m=m->next) {
-        if(m->name && wayland_name(m->name)) {
+        if(m->name && library_name(m->name,library)) {
             struct mv_object o={.base=m->addr,.dynamic=m->dynamic,.low=m->addr,.high=UINTPTR_MAX};
             return lookup_dynamic(&o,name);
         }
@@ -163,7 +162,7 @@ static int parse_hex(const char **p, Elf64_Addr *out) {
     *out=v;return digits!=0;
 }
 
-static void *from_maps(const char *name) {
+static void *from_maps(const char *name,const char *library) {
     long fd=mv_open("/proc/self/maps");if(fd<0)return 0;
     char line[4096];size_t n=0;Elf64_Addr start=0,low=UINTPTR_MAX,high=0;int matched=0;void *result=0;
     for(;;) {
@@ -171,7 +170,7 @@ static void *from_maps(const char *name) {
         if(c!='\n' && n+1<sizeof(line)){line[n++]=c;continue;}
         line[n]=0;const char *p=line;Elf64_Addr lo,hi,off;
         if(parse_hex(&p,&lo)&&*p=='-'){p++;if(parse_hex(&p,&hi)){while(*p==' ')p++;while(*p && *p!=' ')p++;while(*p==' ')p++;if(parse_hex(&p,&off)){
-            while(*p==' ')p++; if(wayland_name(p)){
+            while(*p==' ')p++; if(library_name(p,library)){
                 if(off==0)start=lo;
                 if(lo<low)low=lo;if(hi>high)high=hi;matched=1;
             }
@@ -194,8 +193,8 @@ static void *from_maps(const char *name) {
 
 void *mv_wayland_symbol(const char *name) {
     if(!name || !*name)return 0;
-    void *symbol=from_link_map(name);
-    if (!symbol) symbol=from_maps(name);
+    void *symbol=from_link_map(name,"libwayland-client.so.0");
+    if (!symbol) symbol=from_maps(name,"libwayland-client.so.0");
     if (!symbol) {
         static const char prefix[]="maton-vulkan: unresolved Wayland symbol ";
         mv_write(prefix,sizeof(prefix)-1);
@@ -203,4 +202,17 @@ void *mv_wayland_symbol(const char *name) {
         mv_write(name,length);mv_write("\n",1);
     }
     return symbol;
+}
+
+/* These are Linux-loader functions, invoked with payload TLS, never bionic's
+ * dlopen: XCB owns the caller's connection and must use the same libc. */
+void *mv_client_library(const char *library) {
+    void *(*open_library)(const char *,int)=from_link_map("dlopen","libc.so.6");
+    if(!open_library)open_library=from_link_map("dlopen","libdl.so.2");
+    return open_library?open_library(library,2):0;
+}
+void *mv_client_symbol(void *library,const char *name) {
+    void *(*symbol)(void *,const char *)=from_link_map("dlsym","libc.so.6");
+    if(!symbol)symbol=from_link_map("dlsym","libdl.so.2");
+    return library&&symbol?symbol(library,name):0;
 }

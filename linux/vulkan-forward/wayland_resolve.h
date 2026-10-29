@@ -5,4 +5,7 @@
  * This code is freestanding: it does not call dlopen/dlsym or libc. */
 void *mv_wayland_symbol(const char *name);
 
+void *mv_client_library(const char *);
+void *mv_client_symbol(void *,const char *);
+
 #endif

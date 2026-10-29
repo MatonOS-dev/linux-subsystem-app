@@ -9,7 +9,7 @@ mkdir -p "$out"
 python3 "$here/gen.py" "$headers/registry/vk.xml" "$out"
 cc=${CC:-clang-21}
 flags=(-std=c11 -O2 -march=x86-64-v2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/x86_64")
-"$cc" "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wayland_resolve.c" -o "$out/libmaton_vulkan.so"
+"$cc" "${flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wsi_x11.c" "$here/wayland_resolve.c" -o "$out/libmaton_vulkan.so"
 readelf=${READELF:-llvm-readelf-21}
 check_icd() {
   local lib=$1 label=$2
@@ -29,10 +29,10 @@ PY
 check_icd "$out/libmaton_vulkan.so" x86_64
 mkdir -p "$out/i386"
 i386_flags=(-m32 -march=corei7 -std=c11 -O2 -g -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/i386")
-"$cc" "${i386_flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wayland_resolve.c" -o "$out/i386/libmaton_vulkan.so"
+"$cc" "${i386_flags[@]}" -shared -Wl,--no-undefined,-Bsymbolic,-z,now,-z,noexecstack "$here/runtime.c" "$here/icd.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wsi_x11.c" "$here/wayland_resolve.c" -o "$out/i386/libmaton_vulkan.so"
 check_icd "$out/i386/libmaton_vulkan.so" i386
 for arch in aarch64; do
-  for unit in runtime icd wsi wsi_wayland wayland_resolve; do
+  for unit in runtime icd wsi wsi_wayland wsi_x11 wayland_resolve; do
     "$cc" --target="$arch-linux-gnu" -std=c11 -O2 -ffreestanding -nostdlib -fno-stack-protector -fno-builtin -fvisibility=hidden -fPIC -Wall -Wextra -Werror -I"$headers/include" -I"$out" -I"$here" -I"$here/arch/$arch" -c "$here/$unit.c" -o "$out/$unit-$arch.o"
   done
 done

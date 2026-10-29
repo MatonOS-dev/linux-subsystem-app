@@ -241,3 +241,9 @@ for instrumented logs and evidence. Further runtime progress needs a VM Vulkan
 driver that can query and import an Android-allocated AHB; compositor-push and
 per-window Surface approaches remain out of scope. No shared device-tree or
 kernel change is requested.
+
+X11 WSI (2026-10-29): the ICD implements XCB/Xlib surfaces using stock
+DRI3/Present, linear BGRA dma-buf exports, a private Present event queue,
+and completion/idle-controlled FIFO/reuse. See [WSI.md](WSI.md) for driver
+requirements, host regression evidence and pending device verification.
+This is GPU rendering and shared-buffer presentation, with no CPU readback.

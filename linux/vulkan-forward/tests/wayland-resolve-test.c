@@ -9,6 +9,9 @@
 #include "../../gpu-bridge-common/bootstrap.h"
 
 int main(void) {
+    void *xcb=mv_client_library("libxcb.so.1");assert(xcb);
+    assert(mv_client_symbol(xcb,"xcb_get_geometry")==dlsym(xcb,"xcb_get_geometry"));
+    assert(!mv_client_symbol(xcb,"maton_nonexistent_symbol"));
     void *handle=dlopen("libwayland-client.so.0",RTLD_NOW|RTLD_LOCAL);
     assert(handle);
     assert(dlsym(handle,"wl_display_connect"));

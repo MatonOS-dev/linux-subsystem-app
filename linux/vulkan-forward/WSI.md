@@ -176,3 +176,43 @@ TLS and obtains it through its resident dispatch tables; this probe uses the
 native process's direct device dispatch. No Vulkan result is returned by either
 path. The forwarder has additional WSI allocation/image setup around this
 sequence, but the failure occurs before those later calls can matter.
+
+## X11 WSI (Steam/CEF, 2026-10-29)
+
+The ICD now implements `VK_KHR_xcb_surface` and `VK_KHR_xlib_surface` through
+stock Xwayland DRI3/Present. Xlib supplies its existing XCB connection through
+`XGetXCBConnection`. Only a private special-XGE queue is consumed, preserving
+the application's normal X event queue. The freestanding ICD resolves Linux
+libxcb, libxcb-dri3 and libxcb-present with the payload's loader/TLS.
+
+Depth-24 TrueColor BGR visuals use `VK_FORMAT_B8G8R8A8_UNORM` and Vulkan
+DRM-modifier images with an explicit LINEAR modifier request. Dedicated
+DMA_BUF-exportable memory is allocated, and its plane layout is queried with
+MEMORY_PLANE_0. This avoids interpreting opaque AHB native-handle fds or
+querying DRM modifiers on optimal-tiling images. The exported dma-buf becomes
+a DRI3 pixmap; libxcb owns a duplicate of the fd. Render sync-file completion
+is awaited before Present. CompleteNotify paces FIFO submissions at successive
+MSCs; IdleNotify alone permits reuse of an image. Teardown does not wait for
+the final displayed pixmap to become idle: X retains its own dma-buf reference.
+Capabilities report the actual window extent, as required by the
+[Khronos XCB WSI specification](https://docs.vulkan.org/spec/latest/chapters/VK_KHR_surface/wsi.html).
+
+Limits: this requires a linear, single-plane BGRA dma-buf importable by
+Xwayland, with Android-driver external-memory-fd, dma-buf and DRM-modifier
+extensions. Nonlinear-only allocations, other visual layouts and nonzero plane
+offsets fail explicitly. Wayland continues to use its existing AHB allocator. This does not introduce CPU readback, change renderer
+selection, redirect bundled SwiftShader libraries, or add a compositor protocol.
+The device driver's linear image/export and Xwayland import remain unverified; a mocked driver/X server passing is not device rendering evidence.
+
+`tests/run-wsi.sh OUT HEADERS` now runs a sanitized surface/swapchain test:
+XCB and Xlib creation, visual rejection, linear BGRA allocation/import, duplicate-fd
+ownership, image retention until IdleNotify, FIFO completion, and destruction
+without a final IdleNotify. The resolver test loads real host libxcb symbols.
+
+Coordinator device check: build the GL extension and subsystem, fresh-launch
+Steam, and collect webhelper-linux.txt plus the screen. Confirm the missing
+xcb-extension error disappears, then check surface/swapchain creation and DRI3
+import. A linear image allocation/export/import failure is the next boundary to
+investigate; do not claim the black-window issue resolved without a rendered
+Steam UI. Recheck native Wayland Chrome/Obsidian and X11 Kate. Pressure-vessel
+setup performance is outside this change.

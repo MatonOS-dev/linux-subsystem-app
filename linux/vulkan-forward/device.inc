@@ -44,7 +44,7 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     for(uint32_t j=0;j<info->enabledExtensionCount;j++) {
         const char *name=info->ppEnabledExtensionNames[j];
         if(!strcmp(name,VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
-            if(!h->instance->wsi_wayland_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
+            if(!h->instance->wsi_wayland_enabled&&!h->instance->wsi_xcb_enabled&&!h->instance->wsi_xlib_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
             swapchain_enabled=1;
         } else {
             if(!mv_extension_allowed(name))return VK_ERROR_EXTENSION_NOT_PRESENT;
@@ -59,17 +59,26 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     VkDeviceCreateInfo copy=*info;
     const char **extension_names=0;
     if(swapchain_enabled) {
-        static const char *const internal[]={
+        static const char *const wayland_internal[]={
             "VK_ANDROID_external_memory_android_hardware_buffer",
             "VK_EXT_queue_family_foreign", "VK_EXT_image_drm_format_modifier",
             "VK_KHR_image_format_list", "VK_KHR_external_semaphore_fd"
         };
-        extension_names=mv_alloc((forwarded_extensions+5)*sizeof(*extension_names));
+        static const char *const x11_internal[]={
+            "VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
+            "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list", "VK_KHR_external_semaphore_fd"
+        };
+        /* WSI choice belongs to the surface, not the application. A mixed
+         * X11/Wayland instance needs the union of both allocation backends. */
+        const char *internal[10];uint32_t internal_count=0;
+        if(h->instance->wsi_wayland_enabled)for(uint32_t j=0;j<5;j++)internal[internal_count++]=wayland_internal[j];
+        if(h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled)for(uint32_t j=0;j<5;j++)internal[internal_count++]=x11_internal[j];
+        extension_names=mv_alloc((forwarded_extensions+internal_count)*sizeof(*extension_names));
         if(!extension_names){mv_dfree(d,d);return VK_ERROR_OUT_OF_HOST_MEMORY;}
         uint32_t k=0;
         for(uint32_t j=0;j<info->enabledExtensionCount;j++)
             if(strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_EXTENSION_NAME))extension_names[k++]=info->ppEnabledExtensionNames[j];
-        for(uint32_t j=0;j<5;j++) {
+        for(uint32_t j=0;j<internal_count;j++) {
             uint32_t n=0;while(n<k && strcmp(extension_names[n],internal[j]))n++;
             if(n==k)extension_names[k++]=internal[j];
         }

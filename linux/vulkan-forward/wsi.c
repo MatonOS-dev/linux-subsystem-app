@@ -44,7 +44,7 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     VkSurfaceCapabilitiesKHR caps;VkResult r=mv_wsi_capabilities(s,&caps);if(r)return r;
     if(info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR || info->pNext || info->flags ||
        info->minImageCount<2 || info->minImageCount>4 || info->imageArrayLayers!=1 ||
-       info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM || info->imageColorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ||
+       (info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM && info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM) || info->imageColorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ||
        info->imageUsage!=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT || info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE ||
        info->preTransform!=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || info->compositeAlpha!=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ||
        info->presentMode!=VK_PRESENT_MODE_FIFO_KHR)return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -63,7 +63,7 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
                 &b->ahb,&b->image,&b->memory,&b->token);
         if(!r)r=ops->export_dmabuf(ops->context,b->ahb,b->image,&b->dmabuf_fd,
                 &b->drm_format,&b->stride,&b->offset,&b->modifier);
-        if(!r && (b->drm_format!=0x34324241u || !b->stride ||
+        if(!r && ((b->drm_format!=0x34324241u && b->drm_format!=0x34325241u) || !b->stride ||
                   (b->modifier!=0 && b->modifier!=0x00ffffffffffffffull)))
             r=VK_ERROR_FORMAT_NOT_SUPPORTED;
         if(!r)r=ops->create_buffer(ops->context,b->ahb,s->extent,b->drm_format,b->dmabuf_fd,

@@ -1,7 +1,16 @@
 #include <vulkan/vulkan_core.h>
 #define VK_USE_PLATFORM_WAYLAND_KHR
+/* Platform ABI types, without a build dependency on Linux X11 headers. */
+typedef struct xcb_connection_t xcb_connection_t;
+typedef unsigned int xcb_window_t;
+typedef unsigned int xcb_visualid_t;
+typedef struct _XDisplay Display;
+typedef unsigned long Window;
+typedef unsigned long VisualID;
 #include <vulkan/vulkan_wayland.h>
 #include <vulkan/vk_icd.h>
+#include <vulkan/vulkan_xcb.h>
+#include <vulkan/vulkan_xlib.h>
 #include "runtime.h"
 #include "backend.h"
 #include "../gpu-bridge-common/bridge.h"
@@ -9,6 +18,7 @@
 #include "wsi.h"
 #include "wayland_resolve.h"
 #include "wsi_wayland.h"
+#include "wsi_x11.h"
 #define EXPORT __attribute__((visibility("default")))
 struct mv_instance;
 struct mv_device;
@@ -24,7 +34,7 @@ struct mv_instance {
     struct mv_handle base;
     VkAllocationCallbacks allocator;
     int custom, lock;
-    int wsi_surface_enabled, wsi_wayland_enabled;
+    int wsi_surface_enabled, wsi_wayland_enabled, wsi_xcb_enabled, wsi_xlib_enabled;
     struct mv_handle *physical;
     struct mv_dispatch dispatch;
     PFN_vkDestroyInstance destroy;
@@ -147,11 +157,13 @@ static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAll
     for(uint32_t j=0;j<info->enabledExtensionCount;j++) {
         if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SURFACE_EXTENSION_NAME))seed.wsi_surface_enabled=1;
         if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME))seed.wsi_wayland_enabled=1;
+        if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_XCB_SURFACE_EXTENSION_NAME))seed.wsi_xcb_enabled=1;
+        if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_XLIB_SURFACE_EXTENSION_NAME))seed.wsi_xlib_enabled=1;
     }
-    if(seed.wsi_wayland_enabled && !seed.wsi_surface_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
+    if((seed.wsi_wayland_enabled||seed.wsi_xcb_enabled||seed.wsi_xlib_enabled) && !seed.wsi_surface_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
     struct mv_instance *i=mv_new(&seed,sizeof(*i));if(!i)return VK_ERROR_OUT_OF_HOST_MEMORY;
     i->custom=seed.custom;i->allocator=seed.allocator;
-    i->wsi_surface_enabled=seed.wsi_surface_enabled;i->wsi_wayland_enabled=seed.wsi_wayland_enabled;
+    i->wsi_surface_enabled=seed.wsi_surface_enabled;i->wsi_wayland_enabled=seed.wsi_wayland_enabled;i->wsi_xcb_enabled=seed.wsi_xcb_enabled;i->wsi_xlib_enabled=seed.wsi_xlib_enabled;
     VkInstanceCreateInfo copy=*info;
     /* No extension pNext data or Linux callback may reach bionic. */
     copy.pNext=0;
@@ -160,7 +172,7 @@ static VkResult mv_vkCreateInstance(const VkInstanceCreateInfo *info,const VkAll
      * dependencies even when the Linux application only requests 1.0. */
     VkApplicationInfo resident_app=info->pApplicationInfo?*info->pApplicationInfo:
         (VkApplicationInfo){.sType=VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    if(i->wsi_wayland_enabled && resident_app.apiVersion<VK_API_VERSION_1_1) {
+    if((i->wsi_wayland_enabled||i->wsi_xcb_enabled||i->wsi_xlib_enabled) && resident_app.apiVersion<VK_API_VERSION_1_1) {
         resident_app.apiVersion=VK_API_VERSION_1_1;copy.pApplicationInfo=&resident_app;
     }
     struct mv_scope s;
@@ -241,7 +253,7 @@ static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physica
     if(r!=VK_SUCCESS){mv_free(all);return r;}
     uint32_t written=0,capacity=out?*n:0;
     for(uint32_t j=0;j<count;j++)if(mv_extension_allowed(all[j].extensionName)){if(out && written<capacity)out[written]=all[j];written++;}
-    if(h->instance->wsi_wayland_enabled) {
+    if(h->instance->wsi_wayland_enabled||h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled) {
         if(out && written<capacity) {
             memset(&out[written],0,sizeof(out[written]));
             memcpy(out[written].extensionName,VK_KHR_SWAPCHAIN_EXTENSION_NAME,sizeof(VK_KHR_SWAPCHAIN_EXTENSION_NAME));

@@ -20,8 +20,10 @@ cc=${CC:-clang-21}
 flags=(-std=c11 -g -Wall -Wextra -Werror -fno-builtin -fno-stack-protector -I"$here" -I"$here/arch/x86_64" -I"$headers/include")
 "$cc" "${flags[@]}" -fsanitize=address,undefined "$here/runtime.c" "$here/wsi.c" "$here/tests/wsi-test.c" -o "$out/wsi-test"
 "$out/wsi-test"
-"$cc" "${flags[@]}" -I"$out" "$here/tests/instance-extensions-test.c" "$here/runtime.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wayland_resolve.c" -o "$out/instance-extensions-test"
+"$cc" "${flags[@]}" -I"$out" "$here/tests/instance-extensions-test.c" "$here/runtime.c" "$here/wsi.c" "$here/wsi_wayland.c" "$here/wsi_x11.c" "$here/wayland_resolve.c" -o "$out/instance-extensions-test"
 "$out/instance-extensions-test"
+"$cc" "${flags[@]}" -I"$out" -fsanitize=address,undefined "$here/tests/wsi-x11-test.c" "$here/runtime.c" "$here/wsi.c" "$here/wsi_wayland.c" -o "$out/wsi-x11-test"
+"$out/wsi-x11-test"
 "$cc" "${flags[@]}" -fsanitize=address,undefined "$here/tests/wsi-wayland-test.c" -o "$out/wsi-wayland-test"
 "$out/wsi-wayland-test"
 "$cc" "${flags[@]}" -I"$here" "$here/runtime.c" "$here/wayland_resolve.c" "$here/tests/wayland-resolve-test.c" -ldl -o "$out/wayland-resolve-test"
