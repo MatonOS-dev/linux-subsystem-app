@@ -2803,3 +2803,37 @@ cases. Ordinary positional I/O and writev bypass SIGSYS outside the private
 fd window when tracing is off. Sequential read/write and the requested
 <=2x-native target remain unfinished; host gains do not establish device or
 Steam bootstrap latency. No VM or image build was used for this work.
+
+### Steam r61: ELF32 AT_SYSINFO must remain a payload syscall site
+
+The i386 peer's freestanding startup sets native AT_SYSINFO to 0x70300100
+so bionic can start under inherited routing filters. Passing that value to
+payloads with rewriting off bypassed the handler. With rewriting on, the
+AT_SYSINFO fast entry's fallback `int 0x80` also bypassed it: the dynamic
+peer DSO, including its gateway section, is relocated into the session's
+exempt bionic region. Adding TCGETS to the routing predicate cannot trap an
+instruction in either exempt location.
+
+The payload now gets a separate, named, RX `matonos-i386-sysinfo-trap` page
+outside the native reservations. The direct file-operation entry remains;
+its fallback tail-calls this page while preserving registers and flags.
+Bionic startup keeps its native trampoline. This applies to every fallback
+syscall, with no Steam or ioctl special cases.
+
+`bash tests/bionic32-terminal.sh <external-output-dir>` builds the production
+Android peers and runs an ELF32 glibc payload under inherited routing and a
+kernel filter denying TCGETS with EACCES. It opens synthesized mountinfo,
+checks both libc isatty and direct AT_SYSINFO terminal queries (100 times),
+and requires ENOTTY; a character fd must still receive EACCES. Both rewrite
+settings pass. The old code fails the direct query with EACCES. The native
+stand-in preserves env-array placement: removing entries with unsetenv in
+a constructor hides the original auxv from this particular loader harness.
+
+Device validation remains with the coordinator: repeat the r70/r71 count
+capture and count mountinfo ioctl AVCs; no VM was started here. The existing
+r70 process snapshots show a live CEF browser 24592 and GPU 24616 at 180 and
+240 seconds, rather than a persistent setup wait. The launcher 24467 polls,
+its logger 24479 reads stdin; browser main/IO poll, GPU main/Viz poll, and
+zygote mains 24627/24633 wait on futexes. The logs also contain GL_OUT_OF_MEMORY
+from ANGLE's texture allocation and kernel rendering error 13; the snapshots
+alone cannot attribute Steam's missing init handshake to those errors.

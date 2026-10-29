@@ -72,9 +72,8 @@ int main(int argc,char **argv) {
     if(enabled && !strcmp(enabled,"1") && (sysinfo<0x70300000u || sysinfo>=0x70400000u)) {
         fprintf(stderr,"AT_SYSINFO did not select the proxy entry: %08x\n",(unsigned)sysinfo);return 1;
     }
-    if(enabled && !strcmp(enabled,"0") && sysinfo>=0x70300000u && sysinfo<0x70400000u) {
-        fprintf(stderr,"MATON_PROXY_REWRITE=0 left proxy AT_SYSINFO enabled\n");return 1;
-    }
+    /* Rewrite-off uses a separately mapped payload-only trap trampoline;
+     * its address is deliberately independent of the resident DSO bias. */
     if(argc>1 && !strcmp(argv[1],"--exec-child"))return file_calls()?1:0;
     if(!sysinfo){fprintf(stderr,"AT_SYSINFO missing\n");return 1;}
     int failures=file_calls();

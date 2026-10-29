@@ -84,7 +84,16 @@ proxy_i386_sysinfo_entry:
 .Ltrap:
     popal
     popfl
-    int $0x80
+    /* PIC tail-call into the separately mapped payload trampoline. The
+     * resident DSO's own int80 would be exempt in a dynamic bionic peer. */
+    push %eax
+    call .Lpayload_pc
+.Lpayload_pc:
+    pop %eax
+    lea proxy_i386_payload_sysinfo-.Lpayload_pc(%eax),%eax
+    mov (%eax),%eax
+    xchg %eax,(%esp)
     ret
 .size proxy_i386_sysinfo_entry,.-proxy_i386_sysinfo_entry
+.hidden proxy_i386_payload_sysinfo
 .section .note.GNU-stack,"",@progbits
