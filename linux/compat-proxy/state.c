@@ -200,7 +200,7 @@ int state_import(const char *number,const char *token){
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
  uint64_t self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
  if(magic!=UINT64_C(0x335854454e4f544d)){import_reject("resident-import-magic",(long)magic,(long)version);s.error=-EPERM;}
- else if(version!=14){import_reject("resident-import-version",(long)version,14);s.error=-EPERM;}
+ else if(version!=15){import_reject("resident-import-version",(long)version,15);s.error=-EPERM;}
  else if(pid!=self){import_reject("resident-import-pid",(long)pid,(long)self);s.error=-EPERM;}
  else if(key!=nonce){import_reject("resident-import-nonce",0,0);s.error=-EPERM;}
  /* Restore the diagnostic sink before importing VFS/fd state. Payload stderr
@@ -253,7 +253,7 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};
- state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,14);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
+ state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,15);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
  state_word(&s,proxy_trace);state_word(&s,proxy_diagnostic_fd);
  /* The resident is an Android executable, not the Linux payload. Its linker
   * must not consume payload LD_* settings (paths are still virtual here).

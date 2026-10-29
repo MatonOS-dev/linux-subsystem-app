@@ -11,6 +11,7 @@ grep '^PASS ' "$native_out/guards.log"
 bash tests/bionic32-start.sh "$native_out/bionic32"
 bash tests/home-links.sh
 bash tests/exec-origin.sh
+bash tests/exec-relative.sh
 cc -O2 -Wall -Wextra -Werror tests/reopen-dirfd.c -o build/reopen-dirfd
 reopen_fixture=$(mktemp -d "$PWD/build/reopen-dirfd.XXXXXX")
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/reopen-dirfd" "$reopen_fixture/dir" >build/reopen-dirfd.out 2>build/reopen-dirfd.log

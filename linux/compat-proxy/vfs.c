@@ -269,6 +269,13 @@ struct mount {struct mount *next;char *source,*target;size_t target_len;unsigned
 static struct mount *table;
 static char *gpu_poll_sources[2];
 static char *root,*executable,*cwd;
+static int executable_bwrap;
+static int bwrap_name(const char *path){
+    if(!path)return 0;
+    const char *base=path;for(const char *p=path;*p;p++)if(*p=='/')base=p+1;
+    return p_equal(base,"bwrap") || p_equal(base,"matonos-app-bwrap") ||
+        p_equal(base,"libmatonos-app-bwrap.so");
+}
 static char *oldroot_view;
 static char *global_target(const char *,long *);
 static char *basepath(int,long *);
@@ -369,14 +376,23 @@ void vfs_network_payload(int isolated){
     if(info && !arch_stat_at(AT_FDCWD,info,&st,0))hide_resolver=1;
     vfs_free(info);
 }
-void vfs_executable(const char *path){vfs_free(executable);executable=pdupstr(path);}
-char *vfs_exe(void){return executable?dupstr(executable):NULL;}
-static int vfs_is_bwrap(void){
-    if(!executable)return 0;
-    const char *base=executable;for(const char *p=executable;*p;p++)if(*p=='/')base=p+1;
-    return p_equal(base,"bwrap") || p_equal(base,"matonos-app-bwrap") ||
-        p_equal(base,"libmatonos-app-bwrap.so");
+void vfs_executable(const char *path){
+    /* Linux's proc exe names the resolved image, never execve's relative
+     * spelling. Keep AT_EXECFN/argv unchanged; CEF uses this link to find
+     * and spawn its subprocess executable after a chdir. */
+    long error=0;char *host=vfs_resolve(AT_FDCWD,path,1,&error);
+    char *logical=host?vfs_reverse(host):NULL;
+    char *saved=pdupstr(logical?logical:path);
+    vfs_free(logical);vfs_free(host);
+    if(saved){
+        /* A multicall bwrap symlink selects an applet by invocation name;
+         * its resolved proc exe names the common Flatpak ELF instead. */
+        executable_bwrap=bwrap_name(path);
+        vfs_free(executable);executable=saved;
+    }
 }
+char *vfs_exe(void){return executable?dupstr(executable):NULL;}
+static int vfs_is_bwrap(void){return executable_bwrap;}
 int vfs_bwrap_shm_mkdir(const char *path){
     if(!vfs_is_bwrap() || !path)return 0;
     size_t n=p_len(path);return p_equal(path,"/dev/shm") ||
@@ -1322,6 +1338,7 @@ static void erofs_state(struct state *);
 void vfs_state(struct state *s){
  erofs_state(s);state_string(s,&oldroot_view);
  state_string(s,&root);state_string(s,&cwd);state_string(s,&executable);
+ executable_bwrap=state_word(s,executable_bwrap);
  stacked_oldroot=state_word(s,stacked_oldroot);hide_resolver=state_word(s,hide_resolver);
  for(unsigned i=0;i<2;i++)state_string(s,&gpu_poll_sources[i]);
  uint64_t count=0;for(struct mount *m=table;m;m=m->next)count++;

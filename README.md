@@ -312,3 +312,15 @@ webhelper-linux/steamui_html logs. Confirm same-process singleton recovery
 and `adopt-miss-map 0 0` disappear, EGL initializes in CEF's GPU child, and
 measure pressure-vessel setup again. A successful Steam window and <10 s
 setup remain unverified. No VM, AOSP, kernel or shared image changes.
+
+Steam round 46 measures the day-r51 pressure-vessel setup at about 120 s.
+The hot operations are relative opens/unlinks/links during runtime copying.
+The component walker now stats ordinary ancestors once, retaining its O_PATH
+fallback when getattr fails; the regression reduces a repeatedly visited
+ancestor from 33 O_PATH probes to zero. Device wall-time improvement remains
+unverified. CEF's relative `./steamwebhelper` image also exposed relative
+/proc/self/exe results, which Linux never supplies: record a resolved logical
+absolute image name without changing argv/AT_EXECFN. The mapped relative
+exec → chdir → child-exec regression fails on main and passes with the fix.
+See linux/compat-proxy/README.md for exact timestamps and the still-open
+portal/shared-runtime mismatch behind pv-adverb's ldso ENOENT warning.

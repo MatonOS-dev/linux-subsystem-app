@@ -2403,3 +2403,62 @@ cover genuine raw-fork recovery after TLS changes and rebasing inside SIGSYS.
 The full suite and real-bionic ELF32-to-ELF64/fork/resident-exec Vulkan fixture
 pass. Android production loaders compile. Device verification remains with
 the coordinator: CEF EGL initialization and Steam UI success are not claimed.
+
+### Steam round 46: relative image identity and component-walk cost
+
+Day-r51 PID 8736 enters pressure-vessel at 04:10:34.217 and the launch client
+at 04:12:32.626; pv-adverb 8871 starts at 04:12:34. The trace therefore still
+shows about 120 s of setup. PID 8736 has 43,476 completed openat, 9,387 unlinkat,
+6,599 linkat, 1,366 symlinkat and 1,192 mkdirat operations. Pairing surviving
+path-input/result records gives about 33.34 s for openat, 27.41 s for unlinkat
+and 33.70 s for linkat. These are observed elapsed intervals, including
+scheduling/logging, not exclusive CPU time; interleaved/dropped log fragments
+prevent a precise total. Almost all these paths are relative. Frequent names
+include share, lib, zoneinfo and the architecture library directories: this
+is runtime tree construction, not a single two-minute child wait.
+
+The slow component walker used O_PATH open + readlink + close + stat for
+ordinary ancestors. Use one no-follow stat first; only symlinks or failed
+getattr need the existing O_PATH fallback. This caches no mutable metadata,
+retains search-only permission fallback and virtual symlink/mount traversal,
+and introduces no path/depth limits. `walk-components.py` checks the relative
+walk and cross-map symlink/ENOENT/ENOTDIR semantics; the old walker makes 33
+redundant O_PATH opens of one ordinary ancestor, the new walker makes zero.
+A <10 s device result is not established by this host syscall-count test.
+
+CEF PID 8895 execs `./steamwebhelper` at 04:12:34.876. At 04:12:35.774 it
+reports a non-absolute browser_subprocess_path; 04:12:38.676–38.989 has nine
+GPU launch failures (1002), followed by GPU-isn't-usable FATAL. No GPU child
+clone/exec accompanies those attempts, so there is no evidence for an
+adoption change. The proxy incorrectly saved relative execve text for
+/proc/self/exe. Resolve and reverse-map the image name when recording it,
+leaving argv and AT_EXECFN intact. `exec-relative.sh` fails on main and passes
+with this change, including a mapped directory, cwd change, and child exec
+using the absolute proc link. Whether this fixes CEF's device launch is for
+the coordinator's fresh-image capture to establish.
+
+The ld.so warning remains separate: at 04:12:14.632 the parent opens its
+ldso directory under `<stub>/runtime/.flatpak/<app>/xdg-run`; nested bwrap at
+04:12:34.078 instead binds `<stub>/cache/compat-proxy-8466-…/newroot/run/flatpak/
+.flatpak/<app>/xdg-run` to /run/user/10137. pv-adverb cannot find the parent's
+ldso files there and retains its previous LD_LIBRARY_PATH. The upstream
+portal is configured with XDG_RUNTIME_DIR=/run/flatpak, but that captured
+sandbox directory is not the host's complete shared runtime. This runtime
+view mismatch is still open; no directory-creation or per-app workaround is
+added here.
+
+Canonicalizing a multicall bwrap symlink must not discard its selected
+applet. Preserve that selection separately for existing bwrap VFS setup
+handling, and serialize it in private exec-state version 15. The existing
+nested stock-bwrap socket/shared-memory regression caught this distinction;
+it passes with the separate applet flag. Proc exe still reports the actual
+resolved common ELF, including for a synthetic multicall symlink.
+
+Validation: full `tests/run.sh` passes, including real Flatpak/bwrap with
+resident workers, signalfd, mixed-ABI exec, nested socket binds and the
+0x10d30 handler-stack guard. `build-android.sh` builds all production peers;
+device-tree preflight passes. Logs: `/mnt/data/aosp/out/pc-logs/agents/
+steam-r46-{suite,android,preflight}.log`. No VM was run. Rebuild every peer
+together, verify Kate/Obsidian/Chrome draw, then capture traced Steam to
+check CEF GPU-child launch and pressure-vessel wall time. The separate
+shared-runtime ldso mismatch above remains unresolved.
