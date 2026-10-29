@@ -1290,8 +1290,14 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
         proxy_fd_number_moved((int)target,(int)moved);
     }
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-    if(result>=0 && target>=0 && target!=(int)a[0]) {
-        resident_fd_set(target,source_resident?2:0);
+    /* F_DUPFD[_CLOEXEC] allocates AT OR ABOVE target: target is not the
+     * descriptor replaced. Updating that live lower-bound fd can drop a
+     * resident pipe reader's protection before the next payload fd sweep.
+     * Every successful dup returns the descriptor whose ownership changed. */
+    if(result>=0 && (nr==PROXY_SC_dup || nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3 ||
+       (nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC))) && result!=a[0]) {
+        long tracked=resident_fd_set((int)result,source_resident?2:0);
+        if(tracked<0)return tracked;
     }
         if(result>=0 && (nr!=PROXY_SC_fcntl || a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC)){long tracked=vfs_fd_dup((int)a[0],(int)result);if(tracked<0){RAW(PROXY_SC_close,result,0,0,0,0,0);dns_close((int)result);vfs_fd_close((int)result);net_close((int)result);sysctl_close((int)result);return tracked;}child_fd_dup((int)a[0],(int)result);dns_dup((int)a[0],(int)result);net_dup((int)a[0],(int)result);sysctl_dup((int)a[0],(int)result);}
     return result;

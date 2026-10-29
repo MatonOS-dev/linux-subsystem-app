@@ -2537,3 +2537,55 @@ The coordinator must rebuild all loaders and repeat traced Steam, checking
 zygote termination status, error 1002, and whether the GPU process starts;
 this is a proven proxy bug, not a claim that the device's unseen write has
 been conclusively identified.
+
+### Steam round 52: preserve the resident reader on F_DUPFD
+
+Rebased on main 513d62d (r51 reverted). Fixed a reproduced descriptor-lifetime
+bug in the common trapped/direct duplication dispatcher: the third argument
+of `fcntl(F_DUPFD[_CLOEXEC])` is a minimum, not a descriptor being replaced.
+The old ownership update cleared a resident descriptor at that minimum even
+when the kernel returned a different fd. A subsequent payload close/sweep
+then closed that resident pipe reader; its resident writer got EPIPE/SIGPIPE.
+Update ownership at the returned descriptor for all dup variants instead.
+The minimum's ownership is unchanged, and a duplicate of a resident source
+inherits ownership at the actual returned fd. Private-reserve relocation is
+retained: our virtual free slots still need to be available to payloads.
+No signal dispositions, thread lifetimes or device trace hooks changed.
+
+The resident-fds regression now creates a resident pipe reader, duplicates an
+ordinary fd with that reader as the occupied minimum (both F_DUPFD forms),
+runs the payload close dispatcher, and checks a real write still succeeds.
+It also checks ownership of a resident-source duplicate at the returned fd.
+It failed on unmodified main (exit 70, writer EPIPE) and passes with the fix.
+
+Device evidence and its limits (all paths under out/pc-logs):
+- day-r57/steam.txt:2202193-2202197: zygote 16567 opens `/proc/self/maps`
+  as fd 9, then reads the approximately 4 KB chunks. This is the forwarder's
+  bootstrap discovery, not the CEF launch channel. Discovery switches its
+  subsequent internal syscalls to the exempt direct gateway.
+- :2202307-2202308: parent 16561 observes child 16567 CLD_KILLED/SIGPIPE.
+  The preceding :2202280-2202288 records include the parent's fd 23 read
+  returning ECONNRESET. Neither proves which fd the child wrote or which
+  reader closed: the capture omits fcntl arguments and post-bootstrap raw
+  writes. This patch fixes a demonstrated way to lose that reader; it does
+  not claim the unseen device write has been identified.
+- day-r53/obsidian.txt:48241: its zygote is spawned through zypak-helper and
+  portal Spawn with explicit fd remapping, unlike CEF's direct fork/exec
+  children (day-r57/steam.txt:2192243, exec-argv pid=16567).
+- day-r58/steam.txt:1658433-1658434 is inspect-library child 17656, not a
+  CEF zygote. Its self-originated SIGPIPE in write cannot establish the
+  zygote's writer fd. r51 replaced kernel SIG_DFL with a diagnostic handler
+  and routed resident SIGPIPE sigaction through the proxy; the revert and
+  capture do not isolate which of those changes caused the startup stall.
+  Neither change is restored here.
+
+Coordinator follow-up: rebuild the loaders and repeat traced Steam; check
+zygote death status 13 and GPU launch error 1002. If they remain, the exact
+writer and its reader are still unresolved; do not treat this host regression
+as device proof. No VM run or claim of a working Steam window.
+
+Validation: full `tests/run.sh` (including marker-cache, real Flatpak/bwrap
+signalfd launch, Wayland roundtrip, cross-ABI and site rewrite) passed;
+`build-android.sh` and device `tools/preflight.sh` passed. Logs are
+`out/pc-logs/agents/steam-r52-suite-final.log`,
+`steam-r52-android-final.log`, and `steam-r52-preflight.log`.

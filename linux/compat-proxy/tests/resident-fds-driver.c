@@ -48,6 +48,39 @@ int main(int argc,char **argv,char **env) {
     long reused=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/null",O_RDONLY|O_CLOEXEC,0,0,0);
     CHECK(reused==fd && !resident_fd_owned(reused));
     args[0]=copy;CHECK(resident_fd_native(PROXY_SC_close,args)==0 && !resident_fd_owned(copy));
+    /* F_DUPFD's argument is a lower bound, not a replacement destination.
+     * Losing ownership of a live resident reader here lets a later payload
+     * fd sweep close it, and the resident writer then dies with SIGPIPE. */
+    for(int command=0;command<2;command++) {
+        int channel[2];CHECK(RAW(PROXY_SC_pipe2,channel,O_CLOEXEC,0,0,0,0)==0);
+        CHECK(resident_fd_set(channel[0],2)==0);
+        proxy_arg_t duplicate[6]={ordinary,command?F_DUPFD_CLOEXEC:F_DUPFD,channel[0],0,0,0};
+        long alias=descriptor_dup_dispatch(PROXY_SC_fcntl,duplicate);CHECK(alias>channel[0]);
+        proxy_arg_t sweep[6]={channel[0],0,0,0,0,0};
+        CHECK(file_dispatch(PROXY_SC_close,sweep)==0);
+        /* Test the real reader lifetime, not just the ownership flag. */
+        proxy_sigmask_t bit=UINT64_C(1)<<(SIGPIPE-1),previous=0;
+        CHECK(RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&bit,&previous,8,0,0)==0);
+        long written=RAW(PROXY_SC_write,channel[1],"r",1,0,0,0);
+        if(written==-EPIPE) {
+            struct {long sec,nsec;} zero={0,0};
+            RAW(PROXY_SC_rt_sigtimedwait,&bit,0,&zero,8,0,0);
+        }
+        CHECK(RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&previous,0,8,0,0)==0);
+        CHECK(written==1 && resident_fd_owned(channel[0]));
+        CHECK(!resident_fd_owned(alias));
+        /* A dup of a resident source belongs to the returned fd too. */
+        duplicate[0]=channel[0];
+        long resident_alias=descriptor_dup_dispatch(PROXY_SC_fcntl,duplicate);
+        CHECK(resident_alias>channel[0] && resident_fd_owned(resident_alias));
+        CHECK(resident_fd_owned(channel[0]) && !resident_fd_owned(alias));
+        resident_fd_set(resident_alias,0);RAW(PROXY_SC_close,resident_alias,0,0,0,0,0);
+        resident_fd_set(channel[0],0);
+        RAW(PROXY_SC_close,channel[0],0,0,0,0,0);RAW(PROXY_SC_close,channel[1],0,0,0,0,0);
+        RAW(PROXY_SC_close,alias,0,0,0,0,0);
+    }
+    static const char pass[]="PASS F_DUPFD minimum preserves resident pipe reader and returned-fd ownership\n";
+    proxy_diagnostic_write(pass,sizeof(pass)-1);
     char owned_env[64]="RESIDENT_TEST_FD=",ordinary_env[64]="PAYLOAD_TEST_FD=";
     char *dest[2]={owned_env+17,ordinary_env+16};long nums[2]={owned,ordinary};
     for(unsigned i=0;i<2;i++) {char tmp[16];unsigned n=0;do{tmp[n++]='0'+nums[i]%10;nums[i]/=10;}while(nums[i]);while(n)*dest[i]++=tmp[--n];*dest[i]=0;}
