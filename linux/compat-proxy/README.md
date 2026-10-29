@@ -2462,3 +2462,40 @@ steam-r46-{suite,android,preflight}.log`. No VM was run. Rebuild every peer
 together, verify Kate/Obsidian/Chrome draw, then capture traced Steam to
 check CEF GPU-child launch and pressure-vessel wall time. The separate
 shared-runtime ldso mismatch above remains unresolved.
+
+### Steam r47: identify the zygote launch-channel closure
+
+The day-r52 device capture does not establish a GPU/adoption failure. Browser
+11016 execs zygotes 11020 (`--no-zygote-sandbox`) and 11021 at 04:38:08.704
+and .753. At 04:38:10.697 its AF_UNIX SOCK_SEQPACKET fd 22 `sendmsg`
+(requested 1148, SCM_RIGHTS with three descriptors) returns -104
+(ECONNRESET); at 04:38:13.158 the same channel returns -32 (EPIPE).
+Subsequent launches use fd 23 and also get EPIPE. Error 1002 is therefore
+preceded by a closed launch channel, rather than an observed GPU exec failure.
+Neither zygote has a captured lifecycle exit or fatal report. Their last
+recorded calls are reads (internal op 246, not Linux syscall 246), ending at
+04:38:10.232 and .112. There is no evidence here to justify changing fork,
+GPU bootstrap, sandbox flags, or pressure-vessel setup.
+
+With `--trace`, socket I/O records now use a single write per line and include
+the kernel socket inode. Socketpair endpoint fds, AF_UNIX closes (before the
+fd disappears), and wait4's returned child and raw wait status are recorded.
+These distinguish an intentionally closed inherited descriptor from a dead
+zygote and show its signal/exit code. Without tracing, these additional
+syscalls are not intercepted. The host unix-trace test checks descriptor
+passing, socket identities/closes, a child exiting 7 (wait status 1792), and
+absence of the new records without tracing.
+
+Next device capture: trace Steam through the first error 1002, retain all
+`socketpair-fds`, `unix-close`, `unix-io`, `wait4-result`, `wait4-status`,
+exec-argv and fatal lines. Capture the process tree and `/proc/PID/status`
+for both zygotes if still alive, plus logcat's crash buffer. The important
+unknown is the exit/closure of the peer of the *first* failing seqpacket
+channel. A working Chrome/Obsidian launch with the same traces supplies the
+comparison; day-r52 contains their screenshots but no corresponding traces.
+
+R47 validation: host build, unix-trace-host.py and stderr-trace.py passed;
+build-android.sh passed, and the final trace-close selection also passed NDK
+syntax checks for x86_64 and i386. Full tests/run.sh stopped at
+marker-cache.py: its strace child exceeded 60 seconds, twice including a
+standalone retry; the suite is not reported passing. No VM was run.

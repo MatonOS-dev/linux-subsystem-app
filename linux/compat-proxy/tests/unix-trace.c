@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 int main(void){
  int fd=socket(AF_UNIX,SOCK_STREAM,0);if(fd<0)return 1;
  struct sockaddr_un a;memset(&a,0xa5,sizeof(a));a.sun_family=AF_UNIX;
@@ -45,5 +46,7 @@ int main(void){
   if(c->cmsg_type==SCM_CREDENTIALS && c->cmsg_len>=CMSG_LEN(sizeof(struct ucred)))credentials++;
  }
  close(passed);close(pair[0]);close(pair[1]);
+ pid_t child=fork();if(child<0)return 10;if(!child)_exit(7);
+ int status=0;if(waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)!=7)return 11;
  return rights==1 && credentials==1?0:9;
 }
