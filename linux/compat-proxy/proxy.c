@@ -821,6 +821,10 @@ const char *proxy_tmpdir="/tmp";
 int proxy_trace;
 static volatile uint64_t proxy_counts[PROXY_SC_count];
 static volatile uint64_t proxy_syscall_ns[PROXY_SC_count];
+/* Rewritten calls bypass handler(). Keep their inclusive time separate:
+ * a direct fallback may itself trap, so adding both would double-count it. */
+static volatile uint64_t proxy_direct_counts[PROXY_SC_count];
+static volatile uint64_t proxy_direct_ns[PROXY_SC_count];
 static volatile uint64_t proxy_handler_ns,proxy_vfs_ns;
 uint64_t proxy_count_now(void){
 #ifdef PROXY_PROFILE
@@ -856,11 +860,19 @@ void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[192];size_t n=0;
         /* Each line is independently attributable when processes share a sink. */
         n=0;p_copy(b,"OP ",3);n=3;count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';proxy_internal_write(proxy_count_fd,b,n);
     }}
+    for(int i=0;i<PROXY_SC_count;i++){
+        uint64_t calls=__atomic_exchange_n(&proxy_direct_counts[i],0,__ATOMIC_RELAXED);
+        uint64_t ns=__atomic_exchange_n(&proxy_direct_ns[i],0,__ATOMIC_RELAXED);
+        if(!calls)continue;
+        n=0;p_copy(b,"DOP ",4);n=4;count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+        b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);
+        b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';proxy_internal_write(proxy_count_fd,b,n);
+    }
     vfs_profile_dump();
 }
 static void proxy_count_child(void){
     if(proxy_count_fd<0)return;
-    for(int i=0;i<PROXY_SC_count;i++){proxy_counts[i]=0;proxy_syscall_ns[i]=0;}proxy_handler_ns=proxy_vfs_ns=0;
+    for(int i=0;i<PROXY_SC_count;i++){proxy_counts[i]=0;proxy_syscall_ns[i]=0;proxy_direct_counts[i]=0;proxy_direct_ns[i]=0;}proxy_handler_ns=proxy_vfs_ns=0;
 }
 
 static void emit(const char *s) { proxy_diagnostic_write(s,p_len(s)); }
@@ -1477,7 +1489,7 @@ static long creator_finish(long nr,proxy_arg_t *a,long result){
     return result;
 }
 static int native_mapping_denied(long, const proxy_arg_t *);
-long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
+static long proxy_direct_dispatch_impl(long nr,proxy_arg_t *saved) {
     PROFILE_BEGIN();
     /* The entry's save area must remain immutable: modernize/pack dispatch
      * may rewrite arguments, but syscall-preserved registers restore verbatim. */
@@ -1520,6 +1532,18 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     vfs_direct_end(arena);
     if(thread)thread->direct_depth--;
     PROFILE_END(8);
+    return result;
+}
+long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
+    if(proxy_count_fd<0)return proxy_direct_dispatch_impl(nr,saved);
+    long id=arch_decode_syscall(nr);
+    uint64_t started=proxy_count_now();
+    long result=proxy_direct_dispatch_impl(nr,saved);
+    uint64_t ended=proxy_count_now();
+    if(id>=0 && id<PROXY_SC_count){
+        __atomic_fetch_add(&proxy_direct_counts[id],1,__ATOMIC_RELAXED);
+        if(ended>=started)__atomic_fetch_add(&proxy_direct_ns[id],ended-started,__ATOMIC_RELAXED);
+    }
     return result;
 }
 #include "rewrite.h"
