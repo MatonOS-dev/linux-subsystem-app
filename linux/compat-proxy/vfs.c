@@ -832,10 +832,16 @@ restart:;
         if(!follow && !input[next])continue;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
         links_recover_path(host);
-        long e=0;char *target=readlink_dynamic(host,&e);
+        /* Most components in pressure-vessel's relative copy/link scans
+         * are directories. One lstat identifies those without opening an
+         * O_PATH fd, attempting readlink, closing it, then statting again.
+         * If getattr is denied, retain the O_PATH search-only fallback. */
+        struct proxy_stat st;long status=arch_stat_at(AT_FDCWD,host,&st,AT_SYMLINK_NOFOLLOW);
+        long e=status;char *target=NULL;
+        if(status<0 || S_ISLNK(st.st_mode))target=readlink_dynamic(host,&e);
+        else e=-EINVAL;
         if(target && cacheable)*cacheable=0;
         if(!target && input[i]=='/'){
-            struct proxy_stat st;long status=arch_stat_at(AT_FDCWD,host,&st,AT_SYMLINK_NOFOLLOW);
             if(status<0){
                 /* Path lookup needs search permission on ancestors, not
                  * getattr. An O_PATH|O_DIRECTORY open has the kernel's
