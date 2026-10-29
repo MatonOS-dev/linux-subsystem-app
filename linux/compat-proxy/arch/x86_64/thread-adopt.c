@@ -198,7 +198,7 @@ static struct adopt_thread *reserve(void) {
 }
 static long clone_reject(const char *line,long error) {
     size_t n=0;while(line[n]) n++;
-    R(write,2,line,n,0,0,0);
+    proxy_internal_write(2,line,n);
     return -error;
 }
 #define REJECT(reason,error) clone_reject("maton adopt: clone rejected: " reason " (" #error ")\n",error)

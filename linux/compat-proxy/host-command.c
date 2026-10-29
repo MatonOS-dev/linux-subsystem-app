@@ -37,7 +37,7 @@ static int hc_set_short_path(void) {
 static void hc_stop(int signal) { (void)signal; hc_stopping=1; }
 static int hc_io(int fd,void *buf,size_t size,int writing) {
     char *p=buf;
-    while(size) {long n=writing?RAW(PROXY_SC_write,fd,p,size,0,0,0):RAW(PROXY_SC_read,fd,p,size,0,0,0);
+    while(size) {long n=writing?proxy_internal_send(fd,p,size,0):RAW(PROXY_SC_read,fd,p,size,0,0,0);
         if(n==-EINTR)continue;
         if(n<=0)return -EIO;
         p+=n;size-=(size_t)n;
@@ -188,7 +188,7 @@ static void hc_worker(int socket,char *const *original,long server) {
          * first; success closes the pipe just before resident payload entry. */
         error=(int)hc_exec(argv,env,pipe[1]);
 child_fail:
-        RAW(PROXY_SC_write,pipe[1],&error,4,0,0,0);RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
+        proxy_internal_write(pipe[1],&error,4);RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
     }
     RAW(PROXY_SC_close,pipe[1],0,0,0,0,0);
     for(int i=0;i<nfds;i++){RAW(PROXY_SC_close,received[i],0,0,0,0,0);RAW(PROXY_SC_close,copies[i],0,0,0,0,0);}nfds=0;

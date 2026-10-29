@@ -75,7 +75,7 @@ static long send_request(int fd,struct endpoint *e,void *buf,size_t len,void *ad
     for(off=0;off<len;){struct nlmsghdr *h=(void *)((char *)buf+off);struct reply *r=vfs_palloc(sizeof(*r));if(!r)return -ENOMEM;
         int error=request_error(h);*r=(struct reply){.header={.nlmsg_len=NLMSG_LENGTH(sizeof(struct nlmsgerr)),.nlmsg_type=NLMSG_ERROR,.nlmsg_flags=NLM_F_CAPPED,.nlmsg_seq=h->nlmsg_seq,.nlmsg_pid=e->port},.error={.error=error,.msg=*h}};
         if(e->last)e->last->next=r;else e->first=r;e->last=r;
-        uint64_t one=1;long written=RAW(PROXY_SC_write,fd,&one,sizeof(one),0,0,0);if(written<0)return written;
+        uint64_t one=1;long written=proxy_internal_write(fd,&one,sizeof(one));if(written<0)return written;
         if(proxy_trace)proxy_log("virtual-netlink",h->nlmsg_type,error);
         size_t n=NLMSG_ALIGN((size_t)h->nlmsg_len);off+=n>len-off?h->nlmsg_len:n;
     }

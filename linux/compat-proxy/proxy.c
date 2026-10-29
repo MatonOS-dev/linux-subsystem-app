@@ -824,7 +824,7 @@ void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*64+
     uint64_t raw_syscalls[PROXY_SC_count];vfs_raw_syscall_summary(raw_syscalls);
     for(int i=0;i<PROXY_SC_count;i++)if(raw_syscalls[i]){b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='S';b[n++]='C';b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,raw_syscalls[i]);b[n++]='\n';}
     for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';}}
-    RAW(PROXY_SC_write,proxy_count_fd,b,n,0,0,0);
+    proxy_internal_write(proxy_count_fd,b,n);
     vfs_profile_dump();
 }
 static void emit(const char *s) { proxy_diagnostic_write(s,p_len(s)); }
@@ -1653,7 +1653,7 @@ static int unix_call(long nr,proxy_arg_t a[6],long *result) {
 long proxy_copy(void *dst,const void *src,size_t size) {
     int fd[2];long r=RAW(PROXY_SC_pipe2,fd,O_CLOEXEC|O_NONBLOCK,0,0,0,0);
     if(r<0)return r;
-    r=RAW(PROXY_SC_write,fd[1],src,size,0,0,0);
+    r=proxy_internal_write(fd[1],src,size);
     if(r==(long)size)r=RAW(PROXY_SC_read,fd[0],dst,size,0,0,0);
     RAW(PROXY_SC_close,fd[0],0,0,0,0,0);RAW(PROXY_SC_close,fd[1],0,0,0,0,0);
     return r==(long)size?0:r<0?r:-EFAULT;

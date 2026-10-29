@@ -279,7 +279,7 @@ struct journal_entry {
 static long full_write(int fd, const void *data, size_t n) {
   size_t at = 0;
   while (at < n) {
-    long r = R(write, fd, (const char *)data + at, n - at, 0, 0, 0);
+    long r = proxy_internal_write(fd, (const char *)data + at, n - at);
     if (r <= 0)
       return r ? r : -EIO;
     at += r;
@@ -619,7 +619,7 @@ static long copy(void *dst, const void *src, size_t n) {
     size_t step = n - at;
     if (step > 4096)
       step = 4096;
-    r = R(write, fds[1], (const char *)src + at, step, 0, 0, 0);
+    r = proxy_internal_write(fds[1], (const char *)src + at, step);
     if (r != (long)step) {
       r = r < 0 ? r : -EFAULT;
       break;

@@ -72,21 +72,35 @@ int proxy_host_command(const char *);
 void proxy_host_snapshot(char *const *);
 extern int proxy_diagnostic_fd;
 int proxy_diagnostics_init(void);
-/* Logging must not deliver a proxy-generated SIGPIPE to the payload. Keep
- * its disposition/mask and any already pending SIGPIPE unchanged. No libc,
- * allocation, or large buffers: this also runs on the SIGSYS stack. */
-static inline long proxy_diagnostic_write(const void *data,size_t size) {
+/* Layer-internal writes must not deliver SIGPIPE to the payload: Chromium
+ * resets dispositions in forked children, so the payload may sit at SIG_DFL
+ * while a proxy channel outlives its peer. Keep the disposition/mask and any
+ * already pending SIGPIPE unchanged. No libc, allocation, or large buffers:
+ * this also runs on the SIGSYS stack and in resident helper threads. */
+static inline long proxy_internal_write(int fd,const void *data,size_t size) {
     uint64_t bit=UINT64_C(1)<<(SIGPIPE-1),old=0,pending=0;
     long r=RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&bit,&old,8,0,0);
     if(r<0)return r;
     RAW(PROXY_SC_rt_sigpending,&pending,8,0,0,0,0);
-    r=RAW(PROXY_SC_write,proxy_diagnostic_fd,data,size,0,0,0);
+    r=RAW(PROXY_SC_write,fd,data,size,0,0,0);
     if(r==-EPIPE && !(pending&bit)) { /* EPIPE: consume only our new signal. */
         struct {long sec,nsec;} zero={0,0};
         RAW(PROXY_SC_rt_sigtimedwait,&bit,0,&zero,8,0,0);
     }
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
     return r;
+}
+/* Sockets take MSG_NOSIGNAL so a vanished peer only yields EPIPE. */
+static inline long proxy_internal_sendto(int fd,const void *data,size_t size,
+                                         unsigned flags,const void *addr,unsigned addrlen) {
+    return RAW(PROXY_SC_sendto,fd,data,size,flags|MSG_NOSIGNAL,addr,addrlen);
+}
+static inline long proxy_internal_send(int fd,const void *data,size_t size,unsigned flags) {
+    return proxy_internal_sendto(fd,data,size,flags,0,0);
+}
+/* Logging is the main user of the write helper. */
+static inline long proxy_diagnostic_write(const void *data,size_t size) {
+    return proxy_internal_write(proxy_diagnostic_fd,data,size);
 }
 int proxy_dns_forwarder(const char *);
 int proxy_mount(const char *, const char *);
