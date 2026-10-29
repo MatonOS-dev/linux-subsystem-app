@@ -58,6 +58,11 @@ while IFS='|' read -r name kind location revision digest; do
   rm -rf "$dest"; mkdir -p "$dest"
   tar -xf "$archive" -C "$dest" --strip-components=1
 done < "$HERE/sources.lock"
+# Meson needs this pinned fallback when the target musl prefix has no intl
+# library. Its subproject is intentionally offline during the build.
+mkdir -p "$CACHE/src/glib/subprojects/packagecache"
+install -m644 "$CACHE/tar/0.5.tar.gz" \
+  "$CACHE/src/glib/subprojects/packagecache/proxy-libintl-0.5.tar.gz"
 while IFS='|' read -r name kind location revision digest; do
   [ "$kind" = deb ] || continue
   archive=$CACHE/tar/${location##*/}

@@ -10,7 +10,7 @@ Bubblewrap is also a static musl PIE at `libmatonos-app-bwrap.so`.
 
 `build-support/fetch.sh` verifies `sources.lock` into `CACHE_DIR`.
 `build-support/build-musl.sh` enters the offline root at
-`/mnt/data/aosp/out/pc-logs/musl-324/rootfs/x86_64` and runs the current
+`$HOME/matonos/build/musl-324/rootfs/x86_64` and runs the current
 `build-support/build.sh` recipe there. `MUSL_SCRATCH` can select another Alpine
 root/scratch pair; `CACHE_DIR`, `BUILD_DIR` and `OUT_DIR` must remain below that
 scratch path because `alpine-enter.sh` exposes it as `/scratch`.
@@ -57,8 +57,8 @@ final multicall except two fixed GCC source paths embedded in Alpine's
 prebuilt `libstdc++` diagnostics; those paths are toolchain data, not source,
 build or output directory paths.
 
-For a repeat build, use the same Alpine 3.24.2 root, locked source pins and
-`JOBS=4`, with separate `CACHE_DIR`, `BUILD_DIR` and `OUT_DIR` below the same
+For a repeat build, use the same Alpine 3.24.2 root and locked source pins,
+with separate `CACHE_DIR`, `BUILD_DIR` and `OUT_DIR` below the same
 external scratch directory. Run `fetch.sh` and `build-musl.sh` for each copy,
 then compare the multicall hashes and bytes. `SOURCE` records source revisions
 and binary hashes; `HELPERS.sha256` records the app launcher recipe and bwrap

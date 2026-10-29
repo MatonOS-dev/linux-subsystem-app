@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-SCRATCH=${EROFS_MUSL_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
-WORK=${EROFS_MUSL_WORK:-/mnt/data/aosp/out/pc-logs/erofs-pipeline}
+SCRATCH=${EROFS_MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
+WORK=${EROFS_MUSL_WORK:-$HOME/matonos/build/erofs-pipeline}
 ROOTFS=$SCRATCH/rootfs/x86_64
 ARCHIVE=$WORK/src/erofs-utils-v1.9.4.tar.gz
 SOURCE=$WORK/src/erofs-utils-1.9.4

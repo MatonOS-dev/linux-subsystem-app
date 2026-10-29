@@ -21,7 +21,7 @@ libarchive|tar|https://www.libarchive.org/downloads/libarchive-3.8.9.tar.xz|3.8.
 curl|tar|https://curl.se/download/curl-8.22.0.tar.xz|8.22.0|f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 liblzma|tar|https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz|5.8.1|507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543
 meson|tar|https://github.com/mesonbuild/meson/releases/download/1.12.1/meson-1.12.1.tar.gz|1.12.1|ab0a6ca09f8ef70c564c8241fb5a23957886a0b53fb58412b5e07eaf07dba743
+glib-proxy-libintl|tar|https://github.com/frida/proxy-libintl/archive/refs/tags/0.5.tar.gz|0.5|f7a1cbd7579baaf575c66f9d99fb6295e9b0684a28b095967cfda17857595303
 libffi|tar|https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz|3.5.2|f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc
 pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pcre2-10.46.tar.bz2|10.46|15fbc5aba6beee0b17aecb04602ae39432393aba1ebd8e39b7cabf7db883299f
 e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
-gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042

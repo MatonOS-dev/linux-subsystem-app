@@ -37,7 +37,7 @@ export CMAKE=${CMAKE:-/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake}
 if [[ ! -s $MATON_VULKAN_HEADERS/registry/vk.xml ]]; then
   bash "$ROOT/linux/vulkan-forward/build-tools.sh" "$VULKAN_DEPS"
 fi
-export MUSL_SCRATCH=${MATON_MUSL_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+export MUSL_SCRATCH=${MATON_MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
 export FLATPAK_MUSL_WORK=${MATON_FLATPAK_SCRATCH:-$OUTPUT/flatpak/scratch/flatpak-musl}
 # Source downloads are immutable during builds and remain shared. Every
 # generated Flatpak file lives under this invocation's subsystem output.

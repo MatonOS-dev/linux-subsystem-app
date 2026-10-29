@@ -3,7 +3,7 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 WORK=${MATON_HOST_SMOKE_WORK:-/mnt/data2/matonos-host-smoke}
 FLATPAK_USER_DIR=${MATON_HOST_SMOKE_FLATPAK_USER_DIR:-$WORK/flatpak-user}
-FSCK=${FSCK_EROFS:-/mnt/data/aosp/out/pc-logs/erofs-pipeline/src/erofs-utils-1.9.4/fsck/fsck.erofs}
+FSCK=${FSCK_EROFS:-$HOME/matonos/build/erofs-pipeline/src/erofs-utils-1.9.4/fsck/fsck.erofs}
 MKFS=${MKFS_EROFS:-$ROOT/linux/packs/prebuilt/x86_64/matonos-mkfs-erofs}
 ANDROID_JAR=${MATON_ANDROID_JAR:-/mnt/data/aosp/prebuilts/sdk/current/public/android.jar}
 JSON_JAR=${MATON_JSON_JAR:-/mnt/data/aosp/prebuilts/misc/common/json/json-prebuilt.jar}

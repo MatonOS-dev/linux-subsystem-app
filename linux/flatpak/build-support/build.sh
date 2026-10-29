@@ -61,7 +61,6 @@ EOF
 chmod +x "$PKG_CONFIG_STATIC"
 export PKG_CONFIG="$PKG_CONFIG_STATIC"
 export PATH="$PREFIX/bin:$PATH"
-export PATH="$SRC/gperf-host-tool/usr/bin:$PATH"
 cat > "$BUILD/musl.ini" <<EOF
 [binaries]
 c = '$CC'
@@ -114,6 +113,17 @@ make -j"$JOBS"; make install; stage_metadata
 "$CMAKE" --build "$BUILD/pcre2" --target install --parallel "$JOBS"; stage_metadata
 meson setup "$BUILD/glib" "$SRC/glib" $MCOMMON -Dtests=false -Dman-pages=disabled -Dintrospection=disabled -Ddocumentation=false -Dselinux=disabled
 "$NINJA" -C "$BUILD/glib" -j "$JOBS" install; stage_metadata
+# GLib's pkg-config files expose these target-native generators as /usr/bin
+# paths. Make those paths resolve to this exact build's static-musl tools so
+# later cross-built Meson projects can execute them without network access.
+for tool in glib-mkenums gdbus-codegen; do
+  rm -f "$MUSL_PREFIX/bin/$tool"
+  cat > "$MUSL_PREFIX/bin/$tool" <<EOF
+#!/bin/sh
+exec "$PREFIX/bin/$tool" "\$@"
+EOF
+  chmod 0755 "$MUSL_PREFIX/bin/$tool"
+done
 "$CMAKE" -S "$SRC/zstd/build/cmake" -B "$BUILD/zstd" -G Ninja -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF -DZSTD_BUILD_SHARED=OFF
 "$CMAKE" --build "$BUILD/zstd" --target install --parallel "$JOBS"; stage_metadata
 meson setup "$BUILD/libxml2" "$SRC/libxml2" $MCOMMON -Ddocs=disabled -Dpython=disabled -Dminimum=false -Doutput=enabled -Dzlib=enabled
@@ -178,7 +188,7 @@ fi
 if [ "$START_AT" != flatpak ]; then
 mkdir -p "$BUILD/ostree"; cd "$BUILD/ostree"
 if [ ! -x "$SRC/ostree/configure" ]; then
-  (cd "$SRC/ostree" && ACLOCAL_PATH="$SRC/DullPGP" NOCONFIGURE=1 ./autogen.sh)
+  (cd "$SRC/ostree" && ACLOCAL_PATH="$PREFIX/share/aclocal:$SRC/DullPGP" NOCONFIGURE=1 ./autogen.sh)
 fi
 ac_cv_c_undeclared_builtin_options='none needed' "$SRC/ostree/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --libdir="$INSTALL_PREFIX/lib" --disable-shared --enable-static --with-curl --with-gpgme --without-soup --without-soup3 --without-selinux --without-libmount --without-avahi --disable-rofiles-fuse --disable-man --disable-installed-tests --without-composefs --with-crypto=glib CC="$CC" CFLAGS="$COMPAT_CFLAGS -I$PREFIX/include/gpgme-lite" LDFLAGS="$LDFLAGS" LIBS="-lstdc++ -pthread" PKG_CONFIG="$PKG_CONFIG" PKG_CONFIG_LIBDIR="$PKG_CONFIG_LIBDIR"
 printf '#include "config.h"\n' > "$BUILD/ostree/libglnx-config.h"

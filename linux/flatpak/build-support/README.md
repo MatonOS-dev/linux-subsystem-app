@@ -8,9 +8,19 @@ memory feature. The compatibility proxy backs it with session storage under
 the app cache. This supplies POSIX shared memory on Android hosts without
 `/dev/shm` while retaining Flatpak's explicit sharing choices.
 
+`setup-scratch.sh` recreates the Alpine 3.24.2 root, installs `autoconf`,
+`automake`, `bash`, `bison`, `build-base`, `cmake`, `curl`, `file`, `flex`,
+`gettext-dev`, `git`, `gperf`, `gzip`, `libcap-dev`, `libtool`, `linux-headers`,
+`meson`, `ninja`, `patch`, `perl`, `pkgconf`, `py3-parsing`, `python3`, `tar`,
+`xz`, `zlib-dev`, `zlib-static` and `zstd` from the pinned Alpine 3.24
+repositories. It checks out the pinned Flatpak commit and runs
+`fetch.sh` to verify the immutable source cache, including GLib's Meson
+`proxy-libintl` fallback archive. The default scratch directory
+is `$HOME/matonos/build/musl-324`.
+
 `build-musl.sh` runs the current
 `build.sh` recipe inside the offline Alpine 3.24.2 x86_64 root at
-`/mnt/data/aosp/out/pc-logs/musl-324`. Flatpak, OSTree, bubblewrap and their
+`$HOME/matonos/build/musl-324`. Flatpak, OSTree, bubblewrap and their
 static dependency set are linked with musl as static PIEs, then the Flatpak,
 OSTree and bubblewrap CLI objects are relinked through `make-multicall.py`.
 The result is packaged as `libmatonos-flatpak.so`; `tools/build-flatpak-helpers.sh`
@@ -24,7 +34,8 @@ plan, helper, and generated output directories live under
 3.24.2 root and shared download cache.
 
 The shared `CACHE_DIR` stays under `MUSL_SCRATCH`; `BUILD_DIR` and `OUT_DIR`
-stay under the per-invocation work directory. JOBS is limited to four. The
+stay under the per-invocation work directory. `JOBS` defaults to `nproc` and
+accepts any positive integer. The
 optional START_AT=flatpak reuses prepared dependency
 archives and OSTree/bubblewrap objects; the default builds all dependencies.
 Builds write generated hash manifests under the output directory and never

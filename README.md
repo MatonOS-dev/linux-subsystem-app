@@ -61,6 +61,14 @@ verified dependency cache can be selected with `MATON_FLATPAK_CACHE`,
 The source pin is checked before the APK build. `UPSTREAMS` and the native
 recipes retain the other version/hash pins; this extraction does not upgrade them.
 
+After deleting build scratch, recreate it with
+`bash linux/flatpak/build-support/setup-scratch.sh`. The script verifies and
+extracts Alpine minirootfs 3.24.2, installs the static-build toolchain, checks
+out the locked Flatpak commit, and fills the verified source cache. Its default
+location is `$HOME/matonos/build/musl-324` (`MUSL_SCRATCH` overrides it).
+The EROFS build uses `$HOME/matonos/build/erofs-pipeline` by default; set
+`EROFS_MUSL_WORK` to override that path.
+
 `tests/run.sh OUTPUT` runs signed carrier/stub/planner tests, pack C/Java
 round trips, host commands, Java portals and native bus interoperability.
 `linux/compat-proxy/tests/run.sh` is the Linux-host loader regression suite;

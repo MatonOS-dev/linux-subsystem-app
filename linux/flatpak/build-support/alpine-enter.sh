@@ -2,7 +2,7 @@
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ARCH=${ARCH:-$(uname -m)}
-SCRATCH=${SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+SCRATCH=${SCRATCH:-$HOME/matonos/build/musl-324}
 FLATPAK_MUSL_WORK=${FLATPAK_MUSL_WORK:-$SCRATCH/flatpak-musl}
 FLATPAK_CACHE=${FLATPAK_CACHE:-$SCRATCH/flatpak-musl/cache}
 ROOTFS=$SCRATCH/rootfs/$ARCH

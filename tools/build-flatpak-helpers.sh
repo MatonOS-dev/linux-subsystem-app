@@ -13,7 +13,7 @@ info() { echo "==> $*"; }
 DEVICE_DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
 ARCH=${ARCH:-x86_64}
 
-MUSL_SCRATCH=${MUSL_SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+MUSL_SCRATCH=${MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
 GPGME_LITE_SRC=${GPGME_LITE_SRC:-$MUSL_SCRATCH/flatpak-musl/cache/src/DullPGP}
 ALPINE_ENTER=$DEVICE_DIR/linux/flatpak/build-support/alpine-enter.sh
 [[ -x $MUSL_SCRATCH/rootfs/x86_64/bin/sh ]] || die "offline Alpine 3.24.2 root missing at $MUSL_SCRATCH"

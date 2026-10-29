@@ -2,7 +2,7 @@
 # Build the pinned Flatpak bubblewrap source as a static musl executable.
 set -Eeuo pipefail
 die() { echo "ERROR: $*" >&2; exit 1; }
-ROOTFS=${MUSL_ROOTFS:-/mnt/data/aosp/out/pc-logs/musl-324/rootfs/x86_64}
+ROOTFS=${MUSL_ROOTFS:-$HOME/matonos/build/musl-324/rootfs/x86_64}
 SOURCE=${BUBBLEWRAP_SOURCE:?Set BUBBLEWRAP_SOURCE to the pinned bubblewrap 0.13.0 source tree}
 OUTPUT=${BWRAP_OUTPUT:?Set BWRAP_OUTPUT to the output binary path}
 WORK=${BWRAP_WORK:-${OUTPUT}.build}
