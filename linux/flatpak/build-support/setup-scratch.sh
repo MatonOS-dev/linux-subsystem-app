@@ -48,7 +48,7 @@ fi
 # These cover the pinned Meson/Ninja recipes, autotools bootstraps, static
 # native builds, EROFS configure step, source tools, and bubblewrap's libcap.
 PACKAGES=(
-  autoconf automake bash bison build-base cmake curl file flex gettext-dev git
+  autoconf automake bash bison build-base cmake curl file flex gettext-dev gettext-static git
   gperf gzip libcap-dev libtool linux-headers meson ninja patch perl pkgconf
   py3-parsing python3 tar xz zlib-dev zlib-static zstd
 )
