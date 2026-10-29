@@ -60,8 +60,20 @@ Optional diagnostics:
 - `--trace` writes trap and virtual-operation details to the saved diagnostic
   descriptor.
 - `--count <path>` records handler time, VFS path-resolution time and raw
-  syscall totals. Compile with `PROXY_RAW_COUNTER=1` to enable per-trap raw
-  syscall counts.
+  syscall totals without per-call trace output. The private append sink survives
+  resident and cross-ABI kernel exec. Fork children reset inherited operation
+  totals. Each exec/exit emits `PID=<pid> T=<monotonic ns> H=<handler ns>
+  V=<resolution ns>` and `OP <pid> <operation id> <calls> <nanoseconds>` lines.
+  Operation IDs are the enum in `arch/syscalls.h`, never kernel syscall numbers.
+  Blocking waits count toward operation time; distinguish them from resolution
+  work before attributing CPU cost. Records are individually PID-tagged because
+  concurrent children share the sink. Raw summaries are cumulative within an
+  image, while OP/H/V totals reset at each dump. Compile with
+  `PROXY_RAW_COUNTER=1` to enable raw syscall counts.
+  In a stub, create `<cache>/v3-count` and remove `<cache>/v3-trace`; the output
+  is `<cache>/v3-counts.txt`. Clear the output before a fresh launch. No tracing
+  or per-app behavior is enabled by this marker. Dump formatting uses bounded
+  stack records, including on the SIGSYS handler stack.
 - `--parent-pid <pid>` applies parent-death handling and validates the parent.
 - Host-only harness options (`--root`, `--map`, `--map-ro`,
   `--erofs-mount`, `--android-filter`) are used by tests and host development.

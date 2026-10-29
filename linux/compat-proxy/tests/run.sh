@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+python3 tests/count-exec.py
 python3 tests/mount-scan.py
 python3 tests/walk-components.py
 python3 tests/marker-cache.py

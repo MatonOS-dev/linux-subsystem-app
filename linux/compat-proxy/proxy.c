@@ -832,24 +832,37 @@ uint64_t proxy_count_now(void){
     return (uint64_t)ts.sec*1000000000ULL+(uint64_t)ts.nsec;
 #endif
 }
-void proxy_count_init(const char *path){if(!path || !*path)return;long fd=proxy_private_fd(RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND|O_CLOEXEC,0600,0,0));if(fd>=0){proxy_count_fd=(int)fd;proxy_raw_count_enable();}}
+void proxy_count_init(const char *path){if(!path || !*path)return;long fd=proxy_private_fd(RAW(PROXY_SC_openat,AT_FDCWD,path,O_WRONLY|O_CREAT|O_APPEND,0600,0,0));if(fd>=0){proxy_count_fd=(int)fd;RAW(PROXY_SC_fcntl,fd,F_SETFD,0,0,0,0);proxy_raw_count_enable();}}
 void proxy_count_resolution(uint64_t ns){__atomic_fetch_add(&proxy_vfs_ns,ns,__ATOMIC_RELAXED);}
 static void count_u64(char *b,size_t *n,uint64_t v){char d[24];size_t k=0;do{d[k++]=(char)('0'+v%10);v/=10;}while(v);while(k)b[(*n)++]=d[--k];}
-void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[PROXY_SC_count*64+128];size_t n=0;
+/* Stream bounded records: this also runs on the 67 KiB SIGSYS stack. */
+void proxy_count_dump(void){if(proxy_count_fd<0)return;char b[192];size_t n=0;
     uint64_t handler=__atomic_exchange_n(&proxy_handler_ns,0,__ATOMIC_RELAXED);
     uint64_t vfs=__atomic_exchange_n(&proxy_vfs_ns,0,__ATOMIC_RELAXED);
-    b[n++]='P';b[n++]='I';b[n++]='D';b[n++]='=';count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';b[n++]='H';b[n++]='=';count_u64(b,&n,handler);b[n++]=' ';b[n++]='V';b[n++]='=';count_u64(b,&n,vfs);b[n++]='\n';
-    uint64_t raw_traps=0,raw_calls=0;vfs_raw_count_summary(&raw_traps,&raw_calls);
-    b[n++]='R';b[n++]='A';b[n++]='W';b[n++]=' ';count_u64(b,&n,raw_traps);b[n++]=' ';count_u64(b,&n,raw_calls);b[n++]=' ';count_u64(b,&n,raw_traps?raw_calls/raw_traps:0);b[n++]='\n';
-    uint64_t raw_categories[6];vfs_raw_category_summary(raw_categories);
-    b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='C';b[n++]='A';b[n++]='T';
-    for(unsigned i=0;i<6;i++){b[n++]=' ';count_u64(b,&n,raw_categories[i]);}b[n++]='\n';
-    uint64_t raw_syscalls[PROXY_SC_count];vfs_raw_syscall_summary(raw_syscalls);
-    for(int i=0;i<PROXY_SC_count;i++)if(raw_syscalls[i]){b[n++]='R';b[n++]='A';b[n++]='W';b[n++]='S';b[n++]='C';b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,raw_syscalls[i]);b[n++]='\n';}
-    for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';}}
+    b[n++]='P';b[n++]='I';b[n++]='D';b[n++]='=';count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';b[n++]='T';b[n++]='=';count_u64(b,&n,proxy_count_now());b[n++]=' ';b[n++]='H';b[n++]='=';count_u64(b,&n,handler);b[n++]=' ';b[n++]='V';b[n++]='=';count_u64(b,&n,vfs);b[n++]='\n';
     proxy_internal_write(proxy_count_fd,b,n);
+    uint64_t raw_traps=0,raw_calls=0;vfs_raw_count_summary(&raw_traps,&raw_calls);
+    n=0;p_copy(b,"RAW ",4);n=4;count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';count_u64(b,&n,raw_traps);b[n++]=' ';count_u64(b,&n,raw_calls);b[n++]=' ';count_u64(b,&n,raw_traps?raw_calls/raw_traps:0);b[n++]='\n';proxy_internal_write(proxy_count_fd,b,n);
+    uint64_t categories[6];vfs_raw_category_summary(categories);
+    n=0;p_copy(b,"RAWCAT ",7);n=7;count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));
+    for(unsigned i=0;i<6;i++){b[n++]=' ';count_u64(b,&n,categories[i]);}b[n++]='\n';proxy_internal_write(proxy_count_fd,b,n);
+    uint64_t *raw=vfs_alloc(PROXY_SC_count*sizeof(*raw));
+    if(raw){vfs_raw_syscall_summary(raw);for(int i=0;i<PROXY_SC_count;i++)if(raw[i]){
+        n=0;p_copy(b,"RAWSC ",6);n=6;count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,raw[i]);b[n++]='\n';proxy_internal_write(proxy_count_fd,b,n);
+    }
+    vfs_free(raw);
+    }
+    for(int i=0;i<PROXY_SC_count;i++){uint64_t calls=__atomic_exchange_n(&proxy_counts[i],0,__ATOMIC_RELAXED);uint64_t ns=__atomic_exchange_n(&proxy_syscall_ns[i],0,__ATOMIC_RELAXED);if(calls){
+        /* Each line is independently attributable when processes share a sink. */
+        n=0;p_copy(b,"OP ",3);n=3;count_u64(b,&n,(uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));b[n++]=' ';count_u64(b,&n,(uint64_t)i);b[n++]=' ';count_u64(b,&n,calls);b[n++]=' ';count_u64(b,&n,ns);b[n++]='\n';proxy_internal_write(proxy_count_fd,b,n);
+    }}
     vfs_profile_dump();
 }
+static void proxy_count_child(void){
+    if(proxy_count_fd<0)return;
+    for(int i=0;i<PROXY_SC_count;i++){proxy_counts[i]=0;proxy_syscall_ns[i]=0;}proxy_handler_ns=proxy_vfs_ns=0;
+}
+
 static void emit(const char *s) { proxy_diagnostic_write(s,p_len(s)); }
 static void trace_word(const char *label,uint64_t value) {
     emit(label); crash_hex(value); emit(" ");
@@ -2199,7 +2212,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
      * new namespace flags; the parent's monitor keeps the original namespace. */
     if(namespace_clone_parent){
         if(RAW(PROXY_SC_getpid,0,0,0,0,0,0)!=namespace_clone_parent){
-            vfs_raw_count_fork_child();
+            vfs_raw_count_fork_child();proxy_count_child();
             ipc_fork();
             namespaces|=namespace_clone_flags;
             if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;
@@ -2588,7 +2601,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* Fork-like clone is safe inside the handler only with no child stack;
          * preserve libc vfork's nonstandard return-address registers. */
         result=ipc_fork_prepare();if(result)break;
-        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);proxy_trace_clone_result(result,SIGCHLD);if(proxy_trace)proxy_log("lifecycle-vfork",SIGCHLD,result);if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();}break;
+        dns_fork_prepare();result=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);dns_fork_result(result);ipc_fork_result(result);proxy_trace_clone_result(result,SIGCHLD);if(proxy_trace)proxy_log("lifecycle-vfork",SIGCHLD,result);if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();proxy_count_child();ipc_fork();}break;
     case PROXY_SC_clone:
         /* Stackless forks can clone inside this handler. A supplied child
          * stack needs the assembly retry gateway to preserve its continuation. */
@@ -2604,7 +2617,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             dns_fork_result(result);ipc_fork_result(result);
             proxy_trace_clone_result(result,a[0]);
 
-            if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;}
+            if(!result){thread_state_cache_invalidate_all();vfs_raw_count_fork_child();proxy_count_child();ipc_fork();namespaces|=ns;if((ns&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;}
             break;
         }
 clone_retry:
@@ -2866,6 +2879,8 @@ int proxy_install(int android) {
 
 void proxy_state(struct state *s){
  extern const char *proxy_tmpdir;
+ proxy_count_fd=(int)state_word(s,(uint64_t)(int64_t)proxy_count_fd);
+ if(s->reading && proxy_count_fd>=0)proxy_raw_count_enable();
  proxy_bionic32_base=(uint32_t)state_word(s,proxy_bionic32_base);
  proxy_bionic64_base=state_word(s,proxy_bionic64_base);
  uint64_t native_count=state_count(s,inherited_native_count);

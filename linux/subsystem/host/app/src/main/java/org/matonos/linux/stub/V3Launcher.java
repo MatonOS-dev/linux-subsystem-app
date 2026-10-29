@@ -90,6 +90,11 @@ final class V3Launcher {
         command.add("--gpu-bridge");
         // adb (root): touch <cache>/v3-trace to log every trapped call.
         if (trace) command.add("--trace");
+        // Counter-only profiling avoids a logcat record for every syscall.
+        if (new File(cache, "v3-count").exists()) {
+            command.add("--count");
+            command.add(new File(cache, "v3-counts.txt").getAbsolutePath());
+        }
         if (context.checkSelfPermission(android.Manifest.permission.INTERNET) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED) {
             LoaderCommand.addDns(command, dns);
