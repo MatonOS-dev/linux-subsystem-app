@@ -16,8 +16,9 @@ Each GLX window is rendered to an EGL pbuffer sized to the X window, then
 replaces the pbuffer. This does not use DRI3/Present or shared GPU buffers.
 
 The current implementation is intentionally limited to one EGL config, direct
-contexts, a single current context per thread, and window drawables. GLX visual
-selection returns the default X visual; pixmap and pbuffer GLX drawables,
+contexts, a single current context per thread, and window drawables. GLX configs
+expose the server’s RGB8 TrueColor 24/32-bit visuals; legacy visual selection
+returns the screen’s default visual. Pixmap and pbuffer GLX drawables,
 context sharing, and full GLX attribute negotiation remain unsupported. EGL
 must expose desktop OpenGL; GLES-only devices do not provide this GLX vendor.
 
@@ -83,3 +84,41 @@ until presentation passes.
 The frame-pacing syscalls use each process's Linux ABI: x86_64 `syscall`,
 i386 `int 0x80` with the time32 `timespec` layout. Exercise both without a
 GPU or libc with `bash tests/timing.sh /absolute/external/output`.
+
+
+## Steam/ANGLE requested visuals (2026-10-29, round 56)
+
+The exact “Invalid visual ID requested” error in day-r65/webhelper-linux.txt
+(line 62, repeated) comes from ANGLE's **DisplayGLX** implementation, rather
+than our EGL X11 platform. ANGLE enumerates GLX configs and compares
+`GLX_VISUAL_ID` to `EGL_X11_VISUAL_ID_ANGLE`; no match means EGL initialization
+fails. See [ANGLE DisplayGLX.cpp](https://chromium.googlesource.com/angle/angle.git/+/master/src/libANGLE/renderer/gl/glx/DisplayGLX.cpp).
+Our single synthetic config always returned visual ID zero and visual type
+zero, despite glXGetVisualFromFBConfig returning the default visual.
+
+Configs now describe the real server TrueColor RGB8 visuals (depth 24/32),
+with matching visual IDs, GLX_TRUE_COLOR type and screen. They share the
+existing resident RGBA8/D24S8 pbuffer format. Config selection, visual lookup,
+context creation and GLXWindow validation use the same config identity; the
+actual server visual must match a created window. No new EGL presentation
+backend, app rule, environment override or Android patch is needed.
+
+Validation: tests/visual.c reproduces ANGLE's requested-visual loop on Xvfb,
+checks both depths and visual types, creates a real EGL desktop context via
+a host Mesa direct-table adapter, makes the selected X window current, swaps
+and checks a red XGetImage pixel. It fails against main 7f6f936 at the zero
+visual ID and passes with this change. The adapter substitutes only the
+resident EGL/TLS boundary; this is not an Android/Xwayland rendering claim.
+Existing GLX ABI/swap probes pass, as do x86_64/i386 Android-targeted GLX DSO
+builds (no DT_NEEDED, only __glx_Main exported). Full compat-proxy (including
+marker-cache), Vulkan core/WSI, EGL extension tests, Android loader builds
+and device preflight pass. The older EGL run-host switch benchmark has an
+existing mv_sys link failure; it is unrelated to GLX and is not changed here.
+
+Coordinator: package the new GLX vendor and Vulkan ICD in GL.maton, fresh-launch
+Steam and check that both GL/GLES ANGLE initialization pass, a CEF GPU process
+stays alive and a window renders. Retest Kate/Obsidian/Chrome. Real PC checks
+on Ryzen/RX6600, Surface Pro 3 and Haswell: repeat the visual/context/swap test
+through the adopted runtime on Xwayland, then Steam resize/relaunch. No VM
+was started. Steam rendering and its setup delay remain device-verification
+items; no shared device-tree or kernel changes are requested.
