@@ -205,6 +205,9 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     {
         const uint32_t rewritten[]={(uint32_t)V3_TCGETS2,(uint32_t)V3_TCSETS2,(uint32_t)V3_TCSETSW2,
             (uint32_t)V3_TCSETSF2,(uint32_t)FICLONE,(uint32_t)FICLONERANGE,
+            /* Terminal probes on proxy-synthesized fds (mountinfo memfds) must
+             * reach the handler's ENOTTY check, not SELinux audit. */
+            0x5401 /* TCGETS */,0x540f /* TIOCGPGRP */,0x5413 /* TIOCGWINSZ */,
             SIOCGIFNAME,SIOCGIFCONF,SIOCGIFFLAGS,SIOCSIFFLAGS,
             SIOCGIFADDR,SIOCSIFADDR,SIOCGIFDSTADDR,SIOCSIFDSTADDR,
             SIOCGIFBRDADDR,SIOCSIFBRDADDR,SIOCGIFNETMASK,SIOCSIFNETMASK,
