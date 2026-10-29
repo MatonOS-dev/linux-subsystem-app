@@ -1066,13 +1066,14 @@ static int bwrap_assert_userns_disabled;
 /* --dev needs a temporary root mapping and a second userns to restore the
  * requested IDs. That setup precedes --assert-userns-disabled's probe. */
 static int bwrap_devpts_userns;
+#include "io-fds.h"
 struct sysctl_fd {int fd;struct sysctl_fd *next;int seen_len;char seen[12];};
 static struct sysctl_fd *sysctl_fds;
 static void sysctl_sync(void);
 static void sysctl_close(int fd){struct sysctl_fd **p=&sysctl_fds;while(*p){struct sysctl_fd *d=*p;if(d->fd==fd){*p=d->next;vfs_free(d);return;}p=&d->next;}}
 /* A duplicate shares the open file; it inherits the last applied content. */
 static void sysctl_dup(int from,int to){if(from==to)return;struct sysctl_fd *src=NULL;for(struct sysctl_fd *q=sysctl_fds;q;q=q->next)if(q->fd==from){src=q;break;}sysctl_close(to);if(src){struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(p){*p=*src;p->fd=to;p->next=sysctl_fds;sysctl_fds=p;}}}
-static long sysctl_open(int cloexec){long fd=RAW(PROXY_SC_memfd_create,"v3-userns-limit",cloexec?1:0,0,0,0,0);if(fd<0)return fd;struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*p=(struct sysctl_fd){(int)fd,sysctl_fds,0,{0}};sysctl_fds=p;return fd;}
+static long sysctl_open(int cloexec){long fd=io_fd_move(RAW(PROXY_SC_memfd_create,"v3-userns-limit",cloexec?1:0,0,0,0,0));if(fd<0)return fd;struct sysctl_fd *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}*p=(struct sysctl_fd){(int)fd,sysctl_fds,0,{0}};sysctl_fds=p;return fd;}
 /* Writes to the virtual sysctl reach its memfd natively (the filter lets low-fd
  * writes through). The limit is read back lazily before namespace checks: a
  * changed, valid content ("N" or "N\n") becomes the new limit; anything else
@@ -1318,12 +1319,22 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
         long moved=proxy_private_fd_move(target);if(moved<0)return moved;
         proxy_fd_number_moved((int)target,(int)moved);
     }
+    int duplicate=nr==PROXY_SC_dup || nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3 ||
+        (nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC));
+    int emulated=duplicate && io_emulated_fd((int)a[0]);
+    if(emulated && (nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) && a[0]!=a[1]){
+        long e=io_alias_route((int)a[1]);if(e)return e;
+    }
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     if(result>=0 && replaces_resident){
         /* posix_spawn remaps descriptors before exec. The child must discard
          * native objects caching the old number when that exec commits. */
         resident_reset_pending=1;
         proxy_log("resident-fd-replaced",a[1],a[0]);
+    }
+    if(result>=0 && emulated){
+        long e=io_alias_route((int)result);
+        if(e){if(result!=a[0])RAW(PROXY_SC_close,result,0,0,0,0,0);return e;}
     }
     /* F_DUPFD[_CLOEXEC] allocates AT OR ABOVE target: target is not the
      * descriptor replaced. Updating that live lower-bound fd can drop a
@@ -1465,6 +1476,10 @@ static int fd_creator(long n) {
 }
 static long creator_finish(long nr,proxy_arg_t *a,long result){
     tcp_note(nr,a,result);
+    if(result>=0 && (nr==PROXY_SC_inotify_init || nr==PROXY_SC_inotify_init1))result=io_fd_move(result);
+    if(result>=0 && nr==PROXY_SC_pidfd_getfd && io_emulated_fd((int)result)){
+        long e=io_alias_route((int)result);if(e){RAW(PROXY_SC_close,result,0,0,0,0,0);return e;}
+    }
     if(result>=0 && fd_creator(nr) && nr!=PROXY_SC_open && nr!=PROXY_SC_openat &&
        nr!=PROXY_SC_openat2 && nr!=PROXY_SC_creat && nr!=PROXY_SC_dup &&
        nr!=PROXY_SC_pipe && nr!=PROXY_SC_pipe2 && nr!=PROXY_SC_socketpair)
@@ -2066,6 +2081,8 @@ static int ours(long n) {
     case PROXY_SC_set_thread_area:case PROXY_SC_get_thread_area:case PROXY_SC_modify_ldt:
 #endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
+    case PROXY_SC_pidfd_getfd:case PROXY_SC_recvmmsg:
+    case PROXY_SC_inotify_init:case PROXY_SC_inotify_init1:case PROXY_SC_dup2:case PROXY_SC_dup3:
     case PROXY_SC_signalfd4:case PROXY_SC_rt_sigtimedwait:
     case PROXY_SC_seccomp:case PROXY_SC_prctl:case PROXY_SC_prlimit64:case PROXY_SC_setrlimit:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
@@ -2413,6 +2430,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         break;
     case PROXY_SC_getxattr:case PROXY_SC_lgetxattr:case PROXY_SC_listxattr:case PROXY_SC_llistxattr:case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:result=path_call(nr,a,0,-1);break;
     case PROXY_SC_ppoll:if(app_allowed(nr))result=dns_poll((void *)(uintptr_t)a[0],a[1],(void *)(uintptr_t)a[2],(void *)(uintptr_t)a[3],a[4]);break;
+    case PROXY_SC_inotify_init1:case PROXY_SC_pidfd_getfd:case PROXY_SC_recvmmsg:
+        result=app_allowed(nr)?RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]):-ENOSYS;break;
     case PROXY_SC_flock:result=vfs_private_fd((int)a[0])?-EBADF:(app_allowed(nr)?RAW(nr,a[0],a[1],0,0,0,0):-ENOSYS);break;
     case PROXY_SC_lseek:case PROXY_SC_readlink:case PROXY_SC_readlinkat:
         result=file_dispatch(nr,a);break;
@@ -2519,7 +2538,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(a[2]!=8){result=-EINVAL;break;}
         if(proxy_copy(&mask,(void *)(uintptr_t)a[1],8)){result=-EFAULT;break;}
         result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
-        if(result>=0){child_fd_close((int)result);if(mask&CHLD_BIT)child_wait_begin((int)result);}
+        if(result>=0 && (int)a[0]<0)result=io_fd_move(result);
+        if(result>=0){long e=io_alias_route((int)result);if(e){result=e;break;}child_fd_close((int)result);if(mask&CHLD_BIT)child_wait_begin((int)result);}
         break;
     }
     case PROXY_SC_rt_sigtimedwait: {
@@ -2755,6 +2775,15 @@ finish:
         }
         emit("\n");
     }
+    if(result>=0 && nr==PROXY_SC_recvmsg){
+        long e=io_received_message((void *)(uintptr_t)a[1]);if(e)result=e;
+    }
+    if(result>0 && nr==PROXY_SC_recvmmsg){
+        for(long i=0;i<result;i++){
+            struct arch_mmsghdr *m=(void *)(uintptr_t)a[1];
+            long e=io_received_message(&m[i].msg_hdr);if(e){result=e;break;}
+        }
+    }
     trace_stderr(nr,a,result);
     result=creator_finish(nr,a,result);
     proxy_rewrite_after(nr,a,result);
@@ -2883,7 +2912,8 @@ int proxy_install(int android) {
             if(libc[i].linker) proxy_log("resident-linker-range",(long)libc[i].begin,(long)libc[i].end);
         }
     }
-    int result=arch_filter_install(libc,libc_count);
+    int result=(int)io_adopt_inherited();
+    if(!result)result=arch_filter_install(libc,libc_count);
     if(!result && libc_count) {
         size_t total=inherited_native_count+libc_count;
         struct arch_ip_range *all=RESIDENT_ALLOC(total*sizeof(*all));
@@ -2909,6 +2939,7 @@ int proxy_install(int android) {
 
 void proxy_state(struct state *s){
  extern const char *proxy_tmpdir;
+ io_fd_state(s);
  proxy_count_fd=(int)state_word(s,(uint64_t)(int64_t)proxy_count_fd);
  if(s->reading && proxy_count_fd>=0)proxy_raw_count_enable();
  proxy_bionic32_base=(uint32_t)state_word(s,proxy_bionic32_base);

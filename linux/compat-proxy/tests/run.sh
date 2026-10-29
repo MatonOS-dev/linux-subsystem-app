@@ -8,6 +8,9 @@ cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0
 timeout 15 build/resolve-cache-fork
 cc -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall -Wextra -Werror tests/peer-temporary-ranges.c -o build/peer-temporary-ranges
 build/peer-temporary-ranges
+cc -O2 -Wall -Wextra -Werror -pthread tests/io-fd-window.c -o build/io-fd-window
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/io-fd-window" >build/io-fd-window.out 2>build/io-fd-window.log
+cat build/io-fd-window.out
 python3 tests/io-cache.py
 python3 tests/count-exec.py
 python3 tests/mount-scan.py
