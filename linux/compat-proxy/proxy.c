@@ -941,31 +941,6 @@ static void trace_stderr(long nr,proxy_arg_t a[6],long result) {
     }
     emit("\nv3 payload-stderr end\n");
 }
-/* One write per socket event: concurrent CEF startup otherwise interleaves
- * individual fields and loses the identity of the failing launch channel. */
-struct trace_line {char data[2048];size_t size;};
-static void trace_text(struct trace_line *line,const char *text) {
-    while(*text && line->size<sizeof(line->data)-1)line->data[line->size++]=*text++;
-}
-static void trace_decimal(struct trace_line *line,uint64_t value) {
-    char digits[24];unsigned n=0;
-    do{digits[n++]=(char)('0'+value%10);value/=10;}while(value);
-    while(n && line->size<sizeof(line->data)-1)line->data[line->size++]=digits[--n];
-}
-static void trace_flush(struct trace_line *line) {
-    RAW(PROXY_SC_write,proxy_diagnostic_fd,line->data,line->size,0,0,0);
-}
-static void trace_socket_close(int fd) {
-    if(!proxy_trace)return;
-    int domain=0;socklen_t size=sizeof(domain);struct proxy_stat st;
-    if(RAW(PROXY_SC_getsockopt,fd,SOL_SOCKET,SO_DOMAIN,&domain,&size,0)<0 || domain!=AF_UNIX)return;
-    if(arch_stat_fd(fd,&st)<0)return;
-    struct trace_line line={0};trace_text(&line,"v3 unix-close pid=");
-    trace_decimal(&line,RAW(PROXY_SC_getpid,0,0,0,0,0,0));
-    trace_text(&line," fd=");trace_decimal(&line,fd);
-    trace_text(&line," inode=");trace_decimal(&line,st.st_ino);
-    trace_text(&line,"\n");trace_flush(&line);
-}
 static void trace_unix_io(long nr,proxy_arg_t a[6],long result) {
     if(!proxy_trace)return;
     int fd=(int)a[0],domain=0,type=0;socklen_t size=sizeof(int);
@@ -984,9 +959,6 @@ static void trace_unix_io(long nr,proxy_arg_t a[6],long result) {
             requested+=v.len;
         }
     } else requested=(uint64_t)a[2];
-    struct trace_line line={0};
-#define emit(text) trace_text(&line,text)
-#define trace_number(value) trace_decimal(&line,value)
     emit("v3 unix-io op=");
     const char *op=nr==PROXY_SC_sendmsg?"sendmsg":nr==PROXY_SC_recvmsg?"recvmsg":
         nr==PROXY_SC_sendto?"sendto":nr==PROXY_SC_recvfrom?"recvfrom":
@@ -1020,11 +992,7 @@ static void trace_unix_io(long nr,proxy_arg_t a[6],long result) {
     if(credential_pid<0)emit("-");else trace_number((uint64_t)credential_pid);
     emit(" msg_flags=");trace_number((uint32_t)message.flags);
     emit(" pid=");trace_number((uint64_t)RAW(PROXY_SC_getpid,0,0,0,0,0,0));
-    struct proxy_stat st;
-    if(!arch_stat_fd(fd,&st)){emit(" inode=");trace_number(st.st_ino);}
-    emit("\n");trace_flush(&line);
-#undef trace_number
-#undef emit
+    emit("\n");
 }
 static int app_allowed(long nr) {
     for(unsigned i=0;i<sizeof(android_allowed)/sizeof(android_allowed[0]);i++)
@@ -1335,7 +1303,6 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
         return path_call(nr,a,1,-1);
     case PROXY_SC_readlink:return path_call(nr,a,0,-1);
     case PROXY_SC_close:{
-        trace_socket_close((int)a[0]);
         if(private_close_fd((int)a[0]))return proxy_fd_is_private(a[0])?-EBADF:0;
         /* A written limit must apply before its last descriptor goes away. */
         if(sysctl_fds)sysctl_sync();
@@ -1456,10 +1423,7 @@ static int fd_creator(long n) {
     }
 }
 static long creator_finish(long nr,proxy_arg_t *a,long result){
-    if(proxy_trace && nr==PROXY_SC_socketpair && result==0){
-        int pair[2];if(!proxy_copy(pair,(void *)(uintptr_t)a[3],sizeof(pair)))
-            proxy_log("socketpair-fds",pair[0],pair[1]);
-    }
+    (void)a;
     if(result>=0 && fd_creator(nr) && nr!=PROXY_SC_open && nr!=PROXY_SC_openat &&
        nr!=PROXY_SC_openat2 && nr!=PROXY_SC_creat && nr!=PROXY_SC_dup &&
        nr!=PROXY_SC_pipe && nr!=PROXY_SC_pipe2 && nr!=PROXY_SC_socketpair)
@@ -2012,7 +1976,7 @@ done:
 static int ours(long n) {
     if((native_prepared || inherited_native_count || proxy_bionic32_base) &&
        (n==PROXY_SC_mprotect || n==PROXY_SC_munmap || n==PROXY_SC_mremap))return 1;
-    if(proxy_trace && (n==PROXY_SC_uname || n==PROXY_SC_socketpair || n==PROXY_SC_wait4 || n==PROXY_SC_close))return 1;
+    if(n==PROXY_SC_uname && proxy_trace)return 1;
     if(proxy_rewrite_traps(n))return 1;
     if(ipc_ours(n))return 1;
     if(resident_fds_enabled && (n==PROXY_SC_close || n==PROXY_SC_close_range ||
@@ -2368,7 +2332,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
        nr!=PROXY_SC_dup2 && nr!=PROXY_SC_dup3) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
     if(nr==PROXY_SC_fchmod){struct proxy_stat mode;if(!arch_stat_fd((int)a[0],&mode) && S_ISREG(mode.st_mode))a[1]=(a[1]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}
     switch(nr) {
-    case PROXY_SC_wait4:case PROXY_SC_socketpair:
     case PROXY_SC_uname:
     case PROXY_SC_mprotect:case PROXY_SC_munmap:case PROXY_SC_mremap:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
@@ -2705,12 +2668,6 @@ clone_retry:
     default:break;
     }
 finish:
-    if(proxy_trace && nr==PROXY_SC_wait4){
-        proxy_log("wait4-result",a[0],result);
-        int status;
-        if(result>0 && a[1] && !proxy_copy(&status,(void *)(uintptr_t)a[1],sizeof(status)))
-            proxy_log("wait4-status",result,(unsigned)status);
-    }
     /* Observe the actual kernel answer, including Bionic startup's persona.
      * Do not infer the OS architecture from this loader's ELF class. */
     if(proxy_trace && nr==PROXY_SC_uname) {
