@@ -457,7 +457,7 @@ miss_record_logged:
     }
     else if(n==SYS_brk) result=app_brk;
     else if(n==SYS_rt_sigaction) {
-        if(g[REG_RDI]==SIGSYS || g[REG_RDI]==SIGCHLD) {
+        if(g[REG_RDI]==SIGSYS || g[REG_RDI]==SIGCHLD || g[REG_RDI]==SIGPIPE) {
             /* The proxy owns the SIGSYS and SIGCHLD delivery gates. Its
              * dispatcher retains the payload dispositions and routes child
              * notifications to the current image's waiter after exec. */

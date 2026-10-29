@@ -2537,3 +2537,36 @@ The coordinator must rebuild all loaders and repeat traced Steam, checking
 zygote termination status, error 1002, and whether the GPU process starts;
 this is a proven proxy bug, not a claim that the device's unseen write has
 been conclusively identified.
+
+### Steam round 51: capture default SIGPIPE origin
+
+Rebased on main 1aa47da. day-r57/steam.txt:2202308 and :2202687
+show zygotes 16567 and 16566 killed by SIGPIPE. The preceding read results
+cannot identify a descriptor or prove which write generated the signal;
+there is no sender siginfo in that capture. No device-cause fix is claimed.
+
+Default SIGPIPE now has a small diagnostic handler (no maps scan, libc,
+allocation, or path buffer). `fatal-signal-code SIGNAL SI_CODE` and
+`fatal-signal-sender SI_PID OP` use the existing bounded atomic logger.
+OP is the internal proxy operation in flight, or -1 outside dispatch.
+Signal action queries still report SIG_DFL; SIG_IGN and custom handlers use
+the kernel unchanged. Fork/exec preserve ignored SIGPIPE, and the handler
+re-raises with the kernel default action so waitpid still reports SIGPIPE.
+The exec-sigpipe regression checks these records as well as ignored/default
+behavior and closed diagnostic-pipe isolation.
+
+Next capture: rebuild all peers and collect traced Steam through the first
+zygote death. Preserve both fatal-signal records with pid/tid, plus the
+preceding operations. SI_USER/SI_TKILL identifies an explicit sender;
+SI_KERNEL with a write operation identifies a kernel-generated broken-pipe
+signal. OP -1 means outside the tracked dispatch (including a raw/native
+write), not proof of an external sender. No VM run here.
+
+The resident thread-adoption dispatcher also routes SIGPIPE action requests
+through this gate; otherwise a resident child can see the diagnostic handler
+instead of SIG_DFL. The existing resident host-command PTY regression caught
+that mistake during validation and passes with the routing correction.
+Final full tests/run.sh and build-android.sh passed; preflight passed.
+Logs: /mnt/data/aosp/out/pc-logs/agents/steam-r51-suite-final.log,
+steam-r51-android-final.log, steam-r51-preflight.log. The explicit raised-signal
+regression confirms SI_TKILL is distinguished from a kernel broken-pipe signal.
