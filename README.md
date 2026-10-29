@@ -278,3 +278,37 @@ links, stats and removes 128 siblings under a marked root, counting raw marker
 opens with strace: main makes **3,588** probes; the fix makes **11**. It checks
 real link counts too. Full compatibility and recovery tests remain required;
 this count reduction is not a prediction of device wall time.
+
+The last wrapper's real CEF binary is PID 26508 (`./steamwebhelper`), entered
+at 21:10:29.838. GPU children 26531 and 26577 fail resident adoption/EGL, then
+exit_group(0) at 21:10:32.210 and 21:10:34.176 respectively. The browser
+process remains alive receiving/polling until the capture ends at 21:12:34;
+there is no browser exit to explain in this run. Its GL path fails first;
+the Vulkan surface-extension errors are a later fallback, not evidence that
+adding an extension name will fix initialization.
+
+The adoption trace exposes a separate identity bug: unregistered resident
+workers call `adopt_current`, whose singleton fallback incorrectly treats
+any new TID as a fork child. Day-r50 shows `adopt-recovered-fork-child` for
+TIDs 26118/26119/26122 **in PID 26110**; they steal/rebase the sole payload
+record. Later CEF children report `adopt-miss-map 0 0`, and EGL cannot find
+an adopted Android thread. Require a changed kernel PID before singleton
+fork recovery. Normal TID/FS lookup is unchanged; genuine fork rebasing
+updates the registry's process identity. No threads are retired and signal
+routing/masks are unchanged.
+
+The added native-worker regression fails on main (exit 53, worker steals the
+record) and passes with the fix, retaining the main record and native FS.
+Full compat-proxy suite, real Flatpak/bwrap + resident workers, Wayland
+roundtrip, signalfd, production Android loader builds and the real-bionic
+ELF32-to-ELF64 GPU fixture pass. The GPU fixture covers fork and resident
+exec with a synthetic native Vulkan provider; it is not device rendering.
+Evidence: `/mnt/data/aosp/out/pc-logs/agents/steam-r45-suite.log` and
+`/mnt/data/aosp/out/steam-r45/{gpu64.log,marker-negative.log,preflight.log}`.
+
+Coordinator follow-up: rebuild all loader peers, fresh-boot, verify
+Kate/Obsidian/Chrome still draw, then capture traced Steam and current-run
+webhelper-linux/steamui_html logs. Confirm same-process singleton recovery
+and `adopt-miss-map 0 0` disappear, EGL initializes in CEF's GPU child, and
+measure pressure-vessel setup again. A successful Steam window and <10 s
+setup remain unverified. No VM, AOSP, kernel or shared image changes.

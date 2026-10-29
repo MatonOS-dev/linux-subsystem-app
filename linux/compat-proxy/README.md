@@ -2385,3 +2385,21 @@ mutation remains forbidden. The same 128-file regression makes 3,588 probes
 on main and 11 with this change. Full suite passes, including marker ownership,
 link-store crash recovery, nested bwrap bind-fd, mixed-ABI exec and Android
 loader compilation. No device speedup is claimed until a fresh image is run.
+
+### Steam round 45: singleton adoption recovery requires a new process
+
+A missing FS/TID lookup in a native worker is not a fork. Record the registry's
+kernel PID at install and fork rebase; allow singleton recovery only when that
+PID differs from the current process. Otherwise an unregistered native worker
+can take over the sole payload record and rebase away its identity. The r50
+trace shows same-process recoveries, then empty registries in CEF GPU children
+and failing EGL adoption. This change leaves thread lifetimes and SIGCHLD
+routing intact.
+
+`adopt-rebase-filter.c` now creates an unregistered resident pthread and checks
+that lookup returns NULL without changing the main record, its native FS or
+live count. Main fails this test (exit 53); the fix passes. Existing tests also
+cover genuine raw-fork recovery after TLS changes and rebasing inside SIGSYS.
+The full suite and real-bionic ELF32-to-ELF64/fork/resident-exec Vulkan fixture
+pass. Android production loaders compile. Device verification remains with
+the coordinator: CEF EGL initialization and Steam UI success are not claimed.

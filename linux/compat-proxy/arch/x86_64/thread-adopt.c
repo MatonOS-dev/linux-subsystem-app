@@ -49,6 +49,9 @@ struct thread_chunk {
     struct adopt_thread entries[CHUNK_THREADS];
 };
 static _Atomic(struct thread_chunk *) chunks;
+/* A singleton record is evidence of a fork only in a different process.
+ * Resident workers deliberately have no payload adoption record. */
+static _Atomic int registry_process;
 /* Two independent glibc allocators cannot share sbrk: one can shrink the
  * other's live heap. Freeze only the app's program break; its malloc uses
  * mmap fallback without an imposed memory cap. Resident brk remains native. */
@@ -126,6 +129,8 @@ struct adopt_thread *adopt_current(void) {
      * clone continuation is rebased. If it inherited exactly one live record,
      * that record is unambiguously the calling thread; refresh its identity
      * now and repair the FS map for the post-exec TLS base. */
+    if(atomic_load_explicit(&registry_process,memory_order_acquire)==
+       R(getpid,0,0,0,0,0,0)) return NULL;
     struct adopt_thread *only=NULL;
     for(struct thread_chunk *c=atomic_load_explicit(&chunks,memory_order_acquire);c;
         c=atomic_load_explicit(&c->next,memory_order_acquire))
@@ -208,6 +213,7 @@ static size_t live(void) {
     return count;
 }
 static void fork_rebase(struct adopt_thread *self) {
+    atomic_store_explicit(&registry_process,R(getpid,0,0,0,0,0,0),memory_order_release);
     /* Retain mappings (including the caller's parked resident stack) but
      * discard every vanished identity/reservation. No parent memory changes. */
     for(struct thread_chunk *c=atomic_load(&chunks);c;c=atomic_load(&c->next))
@@ -645,6 +651,7 @@ int adopt_install(void) {
     _Static_assert(offsetof(struct adopt_thread,xfeatures)==16640,"xfeatures assembly layout");
     _Static_assert(ATOMIC_INT_LOCK_FREE==2,"signal-safe registry atomics");
     _Static_assert(ATOMIC_POINTER_LOCK_FREE==2,"signal-safe FS publication");
+    atomic_store_explicit(&registry_process,R(getpid,0,0,0,0,0,0),memory_order_release);
     struct adopt_thread *main=reserve();
     if(!main) return -1;
     adopt_map_configure(map_memory);

@@ -48,9 +48,21 @@ static void exercise(void) {
     CHECK(!rebase_errors && record->signal_stack==previous);
     R(exit_group,0,0,0,0,0,0);__builtin_unreachable();
 }
+static void *resident_probe(void *unused) {
+    (void)unused;
+    CHECK(adopt_current()==NULL);
+    CHECK(live()==1);
+    return NULL;
+}
 int main(void) {
     CHECK(adopt_install()==0);
     record=adopt_current(); CHECK(record);
+    /* A native worker must never steal the sole payload record. */
+    pthread_t worker;
+    uintptr_t main_fs=record->resident_fs;
+    CHECK(pthread_create(&worker,NULL,resident_probe,NULL)==0);
+    CHECK(pthread_join(worker,NULL)==0);
+    CHECK(adopt_current()==record && record->resident_fs==main_fs && live()==1);
     /* Host-command's raw monitor forks can inherit more than one record.
      * Once hc_exec clears TLS, the singleton recovery cannot choose a caller.
      * Rebase at fork time, while the inherited FS identifies it. */
