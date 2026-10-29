@@ -45,6 +45,7 @@ cc -O2 -Wall -Wextra -Werror tests/resident-ranges.c -o build/resident-ranges
 build/resident-ranges
 bash tests/resident-fds.sh
 bash tests/internal-sigpipe.sh
+bash tests/android-log-sigpipe.sh
 cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resident-altstack.c loader.c vfs.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S -o build/resident-altstack
 build/resident-altstack
 cc -O2 -Wall -Wextra -Werror -pthread tests/raw-clone-gateway.c tests/raw-clone-gateway.S -o build/raw-clone-gateway

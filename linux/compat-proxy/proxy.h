@@ -72,6 +72,8 @@ int proxy_host_command(const char *);
 void proxy_host_snapshot(char *const *);
 extern int proxy_diagnostic_fd;
 int proxy_diagnostics_init(void);
+/* Redirect Android liblog to the layer's own logd socket. */
+void proxy_android_log_install(void);
 /* Layer-internal writes must not deliver SIGPIPE to the payload: Chromium
  * resets dispositions in forked children, so the payload may sit at SIG_DFL
  * while a proxy channel outlives its peer. Keep the disposition/mask and any

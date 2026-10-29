@@ -75,6 +75,7 @@ static int hc_test_fd=-1;
 static int proxy_count_fd=-1;
 static long payload_close_range(unsigned,unsigned,unsigned);
 #include "resident-fds.h"
+#include "android-log.h"
 int proxy_resident_fd_owned(int fd){return resident_fd_owned(fd);}
 static int private_close_fd(int fd){
 #ifdef HOST_COMMAND_TEST
@@ -85,6 +86,7 @@ static int private_close_fd(int fd){
 }
 void proxy_fd_number_moved(int oldfd,int newfd){
     vfs_private_fd_relocated(oldfd,newfd);ipc_private_fd_relocated(oldfd,newfd);state_private_fd_relocated(oldfd,newfd);
+    android_log_relocated(oldfd,newfd);
     if(proxy_count_fd==oldfd)proxy_count_fd=newfd;
     if(proxy_diagnostic_fd==oldfd)proxy_diagnostic_fd=newfd;
 }
@@ -108,6 +110,27 @@ int proxy_diagnostics_init(void) {
     if(fd<0)return (int)fd;
     proxy_diagnostic_fd=(int)fd;return 0;
 }
+/* Bionic-side logging must not own a payload-visible descriptor (android-log.h).
+ * Only the resident Android loaders link liblog; the freestanding host and
+ * Android payload loaders never do. */
+#if defined(__ANDROID__) && defined(MATON_GPU_BRIDGE)
+#include <android/log.h>
+#include <dlfcn.h>
+static void proxy_android_log_forward(const struct __android_log_message *message) {
+    proxy_android_log_write((int)message->buffer_id,(int)message->priority,
+                            message->tag,message->message);
+}
+void proxy_android_log_install(void) {
+    __android_log_set_logger(proxy_android_log_forward);
+    /* liblog may already hold a socket from earlier bionic startup, possibly at
+     * a number the payload later sweeps; drop it now that nothing writes to it.
+     * __android_log_close is a systemapi export, so resolve it at run time. */
+    void (*close_log)(void)=(void (*)(void))dlsym(RTLD_DEFAULT,"__android_log_close");
+    if(close_log)close_log();
+}
+#else
+void proxy_android_log_install(void){}
+#endif
 /* Resident exec must discard libc handlers: bionic debuggerd uses bionic
  * TLS, which is no longer valid after entering a glibc image. */
 static void crash_hex(uint64_t value) {
@@ -2874,6 +2897,8 @@ void proxy_state(struct state *s){
  proxy_trace=state_word(s,proxy_trace);proxy_diagnostic_fd=state_word(s,proxy_diagnostic_fd);
  namespaces=state_word(s,namespaces);userns_remaining=state_word(s,userns_remaining);
  proxy_fd_state(s);if(s->error)return;
+ /* Layer logd socket: the number must follow the private reserve across exec. */
+ android_log_state(s);if(s->error)return;
  state_string(s,(char **)&proxy_tmpdir);
  state_string(s,(char **)&host_command_socket);host_command_started=state_word(s,host_command_started);
  count=0;for(struct sysctl_fd *d=sysctl_fds;d;d=d->next)if(state_live(d->fd))count++;

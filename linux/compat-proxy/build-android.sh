@@ -25,7 +25,7 @@ python3 "$build_source/gen-policy.py"
   -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
   "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
   "$build_source"/adopt-map.c "$build_source"/arch/x86_64/thread-adopt.c \
-  "$build_source"/arch/x86_64/{raw.S,adopt.S,altstack.S} -pthread -ldl -lEGL -lGLESv2 \
+  "$build_source"/arch/x86_64/{raw.S,adopt.S,altstack.S} -pthread -ldl -llog -lEGL -lGLESv2 \
   -o "$output/libmatonos-v3-loader.so"
 
 MATON_I386_GPU_BRIDGE=1 bash "$build_source/build-i386.sh" "$output/libmatonos-v3-loader-i386.so"
@@ -38,7 +38,7 @@ MATON_I386_GPU_BRIDGE=1 bash "$build_source/build-i386.sh" "$output/libmatonos-v
  -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
  "$build_source"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
  "$build_source"/adopt-map.c "$build_source"/arch/x86_64/thread-adopt.c \
- "$build_source"/arch/x86_64/{raw.S,adopt.S,altstack.S} -pthread -ldl -lEGL -lGLESv2 \
+ "$build_source"/arch/x86_64/{raw.S,adopt.S,altstack.S} -pthread -ldl -llog -lEGL -lGLESv2 \
  -Wl,-soname,libmatonos-v3-peer-x86_64.so -o "$output/libmatonos-v3-peer-x86_64.so"
 "$compiler" -nostdlib -fPIC -pie -mcmodel=large -Wl,--no-dynamic-linker \
  -Wl,--image-base=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 \

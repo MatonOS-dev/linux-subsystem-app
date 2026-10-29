@@ -2634,3 +2634,42 @@ resident-fds, exec-sigpipe, marker-cache, cross-ABI and site rewrite. No VM
 was run; rebuild the loaders and repeat traced Steam, checking zygote status
 13, GPU launch error 1002 and whether the zygote now reports the clone
 rejection instead of dying.
+
+### Steam round 54: bionic liblog writes must never hit a swept fd
+
+The ftrace at `.capture/ftrace4.txt` shows the CEF zygotes 31383/31384 dying
+of kernel SIGPIPE on `writev(fd 5, vlen 4)` returning `-EPIPE`. Four iovecs
+is exactly liblog's string log: the 11-byte header (`u8 id, u16 tid,
+u32 sec, u32 nsec`) plus priority/tag/message, written through liblog's one
+cached dgram socket for `/dev/socket/logdw` (system/logging/liblog
+`logd_writer.cpp` `LogdWrite`). That socket lives in the payload process's
+descriptor table at a number bionic creates inside the exempt native range,
+so no proxy rule ever learns or protects it. Chromium's `LaunchProcess`
+sweep closes it, a payload allocation recycles the number, and the next
+bionic-side `__android_log_*` write lands in unrelated payload data and dies
+at SIG_DFL.
+
+The layer now redirects liblog instead of chasing the socket number:
+`proxy_android_log_install()` (`android-log.h`, `proxy.c:113-133`) installs
+its own liblog logger after `__android_log_set_logger(...)`, so every
+`__android_log_*` call routes to `proxy_android_log_write()` speaking liblog's
+wire format through the layer's own socket, which is allocated in the private
+fd reserve exactly like the proxy's own fds: payload `close()` of it is
+refused, `close_range()` sweeps step over it, and a payload `dup2`/`F_DUPFD`
+onto the number relocates the layer socket first (`android_log_relocated`,
+wired into `proxy_fd_number_moved`). The old liblog socket, if bionic opened
+one earlier, is dropped with `__android_log_close()` (`proxy.c:128`). Writes
+go through `proxy_internal_send`'s `MSG_NOSIGNAL`, so a vanished or recycled
+peer yields `EPIPE` without a signal. The layer fd number rides the sealed
+exec-state stream (`android_log_state`, version 16). The full suite is
+regression-covered by `tests/android-log-sigpipe.c` and the wire-version
+update in `tests/state-reject.py`. Validation: `tests/run.sh` passes in full
+(including i386/mixed exec, apply-extra, rewrite and the new SIGPIPE cases);
+production `build-android.sh` links `-llog` and passes. No VM was run.
+
+Device follow-up (coordinator; no VM used here): rebuild both loader ABIs,
+relaunch traced Steam and keep logcat through the zygote window. The zygote
+tids alive at the first `__android_log_*` write is the control; check the
+reserve-protected logd socket in the fd sweep and absence of the
+`writev(fd 5, vlen 4)` EPIPE death. No shared device-tree or kernel changes
+are needed.

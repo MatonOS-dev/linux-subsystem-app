@@ -555,6 +555,9 @@ int main(int argc,char **argv,char **environ) {
     }
 #endif
     if(proxy_diagnostics_init())return 1;
+    /* Before any Android graphics library can log: liblog's own logd socket
+     * would live at a payload-visible number that a payload fd sweep recycles. */
+    proxy_android_log_install();
     vfs_temp_gc();
     int android=0,i=resumed?4:1; long parent=0;
 #ifdef MATON_GPU_BRIDGE

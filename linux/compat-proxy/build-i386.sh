@@ -24,7 +24,7 @@ if [[ ${MATON_I386_GPU_BRIDGE:-0} == 1 ]]; then
     "$source_dir/arch/i386/sysinfo.c"
     "$source_dir/arch/i386/adopt.S"
     "$source_dir/arch/i386/thread-adopt.c"
-    -pthread -ldl -lEGL -lGLESv2
+    -pthread -ldl -llog -lEGL -lGLESv2
   )
 fi
 peer_output=$output
