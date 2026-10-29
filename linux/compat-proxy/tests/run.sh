@@ -13,6 +13,7 @@ native_out=$(mktemp -d "${TMPDIR:-/mnt/data/aosp/out/pc-logs}/steam-personality-
 bash tests/native-reservation.sh "$native_out/guards" >"$native_out/guards.log" 2>&1
 grep '^PASS ' "$native_out/guards.log"
 bash tests/bionic32-start.sh "$native_out/bionic32"
+bash tests/bionic32-terminal.sh "$native_out/bionic32-terminal"
 bash tests/home-links.sh
 bash tests/exec-origin.sh
 bash tests/exec-relative.sh
