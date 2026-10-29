@@ -26,18 +26,3 @@ for prefix in ([], [str(root / 'build/linux-layer-v3'), '--android-filter'],
         p.stdin.write(b'x'); p.stdin.flush(); p.stdin.close()
         assert p.wait(timeout=10) == 0, (prefix, p.returncode)
 print('PASS closed diagnostic pipe preserves payload default SIGPIPE and liveness')
-
-# The default-action child still dies by SIGPIPE, with bounded provenance
-# records. The first argument is the signal, then si_code; sender/op follow.
-p = subprocess.run([str(root / 'build/linux-layer-v3'), '--android-filter', '--trace', str(exe)],
-                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-assert b'fatal-signal-code 13 ' in p.stderr, p.stderr[-2000:]
-assert b'fatal-signal-sender ' in p.stderr, p.stderr[-2000:]
-print('PASS default SIGPIPE provenance retains waitpid signal status')
-
-p = subprocess.run([str(root / 'build/linux-layer-v3'), '--android-filter', '--trace',
-                    str(exe), 'sent-signal'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-assert p.returncode == -13, p.returncode
-assert b'fatal-signal-code 13 -6' in p.stderr, p.stderr[-2000:]
-assert b'fatal-signal-sender ' in p.stderr, p.stderr[-2000:]
-print('PASS explicit SIGPIPE sender distinguished from broken-pipe origin')

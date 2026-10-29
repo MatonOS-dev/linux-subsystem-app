@@ -159,25 +159,12 @@ static void crash_report(int sig,siginfo_t *info,void *context) {
     RAW(PROXY_SC_exit_group,128+sig,0,0,0,0,0);
 }
 static void child_exec(void);
-/* Default SIGPIPE provenance without crash_report's maps/stack walk. */
-static long signal_operation(void);
-static void pipe_report(int sig,siginfo_t *info,void *context) {
-    (void)context;
-    proxy_log("fatal-signal-code",sig,info->si_code);
-    proxy_log("fatal-signal-sender",info->si_pid,signal_operation());
-    struct kernel_action action={0};
-    RAW(PROXY_SC_rt_sigaction,sig,&action,0,8,0,0);
-    proxy_sigmask_t mask=UINT64_C(1)<<(sig-1);
-    RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);
-    RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),RAW(PROXY_SC_gettid,0,0,0,0,0,0),sig,0,0,0);
-}
 static void exec_signals(void) {
     for(int sig=1;sig<=64;sig++){
         if(sig==SIGKILL || sig==SIGSTOP || sig==SIGSYS || sig==SIGCHLD)continue;
         struct kernel_action old={0},next={0};
         if(RAW(PROXY_SC_rt_sigaction,sig,0,&old,8,0,0)<0)continue;
         if(old.handler==1 && sig!=SIGSEGV)continue; /* synchronous SIGSEGV still needs proxy handling */
-        if(sig==SIGPIPE)next=(struct kernel_action){(uintptr_t)pipe_report,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
         if(sig==SIGSEGV)chained_segv=(struct kernel_action){0};
         if(sig==SIGSEGV || sig==SIGBUS || sig==SIGILL || sig==SIGFPE || sig==SIGABRT)
             next=(struct kernel_action){(uintptr_t)crash_report,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
@@ -211,7 +198,6 @@ struct ldt_cache_entry { unsigned selector; unsigned age; int real_entry; unsign
 #endif
 struct thread_state {
     unsigned direct_depth;
-    long signal_op;
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
     unsigned int personality,personality_valid;
     proxy_sigmask_t app_sigsys_mask;
@@ -227,13 +213,6 @@ struct thread_state {
 };
 struct thread_node {struct thread_state state;struct thread_node *next;};
 static struct thread_node *threads;
-static long signal_operation(void) {
-    long tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
-    for(struct thread_node *p=__atomic_load_n(&threads,__ATOMIC_ACQUIRE);p;p=p->next)
-        if(p->state.tid==tid)return p->state.signal_op-1;
-    return -1;
-}
-
 /* The static proxy runs before it can rely on the payload's TLS layout. Cache
  * state by the current stack page instead; stacks are per-thread, and an
  * ambiguous page falls back to gettid rather than guessing ownership. */
@@ -1489,8 +1468,7 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     {PROFILE_BEGIN();thread=thread_state();PROFILE_END(9);}
     if(nr==PROXY_SC_personality)return personality_call(a,thread);
     if(nr==PROXY_SC_uname && proxy_trace)return rewrite_slow(nr,a);
-    long saved_signal_op=thread?thread->signal_op:0;
-    if(thread){thread->signal_op=nr+1;thread->direct_depth++;}
+    if(thread)thread->direct_depth++;
     uintptr_t ceiling=(uintptr_t)&ceiling;
     void *arena;
     {PROFILE_BEGIN();arena=thread?vfs_direct_begin(thread->tid,ceiling):NULL;PROFILE_END(10);}
@@ -1498,7 +1476,7 @@ long proxy_direct_dispatch(long nr,proxy_arg_t *saved) {
     {PROFILE_BEGIN();result=file_dispatch(nr,a);PROFILE_END(11);}
     result=creator_finish(nr,a,result);
     vfs_direct_end(arena);
-    if(thread){thread->direct_depth--;thread->signal_op=saved_signal_op;}
+    if(thread)thread->direct_depth--;
     PROFILE_END(8);
     return result;
 }
@@ -2243,8 +2221,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_ARG4),ARCH_CONTEXT(uc,ARCH_ARG5)};
     struct arch_call call=arch_decode_call(info->si_syscall,a);
     nr=original=call.id;
-    long saved_signal_op=thread?thread->signal_op:0;
-    if(thread)thread->signal_op=nr+1;
     long count_id=nr;
     if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
     long result=-ENOSYS;
@@ -2463,16 +2439,8 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         }
         else {
             struct kernel_action action;
-            if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));normalize_payload_action(&action);
-                if(a[0]==SIGPIPE && !action.handler)action=(struct kernel_action){(uintptr_t)pipe_report,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
-                a[1]=(long)&action;}
+            if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));normalize_payload_action(&action);a[1]=(long)&action;}
             result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
-            if(!result && a[0]==SIGPIPE && a[2]){
-                struct kernel_action old;
-                if(!proxy_copy(&old,(void *)(uintptr_t)a[2],sizeof(old)) && old.handler==(uintptr_t)pipe_report){
-                    old=(struct kernel_action){0};proxy_copy((void *)(uintptr_t)a[2],&old,sizeof(old));
-                }
-            }
         }break;
     case PROXY_SC_signalfd4: {
         proxy_sigmask_t mask=0;
@@ -2700,7 +2668,6 @@ clone_retry:
     default:break;
     }
 finish:
-    if(thread)thread->signal_op=saved_signal_op;
     /* Observe the actual kernel answer, including Bionic startup's persona.
      * Do not infer the OS architecture from this loader's ELF class. */
     if(proxy_trace && nr==PROXY_SC_uname) {

@@ -7,7 +7,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 int main(int argc,char **argv){
-    if(argc>1 && !strcmp(argv[1],"sent-signal")){signal(SIGPIPE,SIG_DFL);raise(SIGPIPE);return 19;}
     if(argc>1 && (!strcmp(argv[1],"closed-log")||!strcmp(argv[1],"closed-log-pending"))){
         signal(SIGPIPE,SIG_DFL);
         int pending=!strcmp(argv[1],"closed-log-pending");
