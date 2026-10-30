@@ -1,5 +1,4 @@
-/* Production-filter regression: ordinary positional I/O/writev must not
- * enter SIGSYS. The private window must retain its existing route. */
+/* Inherited filters must permit native linker I/O on private descriptors. */
 #include "../proxy.c"
 static volatile unsigned traps;
 #define CHECK(x) do {if(!(x))RAW(PROXY_SC_exit_group,__LINE__,0,0,0,0,0);} while(0)
@@ -17,18 +16,15 @@ int main(void){
  struct kernel_action action={(uintptr_t)probe,SA_SIGINFO|SA_RESTORER,(uintptr_t)proxy_restore,0};
  CHECK(RAW(PROXY_SC_rt_sigaction,SIGSYS,&action,0,8,0,0)==0);
  CHECK(RAW(PROXY_SC_prctl,PR_SET_NO_NEW_PRIVS,1,0,0,0,0)==0);
- CHECK(arch_app_install()==0 && arch_filter_install(NULL,0)==0);
+ CHECK(RAW(PROXY_SC_dup3,fd,proxy_fd_reserve,0,0,0,0)==proxy_fd_reserve);
+ struct arch_ip_range native={(uintptr_t)payload_io,(uintptr_t)payload_io+256,0};
+ CHECK(arch_app_install()==0 && arch_filter_install(&native,1)==0);
  char c='x';struct iovec v={&c,1};
- CHECK(payload_io(arch_encode_syscall(PROXY_SC_pwrite64),fd,&c,1)==1);
- c=0;CHECK(payload_io(arch_encode_syscall(PROXY_SC_pread64),fd,&c,1)==1 && c=='x');
- CHECK(payload_io(arch_encode_syscall(PROXY_SC_writev),fd,&v,1)==1);
+ CHECK(payload_io(arch_encode_syscall(PROXY_SC_pwrite64),proxy_fd_reserve,&c,1)==1);
+ c=0;CHECK(payload_io(arch_encode_syscall(PROXY_SC_pread64),proxy_fd_reserve,&c,1)==1 && c=='x');
+ CHECK(payload_io(arch_encode_syscall(PROXY_SC_writev),proxy_fd_reserve,&v,1)==1);
  CHECK(traps==0);
- CHECK(payload_io(arch_encode_syscall(PROXY_SC_pread64),proxy_fd_reserve,&c,1)==-EBADF);
- CHECK(payload_io(arch_encode_syscall(PROXY_SC_pwrite64),proxy_fd_reserve_end-1,&c,1)==-EBADF);
- CHECK(payload_io(arch_encode_syscall(PROXY_SC_writev),proxy_fd_reserve,&v,1)==-EBADF);
- CHECK(traps==3);
- CHECK(payload_io(arch_encode_syscall(PROXY_SC_pread64),-1,&c,1)==-EBADF && traps==3);
- const char msg[]="PASS ordinary positional I/O and writev bypass SIGSYS; private window retains routing\n";
+ const char msg[]="PASS native-range positional I/O and writev on private fd bypass routing\n";
  RAW(PROXY_SC_write,1,msg,sizeof(msg)-1,0,0,0);RAW(PROXY_SC_exit_group,0,0,0,0,0,0);
  __builtin_unreachable();
 }

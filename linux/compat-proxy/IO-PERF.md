@@ -1,3 +1,5 @@
+> Follow-up: the positional-I/O/writev bypass described below was reverted after it trapped private descriptors before native-range exemptions, breaking inherited-filter startup. The measurements are historical; path optimizations remain.
+
 # Host I/O performance work, 2026-10-29
 
 Status: partial progress. The requested <=2x native target is **not met**.

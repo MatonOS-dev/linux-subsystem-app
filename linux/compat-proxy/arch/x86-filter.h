@@ -182,25 +182,6 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
         }
     }
-    /* Positional I/O and writev have no payload-side translation. Keep the
-     * private window routed as before; ordinary descriptors go to Linux.
-     * read/readv still decode forwarded signalfd records, and write commits
-     * synthesized sysctl state, including aliases made with dup2. */
-    if(!proxy_trace){
-        const long direct[]={PROXY_SC_pread64,PROXY_SC_pwrite64,PROXY_SC_writev};
-        for(unsigned i=0;i<sizeof(direct)/sizeof(direct[0]);i++){
-            long nr=encode(direct[i]);if(nr<0)continue;
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-            ADD(BPF_JMP|BPF_JEQ|BPF_K,0,6,nr);
-            /* Linux consumes fd as an int, ignoring the argument high word. */
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
-            ADD(BPF_JMP|BPF_JGE|BPF_K,0,2,(uint32_t)proxy_fd_reserve);
-            ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,(uint32_t)proxy_fd_reserve_end);
-            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-        }
-    }
     /* Number-only fast path. Every syscall the checks below would not trap
      * is allowed here before any instruction-pointer or argument load, so
      * the kernel's seccomp action cache marks it constant-allow and skips

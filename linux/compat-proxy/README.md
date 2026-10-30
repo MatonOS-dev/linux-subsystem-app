@@ -2799,8 +2799,7 @@ and `/mnt/data/aosp/out/pc-logs/agents/steam-r60-procs.sh`. No VM was run.
 
 [IO-PERF.md](IO-PERF.md) records the reproducible native/proxy benchmark,
 probe reductions, production-filter regression tests and retained emulation
-cases. Ordinary positional I/O and writev bypass SIGSYS outside the private
-fd window when tracing is off. Sequential read/write and the requested
+cases. The positional-I/O and writev bypass was reverted because its private-fd trap preceded the native-range exemption and broke inherited-filter startup. Sequential read/write and the requested
 <=2x-native target remain unfinished; host gains do not establish device or
 Steam bootstrap latency. No VM or image build was used for this work.
 
