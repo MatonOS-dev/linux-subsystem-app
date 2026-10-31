@@ -182,10 +182,10 @@ static int init_egl(void){
 static Bool supported(Display*d,int s){return d&&s>=0&&s<XScreenCount(d)&&load_egl();}
 static void *dispatch(const GLubyte*n);
 static int init_egl(void);
-static void *getproc(const GLubyte*n){if(!n)return 0;void*p=dispatch(n);if(p)return p;if(!init_egl())return 0;return (void*)eglGetProcAddress((const char*)n);}
+static void *getproc(const GLubyte*n){if(!n)return 0;void*p=dispatch(n);if(p)return p;if(!load_egl())return 0;return (void*)eglGetProcAddress((const char*)n);}
 static int cfgattr(Display*d,GLXFBConfig c,int a,int*v){struct fb *f=find_config(d,c);if(!f||!v)return 1;switch(a){case GLX_FBCONFIG_ID:case GLX_VISUAL_ID:*v=(int)f->visual.visualid;break;case GLX_X_VISUAL_TYPE:*v=GLX_TRUE_COLOR;break;case GLX_X_RENDERABLE:*v=1;break;case GLX_DRAWABLE_TYPE:*v=GLX_WINDOW_BIT|GLX_PBUFFER_BIT;break;case GLX_RENDER_TYPE:*v=GLX_RGBA_BIT;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*v=8;break;case GLX_DEPTH_SIZE:*v=24;break;case GLX_STENCIL_SIZE:*v=8;break;case GLX_DOUBLEBUFFER:*v=1;break;default:*v=0;}return 0;}
-static Bool glXQueryExtension(Display*d,int*e,int*v){if(e)*e=0;if(v)*v=0;return d&&init_egl();}
-static Bool glXQueryVersion(Display*d,int*a,int*b){if(!d||!init_egl())return 0;if(a)*a=1;if(b)*b=4;return 1;}
+static Bool glXQueryExtension(Display*d,int*e,int*v){if(e)*e=0;if(v)*v=0;return d&&load_egl();}
+static Bool glXQueryVersion(Display*d,int*a,int*b){if(!d||!load_egl())return 0;if(a)*a=1;if(b)*b=4;return 1;}
 static const char *glXGetClientString(Display*d,int n){(void)d;return n==GLX_VENDOR?"MatonOS":n==GLX_VERSION?"1.4":exts;}
 static const char *glXQueryServerString(Display*d,int s,int n){return supported(d,s)?glXGetClientString(d,n):0;}
 static const char *glXQueryExtensionsString(Display*d,int s){return supported(d,s)?exts:0;}
