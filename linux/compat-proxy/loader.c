@@ -622,14 +622,13 @@ static int loader_main(int argc,char **argv,char **environ) {
         gpu_gles=gpu_egl;
     }
 #endif
-    /* Discover Android's EGL vendor before snapshotting native syscall
-     * ranges, but leave the display uninitialized until the payload actually
-     * uses graphics. Mesa initialization starts disk-cache worker threads:
-     * doing that in a fresh Linux zygote breaks its single-thread invariant. */
+    /* Enable native fd lifetime tracking without calling EGL. On some
+     * drivers even eglGetDisplay starts cache workers, breaking a freshly
+     * execed Linux zygote's single-thread invariant. Graphics libraries loaded
+     * later still get native syscall semantics via Android mapping lookup. */
 #ifdef MATON_GPU_BRIDGE
     if(gpu_bridge_enabled) {
         if(proxy_resident_fds_snapshot(0)) return 7;
-        (void)eglGetDisplay(EGL_DEFAULT_DISPLAY);
         if(proxy_resident_fds_snapshot(1)) return 7;
         if(proxy_resident_signals_end(resident_signal_mask))return 7;
     }

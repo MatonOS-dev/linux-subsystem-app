@@ -10,9 +10,9 @@ __attribute__((constructor)) static void native_environment(void) {
     unsetenv("LD_PRELOAD");unsetenv("LD_LIBRARY_PATH");
 }
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display) {
-    (void)display;return (EGLDisplay)(uintptr_t)0x1234;
+    (void)display;_exit(97);
 }
-/* Preload may discover a display, but must not start driver workers before
+/* Startup must not discover a display or start driver workers before
  * a Linux zygote's single-thread check. The Vulkan payload never calls EGL. */
 EGLBoolean eglInitialize(EGLDisplay display,EGLint *major,EGLint *minor) {
     (void)display;(void)major;(void)minor;_exit(98);

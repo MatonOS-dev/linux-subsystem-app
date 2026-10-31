@@ -2938,3 +2938,12 @@ exits 98 if startup calls eglInitialize; it fails before this change and
 passes the native peer/fork/resident-exec Vulkan test afterwards. The earlier
 intermediate device build also failed Chrome and Obsidian visually; process
 liveness or am start success alone was not treated as rendering validation.
+
+Follow-up on the same VM: even eglGetDisplay alone starts libmato:disk$0 in
+fresh zygotes (r17-lazy-zygote-dump.txt), so defer every EGL entrypoint, not
+only eglInitialize. Enable resident fd tracking with an empty before/after
+snapshot; late driver calls use the existing native Android mapping route.
+The provider regression now exits 97 on eglGetDisplay as well as 98 on
+initialization. It fails against the display-discovery loader and passes
+against fully lazy startup. This follow-up supersedes the earlier statement
+that display discovery is safe during loader startup.
