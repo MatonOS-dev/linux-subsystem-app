@@ -166,7 +166,11 @@ final class V3Launcher {
                 // ref. Expose only its generated install view, after host paths
                 // are denied, so the child can resolve refs without host access.
                 PackageDeployment.installationReadOnlyOption(deployment),
-                "--nodevice=all", "--device=dri",
+                // /dev/shm is the stub's emulated private tmpfs, not hardware.
+                // Share it like upstream --device=all does: portal Spawn
+                // children inherit it via extra-args, so a sub-sandbox meets
+                // its parent's shared memory instead of a nested per-app dir.
+                "--nodevice=all", "--device=dri", "--device=shm",
                 "--env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1", "--env=GTK_CSD=0",
                 "--env=NO_AT_BRIDGE=1",
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
