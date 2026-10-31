@@ -40,12 +40,12 @@ def build(out, vulkan, egl, glx, branch, vulkan_i386, egl_i386, glx_i386):
             (i386_lib / "libGLX_maton.so").write_bytes((i386_lib / "libGLX_maton.so.0").read_bytes())
     (files / "vulkan/icd.d/maton_icd.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
-        '    "library_path": "libmaton_vulkan.so",\n'
+        '    "library_path": "../lib/libmaton_vulkan.so",\n'
         '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
     if vulkan_i386:
         (files / "vulkan/icd.d/maton_icd_i386.json").write_text(
             '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
-            '    "library_path": "libmaton_vulkan_i386.so",\n'
+            '    "library_path": "../lib/libmaton_vulkan_i386.so",\n'
             '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
     (files / "glvnd/egl_vendor.d/10_maton.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
