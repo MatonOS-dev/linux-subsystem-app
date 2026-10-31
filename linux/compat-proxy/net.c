@@ -194,3 +194,97 @@ void net_state(struct state *s){
   if(!s->reading)d=d->next;
  }
 }
+
+/* /proc/net/tcp{,6} for the stub. Android denies apps the kernel tables
+ * (proc_net_tcp_udp), yet Linux tools such as lsof read them to map socket
+ * inodes to addresses. Every proxy process records its connected and accepted
+ * TCP sockets as one file per socket inode under the stub-wide TMPDIR; a read
+ * lists the records whose owner fd still names that socket. Listening sockets
+ * are not listed. */
+#include <fcntl.h>
+struct record { int32_t pid, fd; uint32_t uid, family; uint8_t local[16], remote[16]; uint16_t lport, rport; uint64_t inode; };
+static char *number(char *out, uint64_t v) { char d[24]; int n = 0; do d[n++] = (char)('0' + v % 10); while (v /= 10); while (n) *out++ = d[--n]; *out = 0; return out; }
+static char *hex(char *out, uint32_t v, int width) { static const char h[] = "0123456789ABCDEF"; for (int i = width - 1; i >= 0; i--) *out++ = h[(v >> (i * 4)) & 15]; *out = 0; return out; }
+static int directory(char *out, size_t size) {
+    extern const char *proxy_tmpdir; size_t n = p_len(proxy_tmpdir);
+    if (n + 24 > size) return -ENAMETOOLONG;
+    p_copy(out, proxy_tmpdir, n); p_copy(out + n, "/matonos-net-tcp", 17);
+    long e = RAW(PROXY_SC_mkdirat, AT_FDCWD, out, 0700, 0, 0, 0);
+    return e == -EEXIST ? 0 : (int)e;
+}
+/* Address of a sockaddr in kernel order; 0 when not AF_INET/AF_INET6. */
+static int tcp_address(const void *sa, unsigned len, uint32_t *family, uint8_t addr[16], uint16_t *port) {
+    const struct sockaddr *s = sa;
+    if (s->sa_family == AF_INET && len >= sizeof(struct sockaddr_in)) { const struct sockaddr_in *i = sa; *family = AF_INET; p_copy(addr, &i->sin_addr, 4); *port = i->sin_port; return 1; }
+    if (s->sa_family == AF_INET6 && len >= sizeof(struct sockaddr_in6)) { const struct sockaddr_in6 *i = sa; *family = AF_INET6; p_copy(addr, &i->sin6_addr, 16); *port = i->sin6_port; return 1; }
+    return 0;
+}
+void tcp_note(long nr, const proxy_arg_t *a, long result) {
+    int fd;
+    if (nr == PROXY_SC_connect && (result == 0 || result == -EINPROGRESS)) fd = (int)a[0];
+    else if (nr == PROXY_SC_accept4 && result >= 0) fd = (int)result;
+    else return;
+    int type = 0; unsigned tlen = sizeof(type);
+    if (RAW(PROXY_SC_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &tlen, 0) || type != SOCK_STREAM) return;
+    struct record r = {0}; struct sockaddr_storage name; unsigned len = sizeof(name); uint32_t family = 0;
+    if (RAW(PROXY_SC_getsockname, fd, &name, &len, 0, 0, 0) || !tcp_address(&name, len, &r.family, r.local, &r.lport)) return;
+    if (nr == PROXY_SC_connect) { if (!a[1] || !tcp_address((const void *)a[1], (unsigned)a[2], &family, r.remote, &r.rport)) return; }
+    else { len = sizeof(name); if (RAW(PROXY_SC_getpeername, fd, &name, &len, 0, 0, 0) || !tcp_address(&name, len, &family, r.remote, &r.rport)) return; }
+    if (family != r.family) return;
+    struct proxy_stat st; if (arch_stat_fd(fd, &st)) return;
+    r.inode = st.st_ino; r.pid = (int32_t)RAW(PROXY_SC_getpid, 0, 0, 0, 0, 0, 0); r.fd = fd; r.uid = (uint32_t)RAW(PROXY_SC_getuid, 0, 0, 0, 0, 0, 0);
+    char path[4096]; if (directory(path, sizeof(path))) return;
+    char *end = path + p_len(path); *end++ = '/'; number(end, r.inode);
+    long out = RAW(PROXY_SC_openat, AT_FDCWD, path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600, 0, 0);
+    if (out < 0) return;
+    RAW(PROXY_SC_write, out, &r, sizeof(r), 0, 0, 0); RAW(PROXY_SC_close, out, 0, 0, 0, 0, 0);
+}
+/* The record is live while its owner fd is still that socket. */
+static int live(const struct record *r) {
+    char path[64] = "/proc/", *p = number(path + 6, (uint64_t)r->pid); p_copy(p, "/fd/", 5); number(p + 4, (uint64_t)r->fd);
+    char want[48] = "socket:[", got[48]; char *w = number(want + 8, r->inode); *w++ = ']'; *w = 0;
+    long n = RAW(PROXY_SC_readlinkat, AT_FDCWD, path, got, sizeof(got) - 1, 0, 0);
+    if (n < 0) return 0;
+    got[n] = 0; return p_equal(got, want);
+}
+static void put(int fd, const char *s) { RAW(PROXY_SC_write, fd, s, p_len(s), 0, 0, 0); }
+static char *endpoint(char *o, const struct record *r, const uint8_t *a, uint16_t port) {
+    for (int i = 0; i < (r->family == AF_INET ? 1 : 4); i++) { uint32_t w; p_copy(&w, a + 4 * i, 4); o = hex(o, w, 8); }
+    *o++ = ':'; return hex(o, (uint32_t)((port >> 8) | ((port & 255) << 8)), 4);
+}
+long tcp_proc_open(const char *path) {
+    size_t n = p_len(path); uint32_t family;
+    if (n >= 9 && p_equal(path + n - 9, "/net/tcp6")) family = AF_INET6;
+    else if (n >= 8 && p_equal(path + n - 8, "/net/tcp")) family = AF_INET;
+    else return -ENOSYS;
+    if (path[0] != '/' || path[1] != 'p' || path[2] != 'r' || path[3] != 'o' || path[4] != 'c' || path[5] != '/') return -ENOSYS;
+    long out = RAW(PROXY_SC_memfd_create, "v3-net-tcp", 1, 0, 0, 0, 0); if (out < 0) return out;
+    put((int)out, family == AF_INET
+        ? "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+        : "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n");
+    char dir[4096];
+    long d = directory(dir, sizeof(dir)) ? -ENOENT : RAW(PROXY_SC_openat, AT_FDCWD, dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0, 0, 0);
+    if (d >= 0) {
+        char buf[4096]; long got; unsigned sl = 0;
+        while ((got = RAW(PROXY_SC_getdents64, d, buf, sizeof(buf), 0, 0, 0)) > 0)
+            for (long off = 0; off < got;) {
+                struct { uint64_t ino; int64_t off; unsigned short reclen; unsigned char type; char name[]; } *e = (void *)(buf + off); off += e->reclen;
+                if (e->name[0] == '.') continue;
+                struct record r; long f = RAW(PROXY_SC_openat, d, e->name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW, 0, 0, 0); if (f < 0) continue;
+                long k = RAW(PROXY_SC_read, f, &r, sizeof(r), 0, 0, 0); RAW(PROXY_SC_close, f, 0, 0, 0, 0, 0);
+                if (k != sizeof(r)) continue;
+                if (!live(&r)) { RAW(PROXY_SC_unlinkat, d, e->name, 0, 0, 0, 0); continue; }
+                if (r.family != family) continue;
+                char line[256], *o = line; char num[24];
+                number(num, sl++); for (size_t pad = p_len(num); pad < 4; pad++) *o++ = ' ';
+                p_copy(o, num, p_len(num)); o += p_len(num); *o++ = ':'; *o++ = ' ';
+                o = endpoint(o, &r, r.local, r.lport); *o++ = ' '; o = endpoint(o, &r, r.remote, r.rport);
+                p_copy(o, " 01 00000000:00000000 00:00000000 00000000 ", 44); o += 43;
+                o = number(o, r.uid); p_copy(o, " 0 ", 4); o = number(o + 3, r.inode); p_copy(o, " 1 0000000000000000 20 4 0 10 -1\n", 34);
+                put((int)out, line);
+            }
+        RAW(PROXY_SC_close, d, 0, 0, 0, 0, 0);
+    }
+    RAW(PROXY_SC_lseek, out, 0, 0, 0, 0, 0);
+    return out;
+}

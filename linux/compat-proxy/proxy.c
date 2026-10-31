@@ -1464,7 +1464,7 @@ static int fd_creator(long n) {
     }
 }
 static long creator_finish(long nr,proxy_arg_t *a,long result){
-    (void)a;
+    tcp_note(nr,a,result);
     if(result>=0 && fd_creator(nr) && nr!=PROXY_SC_open && nr!=PROXY_SC_openat &&
        nr!=PROXY_SC_openat2 && nr!=PROXY_SC_creat && nr!=PROXY_SC_dup &&
        nr!=PROXY_SC_pipe && nr!=PROXY_SC_pipe2 && nr!=PROXY_SC_socketpair)

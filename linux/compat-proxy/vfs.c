@@ -3,6 +3,7 @@
  * every backing operation. No real mount or namespace is created. */
 #include "proxy.h"
 #include "vfs.h"
+#include "net.h"
 #include "links.h"
 #include "sysvipc.h"
 #include "state.h"
@@ -1175,7 +1176,7 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
         vfs_free(next_cwd);vfs_free(next);vfs_free(root);root=saved_next;vfs_free(oldroot_view);oldroot_view=next_oldroot;if(saved_cwd){vfs_free(cwd);cwd=saved_cwd;}return 0;}
     char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;
 }
-long vfs_proc_open(const char *path,int flags){(void)flags;size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
+long vfs_proc_open(const char *path,int flags){(void)flags;long tcp=tcp_proc_open(path);if(tcp!=-ENOSYS)return tcp;size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
     long fd=RAW(PROXY_SC_memfd_create,"v3-mountinfo",1,0,0,0,0);if(fd<0)return fd;
     const char *header="1 0 0:1 / ",*middle=" rw,nosuid - tmpfs compat-proxy rw\n";
     /* Virtual view required by bwrap's post-bind verification. Stable IDs are

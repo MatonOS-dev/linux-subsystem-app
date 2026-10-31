@@ -67,7 +67,7 @@ fi
 if [[ ${1:-} == --i386-p1 ]]; then
     exec bash tests/i386-p1.sh
 fi
-for test in signals threads spawn binder zygote-startup sigsys-virtual; do
+for test in signals threads spawn binder zygote-startup sigsys-virtual proc-net-tcp; do
     cc -no-pie -O2 -Wall -Wextra -Werror -pthread "tests/$test.c" -o "build/$test"
     if [[ $test == sigsys-virtual ]]; then timeout 15 "build/$test"; fi
     # 10,000 thread creations can exceed 15 s on the shared build host.
