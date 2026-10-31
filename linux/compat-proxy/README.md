@@ -2850,3 +2850,17 @@ The original filter remains active for payload sites; Android's inherited
 app filter is unchanged. `resident-altstack.c` exercises a native call with
 SIGSYS blocked under an actual payload TRAP filter and checks payload trapping;
 `payload-filter.c` covers range edges, 4-GiB splits and the foreign ABI.
+
+### Path-cache fork and signal reentry (2026-10-31)
+
+The saved Steam CPU profile's raw IP `0xf72fc55697c`, mapping base
+`0xf72fc527000`, file offset `0x15000`, resolves to peer ELF VA
+`0x60000034897c`: the spin in `vfs_resolve_mount` acquiring
+`resolve_cache_lock`. Simpleperf's displayed `+0x60000034097c` was misleading
+for this ELF's multiple LOAD segments. The cache lock was copied across fork
+without a reset and could also be reentered by an application signal handler.
+Fork children now abandon the potentially partial cache snapshot and reset its
+lock; the parent cache remains intact. Signals are deferred across cache
+critical sections, as for fd-name bookkeeping. `resolve-cache-fork.c` forks
+with the lock held and queues a reentrant signal while holding it. The test
+passes with the fix and fails when child reset is disabled.

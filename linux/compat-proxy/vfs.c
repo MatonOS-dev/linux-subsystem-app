@@ -158,7 +158,8 @@ void vfs_trap_end(void){
 void vfs_raw_count_summary(uint64_t *traps,uint64_t *calls){uint64_t t=0,c=0;for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){t+=a->trap_count;c+=a->raw_sum;}if(traps)*traps=t;if(calls)*calls=c;}
 void vfs_raw_category_summary(uint64_t out[6]){uint64_t v[6]={0};for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){v[0]+=a->openat_sum;v[1]+=a->readlinkat_sum;v[2]+=a->newfstatat_sum;v[3]+=a->geteuid_sum;v[4]+=a->mmap_sum;v[5]+=a->munmap_sum;}for(unsigned i=0;i<6;i++)out[i]=v[i];}
 void vfs_raw_syscall_summary(uint64_t out[PROXY_SC_count]){for(unsigned i=0;i<PROXY_SC_count;i++)out[i]=0;for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)for(unsigned i=0;i<PROXY_SC_count;i++)out[i]+=a->raw_sum_by_nr[i];}
-void vfs_raw_count_fork_child(void){__atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=a->raw_sum_by_nr[i]=0;}}
+static void resolve_cache_fork_child(void);
+void vfs_raw_count_fork_child(void){resolve_cache_fork_child();__atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=a->raw_sum_by_nr[i]=0;}}
 void *vfs_palloc(size_t n) {
     if(n>ALLOCATION_ARENA-sizeof(struct allocation)-4095) return NULL;
     size_t bytes=(n+sizeof(struct allocation)+4095)&~(size_t)4095;
@@ -308,21 +309,36 @@ static size_t resolve_cache_bucket_count;
  * and a full table never needs a clearance pass. */
 static volatile unsigned long resolve_cache_epoch;
 static volatile int resolve_cache_lock;
-static void resolve_cache_acquire(void) {
+static proxy_sigmask_t resolve_cache_acquire(void) {
+    /* A payload signal can resolve a path on this same thread. Defer signals
+     * while holding the lock; all syscalls here use the native raw gateway. */
+    proxy_sigmask_t all=~UINT64_C(0),mask=0;
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
     int unlocked=0;
     while(!__atomic_compare_exchange_n(&resolve_cache_lock,&unlocked,1,0,
             __ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) {
         unlocked=0;
         __asm__ volatile("pause");
     }
+    return mask;
 }
-static void resolve_cache_release(void) {
+static void resolve_cache_release(proxy_sigmask_t mask) {
+    __atomic_store_n(&resolve_cache_lock,0,__ATOMIC_RELEASE);
+    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+}
+static void resolve_cache_fork_child(void) {
+    /* Another vanished thread may have held the copied lock or been midway
+     * through publishing/reallocating a table. Start an empty child cache;
+     * do not traverse or free a possibly inconsistent inherited snapshot. */
+    resolve_cache=NULL;resolve_cache_count=resolve_cache_capacity=0;
+    resolve_cache_buckets=NULL;resolve_cache_bucket_count=0;
+    resolve_cache_epoch=0;
     __atomic_store_n(&resolve_cache_lock,0,__ATOMIC_RELEASE);
 }
 void vfs_resolve_cache_invalidate(void) {
-    resolve_cache_acquire();
+    proxy_sigmask_t cache_mask=resolve_cache_acquire();
     resolve_cache_epoch++;
-    resolve_cache_release();
+    resolve_cache_release(cache_mask);
 }
 /* Drop entries published before the current epoch and rebuild the buckets
  * over the survivors. Called under the cache lock, guarded by "would grow". */
@@ -913,7 +929,7 @@ fail:vfs_free(input);vfs_free(out);return NULL;
 char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **identity){
     size_t key_len=path?p_len(path):0;
     if(fd==AT_FDCWD && resolve_cacheable_path(path) && key_len<PATH_MAX){
-        resolve_cache_acquire();
+        proxy_sigmask_t cache_mask=resolve_cache_acquire();
         unsigned long epoch=resolve_cache_epoch;
         uint64_t hash=resolve_cache_hash(path,key_len,follow);
         if(resolve_cache_bucket_count){size_t index=resolve_cache_buckets[(size_t)hash&(resolve_cache_bucket_count-1)];
@@ -921,7 +937,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
             if(entry->valid && entry->epoch==epoch && entry->hash==hash && entry->follow==follow && entry->key_len==key_len && p_equal(entry->key,path)){
                 char *answer=vfs_alloc(entry->value_len+1);
                 if(answer){p_copy(answer,entry->value,entry->value_len+1);if(identity)*identity=entry->identity;}
-                resolve_cache_release();
+                resolve_cache_release(cache_mask);
                 if(!answer){*error=-ENOMEM;return NULL;}
                 /* Recovery is observable even when pathname translation is cached. */
                 links_recover_path(answer);
@@ -931,7 +947,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
             index=entry->next;
           }
         }
-        resolve_cache_release();
+        resolve_cache_release(cache_mask);
     }
     uint64_t hash=resolve_cache_hash(path?path:"",key_len,follow);
     uint64_t started=proxy_count_now();
@@ -943,7 +959,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
             resolve_cacheable_path(path) && key_len<PATH_MAX){
         size_t value_len=p_len(answer);
         if(value_len<PATH_MAX){
-            resolve_cache_acquire();
+            proxy_sigmask_t cache_mask=resolve_cache_acquire();
             /* Compaction drops entries from an older epoch when the table
              * would otherwise grow, so capacity tracks the live working set.
              * slot is taken last: compaction (and any growth it enables) may
@@ -958,7 +974,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
                 p_copy(entry->key,path,key_len+1);p_copy(entry->value,answer,value_len+1);
                 entry->valid=1;resolve_cache_buckets[bucket]=slot+1;
             }
-            resolve_cache_release();
+            resolve_cache_release(cache_mask);
         }
     }
     return answer;
