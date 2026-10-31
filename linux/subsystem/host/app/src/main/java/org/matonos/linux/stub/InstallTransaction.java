@@ -205,8 +205,15 @@ public final class InstallTransaction {
                 Throwable error=pulled.failed.get(appRef);
                 if(error==null)for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)
                     if(pulled.failed.containsKey(node.ref)){error=pulled.failed.get(node.ref);break;}
+                if(pulled.skipped.contains(appRef)) {
+                    java.util.List<String> skippedDependencies=pulled.skippedDependencies.get(appRef);
+                    String detail=skippedDependencies==null||skippedDependencies.isEmpty()
+                            ?"; skipped refs: "+pulled.skipped
+                            :"; dependency refs: "+String.join(", ",skippedDependencies);
+                    throw new java.io.IOException("Requested ref could not be staged because a dependency failed"+detail,error);
+                }
                 if(error instanceof Exception)throw (Exception)error;
-                throw new java.io.IOException("Requested ref could not be staged because a dependency failed",error);
+                throw new java.io.IOException("Requested ref could not be staged",error);
             }
             org.json.JSONArray rows=InstallHandoff.completedRows(plan,pulled.completed.keySet(),metadata,mounts,appRef);
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)

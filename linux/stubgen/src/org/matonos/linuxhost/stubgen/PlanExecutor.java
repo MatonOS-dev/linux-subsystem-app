@@ -11,10 +11,14 @@ public final class PlanExecutor {
         public final Map<String,T> completed;
         public final Map<String,Throwable> failed;
         public final Set<String> skipped;
-        Outcome(Map<String,T> completed,Map<String,Throwable> failed,Set<String> skipped) {
+        public final Map<String,List<String>> skippedDependencies;
+        Outcome(Map<String,T> completed,Map<String,Throwable> failed,Set<String> skipped,Map<String,List<String>> skippedDependencies) {
             this.completed=Collections.unmodifiableMap(completed);
             this.failed=Collections.unmodifiableMap(failed);
             this.skipped=Collections.unmodifiableSet(skipped);
+            Map<String,List<String>> reasons=new LinkedHashMap<>();
+            for(Map.Entry<String,List<String>> entry:skippedDependencies.entrySet())reasons.put(entry.getKey(),List.copyOf(entry.getValue()));
+            this.skippedDependencies=Collections.unmodifiableMap(reasons);
         }
     }
     private PlanExecutor() { }
@@ -30,20 +34,46 @@ public final class PlanExecutor {
     public static <T> Outcome<T> execute(List<DependencyPlan.Node> plan,ForkJoinPool pool,Task<T> task)throws InterruptedException {
         Map<String,Future<T>> futures=new LinkedHashMap<>();
         Map<String,T> completed=new LinkedHashMap<>();Map<String,Throwable> failed=new LinkedHashMap<>();Set<String> skipped=new LinkedHashSet<>();
-        for(DependencyPlan.Node node:plan) {
-                List<Future<T>> dependencies=new ArrayList<>();boolean missing=false;
+        Map<String,DependencyPlan.Node> byRef=new LinkedHashMap<>();for(DependencyPlan.Node node:plan)byRef.put(node.ref,node);
+        Map<String,List<String>> skippedDependencies=new LinkedHashMap<>();
+        Set<String> pending=new LinkedHashSet<>(byRef.keySet());
+        while(!pending.isEmpty()) {
+            boolean progressed=false;
+            for(DependencyPlan.Node node:plan) {
+                if(!pending.contains(node.ref))continue;
+                List<String> unresolved=new ArrayList<>();boolean waiting=false;
                 for(String ref:node.stageDependencies) {
-                    Future<T> dependency=futures.get(ref);
-                    if(dependency==null) { if(!node.reused)missing=true; }
-                    else dependencies.add(dependency);
+                    if(!byRef.containsKey(ref)) { if(!node.reused)unresolved.add(ref); }
+                    else if(pending.contains(ref))waiting=true;
+                    else if(!futures.containsKey(ref)&&!node.reused)unresolved.add(ref);
                 }
-                if(missing) { skipped.add(node.ref);continue; }
-                futures.put(node.ref,pool.submit(()->{
-                    for(Future<T> dependency:dependencies)try { dependency.get(); }
-                    catch(ExecutionException failure) { throw new DependencyFailed(); }
-                    return task.run(node);
-                }));
+                if(waiting&&unresolved.isEmpty())continue;
+                if(!unresolved.isEmpty()) { skipped.add(node.ref);skippedDependencies.put(node.ref,unresolved); }
+                else {
+                    List<Future<T>> dependencies=new ArrayList<>();boolean missing=false;
+                    for(String ref:node.stageDependencies) {
+                        Future<T> dependency=futures.get(ref);
+                        if(dependency==null) { if(!node.reused)missing=true; }
+                        else dependencies.add(dependency);
+                    }
+                    if(missing) { skipped.add(node.ref);skippedDependencies.put(node.ref,List.of()); }
+                    else futures.put(node.ref,pool.submit(()->{
+                        for(Future<T> dependency:dependencies)try { dependency.get(); }
+                        catch(ExecutionException failure) { throw new DependencyFailed(); }
+                        return task.run(node);
+                    }));
+                }
+                pending.remove(node.ref);progressed=true;
             }
+            if(!progressed) {
+                // A cycle in stageDependencies cannot be staged. Name its direct refs
+                // so the caller can report the actual graph problem.
+                for(String ref:pending) { DependencyPlan.Node node=byRef.get(ref);List<String> cycle=new ArrayList<>();
+                    for(String dependency:node.stageDependencies)if(pending.contains(dependency))cycle.add(dependency);
+                    skipped.add(ref);skippedDependencies.put(ref,cycle); }
+                pending.clear();
+            }
+        }
         for(Map.Entry<String,Future<T>> entry:futures.entrySet())try { completed.put(entry.getKey(),entry.getValue().get()); }
             catch(ExecutionException error) {
                 Throwable cause=error.getCause();
@@ -52,8 +82,15 @@ public final class PlanExecutor {
                 if(dependencyFailed)skipped.add(entry.getKey());else failed.put(entry.getKey(),cause);
                 // A dependent Future.get() wraps the original error. Keep the ref-level cause useful.
             }
-        for(DependencyPlan.Node node:plan)if(futures.containsKey(node.ref)&&!completed.containsKey(node.ref)&&!failed.containsKey(node.ref))skipped.add(node.ref);
-        return new Outcome<>(completed,failed,skipped);
+        for(DependencyPlan.Node node:plan)if(futures.containsKey(node.ref)&&!completed.containsKey(node.ref)&&!failed.containsKey(node.ref)) {
+            skipped.add(node.ref);skippedDependencies.put(node.ref,node.stageDependencies);
+        }
+        // Propagate the failed ref names through dependent nodes for actionable diagnostics.
+        for(DependencyPlan.Node node:plan)if(skipped.contains(node.ref)&&!skippedDependencies.containsKey(node.ref)) {
+            List<String> causes=new ArrayList<>();for(String ref:node.stageDependencies)if(failed.containsKey(ref)||skipped.contains(ref))causes.add(ref);
+            skippedDependencies.put(node.ref,causes);
+        }
+        return new Outcome<>(completed,failed,skipped,skippedDependencies);
     }
 
     /** Shared in-flight work is removed on completion; failures are never cached. */

@@ -20,6 +20,27 @@ public final class PlanExecutorTest {
         });
         check(result.completed.size()==4&&order.indexOf("runtime")<order.indexOf("app")&&order.indexOf("gl")<order.indexOf("app"),"dependency order");
 
+        // Repair plans can list the app before refs discovered through an
+        // installed runtime's related refs. Execution must resolve that graph,
+        // not treat a later plan entry as a missing stage dependency.
+        String appRef="app/org.mozilla.firefox/x86_64/stable";
+        String runtimeRef="runtime/org.gnome.Platform/x86_64/49";
+        String localeRef="runtime/org.gnome.Platform.Locale/x86_64/49";
+        String glRef="runtime/org.freedesktop.Platform.GL.default/x86_64/26.08";
+        String codecsRef="runtime/org.freedesktop.Platform.codecs-extra/x86_64/26.08-extra";
+        DependencyPlan.Node repairApp=new DependencyPlan.Node(appRef,"remote",null,false);
+        repairApp.stageDependencies.addAll(List.of(runtimeRef,glRef,codecsRef));
+        DependencyPlan.Node repairRuntime=new DependencyPlan.Node(runtimeRef,"remote",null,true);
+        DependencyPlan.Node localeNode=new DependencyPlan.Node(localeRef,"remote",null,false);
+        localeNode.stageDependencies.add(runtimeRef);
+        DependencyPlan.Node glNode=new DependencyPlan.Node(glRef,"remote",null,false);
+        glNode.stageDependencies.add(runtimeRef);
+        DependencyPlan.Node codecsNode=new DependencyPlan.Node(codecsRef,"remote",null,false);
+        codecsNode.stageDependencies.add(runtimeRef);
+        PlanExecutor.Outcome<String> repaired=PlanExecutor.execute(List.of(repairApp,repairRuntime,localeNode,glNode,codecsNode),4,n->n.ref);
+        check(repaired.completed.containsKey(appRef)&&repaired.completed.size()==5&&repaired.skipped.isEmpty(),
+                "repair graph with installed runtime and related extensions stages: "+repaired.skippedDependencies);
+
         DependencyPlan.Node base=node("base"),localeCommit=node("locale","base"),codecs=node("codecs"),glCommit=node("gl-independent");
         CountDownLatch rootsStarted=new CountDownLatch(3),releaseRoots=new CountDownLatch(1);
         AtomicBoolean baseFinished=new AtomicBoolean();AtomicInteger active=new AtomicInteger(),peak=new AtomicInteger();
@@ -58,6 +79,7 @@ public final class PlanExecutorTest {
             throw new AssertionError("dependent should be skipped");
         });
         check(result.failed.containsKey("bad")&&result.skipped.contains("dependent")&&result.completed.containsKey("independent"),"failure only aborts dependants");
+        check(result.skippedDependencies.get("dependent").equals(List.of("bad")),"skipped dependency cause is retained");
 
         // Concurrent jobs own separate executors/cancellation state.
         ExecutorService concurrentJobs=Executors.newFixedThreadPool(2);CountDownLatch peerStarted=new CountDownLatch(1);
