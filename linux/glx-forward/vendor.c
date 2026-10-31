@@ -147,8 +147,9 @@ static void reset_egl_probe(void){
     p_eglChooseConfig=0;p_eglCreateContext=0;p_eglCreatePbufferSurface=0;
     p_eglMakeCurrent=0;p_eglDestroySurface=0;p_eglDestroyContext=0;p_eglGetProcAddress=0;p_eglSwapInterval=0;
 }
-static int init_egl(void){
-    if(edpy!=EGL_NO_DISPLAY)return ecfg!=0;
+/* Loads the forwarder only; vendor probes must not start the Android driver
+ * (its threads break single-threaded callers such as Chromium's zygote). */
+static int load_egl(void){
     if(!egl_lib){
         egl_lib=dlopen("libEGL_maton.so",RTLD_NOW|RTLD_LOCAL);
         if(!egl_lib)egl_lib=dlopen("libEGL_maton.so.0",RTLD_NOW|RTLD_LOCAL);
@@ -164,11 +165,13 @@ static int init_egl(void){
         LOAD_DIRECT(eglGetProcAddress,get_proc_address);p_eglSwapInterval=(__typeof__(p_eglSwapInterval))egl_direct->get_proc_address("eglSwapInterval");
 #undef LOAD_DIRECT
     }
-    edpy=eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,EGL_DEFAULT_DISPLAY,0);
-    if(edpy==EGL_NO_DISPLAY||!eglInitialize(edpy,0,0)){
-        edpy=eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        if(edpy==EGL_NO_DISPLAY||!eglInitialize(edpy,0,0)){egl_diag("maton GLX: eglInitialize failed\n");return 0;}
-    }
+    return 1;
+}
+static int init_egl(void){
+    if(edpy!=EGL_NO_DISPLAY)return ecfg!=0;
+    if(!load_egl())return 0;
+    edpy=eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if(edpy==EGL_NO_DISPLAY||!eglInitialize(edpy,0,0)){edpy=EGL_NO_DISPLAY;egl_diag("maton GLX: eglInitialize failed\n");return 0;}
     EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;
     if(!eglBindAPI(EGL_OPENGL_API)){egl_diag("maton GLX: eglBindAPI desktop GL failed\n");return 0;}
     /* GLX windows are rendered into this pbuffer. Keep the advertised GLX
@@ -176,7 +179,7 @@ static int init_egl(void){
     EGLint a[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_DEPTH_SIZE,24,EGL_STENCIL_SIZE,8,EGL_NONE};
     EGLint n=0;int chosen=eglChooseConfig(edpy,a,&ecfg,1,&n)&&n;eglBindAPI(previous_api);if(!chosen){egl_diag("maton GLX: no EGL desktop pbuffer config\n");return 0;}return 1;
 }
-static Bool supported(Display*d,int s){return d&&s>=0&&s<XScreenCount(d)&&init_egl();}
+static Bool supported(Display*d,int s){return d&&s>=0&&s<XScreenCount(d)&&load_egl();}
 static void *dispatch(const GLubyte*n);
 static int init_egl(void);
 static void *getproc(const GLubyte*n){if(!n)return 0;void*p=dispatch(n);if(p)return p;if(!init_egl())return 0;return (void*)eglGetProcAddress((const char*)n);}
@@ -218,7 +221,7 @@ static GLXFBConfig config_for_visual(Display *d,XVisualInfo *v){
 }
 static XVisualInfo *glXChooseVisual(Display*d,int s,int*a){(void)a;if(!supported(d,s))return 0;Visual *v=XDefaultVisual(d,s);if(!v)return 0;XVisualInfo wanted={.screen=s,.visualid=v->visualid};return glXGetVisualFromFBConfig(d,config_for_visual(d,&wanted));}
 static int glXGetConfig(Display*d,XVisualInfo*v,int a,int*out){if(!d||!v||!out)return 1;switch(a){case GLX_RGBA:case GLX_DOUBLEBUFFER:*out=1;break;case GLX_RED_SIZE:case GLX_GREEN_SIZE:case GLX_BLUE_SIZE:case GLX_ALPHA_SIZE:*out=8;break;case GLX_DEPTH_SIZE:*out=24;break;case GLX_STENCIL_SIZE:*out=8;break;case GLX_BUFFER_SIZE:*out=32;break;case GLX_LEVEL:*out=0;break;default:*out=0;}return 0;}
-static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){struct fb *f=find_config(d,c);if(!f||!direct||!supported(d,f->visual.screen))return 0;EGLContext share_egl=EGL_NO_CONTEXT;if(share){struct ctx *parent=(struct ctx *)share;if(parent->magic!=0x4d415443)return 0;share_egl=parent->egl;}struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->direct=direct;x->surface=EGL_NO_SURFACE;EGLint ea[16],n=0,major=0,minor=0,profile=0,flags=0;int seen_major=0,seen_minor=0,seen_profile=0,seen_flags=0;
+static GLXContext create_context(Display*d,GLXFBConfig c,GLXContext share,Bool direct,const int*a){struct fb *f=find_config(d,c);if(!f||!direct||!supported(d,f->visual.screen)||!init_egl())return 0;EGLContext share_egl=EGL_NO_CONTEXT;if(share){struct ctx *parent=(struct ctx *)share;if(parent->magic!=0x4d415443)return 0;share_egl=parent->egl;}struct ctx*x=calloc(1,sizeof(*x));if(!x)return 0;x->magic=0x4d415443;x->direct=direct;x->surface=EGL_NO_SURFACE;EGLint ea[16],n=0,major=0,minor=0,profile=0,flags=0;int seen_major=0,seen_minor=0,seen_profile=0,seen_flags=0;
     if(a)for(const int*p=a;*p!=0;p+=2){int v=p[1];switch(p[0]){case GLX_CONTEXT_MAJOR_VERSION_ARB:if(seen_major++||v<1)goto bad_attr;major=v;break;case GLX_CONTEXT_MINOR_VERSION_ARB:if(seen_minor++||v<0)goto bad_attr;minor=v;break;case GLX_CONTEXT_PROFILE_MASK_ARB:if(seen_profile++||(v!=GLX_CONTEXT_CORE_PROFILE_BIT_ARB&&v!=GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB&&v!=GLX_CONTEXT_ES_PROFILE_BIT_EXT))goto bad_attr;profile=v;break;case GLX_CONTEXT_FLAGS_ARB:if(seen_flags++||(v&~(GLX_CONTEXT_DEBUG_BIT_ARB|GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)))goto bad_attr;flags=v;break;default:goto bad_attr;}}
     int es=profile==GLX_CONTEXT_ES_PROFILE_BIT_EXT;
     if(!es&&((major<3&&profile)||(major==3&&minor<2&&profile)||(major==3&&minor<2&&(flags&GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB))))goto bad_attr;
