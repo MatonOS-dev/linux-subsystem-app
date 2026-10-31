@@ -154,11 +154,16 @@ def emit_group(path, items, prefix, library):
             names.append(name)
             continue
         lines.append(f"static uintptr_t mv_cache_{internal};")
+        displays = [p.findtext("name") for p in cmd.findall("param")
+                    if library == "MV_EGL" and p.findtext("ptype") == "EGLDisplay"]
+        lazy = library == "MV_EGL" and name == "eglGetDisplay"
         # Function pointer declarators in Khronos parameters are uncommon but
         # retain the registry declaration as the call prototype when present.
         lines += [f"static __attribute__((unused)) {ret} {internal}({proto}) {{",
+                  *(["    if (display_id == EGL_DEFAULT_DISPLAY) return MV_LAZY_DISPLAY;"] if lazy else []),
                   "    struct mv_scope scope;",
                   "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+                  *[f"    {d} = mv_display_in({d});" for d in displays],
                   f'    typedef {ret} (*fn_t)({proto});',
                   f"    fn_t fn = (fn_t)__atomic_load_n(&mv_cache_{internal}, __ATOMIC_ACQUIRE);",
                   f'    if (!fn) {{ fn = (fn_t)mv_resolve("{name}", {library}); if (fn) __atomic_store_n(&mv_cache_{internal}, (uintptr_t)fn, __ATOMIC_RELEASE); }}',
@@ -167,6 +172,7 @@ def emit_group(path, items, prefix, library):
                   "    switch_back(&scope);",
                   *([f'    if (!ret) mv_image_failure("{name}", dpy, ctx, target, buffer);']
                     if name in ("eglCreateImage", "eglCreateImageKHR") else []),
+                  *(["    ret = mv_display_out(ret);"] if library == "MV_EGL" and ret == "EGLDisplay" else []),
                   "    " + ("return;" if ret == "void" else f"return ({ret})ret;"), "}"]
         names.append(name)
     pathlib.Path(path).write_text("\n".join(lines) + "\n")

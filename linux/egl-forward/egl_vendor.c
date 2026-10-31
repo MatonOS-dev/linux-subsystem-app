@@ -132,6 +132,28 @@ static void *mv_resolve(const char *name, int which) {
     return p;
 }
 
+/* Linux EGL creates no driver state in eglGetDisplay; Android's display
+ * lookup loads the vendor driver, whose cache workers break a Linux zygote's
+ * single-thread check. Hand out a placeholder for Android's default display
+ * and open the real one on the first call that uses it. */
+static char mv_lazy_display_tag;
+#define MV_LAZY_DISPLAY ((EGLDisplay)&mv_lazy_display_tag)
+static EGLDisplay mv_default_display;
+/* Called only after switching into resident bionic TLS. */
+static EGLDisplay mv_display_in(EGLDisplay dpy) {
+    if (dpy != MV_LAZY_DISPLAY) return dpy;
+    EGLDisplay real = __atomic_load_n(&mv_default_display, __ATOMIC_ACQUIRE);
+    if (real) return real;
+    typedef EGLDisplay (*fn_t)(EGLNativeDisplayType);
+    fn_t fn = (fn_t)mv_resolve("eglGetDisplay", MV_EGL);
+    real = fn ? fn(EGL_DEFAULT_DISPLAY) : EGL_NO_DISPLAY;
+    if (real) __atomic_store_n(&mv_default_display, real, __ATOMIC_RELEASE);
+    return real;
+}
+static EGLDisplay mv_display_out(EGLDisplay dpy) {
+    return dpy && dpy == __atomic_load_n(&mv_default_display, __ATOMIC_ACQUIRE) ? MV_LAZY_DISPLAY : dpy;
+}
+
 #include "egl_thunks.inc"
 #include "gles_thunks.inc"
 #include "desktop_thunks.inc"
@@ -273,9 +295,10 @@ static EGLSurface mv_eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig co
     if (w->version != 3 || !w->surface || w->width<1 || w->height<1) return EGL_NO_SURFACE;
     struct mv_egl_surface *s=mv_alloc(sizeof(*s));
     if (!s) return EGL_NO_SURFACE;
-    memset(s,0,sizeof(*s)); s->display=dpy; s->config=config; s->window=w; s->width=w->width; s->height=w->height; s->swap_interval=1;
+    memset(s,0,sizeof(*s)); s->config=config; s->window=w; s->width=w->width; s->height=w->height; s->swap_interval=1;
     struct mv_scope scope;
     if (!mv_enter(&scope)) { mv_free(s); return EGL_NO_SURFACE; }
+    dpy=mv_display_in(dpy); s->display=dpy;
     typedef EGLSurface (*pbuf_fn)(EGLDisplay,EGLConfig,const EGLint *);
     static uintptr_t cache;
     pbuf_fn pbuf=(pbuf_fn)__atomic_load_n(&cache,__ATOMIC_ACQUIRE);
@@ -372,6 +395,7 @@ static int mv_surface_resize(struct mv_egl_surface *s) {
 static EGLBoolean mv_eglDestroySurface(EGLDisplay dpy,EGLSurface handle) {
     struct mv_egl_surface *s=mv_surface_find(handle);
     if (!s) { struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
+        dpy=mv_display_in(dpy);
         typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface); fn_t fn=(fn_t)mv_resolve("eglDestroySurface",MV_EGL); EGLBoolean r=fn?fn(dpy,handle):EGL_FALSE; switch_back(&scope); return r; }
     if(s->submitted)while(!mv_wl_buffer_released(s->buffer))if(mv_wl_dmabuf_dispatch_one(s->wayland)<0){mv_surface_put(s);return EGL_FALSE;}
     if (!mv_surface_unpublish(s)) { mv_surface_put(s); return EGL_FALSE; }
@@ -386,6 +410,7 @@ static EGLBoolean mv_eglMakeCurrent(EGLDisplay dpy,EGLSurface draw,EGLSurface re
     if((!ds||mv_surface_resize(ds)) && (!rs||rs==ds||mv_surface_resize(rs))) {
         struct mv_scope scope;
         if(mv_ready()&&mv_enter(&scope)) {
+            dpy=mv_display_in(dpy);
             typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLSurface,EGLContext); fn_t fn=(fn_t)mv_resolve("eglMakeCurrent",MV_EGL);
             result=fn?fn(dpy,ds?ds->pbuffer:draw,rs?rs->pbuffer:read,ctx):EGL_FALSE; switch_back(&scope);
         }
@@ -411,6 +436,7 @@ static EGLBoolean mv_eglSwapBuffers_owned(EGLDisplay dpy, struct mv_egl_surface 
         mv_wl_buffer_clear_released(s->buffer);
     }
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
+    dpy=mv_display_in(dpy);
     typedef EGLBoolean (*swap_fn)(EGLDisplay,EGLSurface); swap_fn swap=(swap_fn)mv_resolve("eglSwapBuffers",MV_EGL);
     EGLBoolean ok=swap?swap(dpy,s->pbuffer):EGL_FALSE;
     typedef void (*bind_fn)(GLenum,GLuint); typedef void (*gen_fn)(GLsizei,GLuint *); typedef void (*image_target_fn)(GLenum,void *);
@@ -466,11 +492,13 @@ static EGLBoolean mv_eglSwapBuffers(EGLDisplay dpy,EGLSurface handle) {
     struct mv_egl_surface *s=mv_surface_find(handle);
     if(s) { EGLBoolean r=mv_eglSwapBuffers_owned(dpy,s); mv_surface_put(s); return r; }
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
+    dpy=mv_display_in(dpy);
     typedef EGLBoolean (*swap_fn)(EGLDisplay,EGLSurface); swap_fn swap=(swap_fn)mv_resolve("eglSwapBuffers",MV_EGL);
     EGLBoolean result=swap?swap(dpy,handle):EGL_FALSE; switch_back(&scope); return result;
 }
 static EGLBoolean mv_eglSwapInterval(EGLDisplay dpy,EGLint interval) {
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
+    dpy=mv_display_in(dpy);
     typedef EGLBoolean (*fn_t)(EGLDisplay,EGLint); fn_t fn=(fn_t)mv_resolve("eglSwapInterval",MV_EGL);
     typedef EGLSurface (*get_surface_fn)(EGLint); get_surface_fn get_surface=(get_surface_fn)mv_resolve("eglGetCurrentSurface",MV_EGL);
     EGLBoolean r=fn?fn(dpy,interval):EGL_FALSE; EGLSurface current=get_surface?get_surface(EGL_DRAW):EGL_NO_SURFACE; switch_back(&scope);
@@ -483,12 +511,14 @@ static EGLBoolean mv_eglQuerySurface(EGLDisplay dpy,EGLSurface handle,EGLint att
     if(s && value && (attr==EGL_WIDTH||attr==EGL_HEIGHT)) { *value=attr==EGL_WIDTH?s->width:s->height; mv_surface_put(s); return EGL_TRUE; }
     EGLSurface native=s?s->pbuffer:handle;
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope)){mv_surface_put(s);return EGL_FALSE;}
+    dpy=mv_display_in(dpy);
     typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint *); fn_t fn=(fn_t)mv_resolve("eglQuerySurface",MV_EGL);
     EGLBoolean r=fn?fn(dpy,native,attr,value):EGL_FALSE; switch_back(&scope); mv_surface_put(s); return r;
 }
 static EGLBoolean mv_eglSurfaceAttrib(EGLDisplay dpy,EGLSurface handle,EGLint attr,EGLint value) {
     struct mv_egl_surface *s=mv_surface_find(handle); EGLSurface native=s?s->pbuffer:handle;
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope)){mv_surface_put(s);return EGL_FALSE;}
+    dpy=mv_display_in(dpy);
     typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface,EGLint,EGLint); fn_t fn=(fn_t)mv_resolve("eglSurfaceAttrib",MV_EGL);
     EGLBoolean r=fn?fn(dpy,native,attr,value):EGL_FALSE; switch_back(&scope); mv_surface_put(s); return r;
 }
@@ -616,6 +646,7 @@ static const char *mv_eglQueryString(EGLDisplay dpy, EGLint name) {
         switch_back(&scope);
         return desktop ? client_apis : "OpenGL_ES";
     }
+    dpy = mv_display_in(dpy);
     typedef const char *(*fn_t)(EGLDisplay, EGLint);
     fn_t fn = (fn_t)mv_resolve("eglQueryString", MV_EGL);
     const char *result = fn ? fn(dpy, name) : 0;
@@ -682,8 +713,7 @@ static EGLDisplay mv_vendor_get_platform_display(EGLenum platform, void *native,
         return mv_eglGetDisplay(EGL_DEFAULT_DISPLAY);
     }
     if (platform == EGL_PLATFORM_SURFACELESS_MESA) {
-        EGLDisplay display = mv_eglGetPlatformDisplay(platform, native, attrs);
-        if (display != EGL_NO_DISPLAY) return display;
+        (void)native; (void)attrs;
         return mv_eglGetDisplay(EGL_DEFAULT_DISPLAY);
     }
     if (platform == EGL_NONE) return mv_eglGetDisplay(EGL_DEFAULT_DISPLAY);
