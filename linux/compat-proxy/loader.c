@@ -622,41 +622,14 @@ static int loader_main(int argc,char **argv,char **environ) {
         gpu_gles=gpu_egl;
     }
 #endif
-    /* Load Android's EGL vendor implementation before the proxy snapshots
-     * native-library syscall ranges. EGL dispatch loads the hardware driver
-     * lazily on first initialization; calls from the adopted Linux thread
-     * must keep those driver's Android syscalls native too. */
+    /* Discover Android's EGL vendor before snapshotting native syscall
+     * ranges, but leave the display uninitialized until the payload actually
+     * uses graphics. Mesa initialization starts disk-cache worker threads:
+     * doing that in a fresh Linux zygote breaks its single-thread invariant. */
 #ifdef MATON_GPU_BRIDGE
     if(gpu_bridge_enabled) {
         if(proxy_resident_fds_snapshot(0)) return 7;
-        EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        EGLint major=0,minor=0,count=0;
-        if(display!=EGL_NO_DISPLAY && eglInitialize(display,&major,&minor) &&
-           eglBindAPI(EGL_OPENGL_ES_API)) {
-            const EGLint attrs[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,
-                EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,EGL_NONE};
-            EGLConfig config=0;
-            if(eglChooseConfig(display,attrs,&config,1,&count)&&count) {
-                const EGLint pbuffer_attrs[]={EGL_WIDTH,1,EGL_HEIGHT,1,EGL_NONE};
-                const EGLint context_attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
-                EGLSurface surface=eglCreatePbufferSurface(display,config,pbuffer_attrs);
-                EGLContext context=eglCreateContext(display,config,EGL_NO_CONTEXT,context_attrs);
-                if(surface!=EGL_NO_SURFACE && context!=EGL_NO_CONTEXT &&
-                   eglMakeCurrent(display,surface,surface,context)) {
-                    GLuint shader=glCreateShader(GL_VERTEX_SHADER);
-                    const GLchar *source="attribute vec4 p; void main(){gl_Position=p;}";
-                    if(shader) { glShaderSource(shader,1,&source,NULL); glCompileShader(shader); glDeleteShader(shader); }
-                    GLubyte pixel[4]={0};
-                    glClearColor(1.0f,0.0f,0.0f,1.0f);
-                    glClear(GL_COLOR_BUFFER_BIT);
-                    glFinish();
-                    glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
-                    eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
-                }
-                if(context!=EGL_NO_CONTEXT) eglDestroyContext(display,context);
-                if(surface!=EGL_NO_SURFACE) eglDestroySurface(display,surface);
-            }
-        }
+        (void)eglGetDisplay(EGL_DEFAULT_DISPLAY);
         if(proxy_resident_fds_snapshot(1)) return 7;
         if(proxy_resident_signals_end(resident_signal_mask))return 7;
     }

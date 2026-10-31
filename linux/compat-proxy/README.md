@@ -2924,3 +2924,17 @@ The regression carries separate readonly app/runtime images through ELF64 ->
 ELF32 -> ELF64, then creates bwrap's app bind destinations. Before the fix
 mkdirat returns EROFS; afterwards all original mkdir tests and the new
 multi-image handoff test pass.
+
+EGL discovery is lazy (2026-10-31): a kernel-reset zygote must start without
+native graphics workers. simpleperf captured both Steam zygotes trapping at
+libcef+0x61f51db; the preceding condition calls IsSingleThreadedImpl, which
+stats /proc/self/task and requires st_nlink == 3. The same perf record shows
+Mesa libmato:disk$0 workers in both zygotes before that check. The loader's
+eager eglInitialize/context/shader warmup started those threads. Keep vendor
+discovery via eglGetDisplay for native range discovery, but initialize only
+when the Linux payload actually requests graphics. Do not hide tasks or alter
+/proc counts. The real-bionic GPU provider regression returns a display but
+exits 98 if startup calls eglInitialize; it fails before this change and
+passes the native peer/fork/resident-exec Vulkan test afterwards. The earlier
+intermediate device build also failed Chrome and Obsidian visually; process
+liveness or am start success alone was not treated as rendering validation.
