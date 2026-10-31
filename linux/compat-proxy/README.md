@@ -2914,3 +2914,13 @@ production resident host-command regression exercises payload dup2 -> exec
 separately from the host-command mapping case. This does not virtualize two
 simultaneous meanings of an fd in a process that replaces it and then calls
 native graphics before exec; that remains a limitation of shared fd numbers.
+
+Multi-image EROFS state (2026-10-31): erofs_state's write loop failed to
+advance its list cursor, exporting the head image once per list element.
+A kernel exec therefore lost every other image's prefix/backing identity.
+After the fd-lifetime reset this surfaced as bwrap's EROFS error creating
+/run/parent/app/lib/i386-linux-gnu. Advance the cursor on both read and write.
+The regression carries separate readonly app/runtime images through ELF64 ->
+ELF32 -> ELF64, then creates bwrap's app bind destinations. Before the fix
+mkdirat returns EROFS; afterwards all original mkdir tests and the new
+multi-image handoff test pass.

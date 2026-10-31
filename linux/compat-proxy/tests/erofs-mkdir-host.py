@@ -189,3 +189,27 @@ result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIP
 if result.returncode:
     raise RuntimeError(result.stdout+'\n'+result.stderr)
 print(result.stdout.strip())
+
+# A resident reset uses the same sealed state as a mixed-ABI kernel exec.
+# Keep distinct /usr and /app images: serializing the head twice loses /app's
+# EROFS identity, so its readonly bind can no longer acquire bwrap targets.
+trampoline_source=root/'exec-i386.c'
+trampoline_source.write_text(r'''
+void entry(unsigned *stack){
+ char **argv=(char **)(stack+1),**env=argv+stack[0]+1;
+ __asm__ volatile("int $0x80"::"a"(11),"b"(argv[1]),"c"(argv+1),"d"(env):"memory");
+ __asm__ volatile("int $0x80"::"a"(1),"b"(77):"memory");
+ __builtin_unreachable();
+}
+__asm__(".global _start\n_start:\n mov %esp,%eax\n push %eax\n call entry\n");
+''')
+trampoline=root/'exec-i386'
+subprocess.run(['cc','-m32','-nostdlib','-static','-no-pie','-fno-pie',
+                '-fno-stack-protector','-O2',str(trampoline_source),'-o',str(trampoline)],check=True)
+cmd=[str(base/'build/linux-layer-v3'),'--android-filter',
+     '--map-ro',str(app_image),'/app','--erofs-mount','/app',str(app_image),
+     '--erofs-mount','/usr',str(mount),str(trampoline),str(bwrap),str(newroot),'bwrap-app-dest']
+result=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+if result.returncode:
+    raise RuntimeError(result.stdout+'\n'+result.stderr)
+print('PASS separate app/runtime EROFS identities and bwrap bind destinations survive two kernel ABI handoffs')

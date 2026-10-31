@@ -95,7 +95,8 @@ static void erofs_state(struct state *s){
     for(uint64_t i=0;i<count&&!s->error;i++) {
         struct erofs_mount *m=s->reading?vfs_palloc(sizeof(*m)):*tail;
         if(!m){s->error=-ENOMEM;return;}
-        if(s->reading){m->next=NULL;m->target=m->directory=m->backing=NULL;*tail=m;tail=&m->next;}
+        if(s->reading){m->next=NULL;m->target=m->directory=m->backing=NULL;*tail=m;}
         state_string(s,&m->target);state_string(s,&m->directory);state_string(s,&m->backing);
+        tail=&m->next;
     }
 }
