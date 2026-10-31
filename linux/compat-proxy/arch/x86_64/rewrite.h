@@ -6,8 +6,12 @@ static int arch_rewrite_init(void) {
     if(arch_rewrite_table)return 1;
     extern void proxy_rewrite_entry_common(void),proxy_rewrite_fcntl_entry(void);
     const size_t bytes=512*32;
-    long m=RAW(PROXY_SC_mmap,0,bytes,PROT_READ|PROT_WRITE,
-               MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT,-1,0);
+    /* Rewritten sites load this address through a 32-bit register, so the
+     * table must stay below 4 GiB. MAP_32BIT put it inside Wine's low-address
+     * reservations; use the free gap above 0x68000000 without replacing any
+     * existing mapping. If the gap is occupied, rewriting remains optional. */
+    long m=RAW(PROXY_SC_mmap,UINT32_C(0x68000000),bytes,PROT_READ|PROT_WRITE,
+               MAP_PRIVATE|MAP_ANONYMOUS|UINT32_C(0x100000),-1,0);
     if((unsigned long)m>=(unsigned long)-4095)return 0;
     unsigned char *p=(void *)(uintptr_t)m;
     uintptr_t common=(uintptr_t)proxy_rewrite_entry_common;

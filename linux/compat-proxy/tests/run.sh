@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+cc -nostdlib -static -no-pie -Wl,-Ttext-segment=0x69000000 -mno-sse -mno-sse2 -O2 -Wall -Wextra -Werror tests/wine-reservation.c tests/wine-reservation-entry.S -o build/wine-reservation-x86_64
+cc -m32 -nostdlib -static -no-pie -Wl,-Ttext-segment=0x69000000 -mno-sse -mno-sse2 -O2 -Wall -Wextra -Werror tests/wine-reservation.c tests/wine-reservation-entry.S -o build/wine-reservation-i386
+timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/wine-reservation-x86_64"
+timeout 15 build/linux-layer-v3-i386 --android-filter "$PWD/build/wine-reservation-i386"
 cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/io-routing.c loader.c vfs.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S -o build/io-routing
 timeout 15 build/io-routing
 cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resolve-cache-fork.c loader.c proxy.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S -o build/resolve-cache-fork
