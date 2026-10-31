@@ -33,6 +33,7 @@ long proxy_raw(long nr,long a,long b,long c,long d,long e,long f){
         case BPF_LD|BPF_W|BPF_ABS:assert(ins.k+4<=sizeof(data));memcpy(&acc,(char *)&data+ins.k,4);break;
         case BPF_LD|BPF_IMM:acc=ins.k;break;
         case BPF_JMP|BPF_JEQ|BPF_K:pc+=acc==ins.k?ins.jt:ins.jf;break;
+        case BPF_JMP|BPF_JGE|BPF_K:pc+=acc>=ins.k?ins.jt:ins.jf;break;
         case BPF_RET|BPF_K:return ins.k;
         default:abort();
         }
@@ -40,7 +41,25 @@ long proxy_raw(long nr,long a,long b,long c,long d,long e,long f){
     abort();
 }
 #include "../payload-filter.h"
+#include "../payload-native-filter.h"
 int main(void){
+    /* Native startup may execute with SIGSYS blocked. Its set_tid_address
+     * must bypass a renderer TRAP filter; payload and foreign ABI must not. */
+    struct sock_filter native[32];
+    uint64_t lo=UINT64_C(0x792efffff000),hi=lo+8192;
+    unsigned n=payload_native_range(native,lo,hi);
+    assert(n==payload_native_range(NULL,lo,hi));
+    native[n++]=(struct sock_filter)BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_TRAP|1);
+    struct sock_fprog native_program={n,native};
+    data.arch=AUDIT_ARCH_X86_64;data.nr=218;
+    for(uint64_t ip=lo-1;ip<=hi;ip++) {
+        data.instruction_pointer=ip;
+        long action=proxy_raw(317,SECCOMP_SET_MODE_FILTER,SECCOMP_FILTER_FLAG_TSYNC,(long)&native_program,0,0,0);
+        assert(action==(ip>=lo && ip<hi?SECCOMP_RET_ALLOW:(SECCOMP_RET_TRAP|1)));
+    }
+    data.arch=AUDIT_ARCH_I386;data.instruction_pointer=lo;
+    assert(proxy_raw(317,SECCOMP_SET_MODE_FILTER,SECCOMP_FILTER_FLAG_TSYNC,(long)&native_program,0,0,0)==(SECCOMP_RET_TRAP|1));
+    calls=0;
     struct sock_filter deny[]={BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|EPERM)};
     struct sock_fprog program={1,deny};
     proxy_arg_t prctl_args[]={PR_SET_SECCOMP,SECCOMP_MODE_FILTER,(uintptr_t)&program,0,0,0};

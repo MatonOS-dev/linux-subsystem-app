@@ -2836,3 +2836,17 @@ its logger 24479 reads stdin; browser main/IO poll, GPU main/Viz poll, and
 zygote mains 24627/24633 wait on futexes. The logs also contain GL_OUT_OF_MEMORY
 from ANGLE's texture allocation and kernel rendering error 13; the snapshots
 alone cannot attribute Steam's missing init handshake to those errors.
+
+### Resident pthread startup under payload seccomp (2026-10-31)
+
+Chrome's delayed `RESULT_CODE_INVALID_SANDBOX_STATE` was a renderer killed by
+SIGSYS (31), not a failed Linux sandbox-state check. Kernel ftrace captured
+`ThreadPoolForeg` in bionic `__set_tid_address` during `__start_thread`, with
+SIGSYS blocked and its disposition forced to default. The payload kernel
+filter exempted reserved peer runtime regions and raw gateways, but omitted
+initial Android resident mappings outside those reservations. Payload filters
+now preserve those native x86_64 ranges too, with exact range/ABI checks.
+The original filter remains active for payload sites; Android's inherited
+app filter is unchanged. `resident-altstack.c` exercises a native call with
+SIGSYS blocked under an actual payload TRAP filter and checks payload trapping;
+`payload-filter.c` covers range edges, 4-GiB splits and the foreign ABI.

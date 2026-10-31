@@ -1848,13 +1848,28 @@ int proxy_native_prepare(void) {
     }
     native_prepared=1;return 0;
 }
+#include "payload-native-filter.h"
 static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fprog *original) {
     /* Both fixed gateways survive the filter across a kernel ABI handoff.
      * Exempting only this ABI leaves the next resident's internal calls
      * subject to an earlier payload policy. No payload syscall site is added. */
     const uint64_t pcs[]={arch_gateway_pc(0),
         ARCH_AUDIT==AUDIT_ARCH_I386?UINT64_C(0x600000300042):UINT64_C(0x70300042)};
-    struct sock_filter prefix[48];unsigned at=bionic32_filter(prefix);
+    /* Native pthread startup blocks SIGSYS before set_tid_address. A payload
+     * TRAP policy there is fatal before our handler can run. Apply the same
+     * native routing exemption as arch_filter_install, including the initial
+     * Android runtime outside the later peer's reserved bionic region. */
+    size_t native_count=0;
+    for(size_t i=0;i<inherited_native_count;i++)
+        native_count+=payload_native_range(NULL,inherited_native[i].begin,
+                                         inherited_native[i].end);
+    if(native_count>4096-48 || original->len>4096-48-native_count)return -EINVAL;
+    struct sock_filter *prefix=vfs_alloc((48+native_count)*sizeof(*prefix));
+    if(!prefix)return -ENOMEM;
+    unsigned at=bionic32_filter(prefix);
+    for(size_t i=0;i<inherited_native_count;i++)
+        at+=payload_native_range(prefix+at,inherited_native[i].begin,
+                                 inherited_native[i].end);
     for(unsigned i=0;i<2;i++) {
         uint64_t pc=pcs[i];
         prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,arch));
@@ -1867,10 +1882,11 @@ static long payload_kernel_filter(long nr,proxy_arg_t *args,const struct sock_fp
     }
     prefix[at++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_IMM,0);
     size_t count=at;
-    if(original->len>4096-count)return -EINVAL;
+    if(original->len>4096-count){vfs_free(prefix);return -EINVAL;}
     struct sock_filter *code=vfs_alloc((original->len+count)*sizeof(*code));
-    if(!code)return -ENOMEM;
+    if(!code){vfs_free(prefix);return -ENOMEM;}
     p_copy(code,prefix,count*sizeof(*prefix));
+    vfs_free(prefix);
     p_copy(code+count,original->filter,original->len*sizeof(*code));
     struct sock_fprog program={.len=original->len+count,.filter=code};
     proxy_arg_t forwarded[6];p_copy(forwarded,args,sizeof(forwarded));

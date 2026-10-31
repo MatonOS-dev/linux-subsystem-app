@@ -23,11 +23,21 @@ int main(void){
     struct arch_ip_range range={.begin=(uintptr_t)resident_stack,.end=(uintptr_t)resident_stack_end};
     CHECK(arch_app_install()==0);
     CHECK(arch_filter_install(&range,1)==0);
+    /* Preserve native startup even under a Chromium-style TRAP policy. */
+    inherited_native=&range;inherited_native_count=1;
+    struct sock_filter deny[]={
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,131,0,1),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_TRAP|1),
+        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW)};
+    struct sock_fprog program={4,deny};
+    proxy_arg_t args[6]={SECCOMP_SET_MODE_FILTER,0,(uintptr_t)&program,0,0,0};
+    CHECK(payload_kernel_filter(PROXY_SC_seccomp,args,&program)==0);
     stack_t ss={0};
     CHECK(resident_stack(NULL,&ss)==0&&trapped==0);
     CHECK(RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0)==0);
     CHECK(payload_stack(NULL,&ss)==-EPERM&&trapped==1);
-    const char msg[]="PASS resident sigaltstack with SIGSYS blocked; payload stack still traps\n";
+    const char msg[]="PASS resident sigaltstack with SIGSYS blocked under payload filter; payload stack still traps\n";
     RAW(PROXY_SC_write,1,msg,sizeof(msg)-1,0,0,0);
     RAW(PROXY_SC_exit_group,0,0,0,0,0,0);__builtin_unreachable();
 }
