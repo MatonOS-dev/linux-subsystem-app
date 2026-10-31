@@ -70,105 +70,6 @@ static void mv_fail(void) {
     mv_egl_diagnostic(message, sizeof(message) - 1);
 }
 
-/* Forward declarations needed by the tracing/diagnostic functions that run
- * before the generated thunks and mv_resolve are defined below. */
-static void *mv_resolve(const char *name, int which);
-
-/* Saved GL error for replay across TLS switches. A plain global is needed
- * because __thread variables differ between Linux and Android TLS spaces.
- * The saved error is stored and retrieved on the same kernel thread (Android
- * TLS after mv_enter), so a global is safe for the single-GL-thread case
- * that all our apps use. Multiple GL threads would need per-tid storage. */
-static GLenum mv_saved_gl_error;
-static int mv_gl_trace_errors;
-static void mv_drain_gl_error(void) {
-    mv_saved_gl_error = GL_NO_ERROR;
-}
-/* Called on Android TLS after a GL call. If an error is pending, save it
- * for replay by the next glGetError through the vendor dispatch, and return
- * the error value. Otherwise return GL_NO_ERROR. */
-static GLenum mv_save_gl_error(void) {
-    typedef GLenum (*get_error_fn)(void);
-    /* Try both GLES and Desktop GL, matching how the generated thunk resolved
-     * the texture function. The thunk calls mv_resolve("glTexImage2D", which),
-     * so the same 'which' path would resolve glGetError. */
-    get_error_fn get_error = (get_error_fn)mv_resolve("glGetError", MV_GLES);
-    if (!get_error) get_error = (get_error_fn)mv_resolve("glGetError", MV_DESKTOP);
-    if (!get_error) return GL_NO_ERROR;
-    GLenum err = get_error();
-    if (err != GL_NO_ERROR) mv_saved_gl_error = err;
-    return err;
-}
-/* Log a traced texture operation that failed. Called on Android TLS after
- * mv_save_gl_error. Parameters are the GL function arguments. */
-static void mv_log_tex_failure(const char *name,
-    GLenum target, GLint level, GLint internalformat,
-    GLsizei width, GLsizei height, GLint border,
-    GLenum format, GLenum type, const void *pixels) {
-    /* Log even without env var for diagnostic builds. */
-    (void)pixels;
-    char line[320]; size_t n = 0;
-    const char *prefix = "matonos-egl: tex-failed ";
-    while (*prefix) line[n++] = *prefix++;
-    const char *p = name;
-    while (*p && n < 300) line[n++] = *p++;
-    line[n++] = ' '; line[n++] = '0'; line[n++] = 'x';
-    unsigned long e = mv_saved_gl_error;
-    char hex[12]; size_t h = 0;
-    if (!e) { line[n++] = '0'; } else { while (e) { hex[h++] = "0123456789abcdef"[e & 15]; e >>= 4; } while (h--) line[n++] = hex[h]; }
-    line[n++] = ' '; line[n++] = 't'; line[n++] = 'g'; line[n++] = '=';
-    char buf[24]; unsigned bi = 0; unsigned long v = target;
-    if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'l'; line[n++] = 'v'; line[n++] = '=';
-    bi = 0; int iv = level; if (iv < 0) { line[n++] = '-'; iv = -iv; } v = (unsigned)iv;
-    if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'i'; line[n++] = 'f'; line[n++] = '=';
-    bi = 0; iv = internalformat; if (iv < 0) { line[n++] = '-'; iv = -iv; } v = (unsigned)iv;
-    if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'w'; line[n++] = '=';
-    bi = 0; v = (unsigned)width; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'h'; line[n++] = '=';
-    bi = 0; v = (unsigned)height; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'f'; line[n++] = 'm'; line[n++] = 't'; line[n++] = '=';
-    bi = 0; v = format; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 't'; line[n++] = 'y'; line[n++] = '=';
-    bi = 0; v = type; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'b'; line[n++] = 'd'; line[n++] = '=';
-    bi = 0; iv = border; if (iv < 0) { line[n++] = '-'; iv = -iv; } v = (unsigned)iv;
-    if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = '\n';
-    mv_egl_diagnostic(line, n);
-}
-/* Like mv_log_tex_failure but for glTexStorage2D which has storage levels
- * instead of level/border/pixels. */
-static void mv_log_storage_failure(const char *name,
-    GLenum target, GLsizei levels, GLenum internalformat,
-    GLsizei width, GLsizei height) {
-    /* Log even without MATON_GL_TRACE_ERRORS for diagnostic builds. */
-    char line[320]; size_t n = 0;
-    const char *prefix = "matonos-egl: tex-failed ";
-    while (*prefix) line[n++] = *prefix++;
-    const char *p = name;
-    while (*p && n < 300) line[n++] = *p++;
-    line[n++] = ' '; line[n++] = '0'; line[n++] = 'x';
-    unsigned long e = mv_saved_gl_error;
-    char hex[12]; size_t h = 0;
-    if (!e) { line[n++] = '0'; } else { while (e) { hex[h++] = "0123456789abcdef"[e & 15]; e >>= 4; } while (h--) line[n++] = hex[h]; }
-    line[n++] = ' '; line[n++] = 't'; line[n++] = 'g'; line[n++] = '=';
-    char buf[24]; unsigned bi = 0; unsigned long v = target;
-    if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'l'; line[n++] = 'v'; line[n++] = '=';
-    bi = 0; v = (unsigned)levels; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'i'; line[n++] = 'f'; line[n++] = '=';
-    bi = 0; v = (unsigned)internalformat; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'w'; line[n++] = '=';
-    bi = 0; v = (unsigned)width; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = ' '; line[n++] = 'h'; line[n++] = '=';
-    bi = 0; v = (unsigned)height; if (!v) { buf[bi++] = '0'; } else { while (v) { buf[bi++] = "0123456789abcdef"[v & 15]; v >>= 4; } } while (bi) line[n++] = buf[--bi];
-    line[n++] = '\n';
-    mv_egl_diagnostic(line, n);
-}
-
 /* Keep resident EGL's error pending for the caller: diagnostics must not
  * consume eglGetError. These arguments distinguish dma-buf import from GL
  * image creation and identify which resident display received the call. */
@@ -199,7 +100,6 @@ static int mv_ready(void) {
     mv_bridge = (void *)mv_hex(mv_env("MATON_GPU_BRIDGE"));
     mv_adopt = (void *)mv_hex(mv_env("MATON_THREAD_ADOPT"));
     mv_fast = mv_hex(mv_env("MATON_FAST_TLS")) != 0;
-    { const char *trace = mv_env("MATON_GL_TRACE_ERRORS"); if (trace && trace[0] && trace[0] != '0') mv_gl_trace_errors = 1; }
     if (!mv_bridge || !mv_adopt) {
         static const char message[] = "matonos-egl: GPU bootstrap bridge or adoption API missing\n";
         mv_egl_diagnostic(message, sizeof(message) - 1);
@@ -236,18 +136,6 @@ static void *mv_resolve(const char *name, int which) {
 #include "gles_thunks.inc"
 #include "desktop_thunks.inc"
 #include "shared_thunks.inc"
-
-/* Wrapper for glGetError that returns a saved error first, enabling texture
- * operation diagnostics to log the failing call without consuming the error.
- * Called from the proc-lookup dispatch (gen.py routes "glGetError" here). */
-static GLenum mv_traced_gl_get_error(void) {
-    if (mv_saved_gl_error != GL_NO_ERROR) {
-        GLenum saved = mv_saved_gl_error;
-        mv_saved_gl_error = GL_NO_ERROR;
-        return saved;
-    }
-    return mv_shared_glGetError();
-}
 
 /* Resolve the already resident vendor EGL through libvndksupport so bionic
  * returns the sphal namespace instance instead of loading a second driver. */
