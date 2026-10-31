@@ -136,8 +136,10 @@ void vfs_trap_begin(void *base,size_t size){
       } else {a->lo=lo;a->hi=hi;}
     }
     if(!a->active){a->lo=lo;a->hi=hi;a->active=1;
+#ifdef PROXY_RAW_COUNTER
         a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;
         for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=0;
+#endif
         for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
     }
 }
@@ -149,10 +151,16 @@ void vfs_trap_thread_exit(void *base,size_t size){
  while(b){struct arena_block *next=b->next;RAW(PROXY_SC_munmap,b,sizeof(*b)+b->size,0,0,0,0);b=next;}
  a->lo=a->hi=0;
 }
-void vfs_trap_resume(void){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return;a->active=1;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=0;for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;}
+void vfs_trap_resume(void){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return;a->active=1;
+#ifdef PROXY_RAW_COUNTER
+ a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=0;
+#endif
+ for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;}
 void vfs_trap_end(void){
     uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_stack(sp);if(!a)return;
+#ifdef PROXY_RAW_COUNTER
     a->trap_count++;a->raw_sum+=a->raw_calls;a->openat_sum+=a->openat_calls;a->readlinkat_sum+=a->readlinkat_calls;a->newfstatat_sum+=a->newfstatat_calls;a->geteuid_sum+=a->geteuid_calls;a->mmap_sum+=a->mmap_calls;a->munmap_sum+=a->munmap_calls;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_sum_by_nr[i]+=a->raw_by_nr[i];
+#endif
     for(struct arena_block *b=a->blocks;b;b=b->next)b->used=0;
     a->active=0;
 }
