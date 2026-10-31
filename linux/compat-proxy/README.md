@@ -2891,3 +2891,17 @@ resident ownership during both cleanup phases. The resident host-command
 integration test seeds a cached /dev/zero descriptor and checks its identity
 in the spawned command: it fails before and passes after this change. This
 is descriptor lifetime bookkeeping, not a GL-error workaround.
+
+The next device run exposed a second lifetime issue: an explicit host-command
+mapping dup3'd a passed descriptor onto resident Mesa's fd 7. Such mappings
+are valid Linux API requests, so host-command now resets the resident runtime
+with a real kernel exec when a destination replaces a resident descriptor.
+The new loader uses its fixed-gateway entry (ordinary ASLR'd libc startup
+cannot run under the existing syscall-routing filters). Virtual mounts,
+environment and process state still cross the sealed handoff; a version-18
+ready-fd field delays the host-command handshake until payload entry and
+reports a failed load. All loader peers must be rebuilt together. Commands
+without descriptor collisions retain the existing resident path. Regression
+coverage checks the requested fd, default SIGPIPE, successful import and an
+ENOEXEC response for a bad payload. Host-command cleanup also preserves the
+proxy's private fd reserve, which the imported state requires.

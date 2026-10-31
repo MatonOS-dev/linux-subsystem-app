@@ -55,7 +55,7 @@ static void hc_close_except(const int *keep,int count) {
              * Mesa objects that cache DRM fd numbers. Closing those fds here
              * leaves live drivers issuing ioctls on unrelated reused files.
              * Preserve ownership just as the payload's fd sweeps do. */
-            int retain=fd==directory||vfs_private_fd(fd)||resident_fd_owned(fd);
+            int retain=fd==directory||private_close_fd(fd);
             for(int i=0;i<count;i++)if(keep[i]==fd)retain=1;
             if(valid&&!retain)RAW(PROXY_SC_close,fd,0,0,0,0,0);
             off+=len;
@@ -79,11 +79,18 @@ static char *hc_next(char **p,char *end) {
 static int hc_key(const char *a,const char *b) {
     while(*a&&*a!='='&&*a==*b){a++;b++;}return *a=='='&&*b=='=';
 }
-static long hc_exec(char **argv,char **env,int ready) {
+static void hc_exec_signals(void) {
+    /* session-helper child setup resets ignored actions too (notably PIPE). */
+    struct kernel_action defaults={0};
+    for(int sig=1;sig<=64;sig++)if(sig!=SIGKILL&&sig!=SIGSTOP&&sig!=SIGSYS)RAW(PROXY_SC_rt_sigaction,sig,&defaults,0,8,0,0);
+    exec_signals();chained.handler=0;
+}
+static long hc_exec(char **argv,char **env,int ready,int reset) {
     struct image image;int r;
     if(!p_len(argv[0]))return -EINVAL;
+    if(reset)hc_exec_signals();
     int slash=0;for(char *p=argv[0];*p;p++)if(*p=='/')slash=1;
-    if(slash)r=proxy_load(argv[0],argv,env,&image);
+    if(slash)r=reset?state_reexec(argv[0],argv,env,ready):proxy_load(argv[0],argv,env,&image);
     else {
         const char *path="/usr/bin:/bin";
         for(int i=0;env[i];i++)if(p_len(env[i])>=5&&env[i][0]=='P'&&env[i][1]=='A'&&env[i][2]=='T'&&env[i][3]=='H'&&env[i][4]=='=')path=env[i]+5;
@@ -91,15 +98,12 @@ static long hc_exec(char **argv,char **env,int ready) {
         for(;;){const char *start=path;while(*path&&*path!=':')path++;size_t len=(size_t)(path-start),name=p_len(argv[0]);
             char *candidate=vfs_alloc(len+name+2);if(!candidate)return -ENOMEM;
             p_copy(candidate,start,len);size_t prefix=len;if(len)candidate[prefix++]='/';p_copy(candidate+prefix,argv[0],name+1);
-            r=proxy_load(candidate,argv,env,&image);vfs_free(candidate);if(!r)break;if(!*path)break;path++;
+            r=reset?state_reexec(candidate,argv,env,ready):proxy_load(candidate,argv,env,&image);vfs_free(candidate);if(!r)break;if(!*path)break;path++;
         }
     }
     if(r)return r;
     RAW(PROXY_SC_close,ready,0,0,0,0,0);
-    /* session-helper child setup resets ignored actions too (notably PIPE). */
-    struct kernel_action defaults={0};
-    for(int sig=1;sig<=64;sig++)if(sig!=SIGKILL&&sig!=SIGSTOP&&sig!=SIGSYS)RAW(PROXY_SC_rt_sigaction,sig,&defaults,0,8,0,0);
-    exec_signals();chained.handler=0;
+    hc_exec_signals();
     if(dispatch_selector){RAW(PROXY_SC_prctl,PR_SET_SYSCALL_USER_DISPATCH,PR_SYS_DISPATCH_OFF,0,0,0,0);dispatch_selector=NULL;dispatch_owner=0;}
     unsigned long mask=0;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
     RAW(PROXY_SC_arch_prctl,0x1002,0,0,0,0,0);
@@ -170,6 +174,9 @@ static void hc_worker(int socket,char *const *original,long server) {
         RAW(PROXY_SC_close,pipe[0],0,0,0,0,0);RAW(PROXY_SC_prctl,PR_SET_PDEATHSIG,SIGKILL,0,0,0,0);
         if(RAW(PROXY_SC_getppid,0,0,0,0,0,0)!=worker)RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
         RAW(PROXY_SC_setsid,0,0,0,0,0,0);
+        /* The inherited test channel occupies a private reserve slot. Retire
+         * it to the reserve placeholder before carrying fd state across exec. */
+        if(proxy_fd_is_private(socket))proxy_private_fd_release(socket);
         int keep[HC_FDS+1];for(int i=0;i<nfds;i++)keep[i]=copies[i];keep[nfds]=pipe[1];hc_close_except(keep,nfds+1);
         long null=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/null",O_RDWR,0,0,0);
         if(null<0){error=(int)null;goto child_fail;}
@@ -180,17 +187,22 @@ static void hc_worker(int socket,char *const *original,long server) {
         /* hc_close_except already closed the original stdio. Restore the
          * saved sink explicitly: leaving fd 2 closed lets the portal reuse it
          * for a bus/socket and loses stderr (or writes diagnostics into it). */
+        int reset=0;
         for(int i=0;i<3;i++) {
             long source=portal&&i==2?proxy_diagnostic_fd:null;
-            if(source!=i)RAW(PROXY_SC_dup3,source,i,0,0,0,0);
+            if(source!=i){
+                if(resident_fd_owned(i))reset=1;
+                resident_fd_set(i,0);RAW(PROXY_SC_dup3,source,i,0,0,0,0);
+            }
         }
         if(null>2)RAW(PROXY_SC_close,null,0,0,0,0,0);
-        for(int i=0;i<nfds;i++){long r=RAW(PROXY_SC_dup3,copies[i],targets[i],0,0,0,0);if(r<0){error=(int)r;goto child_fail;}RAW(PROXY_SC_close,copies[i],0,0,0,0,0);vfs_fd_close((int)targets[i]);}
+        for(int i=0;i<nfds;i++)if(resident_fd_owned((int)targets[i]))reset=1;
+        for(int i=0;i<nfds;i++){long r=RAW(PROXY_SC_dup3,copies[i],targets[i],0,0,0,0);if(r<0){error=(int)r;goto child_fail;}RAW(PROXY_SC_close,copies[i],0,0,0,0,0);resident_fd_set((int)targets[i],0);vfs_fd_close((int)targets[i]);}
         for(int i=0;i<nfds;i++)if(targets[i]<3){struct termios tty;if(RAW(PROXY_SC_ioctl,targets[i],TCGETS,&tty,0,0,0)==0){RAW(PROXY_SC_ioctl,targets[i],TIOCSCTTY,0,0,0,0);break;}}
         if(*cwd){error=(int)vfs_chdir(AT_FDCWD,cwd);if(error)goto child_fail;}
         /* A ready pipe replaces native exec's CLOEXEC handshake. Validate/load
          * first; success closes the pipe just before resident payload entry. */
-        error=(int)hc_exec(argv,env,pipe[1]);
+        error=(int)hc_exec(argv,env,pipe[1],reset);
 child_fail:
         proxy_internal_write(pipe[1],&error,4);RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
     }
@@ -283,7 +295,7 @@ void proxy_host_snapshot(char *const *env) {
     if(hc_test_fd>=0){
         host_command_started=1;long parent=RAW(PROXY_SC_getpid,0,0,0,0,0,0);long pid=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);
         if(!pid){int channel=hc_test_fd;hc_test_fd=-1;hc_close_except(&channel,1);hc_worker(channel,env,parent);}
-        RAW(PROXY_SC_close,hc_test_fd,0,0,0,0,0);hc_test_fd=-1;return;
+        proxy_private_fd_release(hc_test_fd);hc_test_fd=-1;return;
     }
 #endif
     /* bwrap closes private loader FDs while constructing the app view. Reopen

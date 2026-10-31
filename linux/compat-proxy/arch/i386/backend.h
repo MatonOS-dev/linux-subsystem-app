@@ -153,4 +153,8 @@ _Static_assert(sizeof(struct cmsghdr)==12,"cmsg wire size");
  * filter and only lacks bionic GPU adoption, which peer execs do not pass. */
 #define ARCH_PEER_LOADER "libmatonos-v3-loader-static.so"
 #define ARCH_PEER_HOST_LOADER "linux-layer-v3"
+
+#define ARCH_RESET_LOADER "libmatonos-v3-loader-i386-static.so"
+#define ARCH_RESET_HOST_LOADER "linux-layer-v3-i386"
+
 #include "../exec.h"

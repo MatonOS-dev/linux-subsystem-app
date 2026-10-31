@@ -15,6 +15,7 @@ if resident:
         '-o',str(ROOT/'build/host-command-loader')],check=True)
 else:
     subprocess.run(['cc','-DHOST_COMMAND_TEST','-nostdlib','-static','-no-pie','-mcmodel=large','-Wl,-Ttext-segment=0x600000000000','-Wl,--section-start=.proxy_gateway=0x600000300000','-O2','-fno-stack-protector','-fno-builtin','-Wall','-Wextra','-Werror',*[str(ROOT/s) for s in ['loader.c','proxy.c','vfs.c','links.c','net.c','sysvipc.c', 'state.c','raw.S','entry.S']],'-o',str(ROOT/'build/host-command-loader')],check=True)
+os.chmod(ROOT/'build/host-command-loader',0o755)
 def read_int(s):
     b=b''
     while len(b)<4:
@@ -84,6 +85,20 @@ with tempfile.TemporaryDirectory(prefix='hc-pair-',dir='/mnt/data/aosp/out') as 
             os.close(read_fd)
             if write_fd>=0:os.close(write_fd)
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',str(ROOT/'tests/host-command-child.c'),'-o',str(d/'app/hc-child')],check=True)
+        if resident:
+            read_fd,write_fd=os.pipe()
+            try:
+                os.write(write_fd,b'r')
+                s,pid,p=spawn(['/app/hc-child','resident-fd-collision'],fds={200:read_fd})
+                assert pid>0,(pid,(d/'log').read_text())
+                assert read_int(s)==0;s.close()
+                assert 'exec-state-import' in (d/'log').read_text()
+                (d/'app'/'bad-exec').write_text('not an executable\n')
+                os.chmod(d/'app'/'bad-exec',0o755)
+                s,pid,p=spawn(['/app/bad-exec'],fds={200:read_fd})
+                assert pid==-8,(pid,(d/'log').read_text());s.close()
+                print('PASS explicit resident-fd collision resets runtime, fd mapping and signals; failed load reports ENOEXEC')
+            finally:os.close(read_fd);os.close(write_fd)
         # portal diagnostics survive the worker's close-all-fds setup even
         # when no stdio SCM_RIGHTS mappings were supplied.
         s,pid,p=spawn(['/app/hc-child','portal'])

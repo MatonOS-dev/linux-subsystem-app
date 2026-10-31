@@ -14,6 +14,12 @@
 int state_android, state_gpu_bridge;
 char **state_environment;
 static int private_fd=-1;
+static int ready_fd=-1;
+void state_notify_ready(int error){
+ if(ready_fd<0)return;
+ if(error)proxy_internal_write(ready_fd,&error,sizeof(error));
+ RAW(PROXY_SC_close,ready_fd,0,0,0,0,0);ready_fd=-1;
+}
 enum { PROXY_PRIVATE_FD_COUNT=18 };
 long proxy_fd_reserve=LONG_MAX,proxy_fd_reserve_end=LONG_MAX;
 int proxy_fd_reserve_ready;
@@ -200,7 +206,7 @@ int state_import(const char *number,const char *token){
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
  uint64_t self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
  if(magic!=UINT64_C(0x335854454e4f544d)){import_reject("resident-import-magic",(long)magic,(long)version);s.error=-EPERM;}
- else if(version!=17){import_reject("resident-import-version",(long)version,17);s.error=-EPERM;}
+ else if(version!=18){import_reject("resident-import-version",(long)version,18);s.error=-EPERM;}
  else if(pid!=self){import_reject("resident-import-pid",(long)pid,(long)self);s.error=-EPERM;}
  else if(key!=nonce){import_reject("resident-import-nonce",0,0);s.error=-EPERM;}
  /* Restore the diagnostic sink before importing VFS/fd state. Payload stderr
@@ -209,6 +215,7 @@ int state_import(const char *number,const char *token){
  if(!s.error){
   int trace=(int)state_word(&s,0),diagnostic=(int)state_word(&s,0);
   if(!s.error){proxy_trace=trace;proxy_diagnostic_fd=diagnostic;
+   ready_fd=(int)state_word(&s,0);
    if(proxy_trace)proxy_log("exec-state-enter",ARCH_AUDIT,s.size);
    uint64_t count=state_count(&s,0);
    if(!s.error && count>SIZE_MAX/sizeof(char *)-1)s.error=-E2BIG;
@@ -225,12 +232,13 @@ int state_import(const char *number,const char *token){
 }
 /* Return zero for this loader's class; otherwise kernel-exec only the verified
  * sibling. Open it once and use execveat(AT_EMPTY_PATH), closing rename races. */
-int state_exec(const char *path,char *const *args,char *const *env){
+static int exec_resident(const char *path,char *const *args,char *const *env,int reset){
  long error=0;char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);if(!resolved)return error;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(resolved);if(fd<0)return fd;
  unsigned char elf[20];long got=proxy_pread_fd(fd,elf,sizeof(elf),0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
- if(got!=sizeof(elf)||elf[0]!=127||elf[1]!='E'||elf[2]!='L'||elf[3]!='F')return 0;
- int target=arch_handoff_class(elf);if(!target)return 0;
+ int is_elf=got==sizeof(elf)&&elf[0]==127&&elf[1]=='E'&&elf[2]=='L'&&elf[3]=='F';
+ if(!is_elf && !reset)return 0;
+ int target=is_elf?arch_handoff_class(elf):0;if(!target && !reset)return 0;
  if(target<0)return -ENOEXEC;
  char self[4096];long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,"/proc/self/exe",self,sizeof(self)-1,0,0);if(n<=0)return -ENOEXEC;self[n]=0;
  while(n && self[n-1]!='/')n--;
@@ -241,20 +249,20 @@ int state_exec(const char *path,char *const *args,char *const *env){
  if(parent<0)return parent;
  int unsafe=arch_stat_fd(parent,&dir)||(dir.st_mode&0022);
  RAW(PROXY_SC_close,parent,0,0,0,0,0);if(unsafe)return -EPERM;
- const char *peer=arch_peer_loader(self+n);
+ const char *peer=target?arch_peer_loader(self+n):arch_reset_loader(self+n);
  if((size_t)n+p_len(peer)>=sizeof(self))return -ENAMETOOLONG;
  p_copy(self+n,peer,p_len(peer)+1);
  fd=RAW(PROXY_SC_openat,AT_FDCWD,self,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;
  struct proxy_stat running,chosen;
  if(arch_stat_at(AT_FDCWD,"/proc/self/exe",&running,0)||arch_stat_fd(fd,&chosen)||!S_ISREG(chosen.st_mode)||chosen.st_uid!=running.st_uid||(chosen.st_mode&0022)||!(chosen.st_mode&0111))error=-EPERM;
- unsigned char header[20];if(!error && (RAW(PROXY_SC_pread64,fd,header,20,0,0,0)!=20||arch_handoff_class(header)!=1))error=-ENOEXEC;
+ unsigned char header[20];if(!error && (RAW(PROXY_SC_pread64,fd,header,20,0,0,0)!=20||arch_handoff_class(header)!=(target?1:0)))error=-ENOEXEC;
  if(error){RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  private_fd=proxy_private_fd(RAW(PROXY_SC_memfd_create,"matonos-v3-exec",MFD_ALLOW_SEALING,0,0,0,0));
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};
- state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,17);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
- state_word(&s,proxy_trace);state_word(&s,proxy_diagnostic_fd);
+ state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,18);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
+ state_word(&s,proxy_trace);state_word(&s,proxy_diagnostic_fd);state_word(&s,(uint64_t)(int64_t)ready_fd);
  /* The resident is an Android executable, not the Linux payload. Its linker
   * must not consume payload LD_* settings (paths are still virtual here).
   * Carry the exact environment, including order/duplicates, in the stream. */
@@ -299,4 +307,20 @@ int state_exec(const char *path,char *const *args,char *const *env){
    * original kernel flag along with the rest of its state. */
   if(error<0 && (handoff_flags&FD_CLOEXEC))RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags,0,0,0);}}
  vfs_free(native_env);vfs_free(av);proxy_private_fd_release(private_fd);RAW(PROXY_SC_close,private_fd,0,0,0,0,0);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
+}
+
+int state_exec(const char *path,char *const *args,char *const *env){
+ return exec_resident(path,args,env,0);
+}
+/* An explicit host-command fd mapping may replace a driver's cached number.
+ * Real exec discards that driver's objects. Do the same instead of retaining
+ * stale resident pointers, while carrying the virtual Linux process state. */
+int state_reexec(const char *path,char *const *args,char *const *env,int ready){
+ long flags=RAW(PROXY_SC_fcntl,ready,F_GETFD,0,0,0,0);if(flags<0)return flags;
+ long r=RAW(PROXY_SC_fcntl,ready,F_SETFD,flags&~FD_CLOEXEC,0,0,0);if(r<0)return r;
+ ready_fd=ready;
+ r=exec_resident(path,args,env,1);
+ ready_fd=-1;
+ RAW(PROXY_SC_fcntl,ready,F_SETFD,flags,0,0,0);
+ return r;
 }

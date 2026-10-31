@@ -519,7 +519,7 @@ int proxy_load(const char *path,char *const *argv,char *const *env,struct image 
     return r;
 }
 #ifndef PROXY_LIBRARY
-int main(int argc,char **argv,char **environ) {
+static int loader_main(int argc,char **argv,char **environ) {
     int supervised=supervise_launch(argc,argv,environ);
     if(supervised>=0)return supervised;
     char **end=environ;while(*end)end++;
@@ -702,10 +702,17 @@ int main(int argc,char **argv,char **environ) {
         if(prctl(PR_SET_VMA,PR_SET_VMA_ANON_NAME,bootstrap,4096,MATON_GPU_BOOTSTRAP_NAME) ||
            mprotect(bootstrap,4096,PROT_READ)) return 6;
         gpu_bootstrap=bootstrap;
+        state_notify_ready(0);
         adopt_launch(image.entry,image.stack);
     }
 #endif
+    state_notify_ready(0);
     proxy_enter(image.entry,image.stack);
+}
+int main(int argc,char **argv,char **environ) {
+    int result=loader_main(argc,argv,environ);
+    state_notify_ready(result?-ENOEXEC:0);
+    return result;
 }
 
 #endif

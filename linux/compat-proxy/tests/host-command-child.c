@@ -13,6 +13,11 @@ int main(int argc,char **argv) {
         return 0;
     }
     struct sigaction action;sigaction(SIGPIPE,NULL,&action);if(action.sa_handler!=SIG_DFL)return 6;
+    if(argc==2 && !strcmp(argv[1],"resident-fd-collision")) {
+        char byte=0;
+        if(read(200,&byte,1)!=1 || byte!='r')return 8;
+        return 0;
+    }
     if(!isatty(0)||!isatty(42))return 1;
     if(getsid(0)!=getpid()||tcgetpgrp(0)!=getpgrp())return 2;
     if(getuid()!=(uid_t)strtoul(getenv("EXPECTED_UID"),NULL,10))return 3;

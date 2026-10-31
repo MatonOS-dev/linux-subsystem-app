@@ -22,3 +22,11 @@ static inline const char *arch_peer_loader(const char *base){
  i=0;while(base[i] && base[i]==b[i])i++;
  return !base[i]&&!b[i]?ARCH_PEER_HOST_LOADER:ARCH_PEER_LOADER;
 }
+
+/* Same-ABI kernel exec must enter the fixed raw gateway, not a newly ASLR'd
+ * libc whose startup would trap before a SIGSYS handler exists. */
+static inline const char *arch_reset_loader(const char *base){
+ const char *prefix="libmatonos-v3-";unsigned i=0;
+ while(prefix[i] && base[i]==prefix[i])i++;
+ return !prefix[i]?ARCH_RESET_LOADER:ARCH_RESET_HOST_LOADER;
+}

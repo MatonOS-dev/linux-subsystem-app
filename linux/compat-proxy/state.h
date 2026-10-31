@@ -15,6 +15,8 @@ int state_private_fd(int);
 void proxy_fd_state(struct state *);
 long proxy_private_fd_limit(uint64_t);
 int state_exec(const char *,char *const *,char *const *);
+int state_reexec(const char *,char *const *,char *const *,int);
+void state_notify_ready(int);
 extern int state_android, state_gpu_bridge;
 extern char **state_environment;
 int state_import(const char *,const char *);
