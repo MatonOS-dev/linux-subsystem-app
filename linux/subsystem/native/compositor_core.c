@@ -851,7 +851,7 @@ struct XOverlay {
   struct wlr_xwayland_surface* xs;
   struct wlr_scene_tree* tree;
   int session;
-  struct wl_listener associate, dissociate, geometry, destroy, tree_destroy;
+  struct wl_listener associate, dissociate, geometry, commit, destroy, tree_destroy;
 };
 static struct Window* xoverlay_owner(struct XOverlay* o) {
   for(struct wlr_xwayland_surface* p=o->xs->parent;p;p=p->parent)
@@ -873,10 +873,12 @@ static void on_xoverlay_tree_destroy(struct wl_listener* l,void* data) {
 static void xoverlay_remove_tree(struct XOverlay* o) {
   if(o->tree)wlr_scene_node_destroy(&o->tree->node);
 }
+static void on_xoverlay_commit(struct wl_listener* l,void* data);
 static void on_xoverlay_associate(struct wl_listener* l,void* data) {
   (void)data;struct XOverlay* o=(struct XOverlay*)((char*)l-offsetof(struct XOverlay,associate));
   struct Window* w=xoverlay_owner(o);
   if(!w||!o->xs->surface)return;
+  if(!o->commit.link.prev||o->commit.link.prev==&o->commit.link){o->commit.notify=on_xoverlay_commit;wl_signal_add(&o->xs->surface->events.commit,&o->commit);}
   xoverlay_remove_tree(o);
   o->tree=wlr_scene_subsurface_tree_create(&w->scene->tree,o->xs->surface);
   if(!o->tree)return;
@@ -889,18 +891,28 @@ static void on_xoverlay_associate(struct wl_listener* l,void* data) {
 }
 static void on_xoverlay_dissociate(struct wl_listener* l,void* data) {
   (void)data;struct XOverlay* o=(struct XOverlay*)((char*)l-offsetof(struct XOverlay,dissociate));
+  if(o->commit.link.prev&&o->commit.link.prev!=&o->commit.link){wl_list_remove(&o->commit.link);wl_list_init(&o->commit.link);}
   xoverlay_remove_tree(o);
+}
+static void on_xoverlay_commit(struct wl_listener* l,void* data) {
+  (void)data;struct XOverlay* o=(struct XOverlay*)((char*)l - offsetof(struct XOverlay,commit));
+  struct Window* w=xoverlay_owner(o);
+  if(!w||!w->xsurface||!o->tree)return;
+  wlr_scene_node_set_position(&o->tree->node,o->xs->x-w->xsurface->x,o->xs->y-w->xsurface->y);
+  if(w->output&&!w->stopped)wlr_output_schedule_frame(w->output);
 }
 static void on_xoverlay_geometry(struct wl_listener* l,void* data) {
   (void)data;struct XOverlay* o=(struct XOverlay*)((char*)l-offsetof(struct XOverlay,geometry));
   struct Window* w=xoverlay_owner(o);
   if(o->tree&&w)wlr_scene_node_set_position(&o->tree->node,o->xs->x-w->xsurface->x,o->xs->y-w->xsurface->y);
+  if(w&&w->output&&!w->stopped)wlr_output_schedule_frame(w->output);
 }
 static void on_xoverlay_destroy(struct wl_listener* l,void* data) {
   (void)data;struct XOverlay* o=(struct XOverlay*)((char*)l-offsetof(struct XOverlay,destroy));
   xoverlay_remove_tree(o);
   wl_list_remove(&o->associate.link);wl_list_remove(&o->dissociate.link);
   wl_list_remove(&o->geometry.link);wl_list_remove(&o->destroy.link);
+  if(o->commit.link.prev&&o->commit.link.prev!=&o->commit.link)wl_list_remove(&o->commit.link);
   free(o);
 }
 static void xwayland_overlay(struct wlr_xwayland_surface* xs,int session) {
