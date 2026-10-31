@@ -131,7 +131,7 @@ static int tree(char *root,const char *path){
   * alternate signal stack used by the seccomp handler. */
  struct tree_scratch {char up[PATH_MAX],key[PATH_MAX],marker[PATH_MAX];size_t visited[TREE_WALK_DEPTH];};
  struct tree_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return 0;
- char *up=scratch->up,*key=scratch->key;if(!parent(key,path))return 0;
+ char *up=scratch->up,*key=scratch->key;if(!parent(key,path)){vfs_free(scratch);return 0;}
  uint64_t generation,device=0;
  /* Offsets into key of each directory walked past without an answer. */
  int depth=0,marked=0,cached=-2;
@@ -169,7 +169,7 @@ restart:
   }
   tree_cache_unlock();
  }
- return marked;
+ vfs_free(scratch);return marked;
 }
 /* One constant-time index entry per physical placeholder inode. Values are
  * relative object IDs, so directory relocation needs no target rewriting. */
@@ -182,12 +182,13 @@ static int index_path(char *out,const char *store,const struct proxy_stat *st){
  * checked. Reuse that store during replay instead of re-walking the marker
  * ancestry for every before/after reference in the same transaction. */
 static int target_index(const char *store,const struct proxy_stat *identity,char *out){
- struct proxy_stat st;char id[36],*entry=vfs_alloc(PATH_MAX);if(!entry || !index_path(entry,store,identity))return 0;
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return 0;
+ struct proxy_stat st;char id[36],*entry=vfs_alloc(PATH_MAX);if(!entry)return 0;if(!index_path(entry,store,identity)){vfs_free(entry);return 0;}
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0){vfs_free(entry);return 0;}
  long n=RAW(PROXY_SC_read,fd,id,sizeof(id),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
- if(n!=35 || id[0]!='i' || id[1]!='-' || id[34])return 0;
- for(unsigned i=2;i<34;i++)if(!((id[i]>='0' && id[i]<='9') || (id[i]>='a' && id[i]<='f')))return 0;
- return catpath(out,store,id) && !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);
+ int valid=n==35 && id[0]=='i' && id[1]=='-' && !id[34];
+ for(unsigned i=2;valid && i<34;i++)if(!((id[i]>='0' && id[i]<='9') || (id[i]>='a' && id[i]<='f')))valid=0;
+ int found=valid && catpath(out,store,id) && !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);
+ vfs_free(entry);return found;
 }
 static int target_locked(const char *store,const char *name,char *out){
  struct proxy_stat st;
@@ -197,8 +198,8 @@ static int target_locked(const char *store,const char *name,char *out){
 int links_target(const char *name,char *out){
  struct proxy_stat st;char root[PATH_MAX],*store=vfs_alloc(PATH_MAX);if(!store)return 0;
  /* The cached marker ancestry excludes ordinary trees without getattr. */
- if(!tree(root,name) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes"))return 0;
- return target_index(store,&st,out);
+ if(!tree(root,name) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes")){vfs_free(store);return 0;}
+ int found=target_index(store,&st,out);vfs_free(store);return found;
 }
 static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=links_euid() || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
 static void unlock(long fd){RAW(PROXY_SC_flock,fd,LOCK_UN,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
@@ -450,8 +451,9 @@ void links_recover_path(const char *path){
   long r=arch_stat_at(AT_FDCWD,journal,&st,AT_SYMLINK_NOFOLLOW);
   if(r!=-ENOENT){needed=1;break;}
  }
- if(!needed)return;
+ if(!needed){vfs_free(journal);return;}
  long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock);}
+ vfs_free(journal);
 }
 /* Only regular files can be store objects; skip the /proc lookup for the rest. */
 static char *fd_backing_path(int fd){

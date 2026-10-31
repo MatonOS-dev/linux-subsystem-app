@@ -14,6 +14,7 @@ python3 tests/mount-scan.py
 python3 tests/walk-components.py
 python3 tests/marker-cache.py
 python3 tests/links-walk-cost.py
+python3 tests/link-pressure.py "$PWD/build/linux-layer-v3"
 python3 tests/exec-sigpipe.py
 python3 tests/child-status.py
 native_out=$(mktemp -d "${TMPDIR:-/mnt/data/aosp/out/pc-logs}/steam-personality-native.XXXXXX")
