@@ -326,6 +326,13 @@ timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/bu
 if [[ -n ${MATON_TEST_GLNX_SOURCE:-} ]]; then bash tests/glnx-nofollow.sh; fi
 cat build/hardlinks-test.out
 printf 'PASS no-follow stored-name and real-symlink regression checks\n'
+# Recovery runs in direct dispatch as well as on the signal stack. Exercise
+# its hard-link paths with a constrained payload stack.
+stack_fixture=$(mktemp -d "$PWD/build/hardlinks-stack.XXXXXX")
+touch "$stack_fixture/.v3-store-root"
+(ulimit -s 64; timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$stack_fixture") >build/hardlinks-stack.out 2>build/hardlinks-stack.log
+cat build/hardlinks-stack.out
+rm -r "$stack_fixture"
 # Backing objects and count sidecars disappear after the final name.
 test "$(find "$hardlinks_fixture/.v3-inodes" -type f ! -name lock | wc -l)" -eq 0
 rm -r "$hardlinks_fixture"

@@ -313,14 +313,16 @@ static long begin_intent(const char *root,const char *store,const char *p,const 
 }
 struct recount_record {struct recount_record *next;dev_t dev;ino_t ino;};
 static struct recount_record *recounted;
-static long recover(const char *root,const char *store){
+struct recover_scratch { char marker[PATH_MAX], journal[PATH_MAX], data[PATH_MAX*2], buf[4096], meta[PATH_MAX], backing[PATH_MAX], object[PATH_MAX]; };
+static long recover_impl(const char *root,const char *store,struct recover_scratch *scratch){
+ char *marker=scratch->marker,*journal=scratch->journal,*data=scratch->data,*buf=scratch->buf,*meta=scratch->meta,*backing=scratch->backing,*object=scratch->object;
  discard_new(store);
  long moving=finish_intent(store);if(moving && moving!=-EIO)return moving;
- char marker[PATH_MAX];struct proxy_stat markerstat;if(!catpath(marker,store,"dirty"))return -ENAMETOOLONG;int changed=moving==-EIO || !arch_stat_at(AT_FDCWD,marker,&markerstat,AT_SYMLINK_NOFOLLOW);
+ struct proxy_stat markerstat;if(!catpath(marker,store,"dirty"))return -ENAMETOOLONG;int changed=moving==-EIO || !arch_stat_at(AT_FDCWD,marker,&markerstat,AT_SYMLINK_NOFOLLOW);
  /* An interrupted first conversion restores its original name before GC. */
- char journal[PATH_MAX];if(!catpath(journal,store,"conversion"))return -ENAMETOOLONG;
+ if(!catpath(journal,store,"conversion"))return -ENAMETOOLONG;
  long j=RAW(PROXY_SC_openat,AT_FDCWD,journal,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
- if(j>=0){char data[PATH_MAX*2];long n=RAW(PROXY_SC_read,j,data,sizeof(data)-1,0,0,0);RAW(PROXY_SC_close,j,0,0,0,0,0);
+ if(j>=0){long n=RAW(PROXY_SC_read,j,data,sizeof(scratch->data)-1,0,0,0);RAW(PROXY_SC_close,j,0,0,0,0,0);
   if(n>0){data[n]=0;size_t k=p_len(data);if(k+1<(size_t)n){struct proxy_stat st;
    if(arch_stat_at(AT_FDCWD,data,&st,AT_SYMLINK_NOFOLLOW)==-ENOENT)RAW(PROXY_SC_renameat2,AT_FDCWD,data+k+1,AT_FDCWD,data,RENAME_NOREPLACE,0);
    else if(!arch_stat_at(AT_FDCWD,data+k+1,&st,AT_SYMLINK_NOFOLLOW)){long r=write_count(data+k+1,1);if(r)return r;}
@@ -335,12 +337,17 @@ static long recover(const char *root,const char *store){
  record->dev=identity.st_dev;record->ino=identity.st_ino;
  do{record->next=__atomic_load_n(&recounted,__ATOMIC_ACQUIRE);}while(!__atomic_compare_exchange_n(&recounted,&record->next,record,0,__ATOMIC_RELEASE,__ATOMIC_ACQUIRE));
  struct proxy_stat st;long r=arch_stat_at(AT_FDCWD,root,&st,0);if(r)return r;
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,store,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;char buf[4096];long n;
- while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(buf),0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){r=-EIO;goto end;}char *name=(void *)(d+19);off+=len;if(name[0]!='i' || name[1]!='-')continue;size_t k=p_len(name);if(k>6 && p_equal(name+k-6,".count")){char meta[PATH_MAX],backing[PATH_MAX];struct proxy_stat bst;if(!catpath(meta,store,name)){r=-ENAMETOOLONG;goto end;}name[k-6]=0;int fits=catpath(backing,store,name);name[k-6]='.';if(!fits){r=-ENAMETOOLONG;goto end;}if(arch_stat_at(AT_FDCWD,backing,&bst,AT_SYMLINK_NOFOLLOW)==-ENOENT)RAW(PROXY_SC_unlinkat,AT_FDCWD,meta,0,0,0,0);continue;}char object[PATH_MAX];if(!catpath(object,store,name)){r=-ENAMETOOLONG;goto end;}char meta[PATH_MAX];size_t olen=p_len(object);if(olen+7>=PATH_MAX){r=-ENAMETOOLONG;goto end;}p_copy(meta,object,olen);p_copy(meta+olen,".count",7);struct proxy_stat mst;if(!changed && !arch_stat_at(AT_FDCWD,meta,&mst,AT_SYMLINK_NOFOLLOW))continue;
- uint64_t count=0;r=count_names(root,object,st.st_dev,&count);if(r)goto end;if(count)r=write_count(object,count);else{r=RAW(PROXY_SC_unlinkat,AT_FDCWD,object,0,0,0,0);if(r==-ENOENT)r=0;char meta[PATH_MAX];if(p_len(object)+7<PATH_MAX){p_copy(meta,object,p_len(object));p_copy(meta+p_len(object),".count",7);RAW(PROXY_SC_unlinkat,AT_FDCWD,meta,0,0,0,0);}}if(r)goto end;}}
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,store,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;long n;
+ while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(scratch->buf),0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){r=-EIO;goto end;}char *name=(void *)(d+19);off+=len;if(name[0]!='i' || name[1]!='-')continue;size_t k=p_len(name);if(k>6 && p_equal(name+k-6,".count")){struct proxy_stat bst;if(!catpath(meta,store,name)){r=-ENAMETOOLONG;goto end;}name[k-6]=0;int fits=catpath(backing,store,name);name[k-6]='.';if(!fits){r=-ENAMETOOLONG;goto end;}if(arch_stat_at(AT_FDCWD,backing,&bst,AT_SYMLINK_NOFOLLOW)==-ENOENT)RAW(PROXY_SC_unlinkat,AT_FDCWD,meta,0,0,0,0);continue;}if(!catpath(object,store,name)){r=-ENAMETOOLONG;goto end;}size_t olen=p_len(object);if(olen+7>=PATH_MAX){r=-ENAMETOOLONG;goto end;}p_copy(meta,object,olen);p_copy(meta+olen,".count",7);struct proxy_stat mst;if(!changed && !arch_stat_at(AT_FDCWD,meta,&mst,AT_SYMLINK_NOFOLLOW))continue;
+ uint64_t count=0;r=count_names(root,object,st.st_dev,&count);if(r)goto end;if(count)r=write_count(object,count);else{r=RAW(PROXY_SC_unlinkat,AT_FDCWD,object,0,0,0,0);if(r==-ENOENT)r=0;if(p_len(object)+7<PATH_MAX){p_copy(meta,object,p_len(object));p_copy(meta+p_len(object),".count",7);RAW(PROXY_SC_unlinkat,AT_FDCWD,meta,0,0,0,0);}}if(r)goto end;}}
  if(n<0)r=n;
 end:RAW(PROXY_SC_close,fd,0,0,0,0,0);if(!r){RAW(PROXY_SC_unlinkat,AT_FDCWD,marker,0,0,0,0);if(catpath(journal,store,"intent"))RAW(PROXY_SC_unlinkat,AT_FDCWD,journal,0,0,0,0);}return r;
 }
+static long recover(const char *root,const char *store){
+ struct recover_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;
+ long result=recover_impl(root,store,scratch);vfs_free(scratch);return result;
+}
+
 static void remove_empty_store(const char *dir){
  char store[PATH_MAX],file[PATH_MAX];struct proxy_stat st;
  if(!catpath(store,dir,".v3-inodes") || arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return;
