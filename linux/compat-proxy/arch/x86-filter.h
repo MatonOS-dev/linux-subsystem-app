@@ -141,7 +141,7 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_KILL_PROCESS);
     /* Proxy-internal syscalls must bypass the payload descriptor guards. */
     for(unsigned g=0;g<3;g++) {
-        uint64_t raw_ip=peer?(g==0?gateway+0x42:g==1?gateway+0x102:gateway+0x202):arch_gateway_pc(g);
+        uint64_t raw_ip=g==0?gateway+0x42:g==1?gateway+0x102:gateway+0x202;
         if(g==2 && peer)continue;
         ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,instruction_pointer)+4);
         ADD(BPF_JMP|BPF_JEQ|BPF_K,0,3,(uint32_t)(raw_ip>>32));
@@ -154,7 +154,7 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
      * the kernel's inherited app filter. */
     if(!resident_fds_enabled){
         const struct {long id;unsigned arg;} guards[]={
-            {PROXY_SC_close,0}
+            {PROXY_SC_close,0},{PROXY_SC_dup2,1},{PROXY_SC_dup3,1}
         };
         for(unsigned i=0;i<sizeof(guards)/sizeof(guards[0]);i++){
             long nr=encode(guards[i].id);if(nr<0)continue;
@@ -180,29 +180,6 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
             ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-        }
-    }
-    /* Special read/write descriptors live in the I/O window; aliases outside
-     * it install synchronized exact-fd filters. Plain files/pipes/sockets
-     * therefore bypass SIGSYS. Positional I/O/writev retain private guards. */
-    if(!proxy_trace){
-        const long direct[]={PROXY_SC_read,PROXY_SC_readv,PROXY_SC_write,PROXY_SC_pread64,PROXY_SC_pwrite64,PROXY_SC_writev};
-        for(unsigned i=0;i<sizeof(direct)/sizeof(direct[0]);i++){
-            long nr=encode(direct[i]);if(nr<0)continue;
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-            unsigned check=n;ADD(BPF_JMP|BPF_JEQ|BPF_K,0,0,nr);
-            /* Linux consumes fd as an int, ignoring the argument high word. */
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,args[0]));
-            for(unsigned window=0;window<(i<3?2U:1U);window++){
-                long begin=window?io_window_begin():proxy_fd_reserve;
-                long end=window?io_window_end():proxy_fd_reserve_end;
-                ADD(BPF_JMP|BPF_JGE|BPF_K,0,2,(uint32_t)begin);
-                ADD(BPF_JMP|BPF_JGE|BPF_K,1,0,(uint32_t)end);
-                ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
-            }
-            ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
-            bpf[check].jf=(uint8_t)(n-check-1);
-            ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
         }
     }
     /* Number-only fast path. Every syscall the checks below would not trap
