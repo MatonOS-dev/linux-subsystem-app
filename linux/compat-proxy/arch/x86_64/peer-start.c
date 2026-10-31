@@ -39,6 +39,9 @@ static void *mapping(uintptr_t size){
  if((uintptr_t)r>=(uintptr_t)-4095)fail("scratch allocation failed");
  return (void *)r;
 }
+struct temporary_range {uintptr_t lo,hi;};
+static struct temporary_range *temporary_ranges;
+static uintptr_t temporary_count,temporary_capacity;
 static char *maps;
 static uintptr_t capacity;
 static char *read_maps(void){
@@ -56,7 +59,9 @@ static char *read_maps(void){
    used=0;
   }
   long n=peer_raw(0,fd,(long)(maps+used),capacity-used-1,0,0,0);
-  if(n<0)fail("mapping layout read failed");if(!n)break;used+=(uintptr_t)n;
+  if(n<0)fail("mapping layout read failed");
+  if(!n)break;
+  used+=(uintptr_t)n;
  }
  peer_raw(3,fd,0,0,0,0,0);maps[used]=0;return maps;
 }
@@ -64,19 +69,23 @@ static uintptr_t hex(char **p){
  uintptr_t n=0,digits=0;
  for(;;){char c=**p;uintptr_t d=c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:16;
   if(d==16){if(!digits)fail("invalid mapping address");return n;}
-  if(digits++==16)fail("mapping address overflow");n=n*16+d;(*p)++;
+  if(digits++==16)fail("mapping address overflow");
+  n=n*16+d;(*p)++;
  }
 }
 static void reserve(uintptr_t lo,uintptr_t hi,int temporary){
  if(lo>=hi)return;
+ if(temporary && temporary_count>=temporary_capacity)fail("temporary range storage exhausted");
  if(peer_raw(9,lo,hi-lo,0,MAP_PRIVATE|MAP_ANONYMOUS|NOREPLACE,-1,0)!=(long)lo)
   fail("native address reservation collided");
+ if(temporary)temporary_ranges[temporary_count++]=(struct temporary_range){lo,hi};
  if(temporary && peer_raw(157,0x53564d41,0,lo,hi-lo,(long)TEMP_NAME,0))
   fail("cannot label temporary native reservation");
 }
 static void hole(uintptr_t lo,uintptr_t hi,int inside){
  if(inside){
-  if(lo<region)lo=region;if(hi>region+REGION_SIZE)hi=region+REGION_SIZE;
+  if(lo<region)lo=region;
+  if(hi>region+REGION_SIZE)hi=region+REGION_SIZE;
   reserve(lo,hi,0);
  }else{
   if(lo<region)reserve(lo,hi<region?hi:region,1);
@@ -85,25 +94,36 @@ static void hole(uintptr_t lo,uintptr_t hi,int inside){
 }
 static void occupy_holes(int inside){
  uintptr_t last=65536;
+ if(!inside){
+  uintptr_t lines=0;for(char *p=read_maps();*p;p++)if(*p=='\n')lines++;
+  /* Allocation adds a map, and the native region can split a gap in two.
+   * Re-read after allocating so the record storage is never reserved over. */
+  temporary_capacity=2*(lines+2);
+  temporary_ranges=mapping(up(temporary_capacity*sizeof(*temporary_ranges)));
+  temporary_count=0;
+ }
  for(char *p=read_maps();*p;){
   uintptr_t lo=hex(&p);if(*p++!='-')fail("invalid mapping layout");uintptr_t hi=hex(&p);
   if(lo>=UINT64_C(0x800000000000))break;
-  if(last<lo)hole(last,lo,inside);last=hi;
-  while(*p && *p!='\n')p++;if(*p)p++;
+  if(last<lo)hole(last,lo,inside);
+  last=hi;
+  while(*p && *p!='\n')p++;
+  if(*p)p++;
  }
  /* Ordinary x86_64 mappings live below the 47-bit userspace ceiling.
   * The legacy vsyscall mapping above it is not an allocator hole. */
  if(last<0x7ffffffff000)hole(last,0x7ffffffff000,inside);
 }
 static void release_holes(void){
- for(char *p=read_maps();*p;){
-  uintptr_t lo=hex(&p);if(*p++!='-')fail("invalid mapping layout");uintptr_t hi=hex(&p);
-  char *line=p;while(*p && *p!='\n')p++;
-  if(*p)*p++=0;
-  for(char *q=line;*q;q++)if(equal(q,"[anon:" TEMP_NAME "]")){
-   if(peer_raw(11,lo,hi-lo,0,0,0,0))fail("cannot release startup reservation");break;
-  }
+ /* /proc/self/maps may display a named PROT_NONE reservation as [heap].
+  * Names are diagnostics, not ownership: release the exact ranges we made. */
+ for(uintptr_t i=0;i<temporary_count;i++){
+  struct temporary_range r=temporary_ranges[i];
+  if(peer_raw(11,r.lo,r.hi-r.lo,0,0,0,0))fail("cannot release startup reservation");
  }
+ if(temporary_ranges)peer_raw(11,(long)temporary_ranges,
+     up(temporary_capacity*sizeof(*temporary_ranges)),0,0,0,0);
+ temporary_ranges=0;temporary_count=temporary_capacity=0;
 }
 static void *symbol(uintptr_t base,const char *name){
  Elf64_Ehdr *eh=(void *)base;Elf64_Phdr *ph=(void *)(base+eh->e_phoff);Elf64_Dyn *dyn=0;
@@ -201,9 +221,11 @@ void peer_start(uintptr_t *stack){
  void *(*lookup)(void *,const char *,const void *)=symbol(region,"__loader_dlsym");
  uint64_t *base=lookup((void *)-1,"proxy_bionic64_base",_start);
  int (*run)(int,char **,char **)=lookup((void *)-1,"main",_start);
- if(!base||!run)fail("native peer entry unavailable");*base=region;
+ if(!base||!run)fail("native peer entry unavailable");
+ *base=region;
  int *active=lookup((void *)-1,"proxy_bionic64_active",_start);
- if(!active)fail("native peer marker unavailable");*active=1;
+ if(!active)fail("native peer marker unavailable");
+ *active=1;
  int result=run((int)argc,av,env);
  peer_raw(231,result,0,0,0,0,0);__builtin_trap();
 }

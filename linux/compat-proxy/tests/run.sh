@@ -6,6 +6,8 @@ cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0
 timeout 15 build/io-routing
 cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror tests/resolve-cache-fork.c loader.c proxy.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S -o build/resolve-cache-fork
 timeout 15 build/resolve-cache-fork
+cc -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall -Wextra -Werror tests/peer-temporary-ranges.c -o build/peer-temporary-ranges
+build/peer-temporary-ranges
 python3 tests/io-cache.py
 python3 tests/count-exec.py
 python3 tests/mount-scan.py

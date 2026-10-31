@@ -2864,3 +2864,18 @@ lock; the parent cache remains intact. Signals are deferred across cache
 critical sections, as for fd-name bookkeeping. `resolve-cache-fork.c` forks
 with the lock held and queues a reentrant signal while holding it. The test
 passes with the fix and fails when child reset is disabled.
+
+### Native peer temporary reservations hidden as `[heap]` (2026-10-31)
+
+Helper restarts reported `native-reservation-error -17` before loading the
+payload. A ptrace capture at failed mmap recorded an old native graphics
+range inside a giant PROT_NONE `[heap]` VMA. It was our temporary startup
+reservation: proc maps gives the kernel heap label precedence over its
+`PR_SET_VMA_ANON_NAME`. Cleanup by displayed name missed it. Whether an old
+native range fell below that reservation's end made failure address-dependent.
+The peer now records every temporary reservation and unmaps those exact
+ranges after bionic startup. Names remain diagnostic only. Storage is sized
+from the map layout, allocated before the final snapshot, and released at
+handoff. `peer-temporary-ranges.c` creates a reservation inside the kernel's
+brk extent, verifies it displays as `[heap]`, and verifies cleanup frees it.
+Restoring the old name-based cleanup makes the test fail.
