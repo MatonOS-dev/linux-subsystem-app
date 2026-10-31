@@ -122,6 +122,8 @@ for name in aliases:
     if target in exposed:
         proc_names[name] = target
 
+trace_targets = {"glTexImage2D", "glTexStorage2D", "glTexSubImage2D"}
+
 def emit_group(path, items, prefix, library):
     lines = ["/* Generated from the pinned Khronos API registries. */"]
     names = []
@@ -143,6 +145,7 @@ def emit_group(path, items, prefix, library):
             "eglQuerySurface", "eglSurfaceAttrib", "eglMakeCurrent",
             "eglGetCurrentSurface",
         }
+        trace_tex = name in trace_targets
         if custom_window:
             lines.append(f"static __attribute__((unused)) {ret} {internal}({proto});")
             names.append(name)
@@ -154,20 +157,43 @@ def emit_group(path, items, prefix, library):
             names.append(name)
             continue
         lines.append(f"static uintptr_t mv_cache_{internal};")
-        # Function pointer declarators in Khronos parameters are uncommon but
-        # retain the registry declaration as the call prototype when present.
-        lines += [f"static __attribute__((unused)) {ret} {internal}({proto}) {{",
-                  "    struct mv_scope scope;",
-                  "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
-                  f'    typedef {ret} (*fn_t)({proto});',
-                  f"    fn_t fn = (fn_t)__atomic_load_n(&mv_cache_{internal}, __ATOMIC_ACQUIRE);",
-                  f'    if (!fn) {{ fn = (fn_t)mv_resolve("{name}", {library}); if (fn) __atomic_store_n(&mv_cache_{internal}, (uintptr_t)fn, __ATOMIC_RELEASE); }}',
-                  "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
-                  *([f"    {ret} ret = fn({args});"] if ret != "void" else [f"    fn({args});"]),
-                  "    switch_back(&scope);",
-                  *([f'    if (!ret) mv_image_failure("{name}", dpy, ctx, target, buffer);']
-                    if name in ("eglCreateImage", "eglCreateImageKHR") else []),
-                  "    " + ("return;" if ret == "void" else f"return ({ret})ret;"), "}"]
+        if trace_tex:
+            # Generate a tracing wrapper that checks GL error after the call.
+            # Before calling, drain any stale saved error; after calling, save
+            # the GL error for replay by glGetError. Stats are env-gated by
+            # MATON_GL_TRACE_ERRORS.
+            if name == "glTexStorage2D":
+                # Different signature: target, levels, internalformat, width, height
+                trace_body = f'mv_drain_gl_error(); fn({args}); mv_save_gl_error(); mv_log_storage_failure("{name}", target, levels, internalformat, width, height);'
+            elif name == "glTexSubImage2D":
+                # signature: target, level, xoffset, yoffset, width, height, format, type, pixels
+                trace_body = f'mv_drain_gl_error(); fn({args}); mv_save_gl_error(); mv_log_tex_failure("{name}", target, level, 0, width, height, 0, format, type, pixels);'
+            else:
+                # glTexImage2D: target, level, internalformat, width, height, border, format, type, pixels
+                trace_body = f'mv_drain_gl_error(); fn({args}); mv_save_gl_error(); mv_log_tex_failure("{name}", target, level, internalformat, width, height, border, format, type, pixels);'
+            lines += [f"static __attribute__((unused)) {ret} {internal}({proto}) {{",
+                      "    struct mv_scope scope;",
+                      "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+                      f'    typedef {ret} (*fn_t)({proto});',
+                      f"    fn_t fn = (fn_t)__atomic_load_n(&mv_cache_{internal}, __ATOMIC_ACQUIRE);",
+                      f'    if (!fn) {{ fn = (fn_t)mv_resolve("{name}", {library}); if (fn) __atomic_store_n(&mv_cache_{internal}, (uintptr_t)fn, __ATOMIC_RELEASE); }}',
+                      "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+                      f"    {trace_body}",
+                      "    switch_back(&scope);",
+                      "    " + ("return;" if ret == "void" else f"return ({ret})ret;"), "}"]
+        else:
+            lines += [f"static __attribute__((unused)) {ret} {internal}({proto}) {{",
+                      "    struct mv_scope scope;",
+                      "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+                      f'    typedef {ret} (*fn_t)({proto});',
+                      f"    fn_t fn = (fn_t)__atomic_load_n(&mv_cache_{internal}, __ATOMIC_ACQUIRE);",
+                      f'    if (!fn) {{ fn = (fn_t)mv_resolve("{name}", {library}); if (fn) __atomic_store_n(&mv_cache_{internal}, (uintptr_t)fn, __ATOMIC_RELEASE); }}',
+                      "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+                      *([f"    {ret} ret = fn({args});"] if ret != "void" else [f"    fn({args});"]),
+                      "    switch_back(&scope);",
+                      *([f'    if (!ret) mv_image_failure("{name}", dpy, ctx, target, buffer);']
+                        if name in ("eglCreateImage", "eglCreateImageKHR") else []),
+                      "    " + ("return;" if ret == "void" else f"return ({ret})ret;"), "}"]
         names.append(name)
     pathlib.Path(path).write_text("\n".join(lines) + "\n")
     return names
@@ -187,29 +213,55 @@ for name in shared:
     params = [decl(p) for p in cmd.findall("param")]
     args = ", ".join(p.findtext("name") for p in cmd.findall("param"))
     proto = ", ".join(params) if params else "void"
-    shared_lines += [f"static {ret} mv_shared_{name}({proto}) {{",
-        "    struct mv_scope scope;",
-        "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
-        "    typedef EGLenum (*query_fn)(void);",
-        '    query_fn query = (query_fn)mv_resolve("eglQueryAPI", MV_EGL);',
-        "    int which = query && query() == EGL_OPENGL_API ? MV_DESKTOP : MV_GLES;",
-        f"    typedef {ret} (*fn_t)({proto});",
-        f'    fn_t fn = (fn_t)mv_resolve("{name}", which);',
-        "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
-        *([f"    {ret} result = fn({args});"] if ret != "void" else [f"    fn({args});"]),
-        "    switch_back(&scope);",
-        "    " + ("return;" if ret == "void" else "return result;"), "}"]
+    trace_shared = name in trace_targets
+    if trace_shared:
+        if name == "glTexStorage2D":
+            trace_body = f'mv_drain_gl_error(); fn({args}); mv_save_gl_error(); mv_log_storage_failure("{name}", target, levels, internalformat, width, height);'
+        elif name == "glTexSubImage2D":
+            trace_body = f'mv_drain_gl_error(); fn({args}); mv_save_gl_error(); mv_log_tex_failure("{name}", target, level, 0, width, height, 0, format, type, pixels);'
+        else:
+            trace_body = f'mv_drain_gl_error(); fn({args}); mv_save_gl_error(); mv_log_tex_failure("{name}", target, level, internalformat, width, height, border, format, type, pixels);'
+        shared_lines += [f"static {ret} mv_shared_{name}({proto}) {{",
+            "    struct mv_scope scope;",
+            "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+            "    typedef EGLenum (*query_fn)(void);",
+            '    query_fn query = (query_fn)mv_resolve("eglQueryAPI", MV_EGL);',
+            "    int which = query && query() == EGL_OPENGL_API ? MV_DESKTOP : MV_GLES;",
+            f"    typedef {ret} (*fn_t)({proto});",
+            f'    fn_t fn = (fn_t)mv_resolve("{name}", which);',
+            "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+            f"    {trace_body}",
+            "    switch_back(&scope);",
+            "    " + ("return;" if ret == "void" else "return result;"), "}"]
+    else:
+        shared_lines += [f"static {ret} mv_shared_{name}({proto}) {{",
+            "    struct mv_scope scope;",
+            "    if (!mv_ready() || !mv_enter(&scope)) { mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+            "    typedef EGLenum (*query_fn)(void);",
+            '    query_fn query = (query_fn)mv_resolve("eglQueryAPI", MV_EGL);',
+            "    int which = query && query() == EGL_OPENGL_API ? MV_DESKTOP : MV_GLES;",
+            f"    typedef {ret} (*fn_t)({proto});",
+            f'    fn_t fn = (fn_t)mv_resolve("{name}", which);',
+            "    if (!fn) { switch_back(&scope); mv_fail(); " + ("return;" if ret == "void" else f"return ({ret})0;") + " }",
+            *([f"    {ret} result = fn({args});"] if ret != "void" else [f"    fn({args});"]),
+            "    switch_back(&scope);",
+            "    " + ("return;" if ret == "void" else "return result;"), "}"]
 pathlib.Path(outdir / "shared_thunks.inc").write_text("\n".join(shared_lines) + "\n")
+def proc_entry(n, target):
+    if n == "glGetError":
+        return f'    else if (!strcmp(name, "glGetError")) return (void *)mv_traced_gl_get_error;\n'
+    return None
+
 (outdir / "proc_lookup.inc").write_text(
     "/* Registry generated proc-address map. */\n" +
     "static void *mv_lookup_proc(const char *name) {\n" +
     "    if (!name) return 0;\n" +
     "    if (0) return 0;\n" +
-    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_shared_{target};\n'
+    "".join(proc_entry(n, target) or f'    else if (!strcmp(name, "{n}")) return (void *)mv_shared_{target};\n'
             for n, target in sorted(proc_names.items()) if target in shared) +
-    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_{target};\n'
+    "".join(proc_entry(n, target) or f'    else if (!strcmp(name, "{n}")) return (void *)mv_{target};\n'
             for n, target in sorted(proc_names.items()) if (target in {x for x, _ in egl + gles} and target not in shared) or n in ("eglQueryString", "eglGetProcAddress")) +
-    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
+    "".join(proc_entry(n, target) or f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
             for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop} and target not in shared) +
     "    return 0;\n}\n")
 (outdir / "desktop_proc_lookup.inc").write_text(
@@ -217,7 +269,7 @@ pathlib.Path(outdir / "shared_thunks.inc").write_text("\n".join(shared_lines) + 
     "static void *mv_lookup_desktop_proc(const char *name) {\n" +
     "    if (!name) return 0;\n" +
     "    if (0) return 0;\n" +
-    "".join(f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
+    "".join(proc_entry(n, target) or f'    else if (!strcmp(name, "{n}")) return (void *)mv_desktop_{target};\n'
             for n, target in sorted(proc_names.items()) if target in {x for x, _ in desktop}) +
     "    return 0;\n}\n")
 # Runtime filtering and probing share this exact registry-derived command list.
