@@ -88,6 +88,34 @@ public final class LauncherDataTest {
         assertArrayEquals("The largest size wins", large, data.icon);
     }
 
+    @Test public void findsScalableAndSymbolicExports() throws Exception {
+        Path deployment = Files.createTempDirectory("launcher-scalable");
+        desktop(deployment, APP_ID, "Scalable App", "missing-icon", null);
+        Path scalable = deployment.resolve("export/share/icons/hicolor/scalable/apps/missing-icon.png");
+        png(scalable);
+        LauncherData data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
+        assertNotNull("Scalable theme directories are searched", data.icon);
+
+        Files.delete(scalable);
+        Path symbolic = deployment.resolve("export/share/icons/hicolor/symbolic/apps/missing-icon.png");
+        png(symbolic);
+        data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
+        assertNotNull("Symbolic theme directories are searched", data.icon);
+    }
+
+    @Test public void findsAppIdIconWithoutDesktopAndWhenDesktopIconDiffers() throws Exception {
+        Path deployment = Files.createTempDirectory("launcher-appid-icon");
+        desktop(deployment, APP_ID, "App Id Icon", "different-icon", null);
+        Path appIdIcon = deployment.resolve("export/share/icons/hicolor/128x128/apps/" + APP_ID + ".png");
+        png(appIdIcon);
+        LauncherData data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
+        assertNotNull("The app id remains a candidate after Icon=", data.icon);
+
+        Files.delete(deployment.resolve("export/share/applications/" + APP_ID + ".desktop"));
+        data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
+        assertNotNull("An exported app-id icon works without a desktop file", data.icon);
+    }
+
     @Test public void ignoresASymlinkedExportedIcon() throws Exception {
         Path deployment = Files.createTempDirectory("launcher-symlink");
         desktop(deployment, APP_ID, "Linked App", APP_ID, null);

@@ -18,6 +18,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import com.caverock.androidsvg.SVG;
 
 /**
  * The launcher label, MIME associations and icon for one package's code-free
@@ -140,7 +145,10 @@ public final class LauncherData {
     private static LauncherData fromExport(File root, String appId) throws IOException {
         if (root == null) return null;
         File desktop = desktopFile(new File(root, "export/share/applications"), appId);
-        if (desktop == null) return null;
+        if (desktop == null) {
+            byte[] icon = exportIcon(root, appId, null);
+            return icon == null ? null : new LauncherData(appId, Collections.<String>emptyList(), icon);
+        }
         byte[] content = PlaceholderFiles.readAllBytes(desktop);
         if (content.length == 0) throw new IOException("Desktop entry is empty");
         StubGenerator.DesktopEntry entry = StubGenerator.parseDesktop(new String(content, StandardCharsets.UTF_8));
@@ -160,8 +168,9 @@ public final class LauncherData {
         return desktops.size() == 1 ? desktops.get(0) : null;
     }
 
-    /** A PNG from {@code export/share/icons/hicolor}, preferring the .desktop's
-     * Icon= name and the largest size, else any app PNG. Never a symlink. */
+    /** Exported PNG/SVG from hicolor, preferring Icon= and then the Flatpak id.
+     * Theme directories (including scalable and symbolic) are searched after
+     * sized directories. Never follows a symlink. */
     private static byte[] exportIcon(File root, String appId, String iconName) throws IOException {
         File hicolor = new File(root, "export/share/icons/hicolor");
         if (!hicolor.isDirectory()) return null;
@@ -172,11 +181,15 @@ public final class LauncherData {
         List<String> names = new ArrayList<>();
         if (iconName != null && !iconName.isEmpty()) names.add(iconName);
         if (!names.contains(appId)) names.add(appId);
-        for (String name : names)
+        for (String name : names) {
             for (File size : sizes) {
-                byte[] icon = readPng(new File(new File(size, "apps"), name + ".png"));
-                if (icon != null) return icon;
+                File apps = new File(size, "apps");
+                for (String extension : new String[]{".png", ".svg"}) {
+                    byte[] icon = readIcon(new File(apps, name + extension));
+                    if (icon != null) return icon;
+                }
             }
+        }
         return null;
     }
 
@@ -190,7 +203,7 @@ public final class LauncherData {
         catch (NumberFormatException tooBig) { return Integer.MAX_VALUE; }
     }
 
-    private static byte[] readPng(File file) throws IOException {
+    private static byte[] readIcon(File file) throws IOException {
         if (!regular(file)) return null;
         long length = PlaceholderFiles.size(file);
         if (length <= 0 || length > Integer.MAX_VALUE) return null;
@@ -203,7 +216,26 @@ public final class LauncherData {
                 read += count;
             }
         }
-        return validIcon(bytes);
+        if (validIcon(bytes) != null) return bytes;
+        if (!file.getName().endsWith(".svg")) return null;
+        try {
+            SVG svg = SVG.getFromString(new String(bytes, StandardCharsets.UTF_8));
+            float width = svg.getDocumentWidth(), height = svg.getDocumentHeight();
+            if (!(width > 0) || !(height > 0)) { width = 512; height = 512; }
+            float scale = Math.min(512f / width, 512f / height);
+            Bitmap bitmap = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.drawColor(Color.TRANSPARENT);
+            canvas.save();
+            canvas.translate((512f - width * scale) / 2f, (512f - height * scale) / 2f);
+            canvas.scale(scale, scale);
+            svg.renderToCanvas(canvas);
+            canvas.restore();
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+            bitmap.recycle();
+            return out.toByteArray();
+        } catch (Exception invalidSvg) { return null; }
     }
 
     /** PNG bytes, or null when absent or malformed. */
@@ -212,6 +244,26 @@ public final class LauncherData {
         byte[] magic = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
         for (int i = 0; i < magic.length; i++) if (bytes[i] != magic[i]) return null;
         return bytes;
+    }
+
+    /** Pads artwork into the adaptive icon safe zone on a transparent canvas. */
+    public static byte[] insetIcon(byte[] bytes) {
+        if (bytes == null) return null;
+        Bitmap source = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        if (source == null) return bytes;
+        Bitmap target = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(target);
+        canvas.drawColor(Color.TRANSPARENT);
+        float scale = Math.min(342f / source.getWidth(), 342f / source.getHeight());
+        int width = Math.max(1, Math.round(source.getWidth() * scale));
+        int height = Math.max(1, Math.round(source.getHeight() * scale));
+        int left = (512 - width) / 2, top = (512 - height) / 2;
+        android.graphics.Rect dst = new android.graphics.Rect(left, top, left + width, top + height);
+        canvas.drawBitmap(source, null, dst, null);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        target.compress(Bitmap.CompressFormat.PNG, 100, out);
+        source.recycle(); target.recycle();
+        return out.toByteArray();
     }
 
     private static boolean regular(File file) {

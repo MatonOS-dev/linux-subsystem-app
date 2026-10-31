@@ -558,7 +558,8 @@ public final class LinuxAppStoreService extends Service {
         File deployment=org.matonos.linux.stub.DeployManifest.stagedDeployment(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef));
         org.matonos.linux.stub.LauncherData launcher=org.matonos.linux.stub.LauncherData.resolve(
                 deployment,appId,new File(deployment,"files/extra"),launchable&&"flathub".equals(remote)?new org.matonos.linux.stub.LauncherData.Flathub():null);
-        byte[] baseIcon=launcher.icon!=null?launcher.icon:fallbackIcon();
+        byte[] baseIcon=org.matonos.linux.stub.LauncherData.insetIcon(
+                launcher.icon!=null?launcher.icon:fallbackIcon());
         String stagedMetadata=org.matonos.linux.stub.DeployManifest.stagedMetadata(installation,org.matonos.linux.stub.InstallHandoff.deploymentManifest(op.stagedManifest,packageRef));
         if(hasExtraData(stagedMetadata)) {
             File minimalBase=new File(installation,"extra-data-stub.apk");
