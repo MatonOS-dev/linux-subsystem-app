@@ -51,7 +51,11 @@ static void hc_close_except(const int *keep,int count) {
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20||off+len>n)break;
             char *s=buf+off+19;int fd=0,valid=*s!=0;
             for(;*s;s++){if(*s<'0'||*s>'9'){valid=0;break;}fd=fd*10+*s-'0';}
-            int retain=fd==directory||vfs_private_fd(fd);
+            /* These raw forks keep the resident Android runtime, including
+             * Mesa objects that cache DRM fd numbers. Closing those fds here
+             * leaves live drivers issuing ioctls on unrelated reused files.
+             * Preserve ownership just as the payload's fd sweeps do. */
+            int retain=fd==directory||vfs_private_fd(fd)||resident_fd_owned(fd);
             for(int i=0;i<count;i++)if(keep[i]==fd)retain=1;
             if(valid&&!retain)RAW(PROXY_SC_close,fd,0,0,0,0,0);
             off+=len;

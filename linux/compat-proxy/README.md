@@ -2879,3 +2879,15 @@ from the map layout, allocated before the final snapshot, and released at
 handoff. `peer-temporary-ranges.c` creates a reservation inside the kernel's
 brk extent, verifies it displays as `[heap]`, and verifies cleanup frees it.
 Restoring the old name-based cleanup makes the test fail.
+
+Host-command resident driver lifetime (2026-10-31): raw host-command server
+and child forks retain the resident Android runtime, so their fd sweeps must
+preserve resident-owned descriptors as well as VFS internals. Previously
+`hc_close_except` closed Mesa's cached DRM descriptors. On VM 5556, ftrace
+showed its close of fd 7; a later Steam webhelper GPU process submitted
+DRM_IOCTL_VIRTGPU_EXECBUFFER (0xc0406442) on fd 7 after it had become bionic
+libc.so, returning EACCES and producing ANGLE's GL_OUT_OF_MEMORY. Preserve
+resident ownership during both cleanup phases. The resident host-command
+integration test seeds a cached /dev/zero descriptor and checks its identity
+in the spawned command: it fails before and passes after this change. This
+is descriptor lifetime bookkeeping, not a GL-error workaround.

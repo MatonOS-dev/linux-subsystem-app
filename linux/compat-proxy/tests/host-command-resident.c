@@ -3,6 +3,8 @@
 #include "../proxy.h"
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 extern char **environ;
 extern int proxy_host_test(int);
 int main(int argc,char **argv) {
@@ -16,6 +18,13 @@ int main(int argc,char **argv) {
         }
         return 3;
     }
+    /* Stand in for a driver descriptor cached by the resident EGL warmup.
+     * Host-command must preserve it in both its server and payload child. */
+    if(proxy_resident_fds_snapshot(0))return 6;
+    int driver=open("/dev/zero",O_RDONLY|O_CLOEXEC);
+    if(driver<0 || fcntl(driver,F_DUPFD_CLOEXEC,200)!=200)return 7;
+    close(driver);
+    if(proxy_resident_fds_snapshot(1))return 8;
     if(i==argc || proxy_install(1) || adopt_install())return 4;
     struct image image;
     if(proxy_load(argv[i],argv+i,environ,&image))return 5;

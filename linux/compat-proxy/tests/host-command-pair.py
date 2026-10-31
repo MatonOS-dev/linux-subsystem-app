@@ -49,6 +49,13 @@ with tempfile.TemporaryDirectory(prefix='hc-pair-',dir='/mnt/data/aosp/out') as 
         a.sendmsg([packet],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',fds.values()))] if fds else [])
         return a,read_int(a),p
     try:
+        if resident:
+            s,pid,p=spawn(['/bin/sleep','60'])
+            assert pid>0,(pid,(d/'log').read_text())
+            assert os.readlink(f'/proc/{pid}/fd/200')=='/dev/zero', 'resident driver fd lost by host-command cleanup'
+            os.write(s.fileno(),struct.pack('<II',15,1))
+            assert read_int(s)==15;s.close()
+            print('PASS host-command server and child retain cached resident driver descriptor')
         with open(d/'out','w+b') as out:
             s,pid,p=spawn(['/bin/sh','-c','printf "%s:%s:" "$HC_INHERIT" "$HC_OVERRIDE"; cat marker; pwd; exit 7'],env={'HC_OVERRIDE':'merged'},fds={1:out.fileno(),2:out.fileno()})
             assert pid>0,(pid,(d/'log').read_text());assert read_int(s)==7<<8;s.close();out.seek(0);text=out.read();assert text==b'inherited:merged:sandbox-marker\n/app\n',text
