@@ -2892,9 +2892,9 @@ integration test seeds a cached /dev/zero descriptor and checks its identity
 in the spawned command: it fails before and passes after this change. This
 is descriptor lifetime bookkeeping, not a GL-error workaround.
 
-The next device run exposed a second lifetime issue: an explicit host-command
-mapping dup3'd a passed descriptor onto resident Mesa's fd 7. Such mappings
-are valid Linux API requests, so host-command now resets the resident runtime
+The next device run exposed a second lifetime issue: a payload dup3 replaced
+resident Mesa's fd 7 before exec. Both payload and explicit host-command fd
+mappings are valid Linux API requests. Host-command resets the resident runtime
 with a real kernel exec when a destination replaces a resident descriptor.
 The new loader uses its fixed-gateway entry (ordinary ASLR'd libc startup
 cannot run under the existing syscall-routing filters). Virtual mounts,
@@ -2905,3 +2905,12 @@ without descriptor collisions retain the existing resident path. Regression
 coverage checks the requested fd, default SIGPIPE, successful import and an
 ENOEXEC response for a bad payload. Host-command cleanup also preserves the
 proxy's private fd reserve, which the imported state requires.
+
+For ordinary payload dup2/dup3 collisions, mark the resident runtime invalid
+and use that same fixed-gateway reset on the next payload exec. This retains
+the requested descriptor and discards native objects caching its old identity.
+The marker is child-local after fork and remains pending if exec fails. A
+production resident host-command regression exercises payload dup2 -> exec
+separately from the host-command mapping case. This does not virtualize two
+simultaneous meanings of an fd in a process that replaces it and then calls
+native graphics before exec; that remains a limitation of shared fd numbers.

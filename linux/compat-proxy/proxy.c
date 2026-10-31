@@ -77,6 +77,8 @@ static long payload_close_range(unsigned,unsigned,unsigned);
 #include "resident-fds.h"
 #include "android-log.h"
 int proxy_resident_fd_owned(int fd){return resident_fd_owned(fd);}
+static int resident_reset_pending;
+int proxy_resident_reset_pending(void){return resident_reset_pending;}
 static int private_close_fd(int fd){
 #ifdef HOST_COMMAND_TEST
     if(fd==hc_test_fd)return 1;
@@ -1302,6 +1304,8 @@ static long modernize(long,proxy_arg_t *,long *);
 static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
     long result;
     int source_resident=resident_fd_owned((int)a[0]);
+    int replaces_resident=(nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) &&
+        a[0]!=a[1] && resident_fd_owned((int)a[1]);
     /* dup3 may replace a sysctl descriptor; apply its written limit first. */
     if(nr==PROXY_SC_dup3 && sysctl_fds)sysctl_sync();
     if(vfs_private_fd((int)a[0]))return -EBADF;
@@ -1315,6 +1319,12 @@ static long descriptor_dup_dispatch(long nr,proxy_arg_t *a){
         proxy_fd_number_moved((int)target,(int)moved);
     }
     result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(result>=0 && replaces_resident){
+        /* posix_spawn remaps descriptors before exec. The child must discard
+         * native objects caching the old number when that exec commits. */
+        resident_reset_pending=1;
+        proxy_log("resident-fd-replaced",a[1],a[0]);
+    }
     /* F_DUPFD[_CLOEXEC] allocates AT OR ABOVE target: target is not the
      * descriptor replaced. Updating that live lower-bound fd can drop a
      * resident pipe reader's protection before the next payload fd sweep.

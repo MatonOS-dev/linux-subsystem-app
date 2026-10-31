@@ -86,6 +86,12 @@ with tempfile.TemporaryDirectory(prefix='hc-pair-',dir='/mnt/data/aosp/out') as 
             if write_fd>=0:os.close(write_fd)
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',str(ROOT/'tests/host-command-child.c'),'-o',str(d/'app/hc-child')],check=True)
         if resident:
+            before=(d/'log').read_text().count('exec-state-import')
+            s,pid,p=spawn(['/app/hc-child','resident-dup-exec'])
+            assert pid>0,(pid,(d/'log').read_text())
+            assert read_int(s)==0;s.close()
+            assert (d/'log').read_text().count('exec-state-import')>before
+            print('PASS payload dup over resident fd resets native objects at next exec')
             read_fd,write_fd=os.pipe()
             try:
                 os.write(write_fd,b'r')

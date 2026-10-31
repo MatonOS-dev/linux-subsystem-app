@@ -310,7 +310,9 @@ static int exec_resident(const char *path,char *const *args,char *const *env,int
 }
 
 int state_exec(const char *path,char *const *args,char *const *env){
- return exec_resident(path,args,env,0);
+ int reset=proxy_resident_reset_pending();
+ if(reset)proxy_log("resident-reset-exec",ARCH_AUDIT,0);
+ return exec_resident(path,args,env,reset);
 }
 /* An explicit host-command fd mapping may replace a driver's cached number.
  * Real exec discards that driver's objects. Do the same instead of retaining
