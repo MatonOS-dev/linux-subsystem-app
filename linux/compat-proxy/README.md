@@ -2799,13 +2799,9 @@ and `/mnt/data/aosp/out/pc-logs/agents/steam-r60-procs.sh`. No VM was run.
 
 [IO-PERF.md](IO-PERF.md) records the reproducible native/proxy benchmark,
 probe reductions, production-filter regression tests and retained emulation
-cases. Ordinary read/write/readv now bypass SIGSYS outside the special/private
-fd windows and exact alias routes when tracing is off. Paired host sequential
-read/write measure 1.17x/1.29x native; path operations still miss the <=2x target.
-Alias routes remain trapped after fd-number reuse. Device fixed-cost capture
-is pending; [coordinator commands](tests/DEVICE-IO-PERF.md) are provided.
-Host gains do not establish device or Steam bootstrap latency. No VM or image
-build was used for this work.
+cases. The positional-I/O and writev bypass was reverted because its private-fd trap preceded the native-range exemption and broke inherited-filter startup. Sequential read/write and the requested
+<=2x-native target remain unfinished; host gains do not establish device or
+Steam bootstrap latency. No VM or image build was used for this work.
 
 ### Steam r61: ELF32 AT_SYSINFO must remain a payload syscall site
 
