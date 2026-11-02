@@ -26,10 +26,12 @@ void proxy_i386_sysinfo_configure(char *const *env) {
         }
         if(!proxy_i386_payload_sysinfo)proxy_log("payload sysinfo allocation failed",0,-ENOMEM);
     }
-    int enabled=0;
+    /* On by default like x86_64 site rewriting; MATON_PROXY_REWRITE=0 is the
+     * shared kill switch. */
+    int enabled=1;
     for (size_t i=0; env && env[i]; i++) {
-        if (p_equal(env[i], "MATON_PROXY_REWRITE=1")) {
-            enabled=1;
+        if (p_equal(env[i], "MATON_PROXY_REWRITE=0")) {
+            enabled=0;
             break;
         }
     }
@@ -54,13 +56,15 @@ uintptr_t proxy_i386_sysinfo_value(uintptr_t inherited) {
 __attribute__((force_align_arg_pointer))
 long proxy_i386_sysinfo_dispatch(long nr, proxy_arg_t *raw) {
     extern long proxy_direct_dispatch(long, proxy_arg_t *);
-    proxy_args args; p_copy(args,raw,sizeof(args));
+    /* Widen like the trap path (signed greg_t): fd -1 and AT_FDCWD stay negative. */
+    proxy_args args; for (unsigned i=0;i<6;i++) args[i]=(int32_t)raw[i];
     if (nr == 140) { /* _llseek(fd, high, low, result*, whence) */
         uint64_t offset = ((uint64_t)(uint32_t)raw[1] << 32) | (uint32_t)raw[2];
         args[0] = (int32_t)raw[0]; args[1] = (int64_t)offset; args[2] = (int32_t)raw[4];
         long result = proxy_direct_dispatch(19, args);
         if (result < 0) return result;
-        if (proxy_copy((void *)(uintptr_t)(uint32_t)raw[3], &result, sizeof(uint32_t)))
+        int64_t position = result; /* loff_t: the high word matters too */
+        if (proxy_copy((void *)(uintptr_t)(uint32_t)raw[3], &position, sizeof(position)))
             return -EFAULT;
         return 0;
     }

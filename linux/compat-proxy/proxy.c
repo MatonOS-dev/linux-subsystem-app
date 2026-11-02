@@ -84,6 +84,7 @@ static int private_close_fd(int fd){
     if(fd==hc_test_fd)return 1;
 #endif
     /* --count spans resident execs even if payloads set CLOEXEC on it. */
+    if(fd<0)return 0;
     return fd==proxy_count_fd || proxy_fd_is_private(fd) || vfs_private_fd(fd) || resident_fd_owned(fd);
 }
 void proxy_fd_number_moved(int oldfd,int newfd){
@@ -1523,7 +1524,8 @@ static long proxy_direct_dispatch_impl(long nr,proxy_arg_t *saved) {
     }
     /* Match native filter bypasses, including CLOEXEC on private fds. */
     if(nr==PROXY_SC_fcntl && (a[1]==F_GETFD || a[1]==F_SETFD ||
-       a[1]==F_GETFL || a[1]==F_SETFL))return RAW(nr,a[0],a[1],a[2],0,0,0);
+       a[1]==F_GETFL || a[1]==F_SETFL))
+        return private_close_fd((int)a[0])?-EBADF:RAW(nr,a[0],a[1],a[2],0,0,0); /* proxy fds stay hidden */
     if(nr==PROXY_SC_fcntl && a[1]!=F_GETFD && a[1]!=F_SETFD && a[1]!=F_GETFL &&
        a[1]!=F_SETFL && a[1]!=F_DUPFD && a[1]!=F_DUPFD_CLOEXEC)return rewrite_slow(nr,a);
     struct thread_state *thread;

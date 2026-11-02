@@ -11,28 +11,15 @@ proxy_i386_sysinfo_entry:
     mov %cs,%cx
     cmp $0x23,%cx                 /* non-flat LDT code keeps the trap route */
     jne .Ltrap
-    cmp $6,%eax                   /* close */
-    je .Ldirect
-    cmp $85,%eax                  /* readlink */
-    je .Ldirect
-    cmp $140,%eax                 /* _llseek */
-    je .Ldirect
-    cmp $195,%eax                 /* stat64 */
-    je .Ldirect
-    cmp $197,%eax                 /* fstat64 */
-    je .Ldirect
-    cmp $220,%eax                 /* getdents64 */
-    je .Ldirect
     cmp $221,%eax                 /* fcntl64: only non-locking commands */
     je .Lfcntl
-    cmp $295,%eax                 /* openat */
-    je .Ldirect
-    cmp $300,%eax                 /* fstatat64 */
-    je .Ldirect
-    cmp $305,%eax                 /* readlinkat */
-    je .Ldirect
-    cmp $383,%eax                 /* statx */
-    je .Ldirect
+    cmp $453,%eax
+    jae .Ltrap
+    call .Lmap_pc
+.Lmap_pc:
+    pop %edx
+    bt %eax,.Ldirect_map-.Lmap_pc(%edx)
+    jc .Ldirect
     jmp .Ltrap
 .Lfcntl:
     mov 16(%esp),%edx             /* EBX: command */
@@ -94,6 +81,13 @@ proxy_i386_sysinfo_entry:
     mov (%eax),%eax
     xchg %eax,(%esp)
     ret
+/* Bitmap of numbers taking the direct dispatcher (the x86_64 rewrite set):
+ * 6 close, 9 link, 10 unlink, 15 chmod, 33 access, 38 rename, 39 mkdir, 40 rmdir, 83 symlink, 85 readlink, 140 _llseek, 183 getcwd, 195 stat64, 196 lstat64, 197 fstat64, 198 lchown32, 212 chown32, 220 getdents64, 295 openat, 296 mkdirat, 297 mknodat, 298 fchownat, 300 fstatat64, 301 unlinkat, 302 renameat, 303 linkat, 304 symlinkat, 305 readlinkat, 306 fchmodat, 307 faccessat, 320 utimensat, 353 renameat2, 383 statx, 439 faccessat2, 452 fchmodat2. */
+.Ldirect_map:
+    .byte 0x40,0x86,0x00,0x00,0xc2,0x01,0x00,0x00,0x00,0x00,0x28,0x00,0x00,0x00,0x00,0x00
+    .byte 0x00,0x10,0x00,0x00,0x00,0x00,0x80,0x00,0x78,0x00,0x10,0x10,0x00,0x00,0x00,0x00
+    .byte 0x00,0x00,0x00,0x00,0x80,0xf7,0x0f,0x00,0x01,0x00,0x00,0x00,0x02,0x00,0x00,0x80
+    .byte 0x00,0x00,0x00,0x00,0x00,0x00,0x80,0x00,0x10
 .size proxy_i386_sysinfo_entry,.-proxy_i386_sysinfo_entry
 .hidden proxy_i386_payload_sysinfo
 .section .note.GNU-stack,"",@progbits
