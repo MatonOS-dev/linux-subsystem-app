@@ -25,9 +25,10 @@ for arch in 64 32; do
       unlinkat) src="$fixture/unlink"; dst=/bench/unlink; iterations=1000; printf x >"$fixture/unlink";;
       linkat) src="$fixture/file"; dst=/bench/file; iterations=1000; [[ ${MATON_TRAP_COST_STORE:-0} == 1 ]] && iterations=10;;
       mkdirat) src="$fixture/dir"; dst=/bench/dir; iterations=1000;; esac
-    for route in native proxied; do
+    for route in native proxied rewrite; do
       if [[ $route == native ]]; then out=$("$bench" "$op" "$iterations" "$src" "$fixture/target");
-      else out=$(MATON_PROXY_REWRITE=0 "$loader" --android-filter --map "$fixture" /bench "$bench" "$op" "$iterations" "$dst" /bench/target); fi
+      elif [[ $route == proxied ]]; then out=$(MATON_PROXY_REWRITE=0 "$loader" --android-filter --map "$fixture" /bench "$bench" "$op" "$iterations" "$dst" /bench/target);
+      else out=$(env -u MATON_PROXY_REWRITE "$loader" --android-filter --map "$fixture" /bench "$bench" "$op" "$iterations" "$dst" /bench/target); fi
       printf '%s,%s,%s,%s\n' "$arch" "$route" "$op" "${out##*us_per_call=}" | sed 's/ checksum=.*//'
     done
   done

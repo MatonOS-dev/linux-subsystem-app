@@ -269,6 +269,10 @@ long proxy_stack_tid(uintptr_t sp){
         if(c->page==page){struct thread_state *state=__atomic_load_n(&c->state,__ATOMIC_ACQUIRE);return state?state->tid:0;}
     return 0;
 }
+static struct thread_state *thread_state(void);
+/* Slow companion of proxy_stack_tid: proves the owner once (gettid) and
+ * caches this stack page, so later allocations on it skip the syscall. */
+long proxy_current_tid(void){struct thread_state *state=thread_state();return state?state->tid:0;}
 static void thread_state_cache_invalidate_all(void){
     for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
         __atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);
@@ -1091,8 +1095,8 @@ static void sysctl_sync(void){
     }
 }
 
-static int self_exe(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
-static int self_cwd(const char *path){char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/cwd",5);return p_equal(path,name) || p_equal(path,"/proc/self/cwd") || p_equal(path,"/proc/thread-self/cwd");}
+static int self_exe(const char *path){if(path[0]!='/' || path[1]!='p' || path[2]!='r' || path[3]!='o' || path[4]!='c' || path[5]!='/')return 0;char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/exe",5);return p_equal(path,name) || p_equal(path,"/proc/self/exe");}
+static int self_cwd(const char *path){if(path[0]!='/' || path[1]!='p' || path[2]!='r' || path[3]!='o' || path[4]!='c' || path[5]!='/')return 0;char name[64]="/proc/",digits[24];size_t k=6;unsigned d=0;unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)name[k++]=digits[--d];p_copy(name+k,"/cwd",5);return p_equal(path,name) || p_equal(path,"/proc/self/cwd") || p_equal(path,"/proc/thread-self/cwd");}
 static int path_exists(const char *path) {
     struct proxy_stat st;
     return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0;
@@ -1127,7 +1131,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_openat && original_path &&
             vfs_plain_nofollow_dir_path(fd,original_path,(int)a[2])){
         long result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
-        if(result>=0){vfs_fd_close((int)result);vfs_fd_record((int)result,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
+        if(result>=0){vfs_fd_record((int)result,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
         return result;
     }
     if(nr==PROXY_SC_newfstatat && original_path &&
@@ -1146,7 +1150,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     /* Stat shares the resolver cache with open/access. An unconditional
      * O_PATH open + fstat + close bypasses it on every repeated lookup. */
     if(nr==PROXY_SC_openat && original_path){long synthetic=vfs_proc_open(original_path,(int)a[2]);if(synthetic!=-ENOSYS)return synthetic;}
-    long e=0;void *pm=NULL,*qm=NULL;char *p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];proxy_diagnostic_write("v3 unresolved ",14);proxy_diagnostic_write(in,p_len(in));proxy_diagnostic_write("\n",1);}create_denied(nr,a[2],e,fd,original_path,NULL);return e;}
+    long e=0;void *pm=NULL,*qm=NULL;char *p;p=writing?vfs_resolve_mount_slow(fd,(char *)(uintptr_t)a[one],follow,&e,&pm):vfs_resolve_mount(fd,(char *)(uintptr_t)a[one],follow,&e,&pm);if(!p){if(proxy_trace && a[one]){const char *in=(const char *)(uintptr_t)a[one];proxy_diagnostic_write("v3 unresolved ",14);proxy_diagnostic_write(in,p_len(in));proxy_diagnostic_write("\n",1);}create_denied(nr,a[2],e,fd,original_path,NULL);return e;}
     char *q=NULL;
     if(proxy_trace){emit("v3 path resolved ");emit(p);emit("\n");}
     int create_readonly_open=nr==PROXY_SC_openat && (a[2]&O_CREAT) && !(a[2]&(O_WRONLY|O_RDWR|O_TRUNC));
@@ -1176,8 +1180,10 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     /* bwrap creates absent regular-file bind destinations with open(O_CREAT)
      * before mounting over them. Give that operation a per-launch writable
      * shadow in the same way as mkdirat, including for app-image prefixes. */
-    if(nr==PROXY_SC_openat && (a[2]&O_CREAT) && !path_exists(p)){
+    if(nr==PROXY_SC_openat && (a[2]&O_CREAT)){
+        /* String match first: ordinary creates skip the existence probe. */
         char *package_path=erofs_reverse(p);
+        if(package_path && path_exists(p)){vfs_free(package_path);package_path=NULL;}
         if(package_path){
             vfs_free(package_path);
             e=vfs_bwrap_erofs_file(p,fd,original_path,(unsigned)a[3]&07777);
@@ -1246,18 +1252,19 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     else if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     else e=links_path_call(nr,a,p);
     if(e>=0 && q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2))vfs_fd_rename(p,q);
-    /* Marker ancestry changes with directories/symlinks and their metadata,
-     * never with ordinary file creation, linking or removal. Marker names
-     * themselves are immutable above. Do not throw away every sibling's
-     * cached ancestry while pressure-vessel copies a runtime tree. */
-    if(e>=0 && ((nr==PROXY_SC_unlinkat && (a[2]&AT_REMOVEDIR)) ||
-       nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 ||
-       nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat ||
+    /* Marker ancestry changes with moved directories, symlinks and directory
+     * metadata, never with ordinary file creation, linking or removal. Marker
+     * names themselves are immutable above, so mkdir (a new, empty directory)
+     * and rmdir (only an empty directory) cannot change any answer either. Do
+     * not throw away every sibling's cached ancestry while pressure-vessel
+     * copies a runtime tree. */
+    if(e>=0 && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 ||
+       nr==PROXY_SC_symlinkat ||
        nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))
         links_cache_invalidate();
     /* Native closes bypass proxy cleanup. A successful open starts a new fd
      * lifetime, so retire pathname metadata left by the prior occupant. */
-    if(e>=0 && nr==PROXY_SC_openat){vfs_fd_close((int)e);vfs_fd_record((int)e,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
+    if(e>=0 && nr==PROXY_SC_openat){vfs_fd_record((int)e,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
     if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */
@@ -1343,6 +1350,18 @@ static long file_dispatch(long nr,proxy_arg_t *a) {
     case PROXY_SC_openat:case PROXY_SC_newfstatat:case PROXY_SC_statx:case PROXY_SC_readlinkat:
         return path_call(nr,a,1,-1);
     case PROXY_SC_readlink:return path_call(nr,a,0,-1);
+    /* Same routing as the trapped dispatcher (legacy forms are modernized
+     * by the direct entry before reaching here). */
+    case PROXY_SC_faccessat:case PROXY_SC_faccessat2:case PROXY_SC_mknodat:case PROXY_SC_mkdirat:
+    case PROXY_SC_unlinkat:case PROXY_SC_fchmodat:case PROXY_SC_fchmodat2:case PROXY_SC_fchownat:
+        return path_call(nr,a,1,-1);
+    case PROXY_SC_utimensat:
+        if(!a[1])return app_allowed(nr)?RAW(PROXY_SC_utimensat,a[0],0,a[2],a[3],0,0):-ENOSYS;
+        return path_call(nr,a,1,-1);
+    case PROXY_SC_linkat:case PROXY_SC_renameat:case PROXY_SC_renameat2:return path_call(nr,a,1,3);
+    case PROXY_SC_symlinkat:return path_call(nr,a,2,-1);
+    case PROXY_SC_getcwd:{long e=0;char *rev=vfs_getcwd(&e);if(!rev)return e;
+        size_t k=p_len(rev)+1;long r=k>(size_t)a[1]?-ERANGE:(long)k;if(r>0)p_copy((void *)(uintptr_t)a[0],rev,k);vfs_free(rev);return r;}
     case PROXY_SC_close:{
         if(private_close_fd((int)a[0]))return proxy_fd_is_private(a[0])?-EBADF:0;
         /* A written limit must apply before its last descriptor goes away. */
@@ -1494,12 +1513,14 @@ static long proxy_direct_dispatch_impl(long nr,proxy_arg_t *saved) {
             return payload_seccomp_errno_value(action);
         if(kind!=SECCOMP_RET_ALLOW && kind!=SECCOMP_RET_LOG)return rewrite_slow(nr,a);
     }
-#if defined(__i386__)
-    /* i386 stat64 is the legacy path form; feed the same normalized
-     * newfstatat path handling used by the trapped dispatcher. */
-    if(nr==PROXY_SC_stat || nr==PROXY_SC_lstat)nr=modernize(nr,a,NULL);
-#endif
-    if(nr==PROXY_SC_readlink){a[3]=a[2];a[2]=a[1];a[1]=a[0];a[0]=AT_FDCWD;nr=PROXY_SC_readlinkat;}
+    /* Legacy path forms take the same normalized *at handling as the
+     * trapped dispatcher. */
+    switch(nr){
+    case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_access:case PROXY_SC_mkdir:case PROXY_SC_rmdir:
+    case PROXY_SC_unlink:case PROXY_SC_rename:case PROXY_SC_link:case PROXY_SC_symlink:case PROXY_SC_readlink:
+    case PROXY_SC_chmod:case PROXY_SC_chown:case PROXY_SC_lchown:nr=modernize(nr,a,NULL);break;
+    default:break;
+    }
     /* Match native filter bypasses, including CLOEXEC on private fds. */
     if(nr==PROXY_SC_fcntl && (a[1]==F_GETFD || a[1]==F_SETFD ||
        a[1]==F_GETFL || a[1]==F_SETFL))return RAW(nr,a[0],a[1],a[2],0,0,0);

@@ -42,12 +42,14 @@ void vfs_profile_dump(void){}
 volatile int proxy_raw_counter_enabled;
 /* Standalone VFS fixtures do not link the proxy thread-state registry. */
 extern long proxy_stack_tid(uintptr_t) __attribute__((weak));
+extern long proxy_current_tid(void) __attribute__((weak));
 static struct trap_arena *arena_for_stack(uintptr_t sp){
     struct trap_arena *best=NULL;long tid=0;
     for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){
         if(!a->active || sp<a->lo || sp>=a->hi)continue;
         if(a->direct_tid){
             if(!tid && proxy_stack_tid)tid=proxy_stack_tid(sp);
+            if(!tid && proxy_current_tid)tid=proxy_current_tid();
             if(!tid)tid=arch_raw_call(PROXY_SC_gettid,0,0,0,0,0,0);
             if(a->direct_tid!=tid)continue;
         }
@@ -176,7 +178,7 @@ void *vfs_palloc(size_t n) {
     if((unsigned long)p>=(unsigned long)-4095) return NULL;
     struct allocation *a=(void *)p;a->size=bytes;return a+1;
 }
-void *vfs_alloc(size_t n){
+static void *vfs_arena_alloc(size_t n,int zero){
     uintptr_t sp=(uintptr_t)&sp;struct trap_arena *arena=arena_for_stack(sp);if(!arena)return vfs_palloc(n);
     if(n>ALLOCATION_ARENA-sizeof(struct allocation)-15)return NULL;
     size_t need=(n+sizeof(struct allocation)+15)&~(size_t)15;
@@ -189,9 +191,13 @@ void *vfs_alloc(size_t n){
     struct allocation *a=(void *)((char *)(b+1)+b->used);a->size=need|ALLOCATION_ARENA;b->used+=need;
     /* mmap-backed vfs_alloc historically returned zero-filled storage. Keep
      * that contract for structures which rely on implicit null fields. */
-    unsigned char *out=(unsigned char *)(a+1);for(size_t i=0;i<n;i++)out[i]=0;
+    unsigned char *out=(unsigned char *)(a+1);if(zero)for(size_t i=0;i<n;i++)out[i]=0;
     return out;
 }
+void *vfs_alloc(size_t n){return vfs_arena_alloc(n,1);}
+/* Path-sized scratch that the caller fully writes before reading: skip the
+ * zero fill (kilobytes per hot-path lookup). mmap fallback is still zeroed. */
+void *vfs_scratch(size_t n){return vfs_arena_alloc(n,0);}
 void vfs_free(void *p) {if(p){struct allocation *a=(struct allocation *)p-1;if(a->size&ALLOCATION_ARENA)return;RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
 static char *join(const char *a,const char *b) {
     size_t x=p_len(a),y=p_len(b);if(x>SIZE_MAX-y-2) return NULL;
@@ -317,23 +323,35 @@ static size_t resolve_cache_bucket_count;
  * comparison and reclaimed by compaction on growth, so invalidation is O(1)
  * and a full table never needs a clearance pass. */
 static volatile unsigned long resolve_cache_epoch;
-static volatile int resolve_cache_lock;
+static volatile unsigned long resolve_cache_lock;
+/* Seqlock for lock-free hits: odd while a writer mutates entries/tables.
+ * Readers never block signals or spin; an odd or changed sequence (including
+ * a signal handler interrupting a writer on this thread) falls back to the
+ * uncached resolution. Replaced tables are retired, never unmapped, so a
+ * racing reader only ever sees mapped (possibly torn, then rejected) data. */
+static volatile unsigned long resolve_cache_seq;
+extern long proxy_current_tid(void) __attribute__((weak));
+/* Writers take a TID-owner lock, so no signal mask syscalls are needed. A
+ * payload signal handler that resolves a path on the thread already holding
+ * the lock gets a zero token and simply skips caching its answer. */
 static proxy_sigmask_t resolve_cache_acquire(void) {
-    /* A payload signal can resolve a path on this same thread. Defer signals
-     * while holding the lock; all syscalls here use the native raw gateway. */
-    proxy_sigmask_t all=~UINT64_C(0),mask=0;
-    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
-    int unlocked=0;
-    while(!__atomic_compare_exchange_n(&resolve_cache_lock,&unlocked,1,0,
-            __ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) {
-        unlocked=0;
+    unsigned long tid=0;
+    if(proxy_current_tid)tid=(unsigned long)proxy_current_tid();
+    if(!tid)tid=(unsigned long)arch_raw_call(PROXY_SC_gettid,0,0,0,0,0,0);
+    for(;;){unsigned long owner=__atomic_load_n(&resolve_cache_lock,__ATOMIC_RELAXED);
+        if(owner==tid)return 0;
+        if(!owner){unsigned long unlocked=0;
+            if(__atomic_compare_exchange_n(&resolve_cache_lock,&unlocked,tid,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))break;}
         __asm__ volatile("pause");
     }
-    return mask;
+    __atomic_store_n(&resolve_cache_seq,resolve_cache_seq+1,__ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    return 1;
 }
-static void resolve_cache_release(proxy_sigmask_t mask) {
+static void resolve_cache_release(proxy_sigmask_t token) {
+    if(!token)return;
+    __atomic_store_n(&resolve_cache_seq,resolve_cache_seq+1,__ATOMIC_RELEASE);
     __atomic_store_n(&resolve_cache_lock,0,__ATOMIC_RELEASE);
-    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
 }
 static void resolve_cache_fork_child(void) {
     /* Another vanished thread may have held the copied lock or been midway
@@ -341,13 +359,13 @@ static void resolve_cache_fork_child(void) {
      * do not traverse or free a possibly inconsistent inherited snapshot. */
     resolve_cache=NULL;resolve_cache_count=resolve_cache_capacity=0;
     resolve_cache_buckets=NULL;resolve_cache_bucket_count=0;
-    resolve_cache_epoch=0;
+    resolve_cache_epoch=0;resolve_cache_seq=0;
     __atomic_store_n(&resolve_cache_lock,0,__ATOMIC_RELEASE);
 }
+/* Lock-free: entries carry the epoch they were published in, and lookups
+ * compare against the current one, so a bump alone retires them all. */
 void vfs_resolve_cache_invalidate(void) {
-    proxy_sigmask_t cache_mask=resolve_cache_acquire();
-    resolve_cache_epoch++;
-    resolve_cache_release(cache_mask);
+    __atomic_add_fetch(&resolve_cache_epoch,1,__ATOMIC_RELEASE);
 }
 /* Drop entries published before the current epoch and rebuild the buckets
  * over the survivors. Called under the cache lock, guarded by "would grow". */
@@ -381,7 +399,7 @@ static int resolve_cache_reserve(size_t needed){
         if(capacity>SIZE_MAX/sizeof(*resolve_cache))return 0;
         size_t bytes=capacity*sizeof(*resolve_cache);struct resolve_cache_entry *entries=vfs_palloc(bytes);if(!entries)return 0;
         for(size_t i=0;i<resolve_cache_count;i++)entries[i]=resolve_cache[i];
-        vfs_free(resolve_cache);resolve_cache=entries;resolve_cache_capacity=capacity;
+        resolve_cache=entries;resolve_cache_capacity=capacity;
     }
     if(!resolve_cache_bucket_count || needed>resolve_cache_bucket_count-resolve_cache_bucket_count/4){
         size_t buckets=resolve_cache_bucket_count?resolve_cache_bucket_count:32;
@@ -390,7 +408,7 @@ static int resolve_cache_reserve(size_t needed){
         size_t *table=vfs_palloc(buckets*sizeof(*table));if(!table)return 0;
         unsigned long epoch=resolve_cache_epoch;
         for(size_t i=0;i<resolve_cache_count;i++)if(resolve_cache[i].valid && resolve_cache[i].epoch==epoch){size_t slot=(size_t)resolve_cache[i].hash&(buckets-1);resolve_cache[i].next=table[slot];table[slot]=i+1;}
-        vfs_free(resolve_cache_buckets);resolve_cache_buckets=table;resolve_cache_bucket_count=buckets;
+        resolve_cache_buckets=table;resolve_cache_bucket_count=buckets;
     }
     return 1;
 }
@@ -696,26 +714,37 @@ struct fd_name {char *path;size_t capacity,length;uint64_t dev,ino;unsigned iden
 static struct fd_name *fd_names;
 static size_t fd_names_capacity;
 /* Only protect the fd-name bookkeeping, never a payload syscall (flock may
- * block). Block signals during the short critical section so an app handler
- * cannot reenter it. Fork children reset the copied lock before payload runs. */
+ * block). The owner is the locking TID, so no signal mask syscalls are
+ * needed: an app signal handler that re-enters on the holding thread gets a
+ * zero token and skips the bookkeeping (the name then falls back to the
+ * kernel's view) instead of deadlocking. Other threads simply spin.
+ * Fork children reset the copied lock before payload runs. */
+extern long proxy_current_tid(void) __attribute__((weak));
 static proxy_sigmask_t fd_names_lock(void){
     PROFILE_BEGIN();
-    proxy_sigmask_t all=~UINT64_C(0),mask=0;
-    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&all,&mask,8,0,0);
+    unsigned long tid=0;
+    if(proxy_current_tid)tid=(unsigned long)proxy_current_tid();
+    if(!tid)tid=(unsigned long)arch_raw_call(PROXY_SC_gettid,0,0,0,0,0,0);
     for(;;){unsigned long owner=__atomic_load_n(&fd_names_owner,__ATOMIC_RELAXED);
-        if(!owner){unsigned long unlocked=0;if(__atomic_compare_exchange_n(&fd_names_owner,&unlocked,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)){PROFILE_END(1);return mask;}}
+        if(owner==tid){PROFILE_END(1);return 0;}
+        if(!owner){unsigned long unlocked=0;if(__atomic_compare_exchange_n(&fd_names_owner,&unlocked,tid,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)){PROFILE_END(1);return 1;}}
         __asm__ volatile("pause");
     }
 }
-static void fd_names_unlock(proxy_sigmask_t mask){
+static void fd_names_unlock(proxy_sigmask_t token){
     PROFILE_BEGIN();
-    __atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
-    RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+    if(token)__atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
     PROFILE_END(2);
 }
 static void fd_name_close(int fd){
+    /* Fresh descriptors almost never carry a stale name: test without the
+     * signal-masking lock first. Tables are retired, never unmapped, and
+     * only this fd's owner records it, so a racing grow is harmless. */
+    struct fd_name *names=__atomic_load_n(&fd_names,__ATOMIC_ACQUIRE);
+    if(fd<0 || (size_t)fd>=__atomic_load_n(&fd_names_capacity,__ATOMIC_ACQUIRE) ||
+       !names || !__atomic_load_n(&names[fd].length,__ATOMIC_RELAXED))return;
     proxy_sigmask_t mask=fd_names_lock();
-    if(fd>=0 && (size_t)fd<fd_names_capacity){fd_names[fd].length=0;fd_names[fd].identity_valid=0;}
+    if(mask && fd>=0 && (size_t)fd<fd_names_capacity){fd_names[fd].length=0;fd_names[fd].identity_valid=0;}
     fd_names_unlock(mask);
 }
 static int fd_names_reserve(size_t needed){
@@ -726,7 +755,8 @@ static int fd_names_reserve(size_t needed){
     if(capacity>SIZE_MAX/sizeof(*fd_names))return -ENOMEM;
     struct fd_name *next=vfs_palloc(capacity*sizeof(*next));if(!next)return -ENOMEM;
     if(fd_names)p_copy(next,fd_names,fd_names_capacity*sizeof(*next));
-    vfs_free(fd_names);fd_names=next;fd_names_capacity=capacity;return 0;
+    /* Retire the old table (geometric, bounded): unlocked readers may hold it. */
+    __atomic_store_n(&fd_names,next,__ATOMIC_RELEASE);__atomic_store_n(&fd_names_capacity,capacity,__ATOMIC_RELEASE);return 0;
 }
 static int fd_name_set_locked(int fd,const char *path){
     if(fd<0 || (unsigned)fd==UINT_MAX)return -EBADF;
@@ -741,7 +771,7 @@ long vfs_fd_dup(int from,int to){if(from==to)return 0;char *name=vfs_fd_name(fro
 char *vfs_fd_name(int fd){
     PROFILE_BEGIN();
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
-    if(fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];if(p->length){
+    if(mask && fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];if(p->length){
         if(!root)name=dupstr(p->path);
         else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
     }}
@@ -749,7 +779,7 @@ char *vfs_fd_name(int fd){
 }
 char *vfs_fd_name_identity(int fd,uint64_t dev,uint64_t ino){
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
-    if(fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];
+    if(mask && fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];
         if(p->length){
             if(p->dev==dev && p->ino==ino){
                 if(!root)name=dupstr(p->path);
@@ -761,7 +791,7 @@ char *vfs_fd_name_identity(int fd,uint64_t dev,uint64_t ino){
 }
 char *vfs_fd_name_cached(int fd){
     proxy_sigmask_t mask=fd_names_lock();char *name=NULL;
-    if(fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];
+    if(mask && fd>=0 && (size_t)fd<fd_names_capacity){struct fd_name *p=&fd_names[fd];
         if(p->length && p->identity_valid){
             if(!root)name=dupstr(p->path);
             else if(prefix(p->path,root)){const char *relative=p->path+p_len(root);name=dupstr(*relative?relative:"/");}
@@ -892,7 +922,8 @@ restart:;
          * If getattr is denied, retain the O_PATH search-only fallback. */
         struct proxy_stat st;long status=arch_stat_at(AT_FDCWD,host,&st,AT_SYMLINK_NOFOLLOW);
         long e=status;char *target=NULL;
-        if(status<0 || S_ISLNK(st.st_mode))target=readlink_dynamic(host,&e);
+        /* A missing name stays missing for the O_PATH fallback: skip it. */
+        if((status<0 && status!=-ENOENT) || (status>=0 && S_ISLNK(st.st_mode)))target=readlink_dynamic(host,&e);
         else e=-EINVAL;
         if(target && cacheable)*cacheable=0;
         if(!target && input[i]=='/'){
@@ -938,25 +969,39 @@ fail:vfs_free(input);vfs_free(out);return NULL;
 char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **identity){
     size_t key_len=path?p_len(path):0;
     if(fd==AT_FDCWD && resolve_cacheable_path(path) && key_len<PATH_MAX){
-        proxy_sigmask_t cache_mask=resolve_cache_acquire();
-        unsigned long epoch=resolve_cache_epoch;
+        unsigned long seq=__atomic_load_n(&resolve_cache_seq,__ATOMIC_ACQUIRE);
         uint64_t hash=resolve_cache_hash(path,key_len,follow);
-        if(resolve_cache_bucket_count){size_t index=resolve_cache_buckets[(size_t)hash&(resolve_cache_bucket_count-1)];
-          while(index){struct resolve_cache_entry *entry=&resolve_cache[index-1];
-            if(entry->valid && entry->epoch==epoch && entry->hash==hash && entry->follow==follow && entry->key_len==key_len && p_equal(entry->key,path)){
-                char *answer=vfs_alloc(entry->value_len+1);
-                if(answer){p_copy(answer,entry->value,entry->value_len+1);if(identity)*identity=entry->identity;}
-                resolve_cache_release(cache_mask);
-                if(!answer){*error=-ENOMEM;return NULL;}
-                /* Recovery is observable even when pathname translation is cached. */
-                links_recover_path(answer);
-                *error=0;
-                return answer;
+        char value[PATH_MAX];size_t value_len=0;void *found_identity=NULL;int hit=0;
+        if(!(seq&1)){
+          struct resolve_cache_entry *entries=__atomic_load_n(&resolve_cache,__ATOMIC_ACQUIRE);
+          size_t *buckets=__atomic_load_n(&resolve_cache_buckets,__ATOMIC_ACQUIRE);
+          size_t bucket_count=resolve_cache_bucket_count,count=resolve_cache_count;
+          unsigned long epoch=resolve_cache_epoch;
+          size_t index=bucket_count && buckets?buckets[(size_t)hash&(bucket_count-1)]:0;
+          for(size_t steps=0;index && index<=count && steps<=count;steps++){
+            struct resolve_cache_entry *entry=&entries[index-1];
+            if(entry->valid && entry->epoch==epoch && entry->hash==hash && entry->follow==follow &&
+                    entry->key_len==key_len){
+                size_t k=0;while(k<key_len && entry->key[k]==path[k])k++;
+                if(k!=key_len){index=entry->next;continue;}
+                value_len=entry->value_len;
+                if(value_len<PATH_MAX){for(size_t k=0;k<value_len;k++)value[k]=entry->value[k];value[value_len]=0;found_identity=entry->identity;hit=1;}
+                break;
             }
             index=entry->next;
           }
+          __atomic_thread_fence(__ATOMIC_ACQUIRE);
+          if(__atomic_load_n(&resolve_cache_seq,__ATOMIC_RELAXED)!=seq)hit=0;
         }
-        resolve_cache_release(cache_mask);
+        if(hit){
+            char *answer=vfs_alloc(value_len+1);
+            if(!answer){*error=-ENOMEM;return NULL;}
+            p_copy(answer,value,value_len+1);if(identity)*identity=found_identity;
+            /* Recovery is observable even when pathname translation is cached. */
+            links_recover_path(answer);
+            *error=0;
+            return answer;
+        }
     }
     uint64_t hash=resolve_cache_hash(path?path:"",key_len,follow);
     uint64_t started=proxy_count_now();
@@ -969,6 +1014,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
         size_t value_len=p_len(answer);
         if(value_len<PATH_MAX){
             proxy_sigmask_t cache_mask=resolve_cache_acquire();
+            if(cache_mask){
             /* Compaction drops entries from an older epoch when the table
              * would otherwise grow, so capacity tracks the live working set.
              * slot is taken last: compaction (and any growth it enables) may
@@ -984,6 +1030,7 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
                 entry->valid=1;resolve_cache_buckets[bucket]=slot+1;
             }
             resolve_cache_release(cache_mask);
+            }
         }
     }
     return answer;
@@ -1061,13 +1108,16 @@ void vfs_fd_record(int fd,int dirfd,const char *path,int capture_identity){
         global=relative?global_target(relative,&e):NULL;vfs_free(relative);
     }
     vfs_free(alias);
-    if(!global)return;
+    /* Callers no longer clear first: drop any stale name ourselves. */
+    if(!global){fd_name_close(fd);return;}
     /* Regular-file fstat consults this identity too. Leaving it zero used
      * to discard the logical name on the first fstat, exposing .v3-inodes
      * through the next proc-fd readlink. */
     struct proxy_stat st={0};long stat_result=arch_stat_fd(fd,&st);
     proxy_sigmask_t mask=fd_names_lock();
-    if(!fd_name_set_locked(fd,global)){
+    if(!mask){}
+    else if(fd_name_set_locked(fd,global)){if(fd>=0 && (size_t)fd<fd_names_capacity){fd_names[fd].length=0;fd_names[fd].identity_valid=0;}}
+    else{
         struct fd_name *entry=&fd_names[fd];
         entry->identity_valid=stat_result==0;
         if(!stat_result){entry->dev=st.st_dev;entry->ino=st.st_ino;}
@@ -1082,7 +1132,7 @@ void vfs_fd_rename(const char *source,const char *destination){
     char *next=new_view?global_target(new_view,&error):NULL;
     if(!old || !next){vfs_free(old_view);vfs_free(new_view);vfs_free(old);vfs_free(next);return;}
     size_t old_len=p_len(old);if(cwd&&prefix(cwd,old_view)){char *renamed=join(new_view,cwd+p_len(old_view));if(renamed){char *saved=pdupstr(renamed);if(saved){vfs_free(cwd);cwd=saved;}vfs_free(renamed);}}vfs_free(old_view);vfs_free(new_view);proxy_sigmask_t mask=fd_names_lock();
-    for(size_t i=0;i<fd_names_capacity;i++){
+    for(size_t i=0;mask && i<fd_names_capacity;i++){
         struct fd_name *entry=&fd_names[i];if(!entry->length || !prefix(entry->path,old))continue;
         char *renamed=join(next,entry->path+old_len);if(!renamed)continue;
         (void)fd_name_set_locked((int)i,renamed);vfs_free(renamed);
@@ -1171,7 +1221,7 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
             else if(prefix(oldcwd,next)){const char *relative=oldcwd+p_len(next);next_cwd=dupstr(*relative?relative:"/");}
             else {char *oldglobal=join(dest,cwd);if(oldglobal && prefix(oldglobal,next)){const char *relative=oldglobal+p_len(next);next_cwd=dupstr(*relative?relative:"/");}vfs_free(oldglobal);}
             vfs_free(oldcwd);if(!next_cwd && !e)e=-ENOMEM;}
-        if(!e){proxy_sigmask_t mask=fd_names_lock();for(size_t i=0;i<fd_names_capacity;i++){struct fd_name *f=&fd_names[i];if(!f->length)continue;
+        if(!e){proxy_sigmask_t mask=fd_names_lock();for(size_t i=0;mask && i<fd_names_capacity;i++){struct fd_name *f=&fd_names[i];if(!f->length)continue;
             if(prefix(f->path,next))continue;
             const char *relative=f->path;
             if(root && prefix(relative,root)){relative+=p_len(root);if(!*relative)relative="/";}

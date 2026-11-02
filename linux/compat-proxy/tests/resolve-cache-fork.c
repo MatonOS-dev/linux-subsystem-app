@@ -4,7 +4,8 @@
 extern void proxy_restore(void);
 #define CHECK(x) do {if(!(x)){RAW(PROXY_SC_exit_group,__LINE__,0,0,0,0,0);__builtin_unreachable();}}while(0)
 static volatile int delivered;
-static void reenter(int sig) { (void)sig;vfs_resolve_cache_invalidate();delivered++; }
+static volatile proxy_sigmask_t reentry_token=1;
+static void reenter(int sig) { (void)sig;vfs_resolve_cache_invalidate();reentry_token=resolve_cache_acquire();resolve_cache_release(reentry_token);delivered++; }
 int main(void) {
     CHECK(resolve_cache_reserve(1));
     resolve_cache_count=1;
@@ -26,11 +27,15 @@ int main(void) {
         (uintptr_t)reenter,0x04000000,(uintptr_t)proxy_restore,0};
     CHECK(!RAW(PROXY_SC_rt_sigaction,SIGUSR1,&action,0,8,0,0));
     mask=resolve_cache_acquire();
+    unsigned long epoch=resolve_cache_epoch;
     CHECK(!RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),RAW(PROXY_SC_gettid,0,0,0,0,0,0),SIGUSR1,0,0,0));
-    CHECK(!delivered);
+    /* No signal deferral: the handler runs now, invalidates lock-free and
+     * gets a zero (skip) token instead of deadlocking on its own thread. */
+    CHECK(delivered==1 && !reentry_token && resolve_cache_epoch==epoch+1);
+    CHECK(resolve_cache_lock && (resolve_cache_seq&1));
     resolve_cache_release(mask);
-    CHECK(delivered==1);
-    const char msg[]="PASS fork discards locked cache snapshot; signal reentry waits for unlock\n";
+    CHECK(!resolve_cache_lock && !(resolve_cache_seq&1));
+    const char msg[]="PASS fork discards locked cache snapshot; signal reentry skips without deadlock\n";
     RAW(PROXY_SC_write,1,msg,sizeof(msg)-1,0,0,0);
     RAW(PROXY_SC_exit_group,0,0,0,0,0,0);__builtin_unreachable();
 }

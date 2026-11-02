@@ -2,6 +2,7 @@
 #define VFS_H
 #include "proxy.h"
 void *vfs_alloc(size_t);
+void *vfs_scratch(size_t);
 void *vfs_palloc(size_t);
 void vfs_free(void *);
 void vfs_trap_begin(void *,size_t);

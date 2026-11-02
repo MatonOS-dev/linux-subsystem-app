@@ -30,7 +30,15 @@ static int arch_rewrite_init(void) {
 /* Assembly reads this exported pointer without TLS or application registers. */
 uintptr_t proxy_rewrite_table;
 static int arch_rewrite_number(long nr){
-    return nr==257 || nr==262 || nr==332 || nr==3 || nr==5 || nr==8 || nr==89 || nr==217 || nr==267 || nr==72;
+    switch(nr){
+    case 257:case 262:case 332:case 3:case 5:case 8:case 89:case 217:case 267:case 72:
+    /* stat lstat access getcwd rename mkdir rmdir link unlink symlink chmod chown lchown */
+    case 4:case 6:case 21:case 79:case 82:case 83:case 84:case 86:case 87:case 88:case 90:case 92:case 94:
+    /* mkdirat fchownat unlinkat renameat linkat symlinkat fchmodat faccessat utimensat renameat2 faccessat2 fchmodat2 */
+    case 258:case 260:case 263:case 264:case 265:case 266:case 268:case 269:case 280:case 316:case 439:case 452:
+        return 1;
+    default:return 0;
+    }
 }
 struct rewrite_insn {size_t size;int64_t target;int stack_delta;unsigned nr,window,flow,stack_access,rax,syscall,number;};
 static int arch_rewrite_decode(const unsigned char *p,size_t n,struct rewrite_insn *d){
@@ -62,25 +70,26 @@ static int arch_rewrite_decode(const unsigned char *p,size_t n,struct rewrite_in
         if(((op-0xb8)|((rex&1)?8:0))==4)return 0; /* rsp destination */
         imm=(rex&8)?8:(operand16?2:4);
         d->rax=((op-0xb8)|((rex&1)?8:0))==0;
-    }else if(op==0x3d || op==0xa9)imm=operand16?2:4;
-    else if(op==0xa8)imm=1;
+    }else if((op<0x40 && (op&7)==5) || op==0xa9)imm=operand16?2:4; /* ALU/test eax,imm */
+    else if((op<0x40 && (op&7)==4) || op==0xa8)imm=1; /* ALU/test al,imm8 */
     else if(op==0x0f){
         if(i>=n)return 0;
         op=p[i++];
         if(op==5){d->syscall=1;} /* syscall */
         else if(op>=0x40 && op<=0x4f)modrm=1; /* cmovcc */
+        else if(op>=0x90 && op<=0x9f)modrm=1; /* setcc */
+        else if(op==0xb6 || op==0xb7 || op==0xbe || op==0xbf)modrm=1; /* movzx/movsx */
         else if(op>=0x80 && op<=0x8f){
             if(n-i<4)return 0;
             int32_t rel;p_copy(&rel,p+i,4);d->target=(int64_t)i+4+rel;d->flow=0;imm=4;
         }else if(op==0x1f)modrm=1;
         else return 0;
-    }else if(op==0x89 || op==0x8b || op==0x8d || op==0x63 || op==0x01 || op==0x03 ||
-              op==0x21 || op==0x23 || op==0x29 || op==0x2b || op==0x09 || op==0x0b ||
-              op==0x31 || op==0x33 || op==0x39 || op==0x3b || op==0x85 || op==0x84 ||
+    }else if((op<0x40 && (op&7)<=3) || /* add/or/adc/sbb/and/sub/xor/cmp r/m forms */
+              op==0x89 || op==0x8b || op==0x8d || op==0x63 || op==0x85 || op==0x84 ||
               op==0x88 || op==0x8a || op==0x80 || op==0x83 || op==0x81 ||
-              op==0xc7 || op==0xf6 || op==0xf7){
+              op==0xc6 || op==0xc7 || op==0xf6 || op==0xf7){
         modrm=1;
-        if(op==0x80 || op==0x83 || op==0xf6)imm=1;
+        if(op==0x80 || op==0x83 || op==0xc6 || op==0xf6)imm=1;
         if(op==0x81 || op==0xc7)imm=operand16?2:4;
     }else return 0;
     if(modrm){
@@ -88,7 +97,7 @@ static int arch_rewrite_decode(const unsigned char *p,size_t n,struct rewrite_in
         unsigned m=p[i++],mode=m>>6,reg=(m>>3)&7,rm=m&7;
         unsigned regx=reg|((rex&4)?8:0),rmx=rm|((rex&1)?8:0);
         d->rax=(regx==0 || rmx==0 || (mode!=3 && rm==4));
-        int group_imm=(op==0x80 || op==0x81 || op==0x83 || op==0xf6 || op==0xf7 || op==0xc7);
+        int group_imm=(op==0x80 || op==0x81 || op==0x83 || op==0xf6 || op==0xf7 || op==0xc6 || op==0xc7);
         if(mode==3 && ((!group_imm && regx==4) || rmx==4)){
             /* Register moves involving rsp are allowed only when they save or
              * restore it through rbp. Other writes need a richer proof. */
@@ -101,7 +110,7 @@ static int arch_rewrite_decode(const unsigned char *p,size_t n,struct rewrite_in
         if(mode!=3 && regx==4 && op!=0x83 && op!=0x81)return 0;
         if(op==0xf6){if(reg==0)imm=1;else if(reg!=2 && reg!=3)return 0;}
         if(op==0xf7){if(reg==0)imm=operand16?2:4;else if(reg!=2 && reg!=3)return 0;}
-        if(op==0xc7 && reg!=0)return 0;
+        if((op==0xc6 || op==0xc7) && reg!=0)return 0;
         if(mode==3 && rm==4 && (op==0x83 || op==0x81)){
             int64_t amount;
             if(imm==1)amount=(int8_t)p[i];else if(imm==4){int32_t x;p_copy(&x,p+i,4);amount=x;}else return 0;

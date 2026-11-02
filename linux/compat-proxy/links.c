@@ -130,7 +130,7 @@ static int tree(char *root,const char *path){
  /* Path-sized temporaries live in the per-trap arena, off the bounded
   * alternate signal stack used by the seccomp handler. */
  struct tree_scratch {char up[PATH_MAX],key[PATH_MAX],marker[PATH_MAX];size_t visited[TREE_WALK_DEPTH];};
- struct tree_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return 0;
+ struct tree_scratch *scratch=vfs_scratch(sizeof(*scratch));if(!scratch)return 0;
  char *up=scratch->up,*key=scratch->key;if(!parent(key,path)){vfs_free(scratch);return 0;}
  uint64_t generation,device=0;
  /* Offsets into key of each directory walked past without an answer. */
@@ -444,7 +444,7 @@ void links_recover_path(const char *path){
   * than caching a process-local clean bit: another process may have crashed.
   * A writer starting after these checks is no different from one starting
   * immediately after the old recovery lock was released. */
- char *journal=vfs_alloc(PATH_MAX);if(!journal)return;
+ char *journal=vfs_scratch(PATH_MAX);if(!journal)return;
  const char *names[]={"intent","conversion","dirty"};int needed=0;
  for(unsigned i=0;i<3;i++){
   if(!catpath(journal,store,names[i])){needed=1;break;}
