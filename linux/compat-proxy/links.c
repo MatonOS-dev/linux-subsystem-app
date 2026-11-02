@@ -447,6 +447,29 @@ long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
  struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
  long lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(!r)r=begin_intent(root,store,p,q,NULL);if(!r){r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);{long clean=finish_intent(store);if(!r)r=clean;}}unlock(lock,root);return r;
 }
+/* Placeholder inode -> backing id and count, valid for one even store word:
+ * index entries and counts change only under the store lock, which moves it.
+ * A direct-mapped cache; a miss or busy lock reads the store as before. */
+#define LINK_CACHE_SLOTS 512
+struct link_cache_entry {volatile uint32_t *word;uint32_t gen;uint64_t dev,ino,count;char id[40];};
+static struct link_cache_entry link_cache[LINK_CACHE_SLOTS];
+static volatile unsigned link_cache_lock;
+static struct link_cache_entry *link_cache_slot(const struct proxy_stat *st){return &link_cache[(st->st_ino*31+st->st_dev)%LINK_CACHE_SLOTS];}
+static int link_cache_trylock(void){unsigned unlocked=0;return __atomic_compare_exchange_n(&link_cache_lock,&unlocked,1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED);}
+static int link_cache_get(volatile uint32_t *word,uint32_t g,const struct proxy_stat *st,const char *root,char *object,uint64_t *count){
+ char id[40];int hit=0;if(!link_cache_trylock())return 0;
+ struct link_cache_entry *e=link_cache_slot(st);
+ if(e->word==word && e->gen==g && e->dev==st->st_dev && e->ino==st->st_ino){p_copy(id,e->id,sizeof(id));*count=e->count;hit=1;}
+ __atomic_store_n(&link_cache_lock,0,__ATOMIC_RELEASE);
+ return hit && p_len(root)+p_len(id)+14<PATH_MAX && catpath(object,root,".v3-inodes") && catpath(object+p_len(object),"",id);
+}
+static void link_cache_put(volatile uint32_t *word,uint32_t g,const struct proxy_stat *st,const char *object,uint64_t count){
+ const char *id=object;for(const char *q=object;*q;q++)if(*q=='/')id=q+1;
+ size_t n=p_len(id);if(n>=40 || !link_cache_trylock())return;
+ struct link_cache_entry *e=link_cache_slot(st);
+ e->word=word;e->gen=g;e->dev=st->st_dev;e->ino=st->st_ino;e->count=count;p_copy(e->id,id,n+1);
+ __atomic_store_n(&link_cache_lock,0,__ATOMIC_RELEASE);
+}
 long links_path_call(long nr,proxy_arg_t *args,const char *p){
  char root[PATH_MAX],store[PATH_MAX],object[PATH_MAX];struct proxy_stat st;long lock=-1,r;int quiet=0;
  /* No placeholder can exist outside a marked store. Keep metadata-changing
@@ -464,7 +487,12 @@ long links_path_call(long nr,proxy_arg_t *args,const char *p){
   return RAW(nr,args[0],args[1],args[2],args[3],args[4],args[5]);
  /* A clean store needs its lock only to repair a placeholder's count. */
  int stored=0;uint64_t count=0;
- if(quiet && (stored=links_target(p,object)) && (checked_count(object,&count) || !count))quiet=0;
+ if(quiet){
+  volatile uint32_t *word=root_word(root);uint32_t g=word?__atomic_load_n(word,__ATOMIC_ACQUIRE):1;
+  if(!(g&1) && link_cache_get(word,g,&st,root,object,&count))stored=1;
+  else if((stored=links_target(p,object)) && !checked_count(object,&count) && count){if(!(g&1))link_cache_put(word,g,&st,object,count);}
+  else if(stored)quiet=0;
+ }
  if(!quiet && tree(root,p) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){
   lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r){unlock(lock,root);return r;}
  }
