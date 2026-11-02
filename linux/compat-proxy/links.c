@@ -12,6 +12,7 @@
 #include <linux/limits.h>
 #include <linux/fs.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <linux/stat.h>
 #ifdef COMPAT_LINKS_TEST
 #include <signal.h>
@@ -49,6 +50,30 @@ static int marked_device(const char *dir,uint64_t *device,char *name){
  if(r || !S_ISREG(st.st_mode) || st.st_uid!=links_euid())return 0;
  if(device)*device=st.st_dev;
  return 1;
+}
+/* Store generation shared by every process using a store: the first word of
+ * its .v3-store-root marker, mapped MAP_SHARED once per process. store_lock
+ * makes it odd and unlock makes it even again, so a crashed writer leaves it
+ * odd. Readers trust a clean-store observation only while the word still holds
+ * the even value read before that observation. Read-only markers (deployment
+ * trees) have no word and keep the per-operation checks. */
+struct store_word {struct store_word *next;uint64_t dev,ino;volatile uint32_t *word;};
+static struct store_word *store_words;
+static volatile uint32_t *store_word(const char *root){
+ char name[PATH_MAX];struct proxy_stat st,own;if(!catpath(name,root,".v3-store-root"))return NULL;
+ if(arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || st.st_uid!=links_euid())return NULL;
+ for(struct store_word *w=__atomic_load_n(&store_words,__ATOMIC_ACQUIRE);w;w=w->next)if(w->dev==st.st_dev && w->ino==st.st_ino)return w->word;
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,name,O_RDWR|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return NULL;
+ volatile uint32_t *word=NULL;
+ if(!arch_stat_fd(fd,&own) && own.st_dev==st.st_dev && own.st_ino==st.st_ino && (own.st_size>=4 || !RAW(PROXY_SC_ftruncate,fd,4,0,0,0,0))){
+  long p=RAW(PROXY_SC_mmap,0,4096,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
+  if((unsigned long)p<(unsigned long)-4095)word=(void *)p;
+ }
+ RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ struct store_word *w=word?vfs_palloc(sizeof(*w)):NULL;if(!w)return word;
+ w->dev=own.st_dev;w->ino=own.st_ino;w->word=word;w->next=__atomic_load_n(&store_words,__ATOMIC_RELAXED);
+ while(!__atomic_compare_exchange_n(&store_words,&w->next,w,1,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
+ return word;
 }
 /* Android denies link(2) in app data. OSTree needs it while Flatpak deploys
  * an installation, so permit the same emulation in each app's private
@@ -97,7 +122,8 @@ int links_marker(const char *path){const char *name=path;for(const char *p=path;
 #define TREE_ROOTS 8
 #define TREE_WALK_DEPTH 64
 struct tree_cache_entry {uint64_t generation;int root;char key[TREE_CACHE_KEY];};
-struct tree_root {uint64_t generation,device;char path[PATH_MAX];};
+/* clean/empty hold word+1 as observed: no journals, or no .v3-inodes at all. */
+struct tree_root {uint64_t generation,device;volatile uint32_t *word;uint32_t clean,empty;char path[PATH_MAX];};
 static struct tree_cache_entry tree_cache[TREE_CACHE_SLOTS];
 static struct tree_root tree_roots[TREE_ROOTS];
 static volatile unsigned tree_cache_lock;
@@ -119,14 +145,16 @@ static void tree_cache_put(const char *dir,uint64_t generation,int root){
  struct tree_cache_entry *e=&tree_cache[tree_cache_hash(dir)%TREE_CACHE_SLOTS];
  e->generation=generation;e->root=root;p_copy(e->key,dir,n+1);
 }
-static int tree_root_put(const char *path,uint64_t device,uint64_t generation){
+static int tree_root_put(const char *path,uint64_t device,uint64_t generation,volatile uint32_t *word){
  for(int i=0;i<TREE_ROOTS;i++)if(tree_roots[i].generation==generation && p_equal(tree_roots[i].path,path)){tree_roots[i].device=device;return i;}
  for(int i=0;i<TREE_ROOTS;i++)if(tree_roots[i].generation!=generation){
-  tree_roots[i].generation=generation;tree_roots[i].device=device;p_copy(tree_roots[i].path,path,p_len(path)+1);return i;
+  tree_roots[i].generation=generation;tree_roots[i].device=device;tree_roots[i].word=word;tree_roots[i].clean=tree_roots[i].empty=0;p_copy(tree_roots[i].path,path,p_len(path)+1);return i;
  }
  return -2;
 }
-static int tree(char *root,const char *path){
+/* *quiet (callers zero it): 2 = no .v3-inodes, 1 = no journals, unchanged
+ * since observed; the root is then trusted without re-probing it. */
+static int tree_state(char *root,const char *path,int *quiet){
  /* Path-sized temporaries live in the per-trap arena, off the bounded
   * alternate signal stack used by the seccomp handler. */
  struct tree_scratch {char up[PATH_MAX],key[PATH_MAX],marker[PATH_MAX];size_t visited[TREE_WALK_DEPTH];};
@@ -134,7 +162,7 @@ static int tree(char *root,const char *path){
  char *up=scratch->up,*key=scratch->key;if(!parent(key,path)){vfs_free(scratch);return 0;}
  uint64_t generation,device=0;
  /* Offsets into key of each directory walked past without an answer. */
- int depth=0,marked=0,cached=-2;
+ int depth=0,marked=0,cached=-2;volatile uint32_t *word=NULL;
  p_copy(root,key,p_len(key)+1);
 restart:
  generation=__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE);
@@ -142,16 +170,18 @@ restart:
  for(;;){
   if(tree_cache_trylock()){
    cached=tree_cache_get(root,generation);
-   if(cached>=0){device=tree_roots[cached].device;p_copy(root,tree_roots[cached].path,p_len(tree_roots[cached].path)+1);}
+   if(cached>=0){struct tree_root *r=&tree_roots[cached];device=r->device;p_copy(root,r->path,p_len(r->path)+1);
+    if(quiet && r->word){uint32_t g=__atomic_load_n(r->word,__ATOMIC_ACQUIRE)+1;*quiet=!(g&1)?0:r->empty==g?2:r->clean==g;}}
    tree_cache_unlock();
   }
   if(cached==-1){marked=0;break;}
   if(cached>=0){
+   if(quiet && *quiet){vfs_free(scratch);return 1;}
    marked=private_dir(root,device);
    if(!marked){links_cache_invalidate();goto restart;}
    break;
   }
-  if(marked_device(root,&device,scratch->marker)){marked=private_dir(root,device);break;}
+  if(marked_device(root,&device,scratch->marker)){marked=private_dir(root,device);word=marked?store_word(root):NULL;break;}
   if(app_install_device(root,&device)){marked=1;break;}
   if(depth<TREE_WALK_DEPTH)scratch->visited[depth++]=p_len(root);
   if(!parent(up,root) || p_equal(up,root)){marked=0;break;}
@@ -159,7 +189,7 @@ restart:
  }
  if(tree_cache_trylock()){
   if(generation==__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE)){
-   int index=marked?tree_root_put(root,device,generation):-1;
+   int index=marked?tree_root_put(root,device,generation,word):-1;
    if(index!=-2){
     /* The walked directories are prefixes of key; truncate in place. */
     char *dir=up;
@@ -170,6 +200,23 @@ restart:
   tree_cache_unlock();
  }
  vfs_free(scratch);return marked;
+}
+static int tree(char *root,const char *path){return tree_state(root,path,NULL);}
+static struct tree_root *root_slot(const char *root){
+ uint64_t generation=__atomic_load_n(&tree_cache_generation,__ATOMIC_ACQUIRE);
+ for(int i=0;i<TREE_ROOTS;i++)if(tree_roots[i].generation==generation && tree_roots[i].word && p_equal(tree_roots[i].path,root))return &tree_roots[i];
+ return NULL;
+}
+static volatile uint32_t *root_word(const char *root){
+ volatile uint32_t *word=NULL;if(!tree_cache_trylock())return NULL;
+ struct tree_root *r=root_slot(root);if(r)word=r->word;tree_cache_unlock();return word;
+}
+/* Record that the store was clean (state 1) or had no .v3-inodes (state 2)
+ * while its word held g. */
+static void tree_note(const char *root,uint32_t g,int state){
+ if(!tree_cache_trylock())return;
+ struct tree_root *r=root_slot(root);if(r){r->clean=g+1;if(state==2)r->empty=g+1;}
+ tree_cache_unlock();
 }
 /* One constant-time index entry per physical placeholder inode. Values are
  * relative object IDs, so directory relocation needs no target rewriting. */
@@ -198,11 +245,12 @@ static int target_locked(const char *store,const char *name,char *out){
 int links_target(const char *name,char *out){
  struct proxy_stat st;char root[PATH_MAX],*store=vfs_alloc(PATH_MAX);if(!store)return 0;
  /* The cached marker ancestry excludes ordinary trees without getattr. */
- if(!tree(root,name) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes")){vfs_free(store);return 0;}
+ int quiet=0;
+ if(!tree_state(root,name,&quiet) || arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode) || !(st.st_mode&S_ISVTX) || !catpath(store,root,".v3-inodes")){vfs_free(store);return 0;}
  int found=target_index(store,&st,out);vfs_free(store);return found;
 }
-static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=links_euid() || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
-static void unlock(long fd){RAW(PROXY_SC_flock,fd,LOCK_UN,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
+static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=links_euid() || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}volatile uint32_t *word=store_word(root);if(word)__atomic_store_n(word,*word|1,__ATOMIC_SEQ_CST);return fd;}
+static void unlock(long fd,const char *root){volatile uint32_t *word=store_word(root);if(word)__atomic_store_n(word,(*word|1)+1,__ATOMIC_SEQ_CST);RAW(PROXY_SC_flock,fd,LOCK_UN,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
 static long count_names(const char *dir,const char *object,dev_t dev,uint64_t *count){
 #ifdef COMPAT_LINKS_TEST
  proxy_log("links tree walk",0,0);
@@ -356,7 +404,7 @@ static void remove_empty_store(const char *dir){
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,store,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);int empty=fd>=0;char buf[4096];long n;
  if(fd>=0){while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(buf),0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){empty=0;break;}char *name=(void *)(d+19);if(!p_equal(name,".") && !p_equal(name,"..") && !p_equal(name,"lock"))empty=0;off+=len;}}if(n<0)empty=0;RAW(PROXY_SC_close,fd,0,0,0,0,0);}
  if(empty && catpath(file,store,"lock")){RAW(PROXY_SC_unlinkat,AT_FDCWD,file,0,0,0,0);RAW(PROXY_SC_unlinkat,AT_FDCWD,store,AT_REMOVEDIR,0,0,0);}
- unlock(lock);
+ unlock(lock,dir);
 }
 static long store_link(const char *source,const char *target){
  char root[PATH_MAX],store[PATH_MAX],object[PATH_MAX],destparent[PATH_MAX];struct proxy_stat src,dst;
@@ -378,7 +426,7 @@ static long store_link(const char *source,const char *target){
  }
  r=begin_intent(root,store,source,target,object);if(r)goto end;
  r=placeholder(store,target,object);{long clean=finish_intent(store);if(!r)r=clean;}
-end:unlock(lock);return r;
+end:unlock(lock,root);return r;
 }
 long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
  char root[PATH_MAX],other[PATH_MAX],store[PATH_MAX];
@@ -397,24 +445,31 @@ long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
  /* Only existing stores require serialization; ordinary files retain kernel behavior. */
  if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;
  struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW))return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
- long lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(!r)r=begin_intent(root,store,p,q,NULL);if(!r){r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);{long clean=finish_intent(store);if(!r)r=clean;}}unlock(lock);return r;
+ long lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(!r)r=begin_intent(root,store,p,q,NULL);if(!r){r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);{long clean=finish_intent(store);if(!r)r=clean;}}unlock(lock,root);return r;
 }
 long links_path_call(long nr,proxy_arg_t *args,const char *p){
- char root[PATH_MAX],store[PATH_MAX],object[PATH_MAX];struct proxy_stat st;long lock=-1,r;
+ char root[PATH_MAX],store[PATH_MAX],object[PATH_MAX];struct proxy_stat st;long lock=-1,r;int quiet=0;
  /* No placeholder can exist outside a marked store. Keep metadata-changing
   * operations below, where their sticky-bit translation is applied. */
  if((nr==PROXY_SC_openat || nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx ||
-     nr==PROXY_SC_faccessat || nr==PROXY_SC_faccessat2) && !tree(root,p))
+     nr==PROXY_SC_faccessat || nr==PROXY_SC_faccessat2) && (!tree_state(root,p,&quiet) || quiet==2))
   return RAW(nr,args[0],args[1],args[2],args[3],args[4],args[5]);
  /* Non-regular, non-symlink inodes cannot be link-store placeholders.
   * Keep symlinks on the slow path: this syscall may follow their target. */
- if(!arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode))
+ long missing=arch_stat_at(AT_FDCWD,p,&st,AT_SYMLINK_NOFOLLOW);
+ if(!missing && !S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode))
   return RAW(nr,args[0],args[1],args[2],args[3],args[4],args[5]);
- if(tree(root,p) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){
-  lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r){unlock(lock);return r;}
+ /* In a clean store only a sticky regular file can be a placeholder. */
+ if(quiet && (missing==-ENOENT || (!missing && S_ISREG(st.st_mode) && !(st.st_mode&S_ISVTX))))
+  return RAW(nr,args[0],args[1],args[2],args[3],args[4],args[5]);
+ /* A clean store needs its lock only to repair a placeholder's count. */
+ int stored=0;uint64_t count=0;
+ if(quiet && (stored=links_target(p,object)) && (checked_count(object,&count) || !count))quiet=0;
+ if(!quiet && tree(root,p) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){
+  lock=store_lock(root,store);if(lock<0)return lock;r=recover(root,store);if(r){unlock(lock,root);return r;}
  }
- proxy_arg_t a[6];p_copy(a,args,sizeof(a));int stored=links_target(p,object);
- if(stored){r=ensure_count(root,store,object);if(r)goto end;
+ proxy_arg_t a[6];p_copy(a,args,sizeof(a));if(!quiet)stored=links_target(p,object);
+ if(stored){if(!quiet){r=ensure_count(root,store,object);if(r)goto end;count=read_count(object);}
   /* Only the final stored name is substituted. Keep flags intact: the
    * backing inode is already regular, so the kernel enforces NOFOLLOW,
    * O_EXCL, O_DIRECTORY and unknown flag semantics itself. */
@@ -425,19 +480,22 @@ long links_path_call(long nr,proxy_arg_t *args,const char *p){
   struct proxy_stat mode;if(!arch_stat_at(AT_FDCWD,stored?object:p,&mode,AT_SYMLINK_NOFOLLOW) && S_ISREG(mode.st_mode))a[2]=(a[2]&~S_ISVTX)|(mode.st_mode&S_ISVTX);
  }
  r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
- if(!r && stored && nr==PROXY_SC_newfstatat)arch_stat_nlink((void *)(uintptr_t)a[2],read_count(object));
- if(!r && stored && nr==PROXY_SC_statx)arch_statx_nlink((void *)(uintptr_t)a[4],read_count(object));
-end:if(lock>=0)unlock(lock);return r;
+ if(!r && stored && nr==PROXY_SC_newfstatat)arch_stat_nlink((void *)(uintptr_t)a[2],count);
+ if(!r && stored && nr==PROXY_SC_statx)arch_statx_nlink((void *)(uintptr_t)a[4],count);
+end:if(lock>=0)unlock(lock,root);return r;
 }
-static void refresh(const char *object){char root[PATH_MAX],store[PATH_MAX];size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock>=0){if(!recover(root,store)){struct proxy_stat st;if(!arch_stat_at(AT_FDCWD,object,&st,0))ensure_count(root,store,object);}unlock(lock);}}
+static void refresh(const char *object){char root[PATH_MAX],store[PATH_MAX];size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock>=0){if(!recover(root,store)){struct proxy_stat st;if(!arch_stat_at(AT_FDCWD,object,&st,0))ensure_count(root,store,object);}unlock(lock,root);}}
 /* Conversion can hide only a regular file, never a directory, symlink or
  * device. The component walker calls this for every ancestor: avoid taking
  * the store lock and replaying its journals for an existing non-regular inode.
  * Missing names still need recovery (conversion may have moved their inode). */
 void links_recover_path(const char *path){
- char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;
- if(!tree(root,path) || !catpath(store,root,".v3-inodes"))return;
- if(!arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode))return;
+ char root[PATH_MAX],store[PATH_MAX];struct proxy_stat st;int quiet=0;
+ if(!tree_state(root,path,&quiet) || quiet || !catpath(store,root,".v3-inodes"))return;
+ /* With a shared word, check the whole store once per generation instead. */
+ volatile uint32_t *word=root_word(root);uint32_t g=word?__atomic_load_n(word,__ATOMIC_ACQUIRE):0;
+ if(word && !(g&1) && arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)==-ENOENT){tree_note(root,g,2);return;}
+ if(!word && !arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW) && !S_ISREG(st.st_mode))return;
  /* Recovery is needed only for a published transaction or a dirty count.
   * Do not open/create/flock the lock inode just to discover three absent
   * journals on every path component. Check shared filesystem state, rather
@@ -445,14 +503,14 @@ void links_recover_path(const char *path){
   * A writer starting after these checks is no different from one starting
   * immediately after the old recovery lock was released. */
  char *journal=vfs_scratch(PATH_MAX);if(!journal)return;
- const char *names[]={"intent","conversion","dirty"};int needed=0;
+ const char *names[]={"intent","conversion","dirty"};int needed=(int)(g&1);
  for(unsigned i=0;i<3;i++){
   if(!catpath(journal,store,names[i])){needed=1;break;}
   long r=arch_stat_at(AT_FDCWD,journal,&st,AT_SYMLINK_NOFOLLOW);
   if(r!=-ENOENT){needed=1;break;}
  }
- if(!needed){vfs_free(journal);return;}
- long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock);}
+ if(!needed){if(word)tree_note(root,g,1);vfs_free(journal);return;}
+ long lock=store_lock(root,store);if(lock>=0){recover(root,store);unlock(lock,root);}
  vfs_free(journal);
 }
 /* Only regular files can be store objects; skip the /proc lookup for the rest. */
@@ -517,12 +575,12 @@ long links_dents(long fd,void *buf,long size){
  if(!tracked && !arch_stat_fd((int)fd,&fdst))
   tracked=fd_path((int)fd,(uint64_t)fdst.st_dev,(uint64_t)fdst.st_ino);
  if(tracked){size_t n=p_len(tracked);if(n+3<=sizeof(path)){p_copy(path,tracked,n);path[n++]='/';path[n++]='.';path[n]=0;}else n=0;vfs_free(tracked);
-  if(n && tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock);return r;}}
+  if(n && tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock,root);return r;}}
  }else{
   char proc[80]="/proc/self/fd/";size_t k=14;k+=number(proc+k,(unsigned)fd);proc[k]=0;long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,proc,path,sizeof(path)-3,0,0);
-  if(n>0){path[n++]='/';path[n++]='.';path[n]=0;if(tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock);return r;}}}
+  if(n>0){path[n++]='/';path[n++]='.';path[n]=0;if(tree(root,path) && catpath(store,root,".v3-inodes") && !arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW)){lock=store_lock(root,store);if(lock<0)return lock;long r=recover(root,store);if(r){unlock(lock,root);return r;}}}
  }
- long r=dents_locked(fd,buf,size);if(lock>=0)unlock(lock);return r;
+ long r=dents_locked(fd,buf,size);if(lock>=0)unlock(lock,root);return r;
 }
 void links_payload_fd_stat(int fd,void *wire){struct proxy_stat s;arch_stat_decode(&s,wire);links_fd_stat(fd,&s);arch_stat_nlink(wire,s.st_nlink);}
 void links_payload_path_stat(const char *path,void *wire,int extended){struct proxy_stat s;if(extended){struct statx *x=wire;s=(struct proxy_stat){.st_mode=x->stx_mode,.st_nlink=x->stx_nlink};links_stat(path,&s);arch_statx_nlink(wire,s.st_nlink);}else{arch_stat_decode(&s,wire);links_stat(path,&s);arch_stat_nlink(wire,s.st_nlink);}}
