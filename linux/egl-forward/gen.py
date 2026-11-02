@@ -133,12 +133,12 @@ def emit_group(path, items, prefix, library):
         proto = ", ".join(params) if params else "void"
         internal = prefix + name
         unsupported = name in {
-            "eglCreatePlatformWindowSurface", "eglCreateWindowSurface",
+            "eglCreatePlatformWindowSurface", "eglCreatePlatformWindowSurfaceEXT", "eglCreateWindowSurface",
             # Do not let the Android driver invoke a Linux callback on bionic TLS.
             "glDebugMessageCallback",
         }
         custom_window = name in {
-            "eglCreatePlatformWindowSurface", "eglCreateWindowSurface",
+            "eglCreatePlatformWindowSurface", "eglCreatePlatformWindowSurfaceEXT", "eglCreateWindowSurface",
             "eglDestroySurface", "eglSwapBuffers", "eglSwapInterval",
             "eglQuerySurface", "eglSurfaceAttrib", "eglMakeCurrent",
             "eglGetCurrentSurface",

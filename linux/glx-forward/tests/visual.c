@@ -15,6 +15,8 @@ extern Display *XOpenDisplay(const char *);
 extern unsigned long XDefaultRootWindow(Display *);
 extern unsigned long XCreateSimpleWindow(Display *,unsigned long,int,int,unsigned,unsigned,unsigned,unsigned long,unsigned long);
 extern int XMapWindow(Display *,unsigned long),XSync(Display *,int),XDestroyWindow(Display *,unsigned long),XCloseDisplay(Display *);
+typedef struct XImage XImage;
+extern int XDestroyImage(XImage *);
 extern XImage *XGetImage(Display *,unsigned long,int,int,unsigned,unsigned,unsigned long,int);
 extern unsigned long XGetPixel(XImage *,int,int);
 int main(void){

@@ -16,7 +16,10 @@ The JSON selects this vendor, and `eglGetPlatformDisplay` maps
 available, with a default-display fallback. The forwarder adds the MESA
 surfaceless token to Android's EGL extension list. Pbuffers and GLES calls
 are forwarded. Wayland window surfaces use the runtime's `wl_egl_window`
-object and `wl_surface`; no libwayland link is added. The adapter uses a
+object and `wl_surface`; no libwayland link is added. X11/XCB platform displays
+(`EGL_KHR_platform_x11`, `EGL_EXT_platform_xcb`) get window surfaces whose AHB
+dma-buf is shared with Xwayland through DRI3 and shown with Present (the
+Vulkan forwarder's `wsi_x11.c`), zero copy. The adapter uses a
 resident Android pbuffer as the app's default framebuffer, then blits each
 completed frame into a client-allocated `AHardwareBuffer` exposed to GLES
 through an EGLImage. It sends that AHB to the compositor with

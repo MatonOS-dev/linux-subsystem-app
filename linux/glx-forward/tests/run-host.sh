@@ -23,7 +23,7 @@ cc=${CC:-cc}
 
 if command -v xvfb-run >/dev/null; then
   mkdir -p "$OUT/mesa-direct"
-  "$cc" -std=c11 -O2 -fPIC -shared -I"$ROOT/glx-forward/include" "$ROOT/glx-forward/tests/mesa-direct.c" -lEGL -o "$OUT/mesa-direct/libEGL_maton.so"
+  "$cc" -std=c11 -O2 -fPIC -shared -I"$ROOT/glx-forward/include" "$ROOT/glx-forward/tests/mesa-direct.c" -lEGL -lGLESv2 -lX11 -o "$OUT/mesa-direct/libEGL_maton.so"
   "$cc" -std=c11 -O2 -Wall -Wextra -Werror -I"$ROOT/glx-forward/include" -I"$deps/include" "$ROOT/glx-forward/tests/visual.c" -lX11 -ldl -o "$OUT/visual-test"
   EGL_PLATFORM=surfaceless LD_LIBRARY_PATH="$OUT/mesa-direct${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" xvfb-run -a "$OUT/visual-test"
 else

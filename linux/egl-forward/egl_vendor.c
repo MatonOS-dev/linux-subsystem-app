@@ -8,6 +8,7 @@
 #include "../wayland-client/wayland_client.h"
 #include "../vulkan-forward/wayland_resolve.h"
 #include "../glx-forward/include/maton_egl_direct.h"
+#include "../vulkan-forward/wsi_x11.h"
 
 #if defined(__i386__)
 #define MV_ANDROID_LIBDIR "/system/lib/"
@@ -139,9 +140,15 @@ static void *mv_resolve(const char *name, int which) {
 static char mv_lazy_display_tag;
 #define MV_LAZY_DISPLAY ((EGLDisplay)&mv_lazy_display_tag)
 static EGLDisplay mv_default_display;
+/* X11 displays share Android's default display. A separate token records
+ * the platform so window surfaces know their native window is an X11 XID;
+ * the X connection is per process (the last display opened wins). */
+static char mv_x11_display_tag;
+#define MV_X11_DISPLAY ((EGLDisplay)&mv_x11_display_tag)
+static void *mv_x11_connection_native;
 /* Called only after switching into resident bionic TLS. */
 static EGLDisplay mv_display_in(EGLDisplay dpy) {
-    if (dpy != MV_LAZY_DISPLAY) return dpy;
+    if (dpy != MV_LAZY_DISPLAY && dpy != MV_X11_DISPLAY) return dpy;
     EGLDisplay real = __atomic_load_n(&mv_default_display, __ATOMIC_ACQUIRE);
     if (real) return real;
     typedef EGLDisplay (*fn_t)(EGLNativeDisplayType);
@@ -228,6 +235,9 @@ struct mv_egl_surface {
     struct mv_wl_dmabuf *wayland;
     struct mv_wl_buffer *buffer;
     struct mv_wl_sync_surface *sync;
+    struct mv_x11 *x11;          /* X11 windows: DRI3/Present, no Wayland objects */
+    struct mv_x11_buffer *xbuf;
+    uint32_t xid;
     void *ahb;
     void *image;
     EGLint width, height;
@@ -271,6 +281,7 @@ static void mv_surface_put(struct mv_egl_surface *s) {
         switch_back(&scope);
     }
     if(s->buffer)mv_wl_buffer_destroy(s->buffer); if(s->sync)mv_wl_sync_surface_destroy(s->sync); if(s->wayland)mv_wl_dmabuf_destroy(s->wayland);
+    if(s->xbuf)mv_x11_buffer_destroy(s->xbuf); if(s->x11)mv_x11_destroy(s->x11);
     mv_free(s);
 }
 static void mv_surface_publish(struct mv_egl_surface *s) {
@@ -288,9 +299,81 @@ static void *mv_current_gl_resolve(const char *name) {
     return mv_resolve(name,query && query()==EGL_OPENGL_API?MV_DESKTOP:MV_GLES);
 }
 
+struct mv_native_handle { int version, num_fds, num_ints; int data[]; };
+static void mv_surface_drop_resources(EGLDisplay dpy, struct mv_egl_surface *s);
+/* X11 window: render into a pbuffer, blit into a BGRA AHardwareBuffer and hand
+ * that buffer's dma-buf to Xwayland once with DRI3; each swap is a Present of
+ * the same pixmap. No CPU copy. */
+static EGLSurface mv_x11_window_surface(EGLConfig config, uint32_t xid) {
+    void *connection=__atomic_load_n(&mv_x11_connection_native,__ATOMIC_ACQUIRE);
+    if (!xid || !connection || !mv_ready()) return EGL_NO_SURFACE;
+    struct mv_egl_surface *s=mv_alloc(sizeof(*s));
+    if (!s) return EGL_NO_SURFACE;
+    memset(s,0,sizeof(*s)); s->config=config; s->xid=xid; s->swap_interval=1;
+    uint32_t w=0,h=0;
+    s->x11=mv_x11_create(connection,xid);
+    if (!s->x11 || !mv_x11_extent(s->x11,&w,&h) || !w || !h) goto fail_early;
+    s->width=(EGLint)w; s->height=(EGLint)h;
+    struct mv_scope scope;
+    if (!mv_enter(&scope)) goto fail_early;
+    EGLDisplay dpy=mv_display_in(MV_X11_DISPLAY); s->display=dpy;
+    typedef EGLSurface (*pbuf_fn)(EGLDisplay,EGLConfig,const EGLint *);
+    pbuf_fn pbuf=(pbuf_fn)mv_resolve("eglCreatePbufferSurface",MV_EGL);
+    EGLint pa[]={EGL_WIDTH,s->width,EGL_HEIGHT,s->height,EGL_NONE};
+    if (pbuf) s->pbuffer=pbuf(dpy,config,pa);
+    typedef int (*alloc_fn)(const struct mv_ahb_desc *,void **);
+    typedef void (*describe_fn)(const void *,struct mv_ahb_desc *);
+    typedef const struct mv_native_handle *(*handle_fn)(const void *);
+    typedef EGLClientBuffer (*client_fn)(const void *);
+    typedef void *(*image_fn)(EGLDisplay,EGLContext,EGLenum,EGLClientBuffer,const EGLint *);
+    alloc_fn alloc=(alloc_fn)mv_android_symbol("AHardwareBuffer_allocate");
+    describe_fn describe=(describe_fn)mv_android_symbol("AHardwareBuffer_describe");
+    handle_fn handle=(handle_fn)mv_android_symbol("AHardwareBuffer_getNativeHandle");
+    client_fn client=(client_fn)mv_egl_ext("eglGetNativeClientBufferANDROID");
+    image_fn create_image=(image_fn)mv_egl_ext("eglCreateImageKHR");
+    /* Format 5 is BGRA_8888: the byte order of DRI3's depth-24/32bpp pixmaps. */
+    struct mv_ahb_desc desc={(uint32_t)s->width,(uint32_t)s->height,1,5,0x200|0x800,0,0,0};
+    int fd=-1; uint32_t stride=0;
+    if (alloc && describe && handle && client && create_image && s->pbuffer &&
+        alloc(&desc,&s->ahb)==0 && s->ahb) {
+        struct mv_ahb_desc actual={0}; describe(s->ahb,&actual);
+        const struct mv_native_handle *native=handle(s->ahb);
+        if (native && native->num_fds>=1 && actual.stride && actual.stride<=UINT32_MAX/4) {
+            fd=native->data[0]; stride=actual.stride*4;
+            EGLint ia[]={EGL_IMAGE_PRESERVED_KHR,EGL_TRUE,EGL_NONE};
+            s->image=create_image(dpy,EGL_NO_CONTEXT,EGL_NATIVE_BUFFER_ANDROID,client(s->ahb),ia);
+        }
+    }
+    switch_back(&scope);
+    /* The AHB keeps owning fd; DRI3 receives a duplicate. */
+    if (!s->pbuffer || !s->image || fd<0) goto fail;
+    s->xbuf=mv_x11_buffer_create(s->x11,fd,w,h,stride);
+    if (!s->xbuf) goto fail;
+    s->handle=s->pbuffer;
+    mv_surface_publish(s);
+    return s->handle;
+fail:
+    mv_surface_drop_resources(s->display,s);
+fail_early:
+    if (s->x11) mv_x11_destroy(s->x11);
+    mv_free(s); return EGL_NO_SURFACE;
+}
+static void mv_surface_drop_resources(EGLDisplay dpy, struct mv_egl_surface *s) {
+    if (!s->image && !s->ahb && !s->pbuffer) return;
+    struct mv_scope scope;
+    if (!mv_enter(&scope)) return;
+    typedef EGLBoolean (*destroy_image_fn)(EGLDisplay,void *);
+    destroy_image_fn di=(destroy_image_fn)mv_egl_ext("eglDestroyImageKHR"); if(s->image&&di)di(dpy,s->image);
+    typedef void (*release_fn)(void *); release_fn rel=(release_fn)mv_android_symbol("AHardwareBuffer_release"); if(s->ahb&&rel)rel(s->ahb);
+    typedef EGLBoolean (*destroy_surface_fn)(EGLDisplay,EGLSurface); destroy_surface_fn ds=(destroy_surface_fn)mv_resolve("eglDestroySurface",MV_EGL); if(s->pbuffer&&ds)ds(dpy,s->pbuffer);
+    switch_back(&scope);
+    s->image=0; s->ahb=0; s->pbuffer=EGL_NO_SURFACE;
+}
 static EGLSurface mv_eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config,
         void *native_window, const EGLAttrib *attrs) {
     if ((attrs && attrs[0]!=EGL_NONE) || !native_window || !mv_ready()) return EGL_NO_SURFACE;
+    /* EGL_KHR_platform_x11: the platform call passes a pointer to the Window. */
+    if (dpy==MV_X11_DISPLAY) return mv_x11_window_surface(config,(uint32_t)*(const unsigned long *)native_window);
     struct wl_egl_window_abi *w=native_window;
     if (w->version != 3 || !w->surface || w->width<1 || w->height<1) return EGL_NO_SURFACE;
     struct mv_egl_surface *s=mv_alloc(sizeof(*s));
@@ -351,16 +434,37 @@ fail:
     }
     mv_free(s); return EGL_NO_SURFACE;
 }
+static EGLSurface mv_eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy,EGLConfig config,
+        void *native_window,const EGLint *attrs) {
+    if(attrs && attrs[0]!=EGL_NONE)return EGL_NO_SURFACE;
+    return mv_eglCreatePlatformWindowSurface(dpy,config,native_window,0);
+}
 static EGLSurface mv_eglCreateWindowSurface(EGLDisplay dpy,EGLConfig config,
         EGLNativeWindowType window,const EGLint *attrs) {
     if(attrs && attrs[0]!=EGL_NONE)return EGL_NO_SURFACE;
+    if(dpy==MV_X11_DISPLAY)return mv_x11_window_surface(config,(uint32_t)(uintptr_t)window);
     return mv_eglCreatePlatformWindowSurface(dpy,config,(void *)window,0);
 }
-static int mv_surface_resize(struct mv_egl_surface *s) {
-    if(!s||!s->window||(s->width==s->window->width&&s->height==s->window->height))return 1;
-    if(s->window->width<1||s->window->height<1)return 0;
-    if(s->submitted){while(!mv_wl_buffer_released(s->buffer))if(mv_wl_dmabuf_dispatch_one(s->wayland)<0)return 0;}
-    EGLSurface replacement=mv_eglCreatePlatformWindowSurface(s->display,s->config,s->window,0);
+/* Waits until the compositor (or Xwayland) no longer reads the AHB. */
+static int mv_surface_wait_release(struct mv_egl_surface *s) {
+    if(!s->submitted)return 1;
+    if(s->x11){while(!mv_x11_released(s->xbuf))if(mv_x11_dispatch(s->x11,-1)<0)return 0;return 1;}
+    while(!mv_wl_buffer_released(s->buffer))if(mv_wl_dmabuf_dispatch_one(s->wayland)<0)return 0;
+    return 1;
+}
+/* Current native window size; X11 costs one GetGeometry round trip. */
+static int mv_surface_target(struct mv_egl_surface *s,EGLint *w,EGLint *h) {
+    if(s->window){*w=s->window->width;*h=s->window->height;return 1;}
+    uint32_t xw=0,xh=0;
+    if(!s->x11||!mv_x11_extent(s->x11,&xw,&xh))return 0;
+    *w=(EGLint)xw;*h=(EGLint)xh;return 1;
+}
+static int mv_surface_resize_to(struct mv_egl_surface *s,EGLint tw,EGLint th) {
+    if(!s||(!s->window&&!s->x11)||(s->width==tw&&s->height==th))return 1;
+    if(tw<1||th<1)return 0;
+    if(!mv_surface_wait_release(s))return 0;
+    EGLSurface replacement=s->x11?mv_x11_window_surface(s->config,s->xid):
+        mv_eglCreatePlatformWindowSurface(s->display,s->config,s->window,0);
     struct mv_egl_surface *n=mv_surface_find(replacement); if(!n)return 0;
     struct mv_scope scope;
     if(!mv_enter(&scope)){mv_eglDestroySurface(s->display,replacement);mv_surface_put(n);return 0;}
@@ -376,28 +480,32 @@ static int mv_surface_resize(struct mv_egl_surface *s) {
     typedef void (*rel_fn)(void *); rel_fn rel=(rel_fn)mv_android_symbol("AHardwareBuffer_release"); if(s->ahb&&rel)rel(s->ahb);
     typedef EGLBoolean (*ds_fn)(EGLDisplay,EGLSurface); ds_fn ds=(ds_fn)mv_resolve("eglDestroySurface",MV_EGL); if(s->pbuffer&&ds)ds(s->display,s->pbuffer);
     switch_back(&scope);
-    mv_wl_buffer_destroy(s->buffer);mv_wl_sync_surface_destroy(s->sync);mv_wl_dmabuf_destroy(s->wayland);
     /* Keep the first pbuffer as the application handle; translate it to the
      * current native pbuffer at every Android EGL call after a resize. */
     mv_surface_lock_acquire();
-    EGLSurface old_pbuffer=s->pbuffer; void *old_image=s->image,*old_ahb=s->ahb;
+    /* The old image, AHB and pbuffer were destroyed above, inside the scope. */
     struct mv_wl_dmabuf *old_wayland=s->wayland; struct mv_wl_buffer *old_buffer=s->buffer; struct mv_wl_sync_surface *old_sync=s->sync;
+    struct mv_x11 *old_x11=s->x11; struct mv_x11_buffer *old_xbuf=s->xbuf;
     s->pbuffer=n->pbuffer; s->image=n->image; s->ahb=n->ahb; s->wayland=n->wayland; s->buffer=n->buffer; s->sync=n->sync;
+    s->x11=n->x11; s->xbuf=n->xbuf; n->x11=0; n->xbuf=0;
     s->width=n->width; s->height=n->height; s->texture=n->texture; s->framebuffer=n->framebuffer; s->submitted=0;
     n->pbuffer=EGL_NO_SURFACE; n->image=0; n->ahb=0; n->wayland=0; n->buffer=0; n->sync=0; n->texture=0; n->framebuffer=0;
     mv_surface_lock_release();
-    if(old_image){typedef EGLBoolean(*f)(EGLDisplay,void*);f x=(f)mv_egl_ext("eglDestroyImageKHR");if(x)x(s->display,old_image);}
-    if(old_ahb){typedef void(*f)(void*);f x=(f)mv_android_symbol("AHardwareBuffer_release");if(x)x(old_ahb);}
-    if(old_pbuffer){typedef EGLBoolean(*f)(EGLDisplay,EGLSurface);f x=(f)mv_resolve("eglDestroySurface",MV_EGL);if(x)x(s->display,old_pbuffer);}
     if(old_buffer)mv_wl_buffer_destroy(old_buffer); if(old_sync)mv_wl_sync_surface_destroy(old_sync); if(old_wayland)mv_wl_dmabuf_destroy(old_wayland);
+    if(old_xbuf)mv_x11_buffer_destroy(old_xbuf); if(old_x11)mv_x11_destroy(old_x11);
     mv_surface_unpublish(n); mv_surface_put(n); return 1;
+}
+static int mv_surface_resize(struct mv_egl_surface *s) {
+    EGLint w,h;
+    if(!s||(!s->window&&!s->x11))return 1;
+    return mv_surface_target(s,&w,&h)&&mv_surface_resize_to(s,w,h);
 }
 static EGLBoolean mv_eglDestroySurface(EGLDisplay dpy,EGLSurface handle) {
     struct mv_egl_surface *s=mv_surface_find(handle);
     if (!s) { struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
         dpy=mv_display_in(dpy);
         typedef EGLBoolean (*fn_t)(EGLDisplay,EGLSurface); fn_t fn=(fn_t)mv_resolve("eglDestroySurface",MV_EGL); EGLBoolean r=fn?fn(dpy,handle):EGL_FALSE; switch_back(&scope); return r; }
-    if(s->submitted)while(!mv_wl_buffer_released(s->buffer))if(mv_wl_dmabuf_dispatch_one(s->wayland)<0){mv_surface_put(s);return EGL_FALSE;}
+    if(!mv_surface_wait_release(s)){mv_surface_put(s);return EGL_FALSE;}
     if (!mv_surface_unpublish(s)) { mv_surface_put(s); return EGL_FALSE; }
     /* Unpublishing drops the table reference; this operation drops its lookup
      * reference. Active swaps/queries keep the resources alive until their puts. */
@@ -429,11 +537,13 @@ static EGLSurface mv_eglGetCurrentSurface(EGLint which) {
     return result;
 }
 static EGLBoolean mv_eglSwapBuffers_owned(EGLDisplay dpy, struct mv_egl_surface *s) {
-    if((s->width!=s->window->width||s->height!=s->window->height)&&!mv_surface_resize(s))return EGL_FALSE;
+    if(!mv_surface_resize(s))return EGL_FALSE;
     if (s->submitted) {
-        while (!mv_wl_buffer_released(s->buffer)) if (mv_wl_dmabuf_dispatch_one(s->wayland)<0) return EGL_FALSE;
-        if (s->swap_interval>0 && mv_wl_sync_wait_frame(s->sync)<0) return EGL_FALSE;
-        mv_wl_buffer_clear_released(s->buffer);
+        if (!mv_surface_wait_release(s)) return EGL_FALSE;
+        if (!s->x11) {
+            if (s->swap_interval>0 && mv_wl_sync_wait_frame(s->sync)<0) return EGL_FALSE;
+            mv_wl_buffer_clear_released(s->buffer);
+        }
     }
     struct mv_scope scope; if(!mv_ready()||!mv_enter(&scope))return EGL_FALSE;
     dpy=mv_display_in(dpy);
@@ -483,7 +593,8 @@ static EGLBoolean mv_eglSwapBuffers_owned(EGLDisplay dpy, struct mv_egl_surface 
         if(finish)finish();else ok=EGL_FALSE;
     }
     switch_back(&scope);
-    if (ok && mv_wl_surface_present(s->sync,s->window->surface,s->buffer,fence)==0) s->submitted=1;
+    if (ok && s->x11) { if (mv_x11_present(s->xbuf,fence)) s->submitted=1; else ok=EGL_FALSE; }
+    else if (ok && mv_wl_surface_present(s->sync,s->window->surface,s->buffer,fence)==0) s->submitted=1;
     else ok=EGL_FALSE;
     if(fence>=0)mv_close(fence);
     return ok;
@@ -658,6 +769,9 @@ static const char *mv_eglQueryString(EGLDisplay dpy, EGLint name) {
     if(ok)ok = mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_MESA_platform_surfaceless");
     if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_KHR_platform_wayland");
     if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_EXT_platform_wayland");
+    if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_KHR_platform_x11");
+    if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_EXT_platform_x11");
+    if(ok) ok=mv_append_token(mv_extension_string[index], mv_extension_string[index], "EGL_EXT_platform_xcb");
     switch_back(&scope);
     __atomic_store_n(&mv_extension_lock[index], 0, __ATOMIC_RELEASE);
     return ok ? mv_extension_string[index] : 0;
@@ -688,9 +802,17 @@ static EGLBoolean mv_direct_bind_api(EGLenum api) {
  * make-current. This private table shares the Maton EGL vendor's TLS-aware
  * wrappers with libGLX_maton.
  */
+static EGLSurface mv_direct_x11_window(EGLConfig config, void *display, unsigned long window) {
+    void *connection = mv_x11_connection(display);
+    if (!connection) return EGL_NO_SURFACE;
+    __atomic_store_n(&mv_x11_connection_native, connection, __ATOMIC_RELEASE);
+    return mv_x11_window_surface(config, (uint32_t)window);
+}
 EXPORT const struct maton_egl_direct_v1 *maton_egl_direct_v1(void) {
     static const struct maton_egl_direct_v1 api = {
-        .version = 1,
+        .version = 2,
+        .create_x11_window_surface = mv_direct_x11_window,
+        .swap_buffers = mv_eglSwapBuffers,
         .get_platform_display = mv_eglGetPlatformDisplay,
         .get_display = mv_eglGetDisplay,
         .initialize = mv_eglInitialize,
@@ -711,6 +833,13 @@ static EGLDisplay mv_vendor_get_platform_display(EGLenum platform, void *native,
     if (platform == EGL_PLATFORM_WAYLAND_KHR || platform == EGL_PLATFORM_WAYLAND_EXT) {
         (void)native; (void)attrs;
         return mv_eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    }
+    if (platform == 0x31D5 /* X11_KHR/EXT */ || platform == 0x31DC /* XCB_EXT */) {
+        (void)attrs;
+        void *connection = platform == 0x31DC ? native : mv_x11_connection(native);
+        if (!connection) return EGL_NO_DISPLAY;
+        __atomic_store_n(&mv_x11_connection_native, connection, __ATOMIC_RELEASE);
+        return MV_X11_DISPLAY;
     }
     if (platform == EGL_PLATFORM_SURFACELESS_MESA) {
         (void)native; (void)attrs;

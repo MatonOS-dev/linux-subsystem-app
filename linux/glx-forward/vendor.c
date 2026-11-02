@@ -61,15 +61,11 @@
 
 typedef struct _XVisual { void *ext_data; unsigned long visualid; int c_class; unsigned long red_mask,green_mask,blue_mask; int bits_per_rgb,map_entries; } Visual;
 typedef struct { int x,y; unsigned int width,height,border_width,depth; Visual *visual; unsigned long root; int c_class,bit_gravity,win_gravity,backing_store; unsigned long backing_planes,backing_pixel; int save_under; unsigned long colormap; int map_installed,map_state; long all_event_masks,your_event_mask,do_not_propagate_mask; int override_redirect; void *screen; } XWindowAttributes;
-typedef struct { int width,height,xoffset,format; char *data; int byte_order,bitmap_unit,bitmap_bit_order,bitmap_pad,depth,bytes_per_line,bits_per_pixel; unsigned long red_mask,green_mask,blue_mask; char *obdata; struct { void *create_image,*destroy_image,*get_pixel,*put_pixel,*sub_image,*add_pixel; } f; } XImage;
 extern int XScreenCount(Display*),XDefaultScreen(Display*),XDefaultDepth(Display*,int);
 extern Visual *XDefaultVisual(Display*,int);
 extern XVisualInfo *XGetVisualInfo(Display*,long,XVisualInfo*,int*);
 extern int XFree(void*);
-extern int XGetWindowAttributes(Display*,unsigned long,XWindowAttributes*),XFlush(Display*),XPutImage(Display*,unsigned long,void*,XImage*,int,int,int,int,unsigned int,unsigned int),XDestroyImage(XImage*),XFreeGC(Display*,void*);
-extern void *XCreateGC(Display*,unsigned long,unsigned long,void*);
-extern XImage *XCreateImage(Display*,Visual*,unsigned int,int,int,char*,unsigned int,unsigned int,int,int);
-extern int XPutPixel(XImage*,int,int,unsigned long);
+extern int XGetWindowAttributes(Display*,unsigned long,XWindowAttributes*);
 static EGLenum (*p_eglQueryAPI)(void); static EGLDisplay edpy=EGL_NO_DISPLAY; static EGLConfig ecfg; static __thread GLXContext current; static __thread Display *current_display;
 static void *egl_lib; static const struct maton_egl_direct_v1 *egl_direct;
 #define EGL_FN(name) static __typeof__(&name) p_##name
@@ -113,7 +109,7 @@ static int init_configs(Display *d,int screen){
     configs_acquire();for(struct fb *c=configs;c;c=c->next)if(c->display==d&&c->visual.screen==screen){configs_release();while(head){struct fb *next=head->next;free(head);head=next;}return 1;}
     while(head){struct fb *next=head->next;head->next=configs;configs=head;head=next;}configs_release();return 1;
 }
-struct ctx { int magic,width,height,direct,swap_interval; EGLenum api; struct pbuffer *pbuffer; unsigned long long last_present_ns; EGLContext egl; EGLSurface surface; GLXDrawable drawable; struct ctx *next; };
+struct ctx { int magic,width,height,direct,swap_interval; EGLenum api; struct pbuffer *pbuffer; EGLContext egl; EGLSurface surface; GLXDrawable drawable; struct ctx *next; };
 /* Server-allocated XIDs keep pbuffer handles disjoint from window IDs. */
 extern unsigned long XCreatePixmap(Display*,unsigned long,unsigned int,unsigned int,unsigned int);
 extern unsigned long XRootWindow(Display*,int);
@@ -138,9 +134,6 @@ static void put_pbuffer(struct pbuffer *p){
 }
 extern long write(int,const void*,unsigned long);
 static void egl_diag(const char*s){size_t n=0;while(s[n])n++;(void)write(2,s,n);}
-#include "timing.h"
-static unsigned long long monotonic_ns(void){struct timespec t;if(sys_clock_gettime(1,&t))return 0;return (unsigned long long)t.tv_sec*1000000000ull+(unsigned long long)t.tv_nsec;}
-static void pace_present(struct ctx*x){if(!x||x->swap_interval<=0)return;unsigned long long now=monotonic_ns();if(!now)return;unsigned long long period=16666667ull*(unsigned)x->swap_interval;if(x->last_present_ns&&now-x->last_present_ns<period){unsigned long long left=period-(now-x->last_present_ns);struct timespec t={(long)(left/1000000000ull),(long)(left%1000000000ull)};(void)sys_nanosleep(&t);}x->last_present_ns=monotonic_ns();}
 static void reset_egl_probe(void){
     egl_lib=0;egl_direct=0;
     p_eglGetPlatformDisplay=0;p_eglGetDisplay=0;p_eglInitialize=0;p_eglBindAPI=0;
@@ -155,7 +148,7 @@ static int load_egl(void){
         if(!egl_lib)egl_lib=dlopen("libEGL_maton.so.0",RTLD_NOW|RTLD_LOCAL);
         if(!egl_lib){egl_diag("maton GLX: cannot load direct Maton EGL vendor\n");return 0;}
         maton_egl_direct_v1_fn get_direct=(maton_egl_direct_v1_fn)dlsym(egl_lib,"maton_egl_direct_v1");
-        if(!get_direct||(egl_direct=get_direct())==0||egl_direct->version!=1){egl_diag("maton GLX: direct Maton EGL ABI unavailable\n");reset_egl_probe();return 0;}
+        if(!get_direct||(egl_direct=get_direct())==0||egl_direct->version!=2){egl_diag("maton GLX: direct Maton EGL ABI unavailable\n");reset_egl_probe();return 0;}
 #define LOAD_DIRECT(name,field) p_##name=(__typeof__(p_##name))egl_direct->field
         LOAD_DIRECT(eglGetPlatformDisplay,get_platform_display);LOAD_DIRECT(eglGetDisplay,get_display);
         LOAD_DIRECT(eglInitialize,initialize);LOAD_DIRECT(eglBindAPI,bind_api);p_eglQueryAPI=egl_direct->query_api;
@@ -245,13 +238,13 @@ static Bool glXMakeContextCurrent(Display*d,GLXDrawable draw,GLXDrawable read,GL
     else if(!draw||!XGetWindowAttributes(d,draw,&w)||!w.width||!w.height)return 0;
     EGLenum previous_api=eglQueryAPI?eglQueryAPI():EGL_OPENGL_ES_API;
     if(!eglBindAPI(x->api)){put_pbuffer(pb);return 0;}
-    if(x->surface!=EGL_NO_SURFACE&&x->pbuffer==pb&&x->drawable==draw&&x->width==(int)w.width&&x->height==(int)w.height){
+    /* Window surfaces track the window size inside the EGL forwarder. */
+    if(x->surface!=EGL_NO_SURFACE&&x->pbuffer==pb&&x->drawable==draw&&(!pb||(x->width==(int)w.width&&x->height==(int)w.height))){
         Bool ok=eglMakeCurrent(edpy,x->surface,x->surface,x->egl);
         eglBindAPI(previous_api);put_pbuffer(pb);
         if(ok){current=c;current_display=d;}return ok;
     }
-    EGLint attrs[]={EGL_WIDTH,(EGLint)w.width,EGL_HEIGHT,(EGLint)w.height,EGL_NONE};
-    EGLSurface replacement=pb?pb->surface:eglCreatePbufferSurface(edpy,ecfg,attrs);
+    EGLSurface replacement=pb?pb->surface:egl_direct->create_x11_window_surface(ecfg,d,draw);
     if(replacement==EGL_NO_SURFACE){eglBindAPI(previous_api);put_pbuffer(pb);return 0;}
     if(!eglMakeCurrent(edpy,replacement,replacement,x->egl)){
         if(!pb)eglDestroySurface(edpy,replacement);
@@ -268,61 +261,13 @@ static GLXContext glXGetCurrentContext(void){return (GLXContext)current;}
 static Display *glXGetCurrentDisplay(void){return current_display;}
 static GLXDrawable glXGetCurrentDrawable(void){return current?((struct ctx*)current)->drawable:0;}
 static GLXDrawable glXGetCurrentReadDrawable(void){return glXGetCurrentDrawable();}
+/* Windows are EGL X11 surfaces: the forwarder blits into an AHardwareBuffer
+ * shared with Xwayland through DRI3 and presents it; Present paces frames. */
 static void glXSwapBuffers(Display*d,GLXDrawable w){
     if(!d||!w||!current)return;
-    if(((struct ctx*)current)->pbuffer)return;
-    struct ctx*x=(struct ctx*)current;XWindowAttributes a;
-    if(!XGetWindowAttributes(d,w,&a)||!a.width||!a.height)return;
-    pace_present(x);
-    if(x->width!=(int)a.width||x->height!=(int)a.height){
-        eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
-        eglDestroySurface(edpy,x->surface);
-        EGLint q[]={EGL_WIDTH,(EGLint)a.width,EGL_HEIGHT,(EGLint)a.height,EGL_NONE};
-        x->surface=eglCreatePbufferSurface(edpy,ecfg,q);
-        if(x->surface==EGL_NO_SURFACE||!eglMakeCurrent(edpy,x->surface,x->surface,x->egl))return;
-        x->width=a.width;x->height=a.height;
-    }
-    size_t z=(size_t)a.width*a.height*4;char*p=malloc(z);if(!p)return;
-    /* GLVND has no current EGL dispatch here: GLX owns the dispatch slot.
-     * Use the same TLS-aware Maton thunks supplied to client GL calls. */
-    void (*finish)(void)=(void (*)(void))eglGetProcAddress("glFinish");
-    void (*pack)(GLenum,GLint)=(void (*)(GLenum,GLint))eglGetProcAddress("glPixelStorei");
-    void (*get)(GLenum,GLint*)=(void (*)(GLenum,GLint*))eglGetProcAddress("glGetIntegerv");
-    void (*bind_framebuffer)(GLenum,GLuint)=(void (*)(GLenum,GLuint))eglGetProcAddress("glBindFramebuffer");
-    void (*bind_buffer)(GLenum,GLuint)=(void (*)(GLenum,GLuint))eglGetProcAddress("glBindBuffer");
-    void (*read_buffer)(GLenum)=(void (*)(GLenum))eglGetProcAddress("glReadBuffer");
-    void (*read_pixels)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*)=
-        (void (*)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*))eglGetProcAddress("glReadPixels");
-    if(!finish||!pack||!get||!bind_framebuffer||!bind_buffer||!read_buffer||!read_pixels){free(p);return;}
-    GLint old_read=0,old_pack_buffer=0,old_alignment=4,default_read=GL_BACK;
-    finish();get(GL_READ_FRAMEBUFFER_BINDING,&old_read);get(GL_PIXEL_PACK_BUFFER_BINDING,&old_pack_buffer);
-    get(GL_PACK_ALIGNMENT,&old_alignment);bind_framebuffer(GL_READ_FRAMEBUFFER,0);get(GL_READ_BUFFER,&default_read);
-    bind_buffer(GL_PIXEL_PACK_BUFFER,0);read_buffer(GL_BACK);pack(GL_PACK_ALIGNMENT,1);
-    read_pixels(0,0,a.width,a.height,BGRA,GL_UNSIGNED_BYTE,p);
-    pack(GL_PACK_ALIGNMENT,old_alignment);read_buffer((GLenum)default_read);
-    bind_buffer(GL_PIXEL_PACK_BUFFER,(GLuint)old_pack_buffer);bind_framebuffer(GL_READ_FRAMEBUFFER,(GLuint)old_read);
-    XImage*i=XCreateImage(d,a.visual,a.depth,2,0,0,a.width,a.height,32,0);
-    if(i){
-        i->data=calloc((size_t)i->bytes_per_line,(size_t)i->height);
-        if(!i->data){XDestroyImage(i);free(p);return;}
-        unsigned long rm=a.visual->red_mask,gm=a.visual->green_mask,bm=a.visual->blue_mask;
-        unsigned rs=0,gs=0,bs=0;while(rs<sizeof(unsigned long)*8&&!(rm&(1ul<<rs)))rs++;
-        while(gs<sizeof(unsigned long)*8&&!(gm&(1ul<<gs)))gs++;
-        while(bs<sizeof(unsigned long)*8&&!(bm&(1ul<<bs)))bs++;
-        unsigned long rmax=rm>>rs,gmax=gm>>gs,bmax=bm>>bs;
-        for(unsigned y=0;y<a.height;y++)for(unsigned x=0;x<a.width;x++){
-            size_t k=((size_t)(a.height-1-y)*a.width+x)*4;
-            unsigned long r=((unsigned long)(unsigned char)p[k+2]*rmax+127)/255;
-            unsigned long g=((unsigned long)(unsigned char)p[k+1]*gmax+127)/255;
-            unsigned long b=((unsigned long)(unsigned char)p[k]*bmax+127)/255;
-            XPutPixel(i,(int)x,(int)y,((r<<rs)&rm)|((g<<gs)&gm)|((b<<bs)&bm));
-        }
-        free(p);
-        void*g=XCreateGC(d,w,0,0);
-        if(g){XPutImage(d,w,g,i,0,0,0,0,a.width,a.height);XFreeGC(d,g);}
-        XDestroyImage(i);
-    }else free(p);
-    XFlush(d);
+    struct ctx*x=(struct ctx*)current;
+    if(x->pbuffer||x->drawable!=w||x->surface==EGL_NO_SURFACE)return;
+    egl_direct->swap_buffers(edpy,x->surface);
 }
 static void glXDestroyContext(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx*)c;if(!x||x->magic!=0x4d415443)return;if(current==(GLXContext)x){eglMakeCurrent(edpy,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);current=0;}if(x->pbuffer)put_pbuffer(x->pbuffer);else if(x->surface!=EGL_NO_SURFACE)eglDestroySurface(edpy,x->surface);eglDestroyContext(edpy,x->egl);contexts_lock_acquire();struct ctx**p=&contexts;while(*p&&*p!=x)p=&(*p)->next;if(*p)*p=x->next;x->magic=0;contexts_lock_release();free(x);}
 static Bool glXIsDirect(Display*d,GLXContext c){(void)d;struct ctx*x=(struct ctx *)c;return x&&x->magic==0x4d415443&&x->direct;}

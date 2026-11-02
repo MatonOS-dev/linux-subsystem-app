@@ -11,9 +11,10 @@ The vendor implements the libglvnd GLX ABI pinned in `pins.json`. It obtains a
 private, versioned entry table from `libEGL_maton.so`; it must bypass GLVND's
 `libEGL.so` front end because GLX already owns libGLdispatch's make-current
 transition. Desktop GL calls use the Maton EGL vendor's TLS-aware GL thunks.
-Each GLX window is rendered to an EGL pbuffer sized to the X window, then
-`glXSwapBuffers` reads pixels and submits an XImage with XPutImage. Resize
-replaces the pbuffer. This does not use DRI3/Present or shared GPU buffers.
+Each GLX window is an EGL X11 window surface from libEGL_maton (direct ABI
+v2): frames are blitted on the GPU into a BGRA AHardwareBuffer whose dma-buf
+is shared once with Xwayland via DRI3 and presented with Present. There is no
+CPU readback. The host Xvfb test bridge (no DRI3) presents by readback.
 
 The current implementation is intentionally limited to one EGL config, direct
 contexts, a single current context per thread, and window/pbuffer drawables. GLX configs
@@ -80,10 +81,6 @@ The current QEMU run passes context creation, binding, pbuffer drawing and
 game startup, but fails steps 3 and 4. First check plain Xlib drawing/readback
 and the launcher screenshot as baselines. Do not treat the shim as complete
 until presentation passes.
-
-The frame-pacing syscalls use each process's Linux ABI: x86_64 `syscall`,
-i386 `int 0x80` with the time32 `timespec` layout. Exercise both without a
-GPU or libc with `bash tests/timing.sh /absolute/external/output`.
 
 
 ## Steam/ANGLE requested visuals (2026-10-29, round 56)
