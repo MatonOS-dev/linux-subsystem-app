@@ -25,6 +25,7 @@ install -m644 "$ROOT/linux/subsystem/flatpak-plan/inspect.c" "$WORK/plan-source/
 SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$SCRATCH/flatpak-musl/cache" \
   GPGME_LITE_SRC="$GPGME_LITE_SRC" \
   "$ROOT/linux/flatpak/build-support/alpine-enter.sh" \
+  env PKG_CONFIG_LIBDIR=/scratch/work/build/prefix/lib/pkgconfig:/scratch/work/build/prefix/share/pkgconfig \
   ninja -C "$(work_inner_path "$PLAN_BUILD")" common/libflatpak.a
 SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$SCRATCH/flatpak-musl/cache" GPGME_LITE_SRC="$GPGME_LITE_SRC" \
   MATON_FLATPAK_PLAN_BUILD="$(work_inner_path "$PLAN_BUILD")" \

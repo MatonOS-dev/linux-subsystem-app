@@ -22,6 +22,8 @@ final class V3Launcher {
     interface DependencyRepair { void repair(String ref) throws Exception; }
     private static volatile DependencyRepair dependencyRepair;
     static void setDependencyRepairForTests(DependencyRepair repair){dependencyRepair=repair;}
+    /** Shown by the stub window while launch() blocks on a dependency download. */
+    static volatile java.util.function.Consumer<String> progress;
     private static final java.util.concurrent.ExecutorService SPAWNER =
             java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
                 Thread thread = new Thread(task, "v3-spawner");
@@ -116,6 +118,8 @@ final class V3Launcher {
             command.add("--map"); command.add(x11.getAbsolutePath()); command.add("/tmp/.X11-unix");
         }
         java.util.List<DeclaredPackages.Entry> packages=DeclaredPackages.resolve(context,dependencyRef->{
+            java.util.function.Consumer<String> shown=progress;
+            if(shown!=null)shown.accept("Downloading dependencies…\n"+dependencyRef);
             DependencyRepair repair=dependencyRepair;
             if(repair!=null)repair.repair(dependencyRef);else repairDependency(context,ref,dependencyRef);
         });
@@ -303,7 +307,10 @@ final class V3Launcher {
         android.content.ServiceConnection connection=new android.content.ServiceConnection(){
             @Override public void onServiceConnected(android.content.ComponentName name,android.os.IBinder binder){
                 try{org.matonos.linux.ILinuxAppStore.Stub.asInterface(binder).repair(appRef,"repair-"+java.util.UUID.randomUUID().toString().replace("-",""),new org.matonos.linux.ILinuxAppStoreCallback.Stub(){
-                    @Override public void onProgress(String id,String phase,int percent,long done,long total){}
+                    @Override public void onProgress(String id,String phase,int percent,long done,long total){
+                        java.util.function.Consumer<String> shown=progress;
+                        if(shown!=null)shown.accept("Downloading dependencies…\n"+dependencyRef+"\n"+phase+(percent>=0?" "+percent+"%":""));
+                    }
                     @Override public void onResult(String id,boolean ok,String message){if(!ok)error.set(message==null?"Subsystem app repair failed":message);complete.countDown();}
                 });}catch(Exception e){error.set(e.getMessage());complete.countDown();}
             }
