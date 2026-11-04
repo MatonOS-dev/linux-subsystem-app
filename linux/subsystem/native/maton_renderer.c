@@ -10,11 +10,10 @@
 struct MatonRenderer {
   struct wlr_renderer base;
   struct wlr_renderer* pixman;
-  const struct wlr_drm_format_set* dmabuf_formats;
 };
 static struct MatonRenderer* from_base(struct wlr_renderer* r) { return (struct MatonRenderer*)r; }
 
-/* Like wlroots' GL textures, a stub keeps its dma-buf locked: wl_buffer.release
+/* Like wlroots' GL textures, a stub keeps its AHB buffer locked: wl_buffer.release
  * then waits until the texture (and the client buffer holding it) is gone,
  * which the presenter delays until SurfaceFlinger releases the buffer. */
 struct StubTexture { struct wlr_texture base; struct wlr_buffer* source; };
@@ -29,9 +28,7 @@ bool maton_texture_is_stub(const struct wlr_texture* texture) {
 }
 
 static const struct wlr_drm_format_set* get_texture_formats(struct wlr_renderer* r, uint32_t caps) {
-  struct MatonRenderer* m = from_base(r);
-  if (caps & WLR_BUFFER_CAP_DMABUF) return m->dmabuf_formats;
-  return wlr_renderer_get_texture_formats(m->pixman, caps);
+  return wlr_renderer_get_texture_formats(from_base(r)->pixman, caps);
 }
 static const struct wlr_drm_format_set* get_render_formats(struct wlr_renderer* r) {
   struct wlr_renderer* pixman = from_base(r)->pixman;
@@ -49,8 +46,7 @@ static struct wlr_texture* texture_from_buffer(struct wlr_renderer* r, struct wl
     wlr_buffer_end_data_ptr_access(buffer);
     return wlr_texture_from_buffer(m->pixman, buffer);
   }
-  struct wlr_dmabuf_attributes attrs;
-  if (!maton_ahb_buffer_get(buffer) && !wlr_buffer_get_dmabuf(buffer, &attrs))
+  if (!maton_ahb_buffer_get(buffer))
     return wlr_texture_from_buffer(m->pixman, buffer);
   struct StubTexture* stub = calloc(1, sizeof(*stub));
   if (!stub) return NULL;
@@ -73,13 +69,11 @@ static const struct wlr_renderer_impl renderer_impl = {
   .begin_buffer_pass = begin_buffer_pass,
 };
 
-struct wlr_renderer* maton_renderer_create(struct wlr_renderer* pixman,
-                                           const struct wlr_drm_format_set* dmabuf_formats) {
+struct wlr_renderer* maton_renderer_create(struct wlr_renderer* pixman) {
   if (!pixman) return NULL;
   struct MatonRenderer* m = calloc(1, sizeof(*m));
   if (!m) return NULL;
   m->pixman = pixman;
-  m->dmabuf_formats = dmabuf_formats;
   wlr_renderer_init(&m->base, &renderer_impl, pixman->render_buffer_caps);
   return &m->base;
 }

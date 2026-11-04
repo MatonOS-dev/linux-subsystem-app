@@ -2,7 +2,6 @@
 
 #include "android_buffer.h"
 #include "android_output.h"
-#include "dmabuf_import.h"
 #include "ahb_buffer.h"
 #include "maton_renderer.h"
 #include "presenter_state.h"
@@ -30,11 +29,10 @@ struct Layer {
   struct wl_listener surface_destroy;
   struct Layer* next;
   /* What SurfaceFlinger currently shows. */
-  struct wlr_buffer* shown;       /* client buffer (dma-buf) or pool buffer (shm copy) */
+  struct wlr_buffer* shown;       /* client buffer (AHB) or pool buffer (shm copy) */
   struct wlr_buffer* shown_source; /* client buffer the shm copy was made from (compared only) */
   uint32_t shown_seq;             /* surface commit the shm copy was made from */
   bool visible, seen;
-  int diag_logged; /* TEMPDIAG */
   /* Copies of shared-memory content; each is locked while SurfaceFlinger holds it. */
   struct PoolBuffer* pool;
   struct MatonPresenterLayerState state;
@@ -239,10 +237,6 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   struct wlr_scene_surface* scene_surface = wlr_scene_surface_try_from_buffer(node);
   struct wlr_surface* surface = scene_surface ? scene_surface->surface : NULL;
   struct Layer* l = buffer ? find_layer(p, node, surface) : NULL;
-  { static int diag_entry; /* TEMPDIAG */
-    if (diag_entry < 40 && (!buffer || !l)) { diag_entry++;
-      __android_log_print(ANDROID_LOG_WARN, "MatonPresenter", "TEMPDIAG skip node %p buffer=%p surface=%p layer=%p",
-          (void*)node, (void*)buffer, (void*)surface, (void*)l); } }
   if (!buffer) return;
   if (!l) return;
   l->seen = true;
@@ -250,25 +244,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
 
   uint32_t seq = scene_surface ? scene_surface->surface->current.seq : 0;
   AHardwareBuffer* ahb = maton_ahb_buffer_get(buffer);
-  bool direct_ahb = ahb != NULL;
-  if (!ahb) ahb = maton_dmabuf_ahb(buffer);
-  /* Defence in depth: never send a dma-buf whose actual mapper metadata
-   * cannot describe its planes, even if it passed protocol-time validation. */
-  if (ahb && !direct_ahb && !maton_dmabuf_layout_safe(ahb)) ahb = NULL;
-  if (l->diag_logged < 5) { /* TEMPDIAG: which path each window's first frames take */
-    struct wlr_dmabuf_attributes da; bool is_dmabuf = wlr_buffer_get_dmabuf(buffer, &da);
-    l->diag_logged++;
-    __android_log_print(ANDROID_LOG_WARN, "MatonPresenter",
-        "TEMPDIAG layer %p frame %d: %dx%d path=%s dmabuf=%d fmt=0x%x mod=0x%llx stride=%u at %d,%d",
-        (void*)l, l->diag_logged, buffer->width, buffer->height,
-        direct_ahb ? "own-ahb" : ahb ? "dmabuf-ahb" : is_dmabuf ? "dmabuf-rejected" : "shm-copy",
-        is_dmabuf, is_dmabuf ? da.format : 0, is_dmabuf ? (unsigned long long)da.modifier : 0ull,
-        is_dmabuf ? da.stride[0] : 0, sx, sy);
-  }
-  bool opaque = false;
   if (ahb) {
-    struct wlr_dmabuf_attributes attrs;
-    if (wlr_buffer_get_dmabuf(buffer, &attrs)) opaque = maton_dmabuf_format_opaque(attrs.format);
     if (buffer != l->shown || seq != l->shown_seq) {
       int acquire_fence=scene_surface?maton_sync_take_acquire(scene_surface->surface):-1;
       maton_transaction_set_buffer(t, l->control, ahb, buffer, acquire_fence);
@@ -280,13 +256,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   } else if (buffer != l->shown_source || seq != l->shown_seq || !l->shown) {
     struct wlr_buffer* copy = copy_shm(p, l, buffer);
     if (!copy) {
-      /* GPU textures may be stubs with no readback. Hide just this window;
-       * the other Linux layers and Android surfaces remain composable. */
-      struct wlr_dmabuf_attributes attrs;
-      if (wlr_buffer_get_dmabuf(buffer, &attrs)) {
-        l->seen = false;
-        l->shown_source = NULL;
-      } else walk->pending = true;
+      walk->pending = true;
       return;
     }
     maton_transaction_set_buffer(t, l->control, maton_ahb_from_wlr_buffer(copy), copy, -1);
@@ -295,7 +265,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
     l->shown_source = buffer;
     l->shown_seq = seq;
   }
-  opaque = opaque || wlr_buffer_is_opaque(buffer);
+  bool opaque = wlr_buffer_is_opaque(buffer);
 
   /* Source crop (viewporter) and destination size; buffer coordinates. */
   ARect src = {0, 0, buffer->width, buffer->height};

@@ -19,7 +19,7 @@ struct mv_x11 { void *connection,*queue; uint32_t window,event,stamp,serial,dept
 struct mv_x11_buffer { struct mv_x11 *x; struct mv_x11_buffer *next;
     uint32_t pixmap,serial; int released; };
 static void (*xfree)(void *);
-static int (*xdup)(int),(*xclose)(int);
+static int (*xdup)(int);
 static uint32_t (*generate)(void *);
 static int (*flush)(void *),(*failed)(void *),(*get_fd)(void *);
 static struct cookie (*get_geometry)(void *,uint32_t);
@@ -54,7 +54,7 @@ static int resolve(void) {
         void *xcb=mv_client_library("libxcb.so.1"),*dri3=mv_client_library("libxcb-dri3.so.0");
         void *pres=mv_client_library("libxcb-present.so.0"),*libc=mv_client_library("libc.so.6");
 #define LOAD(v,l,n) v=(void *)mv_client_symbol(l,n)
-        LOAD(xfree,libc,"free");LOAD(xdup,libc,"dup");LOAD(xclose,libc,"close");
+        LOAD(xfree,libc,"free");LOAD(xdup,libc,"dup");
         LOAD(generate,xcb,"xcb_generate_id");LOAD(flush,xcb,"xcb_flush");
         LOAD(failed,xcb,"xcb_connection_has_error");LOAD(get_fd,xcb,"xcb_get_file_descriptor");
         LOAD(get_geometry,xcb,"xcb_get_geometry");LOAD(geometry_reply,xcb,"xcb_get_geometry_reply");
@@ -80,8 +80,9 @@ static int resolve(void) {
 #undef LOAD
         initialized=1;
     }
-    int ok=xfree&&xdup&&xclose&&generate&&flush&&failed&&get_fd&&get_geometry&&geometry_reply&&check&&free_pixmap&&
-        register_queue&&unregister_queue&&poll_event&&wait_event&&pixmap_from_buffer&&select_input&&present&&present_id&&dri3_id&&extension_data&&setup&&roots&&depths&&visuals&&next_screen&&next_depth&&next_visual&&get_attributes&&attributes_reply;
+    int ok=xfree&&xdup&&generate&&flush&&failed&&get_fd&&get_geometry&&geometry_reply&&check&&free_pixmap&&
+        register_queue&&unregister_queue&&poll_event&&wait_event&&pixmap_from_buffer&&pixmap_from_buffers&&get_modifiers&&modifiers_reply&&
+        window_modifiers&&screen_modifiers&&window_modifiers_length&&screen_modifiers_length&&select_input&&present&&present_id&&dri3_id&&extension_data&&setup&&roots&&depths&&visuals&&next_screen&&next_depth&&next_visual&&get_attributes&&attributes_reply;
     __atomic_store_n(&init_lock,0,__ATOMIC_RELEASE);return ok;
 }
 void *mv_x11_connection(void *display) {
@@ -145,15 +146,8 @@ void mv_x11_destroy(struct mv_x11 *x) {
 }
 /* DRI3 1.2 negotiation: the server lists the modifiers it can import for
  * this window's depth (window list: scanout-capable; screen list: any). */
-static int dri3_modifiers(void) {
-    return pixmap_from_buffers&&get_modifiers&&modifiers_reply&&window_modifiers&&screen_modifiers&&
-        window_modifiers_length&&screen_modifiers_length;
-}
 int mv_x11_modifier_supported(struct mv_x11 *x,uint64_t modifier) {
     if(!x->depth)return 0;
-    /* Pre-1.2 libxcb-dri3 (e.g. Steam's scout runtime) cannot send
-     * modifiers; DRI3 1.0 imports are implicitly linear. */
-    if(!dri3_modifiers())return modifier==0;
     void *r=modifiers_reply(x->connection,get_modifiers(x->connection,x->window,(uint8_t)x->depth,32),0);
     if(!r)return 0;
     int ok=0;const uint64_t *w=window_modifiers(r),*s=screen_modifiers(r);
@@ -169,13 +163,8 @@ struct mv_x11_buffer *mv_x11_buffer_create(struct mv_x11 *x,int fd,uint32_t widt
     memset(b,0,sizeof(*b));b->x=x;b->pixmap=generate(x->connection);b->released=1;
     /* libxcb takes ownership of owned, including error paths. Original AHB
      * native-handle fds remain owned by Android until the image is destroyed. */
-    struct cookie c;
-    if(dri3_modifiers())c=pixmap_from_buffers(x->connection,b->pixmap,x->window,1,(uint16_t)width,(uint16_t)height,
-            stride,offset,0,0,0,0,0,0,(uint8_t)x->depth,32,modifier,&owned);
-    else if(offset||stride>65535||(uint64_t)stride*height>UINT32_MAX){(void)xclose(owned);mv_free(b);return 0;}
-    else c=pixmap_from_buffer(x->connection,b->pixmap,x->window,stride*height,(uint16_t)width,(uint16_t)height,
-            (uint16_t)stride,(uint8_t)x->depth,32,owned);
-    if(!checked(x,c)){mv_free(b);return 0;}
+    if(!checked(x,pixmap_from_buffers(x->connection,b->pixmap,x->window,1,(uint16_t)width,(uint16_t)height,
+            stride,offset,0,0,0,0,0,0,(uint8_t)x->depth,32,modifier,&owned))){mv_free(b);return 0;}
     b->next=x->buffers;x->buffers=b;return b;
 }
 void mv_x11_buffer_destroy(struct mv_x11_buffer *b) {

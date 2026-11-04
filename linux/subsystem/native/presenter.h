@@ -8,7 +8,7 @@ struct wlr_allocator;
 struct MatonEglUploader;
 
 /* Presents a window's scene to SurfaceFlinger as one child layer per
- * visible buffer, instead of compositing it: client dma-bufs are shown
+ * visible buffer, instead of compositing it: client AHB buffers are shown
  * without a copy; shared-memory buffers are copied once into an
  * AHardwareBuffer. Layers sit under `parent` (the window's surface). */
 struct MatonPresenter;

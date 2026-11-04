@@ -54,7 +54,7 @@ foreach(lib wlroots wayland-server wayland-client pixman-1 xkbcommon drm)
 endforeach()
 
 add_library(maton_compositor SHARED
-  compositor_core.c android_keymap.c jni_shim.cpp android_buffer.c ahb_buffer.c android_output.c dmabuf_import.c dmabuf_metadata.cpp maton_renderer.c presenter.c test_client.c
+  compositor_core.c android_keymap.c jni_shim.cpp android_buffer.c ahb_buffer.c android_output.c maton_renderer.c presenter.c test_client.c
   "${GENERATED}/xdg-shell-protocol.c" "${GENERATED}/xdg-shell-client-protocol.h"
   "${GENERATED}/wayland-protocols/xdg-shell-enum.h"
   "${GENERATED}/maton-ahb-buffer-v1-protocol.c" "${GENERATED}/maton-ahb-buffer-v1-server-protocol.h")

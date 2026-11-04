@@ -16,12 +16,10 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
-#include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/render/drm_format_set.h>
 #include <dirent.h>
 #include <math.h>
 #include <sys/stat.h>
-#include "dmabuf_import.h"
 #include "ahb_buffer.h"
 #include "maton_renderer.h"
 #include "presenter.h"
@@ -85,7 +83,7 @@ static void trace_wsi(void* data,enum wl_protocol_logger_type direction,
       strcmp(interface,"wl_shm")&&strcmp(interface,"wl_shm_pool")&&
       strcmp(interface,"wl_buffer")&&strncmp(interface,"xdg_",4)&&
       strncmp(interface,"zxdg_",5)&&strncmp(interface,"zwp_linux_",10))return;
-  /* Registry globals and shm/dmabuf format lists are long and fixed. */
+  /* Registry globals and shm format lists are long and fixed. */
   if(!strcmp(message->message->name,"global")||!strcmp(message->message->name,"format")||
       !strcmp(message->message->name,"modifier"))return;
   const char* signature=message->message->signature;
@@ -209,7 +207,6 @@ struct Server {
   char xwayland_path[512], xwayland_dir[512];
   struct XwaylandSession* xwayland_sessions;
   struct wlr_output* monitor;
-  struct wlr_drm_format_set dmabuf_formats;
 } server = { .mutex=PTHREAD_MUTEX_INITIALIZER, .ready_cond=PTHREAD_COND_INITIALIZER,
              .xw_cond=PTHREAD_COND_INITIALIZER,
              .event_fd=-1, .runtime_dir_fd=-1, .xwayland_dir_fd=-1 };
@@ -480,7 +477,7 @@ static void on_frame(struct wl_listener* l,void* data) {
   (void)data;
   struct Window* w=window_from_listener(l,offsetof(struct Window,frame));
   /* Windows are not composited: each visible buffer becomes its own Android
-   * layer (presenter.c), so client dma-bufs reach SurfaceFlinger untouched. */
+   * layer (presenter.c), so client AHB buffers reach SurfaceFlinger untouched. */
   if(!w->stopped && w->scene_output&&w->presenter){
     /* Retry failed shm copies only after a buffer becomes available (release
      * fence) or another client commit schedules a frame. A periodic timer
@@ -1165,10 +1162,6 @@ static void handle_add_xwayland(int session,uid_t uid) {
   pthread_mutex_unlock(&server.mutex);
 }
 static int on_event_fd(int fd,uint32_t mask,void* data){(void)fd;(void)mask;(void)data;process_commands();return 0;}
-/* GPU clients hand over dma-bufs that SurfaceFlinger shows as they are
- * (presenter.c, dmabuf_import.c). Only what gralloc can fully describe is offered:
- * single-plane RGB formats, linear or the driver's implicit layout, on the
- * render node SurfaceFlinger's GPU uses. */
 /* Wayland caches SO_PEERCRED when constructing the client. Check every
  * connection, including session sockets and Xwayland's socketpair. */
 static void on_new_client(struct wl_listener* listener,void* data) {
@@ -1203,40 +1196,6 @@ static bool render_node(dev_t* out) {
   }
   closedir(dir);return found;
 }
-static bool check_dmabuf(struct wlr_dmabuf_attributes* attrs,void* data) {
-  (void)data;
-  /* Replaces wlroots' own check: require the runtime-probed format and
-   * complete plane metadata for this actual import, not just import success. */
-  return attrs->n_planes==1&&maton_dmabuf_format_supported(attrs->format)&&maton_dmabuf_importable(attrs);
-}
-static bool create_linux_dmabuf(void) {
-  static const uint32_t formats[]={DRM_FORMAT_ARGB8888,DRM_FORMAT_XRGB8888,DRM_FORMAT_ABGR8888,DRM_FORMAT_XBGR8888,DRM_FORMAT_RGB565};
-  for(size_t i=0;i<sizeof(formats)/sizeof(formats[0]);++i)
-    if(maton_dmabuf_format_supported(formats[i])&&
-        (!wlr_drm_format_set_add(&server.dmabuf_formats,formats[i],DRM_FORMAT_MOD_LINEAR)||
-        !wlr_drm_format_set_add(&server.dmabuf_formats,formats[i],DRM_FORMAT_MOD_INVALID)))return false;
-  if(server.dmabuf_formats.len==0){
-    __android_log_print(ANDROID_LOG_WARN,"MatonCompositor","No mapper-safe formats; linux-dmabuf disabled");
-    return true;
-  }
-  dev_t device;
-  if(!render_node(&device)){
-    /* No GPU: clients stay on shared memory. */
-    __android_log_print(ANDROID_LOG_WARN,"MatonCompositor","No DRM render node; linux-dmabuf disabled");
-    return true;
-  }
-  struct wlr_linux_dmabuf_feedback_v1 feedback={.main_device=device};
-  wl_array_init(&feedback.tranches);
-  struct wlr_linux_dmabuf_feedback_v1_tranche* tranche=wlr_linux_dmabuf_feedback_add_tranche(&feedback);
-  struct wlr_drm_format_set none={0};
-  bool ok=tranche&&wlr_drm_format_set_union(&tranche->formats,&none,&server.dmabuf_formats);
-  if(ok)tranche->target_device=device;
-  struct wlr_linux_dmabuf_v1* dmabuf=ok?wlr_linux_dmabuf_v1_create(server.display,4,&feedback):NULL;
-  wlr_linux_dmabuf_feedback_v1_finish(&feedback);
-  if(!dmabuf)return false;
-  wlr_linux_dmabuf_v1_set_check_dmabuf_callback(dmabuf,check_dmabuf,NULL);
-  return true;
-}
 static void* server_main(void* unused) {
   (void)unused;bool initialized=false;const char* stage="display";
   wlr_log_init(WLR_ERROR,maton_wlr_log);
@@ -1253,10 +1212,10 @@ static void* server_main(void* unused) {
   maton_surface_output_set_release_dispatch(release_buffer);
   stage="event loop";server.event_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
   if(server.event_fd<0||!wl_event_loop_add_fd(server.loop,server.event_fd,WL_EVENT_READABLE,on_event_fd,NULL))goto done;
-  stage="backend and renderer";server.backend=wlr_headless_backend_create(server.loop);server.renderer=maton_renderer_create(wlr_pixman_renderer_create(),&server.dmabuf_formats);
+  stage="backend and renderer";server.backend=wlr_headless_backend_create(server.loop);server.renderer=maton_renderer_create(wlr_pixman_renderer_create());
   if(!server.backend||!server.renderer||!maton_ahb_allocator_init(&server.ahb_allocator))goto done;
   stage="renderer globals";if(!wlr_renderer_init_wl_display(server.renderer,server.display))goto done;
-  stage="linux-dmabuf";if(!create_linux_dmabuf())goto done;
+  
   wl_display_set_global_filter(server.display,global_filter,NULL);
   server.allocator=maton_ahb_allocator_base(&server.ahb_allocator);
   if(!maton_egl_uploader_init(&server.uploader))__android_log_print(ANDROID_LOG_WARN,"MatonCompositor","EGL upload fallback unavailable");
@@ -1324,8 +1283,6 @@ done:
   if(server.seat)wlr_seat_destroy(server.seat);server.seat=NULL;server.pointer_buttons=0;server.pointer_focus=NULL;server.pointer_window=0;
   if(server.allocator)wlr_allocator_destroy(server.allocator);server.allocator=NULL;
   if(server.renderer)wlr_renderer_destroy(server.renderer);server.renderer=NULL;
-  /* The renderer reports these as its dma-buf formats: free it after. */
-  wlr_drm_format_set_finish(&server.dmabuf_formats);
   maton_egl_uploader_finish(&server.uploader);if(server.backend)wlr_backend_destroy(server.backend);server.backend=NULL;
   if(server.display)wl_display_destroy(server.display);server.display=NULL;server.loop=NULL;
   while(server.sessions){struct SocketSession* s=server.sessions;server.sessions=s->next;unlink(s->path);if(s->directory_fd>=0)close(s->directory_fd);free(s);}
