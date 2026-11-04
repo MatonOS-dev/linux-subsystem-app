@@ -16,7 +16,11 @@ final class InstalledPackages {
         this.context=context;certificate=StubGenerator.getExistingSigningCertificate();
         for(PackageInfo pkg:context.getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
             if(pkg.packageName==null||!pkg.packageName.startsWith("flatpak.")||!trusted(pkg))continue;
-            DeploymentRecord record=read(pkg);
+            DeploymentRecord record;
+            // An interrupted install leaves a stub without its deployment
+            // split; treat it as not installed instead of failing every scan.
+            try{record=read(pkg);}
+            catch(java.io.IOException incomplete){android.util.Log.w("MatonInstall","Skipping incomplete package "+pkg.packageName+": "+incomplete.getMessage());continue;}
             if(!pkg.packageName.equals(DeployManifest.packageForPublic(record.ref)))throw new IOException("Package name/ref mismatch");
             if(records.put(record.ref,record)!=null)throw new IOException("Duplicate installed ref");
         }

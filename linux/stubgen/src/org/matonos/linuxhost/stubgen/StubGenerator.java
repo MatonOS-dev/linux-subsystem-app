@@ -43,9 +43,13 @@ public final class StubGenerator {
     // v14 adds bridge visibility for self-task Linux window capabilities.
     // v22 removes the per-package apply_extra service and extra split; stock
     // Flatpak now applies the downloaded data before the single EROFS image is built.
-    public static final int STUB_VERSION_CODE = 23;
+    public static final int STUB_VERSION_CODE = 24;
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
+    /** Action every generated app and runtime package answers, so they can see each other. */
+    public static final String PACKAGE_ACTION = "flatpak.PACKAGE";
+    /** Inert service carrying the PACKAGE_ACTION filter. */
+    public static final String PACKAGE_SERVICE = "org.matonos.linux.stub.PackageService";
     /** Split carrying the launcher components (activity-alias) and nothing else. */
     public static final String LAUNCHER_SPLIT_PREFIX = "launcher_";
     /** Host-side AppComponentFactory: loads the stub's components from the current host APK. */
@@ -746,7 +750,7 @@ public final class StubGenerator {
             }
             if (packs != null) str(packs);
             if (dependencyPackages != null) str(dependencyPackages);
-            str("intent");str("org.matonos.linuxhost.PACKAGE");
+            str("intent");str(PACKAGE_ACTION);
             namespace(true);
             List<Attr> root = new ArrayList<>(attrs(a("package", pkg), ai("versionCode", STUB_VERSION_CODE), a("versionName", "1.0")));
             start("manifest", null, root);
@@ -766,7 +770,7 @@ public final class StubGenerator {
             start("queries",null,attrs());
             startEnd("package",attrs(a("name","org.matonos.linux")));
             start("intent",null,attrs());
-            startEnd("action",attrs(a("name","org.matonos.linuxhost.PACKAGE")));
+            startEnd("action",attrs(a("name",PACKAGE_ACTION)));
             end("intent");
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
@@ -776,6 +780,13 @@ public final class StubGenerator {
             startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
             if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
+            // Package visibility: the subsystem and stubs query flatpak.PACKAGE, so every
+            // generated package answers it. Only the system can bind (job permission).
+            start("service",null,attrs(a("name",PACKAGE_SERVICE),ab("exported",true),a("permission","android.permission.BIND_JOB_SERVICE")));
+            start("intent-filter",null,attrs());
+            startEnd("action",attrs(a("name",PACKAGE_ACTION)));
+            end("intent-filter");
+            end("service");
             if(noActivities){
                 startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
                 if(minimalStub)extraDataService();

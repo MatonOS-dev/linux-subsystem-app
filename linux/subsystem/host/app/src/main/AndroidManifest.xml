@@ -15,7 +15,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <queries>
-        <intent><action android:name="org.matonos.linuxhost.PACKAGE" /></intent>
+        <intent><action android:name="flatpak.PACKAGE" /></intent>
         <!-- Minimal extra-data stubs have no launcher yet; the subsystem binds this service. -->
         <intent><action android:name="org.matonos.linuxhost.EXTRA_DATA_INSTALL" /></intent>
         <intent>

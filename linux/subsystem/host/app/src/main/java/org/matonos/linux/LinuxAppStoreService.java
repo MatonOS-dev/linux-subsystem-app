@@ -69,6 +69,7 @@ public final class LinuxAppStoreService extends Service {
         final String id, kind, ref, remote, name, url;
         final ILinuxAppStoreCallback callback;
         volatile boolean cancelled;
+        volatile boolean runtimeFirst;
         volatile InstallTransaction installService;
         volatile String stagedMetadata;
         volatile File packArtifacts;
@@ -223,6 +224,32 @@ public final class LinuxAppStoreService extends Service {
         }
     }
 
+    /** Installs the app's runtime as its own operation, then the app. */
+    private void installRuntimeThenRetry(Operation op,String remote,String runtime) {
+        Log.i(TAG,"Installing "+runtime+" before "+op.ref);
+        ILinuxAppStoreCallback relay=new ILinuxAppStoreCallback.Stub() {
+            @Override public void onProgress(String id,String phase,int percent,long done,long total) {
+                try{op.callback.onProgress(op.id,phase,percent,done,total);}catch(Exception e){Log.w(TAG,"Cannot deliver install progress",e);}
+            }
+            @Override public void onResult(String id,boolean ok,String error) {
+                Operation retry=new Operation(op.uid,op.id,op.kind,op.ref,op.remote,op.name,op.url,op.callback);
+                retry.runtimeFirst=true;
+                operations.put(operationKey(op.uid,op.id),retry);
+                if(!ok){result(retry,false,"Runtime "+runtime+" failed: "+error);return;}
+                worker.execute(()->execute(op.id,retry));
+            }
+        };
+        // Release the first attempt's staging without reporting a result.
+        op.completed.set(true);
+        try{cleanArtifacts(op);InstallTransaction.cleanup(this,op.stagingId);if(op.stubWork!=null)WorkDirs.remove(op.stubWork);}
+        catch(Throwable e){Log.w(TAG,"Cleanup before runtime install failed",e);}
+        java.util.List<AutoCloseable> leases;
+        synchronized(op.workLeases){leases=new java.util.ArrayList<>(op.workLeases);op.workLeases.clear();}
+        for(AutoCloseable lease:leases)try{lease.close();}catch(Throwable e){Log.w(TAG,"Cannot release work lease",e);}
+        Operation runtimeOp=new Operation(op.uid,op.id+"-runtime","install",runtime,remote,null,null,relay);
+        worker.execute(()->execute(runtimeOp.id,runtimeOp));
+    }
+
     private String remoteList() {
         JSONObject result=new JSONObject();
         try {
@@ -276,6 +303,10 @@ public final class LinuxAppStoreService extends Service {
                 } finally {if(op.cancelled)cleanArtifacts(op);}
             }
             @Override public void onFailed(String operationId,String error) {
+                if(error!=null&&error.startsWith(InstallTransaction.RUNTIME_FIRST)&&!op.runtimeFirst) {
+                    installRuntimeThenRetry(op,remote,error.substring(InstallTransaction.RUNTIME_FIRST.length()));
+                    return;
+                }
                 result(op,false,error);
             }
         };

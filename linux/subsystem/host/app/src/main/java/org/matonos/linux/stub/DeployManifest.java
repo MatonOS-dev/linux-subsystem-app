@@ -100,7 +100,7 @@ public final class DeployManifest {
         for(String part:parts) {
             safe.append('.');
             // PackageManager requires every package segment to start with a letter
-            // (branches like 25.08, IDs starting with '_'); the hash keeps names unique.
+            // (branches like 25.08, IDs starting with '_').
             char first=part.isEmpty()?'0':part.charAt(0);
             if(!((first>='A'&&first<='Z')||(first>='a'&&first<='z')))safe.append('v');
             for(int i=0;i<part.length();i++) {
@@ -108,10 +108,7 @@ public final class DeployManifest {
                 safe.append((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'?c:'_');
             }
         }
-        byte[] digest=java.security.MessageDigest.getInstance("SHA-256").digest(ref.getBytes(StandardCharsets.UTF_8));
-        StringBuilder suffix=new StringBuilder(".x");
-        for(int i=0;i<6;i++)suffix.append(String.format(java.util.Locale.ROOT,"%02x",digest[i]&255));
-        String value=safe+suffix.toString();
+        String value=safe.toString();
         if(value.length()>255)throw new IOException("Flatpak ref is too long for an Android package name");
         return value;
     }

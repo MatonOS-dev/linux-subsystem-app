@@ -111,14 +111,17 @@ public final class DependencyPlan {
                     new String(info.metadata,java.nio.charset.StandardCharsets.UTF_8),ref,recordedRefs));
             for(DeploymentRecord.Dependency dependency:recorded.dependencies){
                 if(!selectedRefs.contains(dependency.ref))continue;
-                node.stageDependencies.add(dependency.ref);
+                // Like a fresh plan: related extensions are launch dependencies,
+                // not staging ones. Their ExtensionOf parent is this ref, so
+                // staging them first would form a cycle.
                 if(!dependency.ref.equals(info.parent)) {
                     node.dependencies.add(dependency.ref);visit(dependency.ref,dependency.remote,false,true,true);
                 }
             }
             if(info.runtime!=null&&!info.runtime.isEmpty()) {
                 String runtime=info.runtime.startsWith("runtime/")?info.runtime:"runtime/"+info.runtime;
-                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);node.stageDependencies.add(runtime);visit(runtime,null,false,true,true);}
+                if(!node.stageDependencies.contains(runtime))node.stageDependencies.add(runtime);
+                if(!node.dependencies.contains(runtime)){node.dependencies.add(runtime);visit(runtime,null,false,true,true);}
             }
             order.add(node);
             if(includeRelated&&info.mayHaveRelated&&(root||recorded.dependencies.isEmpty()))for(String related:related(ref,origin,info))if(!node.dependencies.contains(related)) {

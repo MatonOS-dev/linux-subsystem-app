@@ -34,6 +34,8 @@ public final class InstallTransaction {
     }
 
     /** Notified exactly once, on the worker thread, after the worker is done. */
+    /** Failure prefix: the store installs the named runtime, then retries. */
+    public static final String RUNTIME_FIRST="runtime-first:";
     public interface Completion { void workerFinished(); }
 
     public interface Callback {
@@ -147,6 +149,14 @@ public final class InstallTransaction {
             java.util.List<org.matonos.linuxhost.stubgen.DependencyPlan.Node> plan=planner.build(appRef,remote,new File(operation,"repair").exists());
             java.util.Map<String,String> metadata=new java.util.HashMap<>();
             for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)metadata.put(node.ref,new String(node.info.metadata,StandardCharsets.UTF_8));
+            // The store installs an app's runtime as its own install first,
+            // then the app (extra-data apps mount it while building).
+            org.matonos.linuxhost.stubgen.DependencyPlan.Node rootNode=null;
+            for(org.matonos.linuxhost.stubgen.DependencyPlan.Node node:plan)if(node.ref.equals(appRef))rootNode=node;
+            if(rootNode!=null&&appRef.startsWith("app/")&&rootNode.info.runtime!=null&&!rootNode.info.runtime.isEmpty()) {
+                String runtime=rootNode.info.runtime.startsWith("runtime/")?rootNode.info.runtime:"runtime/"+rootNode.info.runtime;
+                if(!installed.records.containsKey(runtime))throw new java.io.IOException(RUNTIME_FIRST+runtime);
+            }
             java.util.Map<String,String> installedMetadata=new java.util.HashMap<>();
             for(org.matonos.linuxhost.stubgen.DeploymentRecord record:installed.records.values())
                 installedMetadata.put(record.ref,new String(record.metadata,StandardCharsets.UTF_8));
@@ -210,7 +220,8 @@ public final class InstallTransaction {
                     String detail=skippedDependencies==null||skippedDependencies.isEmpty()
                             ?"; skipped refs: "+pulled.skipped
                             :"; dependency refs: "+String.join(", ",skippedDependencies);
-                    throw new java.io.IOException("Requested ref could not be staged because a dependency failed"+detail,error);
+                    throw new java.io.IOException("Requested ref could not be staged because a dependency failed"+detail
+                            +"; skip reasons: "+pulled.skippedDependencies+"; failed: "+pulled.failed.keySet(),error);
                 }
                 if(error instanceof Exception)throw (Exception)error;
                 throw new java.io.IOException("Requested ref could not be staged",error);
