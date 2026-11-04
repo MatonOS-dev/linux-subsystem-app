@@ -126,3 +126,42 @@ The i386 adoption backend is not wired to an i386-callable resident bridge.
 Completing this needs a 32-bit callable bridge or an explicit cross-ABI RPC
 gateway, plus working bionic TLS registration for the payload threads; the
 GL32 packaging fix alone cannot provide rendering.
+
+## X11 Kopper without DRI3 (2026-11-04)
+
+The launcher sets `LIBGL_KOPPER_DRI2=true` alongside the bundled Zink driver.
+Stock Mesa otherwise rejects GLX initialization with `DRI3 not available`;
+our Xwayland intentionally uses private AHB import and stock Present instead
+of DRI3. This Mesa option permits Kopper to use the Vulkan WSI; it does not
+add a DRI2 buffer transport.
+
+Abuse remains blocked on the assigned VM. With this setting it creates an
+OpenGL renderer, then Kopper requests `VK_FORMAT_B8G8R8A8_UNORM` (44), usage
+`0x17`, flags zero and no pNext. The WSI advertises only
+`VK_FORMAT_R8G8B8A8_UNORM` (37), backed by the public NDK RGBA AHB format, and
+correctly rejects the request. Changing both X visual and GLX config channel
+masks to RGBA did not change Kopper's request; that experiment was removed.
+Mesa's GLX driver-config matching does not compare channel masks and takes
+the first matching BGR driver config. Merely changing surface enumeration
+cannot correct the GLX framebuffer format Kopper passes to Vulkan.
+
+Continuing needs a Mesa-side selection fix that honors the advertised Vulkan
+surface format (in a real fork), or a separately agreed conversion/BGRA
+transport design. Do not relabel a BGRA VkImage as RGBA: that would violate
+the Vulkan import contract and swap color channels. No private gralloc
+format, dma-buf transport, copy fallback or app-specific override was added.
+
+Validation: isolated subsystem APK and bootstrap builds pass; the WSI suite
+passes, including opaque XCB AHB transport and Present lifetime tests. Installed
+the APK on the existing VM via `adb install -r` and force-stopped/relaunched
+Abuse; the swapchain failure above is reproducible. Firefox's Wayland new-tab
+UI renders. No VM reboot, image build or system-file replacement was used.
+Device evidence is under `/mnt/data/aosp/out/pc-logs/agents/`:
+`xwayland-ahb3-before.png`, `xwayland-ahb3-firefox-initial.png`, and the final
+`xwayland-ahb3-final-*` screenshot/log files.
+
+To retest: install the rebuilt subsystem APK; force-stop the Abuse stub;
+launch `flatpak.app.com_github_Xenoveritas_abuse.x86_64.stable` with monkey;
+capture `logcat -s MatonV3` and a screenshot. Once the Mesa format issue is
+fixed, require animated game pixels and resize/relaunch success, then launch
+`flatpak.app.org_mozilla_firefox.x86_64.stable` and verify its page repaints.

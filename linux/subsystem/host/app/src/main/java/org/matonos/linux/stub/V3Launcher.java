@@ -183,7 +183,9 @@ final class V3Launcher {
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
-        if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton:default");command.add("--env=MESA_LOADER_DRIVER_OVERRIDE=zink");command.add("--env=GALLIUM_DRIVER=zink");command.add("--env=VK_DRIVER_FILES=/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd.json:/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd_i386.json");}
+        // Xwayland uses private AHB import rather than DRI3; let stock Mesa
+        // Kopper present through our Vulkan WSI without requiring DRI3.
+        if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton:default");command.add("--env=MESA_LOADER_DRIVER_OVERRIDE=zink");command.add("--env=GALLIUM_DRIVER=zink");command.add("--env=LIBGL_KOPPER_DRI2=true");command.add("--env=VK_DRIVER_FILES=/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd.json:/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd_i386.json");}
         // adb (root): touch <cache>/v3-vkdebug to log Vulkan loader driver discovery.
         if (new File(cache, "v3-vkdebug").exists()) command.add("--env=VK_LOADER_DEBUG=all");
         // adb (root): write a command name or absolute sandbox path to <cache>/v3-command
