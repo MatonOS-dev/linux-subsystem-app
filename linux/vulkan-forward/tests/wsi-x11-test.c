@@ -74,7 +74,7 @@ void *mv_client_symbol(void *lib,const char *name){assert(lib==&queue_token);
     SYM("xcb_screen_allowed_depths_iterator",depth_iter);SYM("xcb_depth_visuals_iterator",visual_iter);
     SYM("xcb_screen_next",iter_next);SYM("xcb_depth_next",iter_next);SYM("xcb_visualtype_next",iter_next);
     SYM("xcb_get_window_attributes",geometry_request);SYM("xcb_get_window_attributes_reply",attrs_result);
-    SYM("free",free);SYM("dup",dup);SYM("xcb_generate_id",xid);SYM("xcb_flush",yes);
+    SYM("free",free);SYM("dup",dup);SYM("close",close);SYM("xcb_generate_id",xid);SYM("xcb_flush",yes);
     SYM("xcb_connection_has_error",no);SYM("xcb_get_file_descriptor",no);
     SYM("xcb_get_geometry",geometry_request);SYM("xcb_get_geometry_reply",geometry_result);
     SYM("xcb_request_check",request_check);SYM("xcb_free_pixmap",release_pixmap);
