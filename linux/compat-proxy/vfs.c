@@ -1292,6 +1292,10 @@ long vfs_gpu_publish(const char *base,const char *vendor,const char *device,cons
     p_copy(id,vendor+2,4);id[4]=0;gpu_append(event,id);gpu_append(event,":");
     p_copy(id,device+2,4);gpu_append(event,id);gpu_append(event,"\nPCI_SLOT_NAME=0000:00:00.0\n");
     if(!r)r=gpu_file(pci,"uevent",event);
+    /* libpci treats irq and resource as mandatory; all-zero resource lines are
+     * the kernel format for a device without BARs (6 BARs + ROM). */
+    if(!r)r=gpu_file(pci,"irq","0\n");
+    if(!r){char res[7*57+1];res[0]=0;for(int i=0;i<7;i++)gpu_append(res,"0x0000000000000000 0x0000000000000000 0x0000000000000000\n");r=gpu_file(pci,"resource",res);}
     if(!r)r=gpu_link(pci,"subsystem","../../../bus/pci");
     vfs_free(pci);
     /* libpci enumerates this bus alias before reading device attributes.

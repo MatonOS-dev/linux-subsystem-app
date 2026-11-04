@@ -154,6 +154,9 @@ final class V3Launcher {
                         new File(host.getApplicationInfo().sourceDir),runtimeBranch);
                 command.add("--map-ro");command.add(gl32.getAbsolutePath());
                 command.add("/usr/lib/i386-linux-gnu/GL/maton");
+                PackageDeployment.CompatI386 mesa32=PackageDeployment.prepareGl32Default(
+                        context,systemRoot,launchWork,runtimeBranch);
+                if(mesa32!=null)command.addAll(mesa32.arguments);
             }
         }
         command.addAll(DeclaredPackages.arguments(packages,launchWork,true,deployment));
@@ -180,7 +183,7 @@ final class V3Launcher {
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
-        if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton:default");command.add("--env=__GLX_VENDOR_LIBRARY_NAME=maton");}
+        if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton:default");command.add("--env=MESA_LOADER_DRIVER_OVERRIDE=zink");command.add("--env=GALLIUM_DRIVER=zink");command.add("--env=VK_DRIVER_FILES=/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd.json:/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd_i386.json");}
         // adb (root): touch <cache>/v3-vkdebug to log Vulkan loader driver discovery.
         if (new File(cache, "v3-vkdebug").exists()) command.add("--env=VK_LOADER_DEBUG=all");
         // adb (root): write a command name or absolute sandbox path to <cache>/v3-command
@@ -199,7 +202,7 @@ final class V3Launcher {
         env.put("FLATPAK_SYSTEM_DIR", new File(deployment,"system").getAbsolutePath());
         // Flatpak reads this in the launcher process while selecting runtime
         // extensions; the matching --env below exposes the choice to the app.
-        if(matonGlEnabled){env.put("FLATPAK_GL_DRIVERS","maton:default");env.put("__GLX_VENDOR_LIBRARY_NAME","maton");}
+        if(matonGlEnabled){env.put("FLATPAK_GL_DRIVERS","maton:default");}
         env.put("MATON_FLATPAK_DNS", dns);
         String nativeDir = LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
         env.put("PATH", nativeDir + ":/system/bin");

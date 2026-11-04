@@ -94,6 +94,10 @@ void proxy_fd_number_moved(int oldfd,int newfd){
 }
 static struct kernel_action chained;
 static struct kernel_action chained_segv;
+__attribute__((weak)) uintptr_t adopt_signal_enter(void){return 0;}
+__attribute__((weak)) void adopt_signal_leave(uintptr_t resident){(void)resident;}
+static struct kernel_action app_actions[65];
+static long app_sigaction(long,proxy_arg_t *);
 static void rewrite_segv_handler(int,siginfo_t *,void *);
 static void normalize_payload_action(struct kernel_action *action) {
     action->mask&=~SIGSYS_BIT;
@@ -155,6 +159,44 @@ void proxy_image_map(uintptr_t lo,uintptr_t hi,uintptr_t offset,const char *path
     m->next=image_maps;image_maps=m;fatal_exec_path=m->path;
 }
 static void proxy_rewrite_dump(void *);
+static int crash_map(const char *label,uintptr_t pc) {
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);int found=0;
+    if(fd>=0){char line[1024];size_t n=0;char c;
+        while(RAW(PROXY_SC_read,fd,&c,1,0,0,0)==1){
+            if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
+            line[n]=0;const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;
+            if(*p=='-'){p++;hi=maps_hex(&p);}
+            if(pc>=lo && pc<hi && p[1] && p[3]=='x'){crash_text(label);crash_text(line);crash_text(" offset=");crash_hex(pc-lo);crash_text("\n");found=1;break;}n=0;
+        }RAW(PROXY_SC_close,fd,0,0,0,0,0);
+    }
+    return found;
+}
+__attribute__((unused)) static void crash_stack_libs(uintptr_t sp) { /* TEMPDIAG: whole-stack return-address census */
+    static uintptr_t xlo[512],xhi[512]; unsigned nx=0; uintptr_t top=0;
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd>=0){char buf[4096],line[1024];size_t n=0;long got;
+        while((got=RAW(PROXY_SC_read,fd,buf,sizeof(buf),0,0,0))>0)for(long k=0;k<got;k++){char c=buf[k];
+            if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
+            line[n]=0;n=0;const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;if(*p=='-'){p++;hi=maps_hex(&p);}
+            if(sp+0x1000>=lo && sp+0x1000<hi){top=hi;}
+            if(p[1] && p[3]=='x' && nx<512){xlo[nx]=lo;xhi[nx]=hi;nx++;}
+        }RAW(PROXY_SC_close,fd,0,0,0,0,0);}
+    crash_text("v3 app-fault stack-top=");crash_hex(top);crash_text(" exec-maps=");crash_hex(nx);crash_text("\n");
+    unsigned hits=0;
+    for(uintptr_t *w=(uintptr_t *)((sp+0x1000)&~(uintptr_t)0xfff);(uintptr_t)w<top && hits<80;w++){
+        uintptr_t v=*w; for(unsigned j=0;j<nx;j++)if(v>=xlo[j]&&v<xhi[j]){hits++;crash_map("v3 app-fault stk=",v);crash_text("v3 app-fault depth=");crash_hex(top-(uintptr_t)w);crash_text("\n");break;} }
+}
+__attribute__((unused)) static void crash_near(uintptr_t addr) { /* TEMPDIAG */
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd>=0){char line[1024];size_t n=0;char c;
+        while(RAW(PROXY_SC_read,fd,&c,1,0,0,0)==1){
+            if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
+            line[n]=0;const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;
+            if(*p=='-'){p++;hi=maps_hex(&p);}
+            if(hi+0x400000>addr && lo<addr+0x400000){crash_text("v3 app-fault near=");crash_text(line);crash_text("\n");}n=0;
+        }RAW(PROXY_SC_close,fd,0,0,0,0,0);
+    }
+}
 static void crash_report(int sig,siginfo_t *info,void *context) {
     ucontext_t *uc=context;uintptr_t pc=ARCH_CONTEXT(uc,ARCH_PC);
     crash_text("v3 fatal signal=");crash_hex(sig);
@@ -169,15 +211,12 @@ static void crash_report(int sig,siginfo_t *info,void *context) {
     }
     proxy_rewrite_dump(context);
     /* Raw maps: bypass virtual proc paths; no libc/TLS/allocation in a crash. */
-    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
-    if(fd>=0){char line[1024];size_t n=0;char c;
-        while(RAW(PROXY_SC_read,fd,&c,1,0,0,0)==1){
-            if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
-            line[n]=0;const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;
-            if(*p=='-'){p++;hi=maps_hex(&p);}
-            if(pc>=lo && pc<hi){crash_text("v3 fatal map=");crash_text(line);crash_text(" offset=");crash_hex(pc-lo);crash_text("\n");break;}n=0;
-        }RAW(PROXY_SC_close,fd,0,0,0,0,0);
-    }
+    crash_map("v3 fatal map=",pc);
+    #if defined(__x86_64__) /* TEMPDIAG */
+    {unsigned long fs=0;RAW(PROXY_SC_arch_prctl,0x1003,&fs,0,0,0,0);crash_text("v3 fatal fs=");crash_hex(fs);crash_text("\n");}
+#endif
+    {uintptr_t *sp=(uintptr_t *)ARCH_CONTEXT(uc,ARCH_STACK);unsigned shown=0; /* TEMPDIAG */
+        for(unsigned i=0;i<512 && shown<12;i++)if(crash_map("v3 fatal frame=",sp[i]))shown++;}
     struct kernel_action action={0};RAW(PROXY_SC_rt_sigaction,sig,&action,0,8,0,0);
     proxy_sigmask_t mask=UINT64_C(1)<<(sig-1);RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);
     RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),RAW(PROXY_SC_gettid,0,0,0,0,0,0),sig,0,0,0);
@@ -190,6 +229,7 @@ static void exec_signals(void) {
         struct kernel_action old={0},next={0};
         if(RAW(PROXY_SC_rt_sigaction,sig,0,&old,8,0,0)<0)continue;
         if(old.handler==1 && sig!=SIGSEGV)continue; /* synchronous SIGSEGV still needs proxy handling */
+        app_actions[sig]=(struct kernel_action){0};
         if(sig==SIGSEGV)chained_segv=(struct kernel_action){0};
         if(sig==SIGSEGV || sig==SIGBUS || sig==SIGILL || sig==SIGFPE || sig==SIGABRT)
             next=(struct kernel_action){(uintptr_t)crash_report,SA_SIGINFO|SA_RESTORER|SA_ONSTACK,(uintptr_t)proxy_restore,0};
@@ -601,8 +641,21 @@ static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
     /* The adoption handler itself blocks real SIGSYS on entry. Unblock it
      * here so payload-handler syscalls can recurse through the proxy. */
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+    if(sig==SIGSEGV||sig==SIGBUS||sig==SIGILL||sig==SIGFPE||sig==SIGABRT||sig==SIGTRAP){ /* TEMPDIAG */
+        uintptr_t dpc=ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC);
+        crash_text("v3 app-fault signal=");crash_hex(sig);crash_text(" code=");crash_hex(info->si_code);
+        crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);crash_text("\n");
+        crash_map("v3 app-fault pc=",dpc);
+#if defined(__x86_64__)
+        { uintptr_t *bp=(uintptr_t *)((ucontext_t *)ctx)->uc_mcontext.gregs[10]; { greg_t *gr=((ucontext_t *)ctx)->uc_mcontext.gregs; crash_text("v3 app-fault rsp=");crash_hex(gr[15]);crash_text(" rdx=");crash_hex(gr[12]);crash_text(" rax=");crash_hex(gr[13]);crash_text(" rbp=");crash_hex(gr[10]);crash_text(" fsbase=");crash_hex(RAW(PROXY_SC_arch_prctl,0x1003,(long)&(uintptr_t){0},0,0,0,0)==0?0:1);crash_text("\n"); crash_near((uintptr_t)info->si_addr); crash_stack_libs(gr[15]); } if(bp && !((uintptr_t)bp&7)) crash_map("v3 app-fault caller=",bp[1]); } /* TEMPDIAG */
+#endif
+        uintptr_t *dsp=(uintptr_t *)ARCH_CONTEXT((ucontext_t *)ctx,ARCH_STACK);unsigned shown=0;
+        for(unsigned i=0;i<512 && shown<10;i++)if(crash_map("v3 app-fault frame=",dsp[i]))shown++;
+    }
+    uintptr_t resident=adopt_signal_enter();
     if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
     else ((void (*)(int))action.handler)(sig);
+    adopt_signal_leave(resident);
     old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
 }
 static int ldt_is_flat_code(unsigned selector) {
@@ -814,6 +867,51 @@ void proxy_clone_tls_child(unsigned flags, const struct user_desc *user_desc) {
     if(proxy_i386_tls_reservation_enabled)tls_reserve(thread);
 }
 #endif
+/* Payload handlers run behind a proxy entry so a signal that interrupts
+ * resident (Android) code gets the app's TLS base, and the resident base is
+ * restored when the handler returns. siglongjmp out lands in payload code,
+ * which keeps the app base. Arches without adoption use the no-op hooks. */
+static void app_signal_entry(int sig,siginfo_t *info,void *ctx) {
+    struct kernel_action action=app_actions[sig];
+    if(action.flags&SA_RESETHAND)app_actions[sig].handler=0;
+    if(action.handler<=1)return;
+    if(sig==SIGSEGV||sig==SIGBUS||sig==SIGILL||sig==SIGFPE||sig==SIGABRT||sig==SIGTRAP){ /* TEMPDIAG */
+        uintptr_t dpc=ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC);
+        crash_text("v3 app-fault signal=");crash_hex(sig);crash_text(" code=");crash_hex(info->si_code);
+        crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);crash_text("\n");
+        crash_map("v3 app-fault pc=",dpc);
+#if defined(__x86_64__)
+        { uintptr_t *bp=(uintptr_t *)((ucontext_t *)ctx)->uc_mcontext.gregs[10]; { greg_t *gr=((ucontext_t *)ctx)->uc_mcontext.gregs; crash_text("v3 app-fault rsp=");crash_hex(gr[15]);crash_text(" rdx=");crash_hex(gr[12]);crash_text(" rax=");crash_hex(gr[13]);crash_text(" rbp=");crash_hex(gr[10]);crash_text(" fsbase=");crash_hex(RAW(PROXY_SC_arch_prctl,0x1003,(long)&(uintptr_t){0},0,0,0,0)==0?0:1);crash_text("\n"); crash_near((uintptr_t)info->si_addr); crash_stack_libs(gr[15]); } if(bp && !((uintptr_t)bp&7)) crash_map("v3 app-fault caller=",bp[1]); } /* TEMPDIAG */
+#endif
+        uintptr_t *dsp=(uintptr_t *)ARCH_CONTEXT((ucontext_t *)ctx,ARCH_STACK);unsigned shown=0;
+        for(unsigned i=0;i<512 && shown<10;i++)if(crash_map("v3 app-fault frame=",dsp[i]))shown++;
+    }
+    uintptr_t resident=adopt_signal_enter();
+    if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
+    else ((void (*)(int))action.handler)(sig);
+    adopt_signal_leave(resident);
+}
+static long app_sigaction(long nr,proxy_arg_t *a) {
+    int sig=(int)a[0];
+    if(sig<1 || sig>64 || a[3]!=8)return RAW(nr,a[0],a[1],a[2],a[3],0,0);
+    struct kernel_action next,kernel_old,*nextp=NULL;
+    if(a[1]) {
+        p_copy(&next,(void *)(uintptr_t)a[1],sizeof(next));normalize_payload_action(&next);
+        if(next.handler>1 && sig!=SIGKILL && sig!=SIGSTOP) {
+            struct kernel_action proxy=next;
+            proxy.handler=(uintptr_t)app_signal_entry;
+            proxy.flags=next.flags|SA_SIGINFO|SA_RESTORER;proxy.restorer=(uintptr_t)proxy_restore;
+            nextp=&proxy;
+            long r=RAW(nr,sig,nextp,&kernel_old,8,0,0);if(r<0)return r;
+        } else {long r=RAW(nr,sig,&next,&kernel_old,8,0,0);if(r<0)return r;}
+    } else {long r=RAW(nr,sig,0,&kernel_old,8,0,0);if(r<0)return r;}
+    if(a[2]) {
+        struct kernel_action old=kernel_old.handler==(uintptr_t)app_signal_entry?app_actions[sig]:kernel_old;
+        p_copy((void *)(uintptr_t)a[2],&old,sizeof(old));
+    }
+    if(a[1])app_actions[sig]=next;
+    return 0;
+}
 #if ARCH_AUDIT != AUDIT_ARCH_I386
 void proxy_i386_tls_reservation(int enabled) {(void)enabled;}
 int proxy_i386_tls_prepare_payload(void) {return 0;}
@@ -1558,8 +1656,21 @@ static void rewrite_segv_handler(int sig,siginfo_t *info,void *context){
     /* The adoption handler itself blocks real SIGSYS on entry. Unblock it
      * here so payload-handler syscalls can recurse through the proxy. */
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
+    if(sig==SIGSEGV||sig==SIGBUS||sig==SIGILL||sig==SIGFPE||sig==SIGABRT||sig==SIGTRAP){ /* TEMPDIAG */
+        uintptr_t dpc=ARCH_CONTEXT((ucontext_t *)context,ARCH_PC);
+        crash_text("v3 app-fault signal=");crash_hex(sig);crash_text(" code=");crash_hex(info->si_code);
+        crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);crash_text("\n");
+        crash_map("v3 app-fault pc=",dpc);
+#if defined(__x86_64__)
+        { uintptr_t *bp=(uintptr_t *)((ucontext_t *)context)->uc_mcontext.gregs[10]; { greg_t *gr=((ucontext_t *)context)->uc_mcontext.gregs; crash_text("v3 app-fault rsp=");crash_hex(gr[15]);crash_text(" rdx=");crash_hex(gr[12]);crash_text(" rax=");crash_hex(gr[13]);crash_text(" rbp=");crash_hex(gr[10]);crash_text(" fsbase=");crash_hex(RAW(PROXY_SC_arch_prctl,0x1003,(long)&(uintptr_t){0},0,0,0,0)==0?0:1);crash_text("\n"); crash_near((uintptr_t)info->si_addr); crash_stack_libs(gr[15]); } if(bp && !((uintptr_t)bp&7)) crash_map("v3 app-fault caller=",bp[1]); } /* TEMPDIAG */
+#endif
+        uintptr_t *dsp=(uintptr_t *)ARCH_CONTEXT((ucontext_t *)context,ARCH_STACK);unsigned shown=0;
+        for(unsigned i=0;i<512 && shown<10;i++)if(crash_map("v3 app-fault frame=",dsp[i]))shown++;
+    }
+    uintptr_t resident=adopt_signal_enter();
     if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,context);
     else ((void (*)(int))action.handler)(sig);
+    adopt_signal_leave(resident);
     old&=~SIGSYS_BIT;RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);
 }
 
@@ -2071,6 +2182,7 @@ static int ours(long n) {
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
     case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:
+    case PROXY_SC_landlock_create_ruleset:case PROXY_SC_landlock_add_rule:case PROXY_SC_landlock_restrict_self:
     case PROXY_SC_mount_setattr:case PROXY_SC_move_mount:case PROXY_SC_fsopen:case PROXY_SC_fsconfig:case PROXY_SC_fsmount:case PROXY_SC_fspick:case PROXY_SC_stat:case PROXY_SC_lstat:case PROXY_SC_newfstatat:
     case PROXY_SC_inotify_add_watch:case PROXY_SC_getxattrat:case PROXY_SC_listxattrat:case PROXY_SC_setxattrat:case PROXY_SC_removexattrat:case PROXY_SC_name_to_handle_at:case PROXY_SC_statx:case PROXY_SC_access:case PROXY_SC_faccessat:case PROXY_SC_faccessat2:case PROXY_SC_readlink:case PROXY_SC_readlinkat:
     case PROXY_SC_fchdir:case PROXY_SC_chdir:case PROXY_SC_getcwd:case PROXY_SC_mkdir:case PROXY_SC_mkdirat:case PROXY_SC_unlink:case PROXY_SC_unlinkat:
@@ -2510,9 +2622,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             result=RAW(nr,SIGSEGV,&proxy,0,8,0,0);
         }
         else {
-            struct kernel_action action;
-            if(a[1]) {p_copy(&action,(void *)(uintptr_t)a[1],sizeof(action));normalize_payload_action(&action);a[1]=(long)&action;}
-            result=RAW(nr,a[0],a[1],a[2],a[3],0,0);
+            result=app_sigaction(nr,a);
         }break;
     case PROXY_SC_signalfd4: {
         proxy_sigmask_t mask=0;
@@ -2719,6 +2829,11 @@ clone_retry:
     /* Raw open_tree would resolve the untranslated path. ENOSYS makes libglnx
      * chase (Flatpak) fall back to openat, which is translated. */
     case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:result=-ENOSYS;break;
+    /* Landlock rules name real inodes, but the app opens translated paths, so
+     * its ruleset would deny the very files it means to allow (xz: EACCES on
+     * its own input). Report a kernel without Landlock; callers fall back. */
+    case PROXY_SC_landlock_create_ruleset:case PROXY_SC_landlock_add_rule:case PROXY_SC_landlock_restrict_self:
+        result=-ENOSYS;break;
     /* Mounts are emulated through classic mount(); bwrap falls back to
      * MS_REMOUNT when the new mount API reports ENOSYS. */
     case PROXY_SC_mount_setattr:case PROXY_SC_move_mount:case PROXY_SC_fsopen:case PROXY_SC_fsconfig:case PROXY_SC_fsmount:case PROXY_SC_fspick:

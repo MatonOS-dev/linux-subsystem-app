@@ -139,7 +139,18 @@ final class PackageDeployment {
     static CompatI386 prepareCompatI386(Context context,File systemRoot,File cache,String branch,
             boolean required) throws Exception {
         if(!required)return null;
-        String ref="runtime/org.freedesktop.Platform.Compat.i386/x86_64/"+branch;
+        return prepareI386Extension(context,systemRoot,cache,branch,"org.freedesktop.Platform.Compat.i386",
+                "org.freedesktop.Platform.Compat.i386","/usr/lib/i386-linux-gnu");
+    }
+    /** Mesa for i386 processes; GL32.maton carries only the Vulkan ICD Zink runs on. */
+    static CompatI386 prepareGl32Default(Context context,File systemRoot,File cache,String branch) throws Exception {
+        return prepareI386Extension(context,systemRoot,cache,branch,"org.freedesktop.Platform.GL32.default",
+                // Upstream GL32 refs keep the i386 GL.default runtime name.
+                "org.freedesktop.Platform.GL.default","/usr/lib/i386-linux-gnu/GL/default");
+    }
+    private static CompatI386 prepareI386Extension(Context context,File systemRoot,File cache,String branch,
+            String name,String metadataName,String mount) throws Exception {
+        String ref="runtime/"+name+"/x86_64/"+branch;
         PackageManager pm=context.getPackageManager();PackageInfo pkg;
         try{pkg=pm.getPackageInfo(DeployManifest.packageForPublic(ref),PackageManager.GET_SIGNING_CERTIFICATES);}
         catch(PackageManager.NameNotFoundException absent){return null;}
@@ -150,14 +161,13 @@ final class PackageDeployment {
         // Flatpak install.
         android.content.pm.InstallSourceInfo source=pm.getInstallSourceInfo(pkg.packageName);
         if(source==null||!"org.matonos.linux".equals(source.getInitiatingPackageName()))
-            throw new SecurityException("i386 compatibility extension was not installed by the subsystem");
+            throw new SecurityException(name+" was not installed by the subsystem");
         org.matonos.linuxhost.stubgen.DeploymentRecord record=
                 org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
         String extensionParent=PackageMounts.extensionParent(new String(record.metadata,StandardCharsets.UTF_8));
-        if(!record.ref.equals(ref)||!new String(record.metadata,StandardCharsets.UTF_8).contains("name = org.freedesktop.Platform.Compat.i386")
+        if(!record.ref.equals(ref)||!new String(record.metadata,StandardCharsets.UTF_8).contains("name = "+metadataName)
                 ||extensionParent==null||!extensionParent.matches("runtime/org\\.freedesktop\\.Platform/(?:i386|x86_64)/"+java.util.regex.Pattern.quote(branch)))
-            throw new IOException("Installed i386 compatibility extension ref mismatch");
-        String mount="/usr/lib/i386-linux-gnu";
+            throw new IOException("Installed "+name+" ref mismatch");
         // Optional runtime extensions are outside the ordinary app closure and
         // therefore have a private target after the EROFS-target change. Build
         // the Flatpak-canonical deployment at the extension's real target.
@@ -165,12 +175,16 @@ final class PackageDeployment {
         Path files=version.resolve("files");
         if(!Files.exists(version,LinkOption.NOFOLLOW_LINKS))record.materialize(systemRoot,mount);
         if(!Files.isDirectory(files,LinkOption.NOFOLLOW_LINKS)||Files.isSymbolicLink(files))
-            throw new IOException("Cannot materialize i386 compatibility extension for runtime "+branch);
-        Files.write(version.resolve("metadata"),compatMetadata(branch).getBytes(StandardCharsets.UTF_8));
+            throw new IOException("Cannot materialize "+name+" for runtime "+branch);
+        Files.write(version.resolve("metadata"),i386ExtensionMetadata(name,branch).getBytes(StandardCharsets.UTF_8));
         Files.write(version.resolve("deploy"),DeployRecord.extension(record.remote,record.commit,branch));
         File apk=new File(pkg.applicationInfo.sourceDir);
         java.util.List<String> args=new java.util.ArrayList<>(ErofsLaunch.arguments(
                 apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount,branch));
+        // Flatpak may bind the deployment's files dir elsewhere (an app's own
+        // extension point under /app); map the image there too so every bind
+        // of the scaffold sees the payload instead of an empty placeholder.
+        args.addAll(java.util.Arrays.asList("--erofs-mount",files.toAbsolutePath().toString(),args.get(2)));
         return new CompatI386(files.toFile(),args);
     }
     static String withI386ExtensionPoints(String metadata,String branch) {
@@ -197,8 +211,8 @@ final class PackageDeployment {
         if(!Files.exists(loaderLink,LinkOption.NOFOLLOW_LINKS))
             Files.createSymbolicLink(loaderLink,Path.of("/usr/lib/i386-linux-gnu/ld-linux.so.2"));
     }
-    static String compatMetadata(String branch) {
-        return "[Runtime]\nname=org.freedesktop.Platform.Compat.i386\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/"+branch+"\n";
+    static String i386ExtensionMetadata(String name,String branch) {
+        return "[Runtime]\nname="+name+"\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/"+branch+"\n";
     }
     static String gl32Metadata(String branch) {
         return "[Runtime]\nname=org.freedesktop.Platform.GL32.maton\nruntime=org.freedesktop.Platform/x86_64/"+branch

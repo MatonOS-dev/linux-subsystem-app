@@ -34,6 +34,7 @@ struct Layer {
   struct wlr_buffer* shown_source; /* client buffer the shm copy was made from (compared only) */
   uint32_t shown_seq;             /* surface commit the shm copy was made from */
   bool visible, seen;
+  int diag_logged; /* TEMPDIAG */
   /* Copies of shared-memory content; each is locked while SurfaceFlinger holds it. */
   struct PoolBuffer* pool;
   struct MatonPresenterLayerState state;
@@ -235,10 +236,14 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   struct Walk* walk = data;
   struct MatonPresenter* p = walk->p;
   struct wlr_buffer* buffer = node->buffer;
-  if (!buffer) return;
   struct wlr_scene_surface* scene_surface = wlr_scene_surface_try_from_buffer(node);
   struct wlr_surface* surface = scene_surface ? scene_surface->surface : NULL;
-  struct Layer* l = find_layer(p, node, surface);
+  struct Layer* l = buffer ? find_layer(p, node, surface) : NULL;
+  { static int diag_entry; /* TEMPDIAG */
+    if (diag_entry < 40 && (!buffer || !l)) { diag_entry++;
+      __android_log_print(ANDROID_LOG_WARN, "MatonPresenter", "TEMPDIAG skip node %p buffer=%p surface=%p layer=%p",
+          (void*)node, (void*)buffer, (void*)surface, (void*)l); } }
+  if (!buffer) return;
   if (!l) return;
   l->seen = true;
   ASurfaceTransaction* t = walk->t;
@@ -250,6 +255,16 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   /* Defence in depth: never send a dma-buf whose actual mapper metadata
    * cannot describe its planes, even if it passed protocol-time validation. */
   if (ahb && !direct_ahb && !maton_dmabuf_layout_safe(ahb)) ahb = NULL;
+  if (l->diag_logged < 5) { /* TEMPDIAG: which path each window's first frames take */
+    struct wlr_dmabuf_attributes da; bool is_dmabuf = wlr_buffer_get_dmabuf(buffer, &da);
+    l->diag_logged++;
+    __android_log_print(ANDROID_LOG_WARN, "MatonPresenter",
+        "TEMPDIAG layer %p frame %d: %dx%d path=%s dmabuf=%d fmt=0x%x mod=0x%llx stride=%u at %d,%d",
+        (void*)l, l->diag_logged, buffer->width, buffer->height,
+        direct_ahb ? "own-ahb" : ahb ? "dmabuf-ahb" : is_dmabuf ? "dmabuf-rejected" : "shm-copy",
+        is_dmabuf, is_dmabuf ? da.format : 0, is_dmabuf ? (unsigned long long)da.modifier : 0ull,
+        is_dmabuf ? da.stride[0] : 0, sx, sy);
+  }
   bool opaque = false;
   if (ahb) {
     struct wlr_dmabuf_attributes attrs;

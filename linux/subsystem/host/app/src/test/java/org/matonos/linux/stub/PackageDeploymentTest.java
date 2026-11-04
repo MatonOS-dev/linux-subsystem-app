@@ -108,7 +108,7 @@ public final class PackageDeploymentTest {
         try(ZipOutputStream zip=new ZipOutputStream(Files.newOutputStream(apk))) {
             put(zip,"assets/gl-maton-i386/ref.txt","runtime/org.freedesktop.Platform.GL32.maton/x86_64/26.08\n"+commit+"\n");
             zip.putNextEntry(new ZipEntry("assets/gl-maton-i386/objects.ostree"));zip.write(objects.array());zip.closeEntry();
-            put(zip,"assets/gl-maton-i386/tree/lib/libEGL_maton.so","gl32");
+            put(zip,"assets/gl-maton-i386/tree/lib/libmaton_vulkan_i386.so","gl32");
         }
         Path system=scratch.resolve("system");Files.createDirectories(system);
         File files=PackageDeployment.prepareGl32Extension(system.toFile(),apk.toFile(),"25.08");
@@ -116,7 +116,7 @@ public final class PackageDeploymentTest {
         assertEquals(version.resolve("files").toFile(),files);
         assertEquals(PackageDeployment.gl32Metadata("25.08"),read(version.resolve("metadata")));
         assertArrayEquals(DeployRecord.extension("flathub",commit,"25.08"),Files.readAllBytes(version.resolve("deploy")));
-        assertEquals("gl32",read(files.toPath().resolve("lib/libEGL_maton.so")));
+        assertEquals("gl32",read(files.toPath().resolve("lib/libmaton_vulkan_i386.so")));
         assertArrayEquals(commitObject,Files.readAllBytes(system.resolve("repo/objects").resolve(commit.substring(0,2)).resolve(commit.substring(2)+".commit")));
     }
     @Test public void i386ExtensionPointsAreAddedOnceAndLinkTheInterpreter() throws Exception {

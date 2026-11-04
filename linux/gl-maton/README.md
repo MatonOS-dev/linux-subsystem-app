@@ -15,49 +15,20 @@ The APK also carries the i386 forwarders as a separate
 `lib/` layout as the x86_64 extension; it must not add another
 `i386-linux-gnu/` level below that mount.
 
-GLVND loads `libGLX_maton.so.0` by the `__GLX_VENDOR_LIBRARY_NAME=maton`
-selection when the Maton GL extension is enabled. It renders through the EGL
-forwarder into a pbuffer and copies frames to the X window with XPutImage. The
-extension payload uses the runtime's GL `merge-dirs` layout (the
-Platform metadata lists `vulkan/icd.d;glvnd/egl_vendor.d;...` relative to the
-extension root; flatpak merges only those into `GL/vulkan/icd.d` etc.):
+Vulkan is the only passthrough. App GL/EGL/GLX is the runtime's own Mesa,
+forced to Zink (`MESA_LOADER_DRIVER_OVERRIDE=zink`, `GALLIUM_DRIVER=zink`) over
+the Vulkan forwarder ICD. The payload uses the runtime's GL `merge-dirs` layout:
 
 ```text
-# x86_64 forwarders
-lib/libEGL_maton.so
-lib/libGLX_maton.so.0
-# libGLX_maton.so is a regular duplicate for OSTree compatibility
-lib/libGLX_maton.so
 lib/libmaton_vulkan.so
+lib/libmaton_vulkan_i386.so
 vulkan/icd.d/maton_icd.json
-glvnd/egl_vendor.d/10_maton.json
-
-# i386 ICD in the standard GL extension
-lib/libmaton_vulkan_i386.so
 vulkan/icd.d/maton_icd_i386.json
-glvnd/egl_vendor.d/10_maton_i386.json
-
-# nested i386 EGL/GLX for multiarch x86_64 runtimes
-lib/i386-linux-gnu/libEGL_maton.so
-lib/i386-linux-gnu/libGLX_maton.so.0
-lib/i386-linux-gnu/libGLX_maton.so
 ```
 
-The separate GL32 extension contains:
-
-```text
-lib/libEGL_maton.so
-lib/libGLX_maton.so.0
-lib/libGLX_maton.so
-lib/libmaton_vulkan_i386.so
-vulkan/icd.d/maton_icd_i386.json
-glvnd/egl_vendor.d/10_maton_i386.json
-```
-
-The GL32 EGL manifest selects `libEGL_maton.so` from the extension's `lib/`
-directory, which is mounted at `/usr/lib/i386-linux-gnu/GL/maton/lib`. The
-standard GL extension's i386 manifest selects its nested i386 DSO. Both
-architectures' forwarders remain freestanding and have no `DT_NEEDED` entries.
+The GL32 extension contains `lib/libmaton_vulkan_i386.so` and
+`vulkan/icd.d/maton_icd_i386.json`. The forwarders are freestanding and have
+no `DT_NEEDED` entries.
 Build task
 `buildGlMaton` commits the extension files to a local OSTree repo, then uses
 the existing `linux/packs/pack.py` format. `packageGlMaton` places the ref

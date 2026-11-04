@@ -457,23 +457,14 @@ miss_record_logged:
     }
     else if(n==SYS_brk) result=app_brk;
     else if(n==SYS_rt_sigaction) {
-        if(g[REG_RDI]==SIGSYS || g[REG_RDI]==SIGCHLD) {
-            /* The proxy owns the SIGSYS and SIGCHLD delivery gates. Its
-             * dispatcher retains the payload dispositions and routes child
-             * notifications to the current image's waiter after exec. */
-            if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
-                ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
-                return;
-            }
-            result=-EINVAL;
-        } else {
-            result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
-            if(proxy_trace && g[REG_RDI]==SIGCHLD){
-                struct {uintptr_t handler,flags,restorer;uint64_t mask;} current={0};
-                R(rt_sigaction,SIGCHLD,0,&current,8,0,0);
-                proxy_log("adopt-chld-action",current.handler,current.flags);
-            }
+        /* The proxy owns every payload disposition: SIGSYS/SIGCHLD delivery
+         * gates, the SIGSEGV chain, and the TLS-switching handler entry. */
+        if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
+            ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);
+            return;
         }
+        if(g[REG_RDI]==SIGSYS || g[REG_RDI]==SIGCHLD) result=-EINVAL;
+        else result=R(rt_sigaction,g[REG_RDI],g[REG_RSI],g[REG_RDX],g[REG_R10],0,0);
     } else if(n==SYS_rt_sigprocmask) {
         /* The dispatcher owns the payload's virtual SIGSYS mask as well as
          * its disposition. Never expose the resident handler's kernel mask. */
@@ -678,4 +669,19 @@ int adopt_install(void) {
     } action={trap,SA_SIGINFO|SA_ONSTACK|0x04000000UL,proxy_restore,0};
     if(R(rt_sigaction,SIGSYS,&action,0,8,0,0)) return -1;
     return 0;
+}
+/* App signal handlers are payload code: if the signal interrupted resident
+ * (bionic) code, the FS base belongs to bionic. Switch to the thread's app
+ * TLS for the handler; returns the resident base to restore, or 0. */
+uintptr_t adopt_signal_enter(void) {
+    uintptr_t fs=backend_fs_read();
+    struct adopt_thread *t=adopt_map_lookup(fs);
+    if(!t || t->resident_fs!=fs) return 0;
+    uintptr_t app=atomic_load_explicit(&t->app_fs,memory_order_acquire);
+    if(!app || app==fs) return 0;
+    backend_fs_write(app);
+    return fs;
+}
+void adopt_signal_leave(uintptr_t resident) {
+    if(resident) backend_fs_write(resident);
 }

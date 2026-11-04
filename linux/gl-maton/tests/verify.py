@@ -31,14 +31,8 @@ paths = {row["path"]: row for row in rows}
 expected = {
     "/lib/libmaton_vulkan.so",
     "/lib/libmaton_vulkan_i386.so",
-    "/lib/i386-linux-gnu/libEGL_maton.so",
-    "/lib/i386-linux-gnu/libGLX_maton.so.0",
-    "/glvnd/egl_vendor.d/10_maton_i386.json",
-    "/lib/libEGL_maton.so",
-    "/lib/libGLX_maton.so.0",
     "/vulkan/icd.d/maton_icd.json",
     "/vulkan/icd.d/maton_icd_i386.json",
-    "/glvnd/egl_vendor.d/10_maton.json",
 }
 assert expected <= paths.keys(), paths.keys()
 assert "/lib/vulkan/icd.d/maton_icd.json" not in paths  # merge-dirs only sees the extension root
@@ -54,9 +48,6 @@ assert '"library_path": "libmaton_vulkan.so"' in payload(
     "/vulkan/icd.d/maton_icd.json")
 assert '"library_path": "libmaton_vulkan_i386.so"' in payload(
     "/vulkan/icd.d/maton_icd_i386.json")
-assert '"library_path": "libEGL_maton.so"' in payload("/glvnd/egl_vendor.d/10_maton.json")
-assert '"library_path": "/usr/lib/x86_64-linux-gnu/GL/maton/lib/i386-linux-gnu/libEGL_maton.so"' in payload(
-    "/glvnd/egl_vendor.d/10_maton_i386.json")
 assert (root / "objects.ostree").read_bytes().startswith(b"MTPKOBJ1")
 
 gl32 = root / "gl32"
@@ -67,22 +58,8 @@ assert (gl32 / "ref.txt").read_text().splitlines()[0] == \
 gl32_rows = pack.read_index(gl32 / "objects.index")
 gl32_paths = {row["path"] for row in gl32_rows}
 assert {
-    "/lib/libEGL_maton.so",
-    "/lib/libGLX_maton.so.0",
-    "/lib/libGLX_maton.so",
     "/lib/libmaton_vulkan_i386.so",
-    "/glvnd/egl_vendor.d/10_maton_i386.json",
     "/vulkan/icd.d/maton_icd_i386.json",
 } <= gl32_paths
-assert "/lib/i386-linux-gnu/libEGL_maton.so" not in gl32_paths
-assert "/glvnd/egl_vendor.d/10_maton.json" not in gl32_paths
+assert "/lib/libmaton_vulkan.so" not in gl32_paths
 
-# pressure-vessel resolves names containing '/' against the JSON directory,
-# rather than searching ld.so's library path. The mixed-ABI JSON must name
-# the installed i386 object, including after merge-dirs relocates the JSON.
-i386_json = json.loads(payload("/glvnd/egl_vendor.d/10_maton_i386.json"))
-library = i386_json["ICD"]["library_path"]
-mount = "/usr/lib/x86_64-linux-gnu/GL/maton"
-assert library.startswith(mount + "/")
-assert library[len(mount):] in paths
-assert (root / "tree" / library[len(mount)+1:]).is_file()
