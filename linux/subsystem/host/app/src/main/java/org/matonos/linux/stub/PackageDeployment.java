@@ -106,7 +106,9 @@ final class PackageDeployment {
         Path version=branchRoot.resolve(identity[1]);Files.createDirectories(version);
         Files.write(version.resolve("metadata"),extensionMetadata.getBytes(StandardCharsets.UTF_8));
         Files.write(version.resolve("deploy"),DeployRecord.extension("flathub",identity[1],branch));
-        Files.write(version.resolve(".ref"),new byte[0]);Path files=version.resolve("files");Files.createDirectory(files);
+        Files.write(version.resolve(".ref"),new byte[0]);Path files=version.resolve("files");
+        // The commit id does not change when the bundled ICD is rebuilt: always refresh from the APK.
+        ExtraDataFiles.deleteTree(files.toFile());Files.createDirectory(files);
         materializeBundleTree(archive,assetPrefix,files);
         link(branchRoot.resolve("active"),Path.of(identity[1]));
         link(root.resolve("runtime/"+extensionName+"/current"),Path.of("x86_64",branch));

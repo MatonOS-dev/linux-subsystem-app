@@ -14,7 +14,7 @@ VkResult mv_wsi_capabilities(const struct mv_wsi_surface *s,VkSurfaceCapabilitie
         .maxImageArrayLayers=1,.supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .currentTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .supportedUsageFlags=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        .supportedUsageFlags=MV_WSI_USAGE};
     return VK_SUCCESS;
 }
 VkResult mv_wsi_formats(uint32_t *n,VkSurfaceFormatKHR *f) {
@@ -45,7 +45,7 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     if(info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR || info->pNext || info->flags ||
        info->minImageCount<2 || info->minImageCount>4 || info->imageArrayLayers!=1 ||
        (info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM && info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM) || info->imageColorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ||
-       info->imageUsage!=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT || info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE ||
+       !info->imageUsage || (info->imageUsage&~(VkImageUsageFlags)MV_WSI_USAGE) || info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE ||
        info->preTransform!=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || info->compositeAlpha!=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ||
        info->presentMode!=VK_PRESENT_MODE_FIFO_KHR)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     if(!s->extent.width || !s->extent.height || s->extent.width>4096 || s->extent.height>4096 ||
@@ -119,7 +119,7 @@ VkResult mv_wsi_import_ahb(struct mv_wsi_driver *d,struct AHardwareBuffer *ahb,V
         .handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
     VkImageCreateInfo ci={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,.pNext=&external,.imageType=VK_IMAGE_TYPE_2D,
         .format=format,.extent={e.width,e.height,1},.mipLevels=1,.arrayLayers=1,.samples=VK_SAMPLE_COUNT_1_BIT,
-        .tiling=VK_IMAGE_TILING_OPTIMAL,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.sharingMode=VK_SHARING_MODE_EXCLUSIVE,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
+        .tiling=VK_IMAGE_TILING_OPTIMAL,.usage=MV_WSI_USAGE,.sharingMode=VK_SHARING_MODE_EXCLUSIVE,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
     r=d->create(d->device,&ci,0,image);if(r)return r;
     VkMemoryDedicatedAllocateInfo dedicated={.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,.image=*image};
     VkImportAndroidHardwareBufferInfoANDROID import={.sType=VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID,.pNext=&dedicated,.buffer=ahb};

@@ -21,61 +21,28 @@ struct mv_wsi_live_context {
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID get_ahb_properties;
     PFN_vkGetImageDrmFormatModifierPropertiesEXT get_modifier;
     PFN_vkGetImageSubresourceLayout get_layout;
-    PFN_vkGetImageMemoryRequirements get_requirements;
-    PFN_vkGetMemoryFdKHR get_memory_fd;
 };
 struct mv_native_handle { int version, num_fds, num_ints; int data[]; };
+/* minigbm cros_gralloc_handle (MatonOS fork), mirrored from
+ * subsystem/native/gralloc_handle.h: the real plane layout and modifier. */
+struct mv_cros_handle { int32_t version,num_fds,num_ints,fds[5]; uint32_t strides[4],offsets[4],sizes[4];
+    uint32_t id,width,height,format,tiling; uint64_t format_modifier,use_flags;
+    uint32_t magic,pixel_stride; int32_t droid_format; int64_t usage; uint32_t num_planes;
+    uint64_t reserved_region_size,total_size; } __attribute__((packed));
 struct mv_ahb_desc { uint32_t width,height,layers,format; uint64_t usage; uint32_t stride,rfu0; uint64_t rfu1; };
 
-struct mv_x11_export { int fd;uint32_t stride,offset; };
-static VkResult mv_wsi_x11_allocate(struct mv_wsi_live_context *c,VkExtent2D extent,VkFormat format,
-        struct AHardwareBuffer **storage,VkImage *image,VkDeviceMemory *memory,uint64_t *token) {
-    struct mv_x11_export *b=mv_alloc(sizeof(*b));if(!b)return VK_ERROR_OUT_OF_HOST_MEMORY;
-    *b=(struct mv_x11_export){.fd=-1};
-    uint64_t linear=0;
-    VkImageDrmFormatModifierListCreateInfoEXT modifiers={.sType=VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
-        .drmFormatModifierCount=1,.pDrmFormatModifiers=&linear};
-    VkExternalMemoryImageCreateInfo external={.sType=VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,.pNext=&modifiers,
-        .handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    VkImageCreateInfo ci={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,.pNext=&external,.imageType=VK_IMAGE_TYPE_2D,
-        .format=format,.extent={extent.width,extent.height,1},.mipLevels=1,.arrayLayers=1,.samples=VK_SAMPLE_COUNT_1_BIT,
-        .tiling=VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .sharingMode=VK_SHARING_MODE_EXCLUSIVE,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
-    struct mv_scope scope;if(!mv_enter(&scope)){mv_free(b);return VK_ERROR_INITIALIZATION_FAILED;}
-    VkResult r=c->create_image(c->device->base.android,&ci,0,image);
-    VkMemoryRequirements req={0};
-    if(!r)c->get_requirements(c->device->base.android,*image,&req);
-    uint32_t type=0;while(type<32&&!(req.memoryTypeBits&(1u<<type)))type++;
-    if(!r&&(type==32||!req.size))r=VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    VkMemoryDedicatedAllocateInfo dedicated={.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,.image=*image};
-    VkExportMemoryAllocateInfo export={.sType=VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,.pNext=&dedicated,
-        .handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    VkMemoryAllocateInfo ai={.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,.pNext=&export,.allocationSize=req.size,.memoryTypeIndex=type};
-    if(!r)r=c->allocate_memory(c->device->base.android,&ai,0,memory);
-    if(!r)r=c->bind_image(c->device->base.android,*image,*memory,0);
-    VkSubresourceLayout layout={0};VkImageSubresource sub={.aspectMask=VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT};
-    if(!r)c->get_layout(c->device->base.android,*image,&sub,&layout);
-    if(!r&&(layout.offset||layout.rowPitch>65535||layout.rowPitch<(uint64_t)extent.width*4))r=VK_ERROR_FORMAT_NOT_SUPPORTED;
-    if(!r){VkMemoryGetFdInfoKHR fi={.sType=VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,.memory=*memory,
-        .handleType=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};r=c->get_memory_fd(c->device->base.android,&fi,&b->fd);}
-    if(r){if(*image)c->destroy_image(c->device->base.android,*image,0);if(*memory)c->free_memory(c->device->base.android,*memory,0);}
-    switch_back(&scope);
-    if(r){if(b->fd>=0)mv_close(b->fd);mv_free(b);*image=0;*memory=0;return r;}
-    b->stride=(uint32_t)layout.rowPitch;b->offset=(uint32_t)layout.offset;
-    *storage=(void *)b;*token=(uint64_t)(uintptr_t)b;return VK_SUCCESS;
-}
 static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D extent,VkFormat format,
         struct AHardwareBuffer **ahb,VkImage *image,VkDeviceMemory *memory,uint64_t *image_token) {
     (void)token;struct mv_wsi_live_context *c=opaque;*ahb=0;*image=0;*memory=0;
-    if(c->surface->x11)return mv_wsi_x11_allocate(c,extent,format,ahb,image,memory,image_token);
     VkExternalMemoryImageCreateInfo external={.sType=VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
         .handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
     VkImageCreateInfo ci={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,.pNext=&external,.imageType=VK_IMAGE_TYPE_2D,
         .format=format,.extent={extent.width,extent.height,1},.mipLevels=1,.arrayLayers=1,.samples=VK_SAMPLE_COUNT_1_BIT,
-        .tiling=VK_IMAGE_TILING_OPTIMAL,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .tiling=VK_IMAGE_TILING_OPTIMAL,.usage=MV_WSI_USAGE,
         .sharingMode=VK_SHARING_MODE_EXCLUSIVE,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
     struct mv_scope scope;if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
-    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=1,
+    /* X11 DRI3 pixmaps are ARGB8888 in memory: BGRA AHB (HAL format 5). */
+    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=c->surface->x11?5u:1u,
         .usage=(UINT64_C(1)<<8)|(UINT64_C(1)<<9)|(UINT64_C(1)<<11)}; /* GPU sampled/color output + compositor overlay */
     mv_trace_result("maton-vulkan: WSI entering client AHB allocator",mv_ahb_allocate?0:-1,0);
     int ar=mv_ahb_allocate?mv_ahb_allocate(&desc,ahb):-1;
@@ -111,8 +78,7 @@ static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D exte
     *image_token=(uint64_t)(uintptr_t)*ahb;return VK_SUCCESS;
 }
 static void mv_wsi_live_release(void *opaque,struct AHardwareBuffer *ahb,uint64_t token) {
-    struct mv_wsi_live_context *c=opaque;(void)token;
-    if(c->surface->x11){struct mv_x11_export *b=(void *)ahb;if(b){if(b->fd>=0)mv_close(b->fd);mv_free(b);}return;}
+    (void)opaque;(void)token;
     struct mv_scope scope;if(ahb&&mv_ahb_release&&mv_enter(&scope)){mv_ahb_release(ahb);switch_back(&scope);}
 }
 static void mv_wsi_live_destroy(void *opaque,VkImage image,VkDeviceMemory memory) {
@@ -125,12 +91,10 @@ static VkResult mv_wsi_live_export(void *opaque,struct AHardwareBuffer *ahb,VkIm
         uint32_t *format,uint32_t *stride,uint32_t *offset,uint64_t *modifier) {
     struct mv_wsi_live_context *c=opaque;
     *fd=-1;*format=0x34324241u;*stride=0;*offset=0;*modifier=0;
-    if(c->surface->x11){struct mv_x11_export *b=(void *)ahb;
-        *fd=b->fd;*format=0x34325241u;*stride=b->stride;*offset=b->offset;return VK_SUCCESS;}
     struct mv_scope scope;
     /* The private AHB transport is authoritative when available. Do not
      * inspect or assume any native-handle fd in that case. */
-    if(mv_wl_has_ahb_buffer(c->surface->dmabuf) && mv_ahb_send_socket) {
+    if(!c->surface->x11 && mv_wl_has_ahb_buffer(c->surface->dmabuf) && mv_ahb_send_socket) {
         if(!mv_ahb_describe||!mv_enter(&scope))return VK_ERROR_EXTENSION_NOT_PRESENT;
         struct mv_ahb_desc desc={0};mv_ahb_describe(ahb,&desc);
         switch_back(&scope);
@@ -141,21 +105,33 @@ static VkResult mv_wsi_live_export(void *opaque,struct AHardwareBuffer *ahb,VkIm
     if(!mv_ahb_native_handle||!mv_ahb_describe||!mv_enter(&scope))return VK_ERROR_EXTENSION_NOT_PRESENT;
     struct mv_ahb_desc desc={0};mv_ahb_describe(ahb,&desc);
     const struct mv_native_handle *native=mv_ahb_native_handle(ahb);
+    if(c->surface->x11) {
+        /* DRI3 gets gralloc's own layout and modifier; the server decides
+         * whether it can import it (mv_x11_modifier_supported). */
+        switch_back(&scope);
+        const struct mv_cros_handle *h=(const void *)native;
+        if(!native||native->num_fds<1||(size_t)(3+native->num_fds+native->num_ints)*4<sizeof(*h)||
+           h->magic!=0xABCDDCBAu||h->num_planes!=1||desc.format!=5u||!h->strides[0]||!h->width||!h->height)
+            return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        *fd=h->fds[0];*format=0x34325241u;*stride=h->strides[0];*offset=h->offsets[0];*modifier=h->format_modifier;
+        return VK_SUCCESS;
+    }
     VkImageDrmFormatModifierPropertiesEXT mp={.sType=VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT};
     VkSubresourceLayout layout={0};VkImageSubresource sub={.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,.mipLevel=0,.arrayLayer=0};
-    VkResult r=!native||native->num_fds<1||desc.format!=1||desc.width==0||desc.height==0?VK_ERROR_FORMAT_NOT_SUPPORTED:VK_SUCCESS;
+    VkResult r=!native||native->num_fds<1||desc.format!=(c->surface->x11?5u:1u)||desc.width==0||desc.height==0?VK_ERROR_FORMAT_NOT_SUPPORTED:VK_SUCCESS;
     if(!r)r=c->get_modifier(c->device->base.android,image,&mp);
     if(!r)c->get_layout(c->device->base.android,image,&sub,&layout);
     if(!r && (mp.drmFormatModifier!=0||desc.stride>UINT32_MAX/4||layout.rowPitch!=(VkDeviceSize)desc.stride*4))r=VK_ERROR_FORMAT_NOT_SUPPORTED;
-    if(!r){*fd=native->data[0];*format=0x34324241u;*stride=(uint32_t)layout.rowPitch;*offset=(uint32_t)layout.offset;*modifier=mp.drmFormatModifier;}
+    if(!r){*fd=native->data[0];*format=c->surface->x11?0x34325241u:0x34324241u;*stride=(uint32_t)layout.rowPitch;*offset=(uint32_t)layout.offset;*modifier=mp.drmFormatModifier;}
     switch_back(&scope);return r;
 }
 static VkResult mv_wsi_live_create_buffer(void *opaque,struct AHardwareBuffer *ahb,VkExtent2D extent,uint32_t format,int fd,
         uint32_t stride,uint32_t offset,uint64_t modifier,void **buffer) {
     struct mv_wsi_live_context *c=opaque;struct mv_wl_plane plane={.fd=fd,.index=0,.offset=offset,.stride=stride,.modifier=modifier};
     if(c->surface->x11) {
-        if(format!=0x34325241u||offset||modifier)return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        *buffer=mv_x11_buffer_create(c->surface->x11,fd,extent.width,extent.height,stride);
+        if(format!=0x34325241u)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        *buffer=mv_x11_buffer_create(c->surface->x11,fd,extent.width,extent.height,stride,offset,modifier);
+        if(!*buffer)mv_trace_result("maton-vulkan: WSI x11 DRI3 import refused (stride, modifier low)",stride,(uint32_t)modifier);
         return *buffer?VK_SUCCESS:VK_ERROR_INITIALIZATION_FAILED;
     }
     if(format!=0x34324241u)return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -340,7 +316,7 @@ static VkResult mv_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice ph
         .maxImageArrayLayers=1,.supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .currentTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .supportedUsageFlags=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        .supportedUsageFlags=MV_WSI_USAGE};
     struct mv_wayland_surface *s=mv_wsi_surface((VkInstance)h->instance,surface);
     if(s->x11) {
         uint32_t w,ht;if(!mv_x11_extent(s->x11,&w,&ht))return VK_ERROR_SURFACE_LOST_KHR;
@@ -389,7 +365,7 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
     if(allocator&&(!allocator->pfnAllocation||!allocator->pfnReallocation||!allocator->pfnFree))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wayland_surface *surface=mv_wsi_surface((VkInstance)d->base.instance,info->surface);
     if(!surface)return VK_ERROR_SURFACE_LOST_KHR;
-    if(!surface->x11&&(!mv_ahb_native_handle||!mv_ahb_describe||!mv_ahb_release||!mv_ahb_allocate))return VK_ERROR_EXTENSION_NOT_PRESENT;
+    if((!mv_ahb_native_handle||!mv_ahb_describe||!mv_ahb_release||!mv_ahb_allocate))return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(surface->x11) {
         uint32_t w,h;if(!mv_x11_extent(surface->x11,&w,&h))return VK_ERROR_SURFACE_LOST_KHR;
         if(info->imageExtent.width!=w||info->imageExtent.height!=h)return VK_ERROR_OUT_OF_DATE_KHR;
@@ -412,13 +388,11 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
     c->free_memory=(PFN_vkFreeMemory)d->gdpa(d->base.android,"vkFreeMemory");
     c->get_ahb_properties=(PFN_vkGetAndroidHardwareBufferPropertiesANDROID)d->gdpa(d->base.android,"vkGetAndroidHardwareBufferPropertiesANDROID");
     c->get_modifier=(PFN_vkGetImageDrmFormatModifierPropertiesEXT)d->gdpa(d->base.android,"vkGetImageDrmFormatModifierPropertiesEXT");
-    c->get_requirements=(PFN_vkGetImageMemoryRequirements)d->gdpa(d->base.android,"vkGetImageMemoryRequirements");
-    c->get_memory_fd=(PFN_vkGetMemoryFdKHR)d->gdpa(d->base.android,"vkGetMemoryFdKHR");
     c->get_layout=(PFN_vkGetImageSubresourceLayout)d->gdpa(d->base.android,"vkGetImageSubresourceLayout");
     switch_back(&scope);
     if(!c->create_image||!c->allocate_memory||!c->bind_image||!c->destroy_image||
        !c->free_memory||!c->get_layout||
-       (surface->x11?(!c->get_requirements||!c->get_memory_fd):(!c->get_ahb_properties||!c->get_modifier))){mv_free(c);return VK_ERROR_EXTENSION_NOT_PRESENT;}
+       (!c->get_ahb_properties||!c->get_modifier)){mv_free(c);return VK_ERROR_EXTENSION_NOT_PRESENT;}
     VkExtent2D previous_extent=surface->state.extent;
     uint64_t previous_generation=surface->state.generation;
     mv_wsi_surface_resize(&surface->state,info->imageExtent);

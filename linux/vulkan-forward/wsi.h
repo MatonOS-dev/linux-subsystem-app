@@ -1,5 +1,9 @@
 #ifndef MV_WSI_H
 #define MV_WSI_H
+/* Swapchain images are optimal-tiled AHB imports: renderable, sampleable
+ * and copyable, as compositors and GL-on-Vulkan layers expect. */
+#define MV_WSI_USAGE (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|\
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_android.h>
 /* D1 internal API, NOT a loader ABI. Caller serializes all object access.

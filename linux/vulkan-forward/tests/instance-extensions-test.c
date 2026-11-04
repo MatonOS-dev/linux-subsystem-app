@@ -27,7 +27,8 @@ static VkResult VKAPI_CALL capture_device(VkPhysicalDevice physical,const VkDevi
         dma+=!strcmp(info->ppEnabledExtensionNames[i],"VK_EXT_external_memory_dma_buf");
         sync+=!strcmp(info->ppEnabledExtensionNames[i],VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
     }
-    assert(ahb==(expect_x11?0u:1u) && sync==1 && dma==(expect_x11?1u:0u));
+    (void)expect_x11; /* X11 and Wayland share the AHB allocation backend. */
+    assert(ahb==1 && sync==1 && dma==0);
     return VK_ERROR_DEVICE_LOST; /* Avoid needing a real Android driver. */
 }
 int main(void) {
@@ -60,6 +61,7 @@ int main(void) {
         char saved=available[i].extensionName[0];available[i].extensionName[0]=0;
         assert(!advertises_swapchain(&physical));available[i].extensionName[0]=saved;
     }
-    instance.wsi_wayland_enabled=1;assert(!advertises_swapchain(&physical));
+    /* One shared requirement set: a mixed X11/Wayland instance needs nothing more. */
+    instance.wsi_wayland_enabled=1;assert(advertises_swapchain(&physical));
     puts("PASS WSI discovery before Wayland dlopen and private device dependencies without duplicates");
 }

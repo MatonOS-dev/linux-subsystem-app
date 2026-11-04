@@ -19,12 +19,19 @@ static struct geometry *geometry_result(void *c,struct cookie ck,void **error){
     (void)c;(void)ck;(void)error;struct geometry *g=calloc(1,sizeof(*g));g->depth=24;g->width=320;g->height=200;return g;
 }
 static void *request_check(void *c,struct cookie ck){(void)c;(void)ck;return 0;}
-static struct cookie import_buffer(void *c,uint32_t pixmap,uint32_t drawable,uint32_t size,
-        uint16_t width,uint16_t height,uint16_t stride,uint8_t depth,uint8_t bpp,int32_t fd){
-    assert(c==&queue_token&&drawable==42&&size==256000&&width==320&&height==200&&stride==1280&&depth==24&&bpp==32);
-    assert(fd!=source_fd&&fcntl(fd,F_GETFD)>=0&&fcntl(source_fd,F_GETFD)>=0);
-    imported_fd=fd;close(fd);imports++;last_pixmap=pixmap;return cookie;
+static uint64_t server_modifiers[1]={0};
+static struct cookie import_buffers(void *c,uint32_t pixmap,uint32_t drawable,uint8_t n,uint16_t width,uint16_t height,
+        uint32_t stride,uint32_t offset,uint32_t s1,uint32_t o1,uint32_t s2,uint32_t o2,uint32_t s3,uint32_t o3,
+        uint8_t depth,uint8_t bpp,uint64_t modifier,const int32_t *fds){
+    assert(c==&queue_token&&drawable==42&&n==1&&width==320&&height==200&&stride==1280&&offset==0&&depth==24&&bpp==32&&modifier==0);
+    assert(!s1&&!o1&&!s2&&!o2&&!s3&&!o3);
+    assert(fds[0]>=0&&fcntl(fds[0],F_GETFD)>=0);imported_fd=fds[0];close(fds[0]);imports++;last_pixmap=pixmap;return cookie;
 }
+static struct cookie modifiers_request(void *c,uint32_t w,uint8_t depth,uint8_t bpp){assert(c==&queue_token&&w==42&&depth==24&&bpp==32);return cookie;}
+static void *modifiers_result(void *c,struct cookie ck,void **e){(void)c;(void)ck;(void)e;return malloc(1);}
+static uint64_t *window_list(const void *r){(void)r;return server_modifiers;}
+static int window_count(const void *r){(void)r;return 1;}
+static int screen_count(const void *r){(void)r;return 0;}
 static struct cookie release_pixmap(void *c,uint32_t pixmap){(void)c;assert(pixmap>100);return cookie;}
 static struct cookie select_events(void *c,uint32_t id,uint32_t window,uint32_t mask){
     (void)c;assert(window==42&&(mask==6||mask==0));event_id=id;return cookie;
@@ -73,7 +80,10 @@ void *mv_client_symbol(void *lib,const char *name){assert(lib==&queue_token);
     SYM("xcb_request_check",request_check);SYM("xcb_free_pixmap",release_pixmap);
     SYM("xcb_register_for_special_xge",register_events);SYM("xcb_unregister_for_special_event",unregister_events);
     SYM("xcb_poll_for_special_event",next_event);SYM("xcb_wait_for_special_event",next_event);
-    SYM("xcb_dri3_pixmap_from_buffer_checked",import_buffer);SYM("xcb_present_select_input_checked",select_events);
+    SYM("xcb_dri3_pixmap_from_buffer_checked",import_buffers);SYM("xcb_dri3_pixmap_from_buffers_checked",import_buffers);
+    SYM("xcb_dri3_get_supported_modifiers",modifiers_request);SYM("xcb_dri3_get_supported_modifiers_reply",modifiers_result);
+    SYM("xcb_dri3_get_supported_modifiers_window_modifiers",window_list);SYM("xcb_dri3_get_supported_modifiers_screen_modifiers",window_list);
+    SYM("xcb_dri3_get_supported_modifiers_window_modifiers_length",window_count);SYM("xcb_dri3_get_supported_modifiers_screen_modifiers_length",screen_count);SYM("xcb_present_select_input_checked",select_events);
     SYM("xcb_present_pixmap_checked",show);SYM("xcb_present_id",&queue_token);
 #undef SYM
     return 0;
@@ -82,23 +92,36 @@ void *mv_client_symbol(void *lib,const char *name){assert(lib==&queue_token);
 void *mv_wayland_symbol(const char *name){(void)name;return 0;}
 static struct adopt_thread thread;
 static struct adopt_thread *current(void){thread.resident_fs=mv_tp_read(0);return &thread;}
-static void requirements(VkDevice d,VkImage i,VkMemoryRequirements *r){(void)d;(void)i;*r=(VkMemoryRequirements){.size=256000,.alignment=4096,.memoryTypeBits=1};}
-static VkResult memory_fd(VkDevice d,const VkMemoryGetFdInfoKHR *info,int *fd){(void)d;
-    assert(info->handleType==VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);*fd=dup(source_fd);return *fd<0?VK_ERROR_OUT_OF_HOST_MEMORY:VK_SUCCESS;}
+/* Mock gralloc: a cros_gralloc handle with one linear BGRA plane. */
+static struct AHardwareBuffer *ahb_new(void){
+    struct mv_cros_handle *h=calloc(1,sizeof(*h));h->version=12;h->num_fds=1;h->num_ints=(int)(sizeof(*h)/4)-4;
+    h->fds[0]=dup(source_fd);h->strides[0]=1280;h->width=320;h->height=200;h->magic=0xABCDDCBAu;h->num_planes=1;
+    return (void *)h;
+}
+static int ahb_allocate(const void *d,struct AHardwareBuffer **out){const struct mv_ahb_desc *desc=d;
+    assert(desc->format==5&&desc->width==320&&desc->height==200);*out=ahb_new();return 0;}
+static void *ahb_handle(const struct AHardwareBuffer *a){return (void *)a;}
+static void ahb_describe(const struct AHardwareBuffer *a,void *out){(void)a;*(struct mv_ahb_desc *)out=(struct mv_ahb_desc){.width=320,.height=200,.layers=1,.format=5,.stride=320};}
+static int released_ahbs;
+static void ahb_release(struct AHardwareBuffer *a){struct mv_cros_handle *h=(void *)a;close(h->fds[0]);free(h);released_ahbs++;}
+static VkResult ahb_properties(VkDevice d,const struct AHardwareBuffer *a,VkAndroidHardwareBufferPropertiesANDROID *p){(void)d;(void)a;
+    VkAndroidHardwareBufferFormatPropertiesANDROID *f=p->pNext;f->format=VK_FORMAT_B8G8R8A8_UNORM;f->formatFeatures=VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    p->memoryTypeBits=1;p->allocationSize=256000;return VK_SUCCESS;}
+static VkResult image_modifier(VkDevice d,VkImage i,VkImageDrmFormatModifierPropertiesEXT *p){(void)d;(void)i;p->drmFormatModifier=0;return VK_SUCCESS;}
 static VkResult create_image(VkDevice d,const VkImageCreateInfo *info,const VkAllocationCallbacks *a,VkImage *out){
-    (void)d;(void)a;assert(info->format==VK_FORMAT_B8G8R8A8_UNORM&&info->tiling==VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT);
-    const VkExternalMemoryImageCreateInfo *ext=info->pNext;assert(ext->handleTypes==VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
-    const VkImageDrmFormatModifierListCreateInfoEXT *mod=ext->pNext;assert(mod->drmFormatModifierCount==1&&mod->pDrmFormatModifiers[0]==0);*out=(VkImage)(uintptr_t)++ids;return VK_SUCCESS;
+    (void)d;(void)a;assert(info->format==VK_FORMAT_B8G8R8A8_UNORM&&info->tiling==VK_IMAGE_TILING_OPTIMAL);
+    const VkExternalMemoryImageCreateInfo *ext=info->pNext;assert(ext->handleTypes==VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID);
+    *out=(VkImage)(uintptr_t)++ids;return VK_SUCCESS;
 }
 static VkResult allocate_memory(VkDevice d,const VkMemoryAllocateInfo *a,const VkAllocationCallbacks *b,VkDeviceMemory *out){(void)d;(void)a;(void)b;*out=(VkDeviceMemory)(uintptr_t)++ids;return VK_SUCCESS;}
 static VkResult bind_image(VkDevice d,VkImage i,VkDeviceMemory m,VkDeviceSize o){(void)d;(void)i;(void)m;(void)o;return VK_SUCCESS;}
 static void destroy_image(VkDevice d,VkImage i,const VkAllocationCallbacks *a){(void)d;(void)i;(void)a;}
 static void free_memory(VkDevice d,VkDeviceMemory m,const VkAllocationCallbacks *a){(void)d;(void)m;(void)a;}
-static void layout(VkDevice d,VkImage i,const VkImageSubresource *s,VkSubresourceLayout *l){(void)d;(void)i;assert(s->aspectMask==VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT);l->rowPitch=1280;}
+static void layout(VkDevice d,VkImage i,const VkImageSubresource *s,VkSubresourceLayout *l){(void)d;(void)i;(void)s;l->rowPitch=1280;}
 static PFN_vkVoidFunction gdpa(VkDevice d,const char *name){(void)d;
 #define SYM(n,v) if(!strcmp(name,n))return (PFN_vkVoidFunction)(v)
     SYM("vkCreateImage",create_image);SYM("vkAllocateMemory",allocate_memory);SYM("vkBindImageMemory",bind_image);
-    SYM("vkDestroyImage",destroy_image);SYM("vkFreeMemory",free_memory);SYM("vkGetImageMemoryRequirements",requirements);SYM("vkGetMemoryFdKHR",memory_fd);
+    SYM("vkDestroyImage",destroy_image);SYM("vkFreeMemory",free_memory);SYM("vkGetAndroidHardwareBufferPropertiesANDROID",ahb_properties);SYM("vkGetImageDrmFormatModifierPropertiesEXT",image_modifier);
     SYM("vkGetImageSubresourceLayout",layout);
 #undef SYM
     return 0;
@@ -106,11 +129,13 @@ static PFN_vkVoidFunction gdpa(VkDevice d,const char *name){(void)d;
 int main(void){
     source_fd=open("/dev/null",O_RDONLY);assert(source_fd>=0);
     struct adopt_api api={.version=1,.current=current};mv_adopt=&api;
+    mv_ahb_allocate=ahb_allocate;mv_ahb_native_handle=ahb_handle;mv_ahb_describe=ahb_describe;mv_ahb_release=ahb_release;
     assert(mv_x11_visual_supported(&queue_token,7));
     assert(!mv_x11_visual_supported(&queue_token,8));
     extension_reply[8]=0;assert(!mv_x11_visual_supported(&queue_token,7));extension_reply[8]=1;
     setup_data[30]=1;assert(!mv_x11_visual_supported(&queue_token,7));setup_data[30]=0;
     depth_data=30;assert(!mv_x11_visual_supported(&queue_token,7));depth_data=24;
+    depth_data=32;assert(mv_x11_visual_supported(&queue_token,7));depth_data=24;
     struct mv_instance instance={.wsi_surface_enabled=1,.wsi_xcb_enabled=1};
     VkXcbSurfaceCreateInfoKHR info={.sType=VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,.connection=(void *)&queue_token,.window=42};
     VkSurfaceKHR surface;assert(mv_vkCreateXcbSurfaceKHR((VkInstance)&instance,&info,0,&surface)==VK_SUCCESS);
@@ -124,6 +149,10 @@ int main(void){
         .preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,.compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,.presentMode=VK_PRESENT_MODE_FIFO_KHR};
     VkSwapchainKHR swapchain;assert(mv_vkCreateSwapchainKHR((VkDevice)&device,&ci,0,&swapchain)==VK_SUCCESS&&imports==2);
     assert(fcntl(source_fd,F_GETFD)>=0&&fcntl(imported_fd,F_GETFD)==-1);
+    /* The gralloc plane's own modifier is what DRI3 is offered; the server
+     * refusing it fails the swapchain instead of showing garbage. */
+    server_modifiers[0]=5;VkSwapchainKHR refused;
+    assert(mv_vkCreateSwapchainKHR((VkDevice)&device,&ci,0,&refused)!=VK_SUCCESS&&imports==2);server_modifiers[0]=0;
     struct mv_wsi_swapchain *chain=(void *)(uintptr_t)swapchain;uint32_t index;
     assert(mv_wsi_acquire(chain,&index)==VK_SUCCESS);
     assert(mv_wsi_present(chain,index,-1)==VK_SUCCESS&&presents==1);
@@ -139,5 +168,5 @@ int main(void){
     VkXlibSurfaceCreateInfoKHR xi={.sType=VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,.dpy=(void *)&queue_token,.window=42};
     assert(mv_vkCreateXlibSurfaceKHR((VkInstance)&instance,&xi,0,&surface)==VK_SUCCESS);
     mv_vkDestroySurfaceKHR((VkInstance)&instance,surface,0);close(source_fd);
-    puts("PASS XCB Vulkan surface/swapchain: BGRA import, fd ownership, Present idle, teardown without final idle");
+    puts("PASS XCB Vulkan surface/swapchain: BGRA import, fd ownership, Present idle, teardown without final idle, DRI3 modifier negotiation");
 }

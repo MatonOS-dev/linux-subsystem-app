@@ -64,7 +64,11 @@ static int (*mv_ahb_send_socket)(const struct AHardwareBuffer *,int);
 static int mv_fast, mv_state;
 /* Raw diagnostics remain safe on either side of the TLS switch. */
 static void mv_trace_result(const char *stage,long result,uint32_t count) {
-    size_t length=0;while(stage[length])length++;mv_write(stage,length);
+    size_t length=0;while(stage[length])length++;
+#if defined(__i386__)
+    mv_write("[i386] ",7); /* Both ICDs share one log; tell the ABIs apart. */
+#endif
+    mv_write(stage,length);
     char text[36];static const char hex[]="0123456789abcdef";
     text[0]=' ';text[1]='0';text[2]='x';
     for(unsigned j=0;j<16;j++)text[3+j]=hex[((uint64_t)result>>(60-4*j))&15];
@@ -263,11 +267,6 @@ static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physica
             out[written].specVersion=VK_KHR_SWAPCHAIN_SPEC_VERSION;
         }
         written++;
-    } else { /* TEMPDIAG: which WSI requirement is missing */
-        const char *const *lists[2]={mv_wsi_wayland_requirements,mv_wsi_x11_requirements};
-        mv_trace_result("maton-vulkan: wsi flags",(long)(h->instance->wsi_wayland_enabled|h->instance->wsi_xcb_enabled<<1|h->instance->wsi_xlib_enabled<<2),count);
-        for(int l=0;l<2;l++)for(int i=0;i<5;i++){uint32_t j=0;while(j<count&&strcmp(lists[l][i],all[j].extensionName))j++;
-            if(j==count){size_t m=0;while(lists[l][i][m])m++;mv_write("maton-vulkan: wsi missing ",26);mv_write(lists[l][i],m);mv_write("\n",1);}}
     }
     *n=out && written>capacity?capacity:written;mv_free(all);
     return out && written>capacity?VK_INCOMPLETE:VK_SUCCESS;
