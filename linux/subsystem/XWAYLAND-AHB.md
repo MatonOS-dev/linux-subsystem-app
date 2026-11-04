@@ -36,7 +36,9 @@ protocol accepts RGBA8888. No format/modifier negotiation is needed.
 The endpoint is `<directory>/X<display-number>.ahb`, one AF_UNIX SOCK_SEQPACKET
 listener per display. `V3Launcher` exports its matching absolute path as
 `MATON_X11_AHB_SOCKET` to clients. This variable identifies the transport; it
-is not a feature toggle.
+is not a feature toggle. Both endpoints open the parent directory and use
+`/proc/self/fd/<directory-fd>/<socket-name>` in sockaddr_un, so long package
+runtime paths do not exceed the kernel's Unix socket address limit.
 
 Each connection carries one packet of five native-endian uint32 words:
 `width, height, AHB-format, drawable-XID, reserved-pixmap-XID`, plus one

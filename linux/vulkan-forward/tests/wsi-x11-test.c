@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 _Static_assert(sizeof(struct mv_msghdr)==sizeof(struct msghdr),"Linux sendmsg ABI");
 _Static_assert(sizeof(struct mv_cmsghdr)==sizeof(struct cmsghdr),"Linux SCM_RIGHTS ABI");
 _Static_assert(sizeof(struct mv_sockaddr_un)==sizeof(struct sockaddr_un),"Linux Unix socket ABI");
@@ -24,17 +25,23 @@ static struct geometry *geometry_result(void *c,struct cookie ck,void **error){
     (void)c;(void)ck;(void)error;struct geometry *g=calloc(1,sizeof(*g));g->depth=24;g->width=320;g->height=200;return g;
 }
 static void *request_check(void *c,struct cookie ck){(void)c;(void)ck;return 0;}
+static char socket_root[]="/tmp/maton-x11-ahb-XXXXXX",socket_directory[512],socket_path[512];
+static int private_listener,private_directory_fd;
 static uint32_t import_reply;
 static int private_socket(int domain,int type,int protocol) {
-    assert(domain==1&&type==(5|02000000)&&!protocol);return 900;
+    assert(domain==1&&type==(5|02000000)&&!protocol);return socket(domain,type,protocol);
 }
 static int connect_import(int fd,const struct mv_sockaddr *addr,uint32_t size) {
     const struct mv_sockaddr_un *un=(const void *)addr;
-    assert(fd==900&&size==sizeof(*un)&&!strcmp(un->sun_path,"/private/x11/X0.ahb"));return 0;
+    assert(fd>=0&&size==sizeof(*un)&&!strncmp(un->sun_path,"/proc/self/fd/",14));
+    return connect(fd,(const struct sockaddr *)addr,size);
 }
-static int close_import(int fd) {assert(fd==900);return 0;}
+static int close_import(int fd) {return close(fd);}
+static int open_import(const char *path,int flags,...) {
+    assert(!strcmp(path,socket_directory)&&flags==(O_PATH|O_DIRECTORY|O_CLOEXEC));return open(path,flags);
+}
 static ssize_t import_ahb(int fd,const struct mv_msghdr *msg,int flags) {
-    assert(fd==900&&flags==0x4000&&msg->msg_iovlen==1&&msg->msg_iov[0].iov_len==20);
+    assert(fd>=0&&flags==0x4000&&msg->msg_iovlen==1&&msg->msg_iov[0].iov_len==20);
     /* Exercise a real kernel SCM_RIGHTS transfer using the ICD's libc ABI. */
     int pair[2];assert(socketpair(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0,pair)==0);
     assert(sendmsg(pair[0],(const struct msghdr *)msg,flags)==20);
@@ -52,9 +59,9 @@ static ssize_t import_ahb(int fd,const struct mv_msghdr *msg,int flags) {
     imports++;import_reply=refuse_import?0:r[4];return 20;
 }
 static ssize_t import_result(int fd,void *data,size_t size,int flags) {
-    assert(fd==900&&size==4&&!flags);memcpy(data,&import_reply,4);return 4;
+    assert(fd>=0&&size==4&&!flags);memcpy(data,&import_reply,4);return 4;
 }
-static char *private_env(const char *name) {assert(!strcmp(name,"MATON_X11_AHB_SOCKET"));return "/private/x11/X0.ahb";}
+static char *private_env(const char *name) {assert(!strcmp(name,"MATON_X11_AHB_SOCKET"));return socket_path;}
 static struct cookie release_pixmap(void *c,uint32_t pixmap){(void)c;assert(pixmap>100);return cookie;}
 static struct cookie select_events(void *c,uint32_t id,uint32_t window,uint32_t mask){
     (void)c;assert(window==42&&(mask==6||mask==0));event_id=id;return cookie;
@@ -97,7 +104,7 @@ void *mv_client_symbol(void *lib,const char *name){assert(lib==&queue_token);
     SYM("xcb_screen_allowed_depths_iterator",depth_iter);SYM("xcb_depth_visuals_iterator",visual_iter);
     SYM("xcb_screen_next",iter_next);SYM("xcb_depth_next",iter_next);SYM("xcb_visualtype_next",iter_next);
     SYM("xcb_get_window_attributes",geometry_request);SYM("xcb_get_window_attributes_reply",attrs_result);
-    SYM("free",free);SYM("getenv",private_env);SYM("socket",private_socket);SYM("connect",connect_import);
+    SYM("free",free);SYM("open",open_import);SYM("snprintf",snprintf);SYM("getenv",private_env);SYM("socket",private_socket);SYM("connect",connect_import);
     SYM("close",close_import);SYM("sendmsg",import_ahb);SYM("recv",import_result);SYM("xcb_generate_id",xid);SYM("xcb_flush",yes);
     SYM("xcb_connection_has_error",no);SYM("xcb_get_file_descriptor",no);
     SYM("xcb_get_geometry",geometry_request);SYM("xcb_get_geometry_reply",geometry_result);
@@ -140,6 +147,16 @@ static PFN_vkVoidFunction gdpa(VkDevice d,const char *name){(void)d;
     return 0;
 }
 int main(void){
+    assert(mkdtemp(socket_root));
+    snprintf(socket_directory,sizeof(socket_directory),"%s/%0120d",socket_root,0);
+    assert(mkdir(socket_directory,0700)==0);
+    assert(snprintf(socket_path,sizeof(socket_path),"%s/X0.ahb",socket_directory)<(int)sizeof(socket_path));
+    assert(strlen(socket_path)>sizeof(((struct sockaddr_un *)0)->sun_path));
+    private_directory_fd=open(socket_directory,O_PATH|O_DIRECTORY|O_CLOEXEC);assert(private_directory_fd>=0);
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/X0.ahb",private_directory_fd);
+    private_listener=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);assert(private_listener>=0);
+    assert(bind(private_listener,(const struct sockaddr *)&address,sizeof(address))==0&&listen(private_listener,8)==0);
     struct adopt_api api={.version=1,.current=current};mv_adopt=&api;
     mv_ahb_allocate=ahb_allocate;mv_ahb_send_socket=ahb_send;mv_ahb_describe=ahb_describe;mv_ahb_release=ahb_release;
     assert(mv_x11_visual_supported(&queue_token,7));
@@ -179,5 +196,7 @@ int main(void){
     VkXlibSurfaceCreateInfoKHR xi={.sType=VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,.dpy=(void *)&queue_token,.window=42};
     assert(mv_vkCreateXlibSurfaceKHR((VkInstance)&instance,&xi,0,&surface)==VK_SUCCESS);
     mv_vkDestroySurfaceKHR((VkInstance)&instance,surface,0);
-    puts("PASS XCB Vulkan surface/swapchain: opaque RGBA AHB transport, import rejection, Present idle, teardown without final idle");
+    close(private_listener);close(private_directory_fd);
+    assert(unlink(socket_path)==0&&rmdir(socket_directory)==0&&rmdir(socket_root)==0);
+    puts("PASS XCB Vulkan surface/swapchain: opaque RGBA AHB transport, long socket paths, import rejection, Present idle, teardown without final idle");
 }

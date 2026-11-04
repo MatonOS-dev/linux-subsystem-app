@@ -108,7 +108,7 @@
  #endif
 --- /dev/null
 +++ b/hw/xwayland/xwayland-glamor-ahb.c
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,281 @@
 +/* SPDX-License-Identifier: MIT
 + * Copyright (c) 2026 MatonOS contributors
 + * Android AHB glamor backend. Legacy gbm entry point names are retained only
@@ -122,6 +122,7 @@
 +#include <sys/socket.h>
 +#include <sys/un.h>
 +#include <unistd.h>
++#include <fcntl.h>
 +#include <stdlib.h>
 +#include <stdio.h>
 +#include "globals.h"
@@ -137,7 +138,7 @@
 +
 +struct ahb_screen {
 +    struct maton_ahb_buffer_manager_v1 *manager;
-+    int listener;
++    int listener, directory;
 +    char path[108];
 +    CloseScreenProcPtr close_screen;
 +    struct xorg_list peers;
@@ -336,7 +337,7 @@
 +    xorg_list_for_each_entry_safe(p, next, &a->peers, link) {
 +        RemoveNotifyFd(p->fd); close(p->fd); xorg_list_del(&p->link); free(p);
 +    }
-+    RemoveNotifyFd(a->listener); close(a->listener); unlink(a->path);
++    RemoveNotifyFd(a->listener); close(a->listener); unlink(a->path); close(a->directory);
 +    maton_ahb_buffer_manager_v1_destroy(a->manager);
 +    screen->CloseScreen = a->close_screen;
 +    free(a);
@@ -346,7 +347,7 @@
 +    if (!dixRegisterPrivateKey(&ahb_key, PRIVATE_SCREEN, 0)) return FALSE;
 +    struct ahb_screen *a = calloc(1, sizeof(*a));
 +    if (!a) return FALSE;
-+    a->listener = -1;
++    a->listener = a->directory = -1;
 +    xorg_list_init(&a->peers);
 +    dixSetPrivate(&s->screen->devPrivates, &ahb_key, a);
 +    return TRUE;
@@ -370,14 +371,18 @@
 +    struct ahb_screen *a = get_ahb(s);
 +    const char *dir = getenv("MATON_X11_AHB_DIR");
 +    struct sockaddr_un address = { .sun_family=AF_UNIX };
-+    if (!dir || snprintf(a->path, sizeof(a->path), "%s/X%s.ahb", dir, display) >= sizeof(a->path)) return FALSE;
++    if (!dir) return FALSE;
++    a->directory = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC);
++    if (a->directory < 0) return FALSE;
++    int len = snprintf(a->path, sizeof(a->path), "/proc/self/fd/%d/X%s.ahb", a->directory, display);
++    if (len < 0 || len >= sizeof(a->path)) { close(a->directory); return FALSE; }
 +    strcpy(address.sun_path, a->path);
 +    a->listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-+    if (a->listener < 0) return FALSE;
++    if (a->listener < 0) { close(a->directory); return FALSE; }
 +    unlink(a->path);
 +    if (bind(a->listener, (struct sockaddr *)&address, sizeof(address)) || listen(a->listener, 16) ||
 +        !SetNotifyFd(a->listener, accept_import, X_NOTIFY_READ, s)) {
-+        close(a->listener); a->listener = -1; unlink(a->path); return FALSE;
++        close(a->listener); a->listener = -1; unlink(a->path); close(a->directory); return FALSE;
 +    }
 +    s->screen->CreatePixmap = create_pixmap;
 +    s->screen->DestroyPixmap = destroy_pixmap;
