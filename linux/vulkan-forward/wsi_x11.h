@@ -6,6 +6,7 @@ struct mv_x11_buffer;
 int mv_x11_visual_supported(void *,uint32_t);
 struct mv_x11 *mv_x11_create(void *connection,uint32_t window);
 void *mv_x11_connection(void *display);
+void mv_x11_set_mailbox(struct mv_x11 *,int);
 void mv_x11_destroy(struct mv_x11 *);
 int mv_x11_extent(struct mv_x11 *,uint32_t *,uint32_t *);
 struct mv_x11_buffer *mv_x11_buffer_create(struct mv_x11 *,int,uint32_t,uint32_t,uint32_t,uint32_t,uint64_t);

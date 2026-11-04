@@ -15,7 +15,7 @@ struct iterator { void *data;int rem,index; };
 struct visual { uint32_t id;uint8_t kind,bits;uint16_t entries;uint32_t red,green,blue,pad; };
 struct attributes { uint8_t type,backing;uint16_t sequence;uint32_t length,visual; };
 struct mv_x11 { void *connection,*queue; uint32_t window,event,stamp,serial,depth;
-    struct mv_x11_buffer *buffers; uint64_t next_msc; int pending_complete; };
+    struct mv_x11_buffer *buffers; uint64_t next_msc; int pending_complete,mailbox; };
 struct mv_x11_buffer { struct mv_x11 *x; struct mv_x11_buffer *next;
     uint32_t pixmap,serial; int released; };
 static void (*xfree)(void *);
@@ -138,6 +138,7 @@ struct mv_x11 *mv_x11_create(void *connection,uint32_t window) {
     }
     return x;
 }
+void mv_x11_set_mailbox(struct mv_x11 *x,int mailbox) { x->mailbox=mailbox; }
 void mv_x11_destroy(struct mv_x11 *x) {
     if(!x)return;
     (void)checked(x,select_input(x->connection,x->event,x->window,0));
@@ -217,9 +218,12 @@ int mv_x11_present(struct mv_x11_buffer *b,int fence) {
         if(r<0||!(p.revents&1))return 0;
     }
     struct mv_x11 *x=b->x;
-    while(x->pending_complete)if(mv_x11_dispatch(x,-1)<0)return 0;
+    /* FIFO waits for the previous Complete and targets the next MSC. MAILBOX
+     * targets MSC 0: Present replaces a still-queued pixmap (IdleNotify
+     * releases it), so the newest frame shows at the next vblank. */
+    while(!x->mailbox&&x->pending_complete)if(mv_x11_dispatch(x,-1)<0)return 0;
     if(x->next_msc==UINT64_MAX)return 0;
     b->serial=++x->serial;
-    if(!checked(x,present(x->connection,x->window,b->pixmap,b->serial,0,0,0,0,0,0,0,0,x->next_msc,0,0,0,0)))return 0;
+    if(!checked(x,present(x->connection,x->window,b->pixmap,b->serial,0,0,0,0,0,0,0,0,x->mailbox?0:x->next_msc,0,0,0,0)))return 0;
     b->released=0;x->pending_complete=1;return flush(x->connection)>0;
 }

@@ -339,9 +339,7 @@ static VkResult mv_vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice ph
         uint32_t *count,VkPresentModeKHR *modes) {
     struct mv_handle *h=(void *)physical;
     if (!count || !mv_wsi_surface((VkInstance)h->instance,surface)) return VK_ERROR_SURFACE_LOST_KHR;
-    if (!modes) {*count=1;return VK_SUCCESS;}
-    if (!*count) return VK_INCOMPLETE;
-    modes[0]=VK_PRESENT_MODE_FIFO_KHR;*count=1;return VK_SUCCESS;
+    return mv_wsi_modes(count,modes);
 }
 
 static struct mv_wsi_live_context *mv_wsi_live(VkDevice device,VkSwapchainKHR swapchain) {
@@ -401,6 +399,7 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
         .destroy_buffer=mv_wsi_live_destroy_buffer,.present=mv_wsi_live_present};
     struct mv_wsi_swapchain *chain=0;VkResult r=mv_wsi_create(&surface->state,info,&ops,&chain);
     if(r){surface->state.extent=previous_extent;surface->state.generation=previous_generation;mv_free(c);return r;}
+    if(surface->x11)mv_x11_set_mailbox(surface->x11,info->presentMode==VK_PRESENT_MODE_MAILBOX_KHR);
     *out=(VkSwapchainKHR)(uintptr_t)chain;return VK_SUCCESS;
 }
 static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR *info,

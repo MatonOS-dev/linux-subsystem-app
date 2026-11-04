@@ -92,7 +92,8 @@ int main(void) {
     assert(mv_wsi_support(&s,VK_QUEUE_GRAPHICS_BIT,1));assert(!mv_wsi_support(&s,VK_QUEUE_COMPUTE_BIT,1));assert(!mv_wsi_support(&s,VK_QUEUE_GRAPHICS_BIT,0));
     VkSurfaceCapabilitiesKHR caps;assert(!mv_wsi_capabilities(&s,&caps));assert(caps.currentExtent.width==640 && caps.minImageCount==2);
     uint32_t n=0;assert(!mv_wsi_formats(&n,0) && n==1);VkSurfaceFormatKHR f; n=0;assert(mv_wsi_formats(&n,&f)==VK_INCOMPLETE);n=1;assert(!mv_wsi_formats(&n,&f));
-    VkPresentModeKHR mode;n=1;assert(!mv_wsi_modes(&n,&mode) && mode==VK_PRESENT_MODE_FIFO_KHR);
+    VkPresentModeKHR mode,modes[2];n=1;assert(mv_wsi_modes(&n,&mode)==VK_INCOMPLETE && mode==VK_PRESENT_MODE_FIFO_KHR);
+    n=2;assert(!mv_wsi_modes(&n,modes) && modes[0]==VK_PRESENT_MODE_FIFO_KHR && modes[1]==VK_PRESENT_MODE_MAILBOX_KHR);
     struct mv_wsi_ops ops={.allocate=allocate,.release=release,.destroy=destroy,
         .export_dmabuf=export_dmabuf,.create_buffer=create_buffer,.destroy_buffer=destroy_buffer,
         .present=present};
@@ -101,7 +102,7 @@ int main(void) {
         .imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,.presentMode=VK_PRESENT_MODE_FIFO_KHR};
     struct mv_wsi_swapchain *c=0;
-    ci.presentMode=VK_PRESENT_MODE_MAILBOX_KHR;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_FORMAT_NOT_SUPPORTED && !c);ci.presentMode=mode;
+    ci.presentMode=VK_PRESENT_MODE_IMMEDIATE_KHR;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_FORMAT_NOT_SUPPORTED && !c);ci.presentMode=mode;
     fail_allocate=2;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_OUT_OF_DEVICE_MEMORY && !c);assert(releases==2 && destroys==1 && buffer_destroys==1);
     fail_allocate=0;
     /* A failed Wayland buffer creation rolls back every earlier image and
