@@ -58,12 +58,15 @@ static bool begin_access(struct wlr_buffer* base, uint32_t flags, void** data,
     *data = buffer->staging; *format = DRM_FORMAT_ARGB8888; *stride = buffer->stride;
     return true;
   }
-  void* pixels = NULL;
   uint64_t usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY | AHARDWAREBUFFER_USAGE_CPU_READ_RARELY;
+  /* gbm_mesa CPU locks map a staging copy laid out with the map stride, which
+   * AHardwareBuffer_describe reports. The handle's strides[0] (and lockPlanes,
+   * which reports it) is the host's aligned layout and overruns that mapping. */
+  void* pixels = NULL;
   if (AHardwareBuffer_lock(buffer->ahb, usage, -1, NULL, &pixels) != 0 || !pixels) return false;
   buffer->locked = true; *data = pixels;
   *format = buffer->handle ? buffer->handle->format : DRM_FORMAT_ARGB8888;
-  *stride = buffer->handle && buffer->handle->strides[0] ? buffer->handle->strides[0] : buffer->stride;
+  *stride = buffer->stride;
   return true;
 }
 
