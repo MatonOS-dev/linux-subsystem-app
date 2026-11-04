@@ -256,41 +256,9 @@ crypto_build libgpg-error-1.51 'src' --disable-tests --disable-nls
 crypto_build libgcrypt-1.11.1 'compat mpi cipher random src' \
   --with-libgpg-error-prefix="$PREFIX" --disable-asm
 
-# GPU rendering (glamor + DRI3). Mesa lives in /vendor and its Android build
-# has no EGL GBM platform, so Xwayland gets three small forwarding libraries
-# (xwayland-egl/): libEGL, libGLESv2 and libgbm load Mesa through the
-# same-process-HAL namespace, and libEGL maps the GBM platform to
-# EGL_EXT_platform_device. They sit in lib/xwayland-egl (on device
-# private runtime library links), which only Xwayland's LD_LIBRARY_PATH names.
+# Glamor uses the platform Android EGL/GLES dispatch and full AHB handles.
+# No private Mesa/GBM loader is installed in Xwayland's library path.
 MESA_SRC=${MESA_DIR:-$HOME/Documents/mesa-26.2.3}
-[[ -f $MESA_SRC/src/gbm/main/gbm.h ]] || die "Mesa source (gbm.h) missing at $MESA_SRC"
-SHIM_SRC=$ROOT/xwayland-egl
-SHIM=$PREFIX/lib/xwayland-egl
-SYSINC=$TOOLCHAIN/sysroot/usr/include
-mkdir -p "$SHIM" "$BUILD/xwayland-egl" "$PREFIX/include"
-python3 "$SHIM_SRC/gen_forward.py" "$BUILD/xwayland-egl/egl_forward.c" libEGL_mesa.so 'egl[A-Z][A-Za-z0-9]*' \
-  --skip eglGetPlatformDisplay,eglQueryString,eglGetProcAddress "$SYSINC/EGL/egl.h"
-python3 "$SHIM_SRC/gen_forward.py" "$BUILD/xwayland-egl/gles_forward.c" libGLESv2_mesa.so 'gl[A-Z][A-Za-z0-9]*' \
-  "$SYSINC/GLES2/gl2.h" "$SYSINC/GLES3/gl3.h" "$SYSINC/GLES3/gl31.h" "$SYSINC/GLES3/gl32.h"
-python3 "$SHIM_SRC/gen_forward.py" "$BUILD/xwayland-egl/gbm_forward.c" libgbm_mesa.so 'gbm_[a-z0-9_]+' \
-  "$MESA_SRC/src/gbm/main/gbm.h"
-shim_lib() { # soname sources...
-  local soname=$1; shift
-  "$CC" -O2 -Wall -fPIC -shared -I"$SHIM_SRC" -o "$SHIM/$soname" -Wl,-soname,"$soname" "$@" \
-    "$SHIM_SRC/sphal.c" -ldl -llog || die "build failed: $soname"
-}
-shim_lib libEGL.so "$BUILD/xwayland-egl/egl_forward.c" "$SHIM_SRC/egl_overrides.c"
-shim_lib libGLESv2.so "$BUILD/xwayland-egl/gles_forward.c"
-shim_lib libgbm.so "$BUILD/xwayland-egl/gbm_forward.c"
-install -m 0644 "$MESA_SRC/src/gbm/main/gbm.h" "$PREFIX/include/gbm.h"
-cat > "$PREFIX/lib/pkgconfig/gbm.pc" <<EOF
-prefix=$PREFIX
-Name: gbm
-Description: Mesa gbm (MatonOS forwarder to the vendor Mesa)
-Version: 26.2.3
-Libs: -L$SHIM -lgbm
-Cflags: -I$PREFIX/include
-EOF
 # libepoxy: GL dispatch for glamor; on Android it opens libEGL.so/libGLESv2.so.
 [[ -d $SRC/libepoxy-1.5.10 ]] || tar -xzf "$DOWN/libepoxy-1.5.10.tar.gz" -C "$SRC"
 configure_meson libepoxy "$SRC/libepoxy-1.5.10" -Degl=yes -Dglx=no -Dx11=false -Dtests=false
@@ -298,7 +266,7 @@ configure_meson libepoxy "$SRC/libepoxy-1.5.10" -Degl=yes -Dglx=no -Dx11=false -
 # Server GLX uses epoxy dispatch and glamor's existing EGL display, not
 # libGL or a second Mesa/DRI module installation. Meson's GLX dependency('gl')
 # only needs the Khronos GL headers here; provide a headers-only pc file.
-# Use the same Mesa source as the vendor forwarders (NDK supplies KHR headers).
+# Mesa provides the Khronos desktop GL headers (NDK supplies KHR headers).
 mkdir -p "$PREFIX/include/GL"
 for header in gl.h glext.h glcorearb.h; do
   install -m 0644 "$MESA_SRC/include/GL/$header" "$PREFIX/include/GL/$header"
@@ -312,8 +280,8 @@ Version: 1.2
 Libs:
 Cflags: -I\${includedir}
 EOF
-# Xwayland: the standalone X server for Wayland (meson). glamor and DRI3 run
-# on the GPU through the forwarders above. Enabling GLX also builds
+# Xwayland: the standalone X server for Wayland (meson). The AHB backend
+# renders with Android GLES. Enabling GLX also builds
 # glamor/glamor_glx_provider.c; xwl_glamor_init pushes this EGL-backed provider.
 # The patch uses epoxy for server GL dispatch and removes the DRI fallback.
 # Keep indirect GLX disabled (the default):
@@ -349,6 +317,12 @@ if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$SHM_PATC
   patch --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$SHM_PATCH"
 elif ! patch --dry-run --batch --reverse -p1 -d "$SRC/xwayland-24.1.13" < "$SHM_PATCH" >/dev/null 2>&1; then
   die 'Xwayland shm-nosysv patch neither applies nor is already applied'
+fi
+AHB_PATCH=$ROOT/xwayland-ahb.patch
+if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$AHB_PATCH" >/dev/null 2>&1; then
+  patch --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$AHB_PATCH"
+elif ! patch --dry-run --batch --reverse -p1 -d "$SRC/xwayland-24.1.13" < "$AHB_PATCH" >/dev/null 2>&1; then
+  die 'Xwayland AHB patch neither applies nor is already applied'
 fi
 configure_meson xwayland "$SRC/xwayland-24.1.13" \
   -Dglx=true -Dglamor=true -Dxv=false -Ddri3=true -Dmitshm=true \
@@ -410,3 +384,10 @@ EOF
 
 echo "X11/Xwayland stack installed under $PREFIX"
 ls -la "$PREFIX/bin/Xwayland" 2>/dev/null || die "Xwayland binary missing after build"
+
+# The compositor and CMake both package these shared X11 libraries. Keep the
+# existing runtime copies identical after rebuilding this stack independently.
+for library in "$PREFIX"/lib/*.so; do
+  runtime=$BUILD/jniLibs/x86_64/${library##*/}
+  if [[ -f $runtime ]]; then install -m 0755 "$library" "$runtime"; fi
+done

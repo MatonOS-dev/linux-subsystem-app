@@ -53,7 +53,7 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     if(!s->extent.width || !s->extent.height || s->extent.width>4096 || s->extent.height>4096 ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
     if(!ops || !ops->allocate || !ops->release || !ops->destroy ||
-       !ops->export_dmabuf || !ops->create_buffer || !ops->destroy_buffer || !ops->present)
+       !ops->create_buffer || !ops->destroy_buffer || !ops->present)
         return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wsi_swapchain *c=mv_alloc(sizeof(*c));if(!c)return VK_ERROR_OUT_OF_HOST_MEMORY;
     *c=(struct mv_wsi_swapchain){.surface=s,.ops=*ops,.generation=s->generation,.count=info->minImageCount};
@@ -63,13 +63,7 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
         struct mv_wsi_image *b=&c->images[i];
         r=ops->allocate(ops->context,s->token,s->extent,info->imageFormat,
                 &b->ahb,&b->image,&b->memory,&b->token);
-        if(!r)r=ops->export_dmabuf(ops->context,b->ahb,b->image,&b->dmabuf_fd,
-                &b->drm_format,&b->stride,&b->offset,&b->modifier);
-        if(!r && ((b->drm_format!=0x34324241u && b->drm_format!=0x34325241u) || !b->stride ||
-                  (b->modifier!=0 && b->modifier!=0x00ffffffffffffffull)))
-            r=VK_ERROR_FORMAT_NOT_SUPPORTED;
-        if(!r)r=ops->create_buffer(ops->context,b->ahb,s->extent,b->drm_format,b->dmabuf_fd,
-                b->stride,b->offset,b->modifier,&b->wl_buffer);
+        if(!r)r=ops->create_buffer(ops->context,b->ahb,s->extent,&b->wl_buffer);
         if(!r && !b->wl_buffer)r=VK_ERROR_INITIALIZATION_FAILED;
         if(r){cleanup(c);return r;}
     }

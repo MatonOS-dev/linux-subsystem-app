@@ -5,9 +5,9 @@
 #include <string.h>
 static struct adopt_thread thread;
 static int expect_x11;
-static VkExtensionProperties available[5];
+static VkExtensionProperties available[MV_WSI_REQUIREMENT_COUNT];
 static VkResult VKAPI_CALL device_extensions(VkPhysicalDevice p,const char *layer,uint32_t *count,VkExtensionProperties *out){
-    (void)p;assert(!layer);if(out){assert(*count>=5);memcpy(out,available,sizeof(available));}*count=5;return VK_SUCCESS;
+    (void)p;assert(!layer);if(out){assert(*count>=MV_WSI_REQUIREMENT_COUNT);memcpy(out,available,sizeof(available));}*count=MV_WSI_REQUIREMENT_COUNT;return VK_SUCCESS;
 }
 static int advertises_swapchain(struct mv_handle *physical){
     VkExtensionProperties props[16];uint32_t count=16;
@@ -19,7 +19,7 @@ static struct adopt_thread *current(void) {return &thread;}
 static VkResult VKAPI_CALL capture_device(VkPhysicalDevice physical,const VkDeviceCreateInfo *info,
                                          const VkAllocationCallbacks *a,VkDevice *out) {
     (void)physical;(void)a;(void)out;
-    assert(info->enabledExtensionCount==5);
+    assert(info->enabledExtensionCount==MV_WSI_REQUIREMENT_COUNT);
     unsigned ahb=0,sync=0,dma=0;
     for(uint32_t i=0;i<info->enabledExtensionCount;i++) {
         assert(strcmp(info->ppEnabledExtensionNames[i],VK_KHR_SWAPCHAIN_EXTENSION_NAME));
@@ -55,9 +55,9 @@ int main(void) {
     expect_x11=1;instance.wsi_wayland_enabled=0;instance.wsi_xcb_enabled=1;
     assert(mv_vkCreateDevice((VkPhysicalDevice)&physical,&ci,0,&device)==VK_ERROR_DEVICE_LOST);
     instance.extensions=device_extensions;
-    for(unsigned i=0;i<5;i++)memcpy(available[i].extensionName,mv_wsi_x11_requirements[i],strlen(mv_wsi_x11_requirements[i])+1);
+    for(unsigned i=0;i<MV_WSI_REQUIREMENT_COUNT;i++)memcpy(available[i].extensionName,mv_wsi_x11_requirements[i],strlen(mv_wsi_x11_requirements[i])+1);
     assert(advertises_swapchain(&physical));
-    for(unsigned i=0;i<5;i++){
+    for(unsigned i=0;i<MV_WSI_REQUIREMENT_COUNT;i++){
         char saved=available[i].extensionName[0];available[i].extensionName[0]=0;
         assert(!advertises_swapchain(&physical));available[i].extensionName[0]=saved;
     }

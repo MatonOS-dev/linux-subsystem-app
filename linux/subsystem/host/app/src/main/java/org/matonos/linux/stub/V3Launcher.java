@@ -221,7 +221,10 @@ final class V3Launcher {
         File alias = new File(runtime.directory(), "wayland-0-x11");
         if (Files.isSymbolicLink(alias.toPath())) {
             String target = Files.readSymbolicLink(alias.toPath()).toString();
-            if (target.matches("x11/X[0-9]+")) env.put("DISPLAY", ":" + target.substring(5));
+            if (target.matches("x11/X[0-9]+")) {
+                env.put("DISPLAY", ":" + target.substring(5));
+                env.put("MATON_X11_AHB_SOCKET", new File(runtime.directory(), target + ".ahb").getAbsolutePath());
+            }
         }
         if (trace) {
             Log.i("MatonV3", "v3-trace launch ref=" + ref +

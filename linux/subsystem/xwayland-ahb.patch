@@ -1,0 +1,406 @@
+--- a/meson.build
++++ b/meson.build
+@@ -203,7 +203,6 @@
+ gbm_dep = dependency('', required: false)
+ epoxy_dep = dependency('', required: false)
+ if build_glamor
+-    gbm_dep = dependency('gbm', version: gbm_req, required: false)
+     epoxy_dep = dependency('epoxy', required: false)
+ endif
+ 
+--- a/include/meson.build
++++ b/include/meson.build
+@@ -311,7 +311,7 @@
+ configure_file(output : 'xkb-config.h',
+                configuration : xkb_data)
+ 
+-build_xwayland_glamor = build_glamor and gbm_dep.found()
++build_xwayland_glamor = build_glamor
+ 
+ xwayland_data = configuration_data()
+ xwayland_data.set('XWL_HAS_GLAMOR', build_xwayland_glamor ? '1' : false)
+--- a/hw/xwayland/meson.build
++++ b/hw/xwayland/meson.build
+@@ -113,7 +113,7 @@
+               'xwayland-glamor.c',
+               'xwayland-dmabuf.h',
+               'xwayland-dmabuf.c',
+-              'xwayland-glamor-gbm.c',
++              'xwayland-glamor-ahb.c',
+               'xwayland-glamor-gbm.h'
+             ]
+ 
+@@ -123,7 +123,9 @@
+ 
+     srcs += client_header.process('drm.xml')
+     srcs += code.process('drm.xml')
+-    xwayland_dep += gbm_dep
++    srcs += client_header.process('maton-ahb-buffer-v1.xml')
++    srcs += code.process('maton-ahb-buffer-v1.xml')
++    xwayland_dep += cc.find_library('android')
+     xwayland_glamor += glamor
+ endif
+ 
+--- a/hw/xwayland/xwayland-glamor.c
++++ b/hw/xwayland/xwayland-glamor.c
+@@ -79,7 +79,7 @@
+     struct xwl_screen *xwl_screen = xwl_screen_get(screen);
+ 
+     glamor_set_glvnd_vendor(screen, xwl_screen->glvnd_vendor);
+-    glamor_enable_dri3(screen);
++    /* Direct clients use private AHB import and stock Present. */
+     glamor_ctx->ctx = xwl_screen->egl_context;
+     glamor_ctx->display = xwl_screen->egl_display;
+ 
+@@ -110,20 +110,14 @@
+                             uint32_t id, const char *interface,
+                             uint32_t version)
+ {
+-    if (strcmp(interface, wl_drm_interface.name) == 0)
+-        xwl_screen_set_drm_interface(xwl_screen, id, version);
+-    else if (strcmp(interface, zwp_linux_dmabuf_v1_interface.name) == 0)
+-        xwl_screen_set_dmabuf_interface(xwl_screen, id, version);
+-    else if (strcmp(interface, wp_linux_drm_syncobj_manager_v1_interface.name) == 0)
+-        xwl_screen_set_syncobj_interface(xwl_screen, id, version);
++    xwl_ahb_registry(xwl_screen, registry, id, interface);
+ }
+ 
+ static Bool
+ xwl_glamor_has_wl_interfaces(struct xwl_screen *xwl_screen)
+ {
+-    if (!xwl_glamor_has_wl_drm(xwl_screen) &&
+-        xwl_screen->dmabuf_protocol_version < 4) {
+-        LogMessageVerb(X_INFO, 3, "glamor: 'wl_drm' not supported and linux-dmabuf v4 not supported\n");
++    if (!xwl_glamor_has_wl_drm(xwl_screen)) {
++        LogMessageVerb(X_INFO, 3, "glamor: MatonOS AHB manager unavailable\n");
+         return FALSE;
+     }
+ 
+@@ -228,7 +222,7 @@
+     }
+ 
+     if (!xwl_glamor_has_wl_interfaces(xwl_screen)) {
+-        ErrorF("Xwayland glamor: GBM Wayland interfaces not available\n");
++        ErrorF("Xwayland glamor: AHB Wayland interface not available\n");
+         return FALSE;
+     }
+ 
+--- a/hw/xwayland/xwayland-glamor.h
++++ b/hw/xwayland/xwayland-glamor.h
+@@ -47,6 +47,7 @@
+ #ifdef XWL_HAS_GLAMOR
+ 
+ Bool xwl_glamor_init(struct xwl_screen *xwl_screen);
++void xwl_ahb_registry(struct xwl_screen *, struct wl_registry *, uint32_t, const char *);
+ 
+ Bool xwl_screen_set_drm_interface(struct xwl_screen *xwl_screen,
+                                   uint32_t id, uint32_t version);
+--- a/hw/xwayland/xwayland-screen.c
++++ b/hw/xwayland/xwayland-screen.c
+@@ -990,7 +990,7 @@
+ 
+ #ifdef XWL_HAS_GLAMOR
+     if (xwl_screen->glamor && !xwl_glamor_init_gbm(xwl_screen)) {
+-        ErrorF("xwayland glamor: failed to setup GBM backend, falling back to sw accel\n");
++        ErrorF("xwayland glamor: failed to setup AHB backend, falling back to sw accel\n");
+         xwl_screen->glamor = 0;
+     }
+ #endif
+--- /dev/null
++++ b/hw/xwayland/xwayland-glamor-ahb.c
+@@ -0,0 +1,276 @@
++/* SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 MatonOS contributors
++ * Android AHB glamor backend. Legacy gbm entry point names are retained only
++ * for the upstream Xwayland call sites; this backend has no DRM device. */
++#include <xwayland-config.h>
++#define MESA_EGL_NO_X11_HEADERS
++#define EGL_NO_X11
++#include <glamor_egl.h>
++#include <glamor.h>
++#include <android/hardware_buffer.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include "globals.h"
++#include "dix.h"
++#include "dixstruct.h"
++#include "resource.h"
++#include "xwayland-glamor.h"
++#include "xwayland-screen.h"
++#include "xwayland-window.h"
++#include "xwayland-pixmap.h"
++#include "xwayland-window-buffers.h"
++#include "maton-ahb-buffer-v1-client-protocol.h"
++
++struct ahb_screen {
++    struct maton_ahb_buffer_manager_v1 *manager;
++    int listener;
++    char path[108];
++    CloseScreenProcPtr close_screen;
++    struct xorg_list peers;
++};
++struct xwl_pixmap {
++    AHardwareBuffer *ahb;
++    EGLImageKHR image;
++    struct wl_buffer *buffer;
++};
++struct import_peer { struct xorg_list link; struct xwl_screen *screen; int fd; };
++static DevPrivateKeyRec ahb_key;
++static struct ahb_screen *get_ahb(struct xwl_screen *s) {
++    return dixLookupPrivate(&s->screen->devPrivates, &ahb_key);
++}
++void xwl_ahb_registry(struct xwl_screen *s, struct wl_registry *r,
++                      uint32_t id, const char *interface) {
++    if (!strcmp(interface, maton_ahb_buffer_manager_v1_interface.name))
++        get_ahb(s)->manager = wl_registry_bind(r, id,
++                                &maton_ahb_buffer_manager_v1_interface, 1);
++}
++Bool xwl_glamor_has_wl_drm(struct xwl_screen *s) { return get_ahb(s)->manager != NULL; }
++Bool xwl_screen_set_drm_interface(struct xwl_screen *s, uint32_t id, uint32_t version) { return FALSE; }
++Bool xwl_screen_set_syncobj_interface(struct xwl_screen *s, uint32_t id, uint32_t version) { return FALSE; }
++/* The producer fence is waited by the WSI; glFinish below covers server
++ * rendering. wl_buffer.release controls reuse. No kernel implicit sync needed. */
++Bool xwl_glamor_supports_implicit_sync(struct xwl_screen *s) { return TRUE; }
++Bool xwl_glamor_supports_syncobjs(struct xwl_screen *s) { return FALSE; }
++drmDevice *xwl_gbm_get_main_device(struct xwl_screen *s) { return NULL; }
++Bool xwl_glamor_gbm_set_syncpts(struct xwl_window *w, PixmapPtr p) { return FALSE; }
++void xwl_glamor_gbm_dispose_syncpts(PixmapPtr p) { }
++void xwl_glamor_gbm_wait_syncpts(PixmapPtr p) { }
++void xwl_glamor_gbm_wait_release_fence(struct xwl_window *w, PixmapPtr p, struct xwl_window_buffer *b) { }
++/* Glamor's optional fd-export hooks: this backend never exports plane fds. */
++int glamor_egl_fds_from_pixmap(ScreenPtr s, PixmapPtr p, int *fds,
++    uint32_t *strides, uint32_t *offsets, uint64_t *modifier) { return 0; }
++int glamor_egl_fd_from_pixmap(ScreenPtr s, PixmapPtr p, CARD16 *stride, CARD32 *size) { return -1; }
++int xwl_glamor_dmabuf_export_sync_file(PixmapPtr p) { return -1; }
++void xwl_glamor_dmabuf_import_sync_file(PixmapPtr p, int fd) { close(fd); }
++struct dri3_syncobj *xwl_glamor_dri3_syncobj_create(struct xwl_screen *s) { return NULL; }
++void xwl_glamor_dri3_syncobj_passthrough(struct xwl_window *w,
++    struct dri3_syncobj *a, struct dri3_syncobj *r, uint64_t ap, uint64_t rp) { }
++
++/* Takes the received/allocation reference on success only. */
++static PixmapPtr import_ahb(ScreenPtr screen, AHardwareBuffer *ahb, int depth) {
++    struct xwl_screen *s = xwl_screen_get(screen);
++    AHardwareBuffer_Desc d;
++    AHardwareBuffer_describe(ahb, &d);
++    PixmapPtr p = glamor_create_pixmap(screen, d.width, d.height, depth,
++                                      GLAMOR_CREATE_PIXMAP_NO_TEXTURE);
++    struct xwl_pixmap *a = calloc(1, sizeof(*a));
++    GLuint texture = 0;
++    if (!p || !a) goto fail;
++    xwl_glamor_egl_make_current(s);
++    const EGLint attrs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
++    a->image = eglCreateImageKHR(s->egl_display, EGL_NO_CONTEXT,
++        EGL_NATIVE_BUFFER_ANDROID, eglGetNativeClientBufferANDROID(ahb), attrs);
++    if (a->image == EGL_NO_IMAGE_KHR) goto fail;
++    glGenTextures(1, &texture);
++    glBindTexture(GL_TEXTURE_2D, texture);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, a->image);
++    if (glGetError() != GL_NO_ERROR || !glamor_set_pixmap_texture(p, texture)) goto fail;
++    glBindTexture(GL_TEXTURE_2D, 0);
++    glamor_set_pixmap_type(p, GLAMOR_TEXTURE_DRM);
++    a->ahb = ahb;
++    xwl_pixmap_set_private(p, a);
++    return p;
++fail:
++    if (texture) glDeleteTextures(1, &texture);
++    if (a && a->image != EGL_NO_IMAGE_KHR) eglDestroyImageKHR(s->egl_display, a->image);
++    free(a);
++    if (p) glamor_destroy_pixmap(p);
++    return NULL;
++}
++static PixmapPtr create_pixmap(ScreenPtr screen, int w, int h, int depth, unsigned hint) {
++    if (w > 0 && h > 0 && (depth == 24 || depth == 32) &&
++        (hint == CREATE_PIXMAP_USAGE_BACKING_PIXMAP || hint == CREATE_PIXMAP_USAGE_SHARED ||
++         (xwl_screen_get(screen)->rootless && hint == 0))) {
++        /* Always RGBA: the existing compositor protocol accepts ABGR8888.
++         * Depth 24 makes alpha opaque at the X rendering/compositing layer. */
++        AHardwareBuffer_Desc d = { .width=w, .height=h, .layers=1,
++            .format=AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
++            .usage=AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT };
++        AHardwareBuffer *ahb = NULL;
++        if (AHardwareBuffer_allocate(&d, &ahb)) return NULL;
++        PixmapPtr p = import_ahb(screen, ahb, depth);
++        if (!p) AHardwareBuffer_release(ahb);
++        else if (hint == CREATE_PIXMAP_USAGE_BACKING_PIXMAP) glamor_clear_pixmap(p);
++        return p;
++    }
++    return glamor_create_pixmap(screen, w, h, depth, hint);
++}
++PixmapPtr xwl_glamor_create_pixmap_for_window(struct xwl_window *w) {
++    WindowPtr p = w->surface_window;
++    if (!w->xwl_screen->glamor) return NullPixmap;
++    return create_pixmap(p->drawable.pScreen, p->drawable.width + 2*p->borderWidth,
++        p->drawable.height + 2*p->borderWidth, p->drawable.depth, CREATE_PIXMAP_USAGE_BACKING_PIXMAP);
++}
++static Bool destroy_pixmap(PixmapPtr p) {
++    struct xwl_pixmap *a = xwl_pixmap_get(p);
++    if (a && p->refcnt == 1) {
++        struct xwl_screen *s = xwl_screen_get(p->drawable.pScreen);
++        xwl_pixmap_del_buffer_release_cb(p);
++        if (a->buffer) wl_buffer_destroy(a->buffer);
++        xwl_glamor_egl_make_current(s);
++        eglDestroyImageKHR(s->egl_display, a->image);
++        AHardwareBuffer_release(a->ahb);
++        free(a);
++    }
++    return glamor_destroy_pixmap(p);
++}
++static const struct wl_buffer_listener release_listener = { xwl_pixmap_buffer_release_cb };
++struct wl_buffer *xwl_glamor_pixmap_get_wl_buffer(PixmapPtr p) {
++    struct xwl_pixmap *a = xwl_pixmap_get(p);
++    struct xwl_screen *s = xwl_screen_get(p->drawable.pScreen);
++    if (!a) return NULL;
++    xwl_glamor_egl_make_current(s);
++    /* No acquire fence in maton-ahb-buffer-v1. Also covers Present flips. */
++    glFinish();
++    if (!a->buffer) {
++        int pair[2];
++        if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair)) return NULL;
++        if (!AHardwareBuffer_sendHandleToUnixSocket(a->ahb, pair[1])) {
++            a->buffer = maton_ahb_buffer_manager_v1_create_buffer(get_ahb(s)->manager,
++                pair[0], p->drawable.width, p->drawable.height, 0x34324241u);
++        }
++        close(pair[0]); close(pair[1]);
++        if (a->buffer) wl_buffer_add_listener(a->buffer, &release_listener, p);
++    }
++    return a->buffer;
++}
++
++/* Metadata {width,height,AHB format,drawable,client-reserved pixmap XID} plus
++ * SCM_RIGHTS containing the already-filled AHB transport socket. All words
++ * are uint32_t in local byte order (the supported clients are x86 LE).
++ * Reply: pixmap XID, or zero. Present/FreePixmap remain ordinary X requests. */
++static void import_request(int fd, int events, void *data) {
++    struct import_peer *peer = data;
++    struct xwl_screen *s = peer->screen;
++    uint32_t req[5], reply = 0;
++    struct iovec iov = { req, sizeof(req) };
++    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(int))]; } control;
++    struct msghdr msg = { .msg_iov=&iov, .msg_iovlen=1,
++        .msg_control=control.bytes, .msg_controllen=sizeof(control.bytes) };
++    int transport = -1;
++    ssize_t n = recvmsg(fd, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
++    struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
++    if (cm && cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_RIGHTS &&
++        cm->cmsg_len == CMSG_LEN(sizeof(int))) memcpy(&transport, CMSG_DATA(cm), sizeof(int));
++    if (n == sizeof(req) && !(msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) && transport >= 0) {
++        unsigned index = CLIENT_ID(req[4]);
++        ClientPtr client = index < currentMaxClients ? clients[index] : NULL;
++        DrawablePtr drawable;
++        AHardwareBuffer *ahb = NULL;
++        if (client && client != serverClient && LegalNewID(req[4], client) &&
++            dixLookupDrawable(&drawable, req[3], client, M_DRAWABLE_WINDOW, DixWriteAccess) == Success &&
++            drawable->pScreen == s->screen && (drawable->depth == 24 || drawable->depth == 32) &&
++            !AHardwareBuffer_recvHandleFromUnixSocket(transport, &ahb)) {
++            AHardwareBuffer_Desc d;
++            AHardwareBuffer_describe(ahb, &d);
++            if (d.width == req[0] && d.height == req[1] && d.layers == 1 &&
++                req[2] == AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM && d.format == req[2]) {
++                PixmapPtr p = import_ahb(s->screen, ahb, drawable->depth);
++                if (p) {
++                    p->drawable.id = req[4];
++                    if (AddResource(req[4], RT_PIXMAP, p)) reply = req[4];
++                    /* AddResource destroys the pixmap on allocation failure. */
++                    ahb = NULL;
++                }
++            }
++            if (ahb) AHardwareBuffer_release(ahb);
++        }
++    }
++    if (transport >= 0) close(transport);
++    (void)send(fd, &reply, sizeof(reply), MSG_NOSIGNAL);
++    RemoveNotifyFd(fd); close(fd);
++    xorg_list_del(&peer->link); free(peer);
++}
++static void accept_import(int fd, int events, void *data) {
++    int peer = accept4(fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
++    if (peer < 0) return;
++    struct xwl_screen *s = data;
++    struct import_peer *p = calloc(1, sizeof(*p));
++    if (!p) { close(peer); return; }
++    p->screen = s; p->fd = peer;
++    xorg_list_add(&p->link, &get_ahb(s)->peers);
++    if (!SetNotifyFd(peer, import_request, X_NOTIFY_READ, p)) {
++        xorg_list_del(&p->link); free(p); close(peer);
++    }
++}
++static Bool close_screen(ScreenPtr screen) {
++    struct xwl_screen *s = xwl_screen_get(screen);
++    struct ahb_screen *a = get_ahb(s);
++    struct import_peer *p, *next;
++    xorg_list_for_each_entry_safe(p, next, &a->peers, link) {
++        RemoveNotifyFd(p->fd); close(p->fd); xorg_list_del(&p->link); free(p);
++    }
++    RemoveNotifyFd(a->listener); close(a->listener); unlink(a->path);
++    maton_ahb_buffer_manager_v1_destroy(a->manager);
++    screen->CloseScreen = a->close_screen;
++    free(a);
++    return screen->CloseScreen(screen);
++}
++Bool xwl_glamor_init_gbm(struct xwl_screen *s) {
++    if (!dixRegisterPrivateKey(&ahb_key, PRIVATE_SCREEN, 0)) return FALSE;
++    struct ahb_screen *a = calloc(1, sizeof(*a));
++    if (!a) return FALSE;
++    a->listener = -1;
++    xorg_list_init(&a->peers);
++    dixSetPrivate(&s->screen->devPrivates, &ahb_key, a);
++    return TRUE;
++}
++Bool xwl_glamor_gbm_init_egl(struct xwl_screen *s) {
++    const EGLint context_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
++    const EGLint config_attrs[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
++        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
++        EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE };
++    EGLConfig config;
++    EGLint count;
++    s->egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
++    if (s->egl_display == EGL_NO_DISPLAY || !eglInitialize(s->egl_display, NULL, NULL) ||
++        !eglBindAPI(EGL_OPENGL_ES_API) ||
++        !eglChooseConfig(s->egl_display, config_attrs, &config, 1, &count) || count != 1) return FALSE;
++    s->egl_context = eglCreateContext(s->egl_display, config, EGL_NO_CONTEXT, context_attrs);
++    return s->egl_context != EGL_NO_CONTEXT &&
++        eglMakeCurrent(s->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, s->egl_context);
++}
++Bool xwl_glamor_gbm_init_screen(struct xwl_screen *s) {
++    struct ahb_screen *a = get_ahb(s);
++    const char *dir = getenv("MATON_X11_AHB_DIR");
++    struct sockaddr_un address = { .sun_family=AF_UNIX };
++    if (!dir || snprintf(a->path, sizeof(a->path), "%s/X%s.ahb", dir, display) >= sizeof(a->path)) return FALSE;
++    strcpy(address.sun_path, a->path);
++    a->listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
++    if (a->listener < 0) return FALSE;
++    unlink(a->path);
++    if (bind(a->listener, (struct sockaddr *)&address, sizeof(address)) || listen(a->listener, 16) ||
++        !SetNotifyFd(a->listener, accept_import, X_NOTIFY_READ, s)) {
++        close(a->listener); a->listener = -1; unlink(a->path); return FALSE;
++    }
++    s->screen->CreatePixmap = create_pixmap;
++    s->screen->DestroyPixmap = destroy_pixmap;
++    a->close_screen = s->screen->CloseScreen;
++    s->screen->CloseScreen = close_screen;
++    return TRUE;
++}
+--- /dev/null
++++ b/hw/xwayland/maton-ahb-buffer-v1.xml
+@@ -0,0 +1,16 @@
++<protocol name="maton_ahb_buffer_v1">
++  <interface name="maton_ahb_buffer_manager_v1" version="1">
++    <description summary="create wl_buffers backed directly by Android hardware buffers">
++      This private protocol transports an AHardwareBuffer over an AF_UNIX
++      socket and creates a zero-copy wl_buffer for the received allocation.
++    </description>
++    <request name="destroy" type="destructor"/>
++    <request name="create_buffer">
++      <arg name="id" type="new_id" interface="wl_buffer"/>
++      <arg name="transport" type="fd"/>
++      <arg name="width" type="uint"/>
++      <arg name="height" type="uint"/>
++      <arg name="format" type="uint"/>
++    </request>
++  </interface>
++</protocol>

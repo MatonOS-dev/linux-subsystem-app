@@ -19,16 +19,7 @@ struct mv_wsi_live_context {
     PFN_vkDestroyImage destroy_image;
     PFN_vkFreeMemory free_memory;
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID get_ahb_properties;
-    PFN_vkGetImageDrmFormatModifierPropertiesEXT get_modifier;
-    PFN_vkGetImageSubresourceLayout get_layout;
 };
-struct mv_native_handle { int version, num_fds, num_ints; int data[]; };
-/* minigbm cros_gralloc_handle (MatonOS fork), mirrored from
- * subsystem/native/gralloc_handle.h: the real plane layout and modifier. */
-struct mv_cros_handle { int32_t version,num_fds,num_ints,fds[5]; uint32_t strides[4],offsets[4],sizes[4];
-    uint32_t id,width,height,format,tiling; uint64_t format_modifier,use_flags;
-    uint32_t magic,pixel_stride; int32_t droid_format; int64_t usage; uint32_t num_planes;
-    uint64_t reserved_region_size,total_size; } __attribute__((packed));
 struct mv_ahb_desc { uint32_t width,height,layers,format; uint64_t usage; uint32_t stride,rfu0; uint64_t rfu1; };
 
 static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D extent,VkFormat format,
@@ -41,8 +32,7 @@ static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D exte
         .tiling=VK_IMAGE_TILING_OPTIMAL,.usage=MV_WSI_USAGE,
         .sharingMode=VK_SHARING_MODE_EXCLUSIVE,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
     struct mv_scope scope;if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
-    /* X11 DRI3 pixmaps are ARGB8888 in memory: BGRA AHB (HAL format 5). */
-    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=c->surface->x11?5u:1u,
+    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=1u,
         .usage=(UINT64_C(1)<<8)|(UINT64_C(1)<<9)|(UINT64_C(1)<<11)}; /* GPU sampled/color output + compositor overlay */
     mv_trace_result("maton-vulkan: WSI entering client AHB allocator",mv_ahb_allocate?0:-1,0);
     int ar=mv_ahb_allocate?mv_ahb_allocate(&desc,ahb):-1;
@@ -87,68 +77,21 @@ static void mv_wsi_live_destroy(void *opaque,VkImage image,VkDeviceMemory memory
     if(memory)c->free_memory(c->device->base.android,memory,0);
     switch_back(&scope);
 }
-static VkResult mv_wsi_live_export(void *opaque,struct AHardwareBuffer *ahb,VkImage image,int *fd,
-        uint32_t *format,uint32_t *stride,uint32_t *offset,uint64_t *modifier) {
+static VkResult mv_wsi_live_create_buffer(void *opaque,struct AHardwareBuffer *ahb,VkExtent2D extent,void **buffer) {
     struct mv_wsi_live_context *c=opaque;
-    *fd=-1;*format=0x34324241u;*stride=0;*offset=0;*modifier=0;
-    struct mv_scope scope;
-    /* The private AHB transport is authoritative when available. Do not
-     * inspect or assume any native-handle fd in that case. */
-    if(!c->surface->x11 && mv_wl_has_ahb_buffer(c->surface->dmabuf) && mv_ahb_send_socket) {
-        if(!mv_ahb_describe||!mv_enter(&scope))return VK_ERROR_EXTENSION_NOT_PRESENT;
-        struct mv_ahb_desc desc={0};mv_ahb_describe(ahb,&desc);
-        switch_back(&scope);
-        if(!desc.width||!desc.height||desc.stride>UINT32_MAX/4)return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        *stride=desc.stride*4;
-        return VK_SUCCESS;
-    }
-    if(!mv_ahb_native_handle||!mv_ahb_describe||!mv_enter(&scope))return VK_ERROR_EXTENSION_NOT_PRESENT;
-    struct mv_ahb_desc desc={0};mv_ahb_describe(ahb,&desc);
-    const struct mv_native_handle *native=mv_ahb_native_handle(ahb);
-    if(c->surface->x11) {
-        /* DRI3 gets gralloc's own layout and modifier; the server decides
-         * whether it can import it (mv_x11_modifier_supported). */
-        switch_back(&scope);
-        const struct mv_cros_handle *h=(const void *)native;
-        if(!native||native->num_fds<1||(size_t)(3+native->num_fds+native->num_ints)*4<sizeof(*h)||
-           h->magic!=0xABCDDCBAu||h->num_planes!=1||desc.format!=5u||!h->strides[0]||!h->width||!h->height)
-            return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        *fd=h->fds[0];*format=0x34325241u;*stride=h->strides[0];*offset=h->offsets[0];*modifier=h->format_modifier;
-        return VK_SUCCESS;
-    }
-    VkImageDrmFormatModifierPropertiesEXT mp={.sType=VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT};
-    VkSubresourceLayout layout={0};VkImageSubresource sub={.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,.mipLevel=0,.arrayLayer=0};
-    VkResult r=!native||native->num_fds<1||desc.format!=(c->surface->x11?5u:1u)||desc.width==0||desc.height==0?VK_ERROR_FORMAT_NOT_SUPPORTED:VK_SUCCESS;
-    if(!r)r=c->get_modifier(c->device->base.android,image,&mp);
-    if(!r)c->get_layout(c->device->base.android,image,&sub,&layout);
-    if(!r && (mp.drmFormatModifier!=0||desc.stride>UINT32_MAX/4||layout.rowPitch!=(VkDeviceSize)desc.stride*4))r=VK_ERROR_FORMAT_NOT_SUPPORTED;
-    if(!r){*fd=native->data[0];*format=c->surface->x11?0x34325241u:0x34324241u;*stride=(uint32_t)layout.rowPitch;*offset=(uint32_t)layout.offset;*modifier=mp.drmFormatModifier;}
-    switch_back(&scope);return r;
-}
-static VkResult mv_wsi_live_create_buffer(void *opaque,struct AHardwareBuffer *ahb,VkExtent2D extent,uint32_t format,int fd,
-        uint32_t stride,uint32_t offset,uint64_t modifier,void **buffer) {
-    struct mv_wsi_live_context *c=opaque;struct mv_wl_plane plane={.fd=fd,.index=0,.offset=offset,.stride=stride,.modifier=modifier};
-    if(c->surface->x11) {
-        if(format!=0x34325241u)return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        *buffer=mv_x11_buffer_create(c->surface->x11,fd,extent.width,extent.height,stride,offset,modifier);
-        if(!*buffer)mv_trace_result("maton-vulkan: WSI x11 DRI3 import refused (stride, modifier low)",stride,(uint32_t)modifier);
-        return *buffer?VK_SUCCESS:VK_ERROR_INITIALIZATION_FAILED;
-    }
-    if(format!=0x34324241u)return VK_ERROR_FORMAT_NOT_SUPPORTED;
-    if(mv_wl_has_ahb_buffer(c->surface->dmabuf) && mv_ahb_send_socket) {
+    if(c->surface->x11 || mv_wl_has_ahb_buffer(c->surface->dmabuf)) {
         int pair[2];if(mv_socketpair(pair)<0)return VK_ERROR_OUT_OF_HOST_MEMORY;
         struct mv_scope scope;
         if(!mv_enter(&scope)){mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_INITIALIZATION_FAILED;}
         int rc=mv_ahb_send_socket(ahb,pair[1]);
         switch_back(&scope);
         if(rc) {mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_OUT_OF_HOST_MEMORY;}
-        *buffer=mv_wl_ahb_create_buffer(c->surface->dmabuf,extent.width,extent.height,format,pair[0]);
+        *buffer=c->surface->x11 ? (void *)mv_x11_buffer_create(c->surface->x11,pair[0],extent.width,extent.height,1u) :
+            (void *)mv_wl_ahb_create_buffer(c->surface->dmabuf,extent.width,extent.height,0x34324241u,pair[0]);
         mv_close(pair[0]);mv_close(pair[1]);
         return *buffer?VK_SUCCESS:VK_ERROR_OUT_OF_HOST_MEMORY;
     }
-    if(fd<0||!stride)return VK_ERROR_FORMAT_NOT_SUPPORTED;
-    *buffer=mv_wl_dmabuf_create_buffer(c->surface->dmabuf,extent.width,extent.height,format,&plane,1);
-    return *buffer?VK_SUCCESS:VK_ERROR_OUT_OF_HOST_MEMORY;
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
 }
 static void mv_wsi_live_destroy_buffer(void *opaque,void *buffer) {
     struct mv_wsi_live_context *c=opaque;
@@ -231,7 +174,7 @@ static VkResult mv_vkCreateWaylandSurfaceKHR(VkInstance instance,const VkWayland
 }
 
 /* X11 surfaces share allocation/swapchain ownership with Wayland surfaces,
- * but their images are imported through DRI3 and released by Present. */
+ * but their images use the private AHB import socket and stock Present release. */
 static VkResult mv_create_x11_surface(VkInstance instance,void *connection,uint32_t window,
         const VkAllocationCallbacks *allocator,VkSurfaceKHR *out) {
     if(!out)return VK_ERROR_INITIALIZATION_FAILED;*out=VK_NULL_HANDLE;
@@ -331,7 +274,7 @@ static VkResult mv_vkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physica
     if (!count || !mv_wsi_surface((VkInstance)h->instance,surface)) return VK_ERROR_SURFACE_LOST_KHR;
     if (!formats) {*count=1;return VK_SUCCESS;}
     if (!*count) return VK_INCOMPLETE;
-    formats[0]=(VkSurfaceFormatKHR){mv_wsi_surface((VkInstance)h->instance,surface)->x11?VK_FORMAT_B8G8R8A8_UNORM:VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+    formats[0]=(VkSurfaceFormatKHR){VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
     *count=1;return VK_SUCCESS;
 }
 
@@ -363,11 +306,11 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
     if(allocator&&(!allocator->pfnAllocation||!allocator->pfnReallocation||!allocator->pfnFree))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_wayland_surface *surface=mv_wsi_surface((VkInstance)d->base.instance,info->surface);
     if(!surface)return VK_ERROR_SURFACE_LOST_KHR;
-    if((!mv_ahb_native_handle||!mv_ahb_describe||!mv_ahb_release||!mv_ahb_allocate))return VK_ERROR_EXTENSION_NOT_PRESENT;
+    if(!mv_ahb_describe||!mv_ahb_release||!mv_ahb_allocate||!mv_ahb_send_socket)return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(surface->x11) {
         uint32_t w,h;if(!mv_x11_extent(surface->x11,&w,&h))return VK_ERROR_SURFACE_LOST_KHR;
         if(info->imageExtent.width!=w||info->imageExtent.height!=h)return VK_ERROR_OUT_OF_DATE_KHR;
-        if(info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        if(info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
     if(info->oldSwapchain) {
         struct mv_wsi_live_context *old_live=mv_wsi_live(device,info->oldSwapchain);
@@ -385,17 +328,14 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
     c->destroy_image=(PFN_vkDestroyImage)d->gdpa(d->base.android,"vkDestroyImage");
     c->free_memory=(PFN_vkFreeMemory)d->gdpa(d->base.android,"vkFreeMemory");
     c->get_ahb_properties=(PFN_vkGetAndroidHardwareBufferPropertiesANDROID)d->gdpa(d->base.android,"vkGetAndroidHardwareBufferPropertiesANDROID");
-    c->get_modifier=(PFN_vkGetImageDrmFormatModifierPropertiesEXT)d->gdpa(d->base.android,"vkGetImageDrmFormatModifierPropertiesEXT");
-    c->get_layout=(PFN_vkGetImageSubresourceLayout)d->gdpa(d->base.android,"vkGetImageSubresourceLayout");
     switch_back(&scope);
     if(!c->create_image||!c->allocate_memory||!c->bind_image||!c->destroy_image||
-       !c->free_memory||!c->get_layout||
-       (!c->get_ahb_properties||!c->get_modifier)){mv_free(c);return VK_ERROR_EXTENSION_NOT_PRESENT;}
+       !c->free_memory||!c->get_ahb_properties){mv_free(c);return VK_ERROR_EXTENSION_NOT_PRESENT;}
     VkExtent2D previous_extent=surface->state.extent;
     uint64_t previous_generation=surface->state.generation;
     mv_wsi_surface_resize(&surface->state,info->imageExtent);
     struct mv_wsi_ops ops={.context=c,.allocate=mv_wsi_live_allocate,.release=mv_wsi_live_release,
-        .destroy=mv_wsi_live_destroy,.export_dmabuf=mv_wsi_live_export,.create_buffer=mv_wsi_live_create_buffer,
+        .destroy=mv_wsi_live_destroy,.create_buffer=mv_wsi_live_create_buffer,
         .destroy_buffer=mv_wsi_live_destroy_buffer,.present=mv_wsi_live_present};
     struct mv_wsi_swapchain *chain=0;VkResult r=mv_wsi_create(&surface->state,info,&ops,&chain);
     if(r){surface->state.extent=previous_extent;surface->state.generation=previous_generation;mv_free(c);return r;}

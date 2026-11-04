@@ -60,9 +60,9 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     const char **extension_names=0;
     if(swapchain_enabled) {
         /* X11 and Wayland share one AHB allocation backend. */
-        const char *internal[5];uint32_t internal_count=0;
-        if(h->instance->wsi_wayland_enabled)for(uint32_t j=0;j<5;j++)internal[internal_count++]=mv_wsi_wayland_requirements[j];
-        else if(h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled)for(uint32_t j=0;j<5;j++)internal[internal_count++]=mv_wsi_x11_requirements[j];
+        const char *internal[MV_WSI_REQUIREMENT_COUNT];uint32_t internal_count=0;
+        if(h->instance->wsi_wayland_enabled)for(uint32_t j=0;j<MV_WSI_REQUIREMENT_COUNT;j++)internal[internal_count++]=mv_wsi_wayland_requirements[j];
+        else if(h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled)for(uint32_t j=0;j<MV_WSI_REQUIREMENT_COUNT;j++)internal[internal_count++]=mv_wsi_x11_requirements[j];
         extension_names=mv_alloc((forwarded_extensions+internal_count)*sizeof(*extension_names));
         if(!extension_names){mv_dfree(d,d);return VK_ERROR_OUT_OF_HOST_MEMORY;}
         uint32_t k=0;

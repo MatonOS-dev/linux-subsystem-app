@@ -39,6 +39,7 @@ final class XwaylandFiles {
         Os.setenv("MATON_XKB_ROOT",xkb.getAbsolutePath(),true);
         Os.setenv("MATON_XWAYLAND_LIBDIR",libraries.getAbsolutePath()+":"+nativeDir.getAbsolutePath(),true);
         Os.setenv("XDG_RUNTIME_DIR",runtime.getAbsolutePath(),true);
+        Os.setenv("MATON_X11_AHB_DIR",new File(runtime,"x11").getAbsolutePath(),true);
         return nativeDir;
     }
     private static void link(File target,File link) throws Exception {

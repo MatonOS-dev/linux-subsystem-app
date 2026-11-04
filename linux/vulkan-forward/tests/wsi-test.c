@@ -13,7 +13,7 @@
 struct message { uint64_t op,surface,buffer,serial; };
 static int endpoint;
 static unsigned allocations,destroys,releases,fail_allocate,fail_bind;
-static unsigned exports,buffers,buffer_attempts,buffer_destroys,fail_buffer;
+static unsigned buffers,buffer_attempts,buffer_destroys,fail_buffer;
 static unsigned image_creates,memory_allocs,image_destroys,memory_frees;
 static struct AHardwareBuffer *last_ahb;
 static VkImage last_image;
@@ -30,14 +30,8 @@ static VkResult allocate(void *ctx,uint64_t surface,VkExtent2D e,VkFormat f,stru
 }
 static void release(void *ctx,struct AHardwareBuffer *b,uint64_t token) { (void)ctx;assert((uintptr_t)b==0x1000+token);releases++; }
 static void destroy(void *ctx,VkImage image,VkDeviceMemory memory) { (void)ctx;assert(image && memory);destroys++; }
-static VkResult export_dmabuf(void *ctx,struct AHardwareBuffer *b,VkImage image,int *fd,
-        uint32_t *format,uint32_t *stride,uint32_t *offset,uint64_t *modifier) {
-    (void)ctx;assert(b && image);exports++;*fd=51;*format=0x34324241u;*stride=640*4;*offset=0;*modifier=0;return VK_SUCCESS;
-}
-static VkResult create_buffer(void *ctx,struct AHardwareBuffer *ahb,VkExtent2D extent,uint32_t format,int fd,
-        uint32_t stride,uint32_t offset,uint64_t modifier,void **buffer) {
-    (void)ctx;assert(ahb && extent.width && extent.height && format==0x34324241u);
-    assert(fd==51 && stride==2560 && !offset && !modifier);buffer_attempts++;
+static VkResult create_buffer(void *ctx,struct AHardwareBuffer *ahb,VkExtent2D extent,void **buffer) {
+    (void)ctx;assert(ahb && extent.width && extent.height);buffer_attempts++;
     if(buffer_attempts==fail_buffer)return VK_ERROR_OUT_OF_HOST_MEMORY;
     *buffer=(void *)(uintptr_t)(0x5000+ ++buffers);return VK_SUCCESS;
 }
@@ -95,7 +89,7 @@ int main(void) {
     VkPresentModeKHR mode,modes[2];n=1;assert(mv_wsi_modes(&n,&mode)==VK_INCOMPLETE && mode==VK_PRESENT_MODE_FIFO_KHR);
     n=2;assert(!mv_wsi_modes(&n,modes) && modes[0]==VK_PRESENT_MODE_FIFO_KHR && modes[1]==VK_PRESENT_MODE_MAILBOX_KHR);
     struct mv_wsi_ops ops={.allocate=allocate,.release=release,.destroy=destroy,
-        .export_dmabuf=export_dmabuf,.create_buffer=create_buffer,.destroy_buffer=destroy_buffer,
+        .create_buffer=create_buffer,.destroy_buffer=destroy_buffer,
         .present=present};
     VkSwapchainCreateInfoKHR ci={.sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,.minImageCount=2,
         .imageFormat=f.format,.imageColorSpace=f.colorSpace,.imageExtent={640,480},.imageArrayLayers=1,
@@ -108,7 +102,7 @@ int main(void) {
     /* A failed Wayland buffer creation rolls back every earlier image and
      * wl_buffer, while the image whose callback failed is still released. */
     fail_buffer=3;assert(mv_wsi_create(&s,&ci,&ops,&c)==VK_ERROR_OUT_OF_HOST_MEMORY && !c);
-    assert(allocations==4 && exports==3 && buffers==2);
+    assert(allocations==4 && buffer_attempts==3 && buffers==2);
     assert(releases==4 && destroys==3 && buffer_destroys==2);
     fail_buffer=0;assert(!mv_wsi_create(&s,&ci,&ops,&c));VkImage images[2];n=1;assert(mv_wsi_images(c,&n,images)==VK_INCOMPLETE && n==1);n=2;assert(!mv_wsi_images(c,&n,images));assert(images[0]!=images[1]);
     uint32_t a,b;assert(!mv_wsi_acquire(c,&a));assert(!mv_wsi_present(c,a,123));assert(mv_wsi_present(c,a,123)==VK_ERROR_INITIALIZATION_FAILED);
@@ -135,6 +129,6 @@ int main(void) {
     fail_bind=1;assert(mv_wsi_import_ahb(&d,last_ahb,(VkExtent2D){640,480},f.format,&image,&memory)==VK_ERROR_DEVICE_LOST);assert(!image && !memory);
     assert(image_creates==2 && memory_allocs==2 && image_destroys==2 && memory_frees==2);
     struct message stop={.op=3};assert(send(endpoint,&stop,sizeof(stop),0)==sizeof(stop));close(endpoint);int result;assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
-    assert(exports==11 && buffers==10 && buffer_attempts==11);
-    puts("PASS WSI: AHB export metadata, dmabuf wl_buffer lifecycle, surface queries, enumeration, import rollback, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
+    assert(buffers==10 && buffer_attempts==11);
+    puts("PASS WSI: opaque AHB wl_buffer lifecycle, surface queries, enumeration, import rollback, backpressure, cross-process present/release, stale release, resize/loss, dedicated AHB import chains and bind rollback");
 }

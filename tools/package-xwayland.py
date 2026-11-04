@@ -23,8 +23,6 @@ for source in sorted((x/'lib').iterdir()):
     if (existing/source.name).is_file():continue
     name=source.name if source.name.endswith('.so') else 'libmatonos-xwayland-'+source.name+'.so'
     copy(source,name,source.name)
-for name in ['libEGL.so','libGLESv2.so','libgbm.so']:
-    copy(x/'lib/xwayland-egl'/name,'libmatonos-xwayland-'+name[3:],name)
 # The server uses Bionic crypto; these are distinct from the static musl CLI.
 for name in ['libgcrypt.so','libgpg-error.so']:copy(x/'lib'/name,name,name)
 shutil.copytree(build/'xkb-data/system_ext/share/xkeyboard-config-2',assets/'xkb',symlinks=False)

@@ -4,9 +4,10 @@
  * Linux swapchain only when that allocation/presentation backend can work. */
 static const char *const mv_wsi_wayland_requirements[]={
     "VK_ANDROID_external_memory_android_hardware_buffer", "VK_EXT_queue_family_foreign",
-    "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list", "VK_KHR_external_semaphore_fd"
+    "VK_KHR_external_semaphore_fd"
 };
-/* X11 shares the AHB allocation; DRI3 receives its native-handle dma-buf. */
+/* Both window systems transport the complete AHB allocation. */
+#define MV_WSI_REQUIREMENT_COUNT (sizeof(mv_wsi_wayland_requirements)/sizeof(mv_wsi_wayland_requirements[0]))
 #define mv_wsi_x11_requirements mv_wsi_wayland_requirements
 static int mv_wsi_has_requirements(const char *const *names,size_t size,const VkExtensionProperties *all,uint32_t count){
     for(size_t i=0;i<size;i++){
