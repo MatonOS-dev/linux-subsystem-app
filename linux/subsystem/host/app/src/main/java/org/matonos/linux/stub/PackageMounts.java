@@ -189,7 +189,8 @@ public final class PackageMounts {
                 runtimeRef=staged;
                 candidate=runtimeRef.split("/",-1);
             }
-            if(candidate.length!=4||!candidate[0].equals("runtime")||!candidate[2].equals("x86_64"))continue;
+            if(candidate.length!=4||!candidate[0].equals("runtime")||!candidate[2].equals("x86_64")||
+                    !candidate[3].equals(parentParts[3]))continue;
             Parent found=new Parent(runtimeRef,entry.getValue());
             if(match!=null&&!match.ref.equals(found.ref))
                 throw new IOException("Ambiguous staged x86_64 parent for extension "+id);
