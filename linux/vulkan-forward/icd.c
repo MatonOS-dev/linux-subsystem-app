@@ -47,7 +47,10 @@ struct mv_instance {
 struct mv_device {
     struct mv_handle base;
     VkAllocationCallbacks allocator;
-    int custom, lock, wsi_swapchain_enabled, wsi_sync_fd_enabled;
+    int custom, lock, wsi_swapchain_enabled, wsi_sync_fd_enabled, dmabuf_enabled;
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID ahb_properties;
+    PFN_vkGetMemoryAndroidHardwareBufferANDROID ahb_export;
+    struct mv_dmabuf_reg *dmabuf_regs; /* guarded by lock */
     struct mv_handle *children;
     struct mv_dispatch dispatch;
     PFN_vkGetDeviceProcAddr gdpa;
@@ -61,7 +64,9 @@ static void (*mv_ahb_describe)(const struct AHardwareBuffer *,void *);
 static void (*mv_ahb_release)(struct AHardwareBuffer *);
 static int (*mv_ahb_allocate)(const void *,struct AHardwareBuffer **);
 static int (*mv_ahb_send_socket)(const struct AHardwareBuffer *,int);
+static int (*mv_ahb_recv_socket)(int,struct AHardwareBuffer **);
 static int mv_fast, mv_state;
+static int (*mv_log_write)(int,const char *,const char *);
 /* Raw diagnostics remain safe on either side of the TLS switch. */
 static void mv_trace_result(const char *stage,long result,uint32_t count) {
     size_t length=0;while(stage[length])length++;
@@ -80,6 +85,22 @@ static void mv_trace_result(const char *stage,long result,uint32_t count) {
 static int mv_enter(struct mv_scope *s) {
     if(switch_to_android(mv_adopt,mv_fast,s))return 1;
     mv_diagnostic();return 0;
+}
+/* Mirror a diagnostic to logcat: apps (Chromium GPU processes) may discard
+ * stderr. Call only from the Linux side, never inside an Android scope. */
+static void mv_loud(const char *what,unsigned long value) {
+    if(!mv_log_write)return;
+    char line[320];size_t n=0;
+#if defined(__i386__)
+    for(const char *p="[i386] ";*p;p++)line[n++]=*p;
+#endif
+    while(what[0]&&n<sizeof(line)-21)line[n++]=*what++;
+    static const char hex[]="0123456789abcdef";line[n++]=' ';line[n++]='0';line[n++]='x';
+    for(unsigned j=0;j<16;j++)line[n++]=hex[((uint64_t)value>>(60-4*j))&15];
+    line[n]=0;
+    struct mv_scope s;if(!mv_enter(&s))return;
+    mv_log_write(5,"MatonVulkan",line);
+    switch_back(&s);
 }
 static int mv_init(void) {
     int state=__atomic_load_n(&mv_state,__ATOMIC_ACQUIRE);
@@ -104,9 +125,11 @@ static int mv_init(void) {
 #if defined(__i386__)
         const char *vulkan_path="/system/lib/libvulkan.so";
         const char *android_path="/system/lib/libandroid.so";
+        const char *log_path="/system/lib/liblog.so";
 #else
         const char *vulkan_path="/system/lib64/libvulkan.so";
         const char *android_path="/system/lib64/libandroid.so";
+        const char *log_path="/system/lib64/liblog.so";
 #endif
         void *lib=mv_bridge->open(vulkan_path,2);
         if(!lib) {
@@ -125,8 +148,13 @@ static int mv_init(void) {
             mv_ahb_release=(void *)mv_bridge->symbol(android,"AHardwareBuffer_release");
             mv_ahb_allocate=(void *)mv_bridge->symbol(android,"AHardwareBuffer_allocate");
             mv_ahb_send_socket=(void *)mv_bridge->symbol(android,"AHardwareBuffer_sendHandleToUnixSocket");
+            mv_ahb_recv_socket=(void *)mv_bridge->symbol(android,"AHardwareBuffer_recvHandleFromUnixSocket");
         }
+        void *log=mv_bridge->open(log_path,2);
+        if(log)mv_log_write=(void *)mv_bridge->symbol(log,"__android_log_write");
+        if(!mv_log_write){static const char m[]="maton-vulkan: liblog unavailable; diagnostics on stderr only\n";mv_write(m,sizeof(m)-1);}
         switch_back(&s);
+        if(mv_log_write)mv_x11_log_hook=mv_loud;
     } else if(mv_bridge && mv_bridge->version==2) {static const char m[]="maton-vulkan: initial Android thread adoption failed\n";mv_write(m,sizeof(m)-1);}
     __atomic_store_n(&mv_state,mv_gipa?2:0,__ATOMIC_RELEASE);
     if(!mv_gipa)mv_diagnostic();
@@ -236,6 +264,11 @@ static VkResult mv_vkEnumerateInstanceVersion(uint32_t *v) {
     switch_back(&s);if(*v>VK_API_VERSION_1_4)*v=VK_API_VERSION_1_4;return r;
 }
 #include "extensions.inc"
+static int mv_dmabuf_name(const char *);
+static int mv_dmabuf_supported(const VkExtensionProperties *,uint32_t);
+static int mv_dmabuf_emulated(const char *);
+struct mv_device;
+static void mv_dmabuf_unregister(struct mv_device *,VkDeviceMemory,int);
 static int mv_extension_allowed(const char *name) {
     for(size_t j=0;j<sizeof(mv_extensions)/sizeof(*mv_extensions);j++)if(!strcmp(name,mv_extensions[j]))return 1;
     return 0;
@@ -257,7 +290,12 @@ static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physica
     r=f(h->android,0,&count,all);switch_back(&s);
     if(r!=VK_SUCCESS){mv_free(all);return r;}
     uint32_t written=0,capacity=out?*n:0;
-    for(uint32_t j=0;j<count;j++)if(mv_extension_allowed(all[j].extensionName)){if(out && written<capacity)out[written]=all[j];written++;}
+    for(uint32_t j=0;j<count;j++)if(mv_extension_allowed(all[j].extensionName)&&!mv_dmabuf_name(all[j].extensionName)){if(out && written<capacity)out[written]=all[j];written++;}
+    if(mv_dmabuf_supported(all,count)) {
+        static const VkExtensionProperties emulated[]={{VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,VK_KHR_EXTERNAL_MEMORY_FD_SPEC_VERSION},
+            {VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,VK_EXT_EXTERNAL_MEMORY_DMA_BUF_SPEC_VERSION}};
+        for(uint32_t j=0;j<2;j++){if(out && written<capacity)out[written]=emulated[j];written++;}
+    }
     if((h->instance->wsi_wayland_enabled||h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled) &&
        (!h->instance->wsi_wayland_enabled||mv_wsi_has_requirements(mv_wsi_wayland_requirements,MV_WSI_REQUIREMENT_COUNT,all,count)) &&
        (!(h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled)||mv_wsi_has_requirements(mv_wsi_x11_requirements,MV_WSI_REQUIREMENT_COUNT,all,count))) {
@@ -265,6 +303,12 @@ static VkResult mv_vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physica
             memset(&out[written],0,sizeof(out[written]));
             memcpy(out[written].extensionName,VK_KHR_SWAPCHAIN_EXTENSION_NAME,sizeof(VK_KHR_SWAPCHAIN_EXTENSION_NAME));
             out[written].specVersion=VK_KHR_SWAPCHAIN_SPEC_VERSION;
+        }
+        written++;
+        if(out && written<capacity) {
+            memset(&out[written],0,sizeof(out[written]));
+            memcpy(out[written].extensionName,VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME,sizeof(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME));
+            out[written].specVersion=VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_SPEC_VERSION;
         }
         written++;
     }
@@ -283,7 +327,7 @@ static PFN_vkVoidFunction mv_lookup(const char *name) {
 static PFN_vkVoidFunction mv_vkGetInstanceProcAddr(VkInstance instance,const char *name) {
     PFN_vkVoidFunction local=mv_lookup(name);if(!local)return 0;
     if(!mv_init())return !strcmp(name,"vkCreateInstance")?local:0;
-    if(mv_wsi_lookup(name))return local;
+    if(mv_wsi_lookup(name)||mv_dmabuf_emulated(name))return local;
     struct mv_scope s;if(!mv_enter(&s))return 0;
     PFN_vkVoidFunction remote=mv_gipa(instance?((struct mv_instance *)instance)->base.android:0,name);
     switch_back(&s);return remote?local:0;

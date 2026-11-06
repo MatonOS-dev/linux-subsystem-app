@@ -5,8 +5,9 @@
  * the native table. JA (32-bit offset) avoids classic BPF's 8-bit branch limit. */
 #include <linux/sockios.h>
 static int arch_app_install(void) {
-    struct sock_filter bpf[2048];unsigned n=bionic32_filter(bpf);
-#define ADD(code,jt,jf,k) do {if(n>=sizeof(bpf)/sizeof(bpf[0])) return -E2BIG; bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
+    struct sock_filter *bpf=vfs_alloc(2048*sizeof(*bpf));if(!bpf)return -ENOMEM;
+    unsigned n=bionic32_filter(bpf);int result;
+#define ADD(code,jt,jf,k) do {if(n>=2048){result=-E2BIG;goto done_app;} bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,AUDIT_ARCH_X86_64);
     unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
@@ -111,12 +112,17 @@ static int arch_app_install(void) {
         ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_TRAP);
     }
     struct sock_fprog prog={(unsigned short)n,bpf};
-    return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+    result=(int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+done_app:
+    vfs_free(bpf);return result;
 }
 static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t libc_count) {
     /* The kernel's per-filter instruction limit is 4096. Grow to that limit
      * and fail cleanly if the process has more ranges than one filter can hold. */
-    struct sock_filter bpf[4096];unsigned n=bionic32_filter(bpf);
+    struct sock_filter *bpf=vfs_alloc(4096*sizeof(*bpf));if(!bpf)return -ENOMEM;
+    unsigned n=bionic32_filter(bpf);int result;
+#undef ADD
+#define ADD(code,jt,jf,k) do {if(n>=4096){result=-E2BIG;goto done_filter;} bpf[n++]=(struct sock_filter)BPF_JUMP(code,k,jt,jf);} while(0)
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,arch));
     ADD(BPF_JMP|BPF_JEQ|BPF_K,0,1,ARCH_AUDIT);
     unsigned native_jump=n;ADD(BPF_JMP|BPF_JA,0,0,0);
@@ -369,6 +375,8 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
     ADD(BPF_RET|BPF_K,0,0,SECCOMP_RET_ALLOW);
     }
     struct sock_fprog prog={(unsigned short)n,bpf};
-    return (int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+    result=(int)RAW(PROXY_SC_seccomp,SECCOMP_SET_MODE_FILTER,0,&prog,0,0,0);
+done_filter:
+    vfs_free(bpf);return result;
 }
 #undef ADD

@@ -46,8 +46,8 @@ static int hc_io(int fd,void *buf,size_t size,int writing) {
 static void hc_close_except(const int *keep,int count) {
     long directory=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/fd",O_RDONLY|O_DIRECTORY,0,0,0);
     if(directory<0)return;
-    char buf[8192];
-    for(;;){long n=RAW(PROXY_SC_getdents64,directory,buf,sizeof(buf),0,0,0);if(n<=0)break;
+    char *buf=vfs_alloc(8192);if(!buf){RAW(PROXY_SC_close,directory,0,0,0,0,0);return;}
+    for(;;){long n=RAW(PROXY_SC_getdents64,directory,buf,8192,0,0,0);if(n<=0)break;
         for(long off=0;off<n;){unsigned short len=*(unsigned short *)(buf+off+16);if(len<20||off+len>n)break;
             char *s=buf+off+19;int fd=0,valid=*s!=0;
             for(;*s;s++){if(*s<'0'||*s>'9'){valid=0;break;}fd=fd*10+*s-'0';}
@@ -60,7 +60,7 @@ static void hc_close_except(const int *keep,int count) {
             if(valid&&!retain)RAW(PROXY_SC_close,fd,0,0,0,0,0);
             off+=len;
         }
-    }RAW(PROXY_SC_close,directory,0,0,0,0,0);
+    }vfs_free(buf);RAW(PROXY_SC_close,directory,0,0,0,0,0);
 }
 static void hc_parent(long parent) {
     proxy_host_fork_child();

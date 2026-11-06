@@ -255,7 +255,6 @@ public final class InstallTransaction {
             for(String name:new String[]{"installation","home","cache","tmp","run"}) {
                 File dir=new File(root,name);if(!dir.isDirectory()&&!dir.mkdirs())throw new java.io.IOException("Cannot create private scratch");
             }
-            markStoreRoot(new File(root,"installation"));
             installation=requireDirectory(root,"installation");home=requireDirectory(root,"home");
             File sharedCache=new File(WorkDirs.root(context),"flatpak-cache");
             synchronized(InstallTransaction.this) { if(cacheLease==null)cacheLease=WorkDirs.keep(sharedCache); }
@@ -643,15 +642,6 @@ public final class InstallTransaction {
         for(int i=0;i<rows.length();i++)if(ref.equals(rows.getJSONObject(i).getString("ref")))return rows.getJSONObject(i);
         throw new java.io.IOException("Missing planned package: "+ref);
     }
-    /** Each Flatpak installation gets its own hardlink store (compat-proxy nearest
-     *  .v3-store-root), so removing that installation tree frees its backing objects. */
-    static void markStoreRoot(File dir)throws java.io.IOException {
-        File marker=new File(dir,".v3-store-root");
-        if(marker.isFile())return;
-        java.nio.file.Files.createFile(marker.toPath(),
-                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
-                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
-    }
     public static File installationFor(Context context,String id,JSONObject row)throws Exception {
         String location=row.getString("location");
         if(!location.isEmpty()&&!location.matches("package-[0-9]{1,3}"))throw new java.io.IOException("Invalid planned scratch");
@@ -675,17 +665,10 @@ public final class InstallTransaction {
         cleanup(context,id);
         for(String name:new String[]{"installation","home","cache","tmp","run"})
             if(!new File(operation,name).mkdirs())throw new java.io.IOException("Cannot create private staging "+name);
-        markStoreRoot(operation);
-        markStoreRoot(new File(operation,"installation"));
         if(repair)Files.write(new File(operation,"repair").toPath(),new byte[]{1});
     }
     public static void cleanup(Context context,String id) {
-        try {
-            java.nio.file.Files.walkFileTree(operation(context,id).toPath(),new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
-                @Override public java.nio.file.FileVisitResult visitFile(java.nio.file.Path p,java.nio.file.attribute.BasicFileAttributes a) throws java.io.IOException {Files.delete(p);return java.nio.file.FileVisitResult.CONTINUE;}
-                @Override public java.nio.file.FileVisitResult postVisitDirectory(java.nio.file.Path p,java.io.IOException e) throws java.io.IOException {if(e!=null)throw e;Files.delete(p);return java.nio.file.FileVisitResult.CONTINUE;}
-            });
-        }catch(java.nio.file.NoSuchFileException absent) { }
+        try { org.matonos.linuxhost.stubgen.PlaceholderCleanup.deleteTree(operation(context,id)); }
         catch(Exception error){Log.w(TAG,"Cannot clean private staging",error);}
     }
     private File operationDirectory() throws Exception {

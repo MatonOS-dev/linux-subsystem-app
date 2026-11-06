@@ -16,7 +16,8 @@ struct mv_wsi_ops {
     void *context;
     /* Allocate an exportable Android Vulkan image and return the referenced
      * AHB obtained from its dedicated export memory. */
-    VkResult (*allocate)(void *,uint64_t,VkExtent2D,VkFormat,
+    /* views: non-null for MUTABLE_FORMAT swapchains (view format list). */
+    VkResult (*allocate)(void *,uint64_t,VkExtent2D,VkFormat,const VkImageFormatListCreateInfo *,
         struct AHardwareBuffer **,VkImage *,VkDeviceMemory *,uint64_t *);
     void (*release)(void *,struct AHardwareBuffer *,uint64_t);
     void (*destroy)(void *,VkImage,VkDeviceMemory);

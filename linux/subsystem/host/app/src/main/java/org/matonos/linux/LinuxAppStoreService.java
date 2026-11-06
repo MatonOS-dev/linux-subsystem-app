@@ -820,16 +820,8 @@ public final class LinuxAppStoreService extends Service {
 
     private static void cleanArtifacts(Operation op) {
         File directory=op.packArtifacts;if(directory==null)return;
-        try {
-            java.nio.file.Files.walkFileTree(directory.toPath(),new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
-                @Override public java.nio.file.FileVisitResult visitFile(java.nio.file.Path path,java.nio.file.attribute.BasicFileAttributes attrs) throws java.io.IOException {
-                    java.nio.file.Files.deleteIfExists(path);return java.nio.file.FileVisitResult.CONTINUE;
-                }
-                @Override public java.nio.file.FileVisitResult postVisitDirectory(java.nio.file.Path path,java.io.IOException error) throws java.io.IOException {
-                    java.nio.file.Files.deleteIfExists(path);return java.nio.file.FileVisitResult.CONTINUE;
-                }
-            });
-        } catch(Exception e){Log.w(TAG,"Cannot remove pack artifacts",e);}
+        try { org.matonos.linuxhost.stubgen.PlaceholderCleanup.deleteTree(directory); }
+        catch(Exception e){Log.w(TAG,"Cannot remove pack artifacts",e);}
     }
 
     private void uninstallStub(Operation op) throws Exception {

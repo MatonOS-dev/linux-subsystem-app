@@ -62,16 +62,7 @@ public final class WorkDirs {
         try (DirectoryStream<Path> ignored = Files.newDirectoryStream(tree.toPath())) { }
     }
     public static void remove(File tree) throws IOException {
-        if (!Files.exists(tree.toPath(), LinkOption.NOFOLLOW_LINKS)) return;
-        Files.walkFileTree(tree.toPath(), new SimpleFileVisitor<Path>() {
-            @Override public FileVisitResult visitFile(Path p, BasicFileAttributes a) throws IOException {
-                Files.delete(p); return FileVisitResult.CONTINUE;
-            }
-            @Override public FileVisitResult postVisitDirectory(Path p, IOException error) throws IOException {
-                if (error != null) throw error;
-                Files.delete(p); return FileVisitResult.CONTINUE;
-            }
-        });
+        org.matonos.linuxhost.stubgen.PlaceholderCleanup.deleteTree(tree);
     }
     private WorkDirs() { }
 }

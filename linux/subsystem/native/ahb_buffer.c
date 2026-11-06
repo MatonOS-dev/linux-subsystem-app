@@ -98,7 +98,9 @@ static void manager_create_buffer(struct wl_client *client, struct wl_resource *
   }
   AHardwareBuffer_Desc desc = {0};
   AHardwareBuffer_describe(ahb, &desc);
-  if (format != DRM_FORMAT_ABGR8888 || desc.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM ||
+  int rgba = format == DRM_FORMAT_ABGR8888 && desc.format == AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+  int bgra = format == DRM_FORMAT_ARGB8888 && desc.format == 5u /* HAL BGRA_8888; not in the NDK enum */;
+  if (!(rgba || bgra) ||
       desc.width != width || desc.height != height || desc.layers != 1 || !width || !height ||
       width > 16384 || height > 16384) {
     AHardwareBuffer_release(ahb);

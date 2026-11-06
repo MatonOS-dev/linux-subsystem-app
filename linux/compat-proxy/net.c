@@ -202,7 +202,10 @@ void net_state(struct state *s){
  * lists the records whose owner fd still names that socket. Listening sockets
  * are not listed. */
 #include <fcntl.h>
-struct record { int32_t pid, fd; uint32_t uid, family; uint8_t local[16], remote[16]; uint16_t lport, rport; uint64_t inode; };
+/* This file is shared by every ABI in the stub. Explicit padding keeps the
+ * inode at the same offset when one ABI records a socket and another reads it. */
+struct record { int32_t pid, fd; uint32_t uid, family; uint8_t local[16], remote[16]; uint16_t lport, rport; uint32_t reserved; uint64_t inode; };
+_Static_assert(offsetof(struct record,inode)==56 && sizeof(struct record)==64,"TCP record wire layout");
 static char *number(char *out, uint64_t v) { char d[24]; int n = 0; do d[n++] = (char)('0' + v % 10); while (v /= 10); while (n) *out++ = d[--n]; *out = 0; return out; }
 static char *hex(char *out, uint32_t v, int width) { static const char h[] = "0123456789ABCDEF"; for (int i = width - 1; i >= 0; i--) *out++ = h[(v >> (i * 4)) & 15]; *out = 0; return out; }
 static int directory(char *out, size_t size) {
@@ -252,7 +255,8 @@ static char *endpoint(char *o, const struct record *r, const uint8_t *a, uint16_
     for (int i = 0; i < (r->family == AF_INET ? 1 : 4); i++) { uint32_t w; p_copy(&w, a + 4 * i, 4); o = hex(o, w, 8); }
     *o++ = ':'; return hex(o, (uint32_t)((port >> 8) | ((port & 255) << 8)), 4);
 }
-long tcp_proc_open(const char *path) {
+struct tcp_proc_scratch { char dir[4096],buf[4096]; };
+static long tcp_proc_open_impl(const char *path,struct tcp_proc_scratch *scratch) {
     size_t n = p_len(path); uint32_t family;
     if (n >= 9 && p_equal(path + n - 9, "/net/tcp6")) family = AF_INET6;
     else if (n >= 8 && p_equal(path + n - 8, "/net/tcp")) family = AF_INET;
@@ -262,11 +266,11 @@ long tcp_proc_open(const char *path) {
     put((int)out, family == AF_INET
         ? "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
         : "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n");
-    char dir[4096];
-    long d = directory(dir, sizeof(dir)) ? -ENOENT : RAW(PROXY_SC_openat, AT_FDCWD, dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0, 0, 0);
+    char *dir=scratch->dir;
+    long d = directory(dir, sizeof(scratch->dir)) ? -ENOENT : RAW(PROXY_SC_openat, AT_FDCWD, dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0, 0, 0);
     if (d >= 0) {
-        char buf[4096]; long got; unsigned sl = 0;
-        while ((got = RAW(PROXY_SC_getdents64, d, buf, sizeof(buf), 0, 0, 0)) > 0)
+        char *buf=scratch->buf; long got; unsigned sl = 0;
+        while ((got = RAW(PROXY_SC_getdents64, d, buf, sizeof(scratch->buf), 0, 0, 0)) > 0)
             for (long off = 0; off < got;) {
                 struct { uint64_t ino; int64_t off; unsigned short reclen; unsigned char type; char name[]; } *e = (void *)(buf + off); off += e->reclen;
                 if (e->name[0] == '.') continue;
@@ -287,4 +291,8 @@ long tcp_proc_open(const char *path) {
     }
     RAW(PROXY_SC_lseek, out, 0, 0, 0, 0, 0);
     return out;
+}
+long tcp_proc_open(const char *path){
+    struct tcp_proc_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;
+    long result=tcp_proc_open_impl(path,scratch);vfs_free(scratch);return result;
 }

@@ -31,7 +31,7 @@ peer_output=$output
 if [[ ${MATON_I386_GPU_BRIDGE:-0} == 1 ]]; then peer_output=$(dirname "$output")/libmatonos-v3-peer-i386.so; fi
 "$compiler" -m32 -march=i686 -msse2 "${counter_flags[@]}" -DPROXY_ARCH_BACKEND='"i386/backend.h"' \
   "${link_flags[@]}" -Wl,--image-base=0x70000000 -Wl,--section-start=.proxy_gateway=0x70300000 \
-  -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
+  -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror -Wframe-larger-than=8192 \
   "$source_dir"/{loader.c,proxy.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
   "$source_dir"/arch/i386/raw.S "${backend_sources[@]}" "$builtins" -Wl,-soname,libmatonos-v3-peer-i386.so -o "$peer_output"
 

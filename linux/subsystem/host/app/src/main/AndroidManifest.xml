@@ -23,7 +23,7 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
-    <application android:label="Linux Subsystem" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+    <application android:name=".LinkStoreStartup" android:label="Linux Subsystem" android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:multiArch="true" android:extractNativeLibs="true" android:allowClearUserData="false">
         <provider android:name=".PortalFiles" android:authorities="org.matonos.linux.portal.files"
             android:exported="false" android:grantUriPermissions="true" />

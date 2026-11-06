@@ -115,19 +115,21 @@ static void dns_worker(void *unused){(void)unused;
     proxy_sigmask_t faults=(UINT64_C(1)<<(SIGSEGV-1))|(UINT64_C(1)<<(SIGBUS-1))|
                            (UINT64_C(1)<<(SIGFPE-1))|(UINT64_C(1)<<(SIGILL-1));
     RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&faults,0,8,0,0);
-    int server=(int)RAW(PROXY_SC_socket,AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0,0,0,0);if(server<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
+    unsigned char *query=vfs_alloc(65536),*answer=vfs_alloc(65536);
+    if(!query||!answer){vfs_free(query);vfs_free(answer);__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
+    int server=(int)RAW(PROXY_SC_socket,AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0,0,0,0);if(server<0){vfs_free(query);vfs_free(answer);__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
     struct sockaddr_in bindaddr={.sin_family=AF_INET,.sin_addr={.s_addr=0x0100007f}};
-    if(RAW(PROXY_SC_bind,server,&bindaddr,sizeof(bindaddr),0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
-    unsigned len=sizeof(dns_helper_addr);if(RAW(PROXY_SC_getsockname,server,&dns_helper_addr,&len,0,0,0)<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
-    int ep=(int)RAW(PROXY_SC_epoll_create1,EPOLL_CLOEXEC,0,0,0,0,0);if(ep<0){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}dns_server_fd=server;dns_epoll_fd=ep;dns_helper_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+    if(RAW(PROXY_SC_bind,server,&bindaddr,sizeof(bindaddr),0,0,0)<0){vfs_free(query);vfs_free(answer);__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
+    unsigned len=sizeof(dns_helper_addr);if(RAW(PROXY_SC_getsockname,server,&dns_helper_addr,&len,0,0,0)<0){vfs_free(query);vfs_free(answer);__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}
+    int ep=(int)RAW(PROXY_SC_epoll_create1,EPOLL_CLOEXEC,0,0,0,0,0);if(ep<0){vfs_free(query);vfs_free(answer);__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return;}dns_server_fd=server;dns_epoll_fd=ep;dns_helper_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     struct epoll_event ev={.events=EPOLLIN,.data.fd=server};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,server,&ev,0,0);
     dns_helper_ready=1;__atomic_store_n(&dns_helper_state,1,__ATOMIC_RELEASE);
     for(;;){struct epoll_event events[32];long n=RAW(PROXY_SC_epoll_pwait,ep,events,32,-1,0,8);if(n<0)continue;
         for(long i=0;i<n;i++){
             int fd=events[i].data.fd;
-            if(fd==server){unsigned char query[65536];struct sockaddr_in peer={0};unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,sizeof(query),0,&peer,&plen);if(q<=0||!dns_port_owned(peer.sin_port))continue;
+            if(fd==server){struct sockaddr_in peer={0};unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,65536,0,&peer,&plen);if(q<=0||!dns_port_owned(peer.sin_port))continue;
                 int r=dns_netd_send(query,(size_t)q);if(r<0)continue;struct dns_pending *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,r,0,0,0,0,0);continue;}*p=(struct dns_pending){.fd=r,.peer=peer,.next=dns_pending};dns_pending=p;struct epoll_event re={.events=EPOLLIN,.data.fd=r};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,r,&re,0,0);
-            }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;unsigned char answer[65536];int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_netd_result(fd,&rcode,answer,sizeof(answer));RAW(PROXY_SC_close,fd,0,0,0,0,0);if(sz>0)proxy_internal_sendto(server,answer,sz,0,&p->peer,sizeof(p->peer));*pp=p->next;vfs_free(p);}
+            }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_netd_result(fd,&rcode,answer,65536);RAW(PROXY_SC_close,fd,0,0,0,0,0);if(sz>0)proxy_internal_sendto(server,answer,sz,0,&p->peer,sizeof(p->peer));*pp=p->next;vfs_free(p);}
         }
     }
 }

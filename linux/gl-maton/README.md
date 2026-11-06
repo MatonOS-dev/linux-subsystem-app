@@ -15,20 +15,32 @@ The APK also carries the i386 forwarders as a separate
 `lib/` layout as the x86_64 extension; it must not add another
 `i386-linux-gnu/` level below that mount.
 
-Vulkan is the only passthrough. App GL/EGL/GLX is the runtime's own Mesa,
-forced to Zink (`MESA_LOADER_DRIVER_OVERRIDE=zink`, `GALLIUM_DRIVER=zink`) over
-the Vulkan forwarder ICD. The payload uses the runtime's GL `merge-dirs` layout:
+Vulkan is the only passthrough. App GL/EGL/GLX is our own Zink, built from
+MatonOS-dev/mesa by `build-zink.sh` in the Flatpak 25.08 SDK (x86_64 and, with
+Sdk.Compat.i386 + toolchain-i386, i386), forced to Zink
+(`MESA_LOADER_DRIVER_OVERRIDE=zink`, `GALLIUM_DRIVER=zink`) over the Vulkan
+forwarder ICD. It keeps glvnd vendor name `mesa`, so its file names match
+GL.default's; GL.maton is therefore the only GL driver
+(`FLATPAK_GL_DRIVERS=maton`) and GL.default/GL32.default are never mounted.
+The payload uses the runtime's GL `merge-dirs` layout:
 
 ```text
 lib/libmaton_vulkan.so
 lib/libmaton_vulkan_i386.so
+lib/libgallium-<version>.so
+lib/libGLX_mesa.so.0
+lib/libEGL_mesa.so.0
+share/drirc.d/
+glvnd/egl_vendor.d/50_mesa.json
 vulkan/icd.d/maton_icd.json
 vulkan/icd.d/maton_icd_i386.json
 ```
 
-The GL32 extension contains `lib/libmaton_vulkan_i386.so` and
-`vulkan/icd.d/maton_icd_i386.json`. The forwarders are freestanding and have
-no `DT_NEEDED` entries.
+The GL32 extension contains the i386 forwarder, its ICD manifest and the i386
+Zink files in the same layout. The forwarders are freestanding and have no
+`DT_NEEDED` entries; Zink links only libraries the runtime provides. The
+subsystem build takes the Zink trees from `MATON_ZINK_STAGE` and
+`MATON_ZINK_STAGE_I386` (printed by `build-zink.sh`).
 Build task
 `buildGlMaton` commits the extension files to a local OSTree repo, then uses
 the existing `linux/packs/pack.py` format. `packageGlMaton` places the ref
@@ -36,7 +48,7 @@ metadata, index, OSTree objects and immutable content packs in the signed
 subsystem APK under `assets/gl-maton/`. The launcher mounts that package
 through the existing loader pack interface at
 `/usr/lib/x86_64-linux-gnu/GL/maton`; Flatpak receives
-`FLATPAK_GL_DRIVERS=maton:default`. Vulkan and EGL environment overrides and
+`FLATPAK_GL_DRIVERS=maton`. Vulkan and EGL environment overrides and
 the old `/run/maton` maps are removed. The existing `--gpu-bridge` path is
 unchanged.
 
@@ -47,7 +59,7 @@ metadata, and OSTree commit object. It includes the normal `files/`,
 `metadata`, valid Flatpak deployment record, `.ref`, `active`, and `current`
 entries. The signed payload pack overlays that deployment's `files/` directory
 through the proxy; there is no separate `/usr/lib/.../GL/maton` outer-view
-mount. `FLATPAK_GL_DRIVERS=maton:default` is set on Flatpak itself for
+mount. `FLATPAK_GL_DRIVERS=maton` is set on Flatpak itself for
 extension selection and in the app environment for consistent driver choice.
 Flatpak can therefore discover the driver as an installed GL extension and
 generate its normal GL driver paths.

@@ -79,31 +79,35 @@ static void trace_wsi(void* data,enum wl_protocol_logger_type direction,
   if(*count>=8192||!__android_log_is_loggable(ANDROID_LOG_DEBUG,"MatonWSI",ANDROID_LOG_INFO))return;
   const char* interface=wl_resource_get_class(message->resource);
   if(strcmp(interface,"wl_display")&&strcmp(interface,"wl_registry")&&
-      strcmp(interface,"wl_callback")&&strcmp(interface,"wl_surface")&&
+      strcmp(interface,"wl_callback")&&strcmp(interface,"wl_surface")&&strcmp(interface,"wl_output")&&
       strcmp(interface,"wl_shm")&&strcmp(interface,"wl_shm_pool")&&
       strcmp(interface,"wl_buffer")&&strncmp(interface,"xdg_",4)&&
       strncmp(interface,"zxdg_",5)&&strncmp(interface,"zwp_linux_",10))return;
-  /* Registry globals and shm format lists are long and fixed. */
-  if(!strcmp(message->message->name,"global")||!strcmp(message->message->name,"format")||
+  /* shm format lists are long and fixed. Registry globals are kept (once per
+   * bind) so output/xdg-output advertisement is visible. */
+  if(!strcmp(message->message->name,"format")||
       !strcmp(message->message->name,"modifier"))return;
+  /* First four numeric/object arguments (output mode = flags,w,h,refresh);
+   * strings/arrays/fds are logged as 0. */
   const char* signature=message->message->signature;
   while(*signature>='0'&&*signature<='9')signature++;
-  if(*signature=='?')signature++;
-  uint32_t first=0;
-  if(message->arguments_count){
-    if(*signature=='u')first=message->arguments[0].u;
-    else if(*signature=='i')first=(uint32_t)message->arguments[0].i;
-    else if(*signature=='o'&&message->arguments[0].o)
-      first=wl_resource_get_id((struct wl_resource*)message->arguments[0].o);
+  int32_t v[4]={0,0,0,0};
+  for(int i=0;i<message->arguments_count&&i<4&&*signature;i++){
+    if(*signature=='?')signature++;
+    if(*signature=='u')v[i]=(int32_t)message->arguments[i].u;
+    else if(*signature=='i')v[i]=message->arguments[i].i;
+    else if(*signature=='o'&&message->arguments[i].o)
+      v[i]=(int32_t)wl_resource_get_id((struct wl_resource*)message->arguments[i].o);
+    signature++;
   }
   pid_t pid=0;
   struct wl_client* client=wl_resource_get_client(message->resource);
   wl_client_get_credentials(client,&pid,NULL,NULL);
   __android_log_print(ANDROID_LOG_DEBUG,"MatonWSI",
-      "pid=%d fd=%d %s %s@%u.%s argc=%d first=%u",pid,wl_client_get_fd(client),
+      "pid=%d fd=%d %s %s@%u.%s argc=%d args=%d,%d,%d,%d",pid,wl_client_get_fd(client),
       direction==WL_PROTOCOL_LOGGER_REQUEST?"request":"event",interface,
       wl_resource_get_id(message->resource),message->message->name,
-      message->arguments_count,first);
+      message->arguments_count,v[0],v[1],v[2],v[3]);
   if(++*count==8192)__android_log_print(ANDROID_LOG_DEBUG,"MatonWSI","trace limit reached");
 }
 

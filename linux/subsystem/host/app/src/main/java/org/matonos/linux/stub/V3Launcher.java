@@ -73,7 +73,6 @@ final class V3Launcher {
         for (File directory : new File[]{home, cache, new File(home, ".config"), new File(home, ".local/share")})
             if (!directory.isDirectory() && !directory.mkdirs())
                 throw new java.io.IOException("Cannot create application directory " + directory);
-        HomeLinkStore.prepare(home);
         WorkDirs.sweep(WorkDirs.root(context));
         File launchWork = WorkDirs.directory(context,"launch-data");
         WorkDirs.keep(launchWork); // Loader pack mappings live until process exit.
@@ -154,9 +153,6 @@ final class V3Launcher {
                         new File(host.getApplicationInfo().sourceDir),runtimeBranch);
                 command.add("--map-ro");command.add(gl32.getAbsolutePath());
                 command.add("/usr/lib/i386-linux-gnu/GL/maton");
-                PackageDeployment.CompatI386 mesa32=PackageDeployment.prepareGl32Default(
-                        context,systemRoot,launchWork,runtimeBranch);
-                if(mesa32!=null)command.addAll(mesa32.arguments);
             }
         }
         command.addAll(DeclaredPackages.arguments(packages,launchWork,true,deployment));
@@ -177,15 +173,17 @@ final class V3Launcher {
                 // Share it like upstream --device=all does: portal Spawn
                 // children inherit it via extra-args, so a sub-sandbox meets
                 // its parent's shared memory instead of a nested per-app dir.
-                "--nodevice=all", "--device=dri", "--device=shm",
+                "--nodevice=all", "--device=shm",
                 "--env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1", "--env=GTK_CSD=0",
                 "--env=NO_AT_BRIDGE=1",
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
-        // Xwayland uses private AHB import rather than DRI3; let stock Mesa
-        // Kopper present through our Vulkan WSI without requiring DRI3.
-        if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton:default");command.add("--env=MESA_LOADER_DRIVER_OVERRIDE=zink");command.add("--env=GALLIUM_DRIVER=zink");command.add("--env=LIBGL_KOPPER_DRI2=true");command.add("--env=VK_DRIVER_FILES=/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd.json:/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd_i386.json");}
+        // GL.maton is the only GL driver: our Zink (same glvnd vendor name
+        // "mesa" as GL.default, so the two must not be mixed) over the Vulkan
+        // forwarder. Xwayland uses private AHB import rather than DRI3; Kopper
+        // presents through our Vulkan WSI without requiring DRI3.
+        if(matonGlEnabled){command.add("--env=FLATPAK_GL_DRIVERS=maton");command.add("--env=MESA_LOADER_DRIVER_OVERRIDE=zink");command.add("--env=GALLIUM_DRIVER=zink");command.add("--env=LIBGL_KOPPER_DRI2=true");command.add("--env=VK_DRIVER_FILES=/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd.json:/usr/lib/x86_64-linux-gnu/GL/maton/vulkan/icd.d/maton_icd_i386.json");}
         // adb (root): touch <cache>/v3-vkdebug to log Vulkan loader driver discovery.
         if (new File(cache, "v3-vkdebug").exists()) command.add("--env=VK_LOADER_DEBUG=all");
         // adb (root): write a command name or absolute sandbox path to <cache>/v3-command
@@ -197,6 +195,10 @@ final class V3Launcher {
             if (!name.matches("[A-Za-z0-9._+-]+|(/[A-Za-z0-9._+-]+)+") || name.contains("/../") || name.endsWith("/..")) throw new java.io.IOException("Invalid v3-command");
             command.add("--command="+name);
         }
+        // Flatpak binds only X<n> into /tmp/.X11-unix; expose the folder so the
+        // Vulkan forwarder reaches the X<n>.ahb buffer socket beside it.
+        File x11Dir=new File(runtime.directory(),"x11");
+        if(x11Dir.isDirectory())command.add("--filesystem="+x11Dir.getAbsolutePath());
         command.add(ref.substring(4));
         ProcessBuilder builder = new ProcessBuilder(command);
         Map<String, String> env = builder.environment();
@@ -204,7 +206,7 @@ final class V3Launcher {
         env.put("FLATPAK_SYSTEM_DIR", new File(deployment,"system").getAbsolutePath());
         // Flatpak reads this in the launcher process while selecting runtime
         // extensions; the matching --env below exposes the choice to the app.
-        if(matonGlEnabled){env.put("FLATPAK_GL_DRIVERS","maton:default");}
+        if(matonGlEnabled){env.put("FLATPAK_GL_DRIVERS","maton");}
         env.put("MATON_FLATPAK_DNS", dns);
         String nativeDir = LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
         env.put("PATH", nativeDir + ":/system/bin");

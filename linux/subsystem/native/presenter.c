@@ -282,6 +282,13 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
                maton_fit_edge(walk->fit.x,walk->fit.scale,sx+width),
                maton_fit_edge(walk->fit.y,walk->fit.scale,sy+height)};
   int z = walk->z++;
+  /* AHB-imported buffers carry no format info for wlroots, so the client's
+   * opaque region (Xwayland marks non-ARGB windows opaque) is the authority;
+   * real alpha content keeps its translucency. */
+  if (!opaque) {
+    pixman_box32_t whole = {0, 0, width, height};
+    opaque = pixman_region32_contains_rectangle(&node->opaque_region, &whole) == PIXMAN_REGION_IN;
+  }
   enum ASurfaceTransactionTransparency transparency = opaque && node->opacity >= 1.0f
       ? ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE : ASURFACE_TRANSACTION_TRANSPARENCY_TRANSLUCENT;
   int src_values[] = {src.left, src.top, src.right, src.bottom};

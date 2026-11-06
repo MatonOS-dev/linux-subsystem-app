@@ -48,8 +48,14 @@ javac -cp "$ANDROID_JAR:$APKSIG_JAR" -d "$CLASSES" \
     "$ROOT"/linux/stubgen/src/org/matonos/linuxhost/stubgen/*.java \
     "$ROOT"/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployManifest.java \
     "$ROOT"/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployRecord.java \
+    "$ROOT"/tests/placeholder/PlaceholderCleanupTest.java \
     "$ROOT"/tests/placeholder/PlaceholderFilesTest.java \
     "$ROOT"/tests/placeholder/PlaceholderFixtureTest.java
+
+JAVA_INCLUDE=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")/include
+cc -shared -fPIC -O2 -Wall -Wextra -Werror -I"$JAVA_INCLUDE" -I"$JAVA_INCLUDE/linux" \
+    "$ROOT/linux/subsystem/native/link_gc.c" -o "$OUT/libmaton_link_gc.so"
+java -Xmx256m -Djava.library.path="$OUT" -cp "$CLASSES" PlaceholderCleanupTest
 
 java -Xmx256m -cp "$CLASSES" PlaceholderFilesTest
 
@@ -60,6 +66,8 @@ fi
 
 # Build the real proxy freestanding x86_64 layer from a source copy outside the
 # repository. The fixture only needs that layer; the i386 peer is irrelevant.
+FIXTURE=$OUT/fixture
+STAGE=$FIXTURE/stage            # app data root (test override) == Flatpak installation
 PROXY=$OUT/proxy/linux/compat-proxy
 rm -rf "$OUT/proxy"
 mkdir -p "$OUT/proxy/linux"
@@ -70,7 +78,7 @@ cp -r "$ROOT/linux/packs" "$OUT/proxy/linux/packs"
     python3 gen-policy.py
     mkdir -p build
     chmod 0755 build
-    cc -nostdlib -static -no-pie -mcmodel=large \
+    cc -nostdlib -static -no-pie -mcmodel=large "-DCOMPAT_LINKS_TEST_APP_ROOT=\"$STAGE\"" \
         -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 \
         -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror \
         loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c arch/x86_64/raw.S arch/x86_64/entry.S \
@@ -85,13 +93,10 @@ DENY=$PROXY/build/link-deny
 LINK=$PROXY/build/link-helper
 OSTREE=$(command -v ostree)
 
-FIXTURE=$OUT/fixture
-STAGE=$FIXTURE/stage            # marked store root == Flatpak installation
 COPYROOT=$FIXTURE/copy          # copy-mode checkout, outside the store
 rm -rf "$FIXTURE"
 mkdir -m 700 "$FIXTURE"
 mkdir -m 700 "$STAGE"
-touch "$STAGE/.v3-store-root"
 
 # Run a host command through the real proxy with native linkat denied, so the
 # proxy alone decides what a hardlink means.

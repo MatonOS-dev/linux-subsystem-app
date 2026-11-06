@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(maton_compositor LANGUAGES C CXX)
 
+add_library(maton_link_gc SHARED link_gc.c)
+
 if(NOT MATON_COMPOSITOR_ROOT)
   message(FATAL_ERROR "MATON_COMPOSITOR_ROOT must point to linux/subsystem")
 endif()

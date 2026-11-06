@@ -50,7 +50,7 @@ static ssize_t import_ahb(int fd,const struct mv_msghdr *msg,int flags) {
     struct msghdr received={.msg_iov=&iov,.msg_iovlen=1,.msg_control=rights.bytes,.msg_controllen=sizeof(rights.bytes)};
     assert(recvmsg(pair[1],&received,MSG_CMSG_CLOEXEC)==20);
     const uint32_t *r=request;
-    assert(r[0]==320&&r[1]==200&&r[2]==1&&r[3]==42&&r[4]>100);
+    assert(r[0]==320&&r[1]==200&&r[2]==5&&r[3]==42&&r[4]>100);
     struct cmsghdr *cm=CMSG_FIRSTHDR(&received);int transport;
     assert(cm&&cm->cmsg_level==1&&cm->cmsg_type==1&&cm->cmsg_len==MV_CMSG_LEN(sizeof(int)));
     memcpy(&transport,MV_CMSG_DATA(cm),sizeof(transport));
@@ -64,7 +64,7 @@ static ssize_t import_result(int fd,void *data,size_t size,int flags) {
 static char *private_env(const char *name) {assert(!strcmp(name,"MATON_X11_AHB_SOCKET"));return socket_path;}
 static struct cookie release_pixmap(void *c,uint32_t pixmap){(void)c;assert(pixmap>100);return cookie;}
 static struct cookie select_events(void *c,uint32_t id,uint32_t window,uint32_t mask){
-    (void)c;assert(window==42&&(mask==6||mask==0));event_id=id;return cookie;
+    (void)c;assert(window==42&&(mask==7||mask==0));event_id=id;return cookie;
 }
 static void *register_events(void *c,void *extension,uint32_t id,uint32_t *stamp){
     (void)c;(void)extension;(void)id;(void)stamp;return &queue_token;
@@ -122,16 +122,16 @@ static struct adopt_thread thread;
 static struct adopt_thread *current(void){thread.resident_fs=mv_tp_read(0);return &thread;}
 /* AHB is opaque; no gralloc layout or native handle is exposed to the WSI. */
 static int ahb_allocate(const void *d,struct AHardwareBuffer **out){const struct mv_ahb_desc *desc=d;
-    assert(desc->format==1&&desc->width==320&&desc->height==200);*out=malloc(1);return 0;}
-static void ahb_describe(const struct AHardwareBuffer *a,void *out){(void)a;*(struct mv_ahb_desc *)out=(struct mv_ahb_desc){.width=320,.height=200,.layers=1,.format=1,.stride=320};}
+    assert(desc->format==5&&desc->width==320&&desc->height==200);*out=malloc(1);return 0;}
+static void ahb_describe(const struct AHardwareBuffer *a,void *out){(void)a;*(struct mv_ahb_desc *)out=(struct mv_ahb_desc){.width=320,.height=200,.layers=1,.format=5,.stride=320};}
 static int released_ahbs;
 static void ahb_release(struct AHardwareBuffer *a){free(a);released_ahbs++;}
 static int ahb_send(const struct AHardwareBuffer *a,int fd){assert(a);return write(fd,"A",1)==1?0:-1;}
 static VkResult ahb_properties(VkDevice d,const struct AHardwareBuffer *a,VkAndroidHardwareBufferPropertiesANDROID *p){(void)d;(void)a;
-    VkAndroidHardwareBufferFormatPropertiesANDROID *f=p->pNext;f->format=VK_FORMAT_R8G8B8A8_UNORM;f->formatFeatures=VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    VkAndroidHardwareBufferFormatPropertiesANDROID *f=p->pNext;f->format=VK_FORMAT_B8G8R8A8_UNORM;f->formatFeatures=VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     p->memoryTypeBits=1;p->allocationSize=256000;return VK_SUCCESS;}
 static VkResult create_image(VkDevice d,const VkImageCreateInfo *info,const VkAllocationCallbacks *a,VkImage *out){
-    (void)d;(void)a;assert(info->format==VK_FORMAT_R8G8B8A8_UNORM&&info->tiling==VK_IMAGE_TILING_OPTIMAL);
+    (void)d;(void)a;assert(info->format==VK_FORMAT_B8G8R8A8_UNORM&&info->tiling==VK_IMAGE_TILING_OPTIMAL);
     const VkExternalMemoryImageCreateInfo *ext=info->pNext;assert(ext->handleTypes==VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID);
     *out=(VkImage)(uintptr_t)++ids;return VK_SUCCESS;
 }
@@ -173,7 +173,7 @@ int main(void){
     assert(caps.currentExtent.width==320&&caps.minImageExtent.width==320&&caps.maxImageExtent.height==200);
     struct mv_device device={.wsi_swapchain_enabled=1,.gdpa=gdpa};device.base.instance=&instance;
     VkSwapchainCreateInfoKHR ci={.sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,.surface=surface,.minImageCount=2,
-        .imageFormat=VK_FORMAT_R8G8B8A8_UNORM,.imageColorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,.imageExtent={320,200},
+        .imageFormat=VK_FORMAT_B8G8R8A8_UNORM,.imageColorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,.imageExtent={320,200},
         .imageArrayLayers=1,.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.imageSharingMode=VK_SHARING_MODE_EXCLUSIVE,
         .preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,.compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,.presentMode=VK_PRESENT_MODE_FIFO_KHR};
     VkSwapchainKHR swapchain;assert(mv_vkCreateSwapchainKHR((VkDevice)&device,&ci,0,&swapchain)==VK_SUCCESS&&imports==2);

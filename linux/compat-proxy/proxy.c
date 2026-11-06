@@ -75,6 +75,13 @@ static int hc_test_fd=-1;
 static int proxy_count_fd=-1;
 static long payload_close_range(unsigned,unsigned,unsigned);
 #include "resident-fds.h"
+/* GPU forwarders call the kernel through this gateway. A close of an fd the
+ * resident driver exported (sync fds) must retire its ownership record, or the
+ * recycled number stays "resident" and later payload closes become no-ops. */
+long proxy_forwarder_sys(long n,long a,long b,long c,long d,long e,long f) {
+    if(n==(long)arch_encode_syscall(PROXY_SC_close) && resident_fds_enabled && resident_fd_owned((int)a))resident_fd_set((int)a,0);
+    return proxy_raw(n,a,b,c,d,e,f);
+}
 #include "android-log.h"
 int proxy_resident_fd_owned(int fd){return resident_fd_owned(fd);}
 static int resident_reset_pending;
@@ -170,32 +177,6 @@ static int crash_map(const char *label,uintptr_t pc) {
         }RAW(PROXY_SC_close,fd,0,0,0,0,0);
     }
     return found;
-}
-__attribute__((unused)) static void crash_stack_libs(uintptr_t sp) { /* TEMPDIAG: whole-stack return-address census */
-    static uintptr_t xlo[512],xhi[512]; unsigned nx=0; uintptr_t top=0;
-    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
-    if(fd>=0){char buf[4096],line[1024];size_t n=0;long got;
-        while((got=RAW(PROXY_SC_read,fd,buf,sizeof(buf),0,0,0))>0)for(long k=0;k<got;k++){char c=buf[k];
-            if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
-            line[n]=0;n=0;const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;if(*p=='-'){p++;hi=maps_hex(&p);}
-            if(sp+0x1000>=lo && sp+0x1000<hi){top=hi;}
-            if(p[1] && p[3]=='x' && nx<512){xlo[nx]=lo;xhi[nx]=hi;nx++;}
-        }RAW(PROXY_SC_close,fd,0,0,0,0,0);}
-    crash_text("v3 app-fault stack-top=");crash_hex(top);crash_text(" exec-maps=");crash_hex(nx);crash_text("\n");
-    unsigned hits=0;
-    for(uintptr_t *w=(uintptr_t *)((sp+0x1000)&~(uintptr_t)0xfff);(uintptr_t)w<top && hits<80;w++){
-        uintptr_t v=*w; for(unsigned j=0;j<nx;j++)if(v>=xlo[j]&&v<xhi[j]){hits++;crash_map("v3 app-fault stk=",v);crash_text("v3 app-fault depth=");crash_hex(top-(uintptr_t)w);crash_text("\n");break;} }
-}
-__attribute__((unused)) static void crash_near(uintptr_t addr) { /* TEMPDIAG */
-    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
-    if(fd>=0){char line[1024];size_t n=0;char c;
-        while(RAW(PROXY_SC_read,fd,&c,1,0,0,0)==1){
-            if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
-            line[n]=0;const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;
-            if(*p=='-'){p++;hi=maps_hex(&p);}
-            if(hi+0x400000>addr && lo<addr+0x400000){crash_text("v3 app-fault near=");crash_text(line);crash_text("\n");}n=0;
-        }RAW(PROXY_SC_close,fd,0,0,0,0,0);
-    }
 }
 static void crash_report(int sig,siginfo_t *info,void *context) {
     ucontext_t *uc=context;uintptr_t pc=ARCH_CONTEXT(uc,ARCH_PC);
@@ -641,17 +622,6 @@ static void dispatch_segv_app(int sig,siginfo_t *info,void *ctx) {
     /* The adoption handler itself blocks real SIGSYS on entry. Unblock it
      * here so payload-handler syscalls can recurse through the proxy. */
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
-    if(sig==SIGSEGV||sig==SIGBUS||sig==SIGILL||sig==SIGFPE||sig==SIGABRT||sig==SIGTRAP){ /* TEMPDIAG */
-        uintptr_t dpc=ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC);
-        crash_text("v3 app-fault signal=");crash_hex(sig);crash_text(" code=");crash_hex(info->si_code);
-        crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);crash_text("\n");
-        crash_map("v3 app-fault pc=",dpc);
-#if defined(__x86_64__)
-        { uintptr_t *bp=(uintptr_t *)((ucontext_t *)ctx)->uc_mcontext.gregs[10]; { greg_t *gr=((ucontext_t *)ctx)->uc_mcontext.gregs; crash_text("v3 app-fault rsp=");crash_hex(gr[15]);crash_text(" rdx=");crash_hex(gr[12]);crash_text(" rax=");crash_hex(gr[13]);crash_text(" rbp=");crash_hex(gr[10]);crash_text(" fsbase=");crash_hex(RAW(PROXY_SC_arch_prctl,0x1003,(long)&(uintptr_t){0},0,0,0,0)==0?0:1);crash_text("\n"); crash_near((uintptr_t)info->si_addr); crash_stack_libs(gr[15]); } if(bp && !((uintptr_t)bp&7)) crash_map("v3 app-fault caller=",bp[1]); } /* TEMPDIAG */
-#endif
-        uintptr_t *dsp=(uintptr_t *)ARCH_CONTEXT((ucontext_t *)ctx,ARCH_STACK);unsigned shown=0;
-        for(unsigned i=0;i<512 && shown<10;i++)if(crash_map("v3 app-fault frame=",dsp[i]))shown++;
-    }
     uintptr_t resident=adopt_signal_enter();
     if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
     else ((void (*)(int))action.handler)(sig);
@@ -875,17 +845,6 @@ static void app_signal_entry(int sig,siginfo_t *info,void *ctx) {
     struct kernel_action action=app_actions[sig];
     if(action.flags&SA_RESETHAND)app_actions[sig].handler=0;
     if(action.handler<=1)return;
-    if(sig==SIGSEGV||sig==SIGBUS||sig==SIGILL||sig==SIGFPE||sig==SIGABRT||sig==SIGTRAP){ /* TEMPDIAG */
-        uintptr_t dpc=ARCH_CONTEXT((ucontext_t *)ctx,ARCH_PC);
-        crash_text("v3 app-fault signal=");crash_hex(sig);crash_text(" code=");crash_hex(info->si_code);
-        crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);crash_text("\n");
-        crash_map("v3 app-fault pc=",dpc);
-#if defined(__x86_64__)
-        { uintptr_t *bp=(uintptr_t *)((ucontext_t *)ctx)->uc_mcontext.gregs[10]; { greg_t *gr=((ucontext_t *)ctx)->uc_mcontext.gregs; crash_text("v3 app-fault rsp=");crash_hex(gr[15]);crash_text(" rdx=");crash_hex(gr[12]);crash_text(" rax=");crash_hex(gr[13]);crash_text(" rbp=");crash_hex(gr[10]);crash_text(" fsbase=");crash_hex(RAW(PROXY_SC_arch_prctl,0x1003,(long)&(uintptr_t){0},0,0,0,0)==0?0:1);crash_text("\n"); crash_near((uintptr_t)info->si_addr); crash_stack_libs(gr[15]); } if(bp && !((uintptr_t)bp&7)) crash_map("v3 app-fault caller=",bp[1]); } /* TEMPDIAG */
-#endif
-        uintptr_t *dsp=(uintptr_t *)ARCH_CONTEXT((ucontext_t *)ctx,ARCH_STACK);unsigned shown=0;
-        for(unsigned i=0;i<512 && shown<10;i++)if(crash_map("v3 app-fault frame=",dsp[i]))shown++;
-    }
     uintptr_t resident=adopt_signal_enter();
     if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,ctx);
     else ((void (*)(int))action.handler)(sig);
@@ -975,6 +934,7 @@ static void proxy_count_child(void){
     for(int i=0;i<PROXY_SC_count;i++){proxy_counts[i]=0;proxy_syscall_ns[i]=0;proxy_direct_counts[i]=0;proxy_direct_ns[i]=0;}proxy_handler_ns=proxy_vfs_ns=0;
 }
 
+static void trace_number(uint64_t);
 static void emit(const char *s) { proxy_diagnostic_write(s,p_len(s)); }
 static void trace_word(const char *label,uint64_t value) {
     emit(label); crash_hex(value); emit(" ");
@@ -995,6 +955,17 @@ void proxy_log(const char *kind,long nr,long result) {
     unsigned long pid=(unsigned long)RAW(PROXY_SC_getpid,0,0,0,0,0,0);char digits[24];unsigned d=0;
     do{digits[d++]=(char)('0'+pid%10);pid/=10;}while(pid);while(d)line[n++]=digits[--d];line[n++]='\n';
     proxy_diagnostic_write(line,n);
+}
+static volatile int grave_depth;
+void proxy_close_grave(long nr,long first,long last,const char *file,int line) {
+    /* The log channel may close fds while opening; skip nested graves. */
+    if(__atomic_fetch_add(&grave_depth,1,__ATOMIC_ACQ_REL)){__atomic_fetch_sub(&grave_depth,1,__ATOMIC_ACQ_REL);return;}
+    const char *base=file;for(const char *p=file;*p;p++)if(*p=='/')base=p+1;
+    emit(nr==PROXY_SC_close?"v3 close fd=":"v3 close_range fd=");trace_number((uint64_t)first);
+    if(nr!=PROXY_SC_close){emit("..");trace_number((uint64_t)(unsigned)last);}
+    emit(" at ");emit(base);emit(":");trace_number((uint64_t)line);
+    emit(" pid=");trace_number((uint64_t)RAW_CALL(PROXY_SC_getpid,0,0,0,0,0,0));emit("\n");
+    __atomic_fetch_sub(&grave_depth,1,__ATOMIC_ACQ_REL);
 }
 void proxy_trace_clone_result(long child,long flags) {
     if(proxy_trace)proxy_log("lifecycle-clone",flags,child);
@@ -1200,11 +1171,119 @@ static int path_is_symlink(const char *path) {
     return arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW)==0 && S_ISLNK(st.st_mode);
 }
 static void create_denied(long nr,long flags,long result,int dirfd,const char *input,const char *backing){
-    if(nr!=PROXY_SC_openat || !(flags&O_CREAT) || (result!=-EACCES && result!=-EPERM))return;
+    int shm=0;if(input)for(const char *q=input;*q;q++)if(q[0]=='/'&&q[1]=='d'&&q[2]=='e'&&q[3]=='v'&&q[4]=='/'&&q[5]=='s'&&q[6]=='h'&&q[7]=='m'){shm=1;break;}
+    /* Successful shm create/unlink too: who made and who removed
+     * SteamChrome_MasterStream is otherwise invisible. */
+    if(shm && result>=0 && ((nr==PROXY_SC_openat && (flags&O_CREAT)) || nr==PROXY_SC_unlinkat)){
+        proxy_log(nr==PROXY_SC_unlinkat?"shm-unlink":"shm-create",result,flags);
+        emit("v3 shm path ");emit(input);emit(" -> ");emit(backing?backing:"?");emit("\n");return;
+    }
+    if(nr!=PROXY_SC_openat || result>=0 || result==-EEXIST || (!(flags&O_CREAT) && !shm))return;
     proxy_log("create-denied",result,flags);
     proxy_log("create-dirfd",dirfd,0);
     emit("v3 create input ");emit(input?input:"(null)");emit("\n");
     emit("v3 create backing ");emit(backing?backing:"(resolution failed)");emit("\n");
+}
+/* Always-on, failure-only traces: Steam's shm/fd handoff failed silently. */
+/* A process giving up with a nonzero status is otherwise silent (Steam's
+ * webhelper exits 1 with no log line); name it so the log says who. */
+/* /proc/self/cmdline shows the resident loader; keep the payload argv here.
+ * The resident survives emulated exec, and fork copies it with the payload. */
+static char payload_argv_note[512];static size_t payload_argv_used;
+void proxy_note_payload_argv(char *const *argv) {
+    size_t used=0;
+    for(size_t i=0;argv && argv[i] && used<sizeof(payload_argv_note)-1;i++){
+        if(i)payload_argv_note[used++]=' ';
+        for(const char *c=argv[i];*c && used<sizeof(payload_argv_note)-1;c++)
+            payload_argv_note[used++]=(*c>=32&&*c<127)?*c:'.';
+    }
+    payload_argv_used=used;
+}
+/* TEMPORARY diagnostic: read maps once, then report stack words inside executable mappings. */
+void proxy_exit_frames(uintptr_t sp) {
+    enum{CAP=4u<<20};char *maps=vfs_alloc(CAP);if(!maps)return;size_t len=0;
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd>=0){long n;while(len<CAP-1 && (n=RAW(PROXY_SC_read,fd,maps+len,CAP-1-len,0,0,0))>0)len+=(size_t)n;RAW(PROXY_SC_close,fd,0,0,0,0,0);}
+    maps[len]=0;uintptr_t words[64];unsigned shown=0;long self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+    for(unsigned chunk=0;chunk<32 && shown<24;chunk++){
+        struct iovec local={words,sizeof(words)},remote={(void *)(sp+chunk*sizeof(words)),sizeof(words)};
+        if(RAW(PROXY_SC_process_vm_readv,self,&local,1,&remote,1,0)!=(long)sizeof(words))break;
+        for(unsigned i=0;i<64 && shown<24;i++){
+            for(char *line=maps;*line;){
+                char *eol=line;while(*eol && *eol!='\n')eol++;
+                const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;if(*p=='-'){p++;hi=maps_hex(&p);}
+                if(words[i]>=lo && words[i]<hi && p[0] && p[3]=='x'){
+                    crash_text("v3 exit frame=");proxy_diagnostic_write(line,(size_t)(eol-line));crash_text(" offset=");crash_hex(words[i]-lo);crash_text("\n");shown++;break;}
+                line=*eol?eol+1:eol;
+            }
+        }
+    }
+    vfs_free(maps);
+}
+__attribute__((noinline)) void proxy_exit_report(int code) {
+    (void)code;
+    if(payload_argv_used){
+        proxy_diagnostic_write("v3 exit-cmdline ",16);proxy_diagnostic_write(payload_argv_note,payload_argv_used);proxy_diagnostic_write("\n",1);return;
+    }
+    char cmd[512];long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/cmdline",O_RDONLY|O_CLOEXEC,0,0,0);if(fd<0)return;
+    long n=RAW(PROXY_SC_read,fd,cmd,sizeof(cmd)-1,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);if(n<=0)return;
+    for(long i=0;i<n;i++)if(!cmd[i])cmd[i]=' ';
+    proxy_diagnostic_write("v3 exit-cmdline ",16);proxy_diagnostic_write(cmd,(size_t)n);proxy_diagnostic_write("\n",1);
+}
+/* One-shot raw /proc/self/maps dump on the first ENOMEM from a mapping call,
+ * so address-space exhaustion is visible (Steam i386 OOM). No heap use. */
+__attribute__((noinline)) static void enomem_maps_dump(long nr,proxy_arg_t a[6]) {
+    static int done;if(done)return;done=1;
+    proxy_log("fail enomem-maps",nr,(long)a[1]);
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd<0){proxy_log("fail enomem-maps-open",0,fd);return;}
+    char buf[4096],line[256];size_t n=0;long got;
+    while((got=RAW(PROXY_SC_read,fd,buf,sizeof(buf),0,0,0))>0)for(long k=0;k<got;k++){
+        char c=buf[k];if(c!='\n'){if(n+1<sizeof(line))line[n++]=c;continue;}
+        proxy_diagnostic_write("v3 maps ",8);proxy_diagnostic_write(line,n);proxy_diagnostic_write("\n",1);n=0;
+    }
+    RAW(PROXY_SC_close,fd,0,0,0,0,0);
+}
+__attribute__((noinline)) static void fail_trace(long nr,proxy_arg_t a[6],long result) {
+    if((nr==PROXY_SC_mmap || nr==PROXY_SC_mremap) && result==-ENOMEM)enomem_maps_dump(nr,a);
+    /* TEMPDIAG: any hard socket I/O error, with the peer pid. */
+    if((nr==PROXY_SC_sendmsg||nr==PROXY_SC_recvmsg||nr==PROXY_SC_sendto||nr==PROXY_SC_recvfrom||nr==PROXY_SC_writev||nr==PROXY_SC_readv||nr==PROXY_SC_write||nr==PROXY_SC_read)
+       && result<0 && result!=-EAGAIN){struct{int pid,uid,gid;}cr={0};unsigned crl=sizeof(cr);
+       if(!RAW(PROXY_SC_getsockopt,(long)a[0],SOL_SOCKET,SO_PEERCRED,&cr,&crl,0)){proxy_log("sockio-fail nr",nr,result);proxy_log("sockio-fail fd/peer",(long)a[0],cr.pid);}}
+    if(nr==PROXY_SC_recvmsg && a[1]) {
+        struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);
+        if(result>=0 && (m.flags&MSG_CTRUNC))proxy_log("fail recvmsg-ctrunc",(long)a[0],(long)m.controllen);
+        else if(result<0 && result!=-EAGAIN && result!=-EINTR && m.control){proxy_log("fail recvmsg-rights",(long)a[0],result);struct{int pid,uid,gid;}cr={0};unsigned crl=sizeof(cr);RAW(PROXY_SC_getsockopt,(long)a[0],SOL_SOCKET,SO_PEERCRED,&cr,&crl,0);proxy_log("recvmsg-reset peer-pid",(long)a[0],cr.pid);} /* TEMPDIAG */
+    } else if(nr==PROXY_SC_sendmsg && a[1] && result<0 && result!=-EAGAIN && result!=-EINTR) {
+        struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);
+        if(m.control)proxy_log("fail sendmsg-rights",(long)a[0],result);
+    } else if(nr==PROXY_SC_mmap && PROXY_RAW_ERR(result) && (long)a[4]>=0 && (a[3]&MAP_SHARED))proxy_log("fail mmap-shared",(long)a[4],result);
+    else if(nr==PROXY_SC_ftruncate && result<0 && result!=-EINTR)proxy_log("fail ftruncate",(long)a[0],result);
+    else if(nr==PROXY_SC_memfd_create && result<0)proxy_log("fail memfd_create",0,result);
+    else if((nr==PROXY_SC_mprotect || nr==PROXY_SC_munmap || nr==PROXY_SC_mremap) && PROXY_RAW_ERR(result) && !(nr==PROXY_SC_munmap && !a[0])){
+        /* i386 addresses above 2 GB sign-extend negative: only -4095..-1 are errors. */
+        proxy_log(nr==PROXY_SC_mprotect?"fail mprotect":nr==PROXY_SC_munmap?"fail munmap":"fail mremap",(long)a[0],result);
+        proxy_log("fail map-args",(long)a[1],(long)a[2]);
+    }
+    else if(nr==PROXY_SC_connect && result<0 && result!=-EINPROGRESS && result!=-EAGAIN && result!=-EINTR && result!=-EISCONN){
+        proxy_log("fail connect",(long)a[0],result);
+        const unsigned char *sa=(const unsigned char *)(uintptr_t)a[1];size_t len=(size_t)a[2];
+        if(sa && len>=2 && result!=-EFAULT){
+            unsigned family=sa[0]|(sa[1]<<8);char line[160];size_t n=0;
+            static const char hex[]="0123456789abcdef";
+            const char *h="v3 fail-connect-to family=";for(;*h;h++)line[n++]=*h;
+            line[n++]=hex[(family>>4)&15];line[n++]=hex[family&15];line[n++]=' ';
+            if(family==AF_UNIX){
+                /* path, or '@'+abstract name; non-printables as '.' */
+                size_t i=2;if(len>2 && !sa[2]){line[n++]='@';i=3;}
+                for(;i<len && n<sizeof(line)-1;i++){if(!sa[i] && sa[2])break;line[n++]=(sa[i]>=32&&sa[i]<127)?(char)sa[i]:'.';}
+            }else if((family==AF_INET||family==AF_INET6) && len>=4){
+                unsigned port=(sa[2]<<8)|sa[3];const char *q="port=";for(;*q;q++)line[n++]=*q;
+                char d[6];int k=0;do{d[k++]=(char)('0'+port%10);port/=10;}while(port);while(k)line[n++]=d[--k];
+            }
+            line[n++]='\n';proxy_diagnostic_write(line,n);
+        }
+    }
 }
 static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
@@ -1220,7 +1299,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(nr==PROXY_SC_statx)follow=!(a[2]&AT_SYMLINK_NOFOLLOW);
     if(nr==PROXY_SC_openat)follow=!(a[2]&O_NOFOLLOW) && (a[2]&(O_CREAT|O_EXCL))!=(O_CREAT|O_EXCL);
     if(a[one] && !*(char *)(uintptr_t)a[one] && at){
-        if(nr==PROXY_SC_fchmodat2){struct proxy_stat mode;if(!arch_stat_fd(fd,&mode) && S_ISREG(mode.st_mode))a[2]=(a[2]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
+        long r=nr==PROXY_SC_fchmodat2?links_fd_chmod(nr,a):RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);if(!r && nr==PROXY_SC_newfstatat)links_payload_fd_stat(fd,(void *)(uintptr_t)a[2]);if(!r && nr==PROXY_SC_statx){struct proxy_stat st;if(!arch_stat_fd(fd,&st)){links_fd_stat(fd,&st);arch_statx_nlink((void *)(uintptr_t)a[4],st.st_nlink);}}return r;}
     const char *original_path=(void *)(uintptr_t)a[one];
     if(nr==PROXY_SC_openat && original_path &&
             vfs_plain_nofollow_dir_path(fd,original_path,(int)a[2])){
@@ -1295,7 +1374,6 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
     if(nr==PROXY_SC_openat){e=vfs_proc_open(p,(int)a[2]);if(e!=-ENOSYS)goto done;}
     if(writing)vfs_resolve_cache_invalidate();
-    if((writing || nr==PROXY_SC_truncate) && (links_marker(p) || (q && links_marker(q)))){e=-EPERM;goto done;}
     if(writing){e=vfs_mount_readonly(pm);if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
     /* bwrap reads the overflow IDs for its uid maps; Android's policy denies
@@ -1344,15 +1422,6 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     else if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
     else e=links_path_call(nr,a,p);
     if(e>=0 && q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2))vfs_fd_rename(p,q);
-    /* Marker ancestry changes with directories/symlinks and their metadata,
-     * never with ordinary file creation, linking or removal. Marker names
-     * themselves are immutable above. Do not throw away every sibling's
-     * cached ancestry while pressure-vessel copies a runtime tree. */
-    if(e>=0 && ((nr==PROXY_SC_unlinkat && (a[2]&AT_REMOVEDIR)) ||
-       nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2 ||
-       nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat ||
-       nr==PROXY_SC_fchmodat || nr==PROXY_SC_fchmodat2 || nr==PROXY_SC_fchownat))
-        links_cache_invalidate();
     /* Native closes bypass proxy cleanup. A successful open starts a new fd
      * lifetime, so retire pathname metadata left by the prior occupant. */
     if(e>=0 && nr==PROXY_SC_openat){vfs_fd_close((int)e);vfs_fd_record((int)e,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
@@ -1580,7 +1649,7 @@ static long proxy_direct_dispatch_impl(long nr,proxy_arg_t *saved) {
      * may rewrite arguments, but syscall-preserved registers restore verbatim. */
     proxy_args args;p_copy(args,saved,sizeof(args));proxy_arg_t *a=args;
     nr=arch_decode_syscall(nr);
-    if(native_mapping_denied(nr,a))return -EACCES;
+    if(native_mapping_denied(nr,a)){proxy_log("fail native-overlap",nr,(long)a[0]);proxy_log("fail map-args",(long)a[1],(long)a[2]);return -EACCES;}
     /* Evaluate the payload operation before its VFS implementation enters
      * the exempt raw gateway. For TRAP use a real payload syscall frame;
      * the kernel supplies siginfo and preserves the app handler's edits. */
@@ -1656,17 +1725,6 @@ static void rewrite_segv_handler(int sig,siginfo_t *info,void *context){
     /* The adoption handler itself blocks real SIGSYS on entry. Unblock it
      * here so payload-handler syscalls can recurse through the proxy. */
     RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&mask,0,8,0,0);
-    if(sig==SIGSEGV||sig==SIGBUS||sig==SIGILL||sig==SIGFPE||sig==SIGABRT||sig==SIGTRAP){ /* TEMPDIAG */
-        uintptr_t dpc=ARCH_CONTEXT((ucontext_t *)context,ARCH_PC);
-        crash_text("v3 app-fault signal=");crash_hex(sig);crash_text(" code=");crash_hex(info->si_code);
-        crash_text(" addr=");crash_hex((uintptr_t)info->si_addr);crash_text("\n");
-        crash_map("v3 app-fault pc=",dpc);
-#if defined(__x86_64__)
-        { uintptr_t *bp=(uintptr_t *)((ucontext_t *)context)->uc_mcontext.gregs[10]; { greg_t *gr=((ucontext_t *)context)->uc_mcontext.gregs; crash_text("v3 app-fault rsp=");crash_hex(gr[15]);crash_text(" rdx=");crash_hex(gr[12]);crash_text(" rax=");crash_hex(gr[13]);crash_text(" rbp=");crash_hex(gr[10]);crash_text(" fsbase=");crash_hex(RAW(PROXY_SC_arch_prctl,0x1003,(long)&(uintptr_t){0},0,0,0,0)==0?0:1);crash_text("\n"); crash_near((uintptr_t)info->si_addr); crash_stack_libs(gr[15]); } if(bp && !((uintptr_t)bp&7)) crash_map("v3 app-fault caller=",bp[1]); } /* TEMPDIAG */
-#endif
-        uintptr_t *dsp=(uintptr_t *)ARCH_CONTEXT((ucontext_t *)context,ARCH_STACK);unsigned shown=0;
-        for(unsigned i=0;i<512 && shown<10;i++)if(crash_map("v3 app-fault frame=",dsp[i]))shown++;
-    }
     uintptr_t resident=adopt_signal_enter();
     if(action.flags&SA_SIGINFO)((void (*)(int,siginfo_t *,void *))action.handler)(sig,info,context);
     else ((void (*)(int))action.handler)(sig);
@@ -1809,6 +1867,13 @@ static int unix_call(long nr,proxy_arg_t a[6],long *result) {
  * check both ends; unlike /proc/self/mem this respects read-only mappings.
  * A termios2 fits atomically in an empty pipe; nonblocking avoids any wait. */
 long proxy_copy(void *dst,const void *src,size_t size) {
+    /* One syscall on the hot i386 socketcall path. Self access always passes
+     * the ptrace check, and without FOLL_FORCE both ends keep page protections.
+     * The pipe stays as fallback if a policy denies the call. */
+    struct {void *base;size_t len;} local={dst,size},remote={(void *)src,size};
+    long v=RAW(PROXY_SC_process_vm_readv,RAW(PROXY_SC_getpid,0,0,0,0,0,0),&local,1,&remote,1,0);
+    if(v==(long)size)return 0;
+    if(v>=0 || v==-EFAULT)return -EFAULT;
     int fd[2];long r=RAW(PROXY_SC_pipe2,fd,O_CLOEXEC|O_NONBLOCK,0,0,0,0);
     if(r<0)return r;
     r=proxy_internal_write(fd[1],src,size);
@@ -2023,21 +2088,27 @@ static long payload_seccomp_install(long nr,proxy_arg_t *args) {
     if(payload_seccomp_count>=PAYLOAD_SECCOMP_FILTERS)return payload_filter(nr,args);
     if(proxy_copy(&program,(void *)(uintptr_t)args[2],sizeof(program)))return -EFAULT;
     if(!program.len || program.len>PAYLOAD_SECCOMP_INSNS)return -EINVAL;
-    struct payload_seccomp_filter next={.len=program.len,
-        .flags=nr==PROXY_SC_seccomp?(unsigned)args[1]:0};
-    if(proxy_copy(next.insns,program.filter,(size_t)program.len*sizeof(next.insns[0])))return -EFAULT;
+    struct payload_seccomp_filter *next=vfs_alloc(sizeof(*next));
+    if(!next)return -ENOMEM;
+    next->len=program.len;
+    next->flags=nr==PROXY_SC_seccomp?(unsigned)args[1]:0;
+    if(proxy_copy(next->insns,program.filter,(size_t)program.len*sizeof(next->insns[0]))) {
+        vfs_free(next);return -EFAULT;
+    }
     if(payload_current_bwrap) {
         /* bwrap supplies the filter before forking its setup child. Retain it
          * for the app exec so bwrap's own namespace and mount setup is intact. */
-        payload_seccomp[payload_seccomp_count++]=next;
+        payload_seccomp[payload_seccomp_count++]=*next;
+        vfs_free(next);
         return 0;
     }
-    struct sock_fprog kernel_program={.len=next.len,.filter=next.insns};
+    struct sock_fprog kernel_program={.len=next->len,.filter=next->insns};
     long result=payload_kernel_filter(nr,args,&kernel_program);
     if(!result) {
-        payload_seccomp[payload_seccomp_count++]=next;
+        payload_seccomp[payload_seccomp_count++]=*next;
         payload_seccomp_active_count=payload_seccomp_count;
     }
+    vfs_free(next);
     return result;
 }
 static long payload_seccomp_activate(void) {
@@ -2258,15 +2329,16 @@ static volatile unsigned long android_pc_cache_epoch=1;
  * the production-sized handler stack, even after this query has returned. */
 __attribute__((noinline))
 static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end) {
+    char *scratch=vfs_alloc(8192);if(!scratch)return 0;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
-    if(fd<0)return 0;
-    char input[4096],line[4096];size_t used=0;int found=0;
+    if(fd<0){vfs_free(scratch);return 0;}
+    char *input=scratch,*line=scratch+4096;size_t used=0;int found=0;
     for(;;){
-        long n=RAW(PROXY_SC_read,fd,input,sizeof(input),0,0,0);
+        long n=RAW(PROXY_SC_read,fd,input,4096,0,0,0);
         if(n<=0)break;
         for(long i=0;i<n;i++){
             char c=input[i];
-            if(c!='\n'){if(used+1<sizeof(line))line[used++]=c;continue;}
+            if(c!='\n'){if(used+1<4096)line[used++]=c;continue;}
             line[used]=0;used=0;
             const char *p=line;uintptr_t lo=resident_maps_hex(&p),hi=0;
             if(*p=='-'){p++;hi=resident_maps_hex(&p);}
@@ -2290,6 +2362,7 @@ static int android_library_mapping(uintptr_t pc,uintptr_t *begin,uintptr_t *end)
     }
 done:
     RAW(PROXY_SC_close,fd,0,0,0,0,0);
+    vfs_free(scratch);
     return found;
 }
 static int android_library_mapping_state(uintptr_t pc) {
@@ -2428,7 +2501,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         if(nr==PROXY_SC_close && proxy_fd_is_private(a[0]))result=-EBADF;
         else if((nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) && proxy_fd_is_private(a[1]))result=descriptor_dup_dispatch(nr,a);
         else if(nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC) && proxy_fd_is_private(a[2]))result=descriptor_dup_dispatch(nr,a);
-        else if(nr==PROXY_SC_close && resident_fd_owned((int)a[0]))result=0;
         else if(nr==PROXY_SC_close_range)result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);
         else result=resident_fd_native(nr,a);
         if(proxy_trace && (nr==PROXY_SC_mmap || nr==PROXY_SC_ioctl)) {
@@ -2503,7 +2575,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     }
     nr=modernize(nr,a,&result);
     if(nr<0)goto finish;
-    if(native_mapping_denied(nr,a)){result=-EACCES;goto finish;}
+    if(native_mapping_denied(nr,a)){proxy_log("fail native-overlap",nr,(long)a[0]);proxy_log("fail map-args",(long)a[1],(long)a[2]);result=-EACCES;goto finish;}
     if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
@@ -2511,7 +2583,6 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     result=-ENOSYS;
     if(!ours(nr) && nr!=PROXY_SC_close && nr!=PROXY_SC_close_range &&
        nr!=PROXY_SC_dup2 && nr!=PROXY_SC_dup3) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
-    if(nr==PROXY_SC_fchmod){struct proxy_stat mode;if(!arch_stat_fd((int)a[0],&mode) && S_ISREG(mode.st_mode))a[1]=(a[1]&~S_ISVTX)|(mode.st_mode&S_ISVTX);}
     switch(nr) {
     case PROXY_SC_uname:
     case PROXY_SC_mprotect:case PROXY_SC_munmap:case PROXY_SC_mremap:
@@ -2520,7 +2591,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_readv:result=payload_readv((int)a[0],(const struct proxy_iovec *)(uintptr_t)a[1],(unsigned long)a[2]);break;
     case PROXY_SC_pread64:case PROXY_SC_pwrite64:case PROXY_SC_writev:case PROXY_SC_mmap:case PROXY_SC_ftruncate:
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);break;
-    case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_sendfile:case PROXY_SC_copy_file_range:case PROXY_SC_splice:case PROXY_SC_fchmod:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
+    case PROXY_SC_preadv:case PROXY_SC_preadv2:case PROXY_SC_pwritev:case PROXY_SC_pwritev2:case PROXY_SC_fallocate:case PROXY_SC_sendfile:case PROXY_SC_copy_file_range:case PROXY_SC_splice:case PROXY_SC_fchown:case PROXY_SC_fsetxattr:case PROXY_SC_fremovexattr:
         if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
         break;
     case PROXY_SC_getxattr:case PROXY_SC_lgetxattr:case PROXY_SC_listxattr:case PROXY_SC_llistxattr:case PROXY_SC_setxattr:case PROXY_SC_lsetxattr:case PROXY_SC_removexattr:case PROXY_SC_lremovexattr:case PROXY_SC_truncate:result=path_call(nr,a,0,-1);break;
@@ -2529,9 +2600,12 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_lseek:case PROXY_SC_readlink:case PROXY_SC_readlinkat:
         result=file_dispatch(nr,a);break;
     case PROXY_SC_getdents64:result=file_dispatch(nr,a);break;
+    case PROXY_SC_fchmod:if(app_allowed(nr))result=links_fd_chmod(nr,a);break;
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
     case PROXY_SC_exit:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit",nr,a[0]);vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit-group",nr,a[0]);ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit-group",nr,a[0]);else if((int)a[0]){proxy_log("exit-group nonzero",(long)a[0],(long)syscall_pc);proxy_exit_report((int)a[0]);
+        /* TEMPORARY diagnostic: who called exit(nonzero)? Scan the app stack for code addresses. */
+        proxy_exit_frames((uintptr_t)ARCH_CONTEXT(uc,ARCH_STACK));}ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=RAW(nr,a[0],a[1],a[2],0,0,0);if(result>0 && sysctl_fds)sysctl_sync();break;
     case PROXY_SC_close_range:if(sysctl_fds)sysctl_sync();result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:result=file_dispatch(nr,a);break;
@@ -2876,9 +2950,10 @@ finish:
     if(nr==PROXY_SC_sendmsg || nr==PROXY_SC_recvmsg || nr==PROXY_SC_sendto ||
        nr==PROXY_SC_recvfrom || nr==PROXY_SC_write || nr==PROXY_SC_read)
         trace_unix_io(nr,a,result);
-    if(result>=0 && nr==PROXY_SC_mmap)android_pc_cache_invalidate_range((uintptr_t)result,(uintptr_t)result+(uintptr_t)a[1]);
-    if(result>=0 && nr==PROXY_SC_munmap)android_pc_cache_invalidate_range((uintptr_t)a[0],(uintptr_t)a[0]+(uintptr_t)a[1]);
-    if(result>=0 && nr==PROXY_SC_mremap){
+    fail_trace(nr,a,result);
+    if(!PROXY_RAW_ERR(result) && nr==PROXY_SC_mmap)android_pc_cache_invalidate_range((uintptr_t)result,(uintptr_t)result+(uintptr_t)a[1]);
+    if(!PROXY_RAW_ERR(result) && nr==PROXY_SC_munmap)android_pc_cache_invalidate_range((uintptr_t)a[0],(uintptr_t)a[0]+(uintptr_t)a[1]);
+    if(!PROXY_RAW_ERR(result) && nr==PROXY_SC_mremap){
         android_pc_cache_invalidate_range((uintptr_t)a[0],(uintptr_t)a[0]+(uintptr_t)a[1]);
         android_pc_cache_invalidate_range((uintptr_t)result,(uintptr_t)result+(uintptr_t)a[2]);
     }

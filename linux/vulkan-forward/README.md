@@ -170,12 +170,12 @@ Production packaging is wired through the host APK build. `linux/gl-maton/`
 packages both `libmaton_vulkan.so` and ELF32 `libmaton_vulkan_i386.so`, with
 separate ICD manifests, into `org.freedesktop.Platform.GL.maton`, mounted at
 `/usr/lib/x86_64-linux-gnu/GL/maton`. The launcher selects it through
-`FLATPAK_GL_DRIVERS=maton:default` and passes `--gpu-bridge` to the
+`FLATPAK_GL_DRIVERS=maton` and passes `--gpu-bridge` to the
 Android-linked production loader. The ICD manifest follows the runtime's
 `lib/vulkan/icd.d/` extension layout.
 The forwarder then calls the Android Vulkan loader and its selected device
-(lavapipe on the acceptance VM). Apps still receive the existing `--device=dri`
-grant. This path is offscreen only: desktop presentation remains the separate
+(lavapipe on the acceptance VM). Apps get no `--device=dri`
+grant; the forwarder is their only GPU path. This path is offscreen only: desktop presentation remains the separate
 WSI stage.
 
 Still unverified: i386 device runtime, real GPU drivers, signal/reentrant calls

@@ -33,6 +33,11 @@ expected = {
     "/lib/libmaton_vulkan_i386.so",
     "/vulkan/icd.d/maton_icd.json",
     "/vulkan/icd.d/maton_icd_i386.json",
+    "/lib/libgallium-0.0.0-test.so",
+    "/lib/libGLX_mesa.so.0",
+    "/lib/libEGL_mesa.so.0",
+    "/share/drirc.d/00-zink-defaults.conf",
+    "/glvnd/egl_vendor.d/50_mesa.json",
 }
 assert expected <= paths.keys(), paths.keys()
 assert "/lib/vulkan/icd.d/maton_icd.json" not in paths  # merge-dirs only sees the extension root
@@ -60,6 +65,10 @@ gl32_paths = {row["path"] for row in gl32_rows}
 assert {
     "/lib/libmaton_vulkan_i386.so",
     "/vulkan/icd.d/maton_icd_i386.json",
+    "/lib/libgallium-0.0.0-test.so",
+    "/lib/libGLX_mesa.so.0",
+    "/lib/libEGL_mesa.so.0",
+    "/glvnd/egl_vendor.d/50_mesa.json",
 } <= gl32_paths
 assert "/lib/libmaton_vulkan.so" not in gl32_paths
 

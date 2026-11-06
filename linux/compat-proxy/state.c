@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "proxy.h"
+#include "links.h"
 #include "vfs.h"
 #include "state.h"
 #include <fcntl.h>
@@ -83,14 +84,17 @@ long proxy_private_fd(long fd){
  if(moved>=0)private_slot_used[slot]=1;
  return moved;
 }
-void proxy_private_fd_release(int fd){
+int proxy_private_fd_release(int fd){
  for(unsigned i=1;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]==fd && private_slot_used[i]){
   long spare=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/null",O_RDONLY,0,0,0);
-  if(spare>=0){RAW(PROXY_SC_dup3,spare,fd,0,0,0,0);RAW(PROXY_SC_close,spare,0,0,0,0,0);private_slot_used[i]=0;}
-  return;
+  if(spare<0){proxy_log("fail private-release",fd,spare);return 1;}
+  RAW(PROXY_SC_dup3,spare,fd,0,0,0,0);RAW(PROXY_SC_close,spare,0,0,0,0,0);private_slot_used[i]=0;
+  return 1;
  }
- for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd){private_moved[i]=private_moved[--private_moved_count];return;}
+ for(unsigned i=0;i<private_moved_count;i++)if(private_moved[i]==fd){private_moved[i]=private_moved[--private_moved_count];return 0;}
+ return 0;
 }
+static void private_fd_drop(int fd){if(!proxy_private_fd_release(fd))RAW(PROXY_SC_close,fd,0,0,0,0,0);}
 void state_private_fd_relocated(int oldfd,int newfd){if(private_fd==oldfd)private_fd=newfd;}
 long proxy_private_fd_move(long fd){
  if(!proxy_fd_is_private(fd))return 0;
@@ -122,14 +126,14 @@ long proxy_private_fd_move(long fd){
 }
 long proxy_private_fd_limit(uint64_t soft){
  for(unsigned i=0;i<PROXY_PRIVATE_FD_COUNT;i++)if(private_slots[i]>=0&&(uint64_t)private_slots[i]>=soft){
-  int old=private_slots[i];long flags=RAW(PROXY_SC_fcntl,old,F_GETFD,0,0,0,0);if(flags<0)return flags;
+  int old=private_slots[i];long flags=RAW(PROXY_SC_fcntl,old,F_GETFD,0,0,0,0);if(flags<0){proxy_log("fail fd-limit-relocate",old,flags);return flags;}
   long moved=RAW(PROXY_SC_fcntl,old,(flags&FD_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,3,0,0,0);
   if(moved<0)return moved;
   if((uint64_t)moved>=soft){RAW(PROXY_SC_close,moved,0,0,0,0,0);return -EMFILE;}
   private_slots[i]=(int)moved;RAW(PROXY_SC_close,old,0,0,0,0,0);proxy_fd_number_moved(old,(int)moved);
  }
  for(unsigned i=0;i<private_moved_count;i++)if((uint64_t)private_moved[i]>=soft){
-  int old=private_moved[i];long flags=RAW(PROXY_SC_fcntl,old,F_GETFD,0,0,0,0);if(flags<0)return flags;
+  int old=private_moved[i];long flags=RAW(PROXY_SC_fcntl,old,F_GETFD,0,0,0,0);if(flags<0){proxy_log("fail fd-limit-relocate",old,flags);return flags;}
   long moved=RAW(PROXY_SC_fcntl,old,(flags&FD_CLOEXEC)?F_DUPFD_CLOEXEC:F_DUPFD,3,0,0,0);
   if(moved<0)return moved;
   if((uint64_t)moved>=soft){RAW(PROXY_SC_close,moved,0,0,0,0,0);return -EMFILE;}
@@ -227,30 +231,37 @@ int state_import(const char *number,const char *token){
  /* A failed import must be visible even when the payload asked for no tracing:
   * the new resident is the only observer of its own rejected handoff. */
  if(proxy_trace || s.error)proxy_log("exec-state-import",ARCH_AUDIT,s.error);
- RAW(PROXY_SC_munmap,data,st.st_size,0,0,0,0);proxy_private_fd_release((int)fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);private_fd=-1;
+ RAW(PROXY_SC_munmap,data,st.st_size,0,0,0,0);private_fd_drop((int)fd);private_fd=-1;
  return s.error;
 }
 /* Return zero for this loader's class; otherwise kernel-exec only the verified
  * sibling. Open it once and use execveat(AT_EMPTY_PATH), closing rename races. */
-static int exec_resident(const char *path,char *const *args,char *const *env,int reset){
- long error=0;char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);if(!resolved)return error;
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,resolved,O_RDONLY|O_CLOEXEC,0,0,0);vfs_free(resolved);if(fd<0)return fd;
- unsigned char elf[20];long got=proxy_pread_fd(fd,elf,sizeof(elf),0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
+struct exec_resident_scratch { char self[4096],directory[4096]; };
+static int exec_resident_impl(const char *path,char *const *args,char *const *env,int reset,struct exec_resident_scratch *scratch,const unsigned char *known_header,size_t known_header_size){
+ unsigned char elf[20];long got=sizeof(elf),fd=-1,error=0;
+ if(known_header){got=known_header_size>=sizeof(elf)?(long)sizeof(elf):(long)known_header_size;if(got==sizeof(elf))p_copy(elf,known_header,sizeof(elf));}
+ else {
+  char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);if(!resolved)return error;
+  /* Hardlink placeholders read through their store object, as loader_open does. */
+  proxy_arg_t open_args[6]={AT_FDCWD,(proxy_arg_t)resolved,O_RDONLY|O_CLOEXEC,0,0,0};
+  fd=links_path_call(PROXY_SC_openat,open_args,resolved);vfs_free(resolved);if(fd<0)return fd;
+  got=proxy_pread_fd(fd,elf,sizeof(elf),0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ }
  int is_elf=got==sizeof(elf)&&elf[0]==127&&elf[1]=='E'&&elf[2]=='L'&&elf[3]=='F';
  if(!is_elf && !reset)return 0;
  int target=is_elf?arch_handoff_class(elf):0;if(!target && !reset)return 0;
  if(target<0)return -ENOEXEC;
- char self[4096];long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,"/proc/self/exe",self,sizeof(self)-1,0,0);if(n<=0)return -ENOEXEC;self[n]=0;
+ char *self=scratch->self;long n=RAW(PROXY_SC_readlinkat,AT_FDCWD,"/proc/self/exe",self,sizeof(scratch->self)-1,0,0);if(n<=0)return -ENOEXEC;self[n]=0;
  while(n && self[n-1]!='/')n--;
  if(!n)return -ENOEXEC;
- char directory[4096];p_copy(directory,self,n);directory[n]=0;
+ char *directory=scratch->directory;p_copy(directory,self,n);directory[n]=0;
  long parent=RAW(PROXY_SC_openat,AT_FDCWD,directory,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
  struct proxy_stat dir;
  if(parent<0)return parent;
  int unsafe=arch_stat_fd(parent,&dir)||(dir.st_mode&0022);
  RAW(PROXY_SC_close,parent,0,0,0,0,0);if(unsafe)return -EPERM;
  const char *peer=target?arch_peer_loader(self+n):arch_reset_loader(self+n);
- if((size_t)n+p_len(peer)>=sizeof(self))return -ENAMETOOLONG;
+ if((size_t)n+p_len(peer)>=sizeof(scratch->self))return -ENAMETOOLONG;
  p_copy(self+n,peer,p_len(peer)+1);
  fd=RAW(PROXY_SC_openat,AT_FDCWD,self,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;
  struct proxy_stat running,chosen;
@@ -306,13 +317,17 @@ static int exec_resident(const char *path,char *const *args,char *const *env,int
   /* A failed exec leaves the caller alive; restore its private descriptor's
    * original kernel flag along with the rest of its state. */
   if(error<0 && (handoff_flags&FD_CLOEXEC))RAW(PROXY_SC_fcntl,private_fd,F_SETFD,handoff_flags,0,0,0);}}
- vfs_free(native_env);vfs_free(av);proxy_private_fd_release(private_fd);RAW(PROXY_SC_close,private_fd,0,0,0,0,0);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
+ vfs_free(native_env);vfs_free(av);private_fd_drop(private_fd);private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;
+}
+static int exec_resident(const char *path,char *const *args,char *const *env,int reset,const unsigned char *header,size_t header_size){
+ struct exec_resident_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;
+ int result=exec_resident_impl(path,args,env,reset,scratch,header,header_size);vfs_free(scratch);return result;
 }
 
-int state_exec(const char *path,char *const *args,char *const *env){
+int state_exec(const char *path,const unsigned char *header,size_t header_size,char *const *args,char *const *env){
  int reset=proxy_resident_reset_pending();
  if(reset)proxy_log("resident-reset-exec",ARCH_AUDIT,0);
- return exec_resident(path,args,env,reset);
+ return exec_resident(path,args,env,reset,header,header_size);
 }
 /* An explicit host-command fd mapping may replace a driver's cached number.
  * Real exec discards that driver's objects. Do the same instead of retaining
@@ -321,7 +336,7 @@ int state_reexec(const char *path,char *const *args,char *const *env,int ready){
  long flags=RAW(PROXY_SC_fcntl,ready,F_GETFD,0,0,0,0);if(flags<0)return flags;
  long r=RAW(PROXY_SC_fcntl,ready,F_SETFD,flags&~FD_CLOEXEC,0,0,0);if(r<0)return r;
  ready_fd=ready;
- r=exec_resident(path,args,env,1);
+ r=exec_resident(path,args,env,1,NULL,0);
  ready_fd=-1;
  RAW(PROXY_SC_fcntl,ready,F_SETFD,flags,0,0,0);
  return r;

@@ -24,7 +24,18 @@ static inline long mv_open_write(const char *p,int mode) {return mv_sys(257,-100
 static inline long mv_write_fd(long fd,const void *p,size_t n) {return mv_sys(1,fd,(long)p,n,0,0,0);}
 static inline long mv_read(long fd,void *p,size_t n) {return mv_sys(0,fd,(long)p,n,0,0,0);}
 static inline void mv_close(long fd) {mv_sys(3,fd,0,0,0,0,0);}
+static inline uint64_t mv_monotonic_ns(void) {
+    struct { long tv_sec, tv_nsec; } ts;
+    return mv_sys(228,1,(long)&ts,0,0,0,0)<0?0:
+           (uint64_t)ts.tv_sec*1000000000ull+(uint64_t)ts.tv_nsec;
+}
 static inline int mv_socketpair(int pair[2]) { return (int)mv_sys(53,1,5,0,(long)pair,0,0); }
+/* Sized memfd (MFD_CLOEXEC): fd, or negative errno. */
+static inline int mv_memfd(const char *name,uint64_t size) {
+    long fd=mv_sys(319,(long)name,1,0,0,0,0);if(fd<0)return (int)fd;
+    long r=mv_sys(77,fd,(long)size,0,0,0,0);if(r<0){mv_close(fd);return (int)r;}
+    return (int)fd;
+}
 static inline void *mv_map(size_t n) {
     long p=mv_sys(9,0,n,3,0x22,-1,0);
     return (unsigned long)p>=(unsigned long)-4095?0:(void *)p;

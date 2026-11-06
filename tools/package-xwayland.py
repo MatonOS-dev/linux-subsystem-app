@@ -44,4 +44,4 @@ for name in ['libgcrypt-1.11.1','libgpg-error-1.51']:
 (assets/'libraries.json').write_text(json.dumps(links,sort_keys=True))
 shutil.copyfile(root/'linux/subsystem/UPSTREAMS',assets/'SOURCE')
 ndk=Path(os.environ['MATON_NDK'])/'toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang'
-subprocess.run([str(ndk),'-std=c11','-D_GNU_SOURCE','-Wall','-Wextra','-Werror','-fPIE','-pie',str(root/'linux/subsystem/native/xwayland-launch.c'),'-o',str(jni/'libmatonos-Xwayland.so')],check=True)
+subprocess.run([str(ndk),'-std=c11','-D_GNU_SOURCE','-Wall','-Wextra','-Werror','-fPIE','-pie',str(root/'linux/subsystem/native/xwayland-launch.c'),'-o',str(jni/'libmatonos-Xwayland.so'),'-llog'],check=True)

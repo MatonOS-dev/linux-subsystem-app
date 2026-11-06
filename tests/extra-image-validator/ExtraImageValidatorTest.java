@@ -31,10 +31,9 @@ public final class ExtraImageValidatorTest {
             Path trustedStore=Files.createDirectories(temp.resolve("trusted-store"));
             mode(trustedStore,0700);
             Path inodeStore=Files.createDirectory(trustedStore.resolve(".v3-inodes"));mode(inodeStore,0700);
-            Path storeMarker=Files.createFile(trustedStore.resolve(".v3-store-root"));mode(storeMarker,0600);
             Path backing=inodeStore.resolve("i-0123456789abcdef0123456789abcdef");
             Files.writeString(backing,"committed-header");mode(backing,0644);
-            Path trustedHeader=trustedStore.resolve("header.h");Files.createFile(trustedHeader);Files.setAttribute(trustedHeader,"unix:mode",0101600);
+            Path trustedHeader=trustedStore.resolve("header.h");Files.createFile(trustedHeader);Files.setAttribute(trustedHeader,"unix:mode",0101000);
             long dev=((Number)Files.getAttribute(trustedHeader,"unix:dev")).longValue();
             long ino=((Number)Files.getAttribute(trustedHeader,"unix:ino")).longValue();
             Files.writeString(inodeStore.resolve(String.format(java.util.Locale.ROOT,"p-%016x-%016x",dev,ino)),

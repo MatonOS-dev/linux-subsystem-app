@@ -92,9 +92,9 @@ static int rewrite_cache_read(struct rewrite_scan *scan,uintptr_t begin){
     if(rewrite_log)proxy_log("rewrite-persistent-hit",scan->offset+scan->target,disk.count);
     return 1;
 }
-static void rewrite_cache_write(struct rewrite_scan *scan){
+static void rewrite_cache_write_impl(struct rewrite_scan *scan,char *scratch){
     if(!scan->function_size || scan->count>1 || scan->offset>UINT32_MAX)return;
-    struct rewrite_disk disk={0};char path[PATH_MAX+40],temp[PATH_MAX+40];
+    struct rewrite_disk disk={0};char *path=scratch,*temp=scratch+PATH_MAX+40;
     disk.magic=0x32574445524e544dULL;
     rewrite_key_fill(&disk.key,&scan->identity,scan->offset+scan->target);
     if(!rewrite_cache_name(path,&disk.key,0) || !rewrite_cache_name(temp,&disk.key,1))return;
@@ -106,3 +106,4 @@ static void rewrite_cache_write(struct rewrite_scan *scan){
     if(wrote==sizeof(disk))RAW(PROXY_SC_renameat,AT_FDCWD,temp,AT_FDCWD,path,0,0);
     RAW(PROXY_SC_unlinkat,AT_FDCWD,temp,0,0,0,0);
 }
+static void rewrite_cache_write(struct rewrite_scan *scan){char *scratch=vfs_alloc(2*(PATH_MAX+40));if(!scratch)return;rewrite_cache_write_impl(scan,scratch);vfs_free(scratch);}

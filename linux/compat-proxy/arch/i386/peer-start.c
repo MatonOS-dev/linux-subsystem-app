@@ -99,7 +99,11 @@ static void release_holes(void){
   unsigned lo=hex(&p);if(*p++!='-')fail("invalid mapping layout");unsigned hi=hex(&p);
   char *line=p;while(*p && *p!='\n')p++;
   if(*p)*p++=0;
-  for(char *q=line;*q;q++)if(equal(q,"[anon:" TEMP_NAME "]")){
+  /* The kernel shows a VMA touching start_brk as "[heap]" instead of its
+   * anon name. Startup runs before the payload, so a PROT_NONE "[heap]" is
+   * our reservation; leaving it cost Steam's i386 client 2 GiB. */
+  int heap=line[0]==' '&&line[1]=='-'&&line[2]=='-'&&line[3]=='-';
+  for(char *q=line;*q;q++)if(equal(q,"[anon:" TEMP_NAME "]")||(heap&&equal(q,"[heap]"))){
    if(peer_raw(91,lo,hi-lo,0,0,0,0))fail("cannot release startup reservation");break;
   }
  }

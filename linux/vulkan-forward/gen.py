@@ -23,7 +23,7 @@ for n,target in sorted(aliases.items()):
     selected.add(target)
     aliases[n]=target
 wsi_device_commands = {'vkCreateSwapchainKHR','vkDestroySwapchainKHR','vkGetSwapchainImagesKHR','vkAcquireNextImageKHR','vkAcquireNextImage2KHR','vkQueuePresentKHR'}
-manual = {'vkCreateInstance','vkDestroyInstance','vkEnumeratePhysicalDevices','vkEnumeratePhysicalDeviceGroups','vkEnumerateInstanceVersion','vkEnumerateInstanceExtensionProperties','vkEnumerateInstanceLayerProperties','vkEnumerateDeviceExtensionProperties','vkEnumerateDeviceLayerProperties','vkGetInstanceProcAddr','vkGetDeviceProcAddr','vkCreateDevice','vkDestroyDevice','vkGetDeviceQueue','vkGetDeviceQueue2','vkAllocateCommandBuffers','vkFreeCommandBuffers','vkQueueSubmit','vkQueueSubmit2','vkCmdExecuteCommands','vkDestroyCommandPool'} | wsi_device_commands
+manual = {'vkCreateInstance','vkDestroyInstance','vkEnumeratePhysicalDevices','vkEnumeratePhysicalDeviceGroups','vkEnumerateInstanceVersion','vkEnumerateInstanceExtensionProperties','vkEnumerateInstanceLayerProperties','vkEnumerateDeviceExtensionProperties','vkEnumerateDeviceLayerProperties','vkGetInstanceProcAddr','vkGetDeviceProcAddr','vkCreateDevice','vkDestroyDevice','vkGetDeviceQueue','vkGetDeviceQueue2','vkAllocateCommandBuffers','vkFreeCommandBuffers','vkQueueSubmit','vkQueueSubmit2','vkCmdExecuteCommands','vkDestroyCommandPool','vkAllocateMemory','vkCreateImage','vkGetPhysicalDeviceImageFormatProperties2','vkGetMemoryFdKHR','vkGetMemoryFdPropertiesKHR','vkFreeMemory'} | wsi_device_commands
 queries=[]
 for c in r.findall('./commands/command'):
     name=c.findtext('proto/name')
@@ -91,7 +91,7 @@ for n in selected_types:
     st=next((m.get('values') for m in members(n) if m.findtext('name')=='sType'),None)
     if st:chain[st]=n
 roots={canonical(p.findtext('type')) for _,_,ps in queries for p in ps if 'const ' in ''.join(p.itertext()) and p.findtext('type')!='VkAllocationCallbacks'}
-roots.update(chain.values());roots.update(['VkDeviceCreateInfo','VkDeviceQueueInfo2','VkCommandBufferAllocateInfo','VkSubmitInfo','VkSubmitInfo2'])
+roots.update(chain.values());roots.update(['VkMemoryAllocateInfo','VkImageCreateInfo','VkPhysicalDeviceImageFormatInfo2','VkDeviceCreateInfo','VkDeviceQueueInfo2','VkCommandBufferAllocateInfo','VkSubmitInfo','VkSubmitInfo2'])
 needed=set()
 def visit(n):
     n=canonical(n)

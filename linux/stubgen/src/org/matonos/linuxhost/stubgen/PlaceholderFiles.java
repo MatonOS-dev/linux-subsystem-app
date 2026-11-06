@@ -40,9 +40,9 @@ import java.util.regex.Pattern;
  *
  * <ul>
  *   <li>the final component must be a regular file (no symlink) with
- *       {@code S_ISVTX};</li>
- *   <li>the nearest ancestor of the parent that carries an owner-owned regular
- *       {@code .v3-store-root} marker <em>and</em> is an owner-only, same-device
+ *       mode exactly {@code S_ISVTX} (01000);</li>
+ *   <li>the nearest ancestor of the parent that holds an owner-owned (non-symlink)
+ *       {@code .v3-inodes} directory <em>and</em> is an owner-only, same-device
  *       private directory establishes the store;</li>
  *   <li>the store's {@code .v3-inodes/} holds a {@code p-<dev>-<ino>} entry that
  *       is a regular file whose first 35 bytes are a NUL-terminated
@@ -62,7 +62,6 @@ import java.util.regex.Pattern;
  * backend, so no Android type is linked when the class is used on a host.
  */
 public final class PlaceholderFiles {
-    private static final String MARKER = ".v3-store-root";
     private static final String STORE = ".v3-inodes";
     /** Backing id length including the terminating NUL read from the index. */
     private static final int ID_LENGTH = 35;
@@ -90,7 +89,7 @@ public final class PlaceholderFiles {
         }
         public boolean regular() { return (mode & S_IFMT) == S_IFREG; }
         public boolean directory() { return (mode & S_IFMT) == S_IFDIR; }
-        public boolean sticky() { return (mode & S_ISVTX) != 0; }
+        public boolean sticky() { return (mode & 07777) == S_ISVTX; }
     }
 
     /** A resolved regular file plus its logical size. */
@@ -158,7 +157,7 @@ public final class PlaceholderFiles {
     /** Installs a metadata source; null restores the device/host default. */
     public static void install(Backend value) { backend = value == null ? DEVICE : value; }
 
-    private static Backend backend() { return backend; }
+    static Backend backend() { return backend; }
 
     /**
      * The backing file for {@code file}, or {@code file} itself when it is not a
@@ -283,7 +282,7 @@ public final class PlaceholderFiles {
         return id == null ? null : new File(store.store, id);
     }
 
-    private static final class Store {
+    static final class Store {
         final File store;
         Store(File store) { this.store = store; }
 
@@ -312,7 +311,7 @@ public final class PlaceholderFiles {
      * implicitly, exactly as the proxy's read path does: the index entry must
      * exist and name a regular backing file.
      */
-    private static Store findStore(File file) throws IOException {
+    static Store findStore(File file) throws IOException {
         File parent = file.getParentFile();
         if (parent == null) return null;
         Stat parentStat = backend().lstat(parent.getPath());
@@ -330,8 +329,8 @@ public final class PlaceholderFiles {
     /** A marked directory that is an owner-only, same-device private directory. */
     private static boolean marked(File root, long dev) throws IOException {
         Backend backend = backend();
-        Stat marker = backend.lstat(new File(root, MARKER).getPath());
-        if (marker == null || !marker.regular() || marker.uid != backend.uid()) return false;
+        Stat marker = backend.lstat(new File(root, STORE).getPath());
+        if (marker == null || !marker.directory() || marker.uid != backend.uid()) return false;
         Stat dir = backend.lstat(root.getPath());
         return dir != null && dir.directory() && dir.dev == dev && dir.uid == backend.uid()
                 && (dir.mode & OWNER_RWX) == OWNER_RWX && (dir.mode & GROUP_OTHER_WRITE) == 0;

@@ -44,11 +44,26 @@ static void cleanup(struct mv_wsi_swapchain *c) {
 VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *info,const struct mv_wsi_ops *ops,struct mv_wsi_swapchain **out) {
     *out=0;
     VkSurfaceCapabilitiesKHR caps;VkResult r=mv_wsi_capabilities(s,&caps);if(r)return r;
-    if(info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR || info->pNext || info->flags ||
+    /* VK_KHR_swapchain_mutable_format: the only accepted flag and pNext.
+     * Every listed view format must be the image format or its SRGB twin. */
+    const VkImageFormatListCreateInfo *views=0;
+    for(const VkBaseInStructure *p=info->pNext;p;p=p->pNext) {
+        if(p->sType!=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO || views)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        views=(const VkImageFormatListCreateInfo *)p;
+    }
+    int mutable_format=(info->flags&VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR)!=0;
+    if(mutable_format && (!views || !views->viewFormatCount))return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    if(views) {
+        VkFormat srgb=info->imageFormat==VK_FORMAT_B8G8R8A8_UNORM?VK_FORMAT_B8G8R8A8_SRGB:VK_FORMAT_R8G8B8A8_SRGB;
+        for(uint32_t j=0;j<views->viewFormatCount;j++)
+            if(views->pViewFormats[j]!=info->imageFormat && views->pViewFormats[j]!=srgb)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        if(!mutable_format && views->viewFormatCount>1)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    }
+    if(info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR || (info->flags&~(VkSwapchainCreateFlagsKHR)VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ||
        info->minImageCount<2 || info->minImageCount>4 || info->imageArrayLayers!=1 ||
        (info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM && info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM) || info->imageColorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ||
        !info->imageUsage || (info->imageUsage&~(VkImageUsageFlags)MV_WSI_USAGE) || info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE ||
-       info->preTransform!=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || info->compositeAlpha!=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ||
+       info->preTransform!=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || !(info->compositeAlpha&(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR|VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR|VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)) ||
        (info->presentMode!=VK_PRESENT_MODE_FIFO_KHR&&info->presentMode!=VK_PRESENT_MODE_MAILBOX_KHR))return VK_ERROR_FORMAT_NOT_SUPPORTED;
     if(!s->extent.width || !s->extent.height || s->extent.width>4096 || s->extent.height>4096 ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
@@ -61,7 +76,7 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     memset(c->images,0,c->count*sizeof(*c->images));
     for(uint32_t i=0;i<c->count;i++){
         struct mv_wsi_image *b=&c->images[i];
-        r=ops->allocate(ops->context,s->token,s->extent,info->imageFormat,
+        r=ops->allocate(ops->context,s->token,s->extent,info->imageFormat,mutable_format?views:0,
                 &b->ahb,&b->image,&b->memory,&b->token);
         if(!r)r=ops->create_buffer(ops->context,b->ahb,s->extent,&b->wl_buffer);
         if(!r && !b->wl_buffer)r=VK_ERROR_INITIALIZATION_FAILED;

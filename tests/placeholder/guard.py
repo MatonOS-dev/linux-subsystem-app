@@ -49,6 +49,8 @@ SCAN_FILES = [
 # (file, pattern) -> (allowed occurrences, reason). Every raw read must be
 # either routed through PlaceholderFiles on the same line or justified here.
 ALLOW = {
+    ("PlaceholderCleanup.java", "files-readAllBytes"): (
+        1, "reads only the native-u64 .v3-inodes object count under the proxy flock, never payload"),
     ("MachineId.java", "filechannel-open"): (
         1, "opens the lock file for the stub's own machine-id in its private files dir, not an app/deploy tree"),
     ("MachineId.java", "files-readAllBytes"): (

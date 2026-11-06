@@ -1,0 +1,13 @@
+--- a/dix/extension.c	2026-11-06 14:07:53.365086211 +0200
++++ b/dix/extension.c	2026-11-06 14:07:59.974416981 +0200
+@@ -252,6 +252,10 @@
+             reply.first_error = extensions[i]->errorBase;
+         }
+     }
++    /* MATONOS DIAGNOSTIC: remove once the webhelper reset is found. */
++    if (!reply.present)
++        ErrorF("maton-qe-absent: client=%d name=%.*s\n", client->index,
++               (int) stuff->nbytes, (char *) &stuff[1]);
+     WriteReplyToClient(client, sizeof(xQueryExtensionReply), &reply);
+     return Success;
+ }

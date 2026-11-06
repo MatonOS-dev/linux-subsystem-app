@@ -127,7 +127,7 @@ void vfs_trap_begin(void *base,size_t size){
     if(!base || !size || size>UINTPTR_MAX-lo)return;
     hi=lo+size;
     struct trap_arena *a=arena_for_range(lo,hi);
-    if(!a){for(a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)if(!a->active&&!a->lo&&!a->hi)break;
+    if(!a){for(a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){uintptr_t z=0;if(!a->active&&!a->hi&&__atomic_compare_exchange_n(&a->lo,&z,lo,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED))break;}
       if(!a){long p=RAW(PROXY_SC_mmap,0,sizeof(*a),PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)p>=(unsigned long)-4095)return;
         a=(void *)p;*a=(struct trap_arena){.lo=lo,.hi=hi};
         struct trap_arena *head;
@@ -149,7 +149,7 @@ void vfs_trap_thread_exit(void *base,size_t size){
  a->active=0;
  struct arena_block *b=a->blocks;a->blocks=NULL;
  while(b){struct arena_block *next=b->next;RAW(PROXY_SC_munmap,b,sizeof(*b)+b->size,0,0,0,0);b=next;}
- a->lo=a->hi=0;
+ a->hi=0;__atomic_store_n(&a->lo,0,__ATOMIC_RELEASE);
 }
 void vfs_trap_resume(void){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *a=arena_for_address(sp);if(!a)return;a->active=1;
 #ifdef PROXY_RAW_COUNTER
@@ -168,7 +168,11 @@ void vfs_raw_count_summary(uint64_t *traps,uint64_t *calls){uint64_t t=0,c=0;for
 void vfs_raw_category_summary(uint64_t out[6]){uint64_t v[6]={0};for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){v[0]+=a->openat_sum;v[1]+=a->readlinkat_sum;v[2]+=a->newfstatat_sum;v[3]+=a->geteuid_sum;v[4]+=a->mmap_sum;v[5]+=a->munmap_sum;}for(unsigned i=0;i<6;i++)out[i]=v[i];}
 void vfs_raw_syscall_summary(uint64_t out[PROXY_SC_count]){for(unsigned i=0;i<PROXY_SC_count;i++)out[i]=0;for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next)for(unsigned i=0;i<PROXY_SC_count;i++)out[i]+=a->raw_sum_by_nr[i];}
 static void resolve_cache_fork_child(void);
-void vfs_raw_count_fork_child(void){resolve_cache_fork_child();__atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=a->raw_sum_by_nr[i]=0;}}
+void vfs_raw_count_fork_child(void){resolve_cache_fork_child();__atomic_store_n(&fd_names_owner,0,__ATOMIC_RELEASE);
+#ifdef PROXY_RAW_COUNTER
+for(struct trap_arena *a=__atomic_load_n(&trap_arenas,__ATOMIC_ACQUIRE);a;a=a->next){a->trap_count=a->raw_sum=a->openat_sum=a->readlinkat_sum=a->newfstatat_sum=a->geteuid_sum=a->mmap_sum=a->munmap_sum=0;a->raw_calls=a->openat_calls=a->readlinkat_calls=a->newfstatat_calls=a->geteuid_calls=a->mmap_calls=a->munmap_calls=0;for(unsigned i=0;i<PROXY_SC_count;i++)a->raw_by_nr[i]=a->raw_sum_by_nr[i]=0;}
+#endif
+}
 void *vfs_palloc(size_t n) {
     if(n>ALLOCATION_ARENA-sizeof(struct allocation)-4095) return NULL;
     size_t bytes=(n+sizeof(struct allocation)+4095)&~(size_t)4095;
@@ -192,7 +196,9 @@ void *vfs_alloc(size_t n){
     unsigned char *out=(unsigned char *)(a+1);for(size_t i=0;i<n;i++)out[i]=0;
     return out;
 }
-void vfs_free(void *p) {if(p){struct allocation *a=(struct allocation *)p-1;if(a->size&ALLOCATION_ARENA)return;RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
+/* Arena frees are no-ops except for the newest allocation, which is popped so
+ * retry loops (semop waits, recursive recounts) reuse one slot per trap. */
+void vfs_free(void *p) {if(p){struct allocation *a=(struct allocation *)p-1;if(a->size&ALLOCATION_ARENA){uintptr_t sp=(uintptr_t)&sp;struct trap_arena *arena=arena_for_stack(sp);struct arena_block *b=arena?arena->blocks:NULL;size_t size=a->size&~(size_t)ALLOCATION_ARENA;if(b && (char *)a+size==(char *)(b+1)+b->used)b->used-=size;return;}RAW(PROXY_SC_munmap,a,a->size,0,0,0,0);}}
 static char *join(const char *a,const char *b) {
     size_t x=p_len(a),y=p_len(b);if(x>SIZE_MAX-y-2) return NULL;
     char *s=vfs_alloc(x+y+2);if(!s)return NULL;
@@ -224,12 +230,12 @@ static int temp_own(const char *path){
     long reserved=proxy_private_fd(fd);
     if(reserved<0)return (int)reserved;
     fd=(int)reserved;
-    struct temp_lock *l=vfs_palloc(sizeof(*l));if(!l){proxy_private_fd_release(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
+    struct temp_lock *l=vfs_palloc(sizeof(*l));if(!l){if(!proxy_private_fd_release(fd))RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
     long e=RAW(PROXY_SC_flock,fd,LOCK_EX|LOCK_NB,0,0,0,0);
-    if(e){vfs_free(l);proxy_private_fd_release(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)e;}
+    if(e){vfs_free(l);if(!proxy_private_fd_release(fd))RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)e;}
     /* Distinguish new locked directories from legacy PID-only directories. */
     long marker=RAW(PROXY_SC_openat,fd,".v3-owner",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600,0,0);
-    if(marker<0){vfs_free(l);proxy_private_fd_release(fd);RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)marker;}
+    if(marker<0){vfs_free(l);if(!proxy_private_fd_release(fd))RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)marker;}
     RAW(PROXY_SC_close,marker,0,0,0,0,0);l->fd=fd;l->next=temp_locks;temp_locks=l;return 0;
 }
 static int temp_remove_contents(int fd){
@@ -558,7 +564,6 @@ int vfs_plain_nofollow_path(int fd,const char *path,char **logical_out){
     if(!m || !p_equal(m->source,m->target)){vfs_free(logical);return 0;}
     char *host=physical(logical);int same=host && p_equal(host,logical);vfs_free(host);
     if(!same){vfs_free(logical);return 0;}
-    links_recover_path(logical);
     if(logical_out)*logical_out=logical;else vfs_free(logical);
     return 1;
 }
@@ -583,6 +588,8 @@ struct proxy_open_how {uint64_t flags,mode,resolve;};
 #define PROXY_RESOLVE_IN_ROOT       0x10
 /* Resolve ordinary names in one kernel path walk. Keep symlinks on the
  * component walker because a link can cross an emulated mapping. */
+/* Compares one '/'-delimited component, not the remaining path. */
+static int component_is(const char *c,size_t n,const char *name){size_t k=p_len(name);if(n!=k)return 0;for(size_t i=0;i<n;i++)if(c[i]!=name[i])return 0;return 1;}
 static char *resolve_openat2_fast(int fd,const char *path,int follow,void **identity,int *outfd,char **outpath,int *cacheable){
     if(outfd)*outfd=-1;
     if(outpath)*outpath=NULL;
@@ -608,14 +615,13 @@ static char *resolve_openat2_fast(int fd,const char *path,int follow,void **iden
     if(hide_resolver && (prefix(visible,"/etc/resolv.conf") ||
             prefix(visible,"/run/host/monitor/resolv.conf"))){vfs_free(global);return NULL;}
     for(size_t i=0;global[i];){while(global[i]=='/')i++;size_t start=i;while(global[i]&&global[i]!='/')i++;
-        if(p_equal(global+start,".v3-inodes")){vfs_free(global);return NULL;}}
+        if(component_is(global+start,i-start,".v3-inodes")){vfs_free(global);return NULL;}}
     struct mount *m=lookup(global);
     int direct_relative=fd!=AT_FDCWD && !root && m &&
         p_equal(m->source,m->target) && !erofs_prefix_length(global,NULL) &&
         !vfs_has_nested_mount(m->target,m->target,0);
     char *host_path=physical(global);
     if(!host_path){vfs_free(global);return NULL;}
-    links_recover_path(host_path);
     struct proxy_open_how how={.flags=O_PATH|O_CLOEXEC|(!follow?O_NOFOLLOW:0),
         .resolve=PROXY_RESOLVE_NO_MAGICLINKS|PROXY_RESOLVE_NO_SYMLINKS|
             (direct_relative?PROXY_RESOLVE_NO_XDEV:0)};
@@ -868,6 +874,35 @@ static char *vfs_resolve_mount_impl(int fd,const char *path,int follow,long *err
     char *input;
     if(path[0]=='/')input=dupstr(path);else {char *base=basepath(fd,error);if(!base)return NULL;input=join(base,path);vfs_free(base);}
     if(!input){*error=-ENOMEM;return NULL;}
+    /* A no-symlink openat2 probe proves the translated path can bypass the
+     * userspace component walk. ELOOP and ambiguous failures retain that walk. */
+    static int no_openat2;
+    int probe_safe=1;
+    for(size_t i=0;input[i];){while(input[i]=='/')i++;size_t start=i;while(input[i]&&input[i]!='/')i++;
+        size_t n=i-start;
+        if(component_is(input+start,n,".v3-inodes") || component_is(input+start,n,".") || component_is(input+start,n,".."))probe_safe=0;
+    }
+    if(hide_resolver && (prefix(input,"/etc/resolv.conf") || prefix(input,"/run/host/monitor/resolv.conf")))probe_safe=0;
+    if(!no_openat2 && probe_safe){
+        char *global=root?join(root,input):dupstr(input);
+        char *translated=global?physical(global):NULL;
+        vfs_free(global);
+        if(translated){
+            struct proxy_open_how probe={.flags=O_PATH|O_CLOEXEC,
+                .resolve=PROXY_RESOLVE_NO_SYMLINKS|PROXY_RESOLVE_NO_MAGICLINKS};
+            long fd_probe=RAW(PROXY_SC_openat2,AT_FDCWD,translated,&probe,sizeof(probe),0,0);
+            if(fd_probe>=0){RAW(PROXY_SC_close,fd_probe,0,0,0,0,0);}
+            if(fd_probe>=0 || fd_probe==-ENOENT){
+                if(identity){char *logical=root?join(root,input):dupstr(input);*identity=logical?lookup(logical):NULL;vfs_free(logical);}
+                if(input[p_len(input)-1]=='/' && !p_equal(translated,"/")){char *q=join(translated,"/");vfs_free(translated);translated=q;}
+                vfs_free(input);if(!translated)*error=-ENOMEM;return translated;
+            }
+            if(fd_probe==-ENOSYS || fd_probe==-EINVAL)no_openat2=1;
+            vfs_free(translated);
+        }
+    }
+    char app_data_root[PATH_MAX];size_t app_data_root_len=0;
+    if(input[0]=='/' && links_app_data_root(app_data_root,input))app_data_root_len=p_len(app_data_root);
     unsigned links=0;
 restart:;
     char *out=vfs_alloc(p_len(input)+2);if(!out){vfs_free(input);*error=-ENOMEM;return NULL;}size_t used=1;out[0]='/';out[1]=0;
@@ -876,6 +911,11 @@ restart:;
         if(len==2 && input[start]=='.' && input[start+1]=='.'){while(used>1 && out[used-1]!='/')used--;if(used>1)used--;out[used]=0;continue;}
         if(used>1)out[used++]='/';
         p_copy(out+used,input+start,len);used+=len;out[used]=0;
+        /* Android owns app-data ancestors. The kernel resolves them on the
+         * final syscall; only components beneath the package root are mutable
+         * by the app and need this no-follow walk. */
+        if(app_data_root_len && used<=app_data_root_len &&
+                prefix(app_data_root,out))continue;
         /* Flatpak prepares host resolver binds even with --unshare-net.
          * Hide them only after sandbox construction, at payload exec; bwrap
          * must still be able to resolve its bind sources while setting up. */
@@ -885,7 +925,6 @@ restart:;
         size_t next=i;while(input[next]=='/')next++;
         if(!follow && !input[next])continue;
         char *global=root?join(root,out):dupstr(out);char *host=global?physical(global):NULL;vfs_free(global);if(!host){*error=-ENOMEM;goto fail;}
-        links_recover_path(host);
         /* Most components in pressure-vessel's relative copy/link scans
          * are directories. One lstat identifies those without opening an
          * O_PATH fd, attempting readlink, closing it, then statting again.
@@ -949,7 +988,6 @@ char *vfs_resolve_mount(int fd,const char *path,int follow,long *error,void **id
                 resolve_cache_release(cache_mask);
                 if(!answer){*error=-ENOMEM;return NULL;}
                 /* Recovery is observable even when pathname translation is cached. */
-                links_recover_path(answer);
                 *error=0;
                 return answer;
             }
@@ -1101,6 +1139,16 @@ char *vfs_temp_create(long *error){
     else{*error=RAW(PROXY_SC_flock,parent,LOCK_EX,0,0,0,0);if(!*error)*error=RAW(PROXY_SC_mkdirat,AT_FDCWD,src,0700,0,0,0);if(!*error)*error=temp_own(src);RAW(PROXY_SC_close,parent,0,0,0,0,0);}
     if(*error){vfs_free(src);return NULL;}return src;
 }
+static int shm_is_target(const char *dest){size_t n=p_len(dest);return n>=8 && p_equal(dest+n-8,"/dev/shm");}
+static char *shm_directory(long *error){
+    extern const char *proxy_tmpdir;
+    char *directory=join(proxy_tmpdir,"dev-shm");if(!directory){*error=-ENOMEM;return NULL;}
+    long e=RAW(PROXY_SC_mkdirat,AT_FDCWD,directory,01777,0,0,0);
+    if(e==-EEXIST)e=0;
+    if(!e)e=RAW(PROXY_SC_fchmodat,AT_FDCWD,directory,01777,0,0,0);
+    if(e){proxy_log("fail shm-dir",0,e);vfs_free(directory);*error=e;return NULL;}
+    return directory;
+}
 long vfs_mount(const char *source,const char *target,const char *type,unsigned long flags){
     if(flags&(MS_PRIVATE|MS_SLAVE|MS_SHARED|MS_UNBINDABLE))return 0;
     long e=0;char *canonical=NULL;
@@ -1117,7 +1165,10 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     else if(type && p_equal(type,"devpts"))src=dupstr("/dev/pts");
     else if(type && p_equal(type,"mqueue"))src=dupstr("/dev/mqueue");
     else if(type && p_equal(type,"tmpfs")){
-        src=vfs_temp_create(&e);
+        /* A container's own /dev/shm (rooted or nested) keeps the app-wide
+         * shm backing, like one kernel shm per boot; other tmpfs stay private. */
+        if(shm_is_target(dest)){src=shm_directory(&e);proxy_log("shm-mount",0,e);}
+        else src=vfs_temp_create(&e);
     }else e=-ENOSYS;
     if(!e && !src)e=-ENOMEM;
     if(!e){
@@ -1134,10 +1185,14 @@ long vfs_mount(const char *source,const char *target,const char *type,unsigned l
     }
     vfs_free(src);vfs_free(dest);return e;
 }
+/* One /dev/shm per app, like one per Linux boot: every proxy instance of the
+ * app (x86_64 webhelper, i386 steam, ...) must see the same POSIX shm names.
+ * A per-instance temp dir split them (Steam: shm_open ENOENT, browser never
+ * created). Not "compat-proxy-*", so instance temp GC leaves it alone. */
 long vfs_shm_init(void){
-    long e=0;char *directory=vfs_temp_create(&e);if(!directory)return e;
-    e=RAW(PROXY_SC_fchmodat,AT_FDCWD,directory,01777,0,0,0);
-    if(!e)e=proxy_mount(directory,"/dev/shm");
+    long e=0;char *directory=shm_directory(&e);if(!directory)return e;
+    e=proxy_mount(directory,"/dev/shm");
+    if(e)proxy_log("fail shm-init",0,e);
     vfs_free(directory);return e;
 }
 long vfs_unmount(const char *target){proxy_diagnostic_write("v3 unmount ",11);proxy_diagnostic_write(target,p_len(target));proxy_diagnostic_write("\n",1);if(stacked_oldroot && p_equal(target,".")){stacked_oldroot=0;return 0;}long e=0;char *dest=global_target(target,&e);if(!dest)return e;char *oldroot_global=oldroot_view?(root?join(root,oldroot_view):dupstr(oldroot_view)):NULL;if(oldroot_global && p_equal(dest,oldroot_global)){vfs_free(oldroot_view);oldroot_view=NULL;}vfs_free(oldroot_global);struct mount **p=&table;while(*p && !p_equal((*p)->target,dest))p=&(*p)->next;vfs_free(dest);if(!*p)return p_equal(target,".")?0:-EINVAL;struct mount *m=*p;*p=m->next;vfs_resolve_cache_invalidate();vfs_free(m->source);vfs_free(m->target);vfs_free(m);return 0;}

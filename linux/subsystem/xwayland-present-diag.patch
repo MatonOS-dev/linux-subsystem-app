@@ -1,0 +1,37 @@
+--- a/present/present_execute.c	2026-11-06 18:21:57.073119122 +0200
++++ b/present/present_execute.c	2026-11-06 18:48:51.329848842 +0200
+@@ -117,6 +117,34 @@
+ 
+     present_copy_region(&window->drawable, vblank->pixmap, vblank->update, vblank->x_off, vblank->y_off);
+ 
++    /* MATONOS DIAGNOSTIC: remove once the Big Picture black window is found.
++     * Centre pixel of the presented pixmap and of the window after the copy. */
++    {
++        static unsigned n;
++        PixmapPtr p = vblank->pixmap;
++        if (p->drawable.width >= 64 && (n < 40 || !(n % 300))) {
++            CARD32 src = 0, dst = 0;
++            int x = p->drawable.width / 2, y = p->drawable.height / 2;
++            screen->GetImage(&p->drawable, x, y, 1, 1, ZPixmap, ~0, (char *) &src);
++            if (x < window->drawable.width && y < window->drawable.height)
++                screen->GetImage(&window->drawable, x, y, 1, 1, ZPixmap, ~0, (char *) &dst);
++            WindowPtr top = window;
++            CARD32 tpix = 0;
++            while (top->parent && top->parent->parent)
++                top = top->parent;
++            int tx = window->drawable.x - top->drawable.x + x, ty = window->drawable.y - top->drawable.y + y;
++            if (top != window && tx >= 0 && ty >= 0 && tx < top->drawable.width && ty < top->drawable.height)
++                screen->GetImage(&top->drawable, tx, ty, 1, 1, ZPixmap, ~0, (char *) &tpix);
++            ErrorF("maton-present: win=0x%x %dx%d d%d pix %dx%d d%d src=%08x win=%08x top=0x%x d%d %s top_px=%08x redirect=%d\n",
++                   (unsigned) window->drawable.id, window->drawable.width, window->drawable.height,
++                   window->drawable.depth, p->drawable.width, p->drawable.height, p->drawable.depth,
++                   (unsigned) src, (unsigned) dst, (unsigned) top->drawable.id, top->drawable.depth,
++                   screen->GetWindowPixmap(window) == screen->GetWindowPixmap(top) ? "shared" : "own-pixmap",
++                   (unsigned) tpix, (int) window->redirectDraw);
++        }
++        n++;
++    }
++
+     /* present_copy_region sticks the region into a scratch GC,
+      * which is then freed, freeing the region
+      */

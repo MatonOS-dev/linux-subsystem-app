@@ -1,0 +1,17 @@
+# Meson cross file for i386 Zink inside org.freedesktop.Sdk with
+# Sdk.Compat.i386 + Sdk.Extension.toolchain-i386 (used by build-zink.sh).
+[binaries]
+c = '/usr/lib/sdk/toolchain-i386/bin/i686-unknown-linux-gnu-gcc'
+cpp = '/usr/lib/sdk/toolchain-i386/bin/i686-unknown-linux-gnu-g++'
+ar = '/usr/lib/sdk/toolchain-i386/bin/i686-unknown-linux-gnu-ar'
+strip = '/usr/lib/sdk/toolchain-i386/bin/i686-unknown-linux-gnu-strip'
+pkg-config = '/usr/bin/pkg-config'
+
+[properties]
+pkg_config_libdir = ['/usr/lib/i386-linux-gnu/pkgconfig', '/usr/share/pkgconfig']
+
+[host_machine]
+system = 'linux'
+cpu_family = 'x86'
+cpu = 'i686'
+endian = 'little'

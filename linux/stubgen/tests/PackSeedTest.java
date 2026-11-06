@@ -38,15 +38,14 @@ public final class PackSeedTest {
   }
 
   // Model the proxy's hardlink store: OSTree's object and its user.ostreemeta
-  // stay together in the backing inode, while the repo path becomes a 01600
+  // stay together in the backing inode, while the repo path becomes a 01000
   // placeholder whose mode would be misread as 0600 without resolution.
-  Files.createFile(repo.toPath().resolve(".v3-store-root"));
   Files.setAttribute(repo.toPath(),"unix:mode",0700);
   Path store=repo.toPath().resolve(".v3-inodes");Files.createDirectory(store);
   Files.setAttribute(store,"unix:mode",0700);
   String id="i-"+"a".repeat(32);Path backing=store.resolve(id);
   Files.move(object.toPath(),backing);
-  Files.createFile(object.toPath());Files.setAttribute(object.toPath(),"unix:mode",01600);
+  Files.createFile(object.toPath());Files.setAttribute(object.toPath(),"unix:mode",01000);
   Files.writeString(store.resolve(placeholderKey(object.toPath())),id+"\0");
 
   OstreePacks committed=OstreePacks.read(repo,commit,command,xattrs());

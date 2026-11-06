@@ -22,8 +22,8 @@ static struct message exchange(struct message m) {
     assert(send(endpoint,&m,sizeof(m),0)==sizeof(m));
     assert(recv(endpoint,&reply,sizeof(reply),0)==sizeof(reply));return reply;
 }
-static VkResult allocate(void *ctx,uint64_t surface,VkExtent2D e,VkFormat f,struct AHardwareBuffer **b,VkImage *image,VkDeviceMemory *memory,uint64_t *token) {
-    (void)ctx;assert(surface==42 && e.width && e.height && f==VK_FORMAT_R8G8B8A8_UNORM);
+static VkResult allocate(void *ctx,uint64_t surface,VkExtent2D e,VkFormat f,const VkImageFormatListCreateInfo *views,struct AHardwareBuffer **b,VkImage *image,VkDeviceMemory *memory,uint64_t *token) {
+    (void)ctx;(void)views;assert(surface==42 && e.width && e.height && f==VK_FORMAT_R8G8B8A8_UNORM);
     *token=++allocations;*b=(void *)(uintptr_t)(0x1000+*token);
     if(allocations==fail_allocate)return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *image=(VkImage)(uintptr_t)(0x2000+*token);*memory=(VkDeviceMemory)(uintptr_t)(0x3000+*token);return VK_SUCCESS;

@@ -20,16 +20,7 @@ final class ExtraDataImage {
     }
 
     private static void deleteTree(Path root) throws IOException {
-        if(!Files.exists(root,LinkOption.NOFOLLOW_LINKS))return;
-        Files.walkFileTree(root,new SimpleFileVisitor<Path>() {
-            @Override public FileVisitResult visitFile(Path file,BasicFileAttributes attrs)throws IOException {
-                Files.delete(file);return FileVisitResult.CONTINUE;
-            }
-            @Override public FileVisitResult postVisitDirectory(Path directory,IOException error)throws IOException {
-                if(error!=null)throw error;
-                Files.delete(directory);return FileVisitResult.CONTINUE;
-            }
-        });
+        org.matonos.linuxhost.stubgen.PlaceholderCleanup.deleteTree(root.toFile());
     }
 
     private ExtraDataImage() { }

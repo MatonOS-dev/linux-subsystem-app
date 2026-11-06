@@ -520,7 +520,9 @@ static void cleanup_segments(struct ctx *c) {
 static long get(struct ctx *c, int kind, int key, unsigned long size,
                 int flags) {
   int active = 0;
-  unsigned char used[32000] = {0};
+  unsigned char *used = vfs_alloc(32000);
+  if (!used)
+    return -ENOMEM;
   unsigned long total = 0;
   off reusable = 0, reused_data = 0, reused_next = 0;
   size_t reused_capacity = 0;
@@ -539,25 +541,29 @@ static long get(struct ctx *c, int kind, int key, unsigned long size,
     used[p->index] = 1;
     total += p->count;
     if (key && !p->removed && p->key == key) {
-      if ((flags & (IPC_CREAT | IPC_EXCL)) == (IPC_CREAT | IPC_EXCL))
+      if ((flags & (IPC_CREAT | IPC_EXCL)) == (IPC_CREAT | IPC_EXCL)) {
+        vfs_free(used);
         return -EEXIST;
+      }
       if (kind != 3 && size > (kind == 1 ? p->count : p->size))
-        return -EINVAL;
+        { vfs_free(used); return -EINVAL; }
       int r = access_obj(
           p,
           ((flags & 0777) | ((flags & 0777) >> 3) | ((flags & 0777) >> 6)) & 7);
-      return r ? r : p->id;
+      int result = r ? r : p->id;
+      vfs_free(used);
+      return result;
     }
   }
   if (key && !(flags & IPC_CREAT))
-    return -ENOENT;
+    { vfs_free(used); return -ENOENT; }
   if (kind == 1 && (!size || size > 32000))
-    return -EINVAL;
+    { vfs_free(used); return -EINVAL; }
   if (kind == 2 && (!size || size > ULONG_MAX - (1UL << 24)))
-    return -EINVAL;
+    { vfs_free(used); return -EINVAL; }
   if (active >= (kind == 2 ? 4096 : 32000) ||
       (kind == 1 && total + size > 1024000000UL))
-    return -ENOSPC;
+    { vfs_free(used); return -ENOSPC; }
   int index = 0;
   while (index < (kind == 2 ? 4096 : 32000) && used[index])
     index++;
@@ -568,8 +574,10 @@ static long get(struct ctx *c, int kind, int key, unsigned long size,
     id = (int)((seq << 15) | (unsigned)index);
   } while (find(c, id));
   off o = reusable ? reusable : alloc(c, sizeof(struct obj));
-  if (!o)
+  if (!o) {
+    vfs_free(used);
     return -ENOMEM;
+  }
   struct obj fresh = {0};
   struct obj *p = &fresh;
   p->id = id;
@@ -587,13 +595,15 @@ static long get(struct ctx *c, int kind, int key, unsigned long size,
   p->size = kind == 1 && reusable ? reused_capacity : size;
   p->qbytes = 16384;
   if (kind == 2) {
-    if ((uint64_t)size + 4095 > (uint64_t)INT64_MAX)return -ENOMEM;
-    off data=alloc(c,(size+4095)&~4095UL);if(!data)return -ENOMEM;p->data=data;
+    if ((uint64_t)size + 4095 > (uint64_t)INT64_MAX) { vfs_free(used); return -ENOMEM; }
+    off data=alloc(c,(size+4095)&~4095UL);if(!data) { vfs_free(used); return -ENOMEM; }p->data=data;
   }
   if (kind == 1) {
     off data = reusable ? reused_data : alloc(c, size * sizeof(struct cell));
-    if (!data)
+    if (!data) {
+      vfs_free(used);
       return -ENOMEM;
+    }
     p->data = data;
     struct cell *v = ptr(c, data);
     for (size_t i = 0; i < size; i++) {
@@ -605,7 +615,9 @@ static long get(struct ctx *c, int kind, int key, unsigned long size,
   *(struct obj *)ptr(c, o) = *p;
   if (!reusable)
     shared->objects = o;
-  return p->id;
+  int result = p->id;
+  vfs_free(used);
+  return result;
 }
 /* Safe copies use kernel pipe user-copy validation, not process_vm or libc TLS.
  */
@@ -707,22 +719,30 @@ static long ctl(struct ctx *c, struct obj *p, int cmd, int num,
     return -EINVAL;
   struct cell *v = cells(c, p);
   if (cmd == GETALL || cmd == SETALL) {
-    unsigned short vals[32000];
+    /* Heap, sized to the set: handlers may run on the app's small sigaltstack. */
+    if (p->count > (size_t)-1 / 2)
+      return -EOVERFLOW;
+    unsigned short *vals = vfs_alloc(p->count ? p->count * 2 : 1);
+    if (!vals)
+      return -ENOMEM;
     if (cmd == SETALL) {
       r = (int)copy(vals, (void *)arg, p->count * 2);
-      if (r)
-        return r;
-      for (size_t i = 0; i < p->count; i++)
+      for (size_t i = 0; !r && i < p->count; i++)
         if (vals[i] > MAXSEM)
-          return -ERANGE;
-      for (size_t i = 0; i < p->count; i++) {
+          r = -ERANGE;
+      for (size_t i = 0; !r && i < p->count; i++) {
         v[i].value = vals[i];
         v[i].pid = (int)R(getpid, 0, 0, 0, 0, 0, 0);
       }
+      vfs_free(vals);
+      if (r)
+        return r;
     } else {
       for (size_t i = 0; i < p->count; i++)
         vals[i] = (unsigned short)v[i].value;
-      return copy((void *)arg, vals, p->count * 2);
+      long w = copy((void *)arg, vals, p->count * 2);
+      vfs_free(vals);
+      return w;
     }
   } else {
     if (num < 0 || (unsigned)num >= p->count)
@@ -762,18 +782,21 @@ static long semops(struct ctx *c, struct obj *p, proxy_arg_t *a, off *waitrec) {
     return -EINVAL;
   if (n > 500)
     return -E2BIG;
-  struct sembuf ops[500];
-  int trial[32000];
+  struct sembuf *ops = vfs_alloc(n * sizeof(*ops));
+  int *trial = vfs_alloc((size_t)p->count * sizeof(*trial));
+  if (!ops || !trial) {
+    vfs_free(trial);
+    vfs_free(ops);
+    return -ENOMEM;
+  }
   long r = copy(ops, (void *)(uintptr_t)a[1], n * sizeof(*ops));
-  if (r)
-    return r;
+  if (r) { vfs_free(trial); vfs_free(ops); return r; }
   int mode = 4;
   for (size_t i = 0; i < n; i++)
     if (ops[i].sem_op)
       mode = 2;
   r = access_obj(p, mode);
-  if (r)
-    return r;
+  if (r) { vfs_free(trial); vfs_free(ops); return r; }
   struct cell *v = cells(c, p);
   for (size_t i = 0; i < p->count; i++)
     trial[i] = v[i].value;
@@ -781,16 +804,15 @@ static long semops(struct ctx *c, struct obj *p, proxy_arg_t *a, off *waitrec) {
     unsigned k = ops[i].sem_num;
     int delta = ops[i].sem_op;
     if (k >= p->count)
-      return -EFBIG;
+      { r = -EFBIG; goto done; }
     if (trial[k] + delta > MAXSEM)
-      return -ERANGE;
+      { r = -ERANGE; goto done; }
     if ((delta == 0 && trial[k] != 0) || trial[k] + delta < 0) {
       if (ops[i].sem_flg & IPC_NOWAIT)
-        return -EAGAIN;
+        { r = -EAGAIN; goto done; }
       int id = p->id;
       off wr = record(c, 3, id, (int)k);
-      if (!wr)
-        return -ENOMEM;
+      if (!wr) { r = -ENOMEM; goto done; }
       p = find(c, id);
       v = cells(c, p);
       struct rec *q = ptr(c, wr);
@@ -800,7 +822,8 @@ static long semops(struct ctx *c, struct obj *p, proxy_arg_t *a, off *waitrec) {
       else
         v[k].ncnt++;
       *waitrec = wr;
-      return AGAIN;
+      r = AGAIN;
+      goto done;
     }
     trial[k] += delta;
   }
@@ -809,8 +832,7 @@ static long semops(struct ctx *c, struct obj *p, proxy_arg_t *a, off *waitrec) {
   for (size_t i = 0; i < n; i++)
     if (ops[i].sem_flg & SEM_UNDO) {
       off u = record(c, 1, id, ops[i].sem_num);
-      if (!u)
-        return -ENOMEM;
+      if (!u) { r = -ENOMEM; goto done; }
     }
   /* Validate cumulative undo adjustment per semaphore. */
   for (size_t i = 0; i < n; i++)
@@ -822,7 +844,7 @@ static long semops(struct ctx *c, struct obj *p, proxy_arg_t *a, off *waitrec) {
         if ((ops[j].sem_flg & SEM_UNDO) && ops[j].sem_num == ops[i].sem_num)
           adj -= ops[j].sem_op;
       if (adj < -MAXSEM || adj > MAXSEM)
-        return -ERANGE;
+        { r = -ERANGE; goto done; }
     }
   for (size_t i = 0; i < n; i++)
     if (ops[i].sem_flg & SEM_UNDO) {
@@ -837,7 +859,11 @@ static long semops(struct ctx *c, struct obj *p, proxy_arg_t *a, off *waitrec) {
     v[ops[i].sem_num].pid = (int)R(getpid, 0, 0, 0, 0, 0, 0);
   p->atime = now(CLOCK_REALTIME) / 1000000000L;
   wake();
-  return 0;
+  r = 0;
+done:
+  vfs_free(trial);
+  vfs_free(ops);
+  return r;
 }
 static long info(struct ctx *c, int kind, int cmd, void *out) {
   int high = 0, used = 0;
@@ -1194,14 +1220,15 @@ int ipc_ours(long n) {
     return 0;
   }
 }
-long ipc_call(long nr, proxy_arg_t *input) {
+struct ipc_call_scratch { struct sembuf operations[500]; unsigned char message[sizeof(long)+8192]; };
+static long ipc_call_impl(long nr, proxy_arg_t *input,struct ipc_call_scratch *scratch) {
   int time64=nr==PROXY_SC_semtimedop_time64;
   if(time64)nr=PROXY_SC_semtimedop;
   proxy_arg_t args[6];
   p_copy(args, input, sizeof(args));
   proxy_arg_t *a = args;
-  struct sembuf operations[500];
-  unsigned char message[sizeof(long) + 8192];
+  struct sembuf *operations=scratch->operations;
+  unsigned char *message=scratch->message;
   if (nr == PROXY_SC_semop || nr == PROXY_SC_semtimedop) {
     if (a[2] <= 0)
       return a[2] ? -E2BIG : -EINVAL;
@@ -1295,6 +1322,13 @@ long ipc_call(long nr, proxy_arg_t *input) {
     if (deadline && now(CLOCK_MONOTONIC) >= deadline)
       return -EAGAIN;
   }
+}
+long ipc_call(long nr,proxy_arg_t *input){
+  struct ipc_call_scratch *scratch=vfs_alloc(sizeof(*scratch));
+  if(!scratch)return -ENOMEM;
+  long result=ipc_call_impl(nr,input,scratch);
+  vfs_free(scratch);
+  return result;
 }
 void ipc_exit(void) {
   ipc_fork();

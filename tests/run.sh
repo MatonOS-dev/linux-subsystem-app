@@ -47,11 +47,14 @@ javac -d "$OUT/flatpak-output" \
 java -cp "$OUT/flatpak-output" org.matonos.linux.stub.FlatpakOutputTest
 mkdir -p "$OUT/extra-data-files"
 javac -d "$OUT/extra-data-files" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderCleanup.java" \
   "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/ExtraDataFiles.java" \
   "$ROOT/tests/extra-data-files/ExtraDataFilesTest.java"
 java -cp "$OUT/extra-data-files" org.matonos.linux.stub.ExtraDataFilesTest
 mkdir -p "$OUT/extra-data-handoff"
 javac -d "$OUT/extra-data-handoff" \
+  "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderCleanup.java" \
   "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
   "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/ObjectPacks.java" \
   "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PackLaunch.java" \

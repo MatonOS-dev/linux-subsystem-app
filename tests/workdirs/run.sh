@@ -3,5 +3,5 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=${1:?external output directory required}
 mkdir -p "$OUT"
-javac -d "$OUT" "$ROOT/tests/workdirs/android/content/Context.java" "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/WorkDirs.java" "$ROOT/tests/workdirs/WorkDirsTest.java"
+javac -d "$OUT" "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderCleanup.java" "$ROOT/tests/workdirs/android/content/Context.java" "$ROOT/linux/subsystem/host/app/src/main/java/org/matonos/linux/WorkDirs.java" "$ROOT/tests/workdirs/WorkDirsTest.java"
 java -cp "$OUT" WorkDirsTest "$OUT"

@@ -35,9 +35,7 @@ final class PackageDeployment {
         WorkDirs.keep(root); // Held until this one-launch process exits.
         // A process has one launch. A fresh tree also discards removed extensions.
         remove(root.toPath());Files.createDirectories(root.toPath());
-        java.nio.file.Files.createFile(new File(root,".v3-store-root").toPath(),
-                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
-                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
+
         java.util.List<DeclaredPackages.Entry> packages=DeclaredPackages.resolve(context,null);
         if(!packages.get(0).record.ref.equals(appRef))throw new IOException("Installed deployment ref mismatch");
         for(int i=0;i<packages.size();i++) {
@@ -143,12 +141,6 @@ final class PackageDeployment {
         if(!required)return null;
         return prepareI386Extension(context,systemRoot,cache,branch,"org.freedesktop.Platform.Compat.i386",
                 "org.freedesktop.Platform.Compat.i386","/usr/lib/i386-linux-gnu");
-    }
-    /** Mesa for i386 processes; GL32.maton carries only the Vulkan ICD Zink runs on. */
-    static CompatI386 prepareGl32Default(Context context,File systemRoot,File cache,String branch) throws Exception {
-        return prepareI386Extension(context,systemRoot,cache,branch,"org.freedesktop.Platform.GL32.default",
-                // Upstream GL32 refs keep the i386 GL.default runtime name.
-                "org.freedesktop.Platform.GL.default","/usr/lib/i386-linux-gnu/GL/default");
     }
     private static CompatI386 prepareI386Extension(Context context,File systemRoot,File cache,String branch,
             String name,String metadataName,String mount) throws Exception {
@@ -270,11 +262,7 @@ final class PackageDeployment {
         Files.deleteIfExists(link);Files.createSymbolicLink(link,target);
     }
     private static void remove(Path root) throws IOException {
-        if(!Files.exists(root,LinkOption.NOFOLLOW_LINKS))return;
-        Files.walkFileTree(root,new SimpleFileVisitor<Path>() {
-            @Override public FileVisitResult visitFile(Path p,java.nio.file.attribute.BasicFileAttributes a)throws IOException {Files.delete(p);return FileVisitResult.CONTINUE;}
-            @Override public FileVisitResult postVisitDirectory(Path p,IOException e)throws IOException {if(e!=null)throw e;Files.delete(p);return FileVisitResult.CONTINUE;}
-        });
+        org.matonos.linuxhost.stubgen.PlaceholderCleanup.deleteTree(root.toFile());
     }
     private PackageDeployment(){}
 }

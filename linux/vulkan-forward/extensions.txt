@@ -74,3 +74,7 @@ VK_EXT_pipeline_robustness
 # Stage C: driver-reported Zink optional feature paths (no callbacks/WSI).
 VK_KHR_shader_float_controls2
 VK_EXT_legacy_vertex_attributes
+# Emulated over Android AHB import (dmabuf.inc); never forwarded.
+VK_KHR_external_memory_fd
+VK_EXT_external_memory_dma_buf
+VK_EXT_queue_family_foreign

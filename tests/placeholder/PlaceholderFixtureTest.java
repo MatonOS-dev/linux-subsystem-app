@@ -96,7 +96,7 @@ public final class PlaceholderFixtureTest {
         check(hasPlaceholderFile(stagedFiles), "staged tree exposes at least one file placeholder");
 
         // Extra-data image construction preserves deployed modes as well as
-        // content. Proxy hardlink markers are 01600 placeholders, so the mode
+        // content. Proxy hardlink markers are 01000 placeholders, so the mode
         // must come from the indexed backing inode just like the file bytes.
         List<ObjectPacks.Entry> stagedImage = ObjectPacks.fromTreeWithModes(stagedFiles, "/app/");
         List<ObjectPacks.Entry> copiedImage = ObjectPacks.fromTreeWithModes(copyCheckout, "/app/");
@@ -110,7 +110,7 @@ public final class PlaceholderFixtureTest {
             equals(expected.mode, actual.mode, "image mode " + actual.path);
             if (actual.kind.equals("file") && PlaceholderFiles.isPlaceholder(
                     new File(stagedFiles, actual.path.substring("/app/".length())))) {
-                check(actual.mode != 01600, "image mode must not come from the 01600 marker");
+                check(actual.mode != 01000, "image mode must not come from the 01000 placeholder");
                 check(actual.source.equals(PlaceholderFiles.resolve(
                         new File(stagedFiles, actual.path.substring("/app/".length())))),
                         "image source resolves to proxy backing inode");

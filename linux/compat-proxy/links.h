@@ -1,13 +1,14 @@
 #include "arch/arch.h"
 #ifndef LINKS_H
 #define LINKS_H
+long links_fd_chmod(long,proxy_arg_t *);
 long links_publish(const char *,const char *,long);
 struct proxy_stat; struct statx;
 void links_payload_fd_stat(int,void *);
 void links_payload_path_stat(const char *,void *,int);
 void links_fd_stat(int,struct proxy_stat *);
-void links_recover_path(const char *);
 int links_hidden(const char *);
+int links_app_data_root(char *,const char *);
 int links_target(const char *,char *);
 void links_stat(const char *,struct proxy_stat *);
 long links_path_call(long,proxy_arg_t *,const char *);
@@ -16,5 +17,3 @@ long links_dents(long,void *,long);
 #endif
 
 
-int links_marker(const char *);
-void links_cache_invalidate(void);

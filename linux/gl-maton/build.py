@@ -16,7 +16,21 @@ def run(*args):
     subprocess.run(args, check=True, stdout=subprocess.PIPE, text=True)
 
 
-def build(out, vulkan, branch, vulkan_i386):
+def add_mesa(files, mesa):
+    """Our Zink (MatonOS-dev/mesa). It keeps glvnd vendor name "mesa", the same
+    file names as GL.default, so apps get GL.maton alone (FLATPAK_GL_DRIVERS=maton)."""
+    mesa = pathlib.Path(mesa)
+    gallium = sorted((mesa / "lib").glob("libgallium-*.so"))
+    if len(gallium) != 1:
+        raise SystemExit(f"gl-maton: expected one libgallium in {mesa}/lib, found {gallium}")
+    for lib in (gallium[0].name, "libGLX_mesa.so.0", "libEGL_mesa.so.0"):
+        shutil.copy2(mesa / "lib" / lib, files / "lib" / lib)
+        run("strip", "--strip-unneeded", str(files / "lib" / lib))
+    shutil.copytree(mesa / "share/drirc.d", files / "share/drirc.d")
+    shutil.copytree(mesa / "share/glvnd/egl_vendor.d", files / "glvnd/egl_vendor.d")
+
+
+def build(out, vulkan, branch, vulkan_i386, mesa, mesa_i386):
     out = pathlib.Path(out).resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
@@ -26,6 +40,7 @@ def build(out, vulkan, branch, vulkan_i386):
     shutil.copy2(vulkan, files / "lib/libmaton_vulkan.so")
     if vulkan_i386:
         shutil.copy2(vulkan_i386, files / "lib/libmaton_vulkan_i386.so")
+    add_mesa(files, mesa)
     (files / "vulkan/icd.d/maton_icd.json").write_text(
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libmaton_vulkan.so",\n'
@@ -70,10 +85,10 @@ def build(out, vulkan, branch, vulkan_i386):
     # x86_64 ref would expose both ELF classes to the 32-bit loader and makes
     # Flatpak mount the tree at the wrong multiarch directory.
     if vulkan_i386:
-        build_i386(out / "gl32", vulkan_i386, branch)
+        build_i386(out / "gl32", vulkan_i386, branch, mesa_i386)
 
 
-def build_i386(out, vulkan, branch):
+def build_i386(out, vulkan, branch, mesa):
     out = pathlib.Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     files = out / "tree"
@@ -87,6 +102,7 @@ def build_i386(out, vulkan, branch):
         '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
         '    "library_path": "libmaton_vulkan_i386.so",\n'
         '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
+    add_mesa(files, mesa)
     (out / "metadata").write_text(
         f"[Runtime]\nname=org.freedesktop.Platform.GL32.maton\nruntime=org.freedesktop.Platform/x86_64/{branch}"
         f"\nsdk=org.freedesktop.Sdk/x86_64/{branch}\n\n[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/{branch}\n",
@@ -124,7 +140,12 @@ if __name__ == "__main__":
     parser.add_argument("vulkan")
     parser.add_argument("--vulkan-i386", help="freestanding ELF32 Vulkan forwarder")
     parser.add_argument("--branch", default="26.08")
+    parser.add_argument("--mesa", required=True,
+                        help="x86_64 Zink install tree (.../GL/maton with lib/ and share/)")
+    parser.add_argument("--mesa-i386", help="i386 Zink install tree; required with --vulkan-i386")
     args = parser.parse_args()
     if not args.branch or "/" in args.branch:
         parser.error("invalid runtime extension branch")
-    build(args.out, args.vulkan, args.branch, args.vulkan_i386)
+    if args.vulkan_i386 and not args.mesa_i386:
+        parser.error("--vulkan-i386 needs --mesa-i386 (32-bit apps need 32-bit Zink)")
+    build(args.out, args.vulkan, args.branch, args.vulkan_i386, args.mesa, args.mesa_i386)

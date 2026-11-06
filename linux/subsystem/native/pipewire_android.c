@@ -5,6 +5,7 @@
  */
 #include <jni.h>
 #include <aaudio/AAudio.h>
+#include <time.h>
 #include <android/log.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -43,6 +44,8 @@ static struct {
     atomic_uint read, write;
     atomic_bool disconnected;
     atomic_ulong nonzero_frames;
+    /* TEMPORARY diagnostic counters (Steam audio stall hunt). */
+    atomic_ulong diag_in, diag_drop, diag_out, diag_pad, diag_process;
     bool reported_playback;
     int16_t samples[FRAMES * 2];
 } audio;
@@ -62,7 +65,21 @@ static aaudio_data_callback_result_t android_data(AAudioStream *stream, void *us
             output[2*i+1] = audio.samples[(read % FRAMES)*2+1];
             if (output[2*i] || output[2*i+1]) nonzero++;
             read++;
-        } else output[2*i] = output[2*i+1] = 0;
+        } else {output[2*i] = output[2*i+1] = 0; atomic_fetch_add_explicit(&audio.diag_pad, 1, memory_order_relaxed);}
+    }
+    atomic_fetch_add_explicit(&audio.diag_out, (unsigned long)frames, memory_order_relaxed);
+    {   /* TEMPORARY diagnostic: once per second, from the always-running AAudio callback. */
+        static struct timespec last;
+        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec != last.tv_sec) {
+            last = now;
+            __android_log_print(ANDROID_LOG_WARN, TAG,
+                "diag fill=%u in=%lu drop=%lu out=%lu pad=%lu process=%lu",
+                write - read,
+                atomic_exchange(&audio.diag_in, 0), atomic_exchange(&audio.diag_drop, 0),
+                atomic_exchange(&audio.diag_out, 0), atomic_exchange(&audio.diag_pad, 0),
+                atomic_exchange(&audio.diag_process, 0));
+        }
     }
     atomic_store_explicit(&audio.read, read, memory_order_release);
     atomic_fetch_add_explicit(&audio.nonzero_frames, nonzero, memory_order_relaxed);
@@ -102,6 +119,7 @@ static void process(void *user) {
                 "Android consumed non-silent PipeWire PCM (UID %u)", (unsigned)getuid());
         audio.reported_playback = true;
     }
+    atomic_fetch_add_explicit(&audio.diag_process, 1, memory_order_relaxed);
     struct pw_buffer *buffer = pw_stream_dequeue_buffer(audio.sink);
     if (!buffer) return;
     if (atomic_load(&audio.disconnected)) {
@@ -123,6 +141,8 @@ static void process(void *user) {
             for (unsigned i = 0; i < frames; i++)
                 memcpy(&audio.samples[((write+i)%FRAMES)*2], input+i*4, 4);
             atomic_store_explicit(&audio.write, write+frames, memory_order_release);
+            atomic_fetch_add_explicit(&audio.diag_in, frames, memory_order_relaxed);
+            atomic_fetch_add_explicit(&audio.diag_drop, size / 4 - frames, memory_order_relaxed);
         }
     }
     pw_stream_queue_buffer(audio.sink, buffer);

@@ -46,8 +46,6 @@ public final class PlaceholderFilesTest {
         Path store = root.resolve(".v3-inodes");
         Files.createDirectory(store);
         mode(store, 0700);
-        write(root.resolve(".v3-store-root"), new byte[0]);
-        mode(root.resolve(".v3-store-root"), 0600);
         return store;
     }
 
@@ -60,7 +58,7 @@ public final class PlaceholderFilesTest {
     /** Creates an empty sticky file plus its index entry naming {@code id}. */
     private static Path placeholder(Path store, Path at, String id) throws IOException {
         write(at, new byte[0]);
-        mode(at, 01600);
+        mode(at, 01000);
         write(store.resolve(key(at)), fixed(id + "\0"));
         return at;
     }
@@ -71,7 +69,7 @@ public final class PlaceholderFilesTest {
 
     private static Path sticky(Path at, byte[] content) throws IOException {
         write(at, content);
-        mode(at, 01600);
+        mode(at, 01000);
         return at;
     }
 
@@ -153,7 +151,9 @@ public final class PlaceholderFilesTest {
         write(store.resolve(good), "backing".getBytes(StandardCharsets.UTF_8));
 
         Path stray = sticky(root.resolve("stray"), "stray".getBytes(StandardCharsets.UTF_8));
-        check(!PlaceholderFiles.isPlaceholder(stray.toFile()), "sticky without index is ordinary");
+        mode(stray, 01600);
+        index(store, stray, fixed(good + "\0"));
+        check(!PlaceholderFiles.isPlaceholder(stray.toFile()), "readable sticky file is ordinary");
         check(java.util.Arrays.equals("stray".getBytes(StandardCharsets.UTF_8),
                 PlaceholderFiles.readAllBytes(stray.toFile())), "stray keeps its content");
 
@@ -238,13 +238,10 @@ public final class PlaceholderFilesTest {
         Path symlinked = base.resolve("symlinked-marker");
         Files.createDirectories(symlinked);
         mode(symlinked, 0700);
-        Path realMarker = base.resolve("real-marker");
-        write(realMarker, new byte[0]);
-        mode(realMarker, 0600);
-        Files.createSymbolicLink(symlinked.resolve(".v3-store-root"), realMarker);
-        Path symlinkStore = symlinked.resolve(".v3-inodes");
+        Path symlinkStore = base.resolve("real-store");
         Files.createDirectory(symlinkStore);
         mode(symlinkStore, 0700);
+        Files.createSymbolicLink(symlinked.resolve(".v3-inodes"), symlinkStore);
         write(symlinkStore.resolve(id), "sym".getBytes(StandardCharsets.UTF_8));
         Path symlinkFile = placeholder(symlinkStore, symlinked.resolve("file"), id);
         check(!PlaceholderFiles.isPlaceholder(symlinkFile.toFile()), "symlinked marker rejected");

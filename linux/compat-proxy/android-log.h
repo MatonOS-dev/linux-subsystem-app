@@ -68,8 +68,7 @@ static int android_log_open(void) {
     if(reserved<0){RAW(PROXY_SC_close,fd,0,0,0,0,0);return (int)reserved;}
     long connected=android_log_connect((int)reserved);
     if(connected<0){
-        proxy_private_fd_release((int)reserved);
-        RAW(PROXY_SC_close,reserved,0,0,0,0,0);
+        if(!proxy_private_fd_release((int)reserved))RAW(PROXY_SC_close,reserved,0,0,0,0,0);
         return (int)connected;
     }
     return (int)reserved;

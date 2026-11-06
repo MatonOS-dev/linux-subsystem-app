@@ -38,42 +38,53 @@ static VkResult mv_chain_copy(const void *source,VkBaseOutStructure **out) {
     }
     return VK_SUCCESS;
 }
+#include "dmabuf.inc"
 static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreateInfo *info,const VkAllocationCallbacks *a,VkDevice *out) {
     *out=0;struct mv_handle *h=(void *)physical;
-    uint32_t forwarded_extensions=0;int swapchain_enabled=0;
+    uint32_t forwarded_extensions=0;int swapchain_enabled=0,dmabuf_enabled=0;
     for(uint32_t j=0;j<info->enabledExtensionCount;j++) {
         const char *name=info->ppEnabledExtensionNames[j];
-        if(!strcmp(name,VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        if(!strcmp(name,VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME)) {
+            if(!h->instance->wsi_wayland_enabled&&!h->instance->wsi_xcb_enabled&&!h->instance->wsi_xlib_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
+        } else if(!strcmp(name,VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
             if(!h->instance->wsi_wayland_enabled&&!h->instance->wsi_xcb_enabled&&!h->instance->wsi_xlib_enabled)return VK_ERROR_EXTENSION_NOT_PRESENT;
             swapchain_enabled=1;
+        } else if(mv_dmabuf_name(name)) {
+            dmabuf_enabled=1; /* emulated: never forwarded */
         } else {
             if(!mv_extension_allowed(name))return VK_ERROR_EXTENSION_NOT_PRESENT;
             forwarded_extensions++;
         }
     }
+    /* mutable_format depends on swapchain; it is stripped only with it. */
+    if(!swapchain_enabled)for(uint32_t j=0;j<info->enabledExtensionCount;j++)
+        if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME))return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(a && (!a->pfnAllocation || !a->pfnFree || !a->pfnReallocation))return VK_ERROR_INITIALIZATION_FAILED;
     struct mv_device seed={0};if(a){seed.custom=1;seed.allocator=*a;}
     struct mv_device *d=mv_dnew(&seed,sizeof(*d));if(!d)return VK_ERROR_OUT_OF_HOST_MEMORY;
-    d->custom=seed.custom;d->allocator=seed.allocator;d->base.instance=h->instance;d->base.device=d;d->wsi_swapchain_enabled=swapchain_enabled;
+    d->custom=seed.custom;d->allocator=seed.allocator;d->base.instance=h->instance;d->base.device=d;d->wsi_swapchain_enabled=swapchain_enabled;d->dmabuf_enabled=dmabuf_enabled;
     for(uint32_t j=0;j<info->enabledExtensionCount;j++)if(!strcmp(info->ppEnabledExtensionNames[j],VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME))d->wsi_sync_fd_enabled=1;
     VkDeviceCreateInfo copy=*info;
     const char **extension_names=0;
-    if(swapchain_enabled) {
-        /* X11 and Wayland share one AHB allocation backend. */
+    if(swapchain_enabled||dmabuf_enabled) {
+        /* X11 and Wayland share one AHB allocation backend; emulated dma-buf
+         * import needs the same resident extensions. */
         const char *internal[MV_WSI_REQUIREMENT_COUNT];uint32_t internal_count=0;
         if(h->instance->wsi_wayland_enabled)for(uint32_t j=0;j<MV_WSI_REQUIREMENT_COUNT;j++)internal[internal_count++]=mv_wsi_wayland_requirements[j];
-        else if(h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled)for(uint32_t j=0;j<MV_WSI_REQUIREMENT_COUNT;j++)internal[internal_count++]=mv_wsi_x11_requirements[j];
+        else if(dmabuf_enabled||h->instance->wsi_xcb_enabled||h->instance->wsi_xlib_enabled)for(uint32_t j=0;j<MV_WSI_REQUIREMENT_COUNT;j++)internal[internal_count++]=mv_wsi_x11_requirements[j];
         extension_names=mv_alloc((forwarded_extensions+internal_count)*sizeof(*extension_names));
         if(!extension_names){mv_dfree(d,d);return VK_ERROR_OUT_OF_HOST_MEMORY;}
         uint32_t k=0;
         for(uint32_t j=0;j<info->enabledExtensionCount;j++)
-            if(strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_EXTENSION_NAME))extension_names[k++]=info->ppEnabledExtensionNames[j];
+            if(strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_EXTENSION_NAME)&&
+               strcmp(info->ppEnabledExtensionNames[j],VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME)&&
+               !mv_dmabuf_name(info->ppEnabledExtensionNames[j]))extension_names[k++]=info->ppEnabledExtensionNames[j];
         for(uint32_t j=0;j<internal_count;j++) {
             uint32_t n=0;while(n<k && strcmp(extension_names[n],internal[j]))n++;
             if(n==k)extension_names[k++]=internal[j];
         }
         copy.enabledExtensionCount=k;copy.ppEnabledExtensionNames=extension_names;
-        d->wsi_sync_fd_enabled=1;
+        if(swapchain_enabled)d->wsi_sync_fd_enabled=1;
     }
     VkBaseOutStructure *chain=0;
     VkResult cr=mv_chain_copy(info->pNext,&chain);
@@ -93,7 +104,9 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
     mv_trace_result("maton-vulkan: enter create device",0,0);
     VkDevice raw=0;VkResult r=f((VkPhysicalDevice)h->android,&copy,0,&raw);
     mv_trace_result("maton-vulkan: leave create device",r,0);
-    if(r==VK_SUCCESS){d->base.android=raw;d->gdpa=h->instance->gdpa;mv_load_device(d);}
+    if(r==VK_SUCCESS){d->base.android=raw;d->gdpa=h->instance->gdpa;mv_load_device(d);
+        if(dmabuf_enabled){d->ahb_properties=(PFN_vkGetAndroidHardwareBufferPropertiesANDROID)d->gdpa(raw,"vkGetAndroidHardwareBufferPropertiesANDROID");
+            d->ahb_export=(PFN_vkGetMemoryAndroidHardwareBufferANDROID)d->gdpa(raw,"vkGetMemoryAndroidHardwareBufferANDROID");}}
     switch_back(&s);mv_chain_free(chain);mv_free(extension_names);
     if(r!=VK_SUCCESS){mv_dfree(d,d);return r;}
     set_loader_magic_value(d);*out=(VkDevice)d;return VK_SUCCESS;
@@ -101,6 +114,7 @@ static VkResult mv_vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreate
 static void mv_vkDestroyDevice(VkDevice device,const VkAllocationCallbacks *a) {
     (void)a;if(!device)return;struct mv_device *d=(void *)device;struct mv_scope s;if(!mv_enter(&s))return;
     d->dispatch.vkDestroyDevice(d->base.android,0);switch_back(&s);
+    mv_dmabuf_unregister(d,VK_NULL_HANDLE,1);
     struct mv_handle *h=d->children;while(h){struct mv_handle *next=h->next;mv_dfree(d,h);h=next;}mv_dfree(d,d);
 }
 static void mv_vkGetDeviceQueue2(VkDevice device,const VkDeviceQueueInfo2 *info,VkQueue *out) {
@@ -178,5 +192,6 @@ static PFN_vkVoidFunction mv_vkGetDeviceProcAddr(VkDevice device,const char *nam
     if(!device || !name)return 0;struct mv_device *d=(void *)device;
     PFN_vkVoidFunction local=mv_wsi_device_lookup(device,name);if(local)return local;
     local=mv_lookup(name);if(!local)return 0;
+    if(mv_dmabuf_emulated(name))return d->dmabuf_enabled?local:0;
     struct mv_scope s;if(!mv_enter(&s))return 0;PFN_vkVoidFunction raw=d->gdpa(d->base.android,name);switch_back(&s);return raw?local:0;
 }

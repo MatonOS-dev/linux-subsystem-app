@@ -22,17 +22,20 @@ struct mv_wsi_live_context {
 };
 struct mv_ahb_desc { uint32_t width,height,layers,format; uint64_t usage; uint32_t stride,rfu0; uint64_t rfu1; };
 
-static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D extent,VkFormat format,
+static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D extent,VkFormat format,const VkImageFormatListCreateInfo *views,
         struct AHardwareBuffer **ahb,VkImage *image,VkDeviceMemory *memory,uint64_t *image_token) {
     (void)token;struct mv_wsi_live_context *c=opaque;*ahb=0;*image=0;*memory=0;
-    VkExternalMemoryImageCreateInfo external={.sType=VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+    VkImageFormatListCreateInfo list={0};
+    if(views)list=(VkImageFormatListCreateInfo){.sType=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+        .viewFormatCount=views->viewFormatCount,.pViewFormats=views->pViewFormats};
+    VkExternalMemoryImageCreateInfo external={.sType=VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,.pNext=views?&list:0,
         .handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
-    VkImageCreateInfo ci={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,.pNext=&external,.imageType=VK_IMAGE_TYPE_2D,
+    VkImageCreateInfo ci={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,.pNext=&external,.flags=views?VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT:0,.imageType=VK_IMAGE_TYPE_2D,
         .format=format,.extent={extent.width,extent.height,1},.mipLevels=1,.arrayLayers=1,.samples=VK_SAMPLE_COUNT_1_BIT,
         .tiling=VK_IMAGE_TILING_OPTIMAL,.usage=MV_WSI_USAGE,
         .sharingMode=VK_SHARING_MODE_EXCLUSIVE,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
     struct mv_scope scope;if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
-    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=1u,
+    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=format==VK_FORMAT_B8G8R8A8_UNORM?5u:1u,
         .usage=(UINT64_C(1)<<8)|(UINT64_C(1)<<9)|(UINT64_C(1)<<11)}; /* GPU sampled/color output + compositor overlay */
     mv_trace_result("maton-vulkan: WSI entering client AHB allocator",mv_ahb_allocate?0:-1,0);
     int ar=mv_ahb_allocate?mv_ahb_allocate(&desc,ahb):-1;
@@ -80,16 +83,17 @@ static void mv_wsi_live_destroy(void *opaque,VkImage image,VkDeviceMemory memory
 static VkResult mv_wsi_live_create_buffer(void *opaque,struct AHardwareBuffer *ahb,VkExtent2D extent,void **buffer) {
     struct mv_wsi_live_context *c=opaque;
     if(c->surface->x11 || mv_wl_has_ahb_buffer(c->surface->dmabuf)) {
-        int pair[2];if(mv_socketpair(pair)<0)return VK_ERROR_OUT_OF_HOST_MEMORY;
+        int pair[2];int sp=mv_socketpair(pair);if(sp!=0){mv_trace_result("maton-vulkan: WSI socketpair failed",sp,0);return VK_ERROR_INITIALIZATION_FAILED;}
         struct mv_scope scope;
         if(!mv_enter(&scope)){mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_INITIALIZATION_FAILED;}
         int rc=mv_ahb_send_socket(ahb,pair[1]);
         switch_back(&scope);
-        if(rc) {mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_OUT_OF_HOST_MEMORY;}
-        *buffer=c->surface->x11 ? (void *)mv_x11_buffer_create(c->surface->x11,pair[0],extent.width,extent.height,1u) :
+        if(rc) {mv_trace_result("maton-vulkan: WSI AHB send-handle failed",rc,0);mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_INITIALIZATION_FAILED;}
+        *buffer=c->surface->x11 ? (void *)mv_x11_buffer_create(c->surface->x11,pair[0],extent.width,extent.height,5u) :
             (void *)mv_wl_ahb_create_buffer(c->surface->dmabuf,extent.width,extent.height,0x34324241u,pair[0]);
         mv_close(pair[0]);mv_close(pair[1]);
-        return *buffer?VK_SUCCESS:VK_ERROR_OUT_OF_HOST_MEMORY;
+        if(!*buffer){mv_trace_result(c->surface->x11?"maton-vulkan: WSI X11 buffer failed (stage*1000+errno)":"maton-vulkan: WSI Wayland buffer failed",c->surface->x11?mv_x11_last_error:0,0);return VK_ERROR_SURFACE_LOST_KHR;}
+        return VK_SUCCESS;
     }
     return VK_ERROR_EXTENSION_NOT_PRESENT;
 }
@@ -264,6 +268,9 @@ static VkResult mv_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice ph
     if(s->x11) {
         uint32_t w,ht;if(!mv_x11_extent(s->x11,&w,&ht))return VK_ERROR_SURFACE_LOST_KHR;
         caps->currentExtent=caps->minImageExtent=caps->maxImageExtent=(VkExtent2D){w,ht};
+        /* As Mesa: ARGB windows take premultiplied alpha, RGB ones opaque. */
+        caps->supportedCompositeAlpha=VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR|
+            (mv_x11_has_alpha(s->x11)?VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR:VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
     }
     return VK_SUCCESS;
 }
@@ -274,7 +281,9 @@ static VkResult mv_vkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physica
     if (!count || !mv_wsi_surface((VkInstance)h->instance,surface)) return VK_ERROR_SURFACE_LOST_KHR;
     if (!formats) {*count=1;return VK_SUCCESS;}
     if (!*count) return VK_INCOMPLETE;
-    formats[0]=(VkSurfaceFormatKHR){VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+    /* X11 visuals are BGRX/BGRA (what Zink/Kopper asks for); Wayland stays RGBA. */
+    struct mv_wayland_surface *s=mv_wsi_surface((VkInstance)h->instance,surface);
+    formats[0]=(VkSurfaceFormatKHR){s->x11?VK_FORMAT_B8G8R8A8_UNORM:VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
     *count=1;return VK_SUCCESS;
 }
 
@@ -308,13 +317,9 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
     if(!surface)return VK_ERROR_SURFACE_LOST_KHR;
     if(!mv_ahb_describe||!mv_ahb_release||!mv_ahb_allocate||!mv_ahb_send_socket)return VK_ERROR_EXTENSION_NOT_PRESENT;
     if(surface->x11) {
-        uint32_t w,h;if(!mv_x11_extent(surface->x11,&w,&h))return VK_ERROR_SURFACE_LOST_KHR;
-        if(info->imageExtent.width!=w||info->imageExtent.height!=h)return VK_ERROR_OUT_OF_DATE_KHR;
-        if(info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM)return VK_ERROR_FORMAT_NOT_SUPPORTED;
-    }
-    if(info->oldSwapchain) {
-        struct mv_wsi_live_context *old_live=mv_wsi_live(device,info->oldSwapchain);
-        if(!old_live||old_live->surface!=surface)return VK_ERROR_OUT_OF_DATE_KHR;
+        /* A window resized since the caps query is reported as SUBOPTIMAL on
+         * acquire/present (as Mesa), not as a create failure. */
+        if(info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
     if(!surface->x11&&!surface->sync)surface->sync=mv_wl_sync_surface_create(surface->dmabuf,surface->surface);
     if(!surface->x11&&!surface->sync)return VK_ERROR_FEATURE_NOT_PRESENT;
@@ -340,12 +345,14 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
     struct mv_wsi_swapchain *chain=0;VkResult r=mv_wsi_create(&surface->state,info,&ops,&chain);
     if(r){surface->state.extent=previous_extent;surface->state.generation=previous_generation;mv_free(c);return r;}
     if(surface->x11)mv_x11_set_mailbox(surface->x11,info->presentMode==VK_PRESENT_MODE_MAILBOX_KHR);
+    if(surface->x11)mv_x11_set_extent(surface->x11,info->imageExtent.width,info->imageExtent.height);
     *out=(VkSwapchainKHR)(uintptr_t)chain;return VK_SUCCESS;
 }
 static VkResult mv_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR *info,
         const VkAllocationCallbacks *allocator,VkSwapchainKHR *out) {
     VkResult r=mv_create_swapchain(device,info,allocator,out);
     mv_trace_result("maton-vulkan: create swapchain",r,info?info->minImageCount:0);
+    if(r<0)mv_loud("maton-vulkan: create swapchain failed, VkResult",(unsigned long)(long)r);
     return r;
 }
 static void mv_vkDestroySwapchainKHR(VkDevice device,VkSwapchainKHR swapchain,const VkAllocationCallbacks *allocator) {
@@ -367,15 +374,12 @@ static VkResult mv_vkGetSwapchainImagesKHR(VkDevice device,VkSwapchainKHR swapch
     struct mv_wsi_live_context *live=mv_wsi_live(device,swapchain);if(!live)return VK_ERROR_OUT_OF_DATE_KHR;
     return mv_wsi_images((void *)(uintptr_t)swapchain,count,images);
 }
-static uint64_t mv_wsi_now_ns(void) {
-#if defined(__x86_64__)
-    struct { long tv_sec, tv_nsec; } ts;
-    long r=mv_sys(228,1,(long)&ts,0,0,0,0);
-    if(r<0)return 0;
-    return (uint64_t)ts.tv_sec*1000000000ull+(uint64_t)ts.tv_nsec;
-#else
-    return 0;
-#endif
+static uint64_t mv_wsi_now_ns(void) { return mv_monotonic_ns(); }
+/* Freestanding i386 has no libgcc __udivdi3: plain shift-subtract division. */
+static uint64_t mv_udiv64(uint64_t n,uint64_t d,uint64_t *rem) {
+    uint64_t q=0,r=0;
+    for(int i=63;i>=0;i--){r=r<<1|(n>>i&1);if(r>=d){r-=d;q|=1ull<<i;}}
+    if(rem)*rem=r;return q;
 }
 static VkResult mv_vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR swapchain,uint64_t timeout,
         VkSemaphore semaphore,VkFence fence,uint32_t *index) {
@@ -384,11 +388,12 @@ static VkResult mv_vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR swapchai
     uint64_t start=timeout==UINT64_MAX?0:mv_wsi_now_ns();
     uint64_t deadline=timeout==UINT64_MAX||UINT64_MAX-start<timeout?UINT64_MAX:start+timeout;
     for(;;) {
-        if(live->surface->x11)(void)mv_x11_dispatch(live->surface->x11,0);else (void)mv_wl_dmabuf_dispatch(live->surface->dmabuf);
+        if(live->surface->x11&&mv_x11_dispatch(live->surface->x11,0)<0){mv_trace_result("maton-vulkan: acquire dispatch failed -> SURFACE_LOST",-1,0);return VK_ERROR_SURFACE_LOST_KHR;}
+        if(!live->surface->x11)(void)mv_wl_dmabuf_dispatch(live->surface->dmabuf);
         mv_wsi_collect_releases(chain);
         VkResult r=mv_wsi_acquire(chain,index);
         if(r!=VK_NOT_READY) {
-            if(r!=VK_SUCCESS)return r;
+            if(r!=VK_SUCCESS){mv_trace_result("maton-vulkan: acquire failed",r,0);return r;}
             struct mv_device *d=(void *)device;struct mv_handle *q=d->children;
             while(q&&(q->pool||q->device!=d))q=q->next;
             if(!q){mv_wsi_cancel_acquire(chain,*index);return VK_ERROR_INITIALIZATION_FAILED;}
@@ -396,7 +401,8 @@ static VkResult mv_vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR swapchai
                 .pSignalSemaphores=semaphore?&semaphore:NULL};struct mv_scope scope;
             if(!mv_enter(&scope)){mv_wsi_cancel_acquire(chain,*index);return VK_ERROR_INITIALIZATION_FAILED;}
             VkResult sr=d->dispatch.vkQueueSubmit(q->android,1,&si,fence);switch_back(&scope);
-            if(sr)mv_wsi_cancel_acquire(chain,*index);return sr;
+            if(sr){mv_wsi_cancel_acquire(chain,*index);return sr;}
+            return live->surface->x11&&mv_x11_suboptimal(live->surface->x11)?VK_SUBOPTIMAL_KHR:VK_SUCCESS;
         }
         if(!timeout)return VK_NOT_READY;
         int wait_ms=-1;
@@ -404,13 +410,13 @@ static VkResult mv_vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR swapchai
             uint64_t now=mv_wsi_now_ns();
             if(!now||now>=deadline)return VK_TIMEOUT;
             uint64_t remaining=deadline-now;
-            uint64_t rounded=remaining/1000000ull+(remaining%1000000ull!=0);
+            uint64_t rem,rounded=mv_udiv64(remaining,1000000ull,&rem);rounded+=rem!=0;
             wait_ms=rounded>2147483647ull?2147483647:(int)rounded;
         }
         int dispatched=live->surface->x11?mv_x11_dispatch(live->surface->x11,wait_ms):mv_wl_dmabuf_dispatch_timeout(live->surface->dmabuf,wait_ms);
         if(dispatched==0)return VK_TIMEOUT;
         if(dispatched==-4)continue;
-        if(dispatched<0)return VK_ERROR_SURFACE_LOST_KHR;
+        if(dispatched<0){mv_trace_result("maton-vulkan: acquire wait failed -> SURFACE_LOST",dispatched,*index);return VK_ERROR_SURFACE_LOST_KHR;}
     }
 }
 static VkResult mv_vkAcquireNextImage2KHR(VkDevice device,const VkAcquireNextImageInfoKHR *info,uint32_t *index) {
@@ -447,6 +453,7 @@ static VkResult mv_vkQueuePresentKHR(VkQueue queue,const VkPresentInfoKHR *info)
     if(r){if(fd>=0)mv_close(fd);return r;}
     r=mv_wsi_present(chain,info->pImageIndices[0],fd);
     mv_close(fd);
+    if(r==VK_SUCCESS&&live->surface->x11&&mv_x11_suboptimal(live->surface->x11))r=VK_SUBOPTIMAL_KHR;
     if(info->pResults)info->pResults[0]=r;
     return r;
 }

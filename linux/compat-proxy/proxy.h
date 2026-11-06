@@ -6,6 +6,13 @@
 #include <signal.h>
 #include "arch/arch.h"
 long proxy_raw(long, long, long, long, long, long, long);
+void proxy_exit_report(int);
+void proxy_exit_frames(uintptr_t);
+/* Bounded copy of the current payload argv (space-joined), for exit logs. */
+/* Raw syscall error: only -4095..-1 (i386 addresses above 2 GB look negative). */
+#define PROXY_RAW_ERR(r) ((unsigned long)(r)>=(unsigned long)-4095L)
+void proxy_note_payload_argv(char *const *argv);
+long proxy_forwarder_sys(long, long, long, long, long, long, long);
 void proxy_restore(void);
 _Noreturn void proxy_enter(uintptr_t, uintptr_t);
 #ifdef PROXY_RAW_COUNTER
@@ -14,13 +21,13 @@ uint64_t proxy_raw_count_now(void);
 uint64_t proxy_raw_count_for(long);
 extern volatile int proxy_raw_counter_enabled;
 void proxy_raw_count_enable(void);
-#define RAW(n,a,b,c,d,e,f) (proxy_raw_count_one((long)(n)), arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f)))
+#define RAW_CALL(n,a,b,c,d,e,f) (proxy_raw_count_one((long)(n)), arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f)))
 #else
 static inline void proxy_raw_count_one(long nr) { (void)nr; }
 static inline uint64_t proxy_raw_count_now(void) { return 0; }
 static inline uint64_t proxy_raw_count_for(long nr) { (void)nr;return 0; }
 static inline void proxy_raw_count_enable(void) {}
-#define RAW(n,a,b,c,d,e,f) arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f))
+#define RAW_CALL(n,a,b,c,d,e,f) arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f))
 #endif
 #ifdef PROXY_PROFILE
 uint64_t proxy_profile_tsc(void);
@@ -28,12 +35,15 @@ void proxy_profile_raw_site(long,uintptr_t,uint64_t);
 void proxy_profile_section(unsigned,uint64_t);
 #define PROFILE_BEGIN() uint64_t _profile_started=proxy_profile_tsc()
 #define PROFILE_END(section) proxy_profile_section((section),proxy_profile_tsc()-_profile_started)
-#undef RAW
-#define RAW(n,a,b,c,d,e,f) ({ uintptr_t _profile_site=(uintptr_t)__builtin_return_address(0); uint64_t _profile_t=proxy_profile_tsc(); proxy_profile_raw_site((long)(n),_profile_site,0); long _profile_result=arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f)); proxy_profile_raw_site((long)(n),_profile_site,proxy_profile_tsc()-_profile_t); _profile_result; })
+#undef RAW_CALL
+#define RAW_CALL(n,a,b,c,d,e,f) ({ uintptr_t _profile_site=(uintptr_t)__builtin_return_address(0); uint64_t _profile_t=proxy_profile_tsc(); proxy_profile_raw_site((long)(n),_profile_site,0); long _profile_result=arch_raw_call((n),(proxy_arg_t)(a),(proxy_arg_t)(b),(proxy_arg_t)(c),(proxy_arg_t)(d),(proxy_arg_t)(e),(proxy_arg_t)(f)); proxy_profile_raw_site((long)(n),_profile_site,proxy_profile_tsc()-_profile_t); _profile_result; })
 #else
 #define PROFILE_BEGIN() ((void)0)
 #define PROFILE_END(section) ((void)(section))
 #endif
+/* Gravestone: every proxy close and close_range logs its call site. */
+void proxy_close_grave(long,long,long,const char *,int);
+#define RAW(n,a,b,c,d,e,f) ((void)(((n)==PROXY_SC_close||(n)==PROXY_SC_close_range)?(proxy_close_grave((long)(n),(long)(a),(long)(b),__FILE__,__LINE__),0):0),RAW_CALL(n,a,b,c,d,e,f))
 #include "arch/stat.h"
 /* The top of the payload's soft RLIMIT_NOFILE range holds descriptors owned by
  * proxy state (IPC and shared temporary locks). The seccomp filter lets normal
@@ -43,7 +53,8 @@ extern int proxy_fd_reserve_ready;
 void proxy_fd_reserve_init(void);
 int proxy_fd_is_private(long);
 long proxy_private_fd(long);
-void proxy_private_fd_release(int);
+/* Returns 1 when fd stays open as a reserve placeholder (caller must not close it). */
+int proxy_private_fd_release(int);
 long proxy_private_fd_move(long);
 void state_private_fd_relocated(int,int);
 void proxy_fd_number_moved(int,int);

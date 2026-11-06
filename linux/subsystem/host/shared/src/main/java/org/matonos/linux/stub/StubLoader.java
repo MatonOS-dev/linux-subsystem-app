@@ -113,6 +113,11 @@ public final class StubLoader extends AppComponentFactory {
             }
             host = new PathClassLoader(apk, apk + "!/lib/" + Build.SUPPORTED_ABIS[0],
                     Object.class.getClassLoader());
+            try {
+                host.loadClass("org.matonos.linux.LinkStoreStartup").getMethod("start", Context.class).invoke(null,app);
+            } catch (ReflectiveOperationException | LinkageError e) {
+                Log.w(TAG,"Hardlink startup sweep unavailable",e);
+            }
             return host;
         }
 

@@ -128,9 +128,7 @@ public final class StagedPacks {
     }
 
     private static void delete(File file) {
-        if(java.nio.file.Files.isSymbolicLink(file.toPath())) { file.delete(); return; }
-        if(file.isDirectory()) {File[] children=file.listFiles();if(children!=null)for(File child:children)delete(child);}
-        file.delete();
+        ExtraDataFiles.deleteTree(file);
     }
 
     /** Reuse bytes from the installed image where the OSTree object checksum is unchanged. */

@@ -173,7 +173,7 @@ static void loader_close(int fd){RAW(PROXY_SC_close,fd,0,0,0,0,0);}
 long proxy_file_mmap(proxy_arg_t *a) {
     long r=RAW(PROXY_SC_mmap,a[0],a[1],a[2],a[3],a[4],a[5]);
     if(r!=-EACCES && r!=-EPERM){
-        if(r>=0 && (a[2]&(PROT_READ|PROT_EXEC))==(PROT_READ|PROT_EXEC) && !(a[2]&PROT_WRITE) && (a[3]&MAP_PRIVATE))
+        if(!PROXY_RAW_ERR(r) && (a[2]&(PROT_READ|PROT_EXEC))==(PROT_READ|PROT_EXEC) && !(a[2]&PROT_WRITE) && (a[3]&MAP_PRIVATE))
             proxy_rewrite_mapping((int)a[4],(uintptr_t)r,(size_t)a[1],(uint64_t)a[5]);
         return r;
     }
@@ -233,16 +233,19 @@ static void loader_trace_resolve(const char *path,const char *stage){
 }
 /* Preflight both ELF classes before MAP_FIXED or a kernel exec of our peer.
  * Use fixed-width ELF records, not the current backend's native typedefs. */
-static int validate_exec(const char *path,int interpreter,unsigned depth) {
+static int validate_exec(const char *path,long supplied_fd,int interpreter,unsigned depth) {
     if(depth>1)return -ELIBBAD;
     long error=0;
-    char *resolved=vfs_resolve(AT_FDCWD,path,1,&error);
+    char *resolved=NULL;
+    long fd=supplied_fd;
+    if(fd<0)resolved=vfs_resolve(AT_FDCWD,path,1,&error);
     if(proxy_trace){
-        proxy_log("exec-validate-resolve",resolved?1:error,depth);
-        if(resolved)loader_trace_path("v3 exec validate resolved ",resolved);
+        proxy_log("exec-validate-resolve",supplied_fd>=0?1:(resolved?1:error),depth);
+        if(supplied_fd>=0)loader_trace_path("v3 exec validate resolved ",path);
+        else if(resolved)loader_trace_path("v3 exec validate resolved ",resolved);
     }
-    if(!resolved)return error;
-    long fd=loader_open(resolved);
+    if(supplied_fd<0 && !resolved)return error;
+    if(supplied_fd<0)fd=loader_open(resolved);
     if(proxy_trace)proxy_log("exec-validate-open",fd,depth);
     if(fd<0){vfs_free(resolved);return fd;}
     struct proxy_stat st;error=arch_stat_fd(fd,&st);
@@ -299,17 +302,18 @@ static int validate_exec(const char *path,int interpreter,unsigned depth) {
     if(!loads || !has_phdr)goto done;
     if(interp[0]){
         loader_trace_path("v3 exec validate PT_INTERP ",interp);
-        error=validate_exec(interp,bits,depth+1);
+        error=validate_exec(interp,-1,bits,depth+1);
         if(proxy_trace)proxy_log("exec-validate-interp",error,depth);
     }else error=0;
 done:
     if(proxy_trace)proxy_log("exec-validate-result",error,depth);
-    loader_close(fd);return error;
+    if(supplied_fd<0)loader_close(fd);
+    return error;
 }
-static int map_elf(const char *path,struct mapped *out) {
+static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
     arch_elf_ehdr eh; arch_elf_phdr *ph=NULL;
-    long fd=loader_open(path);
-    if(bad(fd)) return (int)fd;
+    long fd=supplied_fd;
+    if(fd<0){fd=loader_open(path);if(bad(fd))return (int)fd;}
     int error=-ENOEXEC;
     if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=(long)sizeof(eh)) goto done;
     if(eh.e_ident[0]!=127 || eh.e_ident[1]!='E' || eh.e_ident[2]!='L' || eh.e_ident[3]!='F' ||
@@ -384,7 +388,7 @@ static int map_elf(const char *path,struct mapped *out) {
     if(!error && eh.e_type==ET_EXEC){out->entry-=bias;out->phdr-=bias;}
 done:
     if(error && out->size){RAW(PROXY_SC_munmap,out->area,out->size,0,0,0,0);out->size=0;}
-    vfs_free(ph);loader_close(fd); return error;
+    vfs_free(ph);if(supplied_fd<0)loader_close(fd); return error;
 }
 /* All reads, validation, allocation and protection checks precede this point.
  * Move staged VMAs one page at a time (protections may split the reservation).
@@ -404,20 +408,19 @@ static uintptr_t stack_string(uintptr_t *cursor,const char *s) {
 static int load_inner(const char *path,char *const *argv,char *const *env,struct image *image,unsigned depth) {
     if(depth>4) return -ELOOP;
     loader_trace_resolve(path,"exec-resolve");
-    char header[256];long path_error=0;
+    char header[256]={0};long path_error=0;
     char *resolved=vfs_resolve(AT_FDCWD,path,1,&path_error);
     if(!resolved)return (int)path_error;
     long fd=loader_open(resolved);
-    vfs_free(resolved);
-    if(bad(fd)) return (int)fd;
+    if(bad(fd)){vfs_free(resolved);return (int)fd;}
     struct proxy_stat executable;int permission=arch_stat_fd(fd,&executable);
     if(!permission && (!S_ISREG(executable.st_mode) || !(executable.st_mode&0111)))permission=-EACCES;
-    if(permission){loader_close(fd);return permission;}
+    if(permission){loader_close(fd);vfs_free(resolved);return permission;}
     long got=proxy_pread_fd(fd,header,sizeof(header)-1,0);
-    loader_close(fd);
-    if(got<0) return (int)got;
+    if(got<0){loader_close(fd);vfs_free(resolved);return (int)got;}
     header[got]=0;
     if(got>=2 && header[0]=='#' && header[1]=='!') {
+        loader_close(fd);vfs_free(resolved);
         char *end=header+2;while(*end && *end!='\n') end++;
         if(!*end) return -ENOEXEC;
         *end=0;while(end>header+2 && (end[-1]==' ' || end[-1]=='\t')) *--end=0;
@@ -433,39 +436,41 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         args[n]=NULL;
         int r=load_inner(interpreter,args,env,image,depth+1);vfs_free(args);return r;
     }
-    int checked=validate_exec(path,0,0);if(checked){if(proxy_trace)proxy_log("exec-validate",checked,0);return checked;}
+    int checked=validate_exec(resolved,fd,0,0);if(checked){if(proxy_trace)proxy_log("exec-validate",checked,0);loader_close(fd);vfs_free(resolved);return checked;}
     if(proxy_trace)proxy_log("exec-validate",0,0);
-    int handoff=state_exec(path,argv,env);if(handoff){if(proxy_trace)proxy_log("exec-state",handoff,0);return handoff;}
+    int handoff=state_exec(path,(const unsigned char *)header,(size_t)got,argv,env);if(handoff){if(proxy_trace)proxy_log("exec-state",handoff,0);loader_close(fd);vfs_free(resolved);return handoff;}
+#define EXEC_RETURN(value) do { int exec_result=(value); loader_close(fd); vfs_free(resolved); return exec_result; } while(0)
     size_t ac=0,ec=0,total=65536;
-    while(argv && argv[ac]){size_t n=p_len(argv[ac]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)return -E2BIG;total+=n+1+sizeof(uintptr_t);ac++;}
-    while(env && env[ec]){size_t n=p_len(env[ec]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)return -E2BIG;total+=n+1+sizeof(uintptr_t);ec++;}
-    if(ac>SIZE_MAX/sizeof(uintptr_t)-1 || ec>SIZE_MAX/sizeof(uintptr_t)-1 || total>SIZE_MAX-4095)return -E2BIG;
+    while(argv && argv[ac]){size_t n=p_len(argv[ac]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)EXEC_RETURN(-E2BIG);total+=n+1+sizeof(uintptr_t);ac++;}
+    while(env && env[ec]){size_t n=p_len(env[ec]);if(n>SIZE_MAX-total-sizeof(uintptr_t)-1)EXEC_RETURN(-E2BIG);total+=n+1+sizeof(uintptr_t);ec++;}
+    if(ac>SIZE_MAX/sizeof(uintptr_t)-1 || ec>SIZE_MAX/sizeof(uintptr_t)-1 || total>SIZE_MAX-4095)EXEC_RETURN(-E2BIG);
     uintptr_t *av=vfs_alloc((ac+1)*sizeof(*av)),*ev=vfs_alloc((ec+1)*sizeof(*ev));
-    if(!av || !ev){vfs_free(av);vfs_free(ev);return -ENOMEM;}
+    if(!av || !ev){vfs_free(av);vfs_free(ev);EXEC_RETURN(-ENOMEM);}
     size_t stack_size=UP(total);if(stack_size<STACK_SIZE)stack_size=STACK_SIZE;
     long stack=RAW(PROXY_SC_mmap,0,stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-    if(bad(stack)){vfs_free(av);vfs_free(ev);return (int)stack;}
+    if(bad(stack)){vfs_free(av);vfs_free(ev);EXEC_RETURN((int)stack);}
     uintptr_t cur=(uintptr_t)stack+stack_size;
     for(size_t i=0;i<ac;i++)av[i]=stack_string(&cur,argv[i]);
     for(size_t i=0;i<ec;i++)ev[i]=stack_string(&cur,env[i]);
-    char *translated=vfs_resolve(AT_FDCWD,path,1,&path_error);
-    if(!translated){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);vfs_free(av);vfs_free(ev);return (int)path_error;}
-    struct mapped main={0},interp={0};int r=map_elf(translated,&main);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-main",r,main.size);
+    /* Note argv before any old mapping is replaced: it may live there. */
+    proxy_note_payload_argv(argv);
+    struct mapped *maps=vfs_alloc(2*sizeof(*maps));if(!maps){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);vfs_free(av);vfs_free(ev);EXEC_RETURN(-ENOMEM);}
+    struct mapped *main=&maps[0],*interp=&maps[1];int r=map_elf(resolved,fd,main);loader_close(fd);vfs_free(resolved);fd=-1;resolved=NULL;if(proxy_trace)proxy_log("exec-map-main",r,main->size);
     if(r)goto failed;
-    uintptr_t entry=main.entry;
-    if(main.interp[0]){
-        loader_trace_path("v3 exec PT_INTERP ",main.interp);
-        loader_trace_resolve(main.interp,"interp-resolve");
-        translated=vfs_resolve(AT_FDCWD,main.interp,1,&path_error);
+    uintptr_t entry=main->entry;
+    if(main->interp[0]){
+        loader_trace_path("v3 exec PT_INTERP ",main->interp);
+        loader_trace_resolve(main->interp,"interp-resolve");
+        char *translated=vfs_resolve(AT_FDCWD,main->interp,1,&path_error);
         if(!translated){r=path_error;goto failed;}
-        r=map_elf(translated,&interp);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-interp",r,interp.size);if(r)goto failed;entry=interp.entry;
+        r=map_elf(translated,-1,interp);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-interp",r,interp->size);if(r)goto failed;entry=interp->entry;
     }
     uintptr_t execfn=stack_string(&cur,path),platform=stack_string(&cur,ARCH_PLATFORM);
     cur-=16; uintptr_t random=cur;
     if(RAW(PROXY_SC_getrandom,random,16,0,0,0,0)!=16){r=-EIO;goto failed;}
     arch_elf_auxv aux[]={
-        {AT_PHDR,{main.phdr}},{AT_PHENT,{sizeof(arch_elf_phdr)}},{AT_PHNUM,{main.phnum}},
-        {AT_PAGESZ,{PAGE}},{AT_BASE,{interp.base}},{AT_ENTRY,{main.entry}},
+        {AT_PHDR,{main->phdr}},{AT_PHENT,{sizeof(arch_elf_phdr)}},{AT_PHNUM,{main->phnum}},
+        {AT_PAGESZ,{PAGE}},{AT_BASE,{interp->base}},{AT_ENTRY,{main->entry}},
         {AT_UID,{RAW(PROXY_SC_getuid,0,0,0,0,0,0)}},{AT_EUID,{RAW(PROXY_SC_geteuid,0,0,0,0,0,0)}},
         {AT_GID,{RAW(PROXY_SC_getgid,0,0,0,0,0,0)}},{AT_EGID,{RAW(PROXY_SC_getegid,0,0,0,0,0,0)}},
         {AT_SECURE,{0}},{AT_RANDOM,{random}},{AT_EXECFN,{execfn}},{AT_PLATFORM,{platform}},
@@ -476,28 +481,37 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     *v++=ac; for(unsigned i=0;i<ac;i++) *v++=av[i]; *v++=0;
     for(unsigned i=0;i<ec;i++) *v++=ev[i];
     *v++=0; p_copy(v,aux,sizeof(aux));
-    vfs_free(av);vfs_free(ev);commit_elf(&main);commit_elf(&interp);
+    vfs_free(av);vfs_free(ev);commit_elf(main);commit_elf(interp);
     image->entry=entry;image->stack=sp;
 #ifdef MATON_GPU_BRIDGE
     /* The resident survives exec. Publish this payload, rather than leaving
      * GPU clients looking at the original bwrap/launcher link map. The private
      * mapping is copy-on-write across fork, like the payload it describes. */
     if(gpu_bootstrap) {
-        if(RAW(PROXY_SC_mprotect,gpu_bootstrap,PAGE,PROT_READ|PROT_WRITE,0,0,0))return -EACCES;
-        maton_gpu_payload(gpu_bootstrap,main.phdr,main.phnum);
-        if(RAW(PROXY_SC_mprotect,gpu_bootstrap,PAGE,PROT_READ,0,0,0))return -EACCES;
+        if(RAW(PROXY_SC_mprotect,gpu_bootstrap,PAGE,PROT_READ|PROT_WRITE,0,0,0)){vfs_free(maps);return -EACCES;}
+        maton_gpu_payload(gpu_bootstrap,main->phdr,main->phnum);
+        if(RAW(PROXY_SC_mprotect,gpu_bootstrap,PAGE,PROT_READ,0,0,0)){vfs_free(maps);return -EACCES;}
     }
 #endif
-    return 0;
+    vfs_free(maps);return 0;
 failed:
     if(proxy_trace)proxy_log("exec-load-failed",r,0);
-    if(main.size)RAW(PROXY_SC_munmap,main.area,main.size,0,0,0,0);
-    if(interp.size)RAW(PROXY_SC_munmap,interp.area,interp.size,0,0,0,0);
+    if(main->size)RAW(PROXY_SC_munmap,main->area,main->size,0,0,0,0);
+    if(interp->size)RAW(PROXY_SC_munmap,interp->area,interp->size,0,0,0,0);
     RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);
-    vfs_free(av);vfs_free(ev);return r;
+    vfs_free(av);vfs_free(ev);vfs_free(maps);return r;
+#undef EXEC_RETURN
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
     char *exec_alias=vfs_exec_alias(path);
+    if(!exec_alias && path){
+        /* path may live in the old image (an ET_EXEC re-exec of itself
+         * passes a BSS buffer); commit_elf replaces that memory before
+         * vfs_executable reads it. Keep a loader-owned copy. */
+        size_t n=p_len(path);
+        exec_alias=vfs_alloc(n+1);if(!exec_alias)return -ENOMEM;
+        p_copy(exec_alias,path,n+1);
+    }
     if(exec_alias)path=exec_alias;
     proxy_log_bwrap_args(path,argv);
 #if defined(__i386__)
@@ -654,7 +668,7 @@ static int loader_main(int argc,char **argv,char **environ) {
                                       MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
         if(bootstrap==MAP_FAILED) return 6;
         bootstrap->magic=MATON_GPU_BOOTSTRAP_MAGIC;
-        snprintf(bootstrap->syscall,sizeof(bootstrap->syscall),"%lx",(unsigned long)proxy_raw);
+        snprintf(bootstrap->syscall,sizeof(bootstrap->syscall),"%lx",(unsigned long)proxy_forwarder_sys);
         snprintf(bootstrap->bridge,sizeof(bootstrap->bridge),"%s",value);
         snprintf(bootstrap->adopt,sizeof(bootstrap->adopt),"%lx",(unsigned long)adopt_api_address());
         snprintf(bootstrap->fast,sizeof(bootstrap->fast),"%lx",(unsigned long)(getauxval(AT_HWCAP2)&2));
