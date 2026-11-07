@@ -6,7 +6,7 @@ import zipfile
 import gi
 from gi.repository import GLib
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "packs"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4] / "packs"))
 import pack
 
 root = pathlib.Path(sys.argv[1])

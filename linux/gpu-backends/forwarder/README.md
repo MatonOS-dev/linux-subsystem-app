@@ -166,7 +166,7 @@ verifies offscreen Zink using Mesa profiles and surfaceless EGL, and verifies
 libc independence with a dynamic musl loader; details are in STAGE-C.md. Desktop
 presentation still requires the later WSI/ANativeWindow/AHB work.
 
-Production packaging is wired through the host APK build. `linux/gl-maton/`
+Production packaging is wired through the host APK build. `linux/gpu-backends/forwarder/gl-maton/`
 packages both `libmaton_vulkan.so` and ELF32 `libmaton_vulkan_i386.so`, with
 separate ICD manifests, into `org.freedesktop.Platform.GL.maton`, mounted at
 `/usr/lib/x86_64-linux-gnu/GL/maton`. The launcher selects it through
