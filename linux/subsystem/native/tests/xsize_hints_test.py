@@ -5,9 +5,9 @@ import subprocess, tempfile, sys
 native=Path(__file__).resolve().parents[1]
 source=(Path(sys.argv[1]) if len(sys.argv)>1 else native/'compositor_core.c').read_text()
 def function(name):
-    start=source.index('static void '+name+'(')
-    while source.index(';',start)<source.index('{',start):
-        start=source.index('static void '+name+'(',start+1)
+    import re
+    starts=[m.start() for m in re.finditer(r'static (?:void|bool) '+name+r'\(',source)]
+    start=next(s for s in starts if source.index(';',s)>source.index('{',s))
     end=source.index('{',start)+1; depth=1
     while depth:
         depth+=(source[end]=='{')-(source[end]=='}');end+=1

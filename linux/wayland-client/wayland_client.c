@@ -1,6 +1,7 @@
 #include "wayland_client.h"
 #include "../vulkan-forward/wayland_resolve.h"
 #include "runtime.h"
+#include "backend.h"
 
 /* libwayland-client ABI layout, stable since Wayland 1.0. */
 struct wl_message { const char *name, *signature; const struct wl_interface **types; };
@@ -234,22 +235,23 @@ int mv_wl_dmabuf_dispatch_one(struct mv_wl_dmabuf *d) {
 int mv_wl_dmabuf_dispatch_timeout(struct mv_wl_dmabuf *d, int timeout_ms) {
     if (!d || !d->display || !d->queue || !display_get_fd ||
         !display_prepare_read || !display_read_events || !display_cancel_read) return -1;
-    while (dispatch_pending(d->display,d->queue) > 0) {}
+    /* Events already queued may be the wakeup the caller waits for: report
+     * progress so it rechecks before sleeping. */
+    int pending=dispatch_pending(d->display,d->queue);
+    if (pending) return pending<0 ? -1 : 1;
     while (display_prepare_read(d->display,d->queue) != 0) {
-        if (dispatch_pending(d->display,d->queue) < 0) return -1;
+        pending=dispatch_pending(d->display,d->queue);
+        if (pending) return pending<0 ? -1 : 1;
     }
     if (display_flush(d->display) < 0) { display_cancel_read(d->display); return -1; }
-#if defined(__x86_64__)
     struct { int fd; short events, revents; } fd = { .fd=display_get_fd(d->display), .events=1 };
-    long r;
-    register long nr __asm__("rax")=7;
-    register long a __asm__("rdi")=(long)&fd;
-    register long b __asm__("rsi")=1;
-    register long c __asm__("rdx")=timeout_ms;
-    __asm__ volatile("syscall":"=a"(r):"a"(nr),"D"(a),"S"(b),"d"(c):"rcx","r11","memory");
+    struct { long sec, nsec; } t = { timeout_ms/1000, (long)(timeout_ms%1000)*1000000L }, *tp = timeout_ms<0 ? 0 : &t;
+#if defined(__x86_64__)
+    long r=mv_sys(271,(long)&fd,1,(long)tp,0,0,0); /* ppoll */
+#elif defined(__i386__)
+    long r=mv_sys(309,(long)&fd,1,(long)tp,0,0,0); /* ppoll (32-bit timespec) */
 #else
-    (void)timeout_ms;
-    long r=-1;
+    long r=-38; (void)tp; (void)fd; /* compile-only arm64 slot: no syscall backend yet */
 #endif
     if (r<=0) { display_cancel_read(d->display); return r; }
     if (display_read_events(d->display)<0) return -1;
@@ -317,27 +319,30 @@ struct mv_wl_sync_surface *mv_wl_sync_surface_create(struct mv_wl_dmabuf *d,stru
     sync->proxy=proxy;sync->display=d->display;sync->queue=d->queue;return sync;
 }
 void mv_wl_sync_surface_destroy(struct mv_wl_sync_surface *sync) {
-    if(!sync)return;if(sync->frame)marshal(sync->frame,0,0,proxy_version(sync->frame),1);if(sync->proxy)marshal(sync->proxy,0,0,proxy_version(sync->proxy),1);mv_free(sync);
+    if(!sync)return;if(sync->frame)proxy_destroy(sync->frame);if(sync->proxy)marshal(sync->proxy,0,0,proxy_version(sync->proxy),1);mv_free(sync);
 }
 int mv_wl_surface_present(struct mv_wl_sync_surface *sync,struct wl_surface *surface,
         struct mv_wl_buffer *buffer,int fence_fd) {
     if(!sync||!sync->proxy||!surface||!buffer||!buffer->proxy||fence_fd<0)return -1;
-    if(sync->frame){marshal(sync->frame,0,0,proxy_version(sync->frame),1);sync->frame=0;}
+    if(sync->frame){proxy_destroy(sync->frame);sync->frame=0;}
     sync->frame_done=0;
     sync->frame=marshal((struct wl_proxy *)surface,3,callback_interface,1,0,(void *)0);
     if(!sync->frame)return -1;
     set_queue(sync->frame,sync->queue);
-    if(add_listener(sync->frame,(void (**)(void))frame_listener,sync)){marshal(sync->frame,0,0,proxy_version(sync->frame),1);sync->frame=0;return -1;}
+    if(add_listener(sync->frame,(void (**)(void))frame_listener,sync)){proxy_destroy(sync->frame);sync->frame=0;return -1;}
     marshal(sync->proxy,1,0,proxy_version(sync->proxy),0,fence_fd);
     uint32_t version=proxy_version((struct wl_proxy *)surface);
     marshal((struct wl_proxy *)surface,1,0,version,0,buffer->proxy,0,0);
-    if(version>=4)marshal((struct wl_proxy *)surface,9,0,version,0,0,0,0,0);
-    else marshal((struct wl_proxy *)surface,2,0,version,0,0,0,0,0);
+    /* Whole-buffer damage: a frame may change any pixel. */
+    if(version>=4)marshal((struct wl_proxy *)surface,9,0,version,0,0,0,INT32_MAX,INT32_MAX);
+    else marshal((struct wl_proxy *)surface,2,0,version,0,0,0,INT32_MAX,INT32_MAX);
     marshal((struct wl_proxy *)surface,6,0,version,0);
-    return display_flush(sync->display);
+    if(display_flush(sync->display)<0)return -1; /* caller logs */
+    return 0;
 }
 int mv_wl_sync_wait_frame(struct mv_wl_sync_surface *sync) {
-    if(!sync||!sync->display||!sync->frame)return -1;
+    if(!sync||!sync->display)return -1;
+    if(!sync->frame)return 0; /* nothing committed yet */
     while(!sync->frame_done)if(dispatch_queue(sync->display,sync->queue)<0)return -1;
-    marshal(sync->frame,0,0,proxy_version(sync->frame),1);sync->frame=0;return 0;
+    proxy_destroy(sync->frame);sync->frame=0;return 0;
 }

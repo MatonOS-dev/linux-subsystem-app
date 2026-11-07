@@ -40,7 +40,7 @@ final class V3Launcher {
     /** End the Linux session through loader exit so the ordinary exit cleanup runs. */
     static synchronized void requestQuit() {
         if (LoaderQuit.request(process, exit != null))
-            Log.i("MatonV3", "Quit requested from the runtime notification");
+            Log.i("MatonV3", "Quit requested; ending the Linux session");
     }
 
     static void addLaunchStatusListener(Runnable listener) {

@@ -244,7 +244,7 @@ struct ldt_cache_entry { unsigned selector; unsigned age; int real_entry; unsign
 #endif
 struct thread_state {
     unsigned direct_depth;
-    long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size;
+    long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size; int signal_stack_guarded;
     unsigned int personality,personality_valid;
     proxy_sigmask_t app_sigsys_mask;
 #if ARCH_AUDIT == AUDIT_ARCH_I386
@@ -294,6 +294,20 @@ static void thread_state_cache_invalidate_all(void){
     for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
         __atomic_store_n(&c->state,NULL,__ATOMIC_RELEASE);
 }
+/* Handler stacks get PROT_NONE guard pages on both sides. Without them an
+ * adjacent app RW anonymous mapping merges into the stack's VMA; the kernel
+ * then sees the handler's RSP inside it and classifies a later
+ * mprotect(PROT_EXEC) of the app page as execstack, which Android
+ * neverallows (EACCES; HotSpot's "Failed to mark memory page as
+ * executable"). Natively the app's syscall RSP is on its own stack. */
+static long guarded_stack_map(size_t size) {
+    long base=RAW(PROXY_SC_mmap,0,size+2*4096,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if((unsigned long)base>=(unsigned long)-4095)return base;
+    long r=RAW(PROXY_SC_mprotect,base+4096,size,PROT_READ|PROT_WRITE,0,0,0);
+    if(r){RAW(PROXY_SC_munmap,base,size+2*4096,0,0,0,0);return r;}
+    return base+4096;
+}
+static void guarded_stack_unmap(void *stack,size_t size) { RAW(PROXY_SC_munmap,(char *)stack-4096,size+2*4096,0,0,0,0); }
 #if ARCH_AUDIT == AUDIT_ARCH_I386 && defined(MATON_GPU_BRIDGE)
 static long threads_pid;
 #endif
@@ -329,7 +343,7 @@ static struct thread_state *thread_state(void) {
 #endif
     struct thread_node *p=vfs_palloc(sizeof(*p));if(!p)return NULL;
     p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
-    p->state.personality_valid=0;
+    p->state.personality_valid=0;p->state.signal_stack_guarded=0;
     p->state.app_sigsys_mask=0;
     stack_t current={0};
     if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0)) {
@@ -342,11 +356,11 @@ static struct thread_state *thread_state(void) {
 #else
         const size_t signal_stack_size=1<<20;
 #endif
-        long area=RAW(PROXY_SC_mmap,0,signal_stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        long area=guarded_stack_map(signal_stack_size);
         if((unsigned long)area>=(unsigned long)-4095){vfs_free(p);return NULL;}
         stack_t own={.ss_sp=(void *)area,.ss_size=signal_stack_size};
-        if(RAW(PROXY_SC_sigaltstack,&own,0,0,0,0,0)){RAW(PROXY_SC_munmap,area,signal_stack_size,0,0,0,0);vfs_free(p);return NULL;}
-        p->state.signal_stack=(void *)area;p->state.signal_stack_size=signal_stack_size;
+        if(RAW(PROXY_SC_sigaltstack,&own,0,0,0,0,0)){guarded_stack_unmap((void *)area,signal_stack_size);vfs_free(p);return NULL;}
+        p->state.signal_stack=(void *)area;p->state.signal_stack_size=signal_stack_size;p->state.signal_stack_guarded=1;
     }
     do {p->next=__atomic_load_n(&threads,__ATOMIC_ACQUIRE);}
     while(!__atomic_compare_exchange_n(&threads,&p->next,p,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED));
@@ -822,7 +836,8 @@ void proxy_i386_thread_exit(void) {
     vfs_trap_thread_exit(thread->signal_stack,thread->signal_stack_size);
     stack_t disabled={.ss_flags=SS_DISABLE};
     RAW(PROXY_SC_sigaltstack,&disabled,0,0,0,0,0);
-    RAW(PROXY_SC_munmap,thread->signal_stack,thread->signal_stack_size,0,0,0,0);
+    if(thread->signal_stack_guarded)guarded_stack_unmap(thread->signal_stack,thread->signal_stack_size);
+    else RAW(PROXY_SC_munmap,thread->signal_stack,thread->signal_stack_size,0,0,0,0);
     thread->tid=0;
 }
 
@@ -961,10 +976,17 @@ void proxy_close_grave(long nr,long first,long last,const char *file,int line) {
     /* The log channel may close fds while opening; skip nested graves. */
     if(__atomic_fetch_add(&grave_depth,1,__ATOMIC_ACQ_REL)){__atomic_fetch_sub(&grave_depth,1,__ATOMIC_ACQ_REL);return;}
     const char *base=file;for(const char *p=file;*p;p++)if(*p=='/')base=p+1;
-    emit(nr==PROXY_SC_close?"v3 close fd=":"v3 close_range fd=");trace_number((uint64_t)first);
-    if(nr!=PROXY_SC_close){emit("..");trace_number((uint64_t)(unsigned)last);}
-    emit(" at ");emit(base);emit(":");trace_number((uint64_t)line);
-    emit(" pid=");trace_number((uint64_t)RAW_CALL(PROXY_SC_getpid,0,0,0,0,0,0));emit("\n");
+    /* One write per line: lines stay whole and cost one syscall group. */
+    char text[256];size_t n=0;
+#define GRAVE_STR(s) do{for(const char *q_=(s);*q_ && n<sizeof(text)-1;q_++)text[n++]=*q_;}while(0)
+#define GRAVE_NUM(v) do{uint64_t v_=(v);char d_[24];unsigned k_=0;do{d_[k_++]=(char)('0'+v_%10);v_/=10;}while(v_);while(k_ && n<sizeof(text)-1)text[n++]=d_[--k_];}while(0)
+    GRAVE_STR(nr==PROXY_SC_close?"v3 close fd=":"v3 close_range fd=");GRAVE_NUM((uint64_t)first);
+    if(nr!=PROXY_SC_close){GRAVE_STR("..");GRAVE_NUM((uint64_t)(unsigned)last);}
+    GRAVE_STR(" at ");GRAVE_STR(base);GRAVE_STR(":");GRAVE_NUM((uint64_t)line);
+    GRAVE_STR(" pid=");GRAVE_NUM((uint64_t)RAW_CALL(PROXY_SC_getpid,0,0,0,0,0,0));
+#undef GRAVE_STR
+#undef GRAVE_NUM
+    text[n++]='\n';proxy_diagnostic_write(text,n);
     __atomic_fetch_sub(&grave_depth,1,__ATOMIC_ACQ_REL);
 }
 void proxy_trace_clone_result(long child,long flags) {
@@ -2206,9 +2228,9 @@ static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
             }
         }
     }
+    unsigned cursor=first;int unshared=0;long result=0;
     if(n<0)goto done;
     for(unsigned i=1;i<count;i++){unsigned value=protected[i],j=i;while(j && protected[j-1]>value){protected[j]=protected[j-1];j--;}protected[j]=value;}
-    unsigned cursor=first;int unshared=0;long result=0;
     for(unsigned i=0;i<count;i++){
         unsigned value=protected[i];
         if(value<cursor || value>last)continue;

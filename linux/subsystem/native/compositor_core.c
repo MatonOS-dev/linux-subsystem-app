@@ -302,20 +302,24 @@ static struct MatonFit window_fit(struct Window* w) {
   if(w->toplevel&&w->toplevel->base->geometry.width>0){width=w->toplevel->base->geometry.width;height=w->toplevel->base->geometry.height;}
   return maton_fit(w->width,w->height,width,height);
 }
-static void configure_window(struct Window* w) {
+/* Returns true when a configure was sent to the client. */
+static bool configure_window(struct Window* w) {
   /* Fixed dialogs still need their requested dimensions (some map a tiny
    * placeholder before publishing their final hints); retain their X origin.
    * Xwayland activates RandR viewport emulation only when the X drawable
    * matches the requested mode. Forcing a fullscreen 1280x720 drawable to
    * 1600x900 disables that path and leaves the GL viewport in one corner. */
-  if((!w->xsurface&&maton_size_fixed(w->hints))||(w->xsurface&&w->xsurface->fullscreen))return;
+  if((!w->xsurface&&maton_size_fixed(w->hints))||(w->xsurface&&w->xsurface->fullscreen))return false;
   int width=maton_size_clamp(w->width,w->hints.min_width,w->hints.max_width);
   int height=maton_size_clamp(w->height,w->hints.min_height,w->hints.max_height);
-  if(w->toplevel&&w->toplevel->base->initialized)wlr_xdg_toplevel_set_size(w->toplevel,width,height);
-  else if(w->xsurface&&(w->xsurface->width!=width||w->xsurface->height!=height||(!maton_size_fixed(w->hints)&&(w->xsurface->x||w->xsurface->y))))
+  if(w->toplevel&&w->toplevel->base->initialized){wlr_xdg_toplevel_set_size(w->toplevel,width,height);return true;}
+  if(w->xsurface&&(w->xsurface->width!=width||w->xsurface->height!=height||(!maton_size_fixed(w->hints)&&(w->xsurface->x||w->xsurface->y)))) {
     wlr_xwayland_surface_configure(w->xsurface,
       maton_size_fixed(w->hints)?w->xsurface->x:0,
       maton_size_fixed(w->hints)?w->xsurface->y:0,width,height);
+    return true;
+  }
+  return false;
 }
 struct PointerButtonEvent { uint32_t time; int window; };
 static void notify_pointer_button(void* data, uint32_t code, bool pressed) {
@@ -952,7 +956,9 @@ static void on_xtrack_configure(struct wl_listener* l,void* data) {
   struct wlr_xwayland_surface_configure_event* ev=data;
   struct Window* w=xtrack_window(t);
   if(!w||t->xs->fullscreen)wlr_xwayland_surface_configure(t->xs,ev->x,ev->y,ev->width,ev->height);
-  else configure_window(w);
+  /* ICCCM 4.1.5: a refused or no-change request still gets a synthetic
+   * ConfigureNotify (wlroots sends one for a same-size configure). */
+  else if(!configure_window(w))wlr_xwayland_surface_configure(t->xs,t->xs->x,t->xs->y,t->xs->width,t->xs->height);
 }
 static void on_xtrack_destroy(struct wl_listener* l,void* data) {
   (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,destroy));

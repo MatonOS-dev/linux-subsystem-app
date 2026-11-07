@@ -17,7 +17,7 @@ extern int mv_x11_last_error;
 extern void (*mv_x11_log_hook)(const char *,unsigned long);
 struct mv_x11_buffer *mv_x11_buffer_create(struct mv_x11 *,int,uint32_t,uint32_t,uint32_t);
 void mv_x11_buffer_destroy(struct mv_x11_buffer *);
-/* Connected socket carrying the AHB for a DRI3 stand-in fd, or -1. */
+/* Connected socket carrying the AHB for a DRI3-exported AHB fd, or -1. */
 int mv_x11_ahb_lookup(int standin);
 int mv_x11_ahb_register(int standin,int transport);
 void mv_x11_ahb_unregister(int fd);

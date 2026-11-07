@@ -4,7 +4,7 @@
  * Linux swapchain only when that allocation/presentation backend can work. */
 static const char *const mv_wsi_wayland_requirements[]={
     "VK_ANDROID_external_memory_android_hardware_buffer", "VK_EXT_queue_family_foreign",
-    "VK_KHR_external_semaphore_fd"
+    "VK_KHR_external_semaphore_fd", "VK_KHR_external_fence_fd"
 };
 /* Both window systems transport the complete AHB allocation. */
 #define MV_WSI_REQUIREMENT_COUNT (sizeof(mv_wsi_wayland_requirements)/sizeof(mv_wsi_wayland_requirements[0]))

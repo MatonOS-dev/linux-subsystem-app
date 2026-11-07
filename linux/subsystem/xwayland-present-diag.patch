@@ -1,6 +1,14 @@
---- a/present/present_execute.c	2026-11-06 18:21:57.073119122 +0200
-+++ b/present/present_execute.c	2026-11-06 18:48:51.329848842 +0200
-@@ -117,6 +117,34 @@
+--- a/present/present_execute.c
++++ b/present/present_execute.c
+@@ -21,6 +21,7 @@
+  */
+ 
+ #include "present_priv.h"
++#include "../composite/compint.h" /* MATONOS DIAGNOSTIC */
+ #include <unistd.h>
+ #ifdef DRI3
+ #include <sys/eventfd.h>
+@@ -117,6 +118,50 @@
  
      present_copy_region(&window->drawable, vblank->pixmap, vblank->update, vblank->x_off, vblank->y_off);
  
@@ -28,6 +36,22 @@
 +                   (unsigned) src, (unsigned) dst, (unsigned) top->drawable.id, top->drawable.depth,
 +                   screen->GetWindowPixmap(window) == screen->GetWindowPixmap(top) ? "shared" : "own-pixmap",
 +                   (unsigned) tpix, (int) window->redirectDraw);
++            /* Ancestor chain: who owns a separate pixmap, and how it is redirected. */
++            for (WindowPtr w = window; w && w->parent; w = w->parent) {
++                /* Redirecting clients and the clip Composite copies through live in CompWindow. */
++                CompWindowPtr cw = w->redirectDraw ? GetCompWindow(w) : NULL;
++                BoxPtr c = cw ? RegionExtents(&cw->borderClip) : RegionExtents(&w->borderClip);
++                char by[64] = "";
++                int off = 0;
++                for (CompClientWindowPtr ccw = cw ? cw->clients : NULL; ccw && off < (int) sizeof(by) - 12; ccw = ccw->next)
++                    off += snprintf(by + off, sizeof(by) - off, "%d/%d,", CLIENT_ID(ccw->id), ccw->update);
++                ErrorF("maton-present:   chain 0x%x owner=%d d%d vis=0x%lx mapped=%d viewable=%d redirect=%d by=%s pix=%p parent_pix=%s %s=%d,%d-%d,%d\n",
++                       (unsigned) w->drawable.id, CLIENT_ID(w->drawable.id), w->drawable.depth,
++                       (unsigned long) wVisual(w), w->mapped, w->viewable, (int) w->redirectDraw, by,
++                       (void *) screen->GetWindowPixmap(w),
++                       screen->GetWindowPixmap(w) == screen->GetWindowPixmap(w->parent) ? "same" : "differs",
++                       cw ? "comp_clip" : "clip", c->x1, c->y1, c->x2, c->y2);
++            }
 +        }
 +        n++;
 +    }
@@ -35,3 +59,50 @@
      /* present_copy_region sticks the region into a scratch GC,
       * which is then freed, freeing the region
       */
+--- a/hw/xwayland/xwayland-present.c
++++ b/hw/xwayland/xwayland-present.c
+@@ -1089,6 +1089,44 @@
+         ScreenPtr screen = window->drawable.pScreen;
+         int ret;
+ 
++        /* MATONOS DIAGNOSTIC: remove once the Big Picture black window is found.
++         * Per window: path taken and whole-frame statistics of the submitted pixmap. */
++        {
++            static struct { XID win; unsigned n; } seen[32];
++            unsigned i, *n = NULL;
++            for (i = 0; i < 32 && seen[i].win && seen[i].win != window->drawable.id; i++)
++                ;
++            if (i == 32) /* table full: share a slot; keeping its count avoids a log flood */
++                i = window->drawable.id % 32;
++            seen[i].win = window->drawable.id;
++            n = &seen[i].n;
++            PixmapPtr p = vblank->pixmap;
++            if (n && p->drawable.width >= 64 && (*n < 3 || !(*n % 300))) {
++                int w = p->drawable.width, h = p->drawable.height;
++                CARD32 *buf = malloc((size_t) w * h * 4);
++                unsigned long rgb = 0, alpha = 0;
++                CARD32 first = 0;
++                if (buf) {
++                    screen->GetImage(&p->drawable, 0, 0, w, h, ZPixmap, ~0, (char *) buf);
++                    for (size_t k = 0; k < (size_t) w * h; k++) {
++                        if (buf[k] & 0xffffff) {
++                            if (!rgb++)
++                                first = buf[k];
++                        }
++                        if (buf[k] >> 24)
++                            alpha++;
++                    }
++                    free(buf);
++                } else
++                    ErrorF("maton-present2: frame stats malloc %dx%d failed\n", w, h);
++                ErrorF("maton-present2: win=0x%x n=%u pixmap=0x%x %dx%d d%d path=%s rgb_nonzero=%lu alpha_nonzero=%lu of %ld first=%08x\n",
++                       (unsigned) window->drawable.id, *n, (unsigned) p->drawable.id, w, h, p->drawable.depth,
++                       vblank->flip ? "flip" : "copy", rgb, alpha, (long) w * h, (unsigned) first);
++            }
++            if (n)
++                (*n)++;
++        }
++
+         if (vblank->flip) {
+             RegionPtr damage;
+ 

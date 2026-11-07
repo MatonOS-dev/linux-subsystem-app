@@ -108,7 +108,7 @@
  #endif
 --- /dev/null
 +++ b/hw/xwayland/xwayland-glamor-ahb.c
-@@ -0,0 +1,477 @@
+@@ -0,0 +1,597 @@
 +/* SPDX-License-Identifier: MIT
 + * Copyright (c) 2026 MatonOS contributors
 + * Android AHB glamor backend. Legacy gbm entry point names are retained only
@@ -135,11 +135,18 @@
 +#include "xwayland-pixmap.h"
 +#include "xwayland-window-buffers.h"
 +#include "maton-ahb-buffer-v1-client-protocol.h"
++/* libnativewindow export (VNDK header); the fds are the buffer's own. */
++typedef struct native_handle { int version, numFds, numInts; int data[0]; } native_handle_t;
++extern const native_handle_t *AHardwareBuffer_getNativeHandle(const AHardwareBuffer *buffer);
 +#include "dri3.h"
 +#include <errno.h>
 +#include <sys/mman.h>
 +#include <sys/stat.h>
 +#include <string.h>
++#include <sys/ioctl.h>
++#include <linux/dma-buf.h>
++#include "misync.h"
++#include "misyncstr.h"
 +
 +/* Every close leaves a gravestone naming its call site. */
 +#define MATON_CLOSE(fd) do { int maton_fd_ = (fd); \
@@ -150,25 +157,27 @@
 +    int listener, directory;
 +    char path[108];
 +    CloseScreenProcPtr close_screen;
++    SyncScreenCreateFenceFunc create_fence;
 +    struct xorg_list peers;
-+    struct xorg_list exports; /* xwl_pixmaps with a DRI3 stand-in fd */
++    struct xorg_list exports; /* xwl_pixmaps with a DRI3 export fd */
 +};
 +struct xwl_pixmap {
 +    AHardwareBuffer *ahb;
 +    EGLImageKHR image;
 +    struct wl_buffer *buffer;
-+    /* DRI3 export: a memfd standing in for the AHB. Clients never get the
-+     * gralloc fd; its identity (dev, ino) is looked up to recover the AHB. */
-+    int standin;
++    /* DRI3 export: a dup of the AHB's first native-handle fd. Its identity
++     * (dev, ino) is looked up to recover the AHB. */
++    int export_fd;
 +    dev_t dev; ino_t ino;
 +    struct xorg_list export_link;
++    Bool sync_failed; /* logged once; no further fence imports */
 +};
 +/* A peer is one request, or a client registration (MAHR) that stays live
 + * until the client closes its socket: an AHB the client exported (Vulkan
-+ * dma-buf export) with the memfd stand-in it handed out for it. */
++ * dma-buf export) with the native-handle fd it handed out for it. */
 +struct import_peer {
 +    struct xorg_list link; struct xwl_screen *screen; int fd;
-+    AHardwareBuffer *ahb; int standin; dev_t dev; ino_t ino;
++    AHardwareBuffer *ahb; int export_fd; dev_t dev; ino_t ino;
 +};
 +static DevPrivateKeyRec ahb_key;
 +static struct ahb_screen *get_ahb(struct xwl_screen *s) {
@@ -183,8 +192,11 @@
 +Bool xwl_glamor_has_wl_drm(struct xwl_screen *s) { return get_ahb(s)->manager != NULL; }
 +Bool xwl_screen_set_drm_interface(struct xwl_screen *s, uint32_t id, uint32_t version) { return FALSE; }
 +Bool xwl_screen_set_syncobj_interface(struct xwl_screen *s, uint32_t id, uint32_t version) { return FALSE; }
-+/* The producer fence is waited by the WSI; glFinish below covers server
-+ * rendering. wl_buffer.release controls reuse. No kernel implicit sync needed. */
++/* Implicit sync as on desktop: shared buffers are dma-bufs (DRI3), and our GL
++ * work is added to their fences (publish_fences) so other processes' readers
++ * (Zink's DMA_BUF_IOCTL_EXPORT_SYNC_FILE) wait for it. The Android GL driver does
++ * not attach those fences itself. The WSI waits its producer fence before
++ * presenting; glFinish below covers wl_buffer attachment. */
 +Bool xwl_glamor_supports_implicit_sync(struct xwl_screen *s) { return TRUE; }
 +Bool xwl_glamor_supports_syncobjs(struct xwl_screen *s) { return FALSE; }
 +drmDevice *xwl_gbm_get_main_device(struct xwl_screen *s) { return NULL; }
@@ -201,6 +213,67 @@
 +struct dri3_syncobj *xwl_glamor_dri3_syncobj_create(struct xwl_screen *s) { return NULL; }
 +void xwl_glamor_dri3_syncobj_passthrough(struct xwl_window *w,
 +    struct dri3_syncobj *a, struct dri3_syncobj *r, uint64_t ap, uint64_t rp) { }
++
++/* A sync_file signalled when all GL work submitted so far completes. */
++static int gl_fence_fd(struct xwl_screen *s) {
++    EGLSyncKHR sync = eglCreateSyncKHR(s->egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
++    if (sync == EGL_NO_SYNC_KHR) {
++        ErrorF("maton-ahb: native fence sync create failed egl=%#x\n", eglGetError());
++        return -1;
++    }
++    glFlush(); /* the fence fd exists once the fence is flushed */
++    int fd = eglDupNativeFenceFDANDROID(s->egl_display, sync);
++    if (fd < 0) ErrorF("maton-ahb: native fence dup failed egl=%#x\n", eglGetError());
++    eglDestroySyncKHR(s->egl_display, sync);
++    return fd;
++}
++/* Add all GL work submitted so far as a write fence to every buffer shared
++ * over DRI3, so readers in other processes wait for it. Runs before any byte
++ * reaches a client (FlushCallback) and before an X sync fence triggers: DRI3
++ * orders our rendering before both, and EXPORT_SYNC_FILE only sees fences
++ * already installed. */
++static void publish_fences(ScreenPtr screen) {
++    struct xwl_screen *s = xwl_screen_get(screen);
++    struct ahb_screen *a = get_ahb(s);
++    struct xwl_pixmap *x;
++    if (xorg_list_is_empty(&a->exports)) return;
++    xwl_glamor_egl_make_current(s);
++    int fence = gl_fence_fd(s);
++    if (fence < 0) return;
++    xorg_list_for_each_entry(x, &a->exports, export_link) {
++        struct dma_buf_import_sync_file imp = { .flags = DMA_BUF_SYNC_WRITE, .fd = fence };
++        if (x->sync_failed || !ioctl(x->export_fd, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &imp)) continue;
++        /* DRI3 buffers are dma-bufs; one that is not cannot be synchronised. */
++        ErrorF("maton-ahb: dma-buf write fence import failed ino=%lu errno=%d; readers of it are unsynchronised\n",
++               (unsigned long) x->ino, errno);
++        x->sync_failed = TRUE;
++    }
++    MATON_CLOSE(fence);
++}
++static void flush_callback(CallbackListPtr *list, void *screen, void *client) {
++    publish_fences(screen);
++}
++/* X sync fences (DRI3 xshmfence, Present idle) let clients reuse or read a
++ * buffer without a reply on the socket. */
++static DevPrivateKeyRec fence_key;
++static void fence_set_triggered(SyncFence *fence) {
++    SyncFenceSetTriggeredFunc *next = dixLookupPrivate(&fence->devPrivates, &fence_key);
++    publish_fences(fence->pScreen);
++    fence->funcs.SetTriggered = *next;
++    fence->funcs.SetTriggered(fence);
++    *next = fence->funcs.SetTriggered;
++    fence->funcs.SetTriggered = fence_set_triggered;
++}
++static void create_fence(ScreenPtr screen, SyncFence *fence, Bool initially_triggered) {
++    struct ahb_screen *a = dixLookupPrivate(&screen->devPrivates, &ahb_key);
++    SyncScreenFuncsPtr funcs = miSyncGetScreenFuncs(screen);
++    funcs->CreateFence = a->create_fence;
++    funcs->CreateFence(screen, fence, initially_triggered);
++    a->create_fence = funcs->CreateFence;
++    funcs->CreateFence = create_fence;
++    *(SyncFenceSetTriggeredFunc *) dixLookupPrivate(&fence->devPrivates, &fence_key) = fence->funcs.SetTriggered;
++    fence->funcs.SetTriggered = fence_set_triggered;
++}
 +
 +/* Takes the received/allocation reference on success only. */
 +static PixmapPtr import_ahb(ScreenPtr screen, AHardwareBuffer *ahb, int depth) {
@@ -228,7 +301,7 @@
 +    glBindTexture(GL_TEXTURE_2D, 0);
 +    glamor_set_pixmap_type(p, GLAMOR_TEXTURE_DRM);
 +    a->ahb = ahb;
-+    a->standin = -1;
++    a->export_fd = -1;
 +    xorg_list_init(&a->export_link);
 +    xwl_pixmap_set_private(p, a);
 +    return p;
@@ -273,7 +346,7 @@
 +        xwl_glamor_egl_make_current(s);
 +        eglDestroyImageKHR(s->egl_display, a->image);
 +        AHardwareBuffer_release(a->ahb);
-+        if (a->standin >= 0) { xorg_list_del(&a->export_link); MATON_CLOSE(a->standin); }
++        if (a->export_fd >= 0) { xorg_list_del(&a->export_link); MATON_CLOSE(a->export_fd); }
 +        free(a);
 +    }
 +    return glamor_destroy_pixmap(p);
@@ -305,7 +378,7 @@
 + * Reply: pixmap XID, or zero. Present/FreePixmap remain ordinary X requests. */
 +#define AHB_LOOKUP_MAGIC 0x4c48414du /* "MAHL" */
 +#define AHB_REGISTER_MAGIC 0x5248414du /* "MAHR" */
-+/* The AHB behind a stand-in: our DRI3 exports, then client registrations. */
++/* The AHB behind an exported fd: our DRI3 exports, then client registrations. */
 +static AHardwareBuffer *find_export(struct ahb_screen *a, int fd) {
 +    struct stat st;
 +    struct xwl_pixmap *x;
@@ -319,7 +392,7 @@
 +}
 +static void drop_peer(struct import_peer *p) {
 +    if (p->ahb) AHardwareBuffer_release(p->ahb);
-+    if (p->standin >= 0) MATON_CLOSE(p->standin);
++    if (p->export_fd >= 0) MATON_CLOSE(p->export_fd);
 +    RemoveNotifyFd(p->fd); MATON_CLOSE(p->fd);
 +    xorg_list_del(&p->link); free(p);
 +}
@@ -357,7 +430,7 @@
 +        }
 +    }
 +    if (n == sizeof(uint32_t) && req[0] == AHB_REGISTER_MAGIC) {
-+        /* Register {stand-in memfd, filled AHB transport}; ack 1 and keep the peer. */
++        /* Register {exported fd, filled AHB transport}; ack 1 and keep the peer. */
 +        struct stat st;
 +        AHardwareBuffer *ahb = NULL;
 +        uint32_t ack = 1;
@@ -368,8 +441,8 @@
 +            ErrorF("maton-ahb: register ack failed errno=%d\n", errno);
 +            AHardwareBuffer_release(ahb);
 +        } else {
-+            peer->ahb = ahb; peer->standin = transport; peer->dev = st.st_dev; peer->ino = st.st_ino;
-+            ErrorF("maton-ahb: registered client stand-in ino=%lu\n", (unsigned long)st.st_ino);
++            peer->ahb = ahb; peer->export_fd = transport; peer->dev = st.st_dev; peer->ino = st.st_ino;
++            ErrorF("maton-ahb: registered client export ino=%lu\n", (unsigned long)st.st_ino);
 +            MATON_CLOSE(second);
 +            return;
 +        }
@@ -379,7 +452,7 @@
 +    if (second >= 0) { extra++; MATON_CLOSE(second); }
 +    if (extra) ErrorF("maton-ahb: fd=%d sent %d unexpected extra fds\n", fd, extra);
 +    if (n == sizeof(uint32_t) && req[0] == AHB_LOOKUP_MAGIC) {
-+        /* Lookup: the fd is a DRI3 stand-in; answer with its AHB or hang up. */
++        /* Lookup: the fd is a DRI3 export; answer with its AHB or hang up. */
 +        AHardwareBuffer *x = transport >= 0 && !extra ? find_export(get_ahb(s), transport) : NULL;
 +        if (!x) ErrorF("maton-ahb: lookup fd=%d: not a live DRI3 export\n", transport);
 +        else {
@@ -407,6 +480,19 @@
 +                PixmapPtr p = import_ahb(s->screen, ahb, drawable->depth);
 +                if (p) {
 +                    p->drawable.id = req[4];
++                    /* Clients read it after our GL writes: fence it like DRI3 imports (publish_fences). */
++                    struct xwl_pixmap *xp = xwl_pixmap_get(p);
++                    const native_handle_t *h = AHardwareBuffer_getNativeHandle(xp->ahb);
++                    int m = h && h->numFds > 0 ? fcntl(h->data[0], F_DUPFD_CLOEXEC, 0) : -1;
++                    struct stat st;
++                    if (m < 0 || fstat(m, &st)) {
++                        ErrorF("maton-ahb: private import keep fd failed (fds=%d errno=%d); GL writes to it are unsynchronised\n",
++                               h ? h->numFds : -1, errno);
++                        if (m >= 0) MATON_CLOSE(m);
++                    } else {
++                        xp->export_fd = m; xp->dev = st.st_dev; xp->ino = st.st_ino;
++                        xorg_list_add(&xp->export_link, &get_ahb(s)->exports);
++                    }
 +                    if (AddResource(req[4], RT_PIXMAP, p)) reply = req[4];
 +                    else ErrorF("maton-ahb: AddResource xid=%#x failed\n", req[4]);
 +                    /* AddResource destroys the pixmap on allocation failure. */
@@ -441,7 +527,7 @@
 +    struct xwl_screen *s = data;
 +    struct import_peer *p = calloc(1, sizeof(*p));
 +    if (!p) { ErrorF("maton-ahb: peer alloc failed\n"); MATON_CLOSE(peer); return; }
-+    p->screen = s; p->fd = peer; p->standin = -1;
++    p->screen = s; p->fd = peer; p->export_fd = -1;
 +    xorg_list_add(&p->link, &get_ahb(s)->peers);
 +    if (!SetNotifyFd(peer, import_request, X_NOTIFY_READ, p)) {
 +        ErrorF("maton-ahb: SetNotifyFd fd=%d failed\n", peer);
@@ -456,6 +542,10 @@
 +    RemoveNotifyFd(a->listener); MATON_CLOSE(a->listener); unlink(a->path); MATON_CLOSE(a->directory);
 +    /* a->manager died with the Wayland display; destroying it locks a freed mutex. */
 +    screen->CloseScreen = a->close_screen;
++    DeleteCallback(&FlushCallback, flush_callback, screen);
++    SyncScreenFuncsPtr funcs = miSyncGetScreenFuncs(screen);
++    if (funcs && funcs->CreateFence == create_fence) funcs->CreateFence = a->create_fence;
++    else if (funcs) ErrorF("maton-ahb: CreateFence wrapped above us at close; left in place\n");
 +    free(a);
 +    return screen->CloseScreen(screen);
 +}
@@ -484,10 +574,11 @@
 +    return s->egl_context != EGL_NO_CONTEXT &&
 +        eglMakeCurrent(s->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, s->egl_context);
 +}
-+/* DRI3 without dma-buf: BufferFromPixmap hands out a memfd stand-in whose
++/* DRI3 1.0 over AHBs: BufferFromPixmap hands out the AHB's own first
++ * native-handle fd (whatever the gralloc uses, a dma-buf on GKI devices); its
 + * identity maps back to the AHB (the forwarder ICD looks it up over the AHB
-+ * socket). PixmapFromBuffer accepts our stand-ins and client-registered ones (MAHR). Open is refused:
-+ * there is no DRM device. CPU mappings of a stand-in do not show pixels. */
++ * socket). PixmapFromBuffer accepts our exports and client-registered ones (MAHR).
++ * Open is refused: there is no DRM device. */
 +static int dri3_refuse_open(ClientPtr client, ScreenPtr screen, RRProviderPtr provider, int *fd) {
 +    ErrorF("maton-dri3: refused Open client=%d\n", client->index);
 +    return BadMatch;
@@ -501,7 +592,7 @@
 +        len = readlink(link, target, sizeof(target) - 1);
 +        target[len > 0 ? len : 0] = 0;
 +        if (fstat(fd, &st)) memset(&st, 0, sizeof(st));
-+        ErrorF("maton-dri3: refused PixmapFromBuffer %ux%u stride=%u depth=%u: not a DRI3 stand-in (fd -> '%s' mode=%#o dev=%#lx rdev=%#lx)\n",
++        ErrorF("maton-dri3: refused PixmapFromBuffer %ux%u stride=%u depth=%u: not a known AHB export (fd -> '%s' mode=%#o dev=%#lx rdev=%#lx)\n",
 +               w, h, stride, depth, target, (unsigned)st.st_mode, (unsigned long)st.st_dev, (unsigned long)st.st_rdev);
 +        return NULL;
 +    }
@@ -517,7 +608,18 @@
 +    }
 +    AHardwareBuffer_acquire(ahb);
 +    PixmapPtr p = import_ahb(screen, ahb, depth);
-+    if (!p) { ErrorF("maton-dri3: PixmapFromBuffer import failed\n"); AHardwareBuffer_release(ahb); }
++    if (!p) { ErrorF("maton-dri3: PixmapFromBuffer import failed\n"); AHardwareBuffer_release(ahb); return NULL; }
++    /* Shared with the client: our GL writes to it get fenced (publish_fences). */
++    struct xwl_pixmap *a = xwl_pixmap_get(p);
++    struct stat st;
++    int m = fcntl(fd, F_DUPFD_CLOEXEC, 0);
++    if (m < 0 || fstat(m, &st)) {
++        ErrorF("maton-dri3: PixmapFromBuffer keep fd failed errno=%d; GL writes to it are unsynchronised\n", errno);
++        if (m >= 0) MATON_CLOSE(m);
++        return p;
++    }
++    a->export_fd = m; a->dev = st.st_dev; a->ino = st.st_ino;
++    xorg_list_add(&a->export_link, &get_ahb(xwl_screen_get(screen))->exports);
 +    return p;
 +}
 +static int dri3_fd_from_pixmap(ScreenPtr screen, PixmapPtr pixmap, CARD16 *stride, CARD32 *size) {
@@ -534,19 +636,25 @@
 +        ErrorF("maton-dri3: refused BufferFromPixmap: stride %u too large for DRI3 1.0\n", d.stride);
 +        return -1;
 +    }
-+    if (a->standin < 0) {
++    if (a->export_fd < 0) {
 +        struct stat st;
-+        int m = memfd_create("maton-dri3-ahb", MFD_CLOEXEC);
-+        if (m < 0) { ErrorF("maton-dri3: memfd_create failed errno=%d\n", errno); return -1; }
-+        if (ftruncate(m, (off_t)(bytes * d.height)) || fstat(m, &st)) {
-+            ErrorF("maton-dri3: stand-in setup failed errno=%d\n", errno); MATON_CLOSE(m); return -1;
++        const native_handle_t *h = AHardwareBuffer_getNativeHandle(a->ahb);
++        if (!h || h->numFds < 1) {
++            ErrorF("maton-dri3: refused BufferFromPixmap %ux%u: AHB native handle has no fd (handle=%p fds=%d)\n",
++                   d.width, d.height, (void *) h, h ? h->numFds : -1);
++            return -1;
 +        }
-+        a->standin = m; a->dev = st.st_dev; a->ino = st.st_ino;
++        int m = fcntl(h->data[0], F_DUPFD_CLOEXEC, 0);
++        if (m < 0) { ErrorF("maton-dri3: dup native-handle fd failed errno=%d\n", errno); return -1; }
++        if (fstat(m, &st)) {
++            ErrorF("maton-dri3: fstat native-handle fd failed errno=%d\n", errno); MATON_CLOSE(m); return -1;
++        }
++        a->export_fd = m; a->dev = st.st_dev; a->ino = st.st_ino;
 +        xorg_list_add(&a->export_link, &get_ahb(xwl_screen_get(screen))->exports);
 +    }
 +    /* The DRI3 request handler sends and closes the returned fd. */
-+    int fd = fcntl(a->standin, F_DUPFD_CLOEXEC, 0);
-+    if (fd < 0) { ErrorF("maton-dri3: dup stand-in failed errno=%d\n", errno); return -1; }
++    int fd = fcntl(a->export_fd, F_DUPFD_CLOEXEC, 0);
++    if (fd < 0) { ErrorF("maton-dri3: dup export failed errno=%d\n", errno); return -1; }
 +    *stride = (CARD16)bytes;
 +    *size = (CARD32)(bytes * d.height);
 +    ErrorF("maton-dri3: BufferFromPixmap %ux%u depth=%u fd=%d stride=%u ino=%lu\n",
@@ -580,6 +688,18 @@
 +    s->screen->DestroyPixmap = destroy_pixmap;
 +    a->close_screen = s->screen->CloseScreen;
 +    s->screen->CloseScreen = close_screen;
++    if (!epoxy_has_egl_extension(s->egl_display, "EGL_ANDROID_native_fence_sync")) {
++        ErrorF("maton-ahb: EGL_ANDROID_native_fence_sync missing: cannot fence shared buffers\n");
++        return FALSE;
++    }
++    SyncScreenFuncsPtr funcs = miSyncGetScreenFuncs(s->screen);
++    if (!funcs || !dixRegisterPrivateKey(&fence_key, PRIVATE_SYNC_FENCE, sizeof(SyncFenceSetTriggeredFunc)) ||
++        !AddCallback(&FlushCallback, flush_callback, s->screen)) {
++        ErrorF("maton-ahb: sync/flush hooks unavailable: cannot fence shared buffers\n");
++        return FALSE;
++    }
++    a->create_fence = funcs->CreateFence;
++    funcs->CreateFence = create_fence;
 +    if (!dri3_screen_init(s->screen, &dri3_refuse_info)) {
 +        ErrorF("maton-dri3: dri3_screen_init failed\n");
 +        return FALSE;

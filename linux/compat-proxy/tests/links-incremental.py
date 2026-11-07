@@ -52,4 +52,4 @@ with tempfile.TemporaryDirectory(prefix='incremental-corrupt-',dir=out) as tmp:
     args=[str(out/'link-deny'),str(out/'links-test-loader'),'--android-filter',str(out/'links-incremental-test'),str(root),'fallback']
     result=subprocess.run(args,capture_output=True,text=True,timeout=15)
     print(result.stdout,end='');assert result.returncode==0,result.stderr
-    assert result.stderr.count('links tree walk')==4,result.stderr # two objects, root + src each
+    assert result.stderr.count('links tree walk')==2,result.stderr # one pass: root + src

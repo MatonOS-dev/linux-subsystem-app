@@ -1,0 +1,15 @@
+--- a/src/gallium/frontends/dri/kopper.c
++++ b/src/gallium/frontends/dri/kopper.c
+@@ -425,7 +425,11 @@
+                          struct pipe_resource *res)
+ {
+    struct dri_screen *screen = drawable->screen;
+-   if (!screen->loader.swrast || screen->has_dmabuf || drawable->is_window ||
++   /* The pixmap's contents need a readback whenever this drawable's texture is
++    * not the imported pixmap buffer: CPU devices skip the DRI3 import and a
++    * failed import leaves a plain resource. Screen-wide dma-buf support says
++    * nothing about this drawable. */
++   if (!screen->loader.swrast || drawable->image || drawable->is_window ||
+        drawable->info.bos.sType != VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR)
+       return;
+    drisw_update_tex_buffer(drawable, ctx, res);

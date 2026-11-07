@@ -10,7 +10,7 @@ VkBool32 mv_wsi_support(const struct mv_wsi_surface *s,VkQueueFlags flags,int ah
 VkResult mv_wsi_capabilities(const struct mv_wsi_surface *s,VkSurfaceCapabilitiesKHR *c) {
     if(!s->alive)return VK_ERROR_SURFACE_LOST_KHR;
     *c=(VkSurfaceCapabilitiesKHR){.minImageCount=2,.maxImageCount=4,
-        .currentExtent=s->extent,.minImageExtent={1,1},.maxImageExtent={4096,4096},
+        .currentExtent=s->extent,.minImageExtent={1,1},.maxImageExtent={MV_WSI_MAX_EXTENT,MV_WSI_MAX_EXTENT},
         .maxImageArrayLayers=1,.supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .currentTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -41,6 +41,11 @@ static void cleanup(struct mv_wsi_swapchain *c) {
     }
     mv_free(c->images);mv_free(c);
 }
+static int mv_wsi_32bit_class(VkFormat f) {
+    return (f>=VK_FORMAT_R8G8B8A8_UNORM&&f<=VK_FORMAT_A2B10G10R10_SINT_PACK32)||
+        (f>=VK_FORMAT_R16G16_UNORM&&f<=VK_FORMAT_R16G16_SFLOAT)||(f>=VK_FORMAT_R32_UINT&&f<=VK_FORMAT_R32_SFLOAT)||
+        f==VK_FORMAT_B10G11R11_UFLOAT_PACK32||f==VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
+}
 VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *info,const struct mv_wsi_ops *ops,struct mv_wsi_swapchain **out) {
     *out=0;
     VkSurfaceCapabilitiesKHR caps;VkResult r=mv_wsi_capabilities(s,&caps);if(r)return r;
@@ -54,18 +59,19 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     int mutable_format=(info->flags&VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR)!=0;
     if(mutable_format && (!views || !views->viewFormatCount))return VK_ERROR_FORMAT_NOT_SUPPORTED;
     if(views) {
-        VkFormat srgb=info->imageFormat==VK_FORMAT_B8G8R8A8_UNORM?VK_FORMAT_B8G8R8A8_SRGB:VK_FORMAT_R8G8B8A8_SRGB;
+        /* Any view format of the swapchain format's 32-bit compatibility class. */
         for(uint32_t j=0;j<views->viewFormatCount;j++)
-            if(views->pViewFormats[j]!=info->imageFormat && views->pViewFormats[j]!=srgb)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+            if(views->pViewFormats[j]!=info->imageFormat && !mv_wsi_32bit_class(views->pViewFormats[j]))return VK_ERROR_FORMAT_NOT_SUPPORTED;
         if(!mutable_format && views->viewFormatCount>1)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
     if(info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR || (info->flags&~(VkSwapchainCreateFlagsKHR)VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ||
        info->minImageCount<2 || info->minImageCount>4 || info->imageArrayLayers!=1 ||
        (info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM && info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM) || info->imageColorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ||
-       !info->imageUsage || (info->imageUsage&~(VkImageUsageFlags)MV_WSI_USAGE) || info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE ||
+       !info->imageUsage || (info->imageUsage&~(VkImageUsageFlags)MV_WSI_USAGE) ||
+       (info->imageSharingMode==VK_SHARING_MODE_CONCURRENT ? (info->queueFamilyIndexCount<2||!info->pQueueFamilyIndices) : info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE) ||
        info->preTransform!=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || !(info->compositeAlpha&(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR|VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR|VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)) ||
        (info->presentMode!=VK_PRESENT_MODE_FIFO_KHR&&info->presentMode!=VK_PRESENT_MODE_MAILBOX_KHR))return VK_ERROR_FORMAT_NOT_SUPPORTED;
-    if(!s->extent.width || !s->extent.height || s->extent.width>4096 || s->extent.height>4096 ||
+    if(!s->extent.width || !s->extent.height || s->extent.width>MV_WSI_MAX_EXTENT || s->extent.height>MV_WSI_MAX_EXTENT ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
     if(!ops || !ops->allocate || !ops->release || !ops->destroy ||
        !ops->create_buffer || !ops->destroy_buffer || !ops->present)

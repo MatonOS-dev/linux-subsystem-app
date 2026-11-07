@@ -338,7 +338,7 @@ static int arch_filter_install(const struct arch_ip_range *libc_ranges, size_t l
         }
     }
     ADD(BPF_LD|BPF_W|BPF_ABS,0,0,offsetof(struct seccomp_data,nr));
-#if defined(__i386__) && defined(MATON_GPU_BRIDGE)
+#ifdef MATON_GPU_BRIDGE
     /* Native bionic clone passed the resident range check above. Payload
      * threads need a real bionic pthread before their Linux continuation. */
     if(!peer && state_gpu_bridge) {

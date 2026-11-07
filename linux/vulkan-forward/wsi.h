@@ -2,6 +2,8 @@
 #define MV_WSI_H
 /* Swapchain images are optimal-tiled AHB imports: renderable, sampleable
  * and copyable, as compositors and GL-on-Vulkan layers expect. */
+/* One limit for surface capabilities and swapchain creation. */
+#define MV_WSI_MAX_EXTENT 4096u
 #define MV_WSI_USAGE (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|\
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 #include <vulkan/vulkan_core.h>

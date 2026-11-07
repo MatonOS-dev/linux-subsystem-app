@@ -162,6 +162,11 @@ MARKER='WLR_XWAYLAND_SOCKET_DIR'
 if ! grep -q "$MARKER" "$SRC/wlroots-0.20.2/xwayland/sockets.c" 2>/dev/null; then
   (cd "$SRC/wlroots-0.20.2" && patch -p1 --forward < "$PATCH") || die "wlroots patch failed"
 fi
+# ICCCM 4.1.5: acknowledge stacking/border-only configure requests.
+PATCH=$ROOT/wlroots-xwm-configure-ack.patch
+if ! grep -q MATONOS_CONFIGURE_ACK "$SRC/wlroots-0.20.2/xwayland/xwm.c" 2>/dev/null; then
+  (cd "$SRC/wlroots-0.20.2" && patch -p1 --forward < "$PATCH") || die "wlroots configure-ack patch failed"
+fi
 build_cross pixman pixman-0.46.0 \
   '-Dtests=disabled -Ddemos=disabled -Dgtk=disabled -Dlibpng=disabled -Dmmx=disabled -Dsse2=enabled -Dssse3=enabled'
 mkdir -p "$BUILD/xkb-config"

@@ -61,12 +61,8 @@ static inline int mv_socketpair(int pair[2]) {
     unsigned args[4]={1,5,0,(unsigned)(uintptr_t)pair};
     return (int)mv_sys(102,8 /* SYS_SOCKETPAIR */,(long)args,0,0,0,0);
 }
-/* Sized memfd (MFD_CLOEXEC): fd, or negative errno. */
-static inline int mv_memfd(const char *name,uint64_t size) {
-    long fd=mv_sys(356,(long)name,1,0,0,0,0);if(fd<0)return (int)fd;
-    long r=mv_sys(194 /* ftruncate64 */,fd,(long)(uint32_t)size,(long)(uint32_t)(size>>32),0,0,0);if(r<0){mv_close(fd);return (int)r;}
-    return (int)fd;
-}
+/* fcntl64(F_DUPFD_CLOEXEC): fd, or negative errno. */
+static inline int mv_dup_cloexec(int fd) { return (int)mv_sys(221,fd,1030,0,0,0,0); }
 static inline uint64_t mv_monotonic_ns(void) {
     struct { long long tv_sec, tv_nsec; } ts; /* __kernel_timespec */
     return mv_sys(403 /* clock_gettime64 */,1,(long)&ts,0,0,0,0)<0?0:

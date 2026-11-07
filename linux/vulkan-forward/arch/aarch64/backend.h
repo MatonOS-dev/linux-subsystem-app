@@ -12,7 +12,7 @@ static inline long mv_read(long f,void *p,size_t n) {(void)f;(void)p;(void)n;ret
 static inline void mv_close(long f) {(void)f;}
 static inline uint64_t mv_monotonic_ns(void) { return 0; }
 static inline int mv_socketpair(int p[2]) {(void)p;return -1;}
-static inline int mv_memfd(const char *n,unsigned long long s) {(void)n;(void)s;return -38;}
+static inline int mv_dup_cloexec(int f) {(void)f;return -38;}
 static inline void *mv_map(size_t n) {(void)n; return 0;}
 static inline void mv_unmap(void *p,size_t n) {(void)p;(void)n;}
 static inline void mv_write(const char *p,size_t n) {(void)p;(void)n;}

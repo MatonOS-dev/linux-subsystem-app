@@ -139,9 +139,18 @@ static VkResult allocate_memory(VkDevice d,const VkMemoryAllocateInfo *a,const V
 static VkResult bind_image(VkDevice d,VkImage i,VkDeviceMemory m,VkDeviceSize o){(void)d;(void)i;(void)m;(void)o;return VK_SUCCESS;}
 static void destroy_image(VkDevice d,VkImage i,const VkAllocationCallbacks *a){(void)d;(void)i;(void)a;}
 static void free_memory(VkDevice d,VkDeviceMemory m,const VkAllocationCallbacks *a){(void)d;(void)m;(void)a;}
+/* Present sync objects: inert handles, fences always signaled. */
+static VkResult sync_create(VkDevice d,const void *i,const VkAllocationCallbacks *a,uint64_t *out){(void)d;(void)i;(void)a;static uint64_t n=1000;*out=++n;return VK_SUCCESS;}
+static void sync_destroy(VkDevice d,uint64_t h,const VkAllocationCallbacks *a){(void)d;(void)h;(void)a;}
+static VkResult sync_wait(VkDevice d,uint32_t n,const VkFence *f,VkBool32 all,uint64_t t){(void)d;(void)n;(void)f;(void)all;(void)t;return VK_SUCCESS;}
+static VkResult sync_reset(VkDevice d,uint32_t n,const VkFence *f){(void)d;(void)n;(void)f;return VK_SUCCESS;}
+static VkResult sync_fd(VkDevice d,const VkSemaphoreGetFdInfoKHR *i,int *fd){(void)d;(void)i;*fd=-1;return VK_SUCCESS;}
+static VkResult import_sem(VkDevice d,const VkImportSemaphoreFdInfoKHR *i){(void)d;assert(i->fd==-1&&(i->flags&VK_SEMAPHORE_IMPORT_TEMPORARY_BIT));return VK_SUCCESS;}
+static VkResult import_fence(VkDevice d,const VkImportFenceFdInfoKHR *i){(void)d;assert(i->fd==-1&&(i->flags&VK_FENCE_IMPORT_TEMPORARY_BIT));return VK_SUCCESS;}
 static PFN_vkVoidFunction gdpa(VkDevice d,const char *name){(void)d;
 #define SYM(n,v) if(!strcmp(name,n))return (PFN_vkVoidFunction)(v)
     SYM("vkCreateImage",create_image);SYM("vkAllocateMemory",allocate_memory);SYM("vkBindImageMemory",bind_image);
+    SYM("vkCreateSemaphore",sync_create);SYM("vkDestroySemaphore",sync_destroy);SYM("vkGetSemaphoreFdKHR",sync_fd);SYM("vkCreateFence",sync_create);SYM("vkDestroyFence",sync_destroy);SYM("vkWaitForFences",sync_wait);SYM("vkResetFences",sync_reset);SYM("vkImportSemaphoreFdKHR",import_sem);SYM("vkImportFenceFdKHR",import_fence);
     SYM("vkDestroyImage",destroy_image);SYM("vkFreeMemory",free_memory);SYM("vkGetAndroidHardwareBufferPropertiesANDROID",ahb_properties);
 #undef SYM
     return 0;

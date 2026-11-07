@@ -1,0 +1,14 @@
+--- a/xwayland/xwm.c
++++ b/xwayland/xwm.c
+@@ -1274,6 +1274,11 @@
+ 	uint16_t geo_mask = XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+ 		XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
+ 	if ((mask & geo_mask) == 0) {
++		/* MATONOS_CONFIGURE_ACK: a stacking/border-only request changes
++		 * nothing here; ICCCM 4.1.5 still requires a synthetic
++		 * ConfigureNotify, which a same-geometry configure sends. */
++		wlr_xwayland_surface_configure(surface, surface->x, surface->y,
++			surface->width, surface->height);
+ 		return;
+ 	}
+ 

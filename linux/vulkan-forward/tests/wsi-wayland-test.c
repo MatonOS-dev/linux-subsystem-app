@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -6,6 +7,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include "../wsi_wayland.c"
+/* The ICD runtime supplies raw syscalls; the host test uses libc. */
+long syscall(long,...);
+long mv_sys(long n,long a,long b,long c,long d,long e,long f){long r=syscall(n,a,b,c,d,e,f);return r<0?-errno:r;}
 
 struct wl_proxy { const struct wl_interface *interface; uint32_t version; int dead; };
 struct wl_display { int unused; };
@@ -47,7 +51,7 @@ static struct wl_proxy *fake_marshal(struct wl_proxy *p,uint32_t opcode,
     if(p==&sync_surface_proxy&&opcode==1){int fd=va_arg(ap,int);assert(fd==123&&!iface);va_end(ap);return 0;}
     if(p==&surface_proxy&&opcode==1){struct wl_proxy *buffer=va_arg(ap,struct wl_proxy *);int32_t x=va_arg(ap,int32_t),y=va_arg(ap,int32_t);assert(buffer==&buffer_proxy&&!x&&!y&&!iface);va_end(ap);return 0;}
     if(p==&surface_proxy&&opcode==3){void *id=va_arg(ap,void *);assert(!id&&iface==&exported_callback&&version==1);callback_proxy=(struct wl_proxy){iface,version,0};va_end(ap);return &callback_proxy;}
-    if(p==&surface_proxy&&opcode==9){int32_t x=va_arg(ap,int32_t),y=va_arg(ap,int32_t),w=va_arg(ap,int32_t),h=va_arg(ap,int32_t);assert(!x&&!y&&!w&&!h&&!iface);va_end(ap);return 0;}
+    if(p==&surface_proxy&&opcode==9){int32_t x=va_arg(ap,int32_t),y=va_arg(ap,int32_t),w=va_arg(ap,int32_t),h=va_arg(ap,int32_t);assert(!x&&!y&&w==INT32_MAX&&h==INT32_MAX&&!iface);va_end(ap);return 0;}
     if(p==&surface_proxy&&opcode==6){assert(!iface);va_end(ap);return 0;}
     if (p==&dmabuf_proxy && opcode==1) {
         void *id=va_arg(ap,void *);assert(!id && iface==&params_interface);

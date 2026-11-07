@@ -5,6 +5,7 @@
 #include "links.h"
 #include <sys/syscall.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdint.h>
@@ -28,6 +29,18 @@ static int component(const char *p){
 }
 int links_hidden(const char *p){return component(p);}
 static int catpath(char *out,const char *a,const char *b){size_t n=p_len(a),m=p_len(b);if(n+m+2>PATH_MAX)return 0;p_copy(out,a,n);out[n++]='/';p_copy(out+n,b,m+1);return 1;}
+/* Metadata that exists but cannot describe a valid state. Only this (and a
+ * missing count) justifies a global recount; I/O errors propagate. */
+#define LINKS_CORRUPT (-EBADMSG)
+static void links_loud(const char *what,long a,long b){proxy_log(what,a,b);}
+static long read_full(long fd,void *buf,size_t size){
+ size_t done=0;while(done<size){long r=RAW(PROXY_SC_read,fd,(char *)buf+done,size-done,0,0,0);if(r==-EINTR)continue;if(r<0)return r;if(!r)break;done+=(size_t)r;}
+ return (long)done;
+}
+static long write_full(long fd,const void *buf,size_t size){
+ size_t done=0;while(done<size){long r=RAW(PROXY_SC_write,fd,(const char *)buf+done,size-done,0,0,0);if(r==-EINTR)continue;if(r<0)return r;if(!r)return -EIO;done+=(size_t)r;}
+ return 0;
+}
 static int parent(char *out,const char *path){size_t n=p_len(path);if(n>=PATH_MAX)return 0;p_copy(out,path,n+1);while(n>1 && out[n-1]!='/')n--;if(n>1)n--;out[n]=0;return 1;}
 /* The process credentials do not change in this compatibility layer. Cache
  * the kernel euid; marker ownership and filesystem state are still checked
@@ -87,15 +100,24 @@ static int index_path(char *out,const char *store,const struct proxy_stat *st){
 /* With the store lock held, the root and its ownership have already been
  * checked. Reuse that store during replay instead of re-walking the marker
  * ancestry for every before/after reference in the same transaction. */
+/* Index lookup: 1 = object id in id[35]; 0 = proven unindexed (an ordinary
+ * 01000 file); negative = unknown (I/O error or a malformed entry). */
+static long index_lookup(const char *store,const struct proxy_stat *identity,char *id){
+ char *entry=vfs_alloc(PATH_MAX);if(!entry)return -ENOMEM;if(!index_path(entry,store,identity)){vfs_free(entry);return -ENAMETOOLONG;}
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);vfs_free(entry);
+ if(fd==-ENOENT){return 0;}if(fd<0)return fd;
+ char buf[36];long n=read_full(fd,buf,sizeof(buf));RAW(PROXY_SC_close,fd,0,0,0,0,0);if(n<0)return n;
+ int valid=n==35 && buf[0]=='i' && buf[1]=='-' && !buf[34];
+ for(unsigned i=2;valid && i<34;i++)if(!((buf[i]>='0' && buf[i]<='9') || (buf[i]>='a' && buf[i]<='f')))valid=0;
+ if(!valid)return LINKS_CORRUPT;
+ p_copy(id,buf,35);return 1;
+}
 static int target_index(const char *store,const struct proxy_stat *identity,char *out){
- struct proxy_stat st;char id[36],*entry=vfs_alloc(PATH_MAX);if(!entry)return 0;if(!index_path(entry,store,identity)){vfs_free(entry);return 0;}
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0){vfs_free(entry);return 0;}
- long n=RAW(PROXY_SC_read,fd,id,sizeof(id),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
- int valid=n==35 && id[0]=='i' && id[1]=='-' && !id[34];
- for(unsigned i=2;valid && i<34;i++)if(!((id[i]>='0' && id[i]<='9') || (id[i]>='a' && id[i]<='f')))valid=0;
- int found=valid && catpath(out,store,id) && !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);
+ struct proxy_stat st;char id[35];long r=index_lookup(store,identity,id);
+ if(r<0)links_loud("links index lookup failed",(long)identity->st_ino,r);
+ int found=r==1 && catpath(out,store,id) && !arch_stat_at(AT_FDCWD,out,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode);
  if(found)remember_object(out,&st);
- vfs_free(entry);return found;
+ return found;
 }
 static int target_locked(const char *store,const char *name,char *out){
  struct proxy_stat st;
@@ -109,40 +131,45 @@ int links_target(const char *name,char *out){
 }
 static long store_lock(const char *root,char *store){if(!catpath(store,root,".v3-inodes"))return -ENAMETOOLONG;long r=RAW(PROXY_SC_mkdirat,AT_FDCWD,store,0700,0,0,0);if(r && r!=-EEXIST)return r;struct proxy_stat st;if(arch_stat_at(AT_FDCWD,store,&st,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode) || st.st_uid!=links_euid() || (st.st_mode&0077))return -EPERM;char file[PATH_MAX];if(!catpath(file,store,"lock"))return -ENAMETOOLONG;long fd=RAW(PROXY_SC_openat,AT_FDCWD,file,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;do{r=RAW(PROXY_SC_flock,fd,LOCK_EX,0,0,0,0);}while(r==-EINTR);if(r){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}struct proxy_stat own,named;if(arch_stat_fd(fd,&own) || arch_stat_at(AT_FDCWD,file,&named,AT_SYMLINK_NOFOLLOW) || own.st_ino!=named.st_ino || own.st_dev!=named.st_dev){RAW(PROXY_SC_close,fd,0,0,0,0,0);return store_lock(root,store);}return fd;}
 static void unlock(long fd){RAW(PROXY_SC_flock,fd,LOCK_UN,0,0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);}
-struct count_names_scratch { char buf[4096],path[PATH_MAX],target[PATH_MAX]; };
-static long count_names(const char *,const char *,dev_t,uint64_t *);
-static long count_names_impl(const char *dir,const char *object,dev_t dev,uint64_t *count,struct count_names_scratch *scratch){
-#ifdef COMPAT_LINKS_TEST
- proxy_log("links tree walk",0,0);
-#endif
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,dir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;
- char *buf=scratch->buf,*path=scratch->path,*target=scratch->target;long r=0,n;
- while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(scratch->buf),0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){r=-EIO;goto end;}const char *name=(void *)(d+19);off+=len;if(p_equal(name,".") || p_equal(name,"..") || p_equal(name,".v3-inodes"))continue;if(!catpath(path,dir,name)){r=-ENAMETOOLONG;goto end;}struct proxy_stat st;r=arch_stat_at(AT_FDCWD,path,&st,AT_SYMLINK_NOFOLLOW);if(r==-ENOENT){r=0;continue;}if(r)goto end;if(is_placeholder(&st) && links_target(path,target) && p_equal(target,object)){if(*count==UINT64_MAX){r=-EOVERFLOW;goto end;}(*count)++;}else if(S_ISDIR(st.st_mode) && st.st_dev==dev){r=count_names(path,object,dev,count);if(r)goto end;}}}
- if(n<0)r=n;
-end:RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;
+/* Counts are published by rename under the store lock (one staging name),
+ * so lock-free readers never see a truncated file. */
+static long write_count(const char *object,uint64_t n){
+ size_t k=p_len(object);if(k+7>=PATH_MAX)return -ENAMETOOLONG;
+ char *meta=vfs_alloc(PATH_MAX*3);if(!meta)return -ENOMEM;char *store=meta+PATH_MAX,*temp=store+PATH_MAX;
+ p_copy(meta,object,k);p_copy(meta+k,".count",7);
+ long r=-ENAMETOOLONG;
+ if(parent(store,object) && catpath(temp,store,"count-new")){
+  long fd=RAW(PROXY_SC_openat,AT_FDCWD,temp,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600,0,0);r=fd;
+  if(fd>=0){r=write_full(fd,&n,sizeof(n));RAW(PROXY_SC_close,fd,0,0,0,0,0);
+   if(!r)r=RAW(PROXY_SC_renameat2,AT_FDCWD,temp,AT_FDCWD,meta,0,0);
+   if(r)RAW(PROXY_SC_unlinkat,AT_FDCWD,temp,0,0,0,0);}
+ }
+ if(r)links_loud("links count publish failed",(long)n,r);
+ vfs_free(meta);return r;
 }
-static long count_names(const char *dir,const char *object,dev_t dev,uint64_t *count){
- struct count_names_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;
- long result=count_names_impl(dir,object,dev,count,scratch);vfs_free(scratch);return result;
-}
-static long write_count(const char *object,uint64_t n){char meta[PATH_MAX];size_t k=p_len(object);if(k+7>=PATH_MAX)return -ENAMETOOLONG;p_copy(meta,object,k);p_copy(meta+k,".count",7);long fd=RAW(PROXY_SC_openat,AT_FDCWD,meta,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;long r=RAW(PROXY_SC_write,fd,&n,sizeof(n),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);return r==sizeof(n)?0:r<0?r:-EIO;}
+/* 0 with *n set; -ENOENT missing; LINKS_CORRUPT malformed; else an I/O error. */
 static long checked_count(const char *object,uint64_t *n){
  char meta[PATH_MAX];size_t k=p_len(object);if(k+7>=PATH_MAX)return -ENAMETOOLONG;
  p_copy(meta,object,k);p_copy(meta+k,".count",7);
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,meta,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;
  struct proxy_stat st;long r=arch_stat_fd(fd,&st);
- if(!r && (!S_ISREG(st.st_mode) || st.st_size!=sizeof(*n)))r=-EIO;
- if(!r){r=RAW(PROXY_SC_read,fd,n,sizeof(*n),0,0,0);r=r==sizeof(*n)?0:r<0?r:-EIO;}
+ if(!r && (!S_ISREG(st.st_mode) || st.st_size!=sizeof(*n)))r=LINKS_CORRUPT;
+ if(!r){r=read_full(fd,n,sizeof(*n));r=r==sizeof(*n)?0:r<0?r:LINKS_CORRUPT;}
  RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;
 }
-static uint64_t read_count(const char *object){uint64_t n=0;checked_count(object,&n);return n;}
+/* For st_nlink: an unreadable count reports 1 (never "deleted") and is logged. */
+static uint64_t read_count(const char *object){
+ uint64_t n=0;long r=checked_count(object,&n);
+ if(r || !n){links_loud("links count unreadable; reporting nlink 1",r,(long)n);return 1;}
+ return n;
+}
 /* Publish complete intents atomically. A killed preparer leaves only pending,
  * which cannot describe a namespace change and is safe to overwrite. */
 static long journal_write_impl(const char *store,const char *name,const void *data,size_t size,char *scratch){
  char *pending=scratch,*path=scratch+PATH_MAX;if(!catpath(pending,store,"pending") || !catpath(path,store,name))return -ENAMETOOLONG;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,pending,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;
- size_t done=0;long r=0;while(done<size){r=RAW(PROXY_SC_write,fd,(const char *)data+done,size-done,0,0,0);if(r==-EINTR)continue;if(r<=0){if(!r)r=-EIO;break;}done+=r;}
- RAW(PROXY_SC_close,fd,0,0,0,0,0);if(done!=size)return r;
+ long r=write_full(fd,data,size);
+ RAW(PROXY_SC_close,fd,0,0,0,0,0);if(r)return r;
  return RAW(PROXY_SC_renameat2,AT_FDCWD,pending,AT_FDCWD,path,0,0);
 }
 static long journal_write(const char *store,const char *name,const void *data,size_t size){char *scratch=vfs_alloc(PATH_MAX*2);if(!scratch)return -ENOMEM;long r=journal_write_impl(store,name,data,size,scratch);vfs_free(scratch);return r;}
@@ -171,6 +198,8 @@ static long placeholder(const char *store,const char *name,const char *object){c
 static long recover(const char *,const char *);
 static long ensure_count(const char *root,const char *store,const char *object){
  uint64_t n;long r=checked_count(object,&n);if(!r && n)return 0;
+ if(r && r!=-ENOENT && r!=LINKS_CORRUPT){links_loud("links count read failed",0,r);return r;}
+ links_loud("links count missing or invalid; full recount",r,0);
  char marker[PATH_MAX];if(!catpath(marker,store,"dirty"))return -ENAMETOOLONG;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,marker,O_WRONLY|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600,0,0);if(fd<0)return fd;RAW(PROXY_SC_close,fd,0,0,0,0,0);
  return recover(root,store);
@@ -187,20 +216,21 @@ static long finish_intent_impl(const char *store,struct finish_intent_scratch *s
  char *path=scratch->path;if(!catpath(path,store,"intent"))return -ENAMETOOLONG;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd==-ENOENT)return 0;if(fd<0)return fd;
  struct intent *j=vfs_alloc(sizeof(*j));if(!j){RAW(PROXY_SC_close,fd,0,0,0,0,0);return -ENOMEM;}
- long r=RAW(PROXY_SC_read,fd,j,sizeof(*j),0,0,0);RAW(PROXY_SC_close,fd,0,0,0,0,0);
- if(r!=sizeof(*j) || j->magic!=0x76336c696e6b0002ULL){vfs_free(j);return -EIO;}
+ long r=read_full(fd,j,sizeof(*j));RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ if(r<0){vfs_free(j);links_loud("links intent read failed",0,r);return r;}
+ if(r!=sizeof(*j) || j->magic!=0x76336c696e6b0002ULL){vfs_free(j);links_loud("links intent malformed",r,0);return LINKS_CORRUPT;}
 
 #ifdef COMPAT_LINKS_TEST
  char *stop=scratch->stop;struct proxy_stat stopst;
  if(catpath(stop,store,"stop-intent") && !arch_stat_at(AT_FDCWD,stop,&stopst,0))RAW(PROXY_SC_kill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),SIGSTOP,0,0,0,0);
 #endif
  r=0;for(int i=0;i<2 && !r;i++){if(!j->object[i][0])continue;
-  if(!terminated(j->object[i]) || !terminated(j->name[0]) || !terminated(j->name[1])){r=-EIO;break;}
+  if(!terminated(j->object[i]) || !terminated(j->name[0]) || !terminated(j->name[1])){r=LINKS_CORRUPT;break;}
   size_t prefix=p_len(store),length=p_len(j->object[i]);int valid=length>prefix+3;
   for(size_t k=0;valid && k<prefix;k++)if(j->object[i][k]!=store[k])valid=0;
   if(valid && (j->object[i][prefix]!='/' || j->object[i][prefix+1]!='i' || j->object[i][prefix+2]!='-'))valid=0;
   for(size_t k=prefix+3;valid && k<length;k++)if(j->object[i][k]=='/')valid=0;
-  if(!valid || j->before[i]>2){r=-EIO;break;}
+  if(!valid || j->before[i]>2){r=LINKS_CORRUPT;break;}
   uint64_t now=present(store,j->name[0],j->object[i])+(!p_equal(j->name[0],j->name[1])?present(store,j->name[1],j->object[i]):0);
   if(j->before[i]>j->count[i] || j->count[i]-j->before[i]>UINT64_MAX-now){r=-EOVERFLOW;break;}
   uint64_t count=j->count[i]-j->before[i]+now;
@@ -213,7 +243,8 @@ static long finish_intent_impl(const char *store,struct finish_intent_scratch *s
   int live=0;for(int k=0;k<2;k++){struct proxy_stat st;if(j->name[k][0] && !arch_stat_at(AT_FDCWD,j->name[k],&st,AT_SYMLINK_NOFOLLOW) && st.st_dev==j->placeholder[i].st_dev && st.st_ino==j->placeholder[i].st_ino)live=1;}
   char *entry=scratch->entry;if(!live && index_path(entry,store,&j->placeholder[i])){long e=RAW(PROXY_SC_unlinkat,AT_FDCWD,entry,0,0,0,0);if(e && e!=-ENOENT)r=e;}
  }
- vfs_free(j);if(!r)r=RAW(PROXY_SC_unlinkat,AT_FDCWD,path,0,0,0,0);return r;
+ vfs_free(j);if(r==LINKS_CORRUPT)links_loud("links intent invalid",0,r);
+ if(!r){r=RAW(PROXY_SC_unlinkat,AT_FDCWD,path,0,0,0,0);}return r;
 }
 static long finish_intent(const char *store){struct finish_intent_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;long r=finish_intent_impl(store,scratch);vfs_free(scratch);return r;}
 static long begin_intent(const char *root,const char *store,const char *p,const char *q,const char *extra){
@@ -229,36 +260,103 @@ static long begin_intent(const char *root,const char *store,const char *p,const 
  if(!r && (j->object[0][0] || j->object[1][0]))r=journal_write(store,"intent",j,sizeof(*j));
  vfs_free(j);return r;
 }
-struct recover_scratch { char marker[PATH_MAX], journal[PATH_MAX], data[PATH_MAX*2], buf[4096], meta[PATH_MAX], backing[PATH_MAX], object[PATH_MAX]; };
-static long recover_impl(const char *root,const char *store,struct recover_scratch *scratch){
- char *marker=scratch->marker,*journal=scratch->journal,*data=scratch->data,*buf=scratch->buf,*meta=scratch->meta,*backing=scratch->backing,*object=scratch->object;
- discard_new(store);
- long moving=finish_intent(store);if(moving && moving!=-EIO)return moving;
- struct proxy_stat markerstat;if(!catpath(marker,store,"dirty"))return -ENAMETOOLONG;int changed=moving==-EIO || !arch_stat_at(AT_FDCWD,marker,&markerstat,AT_SYMLINK_NOFOLLOW);
- /* Exchange leaves either the original source plus an unpublished placeholder,
-  * or the published source plus its data object. Never move the source in replay. */
- if(!catpath(journal,store,"conversion"))return -ENAMETOOLONG;
- long j=RAW(PROXY_SC_openat,AT_FDCWD,journal,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
- if(j>=0){long n=RAW(PROXY_SC_read,j,data,sizeof(scratch->data)-1,0,0,0);RAW(PROXY_SC_close,j,0,0,0,0,0);
-  if(n<=0)return -EIO;
-  data[n]=0;size_t k=p_len(data);
-  if(k+1>=(size_t)n)return -EIO;
-  struct proxy_stat st;
-  if(!arch_stat_at(AT_FDCWD,data+k+1,&st,AT_SYMLINK_NOFOLLOW)){
-   if(is_placeholder(&st)){char entry[PATH_MAX];if(index_path(entry,store,&st))RAW(PROXY_SC_unlinkat,AT_FDCWD,entry,0,0,0,0);RAW(PROXY_SC_unlinkat,AT_FDCWD,data+k+1,0,0,0,0);}
-   else {long r=write_count(data+k+1,1);if(r)return r;}
-  }
-  RAW(PROXY_SC_unlinkat,AT_FDCWD,journal,0,0,0,0);
- }
-
- if(catpath(journal,store,"pending"))RAW(PROXY_SC_unlinkat,AT_FDCWD,journal,0,0,0,0);
- if(!changed)return 0;
- struct proxy_stat st;long r=arch_stat_at(AT_FDCWD,root,&st,0);if(r)return r;
- long fd=RAW(PROXY_SC_openat,AT_FDCWD,store,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;long n;
- while((n=RAW(PROXY_SC_getdents64,fd,buf,sizeof(scratch->buf),0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){r=-EIO;goto end;}char *name=(void *)(d+19);off+=len;if(name[0]!='i' || name[1]!='-')continue;size_t k=p_len(name);if(k>6 && p_equal(name+k-6,".count")){struct proxy_stat bst;if(!catpath(meta,store,name)){r=-ENAMETOOLONG;goto end;}name[k-6]=0;int fits=catpath(backing,store,name);name[k-6]='.';if(!fits){r=-ENAMETOOLONG;goto end;}if(arch_stat_at(AT_FDCWD,backing,&bst,AT_SYMLINK_NOFOLLOW)==-ENOENT)RAW(PROXY_SC_unlinkat,AT_FDCWD,meta,0,0,0,0);continue;}if(!catpath(object,store,name)){r=-ENAMETOOLONG;goto end;}size_t olen=p_len(object);if(olen+7>=PATH_MAX){r=-ENAMETOOLONG;goto end;}p_copy(meta,object,olen);p_copy(meta+olen,".count",7);struct proxy_stat mst;if(!changed && !arch_stat_at(AT_FDCWD,meta,&mst,AT_SYMLINK_NOFOLLOW))continue;
- uint64_t count=0;r=count_names(root,object,st.st_dev,&count);if(r)goto end;if(count)r=write_count(object,count);else{r=RAW(PROXY_SC_unlinkat,AT_FDCWD,object,0,0,0,0);if(r==-ENOENT)r=0;if(p_len(object)+7<PATH_MAX){p_copy(meta,object,p_len(object));p_copy(meta+p_len(object),".count",7);RAW(PROXY_SC_unlinkat,AT_FDCWD,meta,0,0,0,0);}}if(r)goto end;}}
+/* ---- one-pass recount: enumerate objects once, walk the tree once ---- */
+struct recount_entry { char id[40]; uint64_t count; };
+struct recount_table { struct recount_entry *e; size_t n, cap; uint64_t uncertain; };
+static long table_grow(struct recount_table *t){
+ size_t cap=t->cap?t->cap*2:256;if(cap<t->cap || cap>((size_t)-1)/sizeof(*t->e))return -ENOMEM;
+ long m=RAW(PROXY_SC_mmap,0,cap*sizeof(*t->e),PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)m>=(unsigned long)-4095)return m;
+ struct recount_entry *ne=(void *)m;for(size_t i=0;i<t->n;i++)ne[i]=t->e[i];
+ if(t->e){RAW(PROXY_SC_munmap,t->e,t->cap*sizeof(*t->e),0,0,0,0);}t->e=ne;t->cap=cap;return 0;
+}
+static int id_cmp(const char *a,const char *b){for(int i=0;i<35;i++){if(a[i]!=b[i])return (unsigned char)a[i]<(unsigned char)b[i]?-1:1;}return 0;}
+static struct recount_entry *table_find(struct recount_table *t,const char *id){
+ size_t lo=0,hi=t->n;while(lo<hi){size_t mid=lo+(hi-lo)/2;int c=id_cmp(t->e[mid].id,id);if(!c)return &t->e[mid];if(c<0)lo=mid+1;else hi=mid;}return NULL;
+}
+static int object_name(const char *name){
+ if(name[0]!='i' || name[1]!='-'){return 0;}for(int i=2;i<34;i++)if(!((name[i]>='0' && name[i]<='9') || (name[i]>='a' && name[i]<='f')))return 0;return !name[34];
+}
+struct walk_scratch { char buf[4096], path[PATH_MAX], id[35]; };
+static long recount_walk(const char *dir,const char *store,dev_t dev,struct recount_table *t){
+#ifdef COMPAT_LINKS_TEST
+ proxy_log("links tree walk",0,0);
+#endif
+ struct walk_scratch *s=vfs_alloc(sizeof(*s));if(!s)return -ENOMEM;
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,dir,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0){vfs_free(s);return fd;}
+ long r=0,n;
+ while((n=RAW(PROXY_SC_getdents64,fd,s->buf,sizeof(s->buf),0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(s->buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){r=-EIO;goto end;}const char *name=(void *)(d+19);off+=len;
+  if(p_equal(name,".") || p_equal(name,"..") || p_equal(name,".v3-inodes"))continue;
+  if(!catpath(s->path,dir,name)){r=-ENAMETOOLONG;goto end;}
+  struct proxy_stat st;r=arch_stat_at(AT_FDCWD,s->path,&st,AT_SYMLINK_NOFOLLOW);if(r==-ENOENT){r=0;continue;}if(r)goto end;
+  if(is_placeholder(&st)){long k=index_lookup(store,&st,s->id);
+   if(k==1){struct recount_entry *e=table_find(t,s->id);if(e){if(e->count==UINT64_MAX){r=-EOVERFLOW;goto end;}e->count++;}}
+   else if(k<0){t->uncertain++;links_loud("links recount: placeholder index unreadable",(long)st.st_ino,k);}}
+  else if(S_ISDIR(st.st_mode) && st.st_dev==dev){r=recount_walk(s->path,store,dev,t);if(r)goto end;}}}
  if(n<0)r=n;
-end:RAW(PROXY_SC_close,fd,0,0,0,0,0);if(!r){RAW(PROXY_SC_unlinkat,AT_FDCWD,marker,0,0,0,0);if(catpath(journal,store,"intent"))RAW(PROXY_SC_unlinkat,AT_FDCWD,journal,0,0,0,0);}return r;
+end:RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(s);return r;
+}
+struct recount_scratch { char buf[4096], object[PATH_MAX], meta[PATH_MAX]; };
+static long recount_impl(const char *root,const char *store,struct recount_table *t,struct recount_scratch *s){
+ struct proxy_stat rst;long r=arch_stat_at(AT_FDCWD,root,&rst,0);if(r)return r;
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,store,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(fd<0)return fd;long n;
+ while((n=RAW(PROXY_SC_getdents64,fd,s->buf,sizeof(s->buf),0,0,0))>0){for(long off=0;off<n;){unsigned char *d=(void *)(s->buf+off);unsigned short len=*(unsigned short *)(d+16);if(len<20 || off+len>n){n=-EIO;break;}const char *name=(void *)(d+19);off+=len;
+  size_t k=p_len(name);
+  if(k==40 && name[0]=='i' && name[1]=='-' && p_equal(name+34,".count")){char *nm=(char *)name;nm[34]=0;int fits=catpath(s->object,store,nm);nm[34]='.';struct proxy_stat bst;
+   if(fits && arch_stat_at(AT_FDCWD,s->object,&bst,AT_SYMLINK_NOFOLLOW)==-ENOENT && catpath(s->meta,store,name)){long u=RAW(PROXY_SC_unlinkat,AT_FDCWD,s->meta,0,0,0,0);if(u && u!=-ENOENT)links_loud("links orphan count unlink failed",0,u);}
+   continue;}
+  if(!object_name(name)){continue;}if(t->n==t->cap && (r=table_grow(t))){RAW(PROXY_SC_close,fd,0,0,0,0,0);return r;}
+  p_copy(t->e[t->n].id,name,35);t->e[t->n].count=0;t->n++;}if(n<0)break;}
+ RAW(PROXY_SC_close,fd,0,0,0,0,0);if(n<0)return n;
+ for(size_t gap=t->n/2;gap;gap/=2)for(size_t i=gap;i<t->n;i++){struct recount_entry v=t->e[i];size_t j=i;while(j>=gap && id_cmp(t->e[j-gap].id,v.id)>0){t->e[j]=t->e[j-gap];j-=gap;}t->e[j]=v;}
+ r=recount_walk(root,store,rst.st_dev,t);if(r){links_loud("links recount walk failed; store stays dirty",0,r);return r;}
+ for(size_t i=0;i<t->n;i++){if(!catpath(s->object,store,t->e[i].id))return -ENAMETOOLONG;
+  if(t->e[i].count){r=write_count(s->object,t->e[i].count);if(r)return r;continue;}
+  if(t->uncertain){links_loud("links recount: zero count kept as 1 (uncertain lookups)",(long)t->uncertain,0);r=write_count(s->object,1);if(r)return r;continue;}
+  r=RAW(PROXY_SC_unlinkat,AT_FDCWD,s->object,0,0,0,0);if(r && r!=-ENOENT){links_loud("links recount: object unlink failed",0,r);return r;}
+  size_t k=p_len(s->object);p_copy(s->meta,s->object,k);p_copy(s->meta+k,".count",7);
+  r=RAW(PROXY_SC_unlinkat,AT_FDCWD,s->meta,0,0,0,0);if(r && r!=-ENOENT){links_loud("links recount: count unlink failed",0,r);return r;}r=0;}
+ return 0;
+}
+static long recount(const char *root,const char *store){
+ struct recount_scratch *s=vfs_alloc(sizeof(*s));if(!s)return -ENOMEM;struct recount_table t={0};
+ long r=recount_impl(root,store,&t,s);if(t.e)RAW(PROXY_SC_munmap,t.e,t.cap*sizeof(*t.e),0,0,0,0);vfs_free(s);return r;
+}
+static long unlink_checked(const char *path,const char *what){long r=RAW(PROXY_SC_unlinkat,AT_FDCWD,path,0,0,0,0);if(r==-ENOENT)return 0;if(r)links_loud(what,0,r);return r;}
+/* Exchange leaves either the original source plus a staged placeholder at the
+ * object path, or the published source plus its data object. A staged
+ * placeholder is one whose own index entry names this object. */
+static long replay_conversion(const char *store,char *journal,char *data,size_t cap,int *changed){
+ if(!catpath(journal,store,"conversion"))return -ENAMETOOLONG;
+ long j=RAW(PROXY_SC_openat,AT_FDCWD,journal,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);if(j==-ENOENT)return 0;if(j<0)return j;
+ long n=read_full(j,data,cap-1);RAW(PROXY_SC_close,j,0,0,0,0,0);if(n<0){links_loud("links conversion journal read failed",0,n);return n;}
+ data[n]=0;size_t k=p_len(data);
+ if(n<=0 || k+1>=(size_t)n){links_loud("links conversion journal malformed; discarded",n,0);*changed=1;return unlink_checked(journal,"links conversion journal unlink failed");}
+ const char *object=data+k+1;const char *base=object+p_len(object);while(base>object && base[-1]!='/')base--;
+ struct proxy_stat st;long r=arch_stat_at(AT_FDCWD,object,&st,AT_SYMLINK_NOFOLLOW);
+ if(!r){char id[35];long idx=is_placeholder(&st)?index_lookup(store,&st,id):0;
+  if(idx<0){links_loud("links conversion: object index unreadable",0,idx);return idx;}
+  if(idx==1 && p_equal(id,base)){char entry[PATH_MAX];if(!index_path(entry,store,&st))return -ENAMETOOLONG;
+   r=unlink_checked(entry,"links conversion: index unlink failed");if(!r)r=unlink_checked(object,"links conversion: staged placeholder unlink failed");if(r)return r;}
+  else {uint64_t c;long cr=checked_count(object,&c);if(cr==-ENOENT || cr==LINKS_CORRUPT || (!cr && !c))cr=write_count(object,1);else if(cr)links_loud("links conversion: count read failed",0,cr);if(cr)return cr;}
+ } else if(r!=-ENOENT){links_loud("links conversion: object stat failed",0,r);return r;}
+ return unlink_checked(journal,"links conversion journal unlink failed");
+}
+struct recover_scratch { char marker[PATH_MAX], journal[PATH_MAX], data[PATH_MAX*2]; };
+static long recover_impl(const char *root,const char *store,struct recover_scratch *scratch){
+ char *marker=scratch->marker,*journal=scratch->journal;
+ discard_new(store);
+ if(!catpath(journal,store,"count-new")){return -ENAMETOOLONG;}long r=unlink_checked(journal,"links stale count-new unlink failed");if(r)return r;
+ int changed=0;
+ r=replay_conversion(store,journal,scratch->data,sizeof(scratch->data),&changed);if(r)return r;
+ long moving=finish_intent(store);if(moving && moving!=LINKS_CORRUPT)return moving;if(moving)changed=1;
+ if(!catpath(journal,store,"pending")){return -ENAMETOOLONG;}r=unlink_checked(journal,"links pending unlink failed");if(r)return r;
+ struct proxy_stat markerstat;if(!catpath(marker,store,"dirty"))return -ENAMETOOLONG;
+ r=arch_stat_at(AT_FDCWD,marker,&markerstat,AT_SYMLINK_NOFOLLOW);if(!r)changed=1;else if(r!=-ENOENT)return r;
+ if(!changed)return 0;
+ links_loud("links store recount",0,0);
+ r=recount(root,store);if(r)return r;
+ r=unlink_checked(marker,"links dirty unlink failed");if(r)return r;
+ if(!catpath(journal,store,"intent")){return -ENAMETOOLONG;}return unlink_checked(journal,"links intent unlink failed");
 }
 static long recover(const char *root,const char *store){
  struct recover_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;
@@ -289,6 +387,9 @@ static long store_link_impl(const char *source,const char *target,struct store_l
  struct proxy_stat exists;if(!arch_stat_at(AT_FDCWD,target,&exists,AT_SYMLINK_NOFOLLOW)){r=-EEXIST;goto end;}
  if(!target_locked(store,source,object)){
   r=arch_stat_at(AT_FDCWD,source,&src,AT_SYMLINK_NOFOLLOW);if(r)goto end;if(!S_ISREG(src.st_mode) || src.st_uid!=links_euid()){r=-EPERM;goto end;}
+  /* A placeholder without a usable index entry holds no data: converting it
+   * would store the empty placeholder as the object and lose the content. */
+  if(is_placeholder(&src)){r=LINKS_CORRUPT;links_loud("links link: source placeholder has no index entry",(long)src.st_ino,r);goto end;}
   char id[35]="i-";unsigned char nonce[16];long random=RAW(PROXY_SC_getrandom,nonce,sizeof(nonce),0,0,0,0);if(random!=sizeof(nonce)){r=random<0?random:-EIO;goto end;}const char hex[]="0123456789abcdef";for(size_t k=0;k<sizeof(nonce);k++){id[2+2*k]=hex[nonce[k]>>4];id[3+2*k]=hex[nonce[k]&15];}id[34]=0;if(!catpath(object,store,id)){r=-ENAMETOOLONG;goto end;}
   char *journal=scratch->journal;if(!catpath(journal,store,"conversion")){r=-ENAMETOOLONG;goto end;}char *data=scratch->data;size_t sn=p_len(source)+1,on=p_len(object)+1;p_copy(data,source,sn);p_copy(data+sn,object,on);r=journal_write(store,"conversion",data,sn+on);if(r)goto end;
   r=placeholder(store,object,object);if(r)goto end;
@@ -305,17 +406,22 @@ static long store_link(const char *source,const char *target){
  struct store_link_scratch *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;
  long result=store_link_impl(source,target,scratch);vfs_free(scratch);return result;
 }
+static long links_name_call_classified(long nr,proxy_arg_t *a,const char *p,const char *q,long held);
 long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
  if(nr==PROXY_SC_unlinkat && (a[2]&AT_REMOVEDIR))remove_empty_store(p);
+ /* Classify under the store lock so a concurrent conversion cannot turn a
+  * plain file into a placeholder between the check and the operation. */
+ char *paths=vfs_alloc(PATH_MAX*2);if(!paths)return -ENOMEM;struct proxy_stat ss;long held=-1;
+ if(links_app_data_root(paths,p) && catpath(paths+PATH_MAX,paths,".v3-inodes") && !arch_stat_at(AT_FDCWD,paths+PATH_MAX,&ss,AT_SYMLINK_NOFOLLOW) && S_ISDIR(ss.st_mode)){held=store_lock(paths,paths+PATH_MAX);if(held<0){vfs_free(paths);return held;}}
+ vfs_free(paths);
+ long r=links_name_call_classified(nr,a,p,q,held);if(held>=0)unlock(held);return r;
+}
+static long links_name_call_classified(long nr,proxy_arg_t *a,const char *p,const char *q,long held){
  struct proxy_stat ps,qs;int left=!arch_stat_at(AT_FDCWD,p,&ps,AT_SYMLINK_NOFOLLOW) && is_placeholder(&ps);
  int right=q && !arch_stat_at(AT_FDCWD,q,&qs,AT_SYMLINK_NOFOLLOW) && is_placeholder(&qs);
  if(!left && !right){
   /* Directory moves can carry placeholders; serialize them with the GC sweep's scan. */
-  int dirmove=q && (nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2) && !arch_stat_at(AT_FDCWD,p,&ps,AT_SYMLINK_NOFOLLOW) && S_ISDIR(ps.st_mode);
-  char *paths=dirmove?vfs_alloc(PATH_MAX*2):NULL;struct proxy_stat ss;
-  if(!paths || !links_app_data_root(paths,p) || !catpath(paths+PATH_MAX,paths,".v3-inodes") || arch_stat_at(AT_FDCWD,paths+PATH_MAX,&ss,AT_SYMLINK_NOFOLLOW) || !S_ISDIR(ss.st_mode)){if(paths)vfs_free(paths);return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);}
-  long lock=store_lock(paths,paths+PATH_MAX);if(lock<0){vfs_free(paths);return lock;}
-  long r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);unlock(lock);vfs_free(paths);return r;
+  return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
  }
  struct { char root[PATH_MAX],other[PATH_MAX],store[PATH_MAX],left[PATH_MAX],right[PATH_MAX]; } *scratch=vfs_alloc(sizeof(*scratch));if(!scratch)return -ENOMEM;
  char *root=scratch->root,*other=scratch->other,*store=scratch->store;
@@ -323,7 +429,8 @@ long links_name_call(long nr,proxy_arg_t *a,const char *p,const char *q){
  if(!links_app_data_root(root,left?p:q)){vfs_free(scratch);return -EPERM;}
  if(q && left && (!links_app_data_root(other,q) || !p_equal(root,other))){vfs_free(scratch);return -EXDEV;}
  if(!catpath(store,root,".v3-inodes")){vfs_free(scratch);return -ENAMETOOLONG;}
- long lock=store_lock(root,store);if(lock<0){vfs_free(scratch);return lock;}long r=recover(root,store);if(!r)r=begin_intent(root,store,p,q,NULL);if(!r){r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);{long clean=finish_intent(store);if(!r)r=clean;}}unlock(lock);vfs_free(scratch);return r;
+ long lock=held;if(lock<0){lock=store_lock(root,store);if(lock<0){vfs_free(scratch);return lock;}}
+ long r=recover(root,store);if(!r)r=begin_intent(root,store,p,q,NULL);if(!r){r=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);{long clean=finish_intent(store);if(!r)r=clean;}}if(held<0)unlock(lock);vfs_free(scratch);return r;
 }
 long links_path_call(long nr,proxy_arg_t *args,const char *p){
  proxy_arg_t a[6];p_copy(a,args,sizeof(a));
@@ -351,7 +458,7 @@ long links_path_call(long nr,proxy_arg_t *args,const char *p){
  a[path0?0:1]=(long)object;
  return RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
 }
-static void refresh_impl(const char *object,char *root,char *store){size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock>=0){if(!recover(root,store)){struct proxy_stat st;if(!arch_stat_at(AT_FDCWD,object,&st,0))ensure_count(root,store,object);}unlock(lock);}}
+static void refresh_impl(const char *object,char *root,char *store){size_t i=0;for(;object[i];i++){const char marker[]="/.v3-inodes/";size_t j=0;while(marker[j] && object[i+j]==marker[j])j++;if(!marker[j])break;}if(!object[i] || i>=PATH_MAX)return;p_copy(root,object,i);root[i]=0;long lock=store_lock(root,store);if(lock<0){links_loud("links refresh: store lock failed",0,lock);return;}long r=recover(root,store);if(r)links_loud("links refresh: recover failed",0,r);else{struct proxy_stat st;r=arch_stat_at(AT_FDCWD,object,&st,0);if(!r)r=ensure_count(root,store,object);if(r && r!=-ENOENT)links_loud("links refresh: count failed",0,r);}unlock(lock);}
 static void refresh(const char *object){char *scratch=vfs_alloc(PATH_MAX*2);if(!scratch)return;refresh_impl(object,scratch,scratch+PATH_MAX);vfs_free(scratch);}
 /* Only regular files can be store objects; skip the /proc lookup for the rest. */
 static char *fd_backing_path(int fd){

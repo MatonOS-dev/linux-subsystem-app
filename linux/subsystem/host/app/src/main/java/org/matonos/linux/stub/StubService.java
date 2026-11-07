@@ -22,6 +22,7 @@ public final class StubService extends Service {
     private static final String ACTION_QUIT = "org.matonos.linuxhost.action.QUIT";
     private static final int NOTIFICATION_ID = 1;
     private PerAppRuntime runtime;
+    private android.content.BroadcastReceiver hostUpdate;
     // Same process as the stub's activity; exposed so the activity can drive its
     // windows/Surface/input from the in-process runtime.
     private static volatile PerAppRuntime sRuntime;
@@ -67,6 +68,20 @@ public final class StubService extends Service {
         } catch (Exception error) {
             Log.w("MatonStub", "foreground service not allowed; running as a plain service", error);
         }
+        // A subsystem update deletes the APK path this session executes from;
+        // end the session so the next launch uses the new subsystem.
+        hostUpdate = new android.content.BroadcastReceiver() {
+            @Override public void onReceive(android.content.Context context, Intent intent) {
+                android.net.Uri data = intent.getData();
+                if (data == null || !"org.matonos.linux".equals(data.getSchemeSpecificPart())) return;
+                Log.w("MatonStub", "Linux subsystem updated; quitting this app so it restarts on the new version");
+                V3Launcher.requestQuit();
+            }
+        };
+        android.content.IntentFilter filter = new android.content.IntentFilter(Intent.ACTION_PACKAGE_REPLACED);
+        filter.addDataScheme("package");
+        filter.addDataSchemeSpecificPart("org.matonos.linux", android.os.PatternMatcher.PATTERN_LITERAL);
+        registerReceiver(hostUpdate, filter, android.content.Context.RECEIVER_EXPORTED);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -107,6 +122,10 @@ public final class StubService extends Service {
     }
 
     @Override public void onDestroy() {
+        if (hostUpdate != null) {
+            unregisterReceiver(hostUpdate);
+            hostUpdate = null;
+        }
         if (runtime != null) {
             runtime.close();
             runtime = null;

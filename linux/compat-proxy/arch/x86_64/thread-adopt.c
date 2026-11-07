@@ -61,6 +61,20 @@ static uintptr_t app_brk;
 static int force_clone;
 static size_t live(void);
 static size_t signal_stack_size;
+/* Handler stacks get PROT_NONE guard pages on both sides. Without them an
+ * adjacent app RW anonymous mapping merges into the stack's VMA; the kernel
+ * then sees the handler's RSP inside it and classifies a later
+ * mprotect(PROT_EXEC) of the app page as execstack, which Android
+ * neverallows (EACCES; HotSpot's "Failed to mark memory page as
+ * executable"). Natively the app's syscall RSP is on its own stack. */
+static long guarded_stack_map(void) {
+    long base=R(mmap,0,signal_stack_size+2*4096,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if((unsigned long)base>=(unsigned long)-4095)return base;
+    long r=R(mprotect,base+4096,signal_stack_size,PROT_READ|PROT_WRITE,0,0,0);
+    if(r){R(munmap,base,signal_stack_size+2*4096,0,0,0,0);return r;}
+    return base+4096;
+}
+static void guarded_stack_unmap(void *stack) { R(munmap,(char *)stack-4096,signal_stack_size+2*4096,0,0,0,0); }
 static long identity(uintptr_t *);
 static void fork_rebase(struct adopt_thread *);
 static size_t live(void);
@@ -99,17 +113,17 @@ static void *map_memory(size_t n) {
 }
 static long signal_stack_install(struct adopt_thread *t) {
     if(R(sigaltstack,0,&t->prior_signal_stack,0,0,0,0)) return -1;
-    long p=R(mmap,0,signal_stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    long p=guarded_stack_map();
     if((unsigned long)p>=(unsigned long)-4095) return p;
     t->signal_stack=(void *)p;
     stack_t ss={.ss_sp=(void *)p,.ss_size=signal_stack_size};
     long error=R(sigaltstack,&ss,0,0,0,0,0);
-    if(error) {R(munmap,p,signal_stack_size,0,0,0,0);t->signal_stack=NULL;}
+    if(error) {guarded_stack_unmap((void *)p);t->signal_stack=NULL;}
     return error;
 }
 static void signal_stack_release(struct adopt_thread *t) {
     if(R(sigaltstack,&t->prior_signal_stack,0,0,0,0,0)) __builtin_trap();
-    R(munmap,t->signal_stack,signal_stack_size,0,0,0,0);t->signal_stack=NULL;
+    guarded_stack_unmap(t->signal_stack);t->signal_stack=NULL;
 }
 __attribute__((target("general-regs-only")))
 struct adopt_thread *adopt_current(void) {
@@ -222,7 +236,7 @@ static void fork_rebase(struct adopt_thread *self) {
         for(unsigned i=0;i<CHUNK_THREADS;i++)
             if(&c->entries[i]!=self) {
                 if(c->entries[i].signal_stack) {
-                    R(munmap,c->entries[i].signal_stack,signal_stack_size,0,0,0,0);
+                    guarded_stack_unmap(c->entries[i].signal_stack);
                     c->entries[i].signal_stack=NULL;
                 }
                 atomic_store(&c->entries[i].tid,0);
@@ -256,8 +270,7 @@ static void fork_rebase(struct adopt_thread *self) {
         /* A stackless fork can be adopted while its SIGSYS frame is still on
          * the inherited stack. Register a fresh stack so that this live
          * frame remains untouched until rt_sigreturn consumes it. */
-        long mapping=R(mmap,0,signal_stack_size,PROT_READ|PROT_WRITE,
-                       MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        long mapping=guarded_stack_map();
         if((unsigned long)mapping>=(unsigned long)-4095) {
             proxy_log("adopt-fork-altstack-map",R(gettid,0,0,0,0,0,0),mapping);
             self->fork_context=NULL;
@@ -282,7 +295,7 @@ static void fork_rebase(struct adopt_thread *self) {
     if(stack_result) {
         proxy_log("adopt-fork-altstack-install",R(gettid,0,0,0,0,0,0),
                   -stack_result);
-        if(signal_stack!=self->signal_stack) R(munmap,signal_stack,signal_stack_size,0,0,0,0);
+        if(signal_stack!=self->signal_stack) guarded_stack_unmap(signal_stack);
     } else {
         self->signal_stack=signal_stack;
         /* rt_sigreturn restores uc_stack from the live frame. Keep it in
@@ -301,6 +314,10 @@ static void fork_rebase(struct adopt_thread *self) {
  * the freestanding proxy links a weak no-op when adoption is absent. */
 __attribute__((target("general-regs-only")))
 void adopt_fork_child(void) {
+    /* The retry continuation runs this for every zero clone result, thread
+     * clones included. A thread shares the registry; rebasing it would wipe
+     * the parent's records. Only a new process (tid == pid) is rebased. */
+    if(R(gettid,0,0,0,0,0,0)!=R(getpid,0,0,0,0,0,0)) return;
     uintptr_t app_fs=backend_fs_read();
     /* After a process clone, the kernel has changed gettid() but the copied
      * registry still contains the parent's TID. The child inherits the
@@ -412,7 +429,7 @@ static void trap(int sig,siginfo_t *info,void *opaque) {
     /* Only Linux process/thread ABI calls need adoption. Other trapped calls
      * belong to the compatibility proxy's seccomp handler. */
     if(n!=SYS_brk && n!=SYS_munmap && n!=SYS_rt_sigaction && n!=SYS_rt_sigprocmask &&
-       n!=SYS_clone && n!=SYS_clone3 && n!=SYS_vfork &&
+       n!=SYS_clone && n!=SYS_clone3 && n!=SYS_vfork && n!=SYS_fork &&
        n!=SYS_set_robust_list && n!=SYS_get_robust_list && n!=SYS_rseq &&
        n!=SYS_set_tid_address && n!=SYS_exit && n!=SYS_exit_group && n!=SYS_arch_prctl) {
         if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO))
@@ -557,7 +574,9 @@ miss_record_logged:
                 }
             }
         }
-    } else if(n==SYS_vfork) {
+    } else if(n==SYS_vfork || n==SYS_fork) {
+        /* Raw fork needs the same child rebase as vfork and process clone:
+         * the child must not keep the parent's records. */
         if(prior_sigsys.handler>1 && (prior_sigsys.flags&SA_SIGINFO)) {
             self->fork_context=uc;
             ((void (*)(int,siginfo_t *,void *))prior_sigsys.handler)(sig,info,opaque);

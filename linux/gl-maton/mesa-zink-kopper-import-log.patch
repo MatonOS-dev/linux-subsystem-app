@@ -1,0 +1,14 @@
+--- a/src/gallium/frontends/dri/kopper.c
++++ b/src/gallium/frontends/dri/kopper.c
+@@ -284,6 +284,11 @@
+             drawable->textures[statts[i]] = kopper_get_pixmap_buffer(drawable, format);
+             if (drawable->textures[statts[i]])
+                dri_image_fence_sync(ctx, drawable->image);
++            /* MATONOS DIAGNOSTIC: the fallback texture below is never filled
++             * while has_dmabuf is set (kopper_update_tex_buffer). */
++            else
++               mesa_loge("maton-kopper: DRI3 pixmap import failed %ux%u; using an unfilled fallback texture",
++                         templ.width0, templ.height0);
+          }
+ #endif
+          if (!drawable->textures[statts[i]])

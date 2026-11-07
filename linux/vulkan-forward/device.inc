@@ -115,6 +115,7 @@ static void mv_vkDestroyDevice(VkDevice device,const VkAllocationCallbacks *a) {
     (void)a;if(!device)return;struct mv_device *d=(void *)device;struct mv_scope s;if(!mv_enter(&s))return;
     d->dispatch.vkDestroyDevice(d->base.android,0);switch_back(&s);
     mv_dmabuf_unregister(d,VK_NULL_HANDLE,1);
+    mv_ahb_images_free(d);
     struct mv_handle *h=d->children;while(h){struct mv_handle *next=h->next;mv_dfree(d,h);h=next;}mv_dfree(d,d);
 }
 static void mv_vkGetDeviceQueue2(VkDevice device,const VkDeviceQueueInfo2 *info,VkQueue *out) {

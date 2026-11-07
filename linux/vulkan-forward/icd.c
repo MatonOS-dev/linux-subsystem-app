@@ -51,6 +51,7 @@ struct mv_device {
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID ahb_properties;
     PFN_vkGetMemoryAndroidHardwareBufferANDROID ahb_export;
     struct mv_dmabuf_reg *dmabuf_regs; /* guarded by lock */
+    struct mv_ahb_image *ahb_images; /* guarded by lock */
     struct mv_handle *children;
     struct mv_dispatch dispatch;
     PFN_vkGetDeviceProcAddr gdpa;

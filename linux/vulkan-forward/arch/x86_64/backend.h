@@ -30,12 +30,8 @@ static inline uint64_t mv_monotonic_ns(void) {
            (uint64_t)ts.tv_sec*1000000000ull+(uint64_t)ts.tv_nsec;
 }
 static inline int mv_socketpair(int pair[2]) { return (int)mv_sys(53,1,5,0,(long)pair,0,0); }
-/* Sized memfd (MFD_CLOEXEC): fd, or negative errno. */
-static inline int mv_memfd(const char *name,uint64_t size) {
-    long fd=mv_sys(319,(long)name,1,0,0,0,0);if(fd<0)return (int)fd;
-    long r=mv_sys(77,fd,(long)size,0,0,0,0);if(r<0){mv_close(fd);return (int)r;}
-    return (int)fd;
-}
+/* fcntl(F_DUPFD_CLOEXEC): fd, or negative errno. */
+static inline int mv_dup_cloexec(int fd) { return (int)mv_sys(72,fd,1030,0,0,0,0); }
 static inline void *mv_map(size_t n) {
     long p=mv_sys(9,0,n,3,0x22,-1,0);
     return (unsigned long)p>=(unsigned long)-4095?0:(void *)p;

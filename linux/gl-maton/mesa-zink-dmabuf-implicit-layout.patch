@@ -1,0 +1,51 @@
+--- a/src/gallium/drivers/zink/zink_resource.c	2026-11-07 15:14:56.618503578 +0200
++++ b/src/gallium/drivers/zink/zink_resource.c	2026-11-07 15:15:06.417073919 +0200
+@@ -2022,6 +2022,14 @@
+    enum pipe_format srgb = setup_format_list(screen, templ, alloc_info, formats, &format_list, &ici);
+    if (!init_ici(screen, &ici, templ, templ->bind, ici_modifier_count))
+       return roc_fail_and_free_object;
++   /* A dma-buf imported without a modifier (legacy DRI3 BufferFromPixmap) has a
++    * layout only the exporter's allocator knows: import it as OPTIMAL so the
++    * driver takes the layout from the buffer itself instead of assuming LINEAR. */
++   bool implicit_import = alloc_info->whandle && !winsys_modifier &&
++                          (alloc_info->export_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) &&
++                          !ici_modifier_count;
++   if (implicit_import)
++      ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+ 
+    if (templ->bind & ZINK_BIND_VIDEO) {
+       uint32_t bit_depth = zink_video_get_format_bit_depth(templ->format);
+@@ -2046,8 +2054,16 @@
+       if (!ici.pNext)
+          return roc_fail_and_free_object;
+    }
+-   if (!success)
++   if (!success) {
++      if (implicit_import)
++         mesa_loge("zink: driver cannot import modifier-less dma-buf %ux%u %s with OPTIMAL tiling",
++                   templ->width0, templ->height0, util_format_name(templ->format));
+       return roc_fail_and_free_object;
++   }
++   if (implicit_import && ici.tiling != VK_IMAGE_TILING_OPTIMAL) {
++      mesa_loge("zink: refusing modifier-less dma-buf import as tiling %d: its layout is not LINEAR-known", ici.tiling);
++      return roc_fail_and_free_object;
++   }
+ 
+    if (ici.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT && srgb &&
+       util_format_get_nr_components(srgb) == 4 &&
+@@ -2826,11 +2842,10 @@
+       if (whandle->modifier != DRM_FORMAT_MOD_INVALID)
+          modifier = whandle->modifier;
+       else {
+-         if (!zink_screen(pscreen)->driver_workarounds.can_do_invalid_linear_modifier) {
+-            mesa_loge("zink: display server doesn't support DRI3 modifiers and driver can't handle INVALID<->LINEAR!");
+-            return NULL;
+-         }
+-         whandle->modifier = modifier;
++         if (zink_screen(pscreen)->driver_workarounds.can_do_invalid_linear_modifier)
++            whandle->modifier = modifier;
++         else
++            modifier_count = 0; /* implicit layout: imported as OPTIMAL in create_image */
+       }
+    }
+    templ2.bind |= ZINK_BIND_DMABUF;

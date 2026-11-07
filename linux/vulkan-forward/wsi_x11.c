@@ -233,7 +233,7 @@ static int ahb_socket(struct mv_sockaddr_un *address,int *dir) {
 static int ahb_request(uint32_t magic,const int *fds,int count) {
     struct mv_sockaddr_un address={.sun_family=1};int dir;
     mv_x11_last_error=0;
-    if(!resolve()){mv_x11_last_error=13000;note("maton-vulkan: dma-buf stand-in: libc/xcb symbols missing",0);return -1;}
+    if(!resolve()){mv_x11_last_error=13000;note("maton-vulkan: dma-buf AHB socket: libc/xcb symbols missing",0);return -1;}
     int fd=ahb_socket(&address,&dir);if(fd<0)return -1;
     struct mv_iovec iov={&magic,sizeof(magic)};
     union {struct mv_cmsghdr align;unsigned char bytes[MV_CMSG_SPACE(2*sizeof(int))];} control={0};
@@ -249,11 +249,11 @@ static int ahb_request(uint32_t magic,const int *fds,int count) {
     if(sent!=(long)sizeof(magic)){MV_CLOSE(fd);return -1;}
     return fd;
 }
-/* Lookup {"MAHL"} + stand-in: Xwayland replies with the AHB
+/* Lookup {"MAHL"} + exported fd: Xwayland replies with the AHB
  * (AHardwareBuffer_sendHandleToUnixSocket) or hangs up. Caller receives on
  * the Android side and closes the socket. */
 int mv_x11_ahb_lookup(int standin) { return ahb_request(0x4c48414du,&standin,1); }
-/* Register {"MAHR"} + stand-in + AHB transport (already filled). Xwayland
+/* Register {"MAHR"} + exported fd + AHB transport (already filled). Xwayland
  * acks with 4 bytes and keeps the registration until this socket closes. */
 int mv_x11_ahb_register(int standin,int transport) {
     int fds[2]={standin,transport};
@@ -410,6 +410,6 @@ int mv_x11_present(struct mv_x11_buffer *b,int fence) {
     b->serial=++x->serial;
     if(!checked(x,present(x->connection,x->window,b->pixmap,b->serial,0,0,0,0,0,0,0,0,x->mailbox?0:x->next_msc,0,0,0,0))){note("maton-vulkan: X11 PresentPixmap rejected, window",(long)x->window);return 0;}
     /* TEMPDIAG: Big Picture black window - do frames reach this window? */
-    if(!x->presents++||!(x->presents%600))note("maton-vulkan: X11 presents, window",(long)x->window),note("maton-vulkan: X11 presents, count",(long)x->presents);
+    if(!x->presents++||!(x->presents%600))note("maton-vulkan: X11 presents, window",(long)x->window),note("maton-vulkan: X11 presents, count",(long)x->presents),note("maton-vulkan: X11 presents, pixmap",(long)b->pixmap),note("maton-vulkan: X11 presents, size",(long)x->width<<16|x->height),note("maton-vulkan: X11 presents, depth",(long)x->depth),note("maton-vulkan: X11 presents, mailbox msc",x->mailbox?-1L:(long)x->next_msc);
     b->released=0;x->pending_complete=1;int fl=flush(x->connection);XERR(x);return fl>0;
 }
