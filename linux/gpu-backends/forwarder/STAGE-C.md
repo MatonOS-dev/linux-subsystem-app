@@ -71,10 +71,10 @@ containing source-built Headers/Loader/Tools. Run from this worktree:
 OUT=/home/hanro50/matonos/build/vk-forward-c-out
 DEPS=/mnt/data/aosp/out/pc-logs/vk-forward
 export CMAKE=/home/hanro50/Android/Sdk/cmake/4.1.2/bin/cmake
-bash linux/vulkan-forward/tests/build-musl.sh "$OUT" "$DEPS"
-bash linux/vulkan-forward/tests/build-zink.sh "$OUT"
-bash linux/vulkan-forward/tests/run.sh "$OUT/build" "$DEPS/src/Vulkan-Headers-1.4.341"
-bash linux/vulkan-forward/tests/build-profile-audit.sh "$OUT" "$DEPS"
+bash linux/gpu-backends/forwarder/tests/build-musl.sh "$OUT" "$DEPS"
+bash linux/gpu-backends/forwarder/tests/build-zink.sh "$OUT"
+bash linux/gpu-backends/forwarder/tests/run.sh "$OUT/build" "$DEPS/src/Vulkan-Headers-1.4.341"
+bash linux/gpu-backends/forwarder/tests/build-profile-audit.sh "$OUT" "$DEPS"
 ```
 
 Build the adoption launcher through `gpu-forward-spike/spike3/build-android.sh` from an external
@@ -85,9 +85,9 @@ Stage-B glibc runtime, vulkaninfo and JSON must already be installed under
 
 ```sh
 ADB=/mnt/data/aosp/out/host/linux-x86/bin/adb \
- bash linux/vulkan-forward/tests/run-stage-c-vm.sh "$OUT"
+ bash linux/gpu-backends/forwarder/tests/run-stage-c-vm.sh "$OUT"
 ADB=/mnt/data/aosp/out/host/linux-x86/bin/adb \
- bash linux/vulkan-forward/tests/run-profile-vm.sh "$OUT"
+ bash linux/gpu-backends/forwarder/tests/run-profile-vm.sh "$OUT"
 ```
 
 The script pushes only to `/data/local/tmp/vk/`; retains guest files; it does not

@@ -6,7 +6,7 @@
 #include <link.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
-#include "../../gpu-bridge-common/bootstrap.h"
+#include "../../../gpu-bridge-common/bootstrap.h"
 
 int main(void) {
     void *xcb=mv_client_library("libxcb.so.1");assert(xcb);

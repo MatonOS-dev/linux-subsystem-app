@@ -1,5 +1,5 @@
 #include "wayland_client.h"
-#include "../vulkan-forward/wayland_resolve.h"
+#include "../gpu-backends/forwarder/wayland_resolve.h"
 #include "runtime.h"
 #include "backend.h"
 

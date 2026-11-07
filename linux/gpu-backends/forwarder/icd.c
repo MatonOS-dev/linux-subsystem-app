@@ -13,7 +13,7 @@ typedef unsigned long VisualID;
 #include <vulkan/vulkan_xlib.h>
 #include "runtime.h"
 #include "backend.h"
-#include "../gpu-bridge-common/bridge.h"
+#include "../../gpu-bridge-common/bridge.h"
 #include "dispatch.h"
 #include "wsi.h"
 #include "wayland_resolve.h"

@@ -16,7 +16,7 @@
 #include <unistd.h>
 #include "../runtime.h"
 #include "backend.h"
-#include "../../gpu-bridge-common/bootstrap.h"
+#include "../../../gpu-bridge-common/bootstrap.h"
 extern long mv_test_gateway(long,long,long,long,long,long,long);
 extern char mv_test_gateway_after[];
 static volatile sig_atomic_t traps;

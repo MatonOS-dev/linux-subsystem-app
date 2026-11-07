@@ -14,8 +14,8 @@
 #include <vulkan/vulkan.h>
 #include "../runtime.h"
 #include "../arch/x86_64/backend.h"
-#include "../../gpu-bridge-common/bootstrap.h"
-#include "../../gpu-bridge-common/bridge.h"
+#include "../../../gpu-bridge-common/bootstrap.h"
+#include "../../../gpu-bridge-common/bridge.h"
 static unsigned gateway_calls;
 static long gateway(long n,long a,long b,long c,long d,long e,long f) {
     gateway_calls++;return mv_native_sys(n,a,b,c,d,e,f);

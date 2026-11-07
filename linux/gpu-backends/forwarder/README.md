@@ -106,10 +106,10 @@ reuse the unchanged pinned source-built glibc loader/tools from stage A.
 
 ```sh
 OUT=/absolute/external/output
-CMAKE=/path/to/cmake bash linux/vulkan-forward/build-tools.sh "$OUT"
+CMAKE=/path/to/cmake bash linux/gpu-backends/forwarder/build-tools.sh "$OUT"
 HEADERS="$OUT/src/Vulkan-Headers-1.4.341"
-bash linux/vulkan-forward/tests/run.sh "$OUT/build" "$HEADERS"
-bash linux/vulkan-forward/tests/build-offscreen.sh "$OUT/tests" "$HEADERS" "$OUT/loader-build"
+bash linux/gpu-backends/forwarder/tests/run.sh "$OUT/build" "$HEADERS"
+bash linux/gpu-backends/forwarder/tests/build-offscreen.sh "$OUT/tests" "$HEADERS" "$OUT/loader-build"
 ```
 
 `build.sh` checks the x86_64 and i386 ELF dependencies/exports and cross-compiles
@@ -248,7 +248,7 @@ pixmap XID to Xwayland's private per-display socket. Xwayland imports the AHB
 as an EGLImage and replies with the registered pixmap XID. Stock Present
 Complete/Idle events retain FIFO scheduling and buffer reuse. No DRI3 plane,
 modifier or native-handle layout is exported. See
-[the backend notes](../subsystem/XWAYLAND-AHB.md) for the wire contract and tests.
+[the backend notes](../../subsystem/XWAYLAND-AHB.md) for the wire contract and tests.
 
 Both WSI backends require Android hardware-buffer external memory,
 queue-family-foreign and external-semaphore-fd. Enumeration and device creation

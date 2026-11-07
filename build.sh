@@ -35,7 +35,7 @@ export MATON_VULKAN_OUT=${MATON_VULKAN_OUT:-$VULKAN_DEPS/forward}
 export MATON_VULKAN_HEADERS=${MATON_VULKAN_HEADERS:-$VULKAN_DEPS/src/Vulkan-Headers-1.4.341}
 export CMAKE=${CMAKE:-/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake}
 if [[ ! -s $MATON_VULKAN_HEADERS/registry/vk.xml ]]; then
-  bash "$ROOT/linux/vulkan-forward/build-tools.sh" "$VULKAN_DEPS"
+  bash "$ROOT/linux/gpu-backends/forwarder/build-tools.sh" "$VULKAN_DEPS"
 fi
 export MUSL_SCRATCH=${MATON_MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
 export FLATPAK_MUSL_WORK=${MATON_FLATPAK_SCRATCH:-$OUTPUT/flatpak/scratch/flatpak-musl}

@@ -13,7 +13,7 @@ for unit in tests/syscall-gateway.c tests/syscall-gateway.S runtime.c; do
  "$compiler" -c -O2 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror \
   -I"$here" -I"$here/arch/i386" "$here/$unit" -o "$out/$(basename "$unit").o"
 done
-"$compiler" -c "$here/../compat-proxy/arch/i386/entry.S" -o "$out/entry.o"
+"$compiler" -c "$here/../../compat-proxy/arch/i386/entry.S" -o "$out/entry.o"
 ld -m elf_i386 --dynamic-linker /lib/ld-linux.so.2 "$out/entry.o" \
  "$out/syscall-gateway.c.o" "$out/syscall-gateway.S.o" "$out/runtime.c.o" \
  "${MATON_V3_I386_LIBC:-/usr/lib32/libc.so.6}" -o "$out/gateway32"

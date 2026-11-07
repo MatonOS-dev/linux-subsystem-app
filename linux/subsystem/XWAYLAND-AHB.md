@@ -72,8 +72,8 @@ packaging no longer installs the old Mesa/GBM forwarding libraries.
 Host regression commands (outputs outside the repository):
 
 ```
-bash linux/vulkan-forward/tests/run-wsi.sh "$OUT/wsi-tests" "$HEADERS"
-bash linux/vulkan-forward/tests/run.sh "$OUT/core-tests" "$HEADERS"
+bash linux/gpu-backends/forwarder/tests/run-wsi.sh "$OUT/wsi-tests" "$HEADERS"
+bash linux/gpu-backends/forwarder/tests/run.sh "$OUT/core-tests" "$HEADERS"
 ```
 
 The WSI test checks opaque RGBA AHB transport, a real kernel SCM_RIGHTS
