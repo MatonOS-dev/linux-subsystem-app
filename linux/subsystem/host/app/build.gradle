@@ -73,22 +73,22 @@ def buildVulkanForward = tasks.register('buildVulkanForward', Exec) {
 
 def zinkStage(String name) {
     def stage = System.getenv(name)
-    if (!stage) throw new GradleException("${name} unset: build Zink with linux/gpu-backends/forwarder/gl-maton/build-zink.sh first")
+    if (!stage) throw new GradleException("${name} unset: build Zink with linux/gl-maton/build-zink.sh first")
     return stage
 }
 def glMatonOutput = new File(layout.buildDirectory.get().asFile, 'generated/gl-maton')
 def glMatonAssets = new File(layout.buildDirectory.get().asFile, 'generated/gl-maton-assets')
 def buildGlMaton = tasks.register('buildGlMaton', Exec) {
     dependsOn buildVulkanForward
-    inputs.files fileTree('../../../gpu-backends/forwarder/gl-maton'), fileTree('../../../gpu-backends/forwarder') { exclude 'build/**' }
+    inputs.files fileTree('../../../gl-maton'), fileTree('../../../gpu-backends/forwarder') { exclude 'build/**' }
     outputs.dir glMatonOutput
     outputs.upToDateWhen { false }
-    commandLine 'python3', file('../../../gpu-backends/forwarder/gl-maton/build.py').absolutePath,
+    commandLine 'python3', file('../../../gl-maton/build.py').absolutePath,
             glMatonOutput.absolutePath, new File(vulkanOutput, 'libmaton_vulkan.so').absolutePath,
             '--vulkan-i386', new File(vulkanOutput, 'i386/libmaton_vulkan.so').absolutePath,
             // Template branch only: the stub rewrites metadata/deploy for each app's runtime.
             '--branch', '26.08',
-            // x86_64 Zink from MatonOS-dev/mesa, built by linux/gpu-backends/forwarder/gl-maton/build-zink.sh.
+            // x86_64 Zink from MatonOS-dev/mesa, built by linux/gl-maton/build-zink.sh.
             '--mesa', zinkStage('MATON_ZINK_STAGE'), '--mesa-i386', zinkStage('MATON_ZINK_STAGE_I386')
 }
 // Sync, not Copy: stale files from older builds must not reach the APK.

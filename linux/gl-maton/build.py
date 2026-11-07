@@ -9,7 +9,7 @@ import tempfile
 import gi
 from gi.repository import GLib
 
-ROOT = pathlib.Path(__file__).resolve().parents[4]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def run(*args):
