@@ -50,7 +50,7 @@ def build(out, vulkan, branch, vulkan_i386, mesa, mesa_i386):
             '{\n  "file_format_version": "1.0.0",\n  "ICD": {\n'
             '    "library_path": "libmaton_vulkan_i386.so",\n'
             '    "api_version": "1.4.0"\n  }\n}\n', encoding="utf-8")
-    metadata = (ROOT / "linux/gpu-bridge-common/flatpak/metadata.in").read_text()
+    metadata = (ROOT / "linux/gpu-backends/forwarder/gl-maton/flatpak/metadata.in").read_text()
     metadata = metadata.replace("@RUNTIME_BRANCH@", branch)
     (out / "metadata").write_text(metadata, encoding="utf-8")
     repo = out / "repo"
