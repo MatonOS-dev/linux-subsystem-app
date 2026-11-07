@@ -10,7 +10,7 @@ runtime=$aosp/out/target/product/pc_x86_64/apex/com.android.runtime
 mkdir -p "$out"
 out=$(realpath "$out")
 MATON_V3_ANDROID_OUT="$out/android" bash "$root/build-android.sh"
-bash "$root/../gpu-backends/forwarder/build.sh" "$out/vulkan" "$headers"
+bash "$root/../vulkan-forward/build.sh" "$out/vulkan" "$headers"
 cc -O2 -Wall -Wextra -Werror "$root/tests/bionic64-start.c" -o "$out/start"
 "$compiler" -shared -fPIC -O2 -Wall -Wextra -Werror -I"$headers/include" \
  "$root/tests/bionic32-gpu-provider.c" -ldl -o "$out/provider.so"

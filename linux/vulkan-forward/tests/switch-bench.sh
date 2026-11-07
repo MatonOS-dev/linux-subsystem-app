@@ -4,7 +4,7 @@
 # cannot create generated files or binaries in the source worktree.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-root=$(cd "$here/../../.." && pwd)
+root=$(cd "$here/../.." && pwd)
 out=${1:?external output directory}
 limit=${MATON_SWITCH_BENCH_NS:-40}
 src="$out/launcher-src/linux"

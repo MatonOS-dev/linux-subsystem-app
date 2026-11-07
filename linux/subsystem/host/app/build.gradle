@@ -63,12 +63,12 @@ tasks.named('preBuild').configure { dependsOn packageMkfsErofs }
 def vulkanOutput = System.getenv('MATON_VULKAN_OUT') ?: "$aospRoot/out/matonos/vulkan-forward"
 def vulkanHeaders = System.getenv('MATON_VULKAN_HEADERS') ?: "$vulkanOutput/src/Vulkan-Headers-1.4.341"
 def buildVulkanForward = tasks.register('buildVulkanForward', Exec) {
-    inputs.files fileTree('../../../gpu-backends/forwarder') { exclude 'build/**' }
+    inputs.files fileTree('../../../vulkan-forward') { exclude 'build/**' }
     outputs.files new File(vulkanOutput, 'libmaton_vulkan.so'), new File(vulkanOutput, 'maton_icd.json'),
             new File(vulkanOutput, 'i386/libmaton_vulkan.so')
     outputs.upToDateWhen { false }
     environment 'CMAKE', System.getenv('CMAKE') ?: '/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake'
-    commandLine 'bash', file('../../../gpu-backends/forwarder/build.sh').absolutePath, vulkanOutput, vulkanHeaders
+    commandLine 'bash', file('../../../vulkan-forward/build.sh').absolutePath, vulkanOutput, vulkanHeaders
 }
 
 def zinkStage(String name) {
@@ -80,7 +80,7 @@ def glMatonOutput = new File(layout.buildDirectory.get().asFile, 'generated/gl-m
 def glMatonAssets = new File(layout.buildDirectory.get().asFile, 'generated/gl-maton-assets')
 def buildGlMaton = tasks.register('buildGlMaton', Exec) {
     dependsOn buildVulkanForward
-    inputs.files fileTree('../../../gl-maton'), fileTree('../../../gpu-backends/forwarder') { exclude 'build/**' }
+    inputs.files fileTree('../../../gl-maton'), fileTree('../../../vulkan-forward') { exclude 'build/**' }
     outputs.dir glMatonOutput
     outputs.upToDateWhen { false }
     commandLine 'python3', file('../../../gl-maton/build.py').absolutePath,

@@ -1,7 +1,7 @@
 #define adopt_thread provider_thread
 #define adopt_api provider_api
 #define adopt_scope provider_scope
-#include "../../../compat-proxy/arch/i386/adopt.h"
+#include "../../compat-proxy/arch/i386/adopt.h"
 #undef adopt_thread
 #undef adopt_api
 #undef adopt_scope
