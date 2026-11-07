@@ -128,10 +128,7 @@ final class V3Launcher {
                 runtimeMetadata=new String(entry.record.metadata,StandardCharsets.UTF_8);break;
             }
         Context host=context.createPackageContext("org.matonos.linux",0);
-        // Forwarder backend: GL.maton over the Vulkan forwarder, no DRM device in the sandbox.
-        // Mesa backend: stock GL.default drives the render node directly.
-        boolean forwarderBackend="forwarder".equals(org.matonos.linux.BuildConfig.GPU_BACKEND);
-        boolean matonGlEnabled=forwarderBackend&&runtimeMetadata!=null;
+        boolean matonGlEnabled=runtimeMetadata!=null;
         File deployment=PackageDeployment.prepare(context,ref);
         runtime.setFlatpakDirectories(deployment,new File(deployment,"system"));
         if(matonGlEnabled) {
@@ -182,7 +179,6 @@ final class V3Launcher {
                 // Prefer Wayland; X11-only apps still reach Xwayland via DISPLAY.
                 "--env=GDK_BACKEND=wayland,x11", "--env=QT_QPA_PLATFORM=wayland;xcb",
                 "--env=ELECTRON_OZONE_PLATFORM_HINT=auto", "--env=MOZ_ENABLE_WAYLAND=1");
-        if(!forwarderBackend)command.add("--device=dri");
         // GL.maton is the only GL driver: our Zink (same glvnd vendor name
         // "mesa" as GL.default, so the two must not be mixed) over the Vulkan
         // forwarder. Xwayland uses private AHB import rather than DRI3; Kopper

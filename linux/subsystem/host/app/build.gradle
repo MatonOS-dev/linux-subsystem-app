@@ -60,11 +60,6 @@ def packageMkfsErofs = tasks.register('packageMkfsErofs', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn packageMkfsErofs }
 
-// The APK is built for ONE GPU backend: forwarder (Vulkan forwarder + GL.maton)
-// or mesa (stock GL.default on the render node). Backend files: linux/gpu-backends/<name>.
-def gpuBackend = project.findProperty('gpuBackend')?.toString() ?: System.getenv('MATON_GPU_BACKEND') ?: 'forwarder'
-if (!(gpuBackend in ['forwarder', 'mesa'])) throw new GradleException("Unknown GPU backend '${gpuBackend}' (forwarder|mesa)")
-
 def vulkanOutput = System.getenv('MATON_VULKAN_OUT') ?: "$aospRoot/out/matonos/vulkan-forward"
 def vulkanHeaders = System.getenv('MATON_VULKAN_HEADERS') ?: "$vulkanOutput/src/Vulkan-Headers-1.4.341"
 def buildVulkanForward = tasks.register('buildVulkanForward', Exec) {
@@ -103,7 +98,7 @@ def packageGlMaton = tasks.register('packageGlMaton', Sync) {
     from(new File(glMatonOutput, 'gl32')) { into 'gl-maton-i386' }
     into glMatonAssets
 }
-if (gpuBackend == 'forwarder') tasks.named('preBuild').configure { dependsOn packageGlMaton }
+tasks.named('preBuild').configure { dependsOn packageGlMaton }
 
 // Generated stubs carry this dex as their only code (StubGenerator embeds it).
 def stubLoaderResources = new File(layout.buildDirectory.get().asFile, 'generated/stub-loader')
@@ -201,10 +196,9 @@ android {
         versionCode realVersionCode; versionName '1.0'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk { abiFilters 'x86_64' }
-        buildConfigField 'String', 'GPU_BACKEND', '"' + gpuBackend + '"'
         externalNativeBuild { cmake { arguments '-DMATON_COMPOSITOR_ROOT=' + projectDir.absolutePath + '/../..', '-DMATON_AOSP_ROOT=' + aospRoot, '-DMATON_COMPOSITOR_BUILD=' + (System.getenv('MATON_COMPOSITOR_BUILD') ?: "$aospRoot/out/matonos/compositor"), '-DMATON_PIPEWIRE_BUILD=' + pipewireOutput } }
     }
-    buildFeatures { aidl true; buildConfig true }
+    buildFeatures { aidl true }
     packaging {
         jniLibs {
             // Keep extractNativeLibs=true for the broker in adb-installed updates.
