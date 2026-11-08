@@ -55,3 +55,40 @@ for loader in loaders:
     assert trace.index(b"supervisor-descendant-status")<trace.index(b"supervisor-main-status"),trace
     assert b" 9472" in trace,trace # adopted child's exit 37, in wait-status encoding
     print(f"PASS {os.path.basename(loader)} reaps adopted child while main lives, preserves main exit 23")
+
+    def stray_session(directory,stub):
+        pids=os.path.join(directory,"pids")
+        command=[loader,"--supervise","--android-filter",child,"stray",pids]
+        if stub:
+            # Stand-in for the stub process; the supervisor's PDEATHSIG fires when it dies.
+            command=[sys.executable,"-c","import os,subprocess,sys,signal;subprocess.Popen([sys.argv[1],'--supervise','--parent-pid',str(os.getpid())]+sys.argv[3:]);signal.pause()",*command]
+        parent=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        deadline=time.monotonic()+5
+        while not os.path.exists(pids) and time.monotonic()<deadline:time.sleep(0.01)
+        time.sleep(0.05)
+        tree=[int(x) for x in open(pids).read().split()]
+        assert len(tree)==2,tree
+        return parent,tree
+    def gone(pids):
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            alive=[p for p in pids if os.path.exists(f"/proc/{p}") and open(f"/proc/{p}/stat").read().rsplit(")",1)[1].split()[0]!="Z"]
+            if not alive:return True
+            time.sleep(0.02)
+        return False
+    with tempfile.TemporaryDirectory(prefix="v3-supervise-stray-") as directory:
+        session,tree=stray_session(directory,False)
+        session.terminate()
+        assert session.wait(timeout=5)==128+15,(loader,session.returncode)
+        survivors=[p for p in tree if not gone([p])]
+        for p in survivors:os.kill(p,9)
+        assert not survivors,f"{loader}: adopted descendants survived SIGTERM: {survivors}"
+        assert b"supervisor-terminate" in session.stderr.read()
+    print(f"PASS {os.path.basename(loader)} SIGTERM kills the adopted descendant tree")
+    with tempfile.TemporaryDirectory(prefix="v3-supervise-stub-") as directory:
+        stub,tree=stray_session(directory,True)
+        stub.kill();stub.wait(timeout=5)
+        survivors=[p for p in tree if not gone([p])]
+        for p in survivors:os.kill(p,9)
+        assert not survivors,f"{loader}: adopted descendants survived the stub's death: {survivors}"
+    print(f"PASS {os.path.basename(loader)} stub death (PDEATHSIG) kills the adopted descendant tree")

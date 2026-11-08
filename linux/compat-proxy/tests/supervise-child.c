@@ -21,6 +21,21 @@ int main(int argc,char **argv) {
          * is still alive. --supervise must remain the Android-visible child. */
         return 0;
     }
+    if(argc>2 && !strcmp(argv[1],"stray")) {
+        /* A daemonised tree that never exits (Steam's helpers): the middle
+         * process exits so the pair is adopted by the supervisor. */
+        pid_t middle=fork();if(middle<0)return 30;
+        if(!middle) {
+            pid_t a=fork();if(a<0)_exit(31);
+            if(!a){pid_t b=fork();if(b<0)_exit(32);
+                if(!b){for(;;)pause();}
+                FILE *f=fopen(argv[2],"w");if(!f)_exit(33);fprintf(f,"%d %d\n",getpid(),b);fclose(f);
+                for(;;)pause();}
+            _exit(0);
+        }
+        int status;if(waitpid(middle,&status,0)!=middle)return 34;
+        for(;;)pause();
+    }
     if(argc>1 && !strcmp(argv[1],"live")) {
         int pipefd[2];if(pipe(pipefd))return 10;
         pid_t middle=fork();if(middle<0)return 11;

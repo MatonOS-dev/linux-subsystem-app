@@ -55,4 +55,5 @@ struct mv_wsi_driver { VkDevice device;
     PFN_vkDestroyImage destroy; PFN_vkFreeMemory free;
 };
 VkResult mv_wsi_import_ahb(struct mv_wsi_driver *,struct AHardwareBuffer *,VkExtent2D,VkFormat,VkImage *,VkDeviceMemory *);
+extern void (*mv_wsi_log_hook)(const char *,unsigned long);
 #endif

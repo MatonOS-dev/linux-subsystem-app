@@ -20,6 +20,12 @@ int main(int argc,char **argv){
     if(!strcmp(argv[1],"check")){
         assert(!strcmp((char *)getauxval(AT_EXECFN),"./image"));
         assert(!strcmp(argv[0],"relative-argv0"));
+        /* Kernel string layout (Wine's preloader rewrites argv in place):
+         * argv strings, then env strings, then AT_EXECFN, ascending, packed. */
+        char *next=argv[0];
+        for(int i=0;i<argc;i++){assert(argv[i]==next);next+=strlen(argv[i])+1;}
+        for(char **e=environ;*e;e++){assert(*e==next);next+=strlen(*e)+1;}
+        assert((char *)getauxval(AT_EXECFN)==next);
         assert(!chdir("/"));
         char after[PATH_MAX];ssize_t m=readlink("/proc/self/exe",after,sizeof(after)-1);
         assert(m==n && !memcmp(after,exe,(size_t)n));

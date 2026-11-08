@@ -25,7 +25,7 @@ with open(sys.argv[1],'r+b') as f:
 PYCODE
 # Android's ELF32 pthread owner-TID is 16 bits. A host with a large pid_max
 # needs an isolated PID namespace, otherwise native bionic mutexes deadlock.
-for base in 0x10001000 0x37a53000 0x4ffff000; do
+for base in 0xe0000000 0x80000000; do
  unshare -Urpf --mount-proc env LD_LIBRARY_PATH="$runtime/lib/bionic" \
   timeout 15 "$output/start" "$output/peer" "$base"
 done
@@ -33,7 +33,7 @@ done
 # Without the inherited exemption, the linker dies before a handler exists.
 set +e
 unshare -Urpf --mount-proc env LD_LIBRARY_PATH="$runtime/lib/bionic" \
- MATON_TEST_NO_NATIVE_EXEMPT=1 timeout 15 "$output/start" "$output/peer" 0x30000000 \
+ MATON_TEST_NO_NATIVE_EXEMPT=1 timeout 15 "$output/start" "$output/peer" 0xb0000000 \
  >"$output/no-exemption.log" 2>&1
 negative_status=$?
 set -e

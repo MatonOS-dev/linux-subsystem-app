@@ -3,7 +3,7 @@
  * only native runtime code is mapped here, never the Linux payload. */
 #ifndef MATON_BIONIC32_H
 #define MATON_BIONIC32_H
-#define BIONIC32_SIZE UINT32_C(0x10000000)
+#include "bionic32-range.h"
 #define BIONIC32_ENV "MATON_V3_BIONIC32_BASE="
 extern uint32_t proxy_bionic32_base;
 extern uint64_t proxy_bionic64_base;

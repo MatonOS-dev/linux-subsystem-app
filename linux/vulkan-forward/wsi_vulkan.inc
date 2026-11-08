@@ -10,7 +10,23 @@ struct mv_wayland_surface {
     struct mv_wsi_surface state;
 };
 
+/* Presentable formats: Vulkan format -> UNORM image the AHB is imported as, AHB format, Wayland fourcc.
+ * SRGB entries share the UNORM AHB; only the Vulkan image format differs. */
+struct mv_wsi_format { VkFormat vk,base; uint32_t ahb,drm; };
+static const struct mv_wsi_format mv_wsi_formats_table[]={
+    {VK_FORMAT_R8G8B8A8_UNORM,VK_FORMAT_R8G8B8A8_UNORM,1u,0x34324241u},      /* AB24 */
+    {VK_FORMAT_R8G8B8A8_SRGB,VK_FORMAT_R8G8B8A8_UNORM,1u,0x34324241u},
+    {VK_FORMAT_B8G8R8A8_UNORM,VK_FORMAT_B8G8R8A8_UNORM,5u,0x34325241u},      /* AR24, HAL BGRA_8888 */
+    {VK_FORMAT_B8G8R8A8_SRGB,VK_FORMAT_B8G8R8A8_UNORM,5u,0x34325241u},
+    {VK_FORMAT_A2B10G10R10_UNORM_PACK32,VK_FORMAT_A2B10G10R10_UNORM_PACK32,0x2bu,0x30334241u}, /* AB30 */
+};
+static const struct mv_wsi_format *mv_wsi_format_find(VkFormat f) {
+    for(unsigned j=0;j<sizeof(mv_wsi_formats_table)/sizeof(mv_wsi_formats_table[0]);j++)
+        if(mv_wsi_formats_table[j].vk==f)return &mv_wsi_formats_table[j];
+    return 0;
+}
 struct mv_wsi_live_context {
+    const struct mv_wsi_format *format;
     struct mv_device *device;
     struct mv_wayland_surface *surface;
     PFN_vkCreateImage create_image;
@@ -42,6 +58,11 @@ struct mv_ahb_desc { uint32_t width,height,layers,format; uint64_t usage; uint32
 static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D extent,VkFormat format,const VkImageFormatListCreateInfo *views,
         struct AHardwareBuffer **ahb,VkImage *image,VkDeviceMemory *memory,uint64_t *image_token) {
     (void)token;struct mv_wsi_live_context *c=opaque;*ahb=0;*image=0;*memory=0;
+    const struct mv_wsi_format *fmt=mv_wsi_format_find(format);
+    if(!fmt){mv_loud("maton-vulkan: WSI allocate with unknown format",format);return VK_ERROR_FORMAT_NOT_SUPPORTED;}
+    c->format=fmt;VkFormat base=fmt->base;
+    VkFormat pair[2]={format,base};VkImageFormatListCreateInfo own={0};
+    if(!views&&base!=format){own=(VkImageFormatListCreateInfo){.viewFormatCount=2,.pViewFormats=pair};views=&own;}
     VkImageFormatListCreateInfo list={0};
     if(views)list=(VkImageFormatListCreateInfo){.sType=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
         .viewFormatCount=views->viewFormatCount,.pViewFormats=views->pViewFormats};
@@ -53,7 +74,7 @@ static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D exte
         .sharingMode=c->sharing,.queueFamilyIndexCount=c->sharing==VK_SHARING_MODE_CONCURRENT?c->family_count:0,
         .pQueueFamilyIndices=c->sharing==VK_SHARING_MODE_CONCURRENT?c->families:0,.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED};
     struct mv_scope scope;if(!mv_enter(&scope))return VK_ERROR_INITIALIZATION_FAILED;
-    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=format==VK_FORMAT_B8G8R8A8_UNORM?5u:1u,
+    struct mv_ahb_desc desc={.width=extent.width,.height=extent.height,.layers=1,.format=fmt->ahb,
         .usage=(UINT64_C(1)<<8)|(UINT64_C(1)<<9)|(UINT64_C(1)<<11)}; /* GPU sampled/color output + compositor overlay */
     mv_trace_result("maton-vulkan: WSI entering client AHB allocator",mv_ahb_allocate?0:-1,0);
     int ar=mv_ahb_allocate?mv_ahb_allocate(&desc,ahb):-1;
@@ -67,7 +88,7 @@ static VkResult mv_wsi_live_allocate(void *opaque,uint64_t token,VkExtent2D exte
     VkResult r=c->get_ahb_properties(c->device->base.android,*ahb,&hp);
     mv_trace_result("maton-vulkan: WSI AHB Vulkan properties returned",r,hp.memoryTypeBits);
     if(r)mv_trace_result("maton-vulkan: WSI AHB properties failed",r,0);
-    if(!r && (fp.format!=format || !(fp.formatFeatures&VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) || !hp.memoryTypeBits || !hp.allocationSize))
+    if(!r && (fp.format!=base || !(fp.formatFeatures&VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) || !hp.memoryTypeBits || !hp.allocationSize))
         r=VK_ERROR_FORMAT_NOT_SUPPORTED;
     if(r==VK_ERROR_FORMAT_NOT_SUPPORTED)mv_trace_result("maton-vulkan: WSI AHB properties unsupported",r,hp.memoryTypeBits);
     if(!r){r=c->create_image(c->device->base.android,&ci,0,image);if(r)mv_trace_result("maton-vulkan: WSI imported image create failed",r,0);}
@@ -108,7 +129,7 @@ static VkResult mv_wsi_live_create_buffer(void *opaque,struct AHardwareBuffer *a
         switch_back(&scope);
         if(rc) {mv_trace_result("maton-vulkan: WSI AHB send-handle failed",rc,0);mv_close(pair[0]);mv_close(pair[1]);return VK_ERROR_INITIALIZATION_FAILED;}
         *buffer=c->surface->x11 ? (void *)mv_x11_buffer_create(c->surface->x11,pair[0],extent.width,extent.height,5u) :
-            (void *)mv_wl_ahb_create_buffer(c->surface->dmabuf,extent.width,extent.height,0x34324241u,pair[0]);
+            (void *)mv_wl_ahb_create_buffer(c->surface->dmabuf,extent.width,extent.height,c->format->drm,pair[0]);
         mv_close(pair[0]);mv_close(pair[1]);
         if(!*buffer){mv_trace_result(c->surface->x11?"maton-vulkan: WSI X11 buffer failed (stage*1000+errno)":"maton-vulkan: WSI Wayland buffer failed",c->surface->x11?mv_x11_last_error:0,0);return VK_ERROR_SURFACE_LOST_KHR;}
         return VK_SUCCESS;
@@ -298,16 +319,40 @@ static VkResult mv_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice ph
     return VK_SUCCESS;
 }
 
+static int mv_wsi_format_importable(struct mv_handle *h,const struct mv_wsi_format *f) {
+    VkFormat views[2]={f->vk,f->base};
+    VkImageFormatListCreateInfo list={.sType=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,.viewFormatCount=f->vk==f->base?1:2,.pViewFormats=views};
+    VkPhysicalDeviceExternalImageFormatInfo ext={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,.pNext=&list,
+        .handleType=VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
+    VkPhysicalDeviceImageFormatInfo2 info={.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,.pNext=&ext,.format=f->vk,
+        .type=VK_IMAGE_TYPE_2D,.tiling=VK_IMAGE_TILING_OPTIMAL,.usage=MV_WSI_USAGE,
+        .flags=f->vk==f->base?0:VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT|VK_IMAGE_CREATE_EXTENDED_USAGE_BIT};
+    VkExternalImageFormatProperties eprops={.sType=VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+    VkImageFormatProperties2 props={.sType=VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,.pNext=&eprops};
+    struct mv_scope scope;if(!mv_enter(&scope))return 0;
+    PFN_vkGetPhysicalDeviceImageFormatProperties2 q=(void *)mv_gipa(h->instance->base.android,"vkGetPhysicalDeviceImageFormatProperties2");
+    VkResult r=q?q(h->android,&info,&props):VK_ERROR_INITIALIZATION_FAILED;
+    switch_back(&scope);
+    int ok=!r&&(eprops.externalMemoryProperties.externalMemoryFeatures&VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
+    if(!ok&&r!=VK_ERROR_FORMAT_NOT_SUPPORTED)mv_loud("maton-vulkan: WSI surface format probe failed (format)",f->vk);
+    return ok;
+}
 static VkResult mv_vkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physical,VkSurfaceKHR surface,
         uint32_t *count,VkSurfaceFormatKHR *formats) {
     struct mv_handle *h=(void *)physical;
     if (!count || !mv_wsi_surface((VkInstance)h->instance,surface)) return VK_ERROR_SURFACE_LOST_KHR;
-    if (!formats) {*count=1;return VK_SUCCESS;}
-    if (!*count) return VK_INCOMPLETE;
-    /* X11 visuals are BGRX/BGRA (what Zink/Kopper asks for); Wayland stays RGBA. */
+    /* X11 visuals are BGRX/BGRA (what Zink/Kopper asks for), so X11 gets the BGRA pair only.
+     * Wayland gets every table format Android Vulkan can import from an AHB as a colour attachment. */
     struct mv_wayland_surface *s=mv_wsi_surface((VkInstance)h->instance,surface);
-    formats[0]=(VkSurfaceFormatKHR){s->x11?VK_FORMAT_B8G8R8A8_UNORM:VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
-    *count=1;return VK_SUCCESS;
+    VkFormat list[sizeof(mv_wsi_formats_table)/sizeof(mv_wsi_formats_table[0])];uint32_t n=0;
+    for(unsigned j=0;j<sizeof(mv_wsi_formats_table)/sizeof(mv_wsi_formats_table[0]);j++) {
+        VkFormat f=mv_wsi_formats_table[j].vk;
+        if(s->x11 ? (f==VK_FORMAT_B8G8R8A8_UNORM||f==VK_FORMAT_B8G8R8A8_SRGB) : mv_wsi_format_importable(h,&mv_wsi_formats_table[j]))list[n++]=f;
+    }
+    if (!formats) {*count=n;return VK_SUCCESS;}
+    uint32_t w=*count<n?*count:n;
+    for(uint32_t j=0;j<w;j++)formats[j]=(VkSurfaceFormatKHR){list[j],VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+    *count=w;return w<n?VK_INCOMPLETE:VK_SUCCESS;
 }
 
 static VkResult mv_vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice physical,VkSurfaceKHR surface,
@@ -342,7 +387,7 @@ static VkResult mv_create_swapchain(VkDevice device,const VkSwapchainCreateInfoK
     if(surface->x11) {
         /* A window resized since the caps query is reported as SUBOPTIMAL on
          * acquire/present (as Mesa), not as a create failure. */
-        if(info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        if(info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM&&info->imageFormat!=VK_FORMAT_B8G8R8A8_SRGB)return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
     if(!surface->x11&&!surface->sync)surface->sync=mv_wl_sync_surface_create(surface->dmabuf,surface->surface);
     if(!surface->x11&&!surface->sync)return VK_ERROR_FEATURE_NOT_PRESENT;

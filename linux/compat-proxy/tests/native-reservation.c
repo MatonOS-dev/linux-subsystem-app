@@ -7,7 +7,7 @@ static void inspect(int sig,siginfo_t *info,void *opaque) {
     ARCH_CONTEXT((ucontext_t *)opaque,ARCH_RESULT)=4321;
 }
 int main(void) {
-    proxy_bionic32_base=0x40000000;
+    proxy_bionic32_base=0x90000000;
     proxy_bionic64_base=UINT64_C(0x2000000000);
     CHECK(proxy_native_prepare()==0);
     CHECK(RAW(PROXY_SC_mmap,proxy_bionic64_base,BIONIC64_SIZE,PROT_READ,

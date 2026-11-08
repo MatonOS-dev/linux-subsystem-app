@@ -1398,12 +1398,20 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(writing)vfs_resolve_cache_invalidate();
     if(writing){e=vfs_mount_readonly(pm);if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
     if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
-    /* bwrap reads the overflow IDs for its uid maps; Android's policy denies
-     * apps the generic proc_sysctl file. Serve the kernel default (65534). */
-    if(nr==PROXY_SC_openat && !(a[2]&(O_WRONLY|O_RDWR)) && (p_equal(p,"/proc/sys/kernel/overflowuid") || p_equal(p,"/proc/sys/kernel/overflowgid"))){
-        long fd=RAW(PROXY_SC_memfd_create,"v3-overflowid",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);
-        if(fd>=0 && (RAW(PROXY_SC_write,fd,"65534\n",6,0,0,0)!=6 || RAW(PROXY_SC_lseek,fd,0,SEEK_SET,0,0,0)!=0)){RAW(PROXY_SC_close,fd,0,0,0,0,0);fd=-EIO;}
-        e=fd;goto done;
+    /* Android's policy denies apps the generic proc_sysctl files. Serve
+     * values that are fixed on MatonOS: the overflow IDs (kernel default, bwrap
+     * reads them for its uid maps) and fs.file-max, which MatonOS init sets to
+     * LONG_MAX like systemd (init.pc_x86_64.rc; protonfixes reads it). */
+    if(nr==PROXY_SC_openat && !(a[2]&(O_WRONLY|O_RDWR))){
+        const char *value=0;
+        if(p_equal(p,"/proc/sys/kernel/overflowuid") || p_equal(p,"/proc/sys/kernel/overflowgid"))value="65534\n";
+        else if(p_equal(p,"/proc/sys/fs/file-max"))value="9223372036854775807\n";
+        if(value){
+            long len=(long)p_len(value);
+            long fd=RAW(PROXY_SC_memfd_create,"v3-sysctl",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);
+            if(fd>=0 && (RAW(PROXY_SC_write,fd,value,len,0,0,0)!=len || RAW(PROXY_SC_lseek,fd,0,SEEK_SET,0,0,0)!=0)){RAW(PROXY_SC_close,fd,0,0,0,0,0);fd=-EIO;}
+            e=fd;goto done;
+        }
     }
     if(namespaces && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR))){
         size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
@@ -2027,11 +2035,7 @@ int proxy_native_prepare(void) {
         /* 4-GiB aligned interval; Scudo reserves several GiB of virtual space. */
         proxy_bionic64_base=(UINT64_C(0x20)+(random%0x1000))*UINT64_C(0x100000000);
     }
-    if(state_gpu_bridge && !proxy_bionic32_base) {
-        uint32_t random;
-        if(RAW(PROXY_SC_getrandom,&random,sizeof(random),0,0,0,0)!=sizeof(random))return -EIO;
-        proxy_bionic32_base=UINT32_C(0x10000000)+(random%UINT32_C(0x40000))*4096;
-    }
+    if(state_gpu_bridge && !proxy_bionic32_base)proxy_bionic32_base=BIONIC32_BASE;
 #if !defined(__i386__)
     /* The foreign gateway is also inherited by older filters. Keep its page
      * occupied until a kernel ABI exec replaces this address space. */
@@ -2335,11 +2339,12 @@ static void exec_close_fds(void){
 
 /* Syscalls neither emulated nor allowed by Android: report each number once,
  * without --trace, so an app failing on ENOSYS names the missing syscall. */
-static void unhandled_once(long id,long kernel_nr){
+static void unhandled_once(long id,long kernel_nr,uintptr_t pc){
     static unsigned long seen[(PROXY_SC_count+63)/64];
     if(id>=0 && id<PROXY_SC_count){unsigned long bit=1UL<<(id%64);
         if(__atomic_fetch_or(&seen[id/64],bit,__ATOMIC_RELAXED)&bit)return;}
-    proxy_log("unhandled",kernel_nr,id);
+    proxy_log("unhandled-enosys",kernel_nr,id);
+    proxy_log("unhandled-enosys-pc",kernel_nr,(long)pc);
 }
 /* Android loads platform libraries lazily, after the initial syscall filter
  * snapshot. Their syscall sites keep native Android semantics. */
@@ -2541,6 +2546,14 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
          nr==PROXY_SC_pivot_root || (nr==PROXY_SC_clone && (a[0]&NS_FLAGS)));
     uint32_t filter_action=virtual_namespace_setup?SECCOMP_RET_ALLOW:
         payload_seccomp_action(info->si_syscall,a,(uintptr_t)info->si_call_addr);
+    if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_TRAP && chained.handler<=1) {
+        /* The payload filter blocks this call but the app has no SIGSYS
+         * handler. Fail the call with ENOSYS instead of killing the app;
+         * log every occurrence with its site. */
+        proxy_log("blocked-enosys",info->si_syscall,filter_action&SECCOMP_RET_DATA);
+        proxy_log("blocked-enosys-pc",original,(long)(uintptr_t)info->si_call_addr);
+        result=-ENOSYS;goto finish;
+    }
     if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_TRAP) {
         /* Deliver against the interrupted payload frame, never a resident raw
          * syscall frame. Handler register edits must survive our epilogue. */
@@ -2599,6 +2612,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     if(nr<0)goto finish;
     if(native_mapping_denied(nr,a)){proxy_log("fail native-overlap",nr,(long)a[0]);proxy_log("fail map-args",(long)a[1],(long)a[2]);result=-EACCES;goto finish;}
     if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
+    if(nr==PROXY_SC_mprotect && (a[2]&PROT_EXEC) && app_allowed(nr)){result=proxy_exec_mprotect(a);goto finish;}
     if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
     if(net_handled)goto finish;
@@ -3010,7 +3024,7 @@ finish:
             emit(" ip=");crash_hex((uintptr_t)info->si_call_addr);emit("\n");
         }
     }
-    else if(result==-ENOSYS)unhandled_once(original,info->si_syscall);
+    else if(result==-ENOSYS)unhandled_once(original,info->si_syscall,(uintptr_t)info->si_call_addr);
 clean_mask:
     /* Counter-disabled builds return zero here. Emitting a line of eight
      * zeroes cost dozens of log writes per filesystem syscall during runtime
@@ -3124,6 +3138,10 @@ void proxy_state(struct state *s){
  proxy_count_fd=(int)state_word(s,(uint64_t)(int64_t)proxy_count_fd);
  if(s->reading && proxy_count_fd>=0)proxy_raw_count_enable();
  proxy_bionic32_base=(uint32_t)state_word(s,proxy_bionic32_base);
+ if(s->reading && proxy_bionic32_base &&
+    (proxy_bionic32_base<BIONIC32_FLOOR || proxy_bionic32_base>BIONIC32_CEIL-BIONIC32_SIZE)) {
+     proxy_log("fail bionic32-base-low",0,(long)proxy_bionic32_base);s->error=-EINVAL;return;
+ }
  proxy_bionic64_base=state_word(s,proxy_bionic64_base);
  uint64_t native_count=state_count(s,inherited_native_count);
  if(s->reading) {

@@ -43,7 +43,16 @@ static const char *gpu_bridge_error(void) { return dlerror(); }
 #define DOWN(x) ((x)&~(PAGE-1))
 #define UP(x) (((x)+PAGE-1)&~(PAGE-1))
 #define STACK_SIZE (4UL<<20)
-struct mapped { uintptr_t entry, phdr, base, area, size, target; unsigned phnum; char interp[4096]; };
+/* A staged image: ET_DYN is one contiguous span; ET_EXEC keeps the kernel's
+ * per-segment layout, one span per run of touching PT_LOAD pages, so the gaps
+ * between them (wine-preloader: 0x08048000 and 0x7d400000) are neither
+ * reserved, checked for collisions nor moved over live mappings. */
+struct span { uintptr_t low, area, target, size; };
+struct mapped { uintptr_t entry, phdr, base; struct span *spans; unsigned count, phnum; char interp[4096]; };
+static void release_spans(struct mapped *m,int unmap){
+    for(unsigned i=0;unmap && i<m->count;i++)RAW(PROXY_SC_munmap,m->spans[i].area,m->spans[i].size,0,0,0,0);
+    vfs_free(m->spans);m->spans=NULL;m->count=0;
+}
 static int resident_collision(uintptr_t low,uintptr_t high) {
     if(proxy_native_overlap(low,high-low))return 1;
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
@@ -81,6 +90,44 @@ static void supervisor_pid_text(char out[24],long value) {
 static void strip_supervise_option(int argc,char **argv) {
     for(int i=1;i<argc;i++)argv[i]=argv[i+1];
 }
+/* SIGKILL every process this subreaper adopted, until none is left. A child's
+ * own children reparent here as it dies, so repeat until waitid sees none. */
+static void supervisor_kill_tree(long self) {
+    char buf[2048];long killed=0;
+    for(int round=0;;round++) {
+        long found=0,dir=RAW(PROXY_SC_openat,AT_FDCWD,"/proc",O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
+        if(dir<0){proxy_log("fail supervisor-kill /proc",dir,self);return;}
+        long got;
+        while((got=RAW(PROXY_SC_getdents64,dir,buf,sizeof(buf),0,0,0))>0)
+            for(long off=0;off<got;) {
+                struct { uint64_t ino; int64_t off; unsigned short reclen; unsigned char type; char name[]; } *e=(void *)(buf+off);off+=e->reclen;
+                long pid=0;const char *c=e->name;
+                for(;*c>='0'&&*c<='9';c++)pid=pid*10+*c-'0';
+                if(*c || !pid || pid==self)continue;
+                char path[48]="/proc/",stat[512];char *o=path+6;supervisor_pid_text(o,pid);o+=p_len(o);p_copy(o,"/stat",6);
+                long f=RAW(PROXY_SC_openat,AT_FDCWD,path,O_RDONLY|O_CLOEXEC,0,0,0);if(f<0)continue;
+                long n=RAW(PROXY_SC_read,f,stat,sizeof(stat)-1,0,0,0);RAW(PROXY_SC_close,f,0,0,0,0,0);if(n<=0)continue;
+                stat[n]=0;char *close=0;for(char *q=stat;*q;q++)if(*q==')')close=q;
+                if(!close || close[1]!=' ' || !close[2] || close[3]!=' ')continue;
+                long ppid=0;for(c=close+4;*c>='0'&&*c<='9';c++)ppid=ppid*10+*c-'0';
+                if(ppid!=self)continue;
+                if(!RAW(PROXY_SC_kill,pid,SIGKILL,0,0,0,0)){found++;killed++;}
+            }
+        RAW(PROXY_SC_close,dir,0,0,0,0,0);
+        /* Each killed child becomes reapable after handing its own children
+         * to us; reap that many, then rescan for the new orphans. */
+        siginfo_t info;
+        for(long reaped=0;reaped<found;) {
+            long waited=RAW(PROXY_SC_waitid,0,0,&info,4,0,0); /* P_ALL, WEXITED */
+            if(waited==-EINTR)continue;
+            if(waited<0)break;
+            reaped++;
+        }
+        if(!found && RAW(PROXY_SC_waitid,0,0,&info,4|1,0,0)==-ECHILD)break; /* WNOHANG */
+        if(round>4096){proxy_log("fail supervisor-kill descendants keep forking",killed,self);break;}
+    }
+    proxy_log("supervisor-terminate killed descendants",killed,self);
+}
 static int supervise_launch(int argc,char **argv,char **environ) {
     if(argc<2 || !p_equal(argv[1],"--supervise"))return -1;
 
@@ -101,8 +148,10 @@ static int supervise_launch(int argc,char **argv,char **environ) {
         strip_supervise_option(argc,argv);
         return (int)RAW(PROXY_SC_execve,argv[0],argv,environ,0,0,0)==0?0:2;
     }
+    /* SIGTERM, not SIGKILL: the supervisor must outlive the stub long enough
+     * to kill the Linux processes it adopted (see supervisor_kill_tree). */
     if(expected_parent &&
-       (RAW(PROXY_SC_prctl,PR_SET_PDEATHSIG,SIGKILL,0,0,0,0)<0 ||
+       (RAW(PROXY_SC_prctl,PR_SET_PDEATHSIG,SIGTERM,0,0,0,0)<0 ||
         RAW(PROXY_SC_getppid,0,0,0,0,0,0)!=expected_parent))return 2;
 
     long supervisor=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
@@ -121,25 +170,44 @@ static int supervise_launch(int argc,char **argv,char **environ) {
 
     int app_status=2,main_reaped=0;
     if(proxy_trace)proxy_log("supervisor-wait-main",child,supervisor);
-    /* Wait on every child from the start: adopted orphans may exit while
-     * Flatpak's main process remains alive for the whole desktop session.
-     * Blocking waitid is woken by child state changes without a SIGCHLD
-     * handler or a check/sleep race. Only our direct/adopted children are
-     * eligible; payload parents retain their own children's wait status. */
+    /* The stub ends the session (Quit, or a subsystem update deleting the APK
+     * every Linux process runs from) by SIGTERM, directly or as the PDEATHSIG
+     * of the stub process. Adopted descendants would otherwise escape to init
+     * and keep running from the old install, so kill the whole tree.
+     * Signals arrive through a signalfd; the child above keeps a clean mask.
+     * Only our direct/adopted children are reaped; payload parents retain
+     * their own children's wait status. */
+    uint64_t mask=(UINT64_C(1)<<(SIGCHLD-1))|(UINT64_C(1)<<(SIGTERM-1))|(UINT64_C(1)<<(SIGHUP-1))|(UINT64_C(1)<<(SIGINT-1));
+    long sfd=RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&mask,0,8,0,0);
+    if(!sfd)sfd=RAW(PROXY_SC_signalfd4,-1,&mask,8,O_CLOEXEC,0,0);
+    if(sfd<0){proxy_log("fail supervisor-signalfd",sfd,supervisor);RAW(PROXY_SC_kill,child,SIGKILL,0,0,0,0);supervisor_kill_tree(supervisor);return 2;}
     for(;;) {
-        siginfo_t info={0};
-        long waited=RAW(PROXY_SC_waitid,0,0,&info,4,0,0); /* P_ALL, WEXITED */
-        if(waited==-EINTR)continue;
-        if(waited==-ECHILD)break;
-        if(waited<0)return 2;
-        long status=info.si_code==CLD_EXITED?(long)info.si_status<<8:
-                    info.si_status|(info.si_code==CLD_DUMPED?0x80:0);
-        if(info.si_pid==child) {
-            main_reaped=1;
-            app_status=info.si_code==CLD_EXITED?info.si_status:128+info.si_status;
-            if(proxy_trace)proxy_log("supervisor-main-status",child,status);
-        } else if(proxy_trace)proxy_log("supervisor-descendant-status",info.si_pid,status);
+        /* Drain first: a child may have exited before SIGCHLD was blocked. */
+        for(;;) {
+            siginfo_t info={0};
+            long waited=RAW(PROXY_SC_waitid,0,0,&info,4|1,0,0); /* P_ALL, WEXITED|WNOHANG */
+            if(waited==-EINTR)continue;
+            if(waited==-ECHILD)goto done;
+            if(waited<0){proxy_log("fail supervisor-waitid",waited,supervisor);return 2;}
+            if(!info.si_pid)break;
+            long status=info.si_code==CLD_EXITED?(long)info.si_status<<8:
+                        info.si_status|(info.si_code==CLD_DUMPED?0x80:0);
+            if(info.si_pid==child) {
+                main_reaped=1;
+                app_status=info.si_code==CLD_EXITED?info.si_status:128+info.si_status;
+                if(proxy_trace)proxy_log("supervisor-main-status",child,status);
+            } else if(proxy_trace)proxy_log("supervisor-descendant-status",info.si_pid,status);
+        }
+        uint32_t signal[32];
+        long n=RAW(PROXY_SC_read,sfd,signal,sizeof(signal),0,0,0);
+        if(n==-EINTR)continue;
+        if(n!=(long)sizeof(signal)){proxy_log("fail supervisor-signalfd-read",n,supervisor);return 2;}
+        if(signal[0]==SIGCHLD)continue;
+        proxy_log("supervisor-terminate signal",(long)signal[0],supervisor);
+        supervisor_kill_tree(supervisor);
+        return 128+(int)signal[0];
     }
+done:
     if(!main_reaped)return 2;
     return app_status;
 }
@@ -209,6 +277,27 @@ long proxy_file_mmap(proxy_arg_t *a) {
     return area;
 failed:
     RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;
+}
+/* Android denies execmod: a private file mapping whose pages were written
+ * (relocated PE images in Wine, patched code) cannot become executable.
+ * Linux allows it, so move the range into anonymous memory, which apps may
+ * make executable, and retry. The range loses its file backing in maps. */
+long proxy_exec_mprotect(proxy_arg_t *a) {
+    long r=RAW(PROXY_SC_mprotect,a[0],a[1],a[2],0,0,0);
+    if(r!=-EACCES || !(a[2]&PROT_EXEC) || (a[0]&4095) || !a[1])return r;
+    size_t size=((size_t)a[1]+4095)&~(size_t)4095;
+    long copy=RAW(PROXY_SC_mmap,0,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if(PROXY_RAW_ERR(copy)){proxy_log("fail exec-mprotect-copy",a[0],copy);return r;}
+    long readable=RAW(PROXY_SC_mprotect,a[0],size,PROT_READ,0,0,0);
+    if(readable){proxy_log("fail exec-mprotect-read",a[0],readable);RAW(PROXY_SC_munmap,copy,size,0,0,0,0);return r;}
+    p_copy((void *)(uintptr_t)copy,(const void *)(uintptr_t)a[0],size);
+    long area=RAW(PROXY_SC_mmap,a[0],size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
+    if(area!=(long)a[0]){proxy_log("fail exec-mprotect-remap",a[0],area);RAW(PROXY_SC_munmap,copy,size,0,0,0,0);return PROXY_RAW_ERR(area)?area:-ENOMEM;}
+    p_copy((void *)(uintptr_t)area,(const void *)(uintptr_t)copy,size);
+    RAW(PROXY_SC_munmap,copy,size,0,0,0,0);
+    r=RAW(PROXY_SC_mprotect,a[0],size,a[2],0,0,0);
+    proxy_log(r?"fail exec-mprotect-anon":"exec-mprotect-anon",a[0],r?r:(long)size);
+    return r;
 }
 static uintptr_t inherited_aux[64];
 uintptr_t proxy_aux(unsigned type){return type<64?inherited_aux[type]:0;}
@@ -314,7 +403,7 @@ static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
     arch_elf_ehdr eh; arch_elf_phdr *ph=NULL;
     long fd=supplied_fd;
     if(fd<0){fd=loader_open(path);if(bad(fd))return (int)fd;}
-    int error=-ENOEXEC;
+    int error=-ENOEXEC;out->spans=NULL;out->count=0;
     if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=(long)sizeof(eh)) goto done;
     if(eh.e_ident[0]!=127 || eh.e_ident[1]!='E' || eh.e_ident[2]!='L' || eh.e_ident[3]!='F' ||
        eh.e_ident[EI_CLASS]!=ARCH_ELF_CLASS || eh.e_machine!=ARCH_ELF_MACHINE ||
@@ -323,24 +412,38 @@ static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
     size_t bytes=eh.e_phnum*sizeof(arch_elf_phdr);
     ph=vfs_alloc(bytes);if(!ph){error=-ENOMEM;goto done;}
     if(proxy_pread_fd(fd,ph,bytes,eh.e_phoff)!=(long)bytes) goto done;
-    uintptr_t low=UINTPTR_MAX,high=0;
-    for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD) {
+    unsigned loads=0;uintptr_t previous=0;
+    for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD && ph[i].p_memsz) {
         if(ph[i].p_filesz>ph[i].p_memsz ||
            (uint64_t)ph[i].p_vaddr+ph[i].p_memsz>UINTPTR_MAX-(PAGE-1)) goto done;
-        if(DOWN(ph[i].p_vaddr)<low) low=DOWN(ph[i].p_vaddr);
-        if(UP(ph[i].p_vaddr+ph[i].p_memsz)>high) high=UP(ph[i].p_vaddr+ph[i].p_memsz);
+        /* ELF requires PT_LOAD ascending by p_vaddr; spans rely on it. */
+        if(loads && ph[i].p_vaddr<previous) goto done;
+        previous=ph[i].p_vaddr;loads++;
     }
-    if(high<=low) goto done;
+    if(!loads) goto done;
+    out->spans=vfs_alloc(loads*sizeof(*out->spans));if(!out->spans){error=-ENOMEM;goto done;}
+    for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD && ph[i].p_memsz) {
+        uintptr_t low=DOWN(ph[i].p_vaddr),high=UP(ph[i].p_vaddr+ph[i].p_memsz);
+        struct span *last=out->count?&out->spans[out->count-1]:NULL;
+        if(last && (eh.e_type==ET_DYN || low<=last->low+last->size)) {
+            if(high>last->low+last->size)last->size=high-last->low;
+        }else out->spans[out->count++]=(struct span){low,0,0,high-low};
+    }
     /* Refuse collision with the resident proxy rather than overwriting it. */
-    if(eh.e_type==ET_EXEC && resident_collision(low,high)) goto done;
+    for(unsigned k=0;eh.e_type==ET_EXEC && k<out->count;k++)
+        if(resident_collision(out->spans[k].low,out->spans[k].low+out->spans[k].size)) goto done;
     /* Stage away from the caller, including fixed-address executables. */
-    long area=RAW(PROXY_SC_mmap,0,high-low,PROT_NONE,
-                  MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-    if(bad(area)) {error=(int)area; goto done;}
-    out->area=area;out->size=high-low;out->target=eh.e_type==ET_EXEC?low:(uintptr_t)area;
-    uintptr_t bias=(uintptr_t)area-low;
-    out->base=eh.e_type==ET_DYN?bias:0; out->entry=bias+eh.e_entry;
+    for(unsigned k=0;k<out->count;k++) {
+        struct span *span=&out->spans[k];
+        long area=RAW(PROXY_SC_mmap,0,span->size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        if(bad(area)) {error=(int)area; goto done;}
+        span->area=area;span->target=eh.e_type==ET_EXEC?span->low:(uintptr_t)area;
+    }
+    /* Addresses the payload sees: ET_DYN at its staging area, ET_EXEC as linked. */
+    uintptr_t load_bias=eh.e_type==ET_DYN?out->spans[0].area-out->spans[0].low:0;
+    out->base=load_bias; out->entry=load_bias+eh.e_entry;
     out->phnum=eh.e_phnum; out->phdr=0; out->interp[0]=0;
+    unsigned current=0;
     for(unsigned i=0;i<eh.e_phnum;i++) {
         arch_elf_phdr *p=&ph[i];
         if(p->p_type==PT_INTERP) {
@@ -348,8 +451,11 @@ static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
             if(proxy_pread_fd(fd,out->interp,p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
             if(out->interp[p->p_filesz-1])goto done;
         }
-        if(p->p_type==PT_PHDR) out->phdr=bias+p->p_vaddr;
+        if(p->p_type==PT_PHDR) out->phdr=load_bias+p->p_vaddr;
         if(p->p_type!=PT_LOAD || !p->p_memsz) continue;
+        while(DOWN(p->p_vaddr)>=out->spans[current].low+out->spans[current].size)current++;
+        const struct span *span=&out->spans[current];
+        uintptr_t bias=span->area-span->low;
         int prot=((p->p_flags&PF_R)?PROT_READ:0)|((p->p_flags&PF_W)?PROT_WRITE:0)|((p->p_flags&PF_X)?PROT_EXEC:0);
         uintptr_t start=bias+DOWN(p->p_vaddr),end=bias+UP(p->p_vaddr+p->p_memsz);
         long r;
@@ -380,14 +486,13 @@ static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
             r=RAW(PROXY_SC_mprotect,start,end-start,prot,0,0,0);
             if(bad(r)){error=(int)r;goto done;}
         }
-        proxy_image_map(out->target+start-out->area,out->target+end-out->area,DOWN(p->p_vaddr),path);
+        proxy_image_map(span->target+start-span->area,span->target+end-span->area,DOWN(p->p_vaddr),path);
         if(!out->phdr && eh.e_phoff>=p->p_offset && (uint64_t)eh.e_phoff+bytes<=(uint64_t)p->p_offset+p->p_filesz)
-            out->phdr=bias+p->p_vaddr+eh.e_phoff-p->p_offset;
+            out->phdr=load_bias+p->p_vaddr+eh.e_phoff-p->p_offset;
     }
     error=out->phdr?0:-ENOEXEC;
-    if(!error && eh.e_type==ET_EXEC){out->entry-=bias;out->phdr-=bias;}
 done:
-    if(error && out->size){RAW(PROXY_SC_munmap,out->area,out->size,0,0,0,0);out->size=0;}
+    if(error)release_spans(out,1);
     vfs_free(ph);if(supplied_fd<0)loader_close(fd); return error;
 }
 /* All reads, validation, allocation and protection checks precede this point.
@@ -395,12 +500,16 @@ done:
  * Like kernel exec after begin_new_exec, an unrecoverable commit failure must
  * terminate, never resume a caller whose fixed-address pages were replaced. */
 static void commit_elf(struct mapped *m){
-    if(m->area==m->target)return;
-    for(uintptr_t offset=0;offset<m->size;offset+=PAGE){
-        long r=RAW(PROXY_SC_mremap,m->area+offset,PAGE,PAGE,3,m->target+offset,0);
-        if(bad(r))RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
+    for(unsigned k=0;k<m->count;k++){
+        const struct span *span=&m->spans[k];
+        if(span->area==span->target)continue;
+        for(uintptr_t offset=0;offset<span->size;offset+=PAGE){
+            long r=RAW(PROXY_SC_mremap,span->area+offset,PAGE,PAGE,3,span->target+offset,0);
+            if(bad(r))RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
+        }
+        proxy_rewrite_relocate(span->area,span->target,span->size);
     }
-    proxy_rewrite_relocate(m->area,m->target,m->size);
+    release_spans(m,0);
 }
 static uintptr_t stack_string(uintptr_t *cursor,const char *s) {
     size_t n=p_len(s)+1; *cursor-=n; p_copy((void *)*cursor,s,n); return *cursor;
@@ -450,12 +559,16 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     long stack=RAW(PROXY_SC_mmap,0,stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if(bad(stack)){vfs_free(av);vfs_free(ev);EXEC_RETURN((int)stack);}
     uintptr_t cur=(uintptr_t)stack+stack_size;
-    for(size_t i=0;i<ac;i++)av[i]=stack_string(&cur,argv[i]);
-    for(size_t i=0;i<ec;i++)ev[i]=stack_string(&cur,env[i]);
+    /* Kernel layout, ascending: argv strings, env strings, execfn. Wine's
+     * preloader rewrites argv in place and relies on that contiguity. */
+    uintptr_t execfn=stack_string(&cur,path);
+    for(size_t i=ec;i-->0;)ev[i]=stack_string(&cur,env[i]);
+    for(size_t i=ac;i-->0;)av[i]=stack_string(&cur,argv[i]);
     /* Note argv before any old mapping is replaced: it may live there. */
     proxy_note_payload_argv(argv);
     struct mapped *maps=vfs_alloc(2*sizeof(*maps));if(!maps){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);vfs_free(av);vfs_free(ev);EXEC_RETURN(-ENOMEM);}
-    struct mapped *main=&maps[0],*interp=&maps[1];int r=map_elf(resolved,fd,main);loader_close(fd);vfs_free(resolved);fd=-1;resolved=NULL;if(proxy_trace)proxy_log("exec-map-main",r,main->size);
+    maps[0].spans=maps[1].spans=NULL;maps[0].count=maps[1].count=0;
+    struct mapped *main=&maps[0],*interp=&maps[1];int r=map_elf(resolved,fd,main);loader_close(fd);vfs_free(resolved);fd=-1;resolved=NULL;if(proxy_trace)proxy_log("exec-map-main",r,main->count);
     if(r)goto failed;
     uintptr_t entry=main->entry;
     if(main->interp[0]){
@@ -463,9 +576,9 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
         loader_trace_resolve(main->interp,"interp-resolve");
         char *translated=vfs_resolve(AT_FDCWD,main->interp,1,&path_error);
         if(!translated){r=path_error;goto failed;}
-        r=map_elf(translated,-1,interp);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-interp",r,interp->size);if(r)goto failed;entry=interp->entry;
+        r=map_elf(translated,-1,interp);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-interp",r,interp->count);if(r)goto failed;entry=interp->entry;
     }
-    uintptr_t execfn=stack_string(&cur,path),platform=stack_string(&cur,ARCH_PLATFORM);
+    uintptr_t platform=stack_string(&cur,ARCH_PLATFORM);
     cur-=16; uintptr_t random=cur;
     if(RAW(PROXY_SC_getrandom,random,16,0,0,0,0)!=16){r=-EIO;goto failed;}
     arch_elf_auxv aux[]={
@@ -496,8 +609,7 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     vfs_free(maps);return 0;
 failed:
     if(proxy_trace)proxy_log("exec-load-failed",r,0);
-    if(main->size)RAW(PROXY_SC_munmap,main->area,main->size,0,0,0,0);
-    if(interp->size)RAW(PROXY_SC_munmap,interp->area,interp->size,0,0,0,0);
+    release_spans(main,1);release_spans(interp,1);
     RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);
     vfs_free(av);vfs_free(ev);vfs_free(maps);return r;
 #undef EXEC_RETURN

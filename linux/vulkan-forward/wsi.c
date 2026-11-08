@@ -41,6 +41,7 @@ static void cleanup(struct mv_wsi_swapchain *c) {
     }
     mv_free(c->images);mv_free(c);
 }
+void (*mv_wsi_log_hook)(const char *,unsigned long);
 static int mv_wsi_32bit_class(VkFormat f) {
     return (f>=VK_FORMAT_R8G8B8A8_UNORM&&f<=VK_FORMAT_A2B10G10R10_SINT_PACK32)||
         (f>=VK_FORMAT_R16G16_UNORM&&f<=VK_FORMAT_R16G16_SFLOAT)||(f>=VK_FORMAT_R32_UINT&&f<=VK_FORMAT_R32_SFLOAT)||
@@ -52,25 +53,33 @@ VkResult mv_wsi_create(struct mv_wsi_surface *s,const VkSwapchainCreateInfoKHR *
     /* VK_KHR_swapchain_mutable_format: the only accepted flag and pNext.
      * Every listed view format must be the image format or its SRGB twin. */
     const VkImageFormatListCreateInfo *views=0;
+#define MV_REJECT(cond,why,value) do{if(cond){if(mv_wsi_log_hook)mv_wsi_log_hook("maton-vulkan: swapchain rejected: " why,(unsigned long)(value));return VK_ERROR_FORMAT_NOT_SUPPORTED;}}while(0)
     for(const VkBaseInStructure *p=info->pNext;p;p=p->pNext) {
-        if(p->sType!=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO || views)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        MV_REJECT(p->sType!=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO || views,"unsupported pNext sType",p->sType);
         views=(const VkImageFormatListCreateInfo *)p;
     }
     int mutable_format=(info->flags&VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR)!=0;
-    if(mutable_format && (!views || !views->viewFormatCount))return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    MV_REJECT(mutable_format && (!views || !views->viewFormatCount),"mutable format without view list",0);
     if(views) {
         /* Any view format of the swapchain format's 32-bit compatibility class. */
         for(uint32_t j=0;j<views->viewFormatCount;j++)
-            if(views->pViewFormats[j]!=info->imageFormat && !mv_wsi_32bit_class(views->pViewFormats[j]))return VK_ERROR_FORMAT_NOT_SUPPORTED;
-        if(!mutable_format && views->viewFormatCount>1)return VK_ERROR_FORMAT_NOT_SUPPORTED;
+            MV_REJECT(views->pViewFormats[j]!=info->imageFormat && !mv_wsi_32bit_class(views->pViewFormats[j]),"view format",views->pViewFormats[j]);
+        MV_REJECT(!mutable_format && views->viewFormatCount>1,"several view formats without mutable flag",views->viewFormatCount);
     }
-    if(info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR || (info->flags&~(VkSwapchainCreateFlagsKHR)VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ||
-       info->minImageCount<2 || info->minImageCount>4 || info->imageArrayLayers!=1 ||
-       (info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM && info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM) || info->imageColorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ||
-       !info->imageUsage || (info->imageUsage&~(VkImageUsageFlags)MV_WSI_USAGE) ||
-       (info->imageSharingMode==VK_SHARING_MODE_CONCURRENT ? (info->queueFamilyIndexCount<2||!info->pQueueFamilyIndices) : info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE) ||
-       info->preTransform!=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || !(info->compositeAlpha&(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR|VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR|VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)) ||
-       (info->presentMode!=VK_PRESENT_MODE_FIFO_KHR&&info->presentMode!=VK_PRESENT_MODE_MAILBOX_KHR))return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    MV_REJECT(info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,"sType",info->sType);
+    MV_REJECT(info->flags&~(VkSwapchainCreateFlagsKHR)VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR,"flags",info->flags);
+    MV_REJECT(info->minImageCount<2 || info->minImageCount>4,"minImageCount",info->minImageCount);
+    MV_REJECT(info->imageArrayLayers!=1,"imageArrayLayers",info->imageArrayLayers);
+    MV_REJECT(info->imageFormat!=VK_FORMAT_R8G8B8A8_UNORM && info->imageFormat!=VK_FORMAT_B8G8R8A8_UNORM &&
+        info->imageFormat!=VK_FORMAT_R8G8B8A8_SRGB && info->imageFormat!=VK_FORMAT_B8G8R8A8_SRGB &&
+        info->imageFormat!=VK_FORMAT_A2B10G10R10_UNORM_PACK32,"imageFormat",info->imageFormat);
+    MV_REJECT(info->imageColorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,"imageColorSpace",info->imageColorSpace);
+    MV_REJECT(!info->imageUsage || (info->imageUsage&~(VkImageUsageFlags)MV_WSI_USAGE),"imageUsage",info->imageUsage);
+    MV_REJECT(info->imageSharingMode==VK_SHARING_MODE_CONCURRENT ? (info->queueFamilyIndexCount<2||!info->pQueueFamilyIndices) : info->imageSharingMode!=VK_SHARING_MODE_EXCLUSIVE,"imageSharingMode",info->imageSharingMode);
+    MV_REJECT(info->preTransform!=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,"preTransform",info->preTransform);
+    MV_REJECT(!(info->compositeAlpha&(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR|VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR|VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)),"compositeAlpha",info->compositeAlpha);
+    MV_REJECT(info->presentMode!=VK_PRESENT_MODE_FIFO_KHR&&info->presentMode!=VK_PRESENT_MODE_MAILBOX_KHR,"presentMode",info->presentMode);
+#undef MV_REJECT
     if(!s->extent.width || !s->extent.height || s->extent.width>MV_WSI_MAX_EXTENT || s->extent.height>MV_WSI_MAX_EXTENT ||
        info->imageExtent.width!=s->extent.width || info->imageExtent.height!=s->extent.height)return VK_ERROR_OUT_OF_DATE_KHR;
     if(!ops || !ops->allocate || !ops->release || !ops->destroy ||

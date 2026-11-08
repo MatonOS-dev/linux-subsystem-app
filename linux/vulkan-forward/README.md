@@ -34,7 +34,7 @@ cannot leak newly allocated Android buffers.
 Generated dispatch tables cache Android entry points per instance/device. Calls
 use `switch_to_android()`, a typed Android call, then `switch_back()`. Alias
 spellings fall back to Android extension entry points when a canonical pointer
-is absent. ProcAddr returns only allowlisted names also found by Android.
+is absent. ProcAddr returns only forwarded names also found by Android.
 Driver feature/property payloads are preserved; the instance API ceiling is 1.4.
 
 No Linux allocation callback enters bionic. Android receives NULL allocators;
@@ -58,9 +58,14 @@ Device-create chains are copied without mutating application memory.
 `VkDeviceGroupDeviceCreateInfo` physical-device arrays are unwrapped in the copy.
 Khronos `VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO` nodes contain Linux loader
 bookkeeping/callbacks and are stripped: the Android loader supplies its own.
-Device-memory-report callbacks and other unallowlisted nodes are rejected.
-Instance-create pNext is stripped entirely: v1 forwards no instance extensions,
-and Linux debug/direct-driver-loading callbacks must never reach bionic.
+Device-memory-report callbacks and other non-forwarded nodes are rejected.
+Instance-create pNext is stripped entirely. gen.py forwards every registry
+instance/device extension that passes its structural checks (no callbacks, no
+embedded dispatchable handles, supported array shapes) and is not on the
+denylist (WSI/display, external handles beyond the curated extensions.txt base,
+debug/report callbacks, VK_ANDROID_*). coverage.txt lists each dropped
+extension with the reason. Linux debug/direct-driver-loading callbacks must
+never reach bionic.
 
 ## libc-free bootstrap and architecture
 

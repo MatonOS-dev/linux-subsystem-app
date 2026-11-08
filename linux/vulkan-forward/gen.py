@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Stage B: pinned core 1.0–1.4 and explicit offscreen extension allowlist.
+"""Stage B: pinned core 1.0–1.4 plus every registry extension that passes the
+structural checks and denylist below (extensions.txt is the mandatory base).
 Fail generation on new dispatchable-handle parameters needing a custom adapter.
 """
 import hashlib, pathlib, sys, xml.etree.ElementTree as ET
@@ -7,23 +8,133 @@ xml, out = map(pathlib.Path, sys.argv[1:])
 assert hashlib.sha256(xml.read_bytes()).hexdigest() == '006807a47518e9ab23ecf7f4c95d936aab477a20d27a9a7ac23cedefb7210178'
 r = ET.parse(xml).getroot()
 core = {c.get('name') for f in r.findall('feature') if 'vulkan' in f.get('api','').split(',') and tuple(map(int,f.get('number').split('.'))) <= (1,4) for c in f.findall('./require/command')}
-extensions=[x.strip() for x in pathlib.Path(__file__).with_name('extensions.txt').read_text().splitlines() if x.strip() and not x.startswith('#')]
-ext_nodes={e.get('name'):e for e in r.findall('./extensions/extension')}
-assert all(e in ext_nodes and ext_nodes[e].get('type')=='device' for e in extensions)
-selected=set(core)
-for e in extensions:
-    selected.update(c.get('name') for c in ext_nodes[e].findall('./require/command'))
 commands={}
 for c in r.findall('./commands/command'):
     if c.get('api') and 'vulkan' not in c.get('api').split(','):continue
     commands[c.get('name') or c.findtext('proto/name')]=c
+types={t.get('name') or t.findtext('name'):t for t in r.findall('./types/type') if not t.get('api') or 'vulkan' in t.get('api').split(',')}
+def canonical(t):
+    while t in types and types[t].get('alias'):t=types[t].get('alias')
+    return t
+structs={n:t for n,t in types.items() if t.get('category')=='struct' and not t.get('alias') and not t.get('protect')}
+def members(t):return [m for m in structs[t].findall('member') if not m.get('api') or 'vulkan' in m.get('api').split(',')]
+def resolve(n):
+    while n in commands and commands[n].get('alias'):n=commands[n].get('alias')
+    return n
+ext_nodes={e.get('name'):e for e in r.findall('./extensions/extension') if 'vulkan' in e.get('supported','').split(',')}
+def ext_commands(e):
+    return [c.get('name') for q in ext_nodes[e].findall('require') if not q.get('api') or 'vulkan' in q.get('api').split(',') for c in q.findall('command')]
+def ext_types(e):
+    return [t.get('name') for q in ext_nodes[e].findall('require') if not q.get('api') or 'vulkan' in q.get('api').split(',') for t in q.findall('type')]
+# Curated base set (offscreen Zink + external handles backed by dmabuf.inc):
+# must always pass the structural checks below.
+curated=[x.strip() for x in pathlib.Path(__file__).with_name('extensions.txt').read_text().splitlines() if x.strip() and not x.startswith('#')]
+assert all(e in ext_nodes and ext_nodes[e].get('type')=='device' for e in curated)
+# Everything else the registry defines is forwarded unless it needs Linux-side
+# handling we do not have. Reasons:
+#  WSI/present/display: our WSI implements surfaces and swapchains.
+#  external handles: only the curated fd/dma-buf paths are emulated/verified.
+#  report callbacks: Linux function pointers must never reach bionic.
+#  Android: AHB/native-buffer paths belong to the resident side.
+import re
+DENY_DEVICE=re.compile(r'swapchain|present|surface|display|hdr_metadata|full_screen|external_memory|external_semaphore|external_fence|drm_format_modifier|queue_family_foreign|memory_report|address_binding_report|^VK_ANDROID_|frame_boundary|low_latency|win32')
+DENY_INSTANCE=re.compile(r'VK_NV_external|surface|display|swapchain_colorspace|debug_report|debug_utils|direct_driver_loading|portability_enumeration|layer_settings|validation_|headless|acquire_|direct_mode')
+CORE_PROMOTED={'VK_KHR_external_memory','VK_KHR_external_semaphore','VK_KHR_external_fence','VK_KHR_external_memory_capabilities','VK_KHR_external_semaphore_capabilities','VK_KHR_external_fence_capabilities'}
+dispatchable={'VkInstance','VkPhysicalDevice','VkDevice','VkQueue','VkCommandBuffer'}
+def dangerous(t,seen=None):
+    if t in dispatchable or t.startswith('PFN_'):return True
+    if t not in structs:return False
+    seen=set() if seen is None else seen
+    if t in seen:return False
+    return any(dangerous(canonical(m.findtext('type')),seen|{t}) for m in members(t) if m.findtext('name')!='pNext')
+def struct_shape_ok(n,seen):
+    n=canonical(n)
+    if n not in structs or n in seen:return True
+    seen.add(n)
+    for m in members(n):
+        if m.findtext('name')=='pNext':continue
+        t=canonical(m.findtext('type'));decl=''.join(m.itertext())
+        if t not in structs:continue
+        if '*' in decl and m.get('len') and not m.get('len').isidentifier():return False
+        if '[' in decl and any(x.findtext('name')=='pNext' for x in members(t)):return False
+        if not struct_shape_ok(t,seen):return False
+    return True
+def ext_problem(e,first_types):
+    for name in ext_commands(e):
+        if name not in commands:return f'{name} not in registry'
+        target=resolve(name)
+        if target in manual_names:continue
+        params=[p for p in commands[target].findall('param') if not p.get('api') or 'vulkan' in p.get('api').split(',')]
+        if not params or params[0].findtext('type') not in first_types:return f'{target}: first parameter {params[0].findtext("type") if params else None}'
+        for p in params[1:]:
+            if p.findtext('type') in dispatchable:return f'{target}: dispatchable parameter {p.findtext("name")}'
+        for p in params:
+            t=canonical(p.findtext('type'))
+            if t.startswith('PFN_'):return f'{target}: callback parameter'
+            if 'const ' in ''.join(p.itertext()) and p.findtext('type')!='VkAllocationCallbacks':
+                if dangerous(t):return f'{target}: input {t} carries handles/callbacks'
+                if not struct_shape_ok(t,set()):return f'{target}: input {t} has unsupported array shape'
+    for t in ext_types(e):
+        t=canonical(t)
+        if t in structs and structs[t].get('structextends') and not struct_shape_ok(t,set()):return f'{t} has unsupported array shape'
+    return None
+def depends_ok(expr,ok):
+    if not expr:return True
+    toks=re.findall(r'[A-Za-z0-9_:]+|[+,()]',expr);pos=0
+    def atom():
+        nonlocal pos
+        t=toks[pos];pos+=1
+        if t=='(':
+            v=seq()
+            pos+=1
+            return v
+        name=t.split('::')[0]
+        if name.startswith('VK_VERSION_'):return tuple(map(int,name[11:].split('_')))<=(1,4)
+        return name in ok
+    def seq():
+        nonlocal pos
+        v=atom()
+        while pos<len(toks) and toks[pos] in '+,':
+            op=toks[pos];pos+=1;w=atom()
+            v=(v and w) if op=='+' else (v or w)
+        return v
+    return seq()
+wsi_device_commands = {'vkCreateSwapchainKHR','vkDestroySwapchainKHR','vkGetSwapchainImagesKHR','vkAcquireNextImageKHR','vkAcquireNextImage2KHR','vkQueuePresentKHR','vkGetDeviceGroupPresentCapabilitiesKHR','vkGetDeviceGroupSurfacePresentModesKHR','vkGetPhysicalDevicePresentRectanglesKHR'}
+manual = {'vkCreateInstance','vkDestroyInstance','vkEnumeratePhysicalDevices','vkEnumeratePhysicalDeviceGroups','vkEnumerateInstanceVersion','vkEnumerateInstanceExtensionProperties','vkEnumerateInstanceLayerProperties','vkEnumerateDeviceExtensionProperties','vkEnumerateDeviceLayerProperties','vkGetInstanceProcAddr','vkGetDeviceProcAddr','vkCreateDevice','vkDestroyDevice','vkGetDeviceQueue','vkGetDeviceQueue2','vkAllocateCommandBuffers','vkFreeCommandBuffers','vkQueueSubmit','vkQueueSubmit2','vkCmdExecuteCommands','vkDestroyCommandPool','vkAllocateMemory','vkCreateImage','vkGetPhysicalDeviceImageFormatProperties2','vkGetMemoryFdKHR','vkGetMemoryFdPropertiesKHR','vkFreeMemory','vkDestroyImage','vkGetImageMemoryRequirements','vkGetImageMemoryRequirements2','vkGetImageSubresourceLayout','vkBindImageMemory','vkBindImageMemory2'} | wsi_device_commands
+manual_names=manual
+DEVICE_FIRST=('VkPhysicalDevice','VkDevice','VkQueue','VkCommandBuffer')
+dropped={}
+for e in curated:
+    assert ext_problem(e,DEVICE_FIRST) is None,(e,ext_problem(e,DEVICE_FIRST))
+def pick(kind,deny,first):
+    cand=[]
+    for e,n in sorted(ext_nodes.items()):
+        if n.get('type')!=kind or n.get('platform') or n.get('provisional')=='true':continue
+        if e in curated:cand.append(e);continue
+        if deny.search(e) and e not in CORE_PROMOTED:dropped[e]='denied';continue
+        why=ext_problem(e,first)
+        if why:dropped[e]=why;continue
+        cand.append(e)
+    return cand
+dev=pick('device',DENY_DEVICE,DEVICE_FIRST)
+inst=pick('instance',DENY_INSTANCE,('VkPhysicalDevice',))
+while True:
+    ok=set(dev)|set(inst)
+    bad=[e for e in dev+inst if e not in curated and not depends_ok(ext_nodes[e].get('depends'),ok)]
+    if not bad:break
+    for e in bad:dropped[e]='dependency not forwarded';dev=[x for x in dev if x!=e];inst=[x for x in inst if x!=e]
+for e in curated:assert depends_ok(ext_nodes[e].get('depends'),set(dev)|set(inst)),e
+extensions=dev
+instance_extensions=inst
+selected=set(core)
+for e in extensions+instance_extensions:
+    selected.update(ext_commands(e))
+selected-=wsi_device_commands  # WSI interactions (e.g. device_group) are served by wsi_vulkan.inc
 aliases={n:commands[n].get('alias') for n in selected if n in commands and commands[n].get('alias')}
 for n,target in sorted(aliases.items()):
-    while commands[target].get('alias'):target=commands[target].get('alias')
+    target=resolve(target)
     selected.add(target)
     aliases[n]=target
-wsi_device_commands = {'vkCreateSwapchainKHR','vkDestroySwapchainKHR','vkGetSwapchainImagesKHR','vkAcquireNextImageKHR','vkAcquireNextImage2KHR','vkQueuePresentKHR','vkGetDeviceGroupPresentCapabilitiesKHR','vkGetDeviceGroupSurfacePresentModesKHR'}
-manual = {'vkCreateInstance','vkDestroyInstance','vkEnumeratePhysicalDevices','vkEnumeratePhysicalDeviceGroups','vkEnumerateInstanceVersion','vkEnumerateInstanceExtensionProperties','vkEnumerateInstanceLayerProperties','vkEnumerateDeviceExtensionProperties','vkEnumerateDeviceLayerProperties','vkGetInstanceProcAddr','vkGetDeviceProcAddr','vkCreateDevice','vkDestroyDevice','vkGetDeviceQueue','vkGetDeviceQueue2','vkAllocateCommandBuffers','vkFreeCommandBuffers','vkQueueSubmit','vkQueueSubmit2','vkCmdExecuteCommands','vkDestroyCommandPool','vkAllocateMemory','vkCreateImage','vkGetPhysicalDeviceImageFormatProperties2','vkGetMemoryFdKHR','vkGetMemoryFdPropertiesKHR','vkFreeMemory','vkDestroyImage','vkGetImageMemoryRequirements','vkGetImageMemoryRequirements2','vkGetImageSubresourceLayout','vkBindImageMemory','vkBindImageMemory2'} | wsi_device_commands
 queries=[]
 for c in r.findall('./commands/command'):
     name=c.findtext('proto/name')
@@ -60,27 +171,15 @@ for n,t in aliases.items():assert t in names
 assert selected <= set(names)|set(aliases), sorted(selected-set(names)-set(aliases))
 
 (out/'lookup.inc').write_text('\n'.join(f'    if(!strcmp(name,"{n}")) return (PFN_vkVoidFunction)mv_{n};' for n in names)+'\n'+''.join(f'    if(!strcmp(name,"{n}")) return (PFN_vkVoidFunction)mv_{t};\n' for n,t in sorted(aliases.items())))
-(out/'coverage.txt').write_text(f'{len(names)} canonical commands ({len(set(names)&core)} core); {len(aliases)} extension aliases; {len(queries)} generated thunks; {len(manual)} manual adapters\n{len(extensions)} allowlisted device extensions; driver intersection only; zero WSI\n'+'\n'.join(sorted(set(names)|set(aliases)))+'\n')
+(out/'coverage.txt').write_text(f'{len(names)} canonical commands ({len(set(names)&core)} core); {len(aliases)} extension aliases; {len(queries)} generated thunks; {len(manual)} manual adapters\n{len(extensions)} device + {len(instance_extensions)} instance extensions forwarded (driver intersection)\n'+''.join(f'dropped {e}: {w}\n' for e,w in sorted(dropped.items()))+'\n'.join(sorted(set(names)|set(aliases)))+'\n')
+(out/'instance_extensions.inc').write_text('static const char *const mv_forward_instance_names[]={\n'+''.join('    "'+e+'",\n' for e in instance_extensions)+'};\n')
 (out/'extensions.inc').write_text('static const char *const mv_extensions[]={\n'+''.join('    "'+e+'",\n' for e in extensions)+'};\n')
 # Generate input-chain validation. Only selected core/extension structures cross
 # the boundary; function pointers and embedded dispatchable handles fail closed.
 # VkDeviceGroupDeviceCreateInfo is copied/unwrapped by the manual create adapter.
-types={t.get('name') or t.findtext('name'):t for t in r.findall('./types/type') if not t.get('api') or 'vulkan' in t.get('api').split(',')}
-def canonical(t):
-    while t in types and types[t].get('alias'):t=types[t].get('alias')
-    return t
-structs={n:t for n,t in types.items() if t.get('category')=='struct' and not t.get('alias') and not t.get('protect')}
-def members(t):return [m for m in structs[t].findall('member') if not m.get('api') or 'vulkan' in m.get('api').split(',')]
 selected_types={t.get('name') for f in r.findall('feature') if 'vulkan' in f.get('api','').split(',') and tuple(map(int,f.get('number').split('.'))) <= (1,4) for t in f.findall('./require/type')}
-for e in extensions:selected_types.update(t.get('name') for t in ext_nodes[e].findall('./require/type'))
+for e in extensions+instance_extensions:selected_types.update(ext_types(e))
 selected_types={canonical(t) for t in selected_types}
-dispatchable={'VkInstance','VkPhysicalDevice','VkDevice','VkQueue','VkCommandBuffer'}
-def dangerous(t,seen=None):
-    if t in dispatchable or t.startswith('PFN_'):return True
-    if t not in structs:return False
-    seen=set() if seen is None else seen
-    if t in seen:return False
-    return any(dangerous(canonical(m.findtext('type')),seen|{t}) for m in members(t) if m.findtext('name')!='pNext')
 for n,_,ps in queries:
     for p in ps:
         if 'const ' in ''.join(p.itertext()) and p.findtext('type')!='VkAllocationCallbacks':

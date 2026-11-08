@@ -52,7 +52,19 @@ static void test(void){
     req.header.nlmsg_len=sizeof(req)+1;errno=0;CHECK(sendto(fd,&req,sizeof(req),0,(void *)&kernel,sizeof(kernel))==-1 && errno==EINVAL);
     close(fd);
 }
+/* Outside any NEWNET too: libudev's monitor must open, bind to the uevent
+ * group, accept its options and simply see no events. */
+static void uevent(void){
+    int fd=socket(AF_NETLINK,SOCK_RAW|SOCK_CLOEXEC|SOCK_NONBLOCK,NETLINK_KOBJECT_UEVENT);CHECK(fd>=0);
+    struct sockaddr_nl local={.nl_family=AF_NETLINK,.nl_groups=1};CHECK(!bind(fd,(void *)&local,sizeof(local)));
+    int on=1;CHECK(!setsockopt(fd,SOL_SOCKET,SO_PASSCRED,&on,sizeof(on)));CHECK(!setsockopt(fd,SOL_SOCKET,SO_RCVBUFFORCE,&on,sizeof(on)));
+    socklen_t len=sizeof(local);CHECK(!getsockname(fd,(void *)&local,&len));CHECK(local.nl_family==AF_NETLINK && local.nl_pid);
+    struct pollfd p={.fd=fd,.events=POLLIN};CHECK(!poll(&p,1,0));
+    char buf[64];errno=0;CHECK(recv(fd,buf,sizeof(buf),0)==-1 && errno==EAGAIN);
+    int alias=dup(fd);CHECK(alias>=0);close(fd);errno=0;CHECK(recv(alias,buf,sizeof(buf),0)==-1 && errno==EAGAIN);close(alias);
+}
 int main(void){
+    uevent();
     int outside=socket(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0);CHECK(outside>=0);
     struct ifreq hostlo={.ifr_name="lo"};CHECK(!ioctl(outside,SIOCGIFINDEX,&hostlo));CHECK(hostlo.ifr_ifindex>0);close(outside);
     /* Namespace flags on clone belong only to the child, never its monitor. */
@@ -65,6 +77,6 @@ int main(void){
     CHECK(!unshare(CLONE_NEWUSER));int fd=open("/proc/sys/user/max_user_namespaces",O_WRONLY|O_CLOEXEC);CHECK(fd>=0);
     int alias=dup(fd);CHECK(alias>=0);close(fd);CHECK(write(alias,"1",1)==1);close(alias);
     CHECK(!unshare(CLONE_NEWUSER));errno=0;CHECK(unshare(CLONE_NEWUSER)==-1 && errno==EPERM);
-    puts("PASS virtual lo ioctl/socket types, route ACKs, message iov/peek/truncation, fd aliases, clone scope and userns limit");
+    puts("PASS uevent monitor, virtual lo ioctl/socket types, route ACKs, message iov/peek/truncation, fd aliases, clone scope and userns limit");
     return 0;
 }

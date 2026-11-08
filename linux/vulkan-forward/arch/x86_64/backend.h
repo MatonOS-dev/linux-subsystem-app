@@ -23,6 +23,7 @@ static inline long mv_open(const char *p) {return mv_sys(257,-100,(long)p,0,0,0,
 static inline long mv_open_write(const char *p,int mode) {return mv_sys(257,-100,(long)p,1|64|512,mode,0,0);}
 static inline long mv_write_fd(long fd,const void *p,size_t n) {return mv_sys(1,fd,(long)p,n,0,0,0);}
 static inline long mv_read(long fd,void *p,size_t n) {return mv_sys(0,fd,(long)p,n,0,0,0);}
+static inline long mv_pread(long fd,void *p,size_t n,uint64_t off) {return mv_sys(17,fd,(long)p,n,(long)off,0,0);}
 static inline void mv_close(long fd) {mv_sys(3,fd,0,0,0,0,0);}
 static inline uint64_t mv_monotonic_ns(void) {
     struct { long tv_sec, tv_nsec; } ts;
@@ -89,7 +90,16 @@ static inline int switch_to_android(struct adopt_api *api,int fast,struct mv_sco
     if(!have_previous) s->previous=mv_tp_read(fast);
     mv_tp_write(s->thread->resident_fs,fast); return 1;
 }
+/* TEMPDIAG (Wine malloc crash): FS must still be the resident TLS when an
+ * Android call returns; anything else means a handler or callee changed it. */
+static inline void mv_diag_hex(char *b,uintptr_t v){for(int i=15;i>=0;i--){b[i]="0123456789abcdef"[v&15];v>>=4;}}
 static inline void switch_back(struct mv_scope *s) {
+    uintptr_t now=mv_tp_read(s->fast);
+    if(s->thread && now!=s->thread->resident_fs) {
+        char m[]="maton-vulkan: TEMPDIAG fs changed during android call now=0000000000000000 resident=0000000000000000 restore=0000000000000000\n";
+        mv_diag_hex(m+58,now);mv_diag_hex(m+84,s->thread->resident_fs);mv_diag_hex(m+109,s->previous);
+        mv_write(m,sizeof(m)-1);
+    }
     mv_tp_write(s->previous,s->fast);
 }
 #endif

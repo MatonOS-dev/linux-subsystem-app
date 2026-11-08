@@ -3,6 +3,8 @@
 #include "backend.h"
 
 #include <elf.h>
+/* TEMPDIAG (Webbed SIGSYS) */
+static void MV_TD2(const char *what,long v){static const char m[]="maton-vulkan: TEMPDIAG resolve ";mv_write(m,sizeof(m)-1);size_t n=0;while(what[n])n++;mv_write(what,n);char h[20];int k=0;unsigned long u=(unsigned long)v;h[k++]=' ';for(int i=(int)sizeof(long)*2-1;i>=0;i--)h[k++]="0123456789abcdef"[(u>>(i*4))&15];h[k++]='\n';mv_write(h,k);}
 
 /* This process image is ELF32 when Flatpak launches an i386 payload. Keep
  * the same resolver logic, but use the runtime loader's native class. */
@@ -124,10 +126,21 @@ static int library_name(const char *s, const char *needle) {
     return 0;
 }
 
+static int parse_hex(const char **p, Elf64_Addr *out);
+/* MATON_LINUX_PHDR names the image the loader mapped. A replacing loader
+ * (Wine's i386 preloader) may leave that range listed but unbacked, so a
+ * plain load faults. Copy the headers via /proc/self/mem, which fails with
+ * EIO instead. */
+static int copy_mapped(Elf64_Addr addr,void *out,size_t len) {
+    long fd=mv_open("/proc/self/mem");if(fd<0)return 0;
+    long got=mv_pread(fd,out,len,addr);mv_close(fd);
+    return got==(long)len;
+}
 static void *from_link_map(const char *name,const char *library) {
     struct mv_aux aux;
     Elf64_Addr phdr=mv_hex(mv_env("MATON_LINUX_PHDR"));
     size_t phnum=mv_hex(mv_env("MATON_LINUX_PHNUM"));
+    MV_TD2("phdr",(long)phdr);
     /* Native host tests have no resident bootstrap. In production the kernel
      * auxv belongs to bionic's loader, not the manually mapped Linux image. */
     if (!phdr || !phnum) {
@@ -140,8 +153,18 @@ static void *from_link_map(const char *name,const char *library) {
     mv_close(fd);
     }
     if(!phdr || !phnum || phnum>4096)return 0;
-    Elf64_Phdr *p=(Elf64_Phdr *)phdr; Elf64_Dyn *dynamic=0;Elf64_Addr bias=0;
-    for(size_t i=0;i<phnum;i++)if(p[i].p_type==PT_PHDR)bias=phdr-p[i].p_vaddr;
+    Elf64_Phdr *p=(Elf64_Phdr *)phdr; Elf64_Dyn *dynamic=0;Elf64_Addr bias=0;int have_phdr=0;
+    for(size_t i=0;i<phnum;i++) {
+        Elf64_Phdr h;
+        if(!copy_mapped(phdr+i*sizeof(h),&h,sizeof(h))) {
+            static const char m[]="maton-vulkan: MATON_LINUX_PHDR is not readable (image replaced); using /proc/self/maps\n";
+            mv_write(m,sizeof(m)-1);return 0;
+        }
+        if(h.p_type==PT_PHDR){bias=phdr-h.p_vaddr;have_phdr=1;}
+    }
+    /* Without PT_PHDR the load bias is unknown (e.g. Wine's preloader replaced
+     * the image); an unrelocated PT_DYNAMIC would fault. Use /proc/self/maps. */
+    if(!have_phdr)return 0;
     for(size_t i=0;i<phnum;i++)if(p[i].p_type==PT_DYNAMIC)dynamic=(Elf64_Dyn *)(bias+p[i].p_vaddr);
     if(!dynamic)return 0;
     struct mv_r_debug *debug=0;
@@ -163,7 +186,9 @@ static int parse_hex(const char **p, Elf64_Addr *out) {
 }
 
 static void *from_maps(const char *name,const char *library) {
-    long fd=mv_open("/proc/self/maps");if(fd<0)return 0;
+    long fd=mv_open("/proc/self/maps");
+    MV_TD2("maps-open",fd);
+    if(fd<0)return 0;
     char line[4096];size_t n=0;Elf64_Addr start=0,low=UINTPTR_MAX,high=0;int matched=0;void *result=0;
     for(;;) {
         char c;long got=mv_read(fd,&c,1);if(got!=1)break;
@@ -191,10 +216,15 @@ static void *from_maps(const char *name,const char *library) {
     mv_close(fd);return result;
 }
 
+/* TEMPDIAG (Webbed SIGSYS): mark resolver steps. */
+#define MV_TD(s) do{static const char m[]="maton-vulkan: TEMPDIAG resolve " s "\n";mv_write(m,sizeof(m)-1);}while(0)
 void *mv_wayland_symbol(const char *name) {
     if(!name || !*name)return 0;
+    MV_TD("link-map");
     void *symbol=from_link_map(name,"libwayland-client.so.0");
+    MV_TD("maps");
     if (!symbol) symbol=from_maps(name,"libwayland-client.so.0");
+    MV_TD("done");
     if (!symbol) {
         static const char prefix[]="maton-vulkan: unresolved Wayland symbol ";
         mv_write(prefix,sizeof(prefix)-1);
@@ -206,13 +236,25 @@ void *mv_wayland_symbol(const char *name) {
 
 /* These are Linux-loader functions, invoked with payload TLS, never bionic's
  * dlopen: XCB owns the caller's connection and must use the same libc. */
+/* libc first, then libdl (pre-2.34 glibc); link map first, then /proc/self/maps
+ * (link map is unreachable when e.g. Wine's preloader replaced the image). */
+static void *libc_function(const char *name) {
+    void *f=from_link_map(name,"libc.so.6");
+    if(!f)f=from_link_map(name,"libdl.so.2");
+    if(!f)f=from_maps(name,"libc.so.6");
+    if(!f)f=from_maps(name,"libdl.so.2");
+    if(!f){static const char m[]="maton-vulkan: unresolved libc function ";mv_write(m,sizeof(m)-1);size_t n=0;while(name[n])n++;mv_write(name,n);mv_write("\n",1);}
+    return f;
+}
 void *mv_client_library(const char *library) {
-    void *(*open_library)(const char *,int)=from_link_map("dlopen","libc.so.6");
-    if(!open_library)open_library=from_link_map("dlopen","libdl.so.2");
-    return open_library?open_library(library,2):0;
+    void *(*open_library)(const char *,int)=libc_function("dlopen");
+    /* TEMPDIAG (Wine malloc crash): bracket dlopen so a crash inside it shows. */
+    {static const char m[]="maton-vulkan: TEMPDIAG dlopen enter ";mv_write(m,sizeof(m)-1);const char *l=library?library:"(global)";size_t n=0;while(l[n])n++;mv_write(l,n);mv_write("\n",1);}
+    void *r=open_library?open_library(library,2):0;
+    {static const char m[]="maton-vulkan: TEMPDIAG dlopen leave\n";mv_write(m,sizeof(m)-1);}
+    return r;
 }
 void *mv_client_symbol(void *library,const char *name) {
-    void *(*symbol)(void *,const char *)=from_link_map("dlsym","libc.so.6");
-    if(!symbol)symbol=from_link_map("dlsym","libdl.so.2");
+    void *(*symbol)(void *,const char *)=libc_function("dlsym");
     return library&&symbol?symbol(library,name):0;
 }

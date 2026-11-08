@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #define REGION_SIZE UINT32_C(0x10000000)
+#include "../../bionic32-range.h"
 #define REGION_KEY "MATON_V3_BIONIC32_BASE="
 #define FIXED_BASE UINT32_C(0x70000000)
 #define NOREPLACE 0x100000
@@ -175,8 +176,8 @@ void peer_start(unsigned *stack){
    if(!key[k]){unsigned n=0;const char *p=*e+k;if(!*p)fail("empty native base");
     for(;*p;p++){if(*p<'0'||*p>'9'||n>(UINT32_MAX-(unsigned)(*p-'0'))/10)fail("invalid native base");n=n*10+*p-'0';}region=n;}
   }
-  if(!region){uint32_t random;if(peer_raw(355,(long)&random,4,0,0,0,0)!=4)fail("native address randomization failed");region=0x10000000+(random%0x40000)*4096;}
-  if((region&4095) || region<0x10000000 || region>0x50000000)fail("native base outside low address space");
+  if(!region)region=BIONIC32_BASE;
+  if((region&4095) || region<BIONIC32_FLOOR || region>BIONIC32_CEIL-BIONIC32_SIZE)fail("native base outside bionic32 window");
 #ifdef PEER_TEST_LINKER
   const char *linker=PEER_TEST_LINKER;
 #else

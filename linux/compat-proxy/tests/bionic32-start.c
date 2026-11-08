@@ -12,7 +12,7 @@
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
 #include "../bionic32.h"
-uint32_t proxy_bionic32_base=0x40000000;
+uint32_t proxy_bionic32_base=0x90000000;
 uint64_t proxy_bionic64_base;
 int main(int argc,char **argv){
  assert(argc>=2);

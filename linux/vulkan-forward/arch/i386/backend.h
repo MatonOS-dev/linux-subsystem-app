@@ -56,6 +56,7 @@ static inline long mv_open(const char *p) { return mv_sys(5,(long)p,0,0,0,0,0); 
 static inline long mv_open_write(const char *p,int mode) { return mv_sys(5,(long)p,1|64|512,mode,0,0,0); }
 static inline long mv_write_fd(long fd,const void *p,size_t n) { return mv_sys(4,fd,(long)p,n,0,0,0); }
 static inline long mv_read(long fd,void *p,size_t n) { return mv_sys(3,fd,(long)p,n,0,0,0); }
+static inline long mv_pread(long fd,void *p,size_t n,uint64_t off) { return mv_sys(180,fd,(long)p,n,(long)(uint32_t)off,(long)(uint32_t)(off>>32),0); }
 static inline void mv_close(long fd) { (void)mv_sys(6,fd,0,0,0,0,0); }
 static inline int mv_socketpair(int pair[2]) {
     unsigned args[4]={1,5,0,(unsigned)(uintptr_t)pair};

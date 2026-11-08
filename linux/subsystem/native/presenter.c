@@ -27,11 +27,13 @@ struct Layer {
   ASurfaceControl* control;
   struct wl_listener node_destroy;
   struct wl_listener surface_destroy;
+  struct wl_listener surface_commit;
   struct Layer* next;
   /* What SurfaceFlinger currently shows. */
   struct wlr_buffer* shown;       /* client buffer (AHB) or pool buffer (shm copy) */
   struct wlr_buffer* shown_source; /* client buffer the shm copy was made from (compared only) */
   uint32_t shown_seq;             /* surface commit the shm copy was made from */
+  bool content_dirty;             /* a commit attached a buffer since the last shm copy */
   bool visible, seen;
   /* Copies of shared-memory content; each is locked while SurfaceFlinger holds it. */
   struct PoolBuffer* pool;
@@ -88,6 +90,7 @@ static void retire_layer(struct MatonPresenter* p, struct Layer* l) {
   maton_transaction_apply(p->transaction);
   remove_listener(&l->node_destroy);
   remove_listener(&l->surface_destroy);
+  remove_listener(&l->surface_commit);
   l->node = NULL;
   l->next = NULL;
   layer_free(l);
@@ -105,8 +108,17 @@ static void on_surface_destroy(struct wl_listener* listener, void* data) {
   (void)data;
   struct Layer* l = (struct Layer*)((char*)listener - offsetof(struct Layer, surface_destroy));
   remove_listener(&l->surface_destroy);
+  remove_listener(&l->surface_commit);
   l->surface = NULL;
   retire_layer(l->presenter, l);
+}
+
+/* Only a commit that attaches a buffer changes shm content; other commits
+ * (frame callbacks, subsurface state) must not trigger a full copy. */
+static void on_surface_commit(struct wl_listener* listener, void* data) {
+  (void)data;
+  struct Layer* l = (struct Layer*)((char*)listener - offsetof(struct Layer, surface_commit));
+  if (l->surface && (l->surface->current.committed & WLR_SURFACE_STATE_BUFFER)) l->content_dirty = true;
 }
 
 static void bind_layer_node(struct Layer* l, struct wlr_scene_buffer* node,
@@ -114,10 +126,14 @@ static void bind_layer_node(struct Layer* l, struct wlr_scene_buffer* node,
   if (l->node) remove_listener(&l->node_destroy);
   if (l->surface != surface) {
     remove_listener(&l->surface_destroy);
+    remove_listener(&l->surface_commit);
     l->surface = surface;
+    l->content_dirty = true;
     if (surface) {
       l->surface_destroy.notify = on_surface_destroy;
       wl_signal_add(&surface->events.destroy, &l->surface_destroy);
+      l->surface_commit.notify = on_surface_commit;
+      wl_signal_add(&surface->events.commit, &l->surface_commit);
     }
   }
   l->node = node;
@@ -253,7 +269,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
       l->shown_source = NULL;
       l->shown_seq = seq;
     }
-  } else if (buffer != l->shown_source || seq != l->shown_seq || !l->shown) {
+  } else if (buffer != l->shown_source || l->content_dirty || !l->shown) {
     struct wlr_buffer* copy = copy_shm(p, l, buffer);
     if (!copy) {
       walk->pending = true;
@@ -264,6 +280,7 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
     l->shown = copy;
     l->shown_source = buffer;
     l->shown_seq = seq;
+    l->content_dirty = false;
   }
   bool opaque = wlr_buffer_is_opaque(buffer);
 
@@ -403,6 +420,7 @@ void maton_presenter_destroy(struct MatonPresenter* p) {
   for (struct Layer* l = p->layers; l; l = l->next) {
     remove_listener(&l->node_destroy);
     remove_listener(&l->surface_destroy);
+    remove_listener(&l->surface_commit);
     if (t) {
       ASurfaceTransaction_reparent(t, l->control, NULL);
     }

@@ -8,6 +8,7 @@
 #include "android_keymap.h"
 
 #include <android/log.h>
+#include <linux/input-event-codes.h>
 #include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <wlr/backend/headless.h>
@@ -63,6 +64,34 @@ extern void* maton_wayland_test_client(void*);
 
 /* Route wlroots logging into logcat: stderr is lost in app processes, and
  * Xwayland spawn or XWM failures would otherwise be invisible. */
+/* Android's meta state is the truth for modifiers: a key-up or a Caps Lock
+ * toggle delivered to another window never reaches this keyboard, so its
+ * own xkb state would stay wrong. Reconcile after every key event. */
+static void sync_android_meta(struct wlr_keyboard* kb,int meta,int keycode){
+  if(!kb->keymap)return;
+  /* xkb toggles locks on its own press/release cycle; Android flips them on
+   * key-down. Let xkb finish the lock key itself, sync on the next event. */
+  if(keycode==KEY_CAPSLOCK||keycode==KEY_NUMLOCK)return;
+  /* A modifier's own event may not carry its bit yet (injected keys); its
+   * xkb update is exact. The next ordinary key reconciles. */
+  switch(keycode){case KEY_LEFTSHIFT:case KEY_RIGHTSHIFT:case KEY_LEFTCTRL:case KEY_RIGHTCTRL:
+    case KEY_LEFTALT:case KEY_RIGHTALT:case KEY_LEFTMETA:case KEY_RIGHTMETA:return;}
+  struct{int bit;const char* name;int locked;}map[]={
+    {0x1,XKB_MOD_NAME_SHIFT,0},{0x1000,XKB_MOD_NAME_CTRL,0},{0x2,XKB_MOD_NAME_ALT,0},
+    {0x10000,XKB_MOD_NAME_LOGO,0},{0x100000,XKB_MOD_NAME_CAPS,1},{0x200000,XKB_MOD_NAME_NUM,1}};
+  uint32_t depressed=kb->modifiers.depressed,locked=kb->modifiers.locked;
+  for(size_t i=0;i<sizeof(map)/sizeof(map[0]);i++){
+    xkb_mod_index_t idx=xkb_keymap_mod_get_index(kb->keymap,map[i].name);
+    if(idx==XKB_MOD_INVALID||idx>=32)continue;
+    uint32_t *set=map[i].locked?&locked:&depressed,bit=1u<<idx;
+    if(meta&map[i].bit)*set|=bit;else *set&=~bit;
+  }
+  if(depressed==kb->modifiers.depressed&&locked==kb->modifiers.locked)return;
+  __android_log_print(ANDROID_LOG_WARN,"MatonWLR","Modifier state diverged from Android (meta 0x%x): depressed 0x%x->0x%x locked 0x%x->0x%x",
+    (unsigned)meta,kb->modifiers.depressed,depressed,kb->modifiers.locked,locked);
+  wlr_keyboard_notify_modifiers(kb,depressed,kb->modifiers.latched,locked,kb->modifiers.group);
+}
+
 static void maton_wlr_log(enum wlr_log_importance importance,const char* fmt,va_list args) {
   /* wlroots orders SILENT < ERROR < INFO < DEBUG (higher is chattier). */
   int priority=importance<=WLR_ERROR?ANDROID_LOG_ERROR:importance==WLR_INFO?ANDROID_LOG_INFO:ANDROID_LOG_DEBUG;
@@ -130,7 +159,7 @@ struct XwaylandSession {
 enum CommandKind { CMD_STOPPED, CMD_ATTACH, CMD_DETACH, CMD_RESIZE, CMD_KEY, CMD_MOTION, CMD_RELEASE, CMD_CLOSE, CMD_STOP, CMD_ADD_SESSION, CMD_ADD_XWAYLAND, CMD_FULLSCREEN, CMD_RELATIVE, CMD_CAPTURE_LOST };
 struct Command {
   enum CommandKind kind;
-  int id, a, b, c;
+  int id, a, b, c, meta;
   int64_t time;
   float x, y, vs, hs;
   struct MatonSurfaceOutput* output;
@@ -1108,8 +1137,20 @@ static void process_commands(void) {
         if(!logged_unknown_key){wlr_log(WLR_DEBUG,"Dropping unmapped Android keycode %d (scan %d)",c->a,c->b);logged_unknown_key=true;}
         break;
       }
-      struct wlr_surface* focus=NULL;if(w&&w->toplevel&&w->toplevel->base->surface)focus=w->toplevel->base->surface;else if(w&&w->xsurface&&w->xsurface->surface)focus=w->xsurface->surface;if(focus&&server.seat->keyboard_state.focused_surface!=focus){wlr_seat_keyboard_notify_enter(server.seat,focus,NULL,0,&server.keyboard.modifiers);xwindow_activate(w);}struct wlr_keyboard_key_event e={.time_msec=(uint32_t)(c->time/1000000),.keycode=(uint32_t)keycode,.update_state=true,.state=c->c==0?WL_KEYBOARD_KEY_STATE_PRESSED:WL_KEYBOARD_KEY_STATE_RELEASED};wlr_keyboard_notify_key(&server.keyboard,&e);wlr_seat_keyboard_notify_key(server.seat,e.time_msec,e.keycode,e.state);wlr_seat_keyboard_notify_modifiers(server.seat,&server.keyboard.modifiers);}break;
-    case CMD_CAPTURE_LOST:if(w)clear_window_pointer(w);break;
+      struct wlr_surface* focus=NULL;if(w&&w->toplevel&&w->toplevel->base->surface)focus=w->toplevel->base->surface;else if(w&&w->xsurface&&w->xsurface->surface)focus=w->xsurface->surface;if(focus&&server.seat->keyboard_state.focused_surface!=focus){wlr_seat_keyboard_notify_enter(server.seat,focus,NULL,0,&server.keyboard.modifiers);xwindow_activate(w);}struct wlr_keyboard_key_event e={.time_msec=(uint32_t)(c->time/1000000),.keycode=(uint32_t)keycode,.update_state=true,.state=c->c==0?WL_KEYBOARD_KEY_STATE_PRESSED:WL_KEYBOARD_KEY_STATE_RELEASED};wlr_keyboard_notify_key(&server.keyboard,&e);wlr_seat_keyboard_notify_key(server.seat,e.time_msec,e.keycode,e.state);sync_android_meta(&server.keyboard,c->meta,keycode);wlr_seat_keyboard_notify_modifiers(server.seat,&server.keyboard.modifiers);}break;
+    case CMD_CAPTURE_LOST:if(w)clear_window_pointer(w);
+      /* Android sends no key-up to a window that lost focus: release every held key,
+       * or a modifier held across the switch (Shift) stays down forever. */
+      if(server.seat&&server.keyboard_initialized&&server.keyboard.num_keycodes){
+        uint32_t held[WLR_KEYBOARD_KEYS_CAP];size_t n=server.keyboard.num_keycodes;
+        memcpy(held,server.keyboard.keycodes,n*sizeof(held[0]));
+        __android_log_print(ANDROID_LOG_INFO,"MatonWLR","Focus lost with %zu keys held; releasing them",n);
+        struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);uint32_t now_ms=(uint32_t)(ts.tv_sec*1000+ts.tv_nsec/1000000);
+        for(size_t k=0;k<n;k++){struct wlr_keyboard_key_event e={.time_msec=now_ms,.keycode=held[k],.update_state=true,.state=WL_KEYBOARD_KEY_STATE_RELEASED};
+          wlr_keyboard_notify_key(&server.keyboard,&e);wlr_seat_keyboard_notify_key(server.seat,e.time_msec,e.keycode,e.state);}
+        wlr_seat_keyboard_notify_modifiers(server.seat,&server.keyboard.modifiers);
+      }
+      break;
     case CMD_RELATIVE:if(w&&server.constraint&&server.pointer_window==w->id&&isfinite(c->x)&&isfinite(c->y)){
       double dx=c->x/window_fit(w).scale,dy=c->y/window_fit(w).scale;
       wlr_relative_pointer_manager_v1_send_relative_motion(server.relative,server.seat,c->time/1000,dx,dy,dx,dy);
@@ -1331,7 +1372,11 @@ void maton_core_attach(int id,struct MatonSurfaceOutput* output,int width,int he
 void maton_core_detach(int id){command(CMD_DETACH,id,0,0,0,0,0,0,0,0,NULL,NULL);}
 void maton_core_resize(int id,int width,int height){command(CMD_RESIZE,id,width,height,0,0,0,0,0,0,NULL,NULL);}
 void maton_core_set_fullscreen(int id,int on){command(CMD_FULLSCREEN,id,on,0,0,0,0,0,0,0,NULL,NULL);}
-void maton_core_key(int id,int keycode,int scan,int action,int meta,int64_t time){(void)meta;command(CMD_KEY,id,keycode,scan,action,time,0,0,0,0,NULL,NULL);}
+void maton_core_key(int id,int keycode,int scan,int action,int meta,int64_t time){
+  struct Command* c=calloc(1,sizeof(*c));
+  if(!c){__android_log_print(ANDROID_LOG_ERROR,"MatonWLR","Dropping key %d: out of memory",keycode);return;}
+  c->fence_fd=-1;c->kind=CMD_KEY;c->id=id;c->a=keycode;c->b=scan;c->c=action;c->meta=meta;c->time=time;enqueue(c);
+}
 void maton_core_motion(int id,float x,float y,float vs,float hs,int action,int buttons,int64_t time){command(CMD_MOTION,id,action,buttons,0,time,x,y,vs,hs,NULL,NULL);}
 
 void maton_core_stopped(int id,bool stopped){command(CMD_STOPPED,id,stopped,0,0,0,0,0,0,0,NULL,NULL);}

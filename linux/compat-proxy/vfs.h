@@ -74,3 +74,4 @@ void vfs_direct_resume(void *);
 #endif
 
 long proxy_file_mmap(proxy_arg_t *);
+long proxy_exec_mprotect(proxy_arg_t *);

@@ -15,12 +15,22 @@
 #include <limits.h>
 #include <linux/sockios.h>
 struct reply { struct reply *next; struct nlmsghdr header; struct nlmsgerr error; };
-struct endpoint { unsigned refs; unsigned port; int route; struct reply *first, *last; };
-struct descriptor { int fd; struct endpoint *ep; struct descriptor *next; };
+/* uevent: Android denies apps NETLINK_KOBJECT_UEVENT, which makes libudev's
+ * monitor (and SDL's haptic/joystick init through it) fail. The fake socket
+ * accepts libudev's bind/setsockopt and never delivers an event: no hotplug. */
+struct endpoint { unsigned refs; unsigned port; int route, uevent; struct reply *first, *last; };
+/* close/dup2 are not always trapped, so an fd number may since name another
+ * file: ino pins the eventfd it was created as. */
+struct descriptor { int fd; uint64_t ino; struct endpoint *ep; struct descriptor *next; };
 static struct descriptor *fds;
 static short virtual_lo_flags=IFF_LOOPBACK|IFF_UP|IFF_RUNNING;
+static uint64_t inode(int fd) { struct proxy_stat st; return arch_stat_fd(fd,&st)?0:st.st_ino; }
+void net_close(int fd);
 static struct endpoint *lookup(int fd) {
-    for(struct descriptor *p=fds;p;p=p->next)if(p->fd==fd)return p->ep;
+    for(struct descriptor *p=fds;p;p=p->next)if(p->fd==fd){
+        if(p->ino && inode(fd)==p->ino)return p->ep;
+        net_close(fd);return NULL;
+    }
     return NULL;
 }
 void net_close(int fd) {
@@ -34,7 +44,7 @@ void net_dup(int from,int to) {
     if(from==to)return;
     struct endpoint *e=lookup(from);net_close(to);if(!e)return;
     struct descriptor *d=vfs_palloc(sizeof(*d));if(!d)return;
-    *d=(struct descriptor){to,e,fds};fds=d;e->refs++;
+    *d=(struct descriptor){to,inode(to),e,fds};fds=d;e->refs++;
 }
 static long address(void *out, unsigned *len, unsigned port) {
     if(!len)return -EFAULT;
@@ -136,9 +146,27 @@ long net_call(long nr,proxy_arg_t *a,int newnet,int *handled) {
         struct endpoint *e=vfs_palloc(sizeof(*e));struct descriptor *d=vfs_palloc(sizeof(*d));if(!e || !d){vfs_free(e);vfs_free(d);return -ENOMEM;}
         long fd=RAW(PROXY_SC_eventfd2,0,EFD_SEMAPHORE|EFD_NONBLOCK|((a[1]&SOCK_CLOEXEC)?EFD_CLOEXEC:0),0,0,0,0);
         if(fd<0){vfs_free(e);vfs_free(d);return fd;}
-        *e=(struct endpoint){.refs=1,.route=a[0]==AF_NETLINK,.port=(unsigned)RAW(PROXY_SC_getpid,0,0,0,0,0,0)};*d=(struct descriptor){(int)fd,e,fds};fds=d;return fd;
+        *e=(struct endpoint){.refs=1,.route=a[0]==AF_NETLINK,.port=(unsigned)RAW(PROXY_SC_getpid,0,0,0,0,0,0)};*d=(struct descriptor){(int)fd,inode((int)fd),e,fds};fds=d;return fd;
+    }
+    if(nr==PROXY_SC_socket && a[0]==AF_NETLINK && a[2]==NETLINK_KOBJECT_UEVENT){
+        *handled=1;long type=a[1]&~(SOCK_CLOEXEC|SOCK_NONBLOCK);if(type!=SOCK_RAW && type!=SOCK_DGRAM)return -EPROTOTYPE;
+        struct endpoint *e=vfs_palloc(sizeof(*e));struct descriptor *d=vfs_palloc(sizeof(*d));if(!e || !d){vfs_free(e);vfs_free(d);return -ENOMEM;}
+        long fd=RAW(PROXY_SC_eventfd2,0,EFD_NONBLOCK|((a[1]&SOCK_CLOEXEC)?EFD_CLOEXEC:0),0,0,0,0);
+        if(fd<0){vfs_free(e);vfs_free(d);return fd;}
+        *e=(struct endpoint){.refs=1,.uevent=1,.port=(unsigned)RAW(PROXY_SC_getpid,0,0,0,0,0,0)};*d=(struct descriptor){(int)fd,inode((int)fd),e,fds};fds=d;
+        if(proxy_trace)proxy_log("virtual-uevent-socket",fd,0);
+        return fd;
     }
     struct endpoint *e=lookup((int)a[0]);if(!e)return 0;
+    if(e->uevent)switch(nr){
+    case PROXY_SC_bind:{*handled=1;struct sockaddr_nl *s=(void *)(uintptr_t)a[1];if(!s || a[2]<(long)sizeof(*s) || s->nl_family!=AF_NETLINK)return -EINVAL;if(s->nl_pid)e->port=s->nl_pid;return 0;}
+    case PROXY_SC_getsockname:*handled=1;return address((void *)(uintptr_t)a[1],(void *)(uintptr_t)a[2],e->port);
+    case PROXY_SC_setsockopt:*handled=1;return 0;
+    case PROXY_SC_recvfrom:case PROXY_SC_recvmsg:*handled=1;return -EAGAIN;
+    case PROXY_SC_sendto:case PROXY_SC_sendmsg:case PROXY_SC_connect:case PROXY_SC_getsockopt:case PROXY_SC_ioctl:
+        *handled=1;proxy_log("fail virtual-uevent unsupported",nr,(long)a[0]);return -EOPNOTSUPP;
+    default:return 0;
+    }
     if(nr==PROXY_SC_ioctl && !e->route){*handled=1;struct ifreq *r=(void *)(uintptr_t)a[2];if(a[1]!=SIOCGIFINDEX)return -EOPNOTSUPP;if(!r)return -EFAULT;if(r->ifr_name[0]!='l' || r->ifr_name[1]!='o' || r->ifr_name[2])return -ENODEV;r->ifr_ifindex=1;return 0;}
     if(!e->route && (nr==PROXY_SC_sendto || nr==PROXY_SC_sendmsg || nr==PROXY_SC_recvfrom || nr==PROXY_SC_recvmsg || nr==PROXY_SC_connect || nr==PROXY_SC_bind || nr==PROXY_SC_getsockname)){*handled=1;return -EOPNOTSUPP;}
     switch(nr){
@@ -173,7 +201,7 @@ void net_state(struct state *s){
  for(uint64_t i=0;i<count&&!s->error;i++){
   if(s->reading){d=vfs_palloc(sizeof(*d));if(!d){s->error=-ENOMEM;return;}d->ep=vfs_palloc(sizeof(*d->ep));if(!d->ep){s->error=-ENOMEM;return;}d->ep->refs=1;d->ep->first=d->ep->last=NULL;d->next=fds;fds=d;}
   else while(d&&!state_live(d->fd))d=d->next;
-  d->fd=state_word(s,d->fd);
+  d->fd=state_word(s,d->fd);if(s->reading)d->ino=inode(d->fd);
   int alias=-1;
   if(!s->reading)for(struct descriptor *p=fds;p!=d;p=p->next)if(p->ep==d->ep&&state_live(p->fd)){alias=p->fd;break;}
   alias=state_word(s,(int64_t)alias);
@@ -182,7 +210,7 @@ void net_state(struct state *s){
    else d=d->next;
    continue;
   }
-  d->ep->port=state_word(s,d->ep->port);d->ep->route=state_word(s,d->ep->route);
+  d->ep->port=state_word(s,d->ep->port);d->ep->route=state_word(s,d->ep->route);d->ep->uevent=state_word(s,d->ep->uevent);
   uint64_t replies=0;for(struct reply *r=d->ep->first;r;r=r->next)replies++;
   replies=state_count(s,replies);if(s->error)return;
   struct reply **tail=&d->ep->first;
