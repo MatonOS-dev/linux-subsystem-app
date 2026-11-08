@@ -23,7 +23,7 @@ public final class PackSeedTest {
  static String placeholderKey(Path path)throws Exception {
   long dev=((Number)Files.getAttribute(path,"unix:dev")).longValue();
   long ino=((Number)Files.getAttribute(path,"unix:ino")).longValue();
-  return String.format(java.util.Locale.ROOT,"p-%016x-%016x",dev,ino);
+  return String.format(java.util.Locale.ROOT,"p-%016x",ino);
  }
  static void verifyPlaceholderCommitModes(File root)throws Exception {
   File repo=new File(root,"marker-mode-repo"),tree=new File(root,"marker-mode-tree");

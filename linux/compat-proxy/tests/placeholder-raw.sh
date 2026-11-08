@@ -25,7 +25,7 @@ for name in ('a','b'):
     try: os.readlink(p)
     except OSError as e: assert e.errno==22
     else: raise AssertionError('placeholder is a symlink')
-    key=f'p-{st.st_dev:016x}-{st.st_ino:016x}'
+    key=f'p-{st.st_ino:016x}'
     obj=store/(store/key).read_bytes().rstrip(b'\0').decode()
     objects.append(obj)
     assert obj.read_bytes()==b'content' and not obj.stat().st_mode&stat.S_ISVTX

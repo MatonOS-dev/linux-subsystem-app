@@ -7,7 +7,7 @@ public final class PlaceholderCleanupTest {
     static final String ID="i-0123456789abcdef0123456789abcdef";
     static void check(boolean ok,String what) { if(!ok)throw new AssertionError(what); }
     static String key(Path p)throws Exception {
-        return String.format(Locale.ROOT,"p-%016x-%016x",Files.getAttribute(p,"unix:dev"),Files.getAttribute(p,"unix:ino"));
+        return String.format(Locale.ROOT,"p-%016x",Files.getAttribute(p,"unix:ino"));
     }
     static void count(Path store,long n)throws Exception {
         Files.write(store.resolve(ID+".count"),ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).putLong(n).array());

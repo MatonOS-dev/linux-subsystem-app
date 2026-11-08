@@ -20,6 +20,8 @@ int main(int argc,char **argv){CHECK(argc==3);CHECK(!chdir(argv[1]));
   CHECK(!unlink("src/3"));puts("PASS overwrite, exchange, failed link and zero-count collection");return 0;
  }
  if(!strcmp(argv[2],"fallback")){struct stat st;for(int i=0;i<100;i++){CHECK(!stat("src/0",&st) && st.st_nlink==1);CHECK(!stat("src/1",&st) && st.st_nlink==1);}puts("PASS corrupt count recounted once then read directly");return 0;}
+ if(!strcmp(argv[2],"heal")){struct stat st;CHECK(!link("src/0","src/healed"));CHECK(!stat("src/healed",&st) && st.st_nlink==2 && st.st_size==4);puts("PASS lost index entry rebuilt from placeholder backup");return 0;}
+ if(!strcmp(argv[2],"dead")){struct stat st;CHECK(link("src/0","src/x")==-1 && errno==ENOENT);CHECK(stat("src/0",&st)==-1);puts("PASS dead placeholder deleted on link");return 0;}
  if(!strcmp(argv[2],"crash")){CHECK(!link("src/0","dst/crash"));return 0;}
  if(!strcmp(argv[2],"recover")){struct stat st;CHECK(!stat("src/0",&st));CHECK(st.st_nlink==3);CHECK(!stat("src/1",&st));CHECK(st.st_nlink==2);puts("PASS killed intent replay updates affected object only");return 0;}
  return 2;

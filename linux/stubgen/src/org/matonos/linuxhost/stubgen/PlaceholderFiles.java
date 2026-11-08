@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  * the first {@code link}/{@code linkat} moves the content to
  * {@code .v3-inodes/i-<32 hex>} and replaces every linked name with an empty
  * regular file carrying {@code S_ISVTX} plus a constant-time index entry
- * {@code p-<16 hex st_dev>-<16 hex st_ino>} whose NUL-terminated content names
+ * {@code p-<16 hex st_ino>} (no st_dev: it drifts across OTA updates) whose NUL-terminated content names
  * the relative backing id. Programs under the proxy are redirected to the
  * backing file; Java code reads staging trees natively and would otherwise see
  * empty files. This class performs exactly the proxy's recognition
@@ -44,7 +44,7 @@ import java.util.regex.Pattern;
  *   <li>the nearest ancestor of the parent that holds an owner-owned (non-symlink)
  *       {@code .v3-inodes} directory <em>and</em> is an owner-only, same-device
  *       private directory establishes the store;</li>
- *   <li>the store's {@code .v3-inodes/} holds a {@code p-<dev>-<ino>} entry that
+ *   <li>the store's {@code .v3-inodes/} holds a {@code p-<ino>} entry that
  *       is a regular file whose first 35 bytes are a NUL-terminated
  *       {@code i-<32 hex>} id; any other value (including {@code ..}, absolute
  *       paths or separators) is rejected. The directory's own mode is not
@@ -289,7 +289,7 @@ public final class PlaceholderFiles {
         /** Validates the index entry for {@code self}; null when it is not valid. */
         String backingId(Stat self) throws IOException {
             File entry = new File(store, String.format(Locale.ROOT,
-                    "p-%016x-%016x", self.dev, self.ino));
+                    "p-%016x", self.ino));
             Stat entryStat = backend().lstat(entry.getPath());
             if (entryStat == null || !entryStat.regular()) return null;
             byte[] raw;

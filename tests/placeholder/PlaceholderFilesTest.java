@@ -52,7 +52,7 @@ public final class PlaceholderFilesTest {
     private static String key(Path path) throws IOException {
         long dev = ((Number) Files.getAttribute(path, "unix:dev")).longValue();
         long ino = ((Number) Files.getAttribute(path, "unix:ino")).longValue();
-        return String.format(Locale.ROOT, "p-%016x-%016x", dev, ino);
+        return String.format(Locale.ROOT, "p-%016x", ino);
     }
 
     /** Creates an empty sticky file plus its index entry naming {@code id}. */

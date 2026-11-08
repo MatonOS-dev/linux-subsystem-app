@@ -5,7 +5,7 @@ out=pathlib.Path(os.environ.get('COMPAT_LINKS_TEST_OUT',base/'build'))
 
 def indexed(store, path, obj):
     path.touch();path.chmod(0o1000);st=path.stat()
-    (store/f'p-{st.st_dev:016x}-{st.st_ino:016x}').write_bytes(obj.name.encode()+b'\0')
+    (store/f'p-{st.st_ino:016x}').write_bytes(obj.name.encode()+b'\0')
 
 for phase in ('prepared','staged','exchanged','counted','target-staged'):
     with tempfile.TemporaryDirectory(prefix='conversion-',dir=out) as tmp:

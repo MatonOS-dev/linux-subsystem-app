@@ -320,7 +320,7 @@ root=pathlib.Path(sys.argv[1]).resolve()
 for name, boundary in [('outer/deep','outer'), ('outer/nested/deep','outer/nested')]:
     p=root/name/'a'; st=p.stat()
     assert p.is_file() and not p.is_symlink() and st.st_size==0 and st.st_mode&0o1000
-    entry=root/boundary/'.v3-inodes'/f'p-{st.st_dev:016x}-{st.st_ino:016x}'
+    entry=root/boundary/'.v3-inodes'/f'p-{st.st_ino:016x}'
     assert (entry.parent/entry.read_bytes().rstrip(b'\0').decode()).is_file()
 for name in ('plain','symlink','foreign'):
     assert not (root/name/'deep/b').exists()
@@ -358,7 +358,7 @@ store=root/'.v3-inodes'; store.mkdir(mode=0o700)
 obj='i-'+'a'*32
 (store/obj).write_text('live')
 p=root/'survivor';p.touch();p.chmod(0o1600);st=p.stat()
-(store/f'p-{st.st_dev:016x}-{st.st_ino:016x}').write_bytes(obj.encode()+b'\0')
+(store/f'p-{st.st_ino:016x}').write_bytes(obj.encode()+b'\0')
 (store/'conversion').write_bytes(str(root/'restored').encode()+b'\0'+str(store/'i-restored').encode()+b'\0')
 (store/'dirty').touch()
 PYCRASH

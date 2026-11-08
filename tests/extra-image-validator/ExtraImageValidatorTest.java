@@ -36,7 +36,7 @@ public final class ExtraImageValidatorTest {
             Path trustedHeader=trustedStore.resolve("header.h");Files.createFile(trustedHeader);Files.setAttribute(trustedHeader,"unix:mode",0101000);
             long dev=((Number)Files.getAttribute(trustedHeader,"unix:dev")).longValue();
             long ino=((Number)Files.getAttribute(trustedHeader,"unix:ino")).longValue();
-            Files.writeString(inodeStore.resolve(String.format(java.util.Locale.ROOT,"p-%016x-%016x",dev,ino)),
+            Files.writeString(inodeStore.resolve(String.format(java.util.Locale.ROOT,"p-%016x",ino)),
                     "i-0123456789abcdef0123456789abcdef\0");
             if(!PlaceholderFiles.isPlaceholder(trustedHeader.toFile()))
                 throw new AssertionError("trusted file is an indexed hardlink marker");

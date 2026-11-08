@@ -92,10 +92,18 @@ static void remember_object(const char *path,const struct proxy_stat *st){
 }
 /* One constant-time index entry per physical placeholder inode. Values are
  * relative object IDs, so directory relocation needs no target rewriting. */
+/* Keyed by inode only: the store never spans filesystems (store_link rejects
+ * EXDEV), and st_dev of /data is not stable across OTA updates. */
 static int index_path(char *out,const char *store,const struct proxy_stat *st){
- char key[36]="p-";const char hex[]="0123456789abcdef";
- for(unsigned i=0;i<16;i++){key[2+i]=hex[(st->st_dev>>(60-4*i))&15];key[19+i]=hex[(st->st_ino>>(60-4*i))&15];}
- key[18]='-';key[35]=0;return catpath(out,store,key);
+ char key[19]="p-";const char hex[]="0123456789abcdef";
+ for(unsigned i=0;i<16;i++)key[2+i]=hex[(st->st_ino>>(60-4*i))&15];
+ key[18]=0;return catpath(out,store,key);
+}
+static long journal_write(const char *store,const char *name,const void *data,size_t size);
+static int valid_id(const char *buf,long n){
+ int valid=n==35 && buf[0]=='i' && buf[1]=='-' && !buf[34];
+ for(unsigned i=2;valid && i<34;i++)if(!((buf[i]>='0' && buf[i]<='9') || (buf[i]>='a' && buf[i]<='f')))valid=0;
+ return valid;
 }
 /* With the store lock held, the root and its ownership have already been
  * checked. Reuse that store during replay instead of re-walking the marker
@@ -107,9 +115,38 @@ static long index_lookup(const char *store,const struct proxy_stat *identity,cha
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,entry,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);vfs_free(entry);
  if(fd==-ENOENT){return 0;}if(fd<0)return fd;
  char buf[36];long n=read_full(fd,buf,sizeof(buf));RAW(PROXY_SC_close,fd,0,0,0,0,0);if(n<0)return n;
- int valid=n==35 && buf[0]=='i' && buf[1]=='-' && !buf[34];
- for(unsigned i=2;valid && i<34;i++)if(!((buf[i]>='0' && buf[i]<='9') || (buf[i]>='a' && buf[i]<='f')))valid=0;
- if(!valid)return LINKS_CORRUPT;
+ if(!valid_id(buf,n))return LINKS_CORRUPT;
+ p_copy(id,buf,35);return 1;
+}
+/* Every placeholder also carries its object id as content (a backup of the
+ * index entry). Mode 01000 is unreadable even to the owner, so the backup is
+ * read by briefly adding owner read. Store lock held. Rebuilds the index
+ * entry when the backed-up object still exists: 1 = healed, 2 = dead
+ * placeholder (empty, or its object is gone), 0 = not a placeholder of ours,
+ * negative = error. */
+/* Unresolvable placeholder: remove it so the app sees a missing file (and can
+ * re-fetch it) instead of an empty one. */
+static void drop_dead(const char *name,const struct proxy_stat *st){
+ long r=RAW(PROXY_SC_unlinkat,AT_FDCWD,name,0,0,0,0);
+ links_loud(r?"links: dead placeholder unlink failed":"links: dead placeholder deleted (data unrecoverable)",(long)st->st_ino,r);
+}
+static long heal_index(const char *store,const char *name,const struct proxy_stat *identity,char *id){
+ if(RAW(PROXY_SC_fchmodat,AT_FDCWD,name,S_ISVTX|S_IRUSR,0,0,0))return 0;
+ long fd=RAW(PROXY_SC_openat,AT_FDCWD,name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC,0,0,0);
+ long back=RAW(PROXY_SC_fchmodat,AT_FDCWD,name,S_ISVTX,0,0,0);
+ if(back)links_loud("links heal: placeholder mode restore failed",(long)identity->st_ino,back);
+ if(fd<0)return 0;
+ char buf[36];struct proxy_stat st;long n=read_full(fd,buf,sizeof(buf));long sr=arch_stat_fd(fd,&st);RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ if(n<0 || sr || st.st_ino!=identity->st_ino)return 0;
+ if(n==0)return 2;
+ if(!valid_id(buf,n))return 0;
+ char *object=vfs_alloc(PATH_MAX);if(!object)return -ENOMEM;
+ struct proxy_stat ost;int exists=catpath(object,store,buf) && !arch_stat_at(AT_FDCWD,object,&ost,AT_SYMLINK_NOFOLLOW) && S_ISREG(ost.st_mode);vfs_free(object);
+ if(!exists){links_loud("links heal: backed-up object is gone; placeholder data lost",(long)identity->st_ino,0);return 2;}
+ char *entry=vfs_alloc(PATH_MAX);if(!entry)return -ENOMEM;
+ long r=index_path(entry,store,identity)?journal_write(store,entry+p_len(store)+1,buf,35):-ENAMETOOLONG;vfs_free(entry);
+ if(r){links_loud("links heal: index rebuild failed",(long)identity->st_ino,r);return r;}
+ links_loud("links heal: index entry was missing; rebuilt from placeholder backup",(long)identity->st_ino,0);
  p_copy(id,buf,35);return 1;
 }
 static int target_index(const char *store,const struct proxy_stat *identity,char *out){
@@ -120,9 +157,14 @@ static int target_index(const char *store,const struct proxy_stat *identity,char
  return found;
 }
 static int target_locked(const char *store,const char *name,char *out){
- struct proxy_stat st;
- return !arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) &&
-  is_placeholder(&st) && target_index(store,&st,out);
+ struct proxy_stat st;char id[35];
+ if(arch_stat_at(AT_FDCWD,name,&st,AT_SYMLINK_NOFOLLOW) || !is_placeholder(&st))return 0;
+ if(target_index(store,&st,out))return 1;
+ if(index_lookup(store,&st,id)!=0)return 0;
+ long h=heal_index(store,name,&st,id);
+ if(h==2){drop_dead(name,&st);return 0;}
+ if(h!=1)return 0;
+ return target_index(store,&st,out);
 }
 int links_target(const char *name,char *out){
  struct proxy_stat st;char root[PATH_MAX],*store=vfs_alloc(PATH_MAX);if(!store)return 0;
@@ -186,9 +228,9 @@ static void discard_new(const char *store){char *scratch=vfs_alloc(PATH_MAX*2);i
 static long placeholder_impl(const char *store,const char *name,const char *object,char *scratch){
  char *temp=scratch,*entry=scratch+PATH_MAX;if(!catpath(temp,store,"new"))return -ENAMETOOLONG;
  long fd=RAW(PROXY_SC_openat,AT_FDCWD,temp,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,S_ISVTX,0,0);if(fd<0)return fd;
- struct proxy_stat st;long r=arch_stat_fd(fd,&st);RAW(PROXY_SC_close,fd,0,0,0,0,0);
- if(!r && !index_path(entry,store,&st))r=-ENAMETOOLONG;
  const char *id=object;for(const char *p=object;*p;p++)if(*p=='/')id=p+1;
+ struct proxy_stat st;long r=write_full(fd,id,p_len(id)+1);if(!r)r=arch_stat_fd(fd,&st);RAW(PROXY_SC_close,fd,0,0,0,0,0);
+ if(!r && !index_path(entry,store,&st))r=-ENAMETOOLONG;
  if(!r)r=journal_write(store,entry+p_len(store)+1,id,p_len(id)+1);
  if(!r)r=RAW(PROXY_SC_renameat2,AT_FDCWD,temp,AT_FDCWD,name,RENAME_NOREPLACE,0);
  if(r)discard_new(store);
@@ -288,7 +330,7 @@ static long recount_walk(const char *dir,const char *store,dev_t dev,struct reco
   if(p_equal(name,".") || p_equal(name,"..") || p_equal(name,".v3-inodes"))continue;
   if(!catpath(s->path,dir,name)){r=-ENAMETOOLONG;goto end;}
   struct proxy_stat st;r=arch_stat_at(AT_FDCWD,s->path,&st,AT_SYMLINK_NOFOLLOW);if(r==-ENOENT){r=0;continue;}if(r)goto end;
-  if(is_placeholder(&st)){long k=index_lookup(store,&st,s->id);
+  if(is_placeholder(&st)){long k=index_lookup(store,&st,s->id);if(k==0){k=heal_index(store,s->path,&st,s->id);if(k==2){drop_dead(s->path,&st);k=0;}}
    if(k==1){struct recount_entry *e=table_find(t,s->id);if(e){if(e->count==UINT64_MAX){r=-EOVERFLOW;goto end;}e->count++;}}
    else if(k<0){t->uncertain++;links_loud("links recount: placeholder index unreadable",(long)st.st_ino,k);}}
   else if(S_ISDIR(st.st_mode) && st.st_dev==dev){r=recount_walk(s->path,store,dev,t);if(r)goto end;}}}

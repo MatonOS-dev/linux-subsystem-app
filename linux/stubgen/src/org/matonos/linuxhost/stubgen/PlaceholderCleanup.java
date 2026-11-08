@@ -14,7 +14,7 @@ public final class PlaceholderCleanup {
         static native void unlock(int fd);
     }
     private static String key(PlaceholderFiles.Stat s) {
-        return String.format(Locale.ROOT,"p-%016x-%016x",s.dev,s.ino);
+        return String.format(Locale.ROOT,"p-%016x",s.ino);
     }
     private static boolean exists(File f) { return Files.exists(f.toPath(),LinkOption.NOFOLLOW_LINKS); }
     private static File[] children(File f) throws IOException {
@@ -77,11 +77,11 @@ public final class PlaceholderCleanup {
             PlaceholderFiles.Store reader=new PlaceholderFiles.Store(store);
             for(File entry:children(store)) {
                 String name=entry.getName();
-                if(!name.matches("p-[0-9a-f]{16}-[0-9a-f]{16}"))continue;
+                if(!name.matches("p-[0-9a-f]{16}"))continue;
                 if(!live.contains(name)) { Files.delete(entry.toPath()); continue; }
                 String[] parts=name.split("-");
-                PlaceholderFiles.Stat identity=new PlaceholderFiles.Stat(Long.parseUnsignedLong(parts[1],16),
-                        Long.parseUnsignedLong(parts[2],16),0101000,PlaceholderFiles.backend().uid());
+                PlaceholderFiles.Stat identity=new PlaceholderFiles.Stat(0,
+                        Long.parseUnsignedLong(parts[1],16),0101000,PlaceholderFiles.backend().uid());
                 String id=reader.backingId(identity);
                 if(id!=null)counts.put(id,counts.getOrDefault(id,0L)+1);
             }
