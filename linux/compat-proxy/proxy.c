@@ -2790,6 +2790,16 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         /* App altstack changes are virtual: the kernel retains our private stack.
          * The chained app handler's SA_ONSTACK is currently unsupported. */
         if(!thread) {result=-ENOMEM;break;}
+        /* A call made from inside a handler running on our private stack
+         * sees that stack, as Linux reports the altstack in use (SS_ONSTACK)
+         * and refuses changes. Go's signal handler checks its sp against this;
+         * the app stack would make it treat the thread as foreign and hang. */
+        uintptr_t caller_sp=ARCH_CONTEXT(uc,ARCH_STACK),own=(uintptr_t)thread->signal_stack;
+        if(own && caller_sp>own && caller_sp<=own+thread->signal_stack_size) {
+            if(a[0]) {result=-EPERM;break;}
+            if(a[1]) {stack_t cur={.ss_sp=thread->signal_stack,.ss_flags=SS_ONSTACK,.ss_size=thread->signal_stack_size};p_copy((void *)(uintptr_t)a[1],&cur,sizeof(cur));}
+            result=0;break;
+        }
         stack_t next=thread->app_stack;
         if(a[0]) {
             p_copy(&next,(void *)(uintptr_t)a[0],sizeof(next));
