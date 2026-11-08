@@ -32,6 +32,7 @@ struct mv_r_debug {
     Elf64_Addr breakpoint;
     int state;
     Elf64_Addr loader_base;
+    struct mv_r_debug *next; /* version >= 2: next linker namespace */
 };
 struct mv_aux { Elf64_Addr type, value; };
 
@@ -216,14 +217,38 @@ static void *from_maps(const char *name,const char *library) {
     mv_close(fd);return result;
 }
 
+/* One process can hold several glibc namespaces (pressure-vessel loads
+ * drivers and layers via dlmopen), each with its own libc. Functions must come
+ * from the namespace that loaded this forwarder: ld.so's _r_debug chains all
+ * namespaces (r_debug version 2), and our own entry is the one whose l_ld is
+ * our _DYNAMIC. ld.so is mapped once, so a maps lookup for it is unambiguous. */
+extern Elf64_Dyn _DYNAMIC[] __attribute__((visibility("hidden")));
+static void *from_namespace(const char *name,const char *library) {
+    static struct mv_r_debug *debug;
+    if(!debug)debug=from_maps("_r_debug","ld-linux");
+    if(!debug){static const char m[]="maton-vulkan: ld.so _r_debug not found\n";mv_write(m,sizeof(m)-1);return 0;}
+    for(struct mv_r_debug *ns=debug;ns;ns=ns->version>=2?ns->next:0) {
+        struct mv_link_map *found=0;int ours=0;
+        for(struct mv_link_map *m=ns->map;m;m=m->next) {
+            if(m->dynamic==_DYNAMIC)ours=1;
+            if(!found && m->name && library_name(m->name,library))found=m;
+        }
+        if(!ours)continue;
+        if(!found)return 0;
+        struct mv_object o={.base=found->addr,.dynamic=found->dynamic,.low=found->addr,.high=UINTPTR_MAX};
+        return lookup_dynamic(&o,name);
+    }
+    static const char m[]="maton-vulkan: forwarder not found in any glibc namespace\n";mv_write(m,sizeof(m)-1);
+    return 0;
+}
+
 /* TEMPDIAG (Webbed SIGSYS): mark resolver steps. */
 #define MV_TD(s) do{static const char m[]="maton-vulkan: TEMPDIAG resolve " s "\n";mv_write(m,sizeof(m)-1);}while(0)
 void *mv_wayland_symbol(const char *name) {
     if(!name || !*name)return 0;
     MV_TD("link-map");
-    void *symbol=from_link_map(name,"libwayland-client.so.0");
-    MV_TD("maps");
-    if (!symbol) symbol=from_maps(name,"libwayland-client.so.0");
+    void *symbol=from_namespace(name,"libwayland-client.so.0");
+    if (!symbol) symbol=from_link_map(name,"libwayland-client.so.0");
     MV_TD("done");
     if (!symbol) {
         static const char prefix[]="maton-vulkan: unresolved Wayland symbol ";
@@ -236,13 +261,13 @@ void *mv_wayland_symbol(const char *name) {
 
 /* These are Linux-loader functions, invoked with payload TLS, never bionic's
  * dlopen: XCB owns the caller's connection and must use the same libc. */
-/* libc first, then libdl (pre-2.34 glibc); link map first, then /proc/self/maps
- * (link map is unreachable when e.g. Wine's preloader replaced the image). */
+/* libc first, then libdl (pre-2.34 glibc); our own namespace first, the main
+ * link map only when ld.so's _r_debug is unavailable. */
 static void *libc_function(const char *name) {
-    void *f=from_link_map(name,"libc.so.6");
+    void *f=from_namespace(name,"libc.so.6");
+    if(!f)f=from_namespace(name,"libdl.so.2");
+    if(!f)f=from_link_map(name,"libc.so.6");
     if(!f)f=from_link_map(name,"libdl.so.2");
-    if(!f)f=from_maps(name,"libc.so.6");
-    if(!f)f=from_maps(name,"libdl.so.2");
     if(!f){static const char m[]="maton-vulkan: unresolved libc function ";mv_write(m,sizeof(m)-1);size_t n=0;while(name[n])n++;mv_write(name,n);mv_write("\n",1);}
     return f;
 }
