@@ -49,22 +49,12 @@ final class TrayHostItems {
     bundle.putString("status", item.status);
     Bitmap icon = item.icon;
     if (icon != null) {
-      bundle.putParcelable("icon", tintBlack(icon));
+      bundle.putParcelable("icon", icon);
     }
     if (item.iconName != null && !item.iconName.isEmpty()) {
       bundle.putString("iconName", item.iconName);
     }
     return true;
-  }
-
-  // TEMP: black icons so white tray icons show on the light taskbar (until the dark pill).
-  private static Bitmap tintBlack(Bitmap source) {
-    Bitmap out = Bitmap.createBitmap(source.getWidth(), source.getHeight(), Bitmap.Config.ARGB_8888);
-    android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
-    paint.setColorFilter(new android.graphics.PorterDuffColorFilter(
-        android.graphics.Color.BLACK, android.graphics.PorterDuff.Mode.SRC_IN));
-    new android.graphics.Canvas(out).drawBitmap(source, 0, 0, paint);
-    return out;
   }
 
   interface BundleWriter {

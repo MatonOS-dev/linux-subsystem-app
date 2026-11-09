@@ -74,6 +74,8 @@ public final class StubGenerator {
     public static final String PACKS_META = "org.matonos.linuxhost.PACKS";
     public static final String DEPENDENCIES_META = "org.matonos.linuxhost.DEPENDENCIES";
     public static final String APP_REF_META = "org.matonos.linuxhost.APP_REF";
+    /** Exact Flatpak application id; package-name encoding is not reversible. */
+    public static final String FLATPAK_ID_META = "org.matonos.linux.flatpak_id";
     private static final String KEY_ALIAS = "org.matonos.linux.flatpak_stub_v1";
 
     public static final String GAME_CONTROLLERS = "org.matonos.permission.GAME_CONTROLLERS";
@@ -110,6 +112,14 @@ public final class StubGenerator {
     }
 
     private StubGenerator() { }
+
+    private static String flatpakId(String ref) {
+        if (ref == null || !ref.startsWith("app/")) return null;
+        int end = ref.indexOf('/', 4);
+        if (end <= 4) return null;
+        String id = ref.substring(4, end);
+        return id.matches("[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+") ? id : null;
+    }
 
     /** Container for OSTree commit information carried in a stub's manifest. */
     public static final class CommitInfo {
@@ -740,7 +750,9 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", "org.matonos.dbus.SERVICE", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", "org.matonos.dbus.SERVICE", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, FLATPAK_ID_META, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            String internedFlatpakId = flatpakId(ref);
+            if (internedFlatpakId != null) str(internedFlatpakId);
             for (String p : permissions) str(p);
             // Pre-intern commit info values if present
             if (commitInfo != null) {
@@ -780,6 +792,8 @@ public final class StubGenerator {
             List<Attr> appAttrs=new ArrayList<>(Arrays.asList(a("label",label),ab("hasCode",true),a("appComponentFactory",HOST_LOADER),new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             if(!minimalStub)appAttrs.add(new Attr("icon","@drawable/icon",0x7f010000,1));
             start("application",null,attrs(appAttrs.toArray(new Attr[0])));
+            String flatpakId = flatpakId(ref);
+            if (flatpakId != null) startEnd("meta-data",attrs(a("name",FLATPAK_ID_META),a("value",flatpakId)));
             startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
             if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));

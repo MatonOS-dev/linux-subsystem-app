@@ -12,4 +12,11 @@ public final class AppIconResolverTest {
     assertEquals(2, AppIconResolver.firstAvailable(false, false, true));
     assertEquals(3, AppIconResolver.firstAvailable(false, false, false));
   }
+
+  @Test
+  public void readsExactFlatpakIdMetadataWithoutPackageNameGuessing() {
+    assertEquals("org.example_app.Editor", AppIconResolver.metadataFlatpakId("org.example_app.Editor"));
+    assertEquals(null, AppIconResolver.metadataFlatpakId(null));
+    assertEquals(null, AppIconResolver.metadataFlatpakId(""));
+  }
 }

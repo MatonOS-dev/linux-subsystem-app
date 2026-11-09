@@ -2,6 +2,7 @@ package org.matonos.tray;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.content.pm.ApplicationInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -29,7 +30,8 @@ final class AppIconResolver {
     Arrays.sort(packages);
     for (String packageName : packages) {
       if (!packageName.startsWith("flatpak.app.")) continue;
-      String appId = flatpakId(packageName);
+      String appId = flatpakId(context.getPackageManager(), packageName, uid);
+      if (appId == null) continue;
       IconThemeResolver.Result themed = IconThemeResolver.resolveSymbolic(context, appId + "-symbolic", sizePx);
       if (themed.bitmap != null) {
         CACHE.putIfAbsent(uid, new Entry(packageName, themed.bitmap));
@@ -62,11 +64,23 @@ final class AppIconResolver {
     return 3;
   }
 
-  private static String flatpakId(String packageName) {
-    String[] parts = packageName.split("\\.");
-    if (parts.length < 5) return packageName;
-    // DeployManifest encodes dots and other separators in ref segments as underscores.
-    return parts[2].replace('_', '.');
+  static String flatpakId(PackageManager packageManager, String packageName, int uid) {
+    try {
+      ApplicationInfo info = packageManager.getApplicationInfo(packageName, PackageManager.GET_META_DATA);
+      String id = metadataFlatpakId(info.metaData == null ? null : info.metaData.getString("org.matonos.linux.flatpak_id"));
+      if (id == null || id.isEmpty()) {
+        Log.e(TAG, "Missing Flatpak id metadata package=" + packageName + " uid=" + uid);
+        return null;
+      }
+      return id;
+    } catch (PackageManager.NameNotFoundException error) {
+      Log.e(TAG, "Flatpak metadata lookup failed package=" + packageName + " uid=" + uid, error);
+      return null;
+    }
+  }
+
+  static String metadataFlatpakId(String value) {
+    return value == null || value.isEmpty() ? null : value;
   }
 
   private static Bitmap silhouette(Drawable source, int size) {
