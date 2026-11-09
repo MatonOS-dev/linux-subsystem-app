@@ -30,6 +30,7 @@ final class PillView extends View {
     private final List<TrayItem> items = new ArrayList<>();
     private final Runnable longPress = this::handleLongPress;
     private int targetSize;
+    private int slotHeight;
     private int iconSize;
     private int screenX;
     private int screenY;
@@ -51,7 +52,8 @@ final class PillView extends View {
         this.host = host;
         this.callback = callback;
         int densityTarget = dp(TARGET_DP);
-        targetSize = heightPx > 0 ? Math.min(densityTarget, heightPx) : densityTarget;
+        slotHeight = heightPx > 0 ? heightPx : densityTarget;
+        targetSize = Math.min(densityTarget, slotHeight);
         targetSize = Math.max(1, targetSize);
         iconSize = Math.min(dp(ICON_DP), targetSize);
         setFocusable(true);
@@ -68,7 +70,7 @@ final class PillView extends View {
     }
 
     int desiredHeight() {
-        return targetSize;
+        return slotHeight;
     }
 
     void refreshItems() {
@@ -82,7 +84,7 @@ final class PillView extends View {
         invalidate();
         if (desiredWidth != lastWidth) {
             lastWidth = desiredWidth;
-            host.updatePillLayout(desiredWidth, targetSize);
+            host.updatePillLayout(desiredWidth, slotHeight);
             try {
                 callback.onWidthChanged(desiredWidth);
             } catch (Exception e) {
@@ -94,17 +96,19 @@ final class PillView extends View {
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int width = targetSize * items.size();
-        int height = targetSize;
+        int height = slotHeight;
         setMeasuredDimension(resolveSize(width, widthMeasureSpec), resolveSize(height, heightMeasureSpec));
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        float pillTop = (getHeight() - targetSize) / 2f;
+        float pillBottom = pillTop + targetSize;
         float radius = targetSize / 2f;
         paint.setColor(0xff252525);
         paint.setColorFilter(null);
-        canvas.drawRoundRect(new RectF(0, 0, getWidth(), getHeight()), radius, radius, paint);
+        canvas.drawRoundRect(new RectF(0, pillTop, getWidth(), pillBottom), radius, radius, paint);
         for (int i = 0; i < items.size(); i++) {
             TrayItem item = items.get(i);
             float centerX = i * targetSize + targetSize / 2f;
@@ -129,7 +133,7 @@ final class PillView extends View {
             }
             if ("NeedsAttention".equalsIgnoreCase(item.status)) {
                 paint.setColor(0xffffb74d);
-                canvas.drawCircle(i * targetSize + targetSize - dp(6), dp(6), dp(3), paint);
+                canvas.drawCircle(i * targetSize + targetSize - dp(6), getHeight() / 2f - targetSize / 2f + dp(6), dp(3), paint);
             }
         }
     }
@@ -193,7 +197,8 @@ final class PillView extends View {
 
     private Rect itemBounds(int index) {
         int left = screenX + index * targetSize;
-        return new Rect(left, screenY, left + targetSize, screenY + targetSize);
+        int top = screenY + (slotHeight - targetSize) / 2;
+        return new Rect(left, top, left + targetSize, top + targetSize);
     }
 
     private boolean validIndex(int index) {
