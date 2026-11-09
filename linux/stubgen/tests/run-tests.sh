@@ -28,6 +28,8 @@ java -Xmx256m -cp "$TEST_OUT/classes:$ANDROID_JAR:$STUB_DIR/prebuilt/apksig.jar"
   org.matonos.linuxhost.stubgen.SessionPlanHandoffTest "$TEST_OUT" "$TEST_OUT/key.der" "$TEST_OUT/cert.pem"
 java -Xmx256m -cp "$TEST_OUT/classes" ControllerMetadataTest
 java -Xmx256m -cp "$TEST_OUT/classes" org.matonos.linuxhost.stubgen.MonochromeResourceTest
+java -Xmx256m -cp "$TEST_OUT/classes:$STUB_DIR/prebuilt/apksig.jar" org.matonos.linuxhost.stubgen.LauncherSplitAaptTest \
+  "$AAPT2" "$TEST_OUT" "$TEST_OUT/key.der" "$TEST_OUT/cert.pem"
 java -Xmx256m -cp "$TEST_OUT/classes" CommitValidationTest
 java -cp "$TEST_OUT/classes:$ANDROID_JAR" ForegroundManifestTest "$AAPT2" "$TEST_OUT"
 
