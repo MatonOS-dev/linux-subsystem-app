@@ -80,24 +80,34 @@ final class IconThemeResolver {
                 .appendPath(Integer.toString(size)).appendPath("1").build();
         try (ParcelFileDescriptor descriptor = resolver.openFileDescriptor(uri, "r")) {
             if (descriptor == null) return MISSING;
-            Bitmap bitmap;
             String mime = resolver.getType(uri);
             try (InputStream input = new android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor)) {
-                if ("image/svg+xml".equals(mime)) {
-                    SVG svg = SVG.getFromInputStream(input);
-                    bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-                    svg.renderToCanvas(new Canvas(bitmap));
-                } else {
-                    bitmap = BitmapFactory.decodeStream(input);
-                }
+                Bitmap bitmap = "image/svg+xml".equals(mime) ? decodeSvg(input, size)
+                        : BitmapFactory.decodeStream(input);
+                return new Result(bitmap, symbolic && bitmap != null);
             }
-            return new Result(bitmap, symbolic && bitmap != null);
         } catch (FileNotFoundException missing) {
             return MISSING;
         } catch (Exception error) {
             Log.e(TAG, "Cannot render themed icon theme=" + themeId + " name=" + name, error);
             return MISSING;
         }
+    }
+
+    static Bitmap decode(InputStream input, int size) throws Exception {
+        byte[] bytes = input.readAllBytes();
+        String prefix = new String(bytes, 0, Math.min(bytes.length, 256), java.nio.charset.StandardCharsets.UTF_8)
+                .trim().toLowerCase(java.util.Locale.ROOT);
+        if (prefix.startsWith("<svg") || prefix.startsWith("<?xml"))
+            return decodeSvg(new java.io.ByteArrayInputStream(bytes), size);
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+    }
+
+    private static Bitmap decodeSvg(InputStream input, int size) throws Exception {
+        SVG svg = SVG.getFromInputStream(input);
+        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        svg.renderToCanvas(new Canvas(bitmap));
+        return bitmap;
     }
 
     static final class Result {

@@ -131,6 +131,19 @@ final class V3Launcher {
         boolean matonGlEnabled=runtimeMetadata!=null;
         File deployment=PackageDeployment.prepare(context,ref);
         runtime.setFlatpakDirectories(deployment,new File(deployment,"system"));
+        DeclaredPackages.Entry appDeployment = packages.get(0);
+        DeclaredPackages.Entry platformRuntime = null;
+        for (DeclaredPackages.Entry entry : packages) {
+            if (entry.record.ref.startsWith("runtime/org.freedesktop.Platform/x86_64/")) {
+                platformRuntime = entry;
+                break;
+            }
+        }
+        File appIconFiles = ErofsLaunch.mountedRoot(appDeployment.pkg.splitNames,
+                appDeployment.pkg.applicationInfo.splitSourceDirs);
+        File runtimeIconFiles = platformRuntime == null ? null : ErofsLaunch.mountedRoot(
+                platformRuntime.pkg.splitNames, platformRuntime.pkg.applicationInfo.splitSourceDirs);
+        runtime.setIconDirectories(appIconFiles, runtimeIconFiles);
         if(matonGlEnabled) {
             String runtimeRef=null;
             for(DeclaredPackages.Entry entry:packages)

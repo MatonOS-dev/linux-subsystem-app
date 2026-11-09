@@ -8,12 +8,15 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
+import android.os.Binder;
 import android.system.Os;
 import android.system.OsConstants;
 import java.io.FileDescriptor;
+import java.io.File;
 import android.util.Log;
 
 import org.matonos.linux.runtime.NativeBroker;
+import org.matonos.linux.stub.StubIconLookup;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,11 +28,34 @@ final class DBusBridges implements AutoCloseable {
     private final Context context;
     private final List<ServiceConnection> bindings = new ArrayList<>();
     private boolean closed;
+    private volatile File appFiles;
+    private volatile File runtimeFiles;
 
     DBusBridges(Context context) {
         this.context = context.getApplicationContext();
         discover();
     }
+
+    void setIconDirectories(File appFiles, File runtimeFiles) {
+        this.appFiles = appFiles;
+        this.runtimeFiles = runtimeFiles;
+    }
+
+    private final IStubIcons iconCallback = new IStubIcons.Stub() {
+        @Override public ParcelFileDescriptor openIcon(String iconThemePath, String iconName, int sizePx) {
+            int uid = Binder.getCallingUid();
+            try {
+                File home = new File(context.getDataDir().getCanonicalFile(), "home");
+                File icon = StubIconLookup.find(appFiles, runtimeFiles, home, iconThemePath, iconName, sizePx);
+                if (icon == null) return null;
+                return ParcelFileDescriptor.open(icon, ParcelFileDescriptor.MODE_READ_ONLY);
+            } catch (Exception error) {
+                Log.e(TAG, "stub icon open failed uid=" + uid + " path=" + iconThemePath
+                        + " name=" + iconName + " size=" + sizePx, error);
+                return null;
+            }
+        }
+    };
 
     private void discover() {
         PackageManager pm = context.getPackageManager();
@@ -70,7 +96,7 @@ final class DBusBridges implements AutoCloseable {
                 Os.socketpair(OsConstants.AF_UNIX, OsConstants.SOCK_SEQPACKET | OsConstants.SOCK_CLOEXEC, 0, a, b);
                 try { pair = new ParcelFileDescriptor[]{ParcelFileDescriptor.dup(a), ParcelFileDescriptor.dup(b)}; }
                 finally { Os.close(a); Os.close(b); }
-                IDBusService.Stub.asInterface(binder).attach(pair[0]); // binder dups it; we close ours below
+                IDBusService.Stub.asInterface(binder).attachWithIcons(pair[0], iconCallback); // Binder duplicates the descriptors.
                 NativeBroker.nativeAddBridge(pair[1].detachFd(), names);
             } catch (Exception e) {
                 Log.e(TAG, "provider " + provider + " bridge attach failed for " + String.join(",", names), e);

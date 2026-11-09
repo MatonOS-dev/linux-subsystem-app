@@ -53,7 +53,7 @@ public final class IconThemeLookupTest {
         Path dir = Files.createDirectories(root.resolve(name));
         StringBuilder contents = new StringBuilder("[Icon Theme]\n").append(main);
         for (String directory : directories) contents.append(directory);
-        Files.writeString(dir.resolve("index.theme"), contents.toString());
+        Files.write(dir.resolve("index.theme"), contents.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return dir;
     }
 

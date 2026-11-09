@@ -42,6 +42,11 @@ final class ErofsLaunch {
         return path;
     }
 
+    /** The same per-stub mount used by V3Launcher, for owner-UID host reads. */
+    static File mountedRoot(String[] names, String[] paths) throws Exception {
+        return new File(mountInstalledImage(names, paths, TOKEN));
+    }
+
     private static IErofsMounter mounter() throws Exception {
         IBinder binder=(IBinder)Class.forName("android.os.ServiceManager").getMethod("getService",String.class).invoke(null,"matonos.erofs");
         IErofsMounter result=IErofsMounter.Stub.asInterface(binder);

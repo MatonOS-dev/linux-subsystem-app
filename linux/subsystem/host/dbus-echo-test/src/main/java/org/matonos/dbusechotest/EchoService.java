@@ -37,6 +37,9 @@ public final class EchoService extends Service {
 
     @Override public IBinder onBind(Intent intent) {
         return new IDBusService.Stub() {
+            @Override public void attachWithIcons(ParcelFileDescriptor socket, org.matonos.linux.IStubIcons icons) {
+                attach(socket);
+            }
             @Override public void attach(ParcelFileDescriptor socket) {
                 final int uid = Binder.getCallingUid();
                 Thread reader = new Thread(() -> serve(socket, uid), "dbus-echo-" + uid);

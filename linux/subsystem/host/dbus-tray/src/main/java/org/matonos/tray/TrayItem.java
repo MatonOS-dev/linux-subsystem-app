@@ -51,7 +51,8 @@ public final class TrayItem {
   Bitmap statusIcon(Context context, int sizePx) {
     Bitmap cached = statusIcons.get(sizePx);
     if (cached != null && !cached.isRecycled()) return cached;
-    Bitmap source = IconThemeResolver.resolve(context, iconName, sizePx).bitmap;
+    Bitmap source = bus == null ? null : bus.openStubIcon(this, sizePx);
+    if (source == null) source = IconThemeResolver.resolve(context, iconName, sizePx).bitmap;
     if (source == null) source = icon;
     if (source == null && bus != null) {
       source = AppIconResolver.resolve(context, bus.uid, sizePx).bitmap;

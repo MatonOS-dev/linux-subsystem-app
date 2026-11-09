@@ -63,6 +63,10 @@ final class SessionBus implements AutoCloseable {
         portals.setFlatpakDirectories(userDir,systemDir);
     }
 
+    void setIconDirectories(File appFiles, File runtimeFiles) {
+        if (bridges != null) bridges.setIconDirectories(appFiles, runtimeFiles);
+    }
+
     @Override public void close() {
         running = false;
         if (bridges != null) { bridges.close(); bridges = null; }

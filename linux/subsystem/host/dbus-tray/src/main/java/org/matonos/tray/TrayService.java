@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.matonos.dbus.DBusMessage;
 import org.matonos.dbus.DBusVariant;
 import org.matonos.linux.IDBusService;
+import org.matonos.linux.IStubIcons;
 
 /** StatusNotifierWatcher provider; each attach owns an independent private bus. */
 public final class TrayService extends Service {
@@ -88,10 +89,17 @@ public final class TrayService extends Service {
   public IBinder onBind(Intent intent) {
     return new IDBusService.Stub() {
       @Override
+      public void attachWithIcons(ParcelFileDescriptor socket, IStubIcons icons) {
+        attachInternal(socket, icons);
+      }
+      @Override
       public void attach(ParcelFileDescriptor socket) {
+        attachInternal(socket, null);
+      }
+      private void attachInternal(ParcelFileDescriptor socket, IStubIcons icons) {
         int uid = Binder.getCallingUid();
         long id = NEXT_ATTACH.getAndIncrement();
-        Bus b = new Bus(id, uid, socket);
+        Bus b = new Bus(id, uid, socket, icons);
         buses.put(id, b);
         b.start();
       }
@@ -110,6 +118,7 @@ public final class TrayService extends Service {
     final long id;
     final int uid;
     final ParcelFileDescriptor socket;
+    final IStubIcons icons;
     final int fdNumber;
     final FileDescriptor fd;
     final FileOutputStream output;
@@ -120,14 +129,30 @@ public final class TrayService extends Service {
     final Set<String> hosts = ConcurrentHashMap.newKeySet();
     volatile boolean closed;
 
-    Bus(long id, int uid, ParcelFileDescriptor socket) {
+    Bus(long id, int uid, ParcelFileDescriptor socket, IStubIcons icons) {
       this.id = id;
       this.uid = uid;
       this.socket = socket;
+      this.icons = icons;
       fdNumber = socket.getFd();
       fd = socket.getFileDescriptor();
       output = new FileOutputStream(fd);
       setName("dbus-tray-" + uid + "-" + id);
+    }
+
+    Bitmap openStubIcon(TrayItem item, int sizePx) {
+      if (icons == null || item.iconThemePath == null || item.iconThemePath.isEmpty()
+          || item.iconName == null || item.iconName.isEmpty()) return null;
+      try (ParcelFileDescriptor descriptor = icons.openIcon(item.iconThemePath, item.iconName, sizePx)) {
+        if (descriptor == null) return null;
+        try (java.io.InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(descriptor)) {
+          return IconThemeResolver.decode(input, sizePx);
+        }
+      } catch (Exception error) {
+        Log.e(TAG, "stub icon callback failed uid=" + uid + " service=" + item.service
+            + " path=" + item.iconThemePath + " name=" + item.iconName + " size=" + sizePx, error);
+        return null;
+      }
     }
 
     @Override
@@ -425,6 +450,7 @@ public final class TrayService extends Service {
                 "org.kde.StatusNotifierItem");
         Map<String, DBusVariant> p = DBusMessage.dictionary(r.body.get(0));
         String previousIconName = i.iconName;
+        String previousIconThemePath = i.iconThemePath;
         Bitmap previousIcon = i.icon;
         i.id = str(p, "Id");
         i.title = str(p, "Title");
@@ -439,6 +465,7 @@ public final class TrayService extends Service {
         i.icon = decodeIcon(p.get("IconPixmap"));
         Bitmap currentIcon = i.icon;
         boolean iconChanged = !Objects.equals(previousIconName, i.iconName)
+            || !Objects.equals(previousIconThemePath, i.iconThemePath)
             || (previousIcon == null) != (currentIcon == null)
             || (previousIcon != null && currentIcon != null && !previousIcon.sameAs(currentIcon));
         if (iconChanged) {
