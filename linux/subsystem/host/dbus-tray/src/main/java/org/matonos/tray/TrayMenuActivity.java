@@ -439,6 +439,9 @@ public final class TrayMenuActivity extends Activity {
       }, "tray-menu-submenu-" + id).start();
       return;
     }
+    // BAL eligibility is checked when a PendingIntent is sent. The current
+    // fallback foregrounds the owner for every user action that may map a window.
+    TrayWindowActivation.bringAppForward(this, item);
     finish();
     new Thread(() -> {
       try {
