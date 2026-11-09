@@ -5,11 +5,18 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Rect;
 import android.os.Binder;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Process;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.util.Log;
+import android.view.Display;
+import android.view.SurfaceControlViewHost;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import java.util.Arrays;
 import java.util.List;
 
@@ -17,6 +24,11 @@ import java.util.List;
 public final class TrayHostService extends Service {
   static final String ACTION_HOST = "org.matonos.tray.HOST";
   private static final RemoteCallbackList<ITrayListener> LISTENERS = new RemoteCallbackList<>();
+  private static final Handler MAIN = new Handler(Looper.getMainLooper());
+  private static volatile TrayHostService instance;
+  private SurfaceControlViewHost pillHost;
+  private PillView pillView;
+  private boolean pillAttached;
 
   private final ITrayHost.Stub binder =
       new ITrayHost.Stub() {
@@ -54,11 +66,64 @@ public final class TrayHostService extends Service {
           checkCaller();
           launch(key, anchor, true);
         }
+
+        @Override
+        public SurfaceControlViewHost.SurfacePackage attachPill(
+            int displayId, IBinder hostToken, int heightPx, IPillCallback callback) {
+          checkCaller();
+          if (hostToken == null) {
+            throw new IllegalArgumentException("attachPill hostToken is null package=org.matonos.tray");
+          }
+          if (callback == null) {
+            throw new IllegalArgumentException("attachPill callback is null package=org.matonos.tray");
+          }
+          if (heightPx <= 0) {
+            throw new IllegalArgumentException("attachPill heightPx must be positive: " + heightPx);
+          }
+          return onMain(() -> attachPillOnMain(displayId, hostToken, heightPx, callback));
+        }
+
+        @Override
+        public void detachPill() {
+          checkCaller();
+          onMain(() -> {
+            detachPillOnMain();
+            return null;
+          });
+        }
+
+        @Override
+        public void setPillOrigin(int screenX, int screenY) {
+          checkCaller();
+          onMain(() -> {
+            if (pillView == null) {
+              throw new IllegalStateException("setPillOrigin without attached pill package=org.matonos.tray");
+            }
+            pillView.setScreenOrigin(screenX, screenY);
+            return null;
+          });
+        }
       };
 
   @Override
   public IBinder onBind(Intent intent) {
     return binder;
+  }
+
+  @Override
+  public void onCreate() {
+    super.onCreate();
+    instance = this;
+  }
+
+  @Override
+  public void onDestroy() {
+    onMain(() -> {
+      detachPillOnMain();
+      return null;
+    });
+    if (instance == this) instance = null;
+    super.onDestroy();
   }
 
   static void modelChanged() {
@@ -78,6 +143,85 @@ public final class TrayHostService extends Service {
       } finally {
         LISTENERS.finishBroadcast();
       }
+    }
+    TrayHostService current = instance;
+    if (current != null) {
+      MAIN.post(() -> {
+        if (current.pillView != null) current.pillView.refreshItems();
+      });
+    }
+  }
+
+  private SurfaceControlViewHost.SurfacePackage attachPillOnMain(
+      int displayId, IBinder hostToken, int heightPx, IPillCallback callback) {
+    detachPillOnMain();
+    Display display = getSystemService(android.hardware.display.DisplayManager.class).getDisplay(displayId);
+    if (display == null) {
+      Log.e(TrayService.TAG, "Pill attach failed package=org.matonos.tray displayId=" + displayId + " heightPx=" + heightPx);
+      throw new IllegalArgumentException("Unknown displayId=" + displayId + " package=org.matonos.tray");
+    }
+    try {
+      android.content.Context displayContext = createDisplayContext(display);
+      pillHost = new SurfaceControlViewHost(displayContext, display, hostToken);
+      pillView = new PillView(displayContext, this, heightPx, callback);
+      pillHost.setView(pillView, Math.max(1, pillView.desiredWidth()), pillView.desiredHeight());
+      pillAttached = true;
+      updatePillLayout(pillView.desiredWidth(), pillView.desiredHeight());
+      return pillHost.getSurfacePackage();
+    } catch (RuntimeException e) {
+      Log.e(TrayService.TAG, "Pill attach failed package=org.matonos.tray displayId=" + displayId + " heightPx=" + heightPx, e);
+      detachPillOnMain();
+      throw e;
+    }
+  }
+
+  private void detachPillOnMain() {
+    if (pillHost != null) {
+      try {
+        pillHost.release();
+      } catch (RuntimeException e) {
+        Log.e(TrayService.TAG, "Pill SurfaceControlViewHost release failed package=org.matonos.tray", e);
+      }
+      pillHost = null;
+      pillView = null;
+      pillAttached = false;
+    }
+  }
+
+  private static <T> T onMain(Callable<T> action) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      try {
+        return action.call();
+      } catch (RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException("Main-thread tray operation failed package=org.matonos.tray", e);
+      }
+    }
+    FutureTask<T> task = new FutureTask<>(action);
+    MAIN.post(task);
+    try {
+      return task.get(10, TimeUnit.SECONDS);
+    } catch (Exception e) {
+      Log.e(TrayService.TAG, "Main-thread tray operation timed out or failed package=org.matonos.tray", e);
+      throw new IllegalStateException("Main-thread tray operation timed out or failed package=org.matonos.tray", e);
+    }
+  }
+
+  void performPillAction(TrayItem item, Rect anchor, boolean openMenu) {
+    if (item == null) {
+      Log.e(TrayService.TAG, "Pill action ignored missing item package=org.matonos.tray");
+      return;
+    }
+    launch(TrayService.key(item.attachId, item.service), anchor, openMenu);
+  }
+
+  void updatePillLayout(int widthPx, int heightPx) {
+    if (!pillAttached || pillHost == null || pillView == null) return;
+    try {
+      pillHost.relayout(Math.max(1, widthPx), heightPx);
+    } catch (RuntimeException e) {
+      Log.e(TrayService.TAG, "Pill relayout failed package=org.matonos.tray widthPx=" + widthPx + " heightPx=" + heightPx, e);
     }
   }
 

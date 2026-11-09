@@ -39,6 +39,23 @@ when LayoutUpdated or ItemsPropertiesUpdated arrives. Outside taps dismiss the
 popup. The older D-Bus value reader, writer, signature parser, and message codec
 are shared under `host/shared/src/main/java/org/matonos/dbus`.
 
+Desktop launchers can host a live tray pill through `ITrayHost.attachPill()`.
+It returns a `SurfaceControlViewHost.SurfacePackage` for the supplied display
+and host token; the caller installs it with
+`SurfaceView.setChildSurfacePackage()`. The pill draws registered non-Passive
+items in registration order, tints icons white, marks NeedsAttention, and
+reports content width changes through `IPillCallback.onWidthChanged()`. Call
+`setPillOrigin(screenX, screenY)` after layout so item menu bounds use screen
+coordinates, then call `detachPill()` when the host surface goes away. Primary
+click opens the existing Activate flow, secondary click or long press opens
+the item's menu, and a swipe over an item sends Scroll. The older Bundle
+listener and activate/openMenu calls remain available for Launcher3.
+
+Launcher splits include an adaptive icon monochrome layer when the exported
+icon tree provides the exact `<app-id>-symbolic` asset. PNG and SVG inputs use
+the same rasterization path as the regular launcher icon. Without that asset,
+the generated adaptive icon remains foreground and background only.
+
 The subsystem app exposes installed icon-theme files through the read-only
 `org.matonos.linux.icons` ContentProvider. It finds runtime icon-theme extension
 packages from their installed Flatpak ref metadata, mounts their EROFS image
@@ -84,6 +101,13 @@ item and confirm hierarchical submenus, toggles, separators, disabled/hidden
 items, and leaf Event delivery. Update menu properties while open and confirm
 the current submenu refreshes. Stop each Linux app and confirm only its items
 disappear after its bus name is released.
+
+For pill verification, bind to `org.matonos.tray.HOST`, attach a `SurfaceView`
+using its display ID, host token, and available height, then set the screen
+origin after layout. Add and remove tray items while attached and verify the
+reported width and drawn item order update. Check primary activation,
+secondary click, long press, scroll, and anchored menu bounds. Detach and
+reattach the host surface and confirm updates continue.
 
 For icon-theme verification, install the Papirus extension as a standalone
 Flatpak ref for the installed Platform branch through the normal store install
