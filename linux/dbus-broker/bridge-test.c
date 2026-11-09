@@ -32,6 +32,7 @@ static GDBusMessage *receive_message(int fd) {
     GDBusMessage *m = g_dbus_message_new_from_blob(blob, (gsize)n,
         G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
     assert(m && error == NULL);
+    assert(g_dbus_message_get_serial(m) != 0); /* D-Bus forbids serial 0 */
     return m;
 }
 
@@ -63,6 +64,7 @@ static GDBusMessage *receive_fd_message(int fd) {
     GError *error = NULL;
     GDBusMessage *m = g_dbus_message_new_from_blob(blob, (gsize)n, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
     assert(m && error == NULL);
+    assert(g_dbus_message_get_serial(m) != 0); /* D-Bus forbids serial 0 */
     GUnixFDList *fds = g_unix_fd_list_new();
     for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
         assert(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS);

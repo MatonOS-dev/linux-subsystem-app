@@ -54,6 +54,7 @@ struct _Broker {
     GHashTable *name_queues; /* well-known name -> GQueue of waiting Client* */
     GHashTable *rules;  /* name -> access flags */
     guint next_id;
+    guint32 bridge_serial; /* serials the broker assigns on bridge sockets */
     char *id;
     gboolean trace_calls;
     void* session_services;
@@ -126,6 +127,10 @@ static const char *owner_of(Broker *b, const char *name) {
     if (c != NULL) return c->unique;
     if (g_hash_table_contains(b->owners, name)) return ":1.0";
     return NULL;
+}
+static guint32 next_bridge_serial(Broker *b) {
+    if (++b->bridge_serial == 0) ++b->bridge_serial; /* serial 0 is invalid D-Bus */
+    return b->bridge_serial;
 }
 static gboolean bridge_send_message(Client *c, GDBusMessage *m) {
     GError *error = NULL;
@@ -286,6 +291,9 @@ static gboolean match_rule_supported(const char *rule) {
 }
 static void send_raw(Client *c, GDBusMessage *m) {
     if (c->bridge) {
+        /* A bridge peer has no GDBus connection to number its messages; the
+         * broker is its sending connection, so it assigns a fresh serial. */
+        g_dbus_message_set_serial(m, next_bridge_serial(c->broker));
         bridge_send_message(c, m);
         return;
     }
@@ -907,7 +915,7 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
     GError *error = NULL;
     gboolean sent = FALSE;
     if (target->bridge) {
-        forwarded = b->next_id++;
+        forwarded = next_bridge_serial(b);
         g_dbus_message_set_serial(copy, forwarded);
         sent = bridge_send_message(target, copy);
     } else sent = g_dbus_connection_send_message(target->connection, copy,
