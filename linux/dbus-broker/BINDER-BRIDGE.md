@@ -13,6 +13,14 @@ Direction (subsystem AGENTS.md): Linux app ↔ its private bus ↔ binder ↔ ot
 Android app. Cross-app policy sits at the binder hop (Android permissions and
 caller UID), never in a D-Bus name filter.
 
+## One bus per app
+
+A Linux app's private bus is the only D-Bus it has. Android's "system bus" is binder.
+Names that Flatpak would send to the host system bus (`--system-talk-name`: UPower,
+NetworkManager, logind, GeoClue, ...) are provided by bridged Android apps on that same
+private bus. The launch environment sets `DBUS_SYSTEM_BUS_ADDRESS` to the private bus
+socket (env-var only; no fallback for a hard-coded `/run/dbus/system_bus_socket`).
+
 ## Model
 
 - A **provider** is an Android app that exports a bound service:
@@ -99,5 +107,6 @@ A tiny separate APK (its own gradle module) provides `org.matonos.test.Echo`:
 2. **Tray app:** `StatusNotifierWatcher` + `StatusNotifierHost`, with DBusMenu read through
    the bridge.
 3. **Widget + menu popup.**
+4. **System names:** set `DBUS_SYSTEM_BUS_ADDRESS`, then providers for UPower/logind/... as needed.
 
 Patching the taskbar to host the widget comes later.
