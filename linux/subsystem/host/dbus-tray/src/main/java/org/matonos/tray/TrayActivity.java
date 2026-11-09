@@ -35,6 +35,16 @@ public final class TrayActivity extends Activity {
     rows.setOrientation(LinearLayout.VERTICAL);
     rows.setPadding(12, 12, 12, 12);
     scroll.addView(rows);
+    // targetSdk 35+ is edge-to-edge: keep rows clear of the action bar and system bars.
+    scroll.setOnApplyWindowInsetsListener(
+        (view, insets) -> {
+          android.graphics.Insets bars =
+              insets.getInsets(
+                  android.view.WindowInsets.Type.systemBars()
+                      | android.view.WindowInsets.Type.displayCutout());
+          view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+          return insets;
+        });
     setContentView(scroll);
     registerReceiver(
         updates, new IntentFilter(TrayService.ACTION_ITEMS), Context.RECEIVER_NOT_EXPORTED);
