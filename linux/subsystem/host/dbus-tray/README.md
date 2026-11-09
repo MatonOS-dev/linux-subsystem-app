@@ -31,17 +31,22 @@ NeedsAttention items get a badge. Tapping an item calls
 `Activate(0,0)`; ItemIsMenu items and items returning UnknownMethod open the
 menu popup.
 
-The dialog-themed menu Activity keeps DBusMenu submenus hierarchical. It
-renders enabled/visible state, separators, check and radio toggles, and
-`icon-data`. It calls AboutToShow before opening the root and each submenu,
-sends Event `clicked` for selected leaves, and refreshes the currently open menu
-when LayoutUpdated or ItemsPropertiesUpdated arrives. Outside taps dismiss the
-popup. The older D-Bus value reader, writer, signature parser, and message codec
-are shared under `host/shared/src/main/java/org/matonos/dbus`.
+The menu Activity is a compact dark popup positioned above the clicked item,
+with its left edge aligned to that item's screen bounds and clamped to the
+display. It renders a muted app-title header, hover highlighting, enabled
+state, separators, check switches, radio indicators, themed or supplied row
+icons, and right-aligned shortcuts. DBusMenu submenus remain hierarchical and
+open as nested popup sections with a Back row. It calls AboutToShow before
+opening the root and each submenu, sends Event `clicked` for selected leaves,
+and refreshes the currently open menu when LayoutUpdated or
+ItemsPropertiesUpdated arrives. Outside taps, Escape, and focus loss dismiss
+the popup. The older D-Bus value reader, writer, signature parser, and message
+codec are shared under `host/shared/src/main/java/org/matonos/dbus`.
 
 Desktop launchers can host a live tray pill through `ITrayHost.attachPill()`.
 It returns a `SurfaceControlViewHost.SurfacePackage` for the supplied display
-and host token; the caller installs it with
+and host token. The hosted view occupies the full supplied slot height while
+the capsule and icon slots are vertically centered inside it; the caller installs it with
 `SurfaceView.setChildSurfacePackage()`. The pill draws registered non-Passive
 items in registration order, tints icons white, marks NeedsAttention, and
 reports content width changes through `IPillCallback.onWidthChanged()`. Call
@@ -87,9 +92,10 @@ the mounted images. Tray never opens those paths.
 
 From the repository root, use the regular `./build.sh` environment from the
 bridge task brief. It assembles `:dbus-tray` and runs
-`:dbus-tray:testDebugUnitTest`. JVM tests cover pixmap/menu wire decoding and
-the menu-tree view model, including nested submenus, toggle states, and hidden
-items. `IconThemeLookupTest` builds a small fake theme tree and covers
+`:dbus-tray:testDebugUnitTest`. JVM tests cover pixmap/menu wire decoding,
+popup placement clamping, and the menu-tree view model, including nested
+submenus, row types, icons, shortcuts, toggle states, and hidden items.
+`IconThemeLookupTest` builds a small fake theme tree and covers
 fixed/scalable sizes, scale, threshold, inheritance, hicolor fallback, and
 symbolic preference.
 
@@ -119,7 +125,7 @@ pixmap or text. No extension is installed automatically.
 
 ## Open issues
 
-- The popup is positioned at the bottom center because Android does not provide
-  the widget's screen bounds in a normal widget click PendingIntent.
+- The popup uses source bounds supplied by the launcher or tray host; callers
+  without screen bounds use the bottom-center fallback.
 - The provider and tray have not been exercised with a Papirus extension
   installed on a device or against a live Linux tray implementation.

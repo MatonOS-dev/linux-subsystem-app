@@ -40,6 +40,25 @@ public final class MenuViewModelTest {
     assertFalse(model.children.stream().anyMatch(node -> node.id == 5));
   }
 
+  @Test
+  public void preservesRowKindsIconsAndShortcuts() {
+    TrayItem.MenuEntry separator =
+        entry(1, "", true, true, true, "", 0, Collections.emptyList());
+    TrayItem.MenuEntry checked =
+        new TrayItem.MenuEntry(2, "Checked", true, true, false, "checkmark", 1,
+            null, "media-playback-start", "Ctrl+P", Collections.emptyList());
+    TrayItem.MenuEntry radio =
+        entry(3, "Radio", true, true, false, "radio", 1, Collections.emptyList());
+
+    MenuViewModel model = MenuViewModel.from(Arrays.asList(separator, checked, radio));
+
+    assertTrue(model.children.get(0).separator);
+    assertEquals("checkmark", model.children.get(1).toggleType);
+    assertEquals("media-playback-start", model.children.get(1).iconName);
+    assertEquals("Ctrl+P", model.children.get(1).shortcut);
+    assertEquals("radio", model.children.get(2).toggleType);
+  }
+
   private TrayItem.MenuEntry entry(
       int id,
       String label,

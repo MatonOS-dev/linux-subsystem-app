@@ -533,6 +533,8 @@ public final class TrayService extends Service {
                 propString(props.get("toggle-type")),
                 propInt(props.get("toggle-state"), 0),
                 decodeMenuIcon(props.get("icon-data")),
+                propString(props.get("icon-name")),
+                propShortcut(props.get("shortcut")),
                 parseChildren(node.get(2))));
       }
       return out;
@@ -540,6 +542,19 @@ public final class TrayService extends Service {
 
     String propString(DBusVariant v) {
       return v != null && v.value instanceof String ? (String) v.value : "";
+    }
+
+    String propShortcut(DBusVariant v) {
+      if (v == null || !(v.value instanceof List)) return "";
+      List<String> parts = new ArrayList<>();
+      Object value = v.value;
+      if (value instanceof List && !((List<?>) value).isEmpty()
+          && ((List<?>) value).get(0) instanceof List) value = ((List<?>) value).get(0);
+      for (Object key : (List<?>) value) {
+        Object unwrapped = key instanceof DBusVariant ? ((DBusVariant) key).value : key;
+        if (unwrapped instanceof String && !((String) unwrapped).isEmpty()) parts.add((String) unwrapped);
+      }
+      return String.join("+", parts);
     }
 
     boolean propBool(DBusVariant v, boolean d) {

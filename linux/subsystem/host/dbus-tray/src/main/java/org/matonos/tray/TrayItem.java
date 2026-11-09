@@ -94,6 +94,8 @@ public final class TrayItem {
     public final String toggleType;
     public final int toggleState;
     public final Bitmap icon;
+    public final String iconName;
+    public final String shortcut;
     public final List<MenuEntry> children;
 
     MenuEntry(
@@ -106,6 +108,35 @@ public final class TrayItem {
         int toggleState,
         Bitmap icon,
         List<MenuEntry> children) {
+      this(id, label, enabled, visible, separator, toggleType, toggleState, icon, "", "", children);
+    }
+
+    MenuEntry(
+        int id,
+        String label,
+        boolean enabled,
+        boolean visible,
+        boolean separator,
+        String toggleType,
+        int toggleState,
+        Bitmap icon,
+        String iconName,
+        List<MenuEntry> children) {
+      this(id, label, enabled, visible, separator, toggleType, toggleState, icon, iconName, "", children);
+    }
+
+    MenuEntry(
+        int id,
+        String label,
+        boolean enabled,
+        boolean visible,
+        boolean separator,
+        String toggleType,
+        int toggleState,
+        Bitmap icon,
+        String iconName,
+        String shortcut,
+        List<MenuEntry> children) {
       this.id = id;
       this.label = label;
       this.enabled = enabled;
@@ -114,6 +145,8 @@ public final class TrayItem {
       this.toggleType = toggleType;
       this.toggleState = toggleState;
       this.icon = icon;
+      this.iconName = iconName;
+      this.shortcut = shortcut;
       this.children = children;
     }
   }

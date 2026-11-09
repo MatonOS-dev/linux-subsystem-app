@@ -34,6 +34,8 @@ public final class MenuViewModel {
               entry.toggleType,
               entry.toggleState,
               entry.icon,
+              entry.iconName,
+              entry.shortcut,
               convert(entry.children)));
     }
     return result;
@@ -47,6 +49,8 @@ public final class MenuViewModel {
     public final String toggleType;
     public final int toggleState;
     public final android.graphics.Bitmap icon;
+    public final String iconName;
+    public final String shortcut;
     public final List<Node> children;
 
     Node(
@@ -57,6 +61,8 @@ public final class MenuViewModel {
         String toggleType,
         int toggleState,
         android.graphics.Bitmap icon,
+        String iconName,
+        String shortcut,
         List<Node> children) {
       this.id = id;
       this.label = label;
@@ -65,6 +71,8 @@ public final class MenuViewModel {
       this.toggleType = toggleType;
       this.toggleState = toggleState;
       this.icon = icon;
+      this.iconName = iconName;
+      this.shortcut = shortcut;
       this.children = Collections.unmodifiableList(children);
     }
   }
