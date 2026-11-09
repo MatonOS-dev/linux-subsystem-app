@@ -110,6 +110,7 @@ public final class TrayService extends Service {
     final long id;
     final int uid;
     final ParcelFileDescriptor socket;
+    final int fdNumber;
     final FileDescriptor fd;
     final FileOutputStream output;
     final AtomicInteger nextSerial = new AtomicInteger(1);
@@ -123,6 +124,7 @@ public final class TrayService extends Service {
       this.id = id;
       this.uid = uid;
       this.socket = socket;
+      fdNumber = socket.getFd();
       fd = socket.getFileDescriptor();
       output = new FileOutputStream(fd);
       setName("dbus-tray-" + uid + "-" + id);
@@ -733,7 +735,13 @@ public final class TrayService extends Service {
         if (arg != null) m.body.add(arg);
         send(m);
       } catch (Exception e) {
-        Log.e(TAG, "signal failed attach=" + id + " member=" + member + " errno=" + errno(e), e);
+        if (isBrokenPipe(e)) {
+          Log.w(TAG, "signal dropped after bus closed attach=" + id + " uid=" + uid
+              + " fd=" + fdNumber + " member=" + member + " errno=" + OsConstants.EPIPE);
+        } else {
+          Log.e(TAG, "signal failed attach=" + id + " uid=" + uid + " fd=" + fdNumber
+              + " member=" + member + " errno=" + errno(e), e);
+        }
       }
     }
 
@@ -784,6 +792,19 @@ public final class TrayService extends Service {
 
   static int errno(Exception e) {
     return e instanceof ErrnoException ? ((ErrnoException) e).errno : 0;
+  }
+
+  static boolean isBrokenPipe(Throwable error) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof ErrnoException
+          && ((ErrnoException) current).errno == OsConstants.EPIPE) return true;
+      String message = current.getMessage();
+      if (message != null
+          && (message.equalsIgnoreCase("Broken pipe")
+              || message.contains("EPIPE")
+              || message.toLowerCase(java.util.Locale.ROOT).contains("broken pipe"))) return true;
+    }
+    return false;
   }
 
   static byte[] readPacket(FileDescriptor fd) throws Exception {
