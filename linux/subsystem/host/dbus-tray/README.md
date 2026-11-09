@@ -8,8 +8,9 @@ refresh, pixmap decoding, item action forwarding, and DBusMenu layout and event
 calls.
 
 The home-screen AppWidget renders non-Passive items from every attached bus in a
-horizontal strip. It prefers `IconPixmap`; until icon-theme lookup exists, it
-shows `IconName` as text. NeedsAttention items get a badge. Tapping an item calls
+horizontal strip. For `IconName`, it first asks the subsystem's protected icon
+provider for the Papirus themed icon, then uses `IconPixmap`, then text.
+NeedsAttention items get a badge. Tapping an item calls
 `Activate(0,0)`; ItemIsMenu items and items returning UnknownMethod open the
 menu popup.
 
@@ -21,13 +22,42 @@ when LayoutUpdated or ItemsPropertiesUpdated arrives. Outside taps dismiss the
 popup. The older D-Bus value reader, writer, signature parser, and message codec
 are shared under `host/shared/src/main/java/org/matonos/dbus`.
 
+The subsystem app exposes installed icon-theme files through the read-only
+`org.matonos.linux.icons` ContentProvider. It finds runtime icon-theme extension
+packages from their installed Flatpak ref metadata, mounts their EROFS image
+through `matonos-erofsd`, and opens the selected file descriptor. The exported
+provider requires `org.matonos.permission.READ_ICON_THEMES` (signature). The
+tray app and subsystem currently share a signing key. The tray bundles
+AndroidSVG 1.4 (Apache-2.0) to render installed SVG files; see
+[third party notices](THIRD_PARTY_LICENSES.md). No Papirus files are bundled.
+
+The lookup follows `index.theme` directory sizes, scale, thresholds, scalable
+ranges, inheritance, and `hicolor`; it tries `<name>-symbolic` first. Provider
+queries also list installed themes. Unknown icons return no file. Parse and I/O
+failures are logged with theme and path. The tray caches by theme, name, and
+pixel size, and clears that cache on installed-package changes.
+
+In the v3 layout, each Flatpak ref is installed as an Android package with one
+EROFS image split. `matonos-erofsd` mounts that image at
+`/mnt/matonos/<owner uid>/<n>` while a Binder token is held. Runtime extension
+refs can be installed as standalone non-launchable packages through the normal
+store install flow; the store generates an APK carrying the ref metadata and
+the image split. This checkout no longer has the retired shared
+`/data/linux-app` deployment store; PackageManager owns each installed ref
+package, while active mounts live under `/mnt/matonos/<owner uid>/<n>`. The
+provider also reads the matching Platform runtime image for inherited
+`hicolor` icons. The subsystem provider is the only component here that reads
+the mounted images. Tray never opens those paths.
+
 ## Build and tests
 
 From the repository root, use the regular `./build.sh` environment from the
 bridge task brief. It assembles `:dbus-tray` and runs
 `:dbus-tray:testDebugUnitTest`. JVM tests cover pixmap/menu wire decoding and
 the menu-tree view model, including nested submenus, toggle states, and hidden
-items.
+items. `IconThemeLookupTest` builds a small fake theme tree and covers
+fixed/scalable sizes, scale, threshold, inheritance, hicolor fallback, and
+symbolic preference.
 
 No device or VM install was done for this task. On a device with the bridge
 consumer enabled, add the D-Bus Tray widget, start Linux apps that register SNI
@@ -38,11 +68,17 @@ items, and leaf Event delivery. Update menu properties while open and confirm
 the current submenu refreshes. Stop each Linux app and confirm only its items
 disappear after its bus name is released.
 
+For icon-theme verification, install the Papirus extension as a standalone
+Flatpak ref for the installed Platform branch through the normal store install
+path, then start a tray item that sends an `IconName` available in Papirus.
+Confirm the provider lists Papirus and the widget shows that icon; include a
+symbolic icon to verify its white tint. Remove the extension and confirm a
+subsequent package change clears the tray cache and falls back to the item's
+pixmap or text. No extension is installed automatically.
+
 ## Open issues
 
-- Icon theme name resolution is intentionally absent; only `IconPixmap` is
-  rendered as an image.
 - The popup is positioned at the bottom center because Android does not provide
   the widget's screen bounds in a normal widget click PendingIntent.
-- The widget and popup have not been exercised against a live Linux tray
-  implementation or the Android binder bridge.
+- The provider and tray have not been exercised with a Papirus extension
+  installed on a device or against a live Linux tray implementation.

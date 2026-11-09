@@ -42,8 +42,13 @@ public final class TrayWidgetProvider extends AppWidgetProvider {
       }
       RemoteViews child = new RemoteViews(context.getPackageName(), R.layout.tray_widget_item);
       Bitmap icon = item.icon;
+      IconThemeResolver.Result themed = IconThemeResolver.resolve(context, item.iconName, dp(context, 32));
+      if (themed.bitmap != null) icon = themed.bitmap;
       if (icon != null) {
         child.setImageViewBitmap(R.id.tray_icon, icon);
+        if (themed.bitmap != null && themed.symbolic) {
+          child.setInt(R.id.tray_icon, "setColorFilter", android.graphics.Color.WHITE);
+        }
         child.setViewVisibility(R.id.tray_icon, android.view.View.VISIBLE);
         child.setViewVisibility(R.id.tray_icon_name, android.view.View.GONE);
       } else {
@@ -69,5 +74,9 @@ public final class TrayWidgetProvider extends AppWidgetProvider {
       views.addView(R.id.tray_items, child);
     }
     return views;
+  }
+
+  private static int dp(Context context, int value) {
+    return Math.round(value * context.getResources().getDisplayMetrics().density);
   }
 }

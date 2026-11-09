@@ -9,4 +9,7 @@ android {
     testOptions { unitTests.returnDefaultValues = true }
 }
 
-dependencies { testImplementation 'junit:junit:4.13.2' }
+dependencies {
+    implementation 'com.caverock:androidsvg-aar:1.4'
+    testImplementation 'junit:junit:4.13.2'
+}

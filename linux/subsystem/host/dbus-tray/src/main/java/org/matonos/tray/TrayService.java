@@ -2,6 +2,9 @@ package org.matonos.tray;
 
 import android.app.Service;
 import android.content.Intent;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.content.BroadcastReceiver;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Binder;
@@ -33,6 +36,12 @@ public final class TrayService extends Service {
   static final String WATCH_PATH = "/StatusNotifierWatcher",
       WATCH_IFACE = "org.kde.StatusNotifierWatcher";
   private final Map<Long, Bus> buses = new ConcurrentHashMap<>();
+  private final BroadcastReceiver iconPackages = new BroadcastReceiver() {
+    @Override public void onReceive(android.content.Context context, Intent intent) {
+      IconThemeResolver.clearCache();
+      sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
+    }
+  };
 
   static String key(long attach, String service) {
     return attach + "\n" + service;
@@ -41,6 +50,17 @@ public final class TrayService extends Service {
   static void changed(TrayService s) {
     s.sendBroadcast(new Intent(ACTION_ITEMS).setPackage(s.getPackageName()));
     TrayHostService.modelChanged();
+  }
+
+  @Override
+  public void onCreate() {
+    super.onCreate();
+    IntentFilter filter = new IntentFilter();
+    filter.addAction(Intent.ACTION_PACKAGE_ADDED);
+    filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+    filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
+    filter.addDataScheme("package");
+    registerReceiver(iconPackages, filter, Context.RECEIVER_NOT_EXPORTED);
   }
 
   @Override
@@ -59,6 +79,7 @@ public final class TrayService extends Service {
 
   @Override
   public void onDestroy() {
+    unregisterReceiver(iconPackages);
     for (Bus b : buses.values()) b.close();
     super.onDestroy();
   }

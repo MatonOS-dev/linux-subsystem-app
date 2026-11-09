@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Typeface;
+import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
@@ -73,13 +74,19 @@ public final class TrayActivity extends Activity {
       row.setGravity(Gravity.CENTER_VERTICAL);
       row.setPadding(8, 8, 8, 8);
       ImageView icon = new ImageView(this);
-      if (item.icon != null) icon.setImageBitmap(item.icon);
+      IconThemeResolver.Result themed = IconThemeResolver.resolve(this, item.iconName,
+          Math.round(32 * getResources().getDisplayMetrics().density));
+      Bitmap displayed = themed.bitmap != null ? themed.bitmap : item.icon;
+      if (displayed != null) {
+        icon.setImageBitmap(displayed);
+        if (themed.bitmap != null && themed.symbolic) icon.setColorFilter(android.graphics.Color.WHITE);
+      }
       else {
         icon.setContentDescription(item.iconName);
         icon.setScaleType(ImageView.ScaleType.CENTER);
       }
       row.addView(icon, new LinearLayout.LayoutParams(48, 48));
-      if (item.icon == null && !item.iconName.isEmpty()) {
+      if (displayed == null && !item.iconName.isEmpty()) {
         TextView iconName = new TextView(this);
         iconName.setText(item.iconName);
         iconName.setTextSize(10);
