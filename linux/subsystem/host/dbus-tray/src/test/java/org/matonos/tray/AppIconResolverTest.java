@@ -19,4 +19,10 @@ public final class AppIconResolverTest {
     assertEquals(null, AppIconResolver.metadataFlatpakId(null));
     assertEquals(null, AppIconResolver.metadataFlatpakId(""));
   }
+
+  @Test
+  public void adaptiveForegroundUsesLauncherSafeZoneCrop() {
+    assertEquals(108, AppIconResolver.adaptiveForegroundCanvasSize(66));
+    assertEquals(21, AppIconResolver.adaptiveForegroundCropOffset(66));
+  }
 }

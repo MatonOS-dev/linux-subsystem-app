@@ -17,9 +17,10 @@ decoded by converting encoded underscores to dots for the exact
 `<app-id>-symbolic` theme lookup. `DeployManifest` encodes both dots and
 literal underscores as underscores, so this package-derived ID can be
 ambiguous for IDs containing literal underscores; the launcher icon fallback
-still works in that case. If the theme icon is absent, an adaptive icon's
-monochrome drawable is used, or its launcher drawable is reduced to an alpha
-silhouette. These symbolic fallbacks use the regular symbolic tint treatment.
+still works in that case. If the theme icon is absent, launcher icons are
+reduced to alpha silhouettes. Adaptive icons use only the foreground layer,
+cropped to the launcher safe zone; non-adaptive icons keep the full drawable.
+These symbolic fallbacks use the regular symbolic tint treatment.
 Launcher icon results are cached per UID and cleared on package add, remove, or
 replacement. PackageManager returns the known owner packages by UID, so no
 package visibility query is needed.

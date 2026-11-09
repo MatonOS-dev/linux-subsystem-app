@@ -39,9 +39,18 @@ final class AppIconResolver {
       }
       try {
         Drawable launcher = context.getPackageManager().getApplicationIcon(packageName);
-        Drawable monochrome = launcher instanceof AdaptiveIconDrawable
-            ? ((AdaptiveIconDrawable) launcher).getMonochrome() : null;
-        Bitmap bitmap = monochrome == null ? silhouette(launcher, sizePx) : render(monochrome, sizePx);
+        Bitmap bitmap;
+        if (launcher instanceof AdaptiveIconDrawable) {
+          Drawable foreground = ((AdaptiveIconDrawable) launcher).getForeground();
+          if (foreground == null) {
+            Log.e(TAG, "Adaptive launcher icon has no foreground package=" + packageName
+                + " uid=" + uid);
+            continue;
+          }
+          bitmap = silhouetteAdaptiveForeground(foreground, sizePx);
+        } else {
+          bitmap = silhouette(launcher, sizePx);
+        }
         if (bitmap != null) {
           CACHE.putIfAbsent(uid, new Entry(packageName, bitmap));
           return new IconThemeResolver.Result(bitmap, true);
@@ -86,6 +95,22 @@ final class AppIconResolver {
   private static Bitmap silhouette(Drawable source, int size) {
     Bitmap original = render(source, size);
     if (original == null) return null;
+    return alphaSilhouette(original);
+  }
+
+  private static Bitmap silhouetteAdaptiveForeground(Drawable foreground, int size) {
+    if (size <= 0) return null;
+    int canvasSize = adaptiveForegroundCanvasSize(size);
+    Bitmap full = render(foreground, canvasSize);
+    if (full == null) return null;
+    int offset = adaptiveForegroundCropOffset(size);
+    Bitmap safeZone = Bitmap.createBitmap(full, offset, offset, size, size);
+    full.recycle();
+    return alphaSilhouette(safeZone);
+  }
+
+  private static Bitmap alphaSilhouette(Bitmap original) {
+    int size = original.getWidth();
     Bitmap mask = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
     int[] pixels = new int[size * size];
     original.getPixels(pixels, 0, size, 0, 0, size, size);
@@ -96,6 +121,16 @@ final class AppIconResolver {
     mask.setPixels(pixels, 0, size, 0, 0, size, size);
     original.recycle();
     return mask;
+  }
+
+  static int adaptiveForegroundCanvasSize(int outputSize) {
+    if (outputSize <= 0) return outputSize;
+    // Adaptive icon artwork uses a 108dp layer with a 66dp safe zone.
+    return (int) (((long) outputSize * 18 + 10) / 11);
+  }
+
+  static int adaptiveForegroundCropOffset(int outputSize) {
+    return (adaptiveForegroundCanvasSize(outputSize) - outputSize) / 2;
   }
 
   private static Bitmap render(Drawable drawable, int size) {
