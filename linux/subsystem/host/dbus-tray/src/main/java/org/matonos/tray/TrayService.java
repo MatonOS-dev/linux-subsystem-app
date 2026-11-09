@@ -135,10 +135,12 @@ public final class TrayService extends Service {
                 try {
                   addMatch(
                       "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'");
+                  acquireWatcherName();
                 } catch (Exception e) {
                   Log.e(
                       TAG,
-                      "NameOwnerChanged AddMatch failed attach=" + id + " errno=" + errno(e),
+                      "watcher startup failed attach=" + id + " uid=" + uid + " fd=" + socket.getFd()
+                          + " errno=" + errno(e),
                       e);
                 }
               },
@@ -162,6 +164,27 @@ public final class TrayService extends Service {
       } finally {
         close();
       }
+    }
+
+    void acquireWatcherName() throws Exception {
+      DBusMessage.Message result =
+          call(
+              "org.freedesktop.DBus",
+              "/org/freedesktop/DBus",
+              "org.freedesktop.DBus",
+              "RequestName",
+              "su",
+              WATCH_IFACE,
+              4);
+      if (result.body.size() != 1 || !(result.body.get(0) instanceof Integer)) {
+        throw new IOException(
+            "RequestName returned malformed result attach=" + id + " body=" + result.body);
+      }
+      int status = (Integer) result.body.get(0);
+      if (status != 1 && status != 4) {
+        throw new IOException("RequestName did not acquire watcher attach=" + id + " status=" + status);
+      }
+      emit("StatusNotifierHostRegistered", "", null);
     }
 
     DBusMessage.Message call(
