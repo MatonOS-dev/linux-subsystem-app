@@ -615,7 +615,7 @@ public final class StubGenerator {
         byte[] types = typeId==1?resourceStringPool("drawable"):resourceStringPool("matonos","drawable");
         byte[] keys = monochrome?resourceStringPool("icon", "foreground", "background", "monochrome"):resourceStringPool("icon", "foreground", "background");
         int count=monochrome?4:3;
-        byte[] spec = new byte[28];
+        byte[] spec = new byte[16+count*4];
         put16(spec,0,0x0202); put16(spec,2,16); putInt(spec,4,spec.length);
         spec[8]=(byte)typeId; putInt(spec,12,count);
         byte[] type = new byte[84+count*4+count*16];
