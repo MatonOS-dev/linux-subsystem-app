@@ -7,6 +7,18 @@ android {
     buildFeatures { aidl true }
     sourceSets { main { java.srcDirs += file('../shared/src/main/java'); aidl.srcDirs += file('../shared/src/main/aidl') } }
     testOptions { unitTests.returnDefaultValues = true }
+    signingConfigs {
+        subsystem {
+            storeFile file(System.getenv('MATON_SIGNING_STORE_FILE'))
+            storePassword System.getenv('MATON_SIGNING_STORE_PASSWORD')
+            keyAlias System.getenv('MATON_SIGNING_KEY_ALIAS')
+            keyPassword System.getenv('MATON_SIGNING_KEY_PASSWORD')
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.subsystem }
+        release { signingConfig signingConfigs.subsystem }
+    }
 }
 
 dependencies {

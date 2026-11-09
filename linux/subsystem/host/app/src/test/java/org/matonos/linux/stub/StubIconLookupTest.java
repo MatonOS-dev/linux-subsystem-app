@@ -21,11 +21,42 @@ public final class StubIconLookupTest {
             Files.write(scalable.resolve("scaled.png"), new byte[]{1});
 
             assertEquals(base.resolve("direct.png").toFile(), StubIconLookup.find(
-                    app.toFile(), runtime.toFile(), home.toFile(), "/app/share/icons/theme", "direct", 24));
+                    app.toFile(), runtime.toFile(), home.toFile(), "org.example.App",
+                    "/app/share/icons/theme", "direct", 24));
             assertEquals(sized.resolve("sized.svg").toFile(), StubIconLookup.find(
-                    app.toFile(), runtime.toFile(), home.toFile(), "/app/share/icons/theme", "sized", 24));
+                    app.toFile(), runtime.toFile(), home.toFile(), "org.example.App",
+                    "/app/share/icons/theme", "sized", 24));
             assertEquals(scalable.resolve("scaled.png").toFile(), StubIconLookup.find(
-                    app.toFile(), runtime.toFile(), home.toFile(), "/app/share/icons/theme", "scaled", 24));
+                    app.toFile(), runtime.toFile(), home.toFile(), "org.example.App",
+                    "/app/share/icons/theme", "scaled", 24));
+        } finally {
+            delete(app); delete(runtime); delete(home);
+        }
+    }
+
+    @Test public void mapsFlatpakVarDataToTheOwningAppsExistingPersistentDirectory() throws Exception {
+        Path app = Files.createTempDirectory("stub-icons-app");
+        Path runtime = Files.createTempDirectory("stub-icons-runtime");
+        Path home = Files.createTempDirectory("stub-icons-home");
+        try {
+            Path steamIcons = Files.createDirectories(home.resolve(
+                    ".var/app/com.valvesoftware.Steam/data/Steam/public/24x24/apps"));
+            Path icon = steamIcons.resolve("steam_tray_mono.png");
+            Files.write(icon, new byte[]{1});
+
+            assertEquals(icon.toFile(), StubIconLookup.find(app.toFile(), runtime.toFile(), home.toFile(),
+                    "com.valvesoftware.Steam", "/var/data/Steam/public", "steam_tray_mono", 24));
+            assertEquals(home.resolve(".var/app/com.valvesoftware.Steam/config/Steam").toFile(),
+                    StubIconLookup.mapDirectoryUnchecked(app.toFile(), runtime.toFile(), home.toFile(),
+                            "com.valvesoftware.Steam", "/var/config/Steam"));
+            assertEquals(home.resolve(".var/app/com.valvesoftware.Steam/cache/Steam").toFile(),
+                    StubIconLookup.mapDirectoryUnchecked(app.toFile(), runtime.toFile(), home.toFile(),
+                            "com.valvesoftware.Steam", "/var/cache/Steam"));
+            assertEquals(home.resolve(".var/app/com.valvesoftware.Steam/tmp").toFile(),
+                    StubIconLookup.mapDirectoryUnchecked(app.toFile(), runtime.toFile(), home.toFile(),
+                            "com.valvesoftware.Steam", "/var/tmp"));
+            assertNull(StubIconLookup.mapDirectoryUnchecked(app.toFile(), runtime.toFile(), home.toFile(),
+                    "com.valvesoftware.Steam", "/var/database/Steam"));
         } finally {
             delete(app); delete(runtime); delete(home);
         }
@@ -38,12 +69,12 @@ public final class StubIconLookupTest {
         Path outside = Files.createTempDirectory("stub-icons-outside");
         try {
             assertNull(StubIconLookup.mapDirectoryUnchecked(app.toFile(), runtime.toFile(), home.toFile(),
-                    "/app/../../outside"));
+                    "org.example.App", "/app/../../outside"));
             Files.createSymbolicLink(app.resolve("escape"), outside);
             assertNull(StubIconLookup.mapDirectoryUnchecked(app.toFile(), runtime.toFile(), home.toFile(),
-                    "/app/escape"));
+                    "org.example.App", "/app/escape"));
             assertNull(StubIconLookup.mapDirectoryUnchecked(app.toFile(), runtime.toFile(), home.toFile(),
-                    outside.resolve("icons").toString()));
+                    "org.example.App", outside.resolve("icons").toString()));
         } finally {
             delete(app); delete(runtime); delete(home); delete(outside);
         }

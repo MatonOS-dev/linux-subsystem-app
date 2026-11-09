@@ -32,6 +32,13 @@ NeedsAttention items get a badge. Tapping an item calls
 `Activate(0,0)`; ItemIsMenu items and items returning UnknownMethod open the
 menu popup.
 
+The menu is excluded from Recents, has no snapshot or caption, and removes its
+task when it closes. Opening the menu does not launch or raise the owning app.
+Activate and menu leaf Event actions query the stub for an existing toplevel
+before lending a foreground start; they never request a second task. If the
+action finishes without a toplevel, the stub removes only its tray-started
+empty placeholder.
+
 The menu Activity uses a single dark palette for the popup, text, disabled and
 hover states, toggle controls, outline, and subtle one-pixel separators. It is
 positioned above the clicked item,
@@ -88,7 +95,8 @@ The subsystem app exposes installed icon-theme files through the read-only
 packages from their installed Flatpak ref metadata, mounts their EROFS image
 through `matonos-erofsd`, and opens the selected file descriptor. The exported
 provider requires `org.matonos.permission.READ_ICON_THEMES` (signature). The
-tray app and subsystem currently share a signing key. The tray bundles
+tray declares this permission and both debug and release APKs use the
+subsystem signing key from the build environment. The tray bundles
 AndroidSVG 1.4 (Apache-2.0) to render installed SVG files; see
 [third party notices](THIRD_PARTY_LICENSES.md). No Papirus files are bundled.
 
@@ -109,6 +117,11 @@ package, while active mounts live under `/mnt/matonos/<owner uid>/<n>`. The
 provider also reads the matching Platform runtime image for inherited
 `hicolor` icons. The subsystem provider is the only component here that reads
 the mounted images. Tray never opens those paths.
+
+SNI `IconThemePath` values under `/var/data`, `/var/config`, `/var/cache`, and
+`/var/tmp` resolve through Flatpak's existing per-app directories at
+`$HOME/.var/app/<app-id>/{data,config,cache,tmp}`. Other paths remain limited
+to the app deployment, runtime deployment, or stub home.
 
 ## Build and tests
 

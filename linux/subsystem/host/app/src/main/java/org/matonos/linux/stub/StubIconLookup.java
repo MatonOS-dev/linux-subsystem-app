@@ -14,7 +14,7 @@ public final class StubIconLookup {
 
     private StubIconLookup() {}
 
-    public static File find(File appFiles, File runtimeFiles, File home, String themePath,
+    public static File find(File appFiles, File runtimeFiles, File home, String appId, String themePath,
             String iconName, int sizePx) {
         if (sizePx <= 0 || iconName == null || !iconName.matches("[A-Za-z0-9_.+-]+")) {
             Log.e(TAG, "Rejected invalid icon request path=" + themePath + " name=" + iconName
@@ -22,7 +22,7 @@ public final class StubIconLookup {
             return null;
         }
         try {
-            File directory = mapDirectory(appFiles, runtimeFiles, home, themePath);
+            File directory = mapDirectory(appFiles, runtimeFiles, home, appId, themePath);
             if (directory == null || !directory.isDirectory()) {
                 Log.e(TAG, "Icon theme directory unavailable path=" + themePath);
                 return null;
@@ -33,7 +33,7 @@ public final class StubIconLookup {
             addVariants(candidates, new File(directory, "scalable/apps"), iconName);
             for (File candidate : candidates) {
                 File canonical = candidate.getCanonicalFile();
-                if (!insideAllowedRoots(canonical, appFiles, runtimeFiles, home)) {
+                if (!insideAllowedRoots(canonical, appFiles, runtimeFiles, home, appId)) {
                     Log.e(TAG, "Icon candidate escapes owning stub trees path=" + candidate
                             + " canonical=" + canonical);
                     continue;
@@ -49,14 +49,14 @@ public final class StubIconLookup {
         }
     }
 
-    static File mapDirectory(File appFiles, File runtimeFiles, File home, String path) throws IOException {
-        File mapped = mapDirectoryUnchecked(appFiles, runtimeFiles, home, path);
+    static File mapDirectory(File appFiles, File runtimeFiles, File home, String appId, String path) throws IOException {
+        File mapped = mapDirectoryUnchecked(appFiles, runtimeFiles, home, appId, path);
         if (mapped == null && path != null && !path.isEmpty())
             Log.e(TAG, "Rejected icon theme path outside the owning app trees path=" + path);
         return mapped;
     }
 
-    static File mapDirectoryUnchecked(File appFiles, File runtimeFiles, File home, String path) throws IOException {
+    static File mapDirectoryUnchecked(File appFiles, File runtimeFiles, File home, String appId, String path) throws IOException {
         if (path == null || path.isEmpty() || !path.startsWith("/")) return null;
         File root;
         String relative;
@@ -66,6 +66,11 @@ public final class StubIconLookup {
         } else if (path.equals("/usr") || path.startsWith("/usr/")) {
             root = runtimeFiles;
             relative = path.length() == 4 ? "" : path.substring(5);
+        } else if (isVarDirectory(path) && validAppId(appId)) {
+            String mount = path.substring(5, path.indexOf('/', 5) < 0 ? path.length() : path.indexOf('/', 5));
+            String suffix = path.length() == 5 + mount.length() ? "" : path.substring(6 + mount.length());
+            root = new File(new File(home, ".var/app/" + appId), mount);
+            relative = suffix;
         } else {
             File canonicalHome = home.getCanonicalFile();
             File candidate = new File(path).getCanonicalFile();
@@ -81,11 +86,24 @@ public final class StubIconLookup {
         return candidate;
     }
 
-    private static boolean insideAllowedRoots(File file, File app, File runtime, File home) throws IOException {
+    private static boolean insideAllowedRoots(File file, File app, File runtime, File home, String appId) throws IOException {
         Path path = file.toPath();
         return app != null && inside(path, app.getCanonicalFile().toPath())
                 || runtime != null && inside(path, runtime.getCanonicalFile().toPath())
-                || home != null && inside(path, home.getCanonicalFile().toPath());
+                || home != null && inside(path, home.getCanonicalFile().toPath())
+                || home != null && validAppId(appId)
+                        && inside(path, new File(home, ".var/app/" + appId).getCanonicalFile().toPath());
+    }
+
+    private static boolean isVarDirectory(String path) {
+        return path.equals("/var/data") || path.startsWith("/var/data/")
+                || path.equals("/var/config") || path.startsWith("/var/config/")
+                || path.equals("/var/cache") || path.startsWith("/var/cache/")
+                || path.equals("/var/tmp") || path.startsWith("/var/tmp/");
+    }
+
+    private static boolean validAppId(String appId) {
+        return appId != null && appId.matches("[A-Za-z0-9_.-]+") && !appId.startsWith(".");
     }
 
     private static boolean inside(Path child, Path root) {

@@ -20,6 +20,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private volatile int window;
     private volatile boolean destroyed;
     private static final String WINDOW = "org.matonos.linuxhost.WINDOW_ID";
+    private static final String TRAY_PLACEHOLDER = "org.matonos.linuxhost.TRAY_PLACEHOLDER";
     private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
     private static final java.util.Set<StubActivity> LIVE_ACTIVITIES =
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
@@ -27,9 +28,22 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     /** A tray may only lend a new activity start when this app has no live host activity. */
     public static boolean hasLiveWindow() {
         for (StubActivity activity : LIVE_ACTIVITIES) {
-            if (!activity.destroyed && !activity.isFinishing()) return true;
+            if (!activity.destroyed && !activity.isFinishing() && activity.window != 0) return true;
         }
         return false;
+    }
+
+    /** Remove tray-started placeholders after Activate/Event completes without opening a toplevel. */
+    public static void finishPlaceholdersWithoutWindow() {
+        MAIN.postDelayed(() -> {
+            for (StubActivity activity : LIVE_ACTIVITIES) {
+                if (activity.destroyed || activity.isFinishing() || activity.window != 0
+                        || !activity.getIntent().getBooleanExtra(TRAY_PLACEHOLDER, false)) continue;
+                android.util.Log.i("MatonFlatpakStub", "Removing empty tray placeholder package="
+                        + activity.getPackageName() + " uid=" + android.os.Process.myUid());
+                activity.finishAndRemoveTask();
+            }
+        }, 2000);
     }
     private final Runnable launchStatusChanged = () -> runOnUiThread(() -> {
         if (destroyed) return;
@@ -150,6 +164,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private static final WindowLifetime WINDOWS = new WindowLifetime();
     private android.os.PowerManager.WakeLock portalWake;
     private boolean stopped;
+    private boolean trayPlaceholder;
     private String ref;
     private boolean attached;
     private TextView status;
@@ -246,6 +261,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         status=new TextView(this);status.setPadding(32,32,32,32);
         status.setText("Starting application…");setContentView(status);
         window=state!=null?state.getInt(WINDOW,0):getIntent().getIntExtra(WINDOW,0);
+        trayPlaceholder = getIntent().getBooleanExtra(TRAY_PLACEHOLDER, false);
         int minimum=1;
         try {
             ActivityInfo info=getPackageManager().getActivityInfo(getComponentName(),PackageManager.GET_META_DATA);
@@ -272,6 +288,11 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             // The pin activity lives in the subsystem app, not in this stub package.
             startActivityForResult(new Intent().setClassName("org.matonos.linux","org.matonos.linux.ErofsPinActivity"),EROFS_PIN_REQUEST);
         } catch(Exception error) { failure("Cannot start the app runtime",error); }
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        trayPlaceholder = intent.getBooleanExtra(TRAY_PLACEHOLDER, false);
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
         super.onActivityResult(requestCode,resultCode,data);

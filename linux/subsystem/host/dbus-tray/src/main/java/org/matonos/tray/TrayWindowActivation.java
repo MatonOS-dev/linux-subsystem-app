@@ -13,6 +13,7 @@ import java.util.Arrays;
 /** Uses the foreground tray action to lend the normal Android BAL exemption. */
 final class TrayWindowActivation {
   private static final String STUB_ACTIVITY = "org.matonos.linux.stub.StubActivity";
+  private static final String EXTRA_TRAY_PLACEHOLDER = "org.matonos.linuxhost.TRAY_PLACEHOLDER";
 
   private TrayWindowActivation() {}
 
@@ -60,7 +61,9 @@ final class TrayWindowActivation {
         continue;
       }
       Intent intent = new Intent().setComponent(component)
-          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+          .putExtra(EXTRA_TRAY_PLACEHOLDER, true)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+              | Intent.FLAG_ACTIVITY_SINGLE_TOP);
       PendingIntent launch = PendingIntent.getActivity(context, bus.uid, intent,
           PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
       ActivityOptions options = ActivityOptions.makeBasic()

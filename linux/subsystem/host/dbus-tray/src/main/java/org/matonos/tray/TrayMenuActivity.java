@@ -49,6 +49,7 @@ public final class TrayMenuActivity extends Activity {
   @Override
   protected void onCreate(Bundle state) {
     super.onCreate(state);
+    setRecentsScreenshotEnabled(false);
     Window window = getWindow();
     window.requestFeature(Window.FEATURE_NO_TITLE);
     window.setBackgroundDrawableResource(android.R.color.transparent);
@@ -59,7 +60,7 @@ public final class TrayMenuActivity extends Activity {
     if (item == null) {
       Log.e(TrayService.TAG, "menu Activity item missing package=" + getPackageName()
           + " key=" + getIntent().getStringExtra(EXTRA_ITEM_KEY));
-      finish();
+      closeMenuTask();
       return;
     }
     registerReceiver(updates, new IntentFilter(TrayService.ACTION_ITEMS), RECEIVER_NOT_EXPORTED);
@@ -79,7 +80,7 @@ public final class TrayMenuActivity extends Activity {
     if (item == null) {
       Log.e(TrayService.TAG, "menu Activity item missing package=" + getPackageName()
           + " key=" + intent.getStringExtra(EXTRA_ITEM_KEY));
-      finish();
+      closeMenuTask();
       return;
     }
     parentStack.clear();
@@ -117,13 +118,13 @@ public final class TrayMenuActivity extends Activity {
   public void onWindowFocusChanged(boolean hasFocus) {
     super.onWindowFocusChanged(hasFocus);
     if (hasFocus) hadWindowFocus = true;
-    else if (hadWindowFocus && !isFinishing()) finish();
+    else if (hadWindowFocus && !isFinishing()) closeMenuTask();
   }
 
   @Override
   public boolean dispatchTouchEvent(MotionEvent event) {
     if (event.getActionMasked() == MotionEvent.ACTION_OUTSIDE) {
-      finish();
+      closeMenuTask();
       return true;
     }
     return super.dispatchTouchEvent(event);
@@ -132,7 +133,7 @@ public final class TrayMenuActivity extends Activity {
   @Override
   public boolean dispatchKeyEvent(KeyEvent event) {
     if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE && event.getAction() == KeyEvent.ACTION_UP) {
-      finish();
+      closeMenuTask();
       return true;
     }
     return super.dispatchKeyEvent(event);
@@ -142,7 +143,7 @@ public final class TrayMenuActivity extends Activity {
     if (item.bus == null) {
       Log.e(TrayService.TAG, "Activate failed package=" + getPackageName() + " service="
           + item.service + ": attached bus is unavailable");
-      finish();
+      closeMenuTask();
       return;
     }
     if (activationPending) {
@@ -155,14 +156,18 @@ public final class TrayMenuActivity extends Activity {
     new Thread(() -> {
       try {
         item.bus.invokeItem(item, "Activate", 0, 0);
-        runOnUiThread(this::finish);
+        runOnUiThread(this::closeMenuTask);
       } catch (Exception e) {
-        if (isUnknownMethod(e)) runOnUiThread(this::openRootMenu);
+        if (isUnknownMethod(e)) {
+          runOnUiThread(this::openRootMenu);
+        }
         else {
           Log.e(TrayService.TAG, "Activate failed package=" + getPackageName() + " service="
               + item.service + " path=" + item.path, e);
-          runOnUiThread(this::finish);
+          runOnUiThread(this::closeMenuTask);
         }
+      } finally {
+        finishEmptyPlaceholder();
       }
     }, "tray-widget-activate-" + item.attachId).start();
   }
@@ -442,13 +447,15 @@ public final class TrayMenuActivity extends Activity {
     // BAL eligibility is checked when a PendingIntent is sent. The current
     // fallback foregrounds the owner for every user action that may map a window.
     TrayWindowActivation.bringAppForward(this, item);
-    finish();
+    closeMenuTask();
     new Thread(() -> {
       try {
         if (item.bus != null) item.bus.menuEvent(item, node.id);
       } catch (Exception e) {
         Log.e(TrayService.TAG, "menu Event failed package=" + getPackageName() + " service="
             + item.service + " id=" + node.id, e);
+      } finally {
+        finishEmptyPlaceholder();
       }
     }, "tray-menu-click-" + node.id).start();
   }
@@ -471,5 +478,24 @@ public final class TrayMenuActivity extends Activity {
 
   private int dp(int value) {
     return Math.round(value * getResources().getDisplayMetrics().density);
+  }
+
+  private void closeMenuTask() {
+    if (!isFinishing()) finishAndRemoveTask();
+  }
+
+  private void finishEmptyPlaceholder() {
+    TrayService.Bus bus = item == null ? null : item.bus;
+    if (bus == null || bus.icons == null) {
+      Log.e(TrayService.TAG, "Empty placeholder cleanup failed package=" + getPackageName()
+          + " reason=stub callback unavailable");
+      return;
+    }
+    try {
+      bus.icons.finishPlaceholderIfNoWindow();
+    } catch (android.os.RemoteException | RuntimeException error) {
+      Log.e(TrayService.TAG, "Empty placeholder cleanup failed package=" + getPackageName()
+          + " service=" + item.service + " uid=" + bus.uid, error);
+    }
   }
 }

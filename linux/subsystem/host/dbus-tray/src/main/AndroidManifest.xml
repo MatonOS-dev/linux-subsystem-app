@@ -7,6 +7,7 @@
         <activity android:name=".TrayMenuActivity" android:exported="false"
             android:theme="@style/TrayMenuTheme"
             android:taskAffinity="org.matonos.tray.menu"
+            android:excludeFromRecents="true"
             android:launchMode="singleTask" />
         <receiver android:name=".TrayWidgetProvider" android:exported="true">
             <intent-filter>

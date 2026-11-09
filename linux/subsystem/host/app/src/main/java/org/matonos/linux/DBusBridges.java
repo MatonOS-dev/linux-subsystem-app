@@ -28,6 +28,7 @@ final class DBusBridges implements AutoCloseable {
     private static final String TAG = "MatonDBusBridge";
     private static final String ACTION = "org.matonos.dbus.SERVICE";
     private final Context context;
+    private final String appId;
     private final List<ServiceConnection> bindings = new ArrayList<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean closed;
@@ -36,7 +37,26 @@ final class DBusBridges implements AutoCloseable {
 
     DBusBridges(Context context) {
         this.context = context.getApplicationContext();
+        this.appId = owningAppId(this.context);
         discover();
+    }
+
+    private static String owningAppId(Context context) {
+        try {
+            android.content.pm.ApplicationInfo info = context.getPackageManager().getApplicationInfo(
+                    context.getPackageName(), PackageManager.GET_META_DATA);
+            String ref = info.metaData == null ? null : info.metaData.getString("org.matonos.linuxhost.FLATPAK_REF");
+            if (ref != null) {
+                String[] parts = ref.split("/");
+                if (parts.length == 4 && parts[0].equals("app") && parts[1].matches("[A-Za-z0-9_.-]+"))
+                    return parts[1];
+            }
+            Log.e(TAG, "Cannot map Flatpak /var directories package=" + context.getPackageName()
+                    + " ref=" + ref);
+        } catch (PackageManager.NameNotFoundException error) {
+            Log.e(TAG, "Cannot read owning app metadata package=" + context.getPackageName(), error);
+        }
+        return null;
     }
 
     void setIconDirectories(File appFiles, File runtimeFiles) {
@@ -53,11 +73,19 @@ final class DBusBridges implements AutoCloseable {
             return live;
         }
 
+        @Override public void finishPlaceholderIfNoWindow() {
+            int uid = Binder.getCallingUid();
+            Log.i(TAG, "finish empty tray placeholder requested uid=" + uid
+                    + " package=" + context.getPackageName());
+            org.matonos.linux.stub.StubActivity.finishPlaceholdersWithoutWindow();
+        }
+
         @Override public ParcelFileDescriptor openIcon(String iconThemePath, String iconName, int sizePx) {
             int uid = Binder.getCallingUid();
             try {
                 File home = new File(context.getDataDir().getCanonicalFile(), "home");
-                File icon = StubIconLookup.find(appFiles, runtimeFiles, home, iconThemePath, iconName, sizePx);
+                File icon = StubIconLookup.find(appFiles, runtimeFiles, home, appId,
+                        iconThemePath, iconName, sizePx);
                 if (icon == null) return null;
                 return ParcelFileDescriptor.open(icon, ParcelFileDescriptor.MODE_READ_ONLY);
             } catch (Exception error) {
