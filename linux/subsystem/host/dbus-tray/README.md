@@ -46,6 +46,21 @@ ItemsPropertiesUpdated arrives. Outside taps, Escape, and focus loss dismiss
 the popup. The older D-Bus value reader, writer, signature parser, and message
 codec are shared under `host/shared/src/main/java/org/matonos/dbus`.
 
+Menu labels and shortcuts use font-metric-based vertical centering. The
+icon/toggle gutter is shared by all rows at one menu level only when at least
+one visible row at that level has an icon or toggle indicator; otherwise the
+labels align with the header.
+
+On each attached bus, the tray claims `org.kde.StatusNotifierWatcher` with the
+standard D-Bus `RequestName` call before serving registrations. The broker's
+normal `NameOwnerChanged` signal tells existing items that the watcher has
+returned, and the tray then emits `StatusNotifierHostRegistered`. This follows
+the watcher restart flow used by clients: libappindicator watches the watcher
+name and rebuilds its proxy when it appears, then registers its item; Qt's
+KStatusNotifierItem watches owner changes and calls
+`RegisterStatusNotifierItem` when the watcher gains an owner. Neither client
+needs to restart.
+
 Desktop launchers can host a live tray pill through `ITrayHost.attachPill()`.
 It returns a `SurfaceControlViewHost.SurfacePackage` for the supplied display
 and host token. The hosted view occupies the full supplied slot height while
@@ -121,6 +136,12 @@ origin after layout. Add and remove tray items while attached and verify the
 reported width and drawn item order update. Check primary activation,
 secondary click, long press, scroll, and anchored menu bounds. Detach and
 reattach the host surface and confirm updates continue.
+
+For watcher restart verification, keep a Steam tray item (libappindicator
+path) and a Qt tray item such as Telegram running while restarting the tray
+service. Confirm the pill repopulates after each client's watcher-name
+notification triggers `RegisterStatusNotifierItem`, without restarting either
+Linux app.
 
 For icon-theme verification, install the Papirus extension as a standalone
 Flatpak ref for the installed Platform branch through the normal store install

@@ -209,7 +209,9 @@ public final class TrayMenuActivity extends Activity {
 
     LinearLayout rows = new LinearLayout(this);
     rows.setOrientation(LinearLayout.VERTICAL);
-    for (MenuViewModel.Node node : MenuViewModel.from(entries).children) {
+    List<MenuViewModel.Node> menuNodes = MenuViewModel.from(entries).children;
+    boolean hasIndicatorColumn = menuNodes.stream().anyMatch(TrayMenuActivity::usesIndicatorColumn);
+    for (MenuViewModel.Node node : menuNodes) {
       if (node.separator) {
         View line = new View(this);
         line.setBackgroundColor(palette.separator);
@@ -217,7 +219,7 @@ public final class TrayMenuActivity extends Activity {
         lineParams.setMargins(dp(10), dp(3), dp(10), dp(3));
         rows.addView(line, lineParams);
       } else {
-        rows.addView(createRow(node, palette));
+        rows.addView(createRow(node, palette, hasIndicatorColumn));
       }
     }
     ScrollView scroll = new ScrollView(this);
@@ -254,7 +256,14 @@ public final class TrayMenuActivity extends Activity {
     window.setAttributes(params);
   }
 
-  private View createRow(MenuViewModel.Node node, Palette palette) {
+  private static boolean usesIndicatorColumn(MenuViewModel.Node node) {
+    return "checkmark".equals(node.toggleType)
+        || "radio".equals(node.toggleType)
+        || node.icon != null
+        || (node.iconName != null && !node.iconName.isEmpty());
+  }
+
+  private View createRow(MenuViewModel.Node node, Palette palette, boolean hasIndicatorColumn) {
     LinearLayout row = new LinearLayout(this);
     row.setGravity(Gravity.CENTER_VERTICAL);
     row.setPadding(dp(8), 0, dp(8), 0);
@@ -290,20 +299,27 @@ public final class TrayMenuActivity extends Activity {
     }
     LinearLayout.LayoutParams indicatorParams = new LinearLayout.LayoutParams(dp(24), dp(24));
     indicatorParams.setMargins(0, 0, dp(9), 0);
-    if (indicator != null) row.addView(indicator, indicatorParams);
-    else row.addView(new View(this), indicatorParams);
+    if (hasIndicatorColumn) {
+      if (indicator != null) row.addView(indicator, indicatorParams);
+      else row.addView(new View(this), indicatorParams);
+    } else {
+      row.setPadding(dp(12), 0, dp(8), 0);
+    }
 
     TextView label = new TextView(this);
     label.setText(node.label);
     label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
     label.setTextColor(node.enabled ? palette.text : palette.disabled);
     label.setSingleLine(true);
+    label.setIncludeFontPadding(false);
+    label.setGravity(Gravity.CENTER_VERTICAL);
     row.addView(label, new LinearLayout.LayoutParams(0, dp(36), 1));
     if (node.shortcut != null && !node.shortcut.isEmpty()) {
       TextView shortcut = new TextView(this);
       shortcut.setText(node.shortcut);
       shortcut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
       shortcut.setTextColor(node.enabled ? palette.muted : palette.disabled);
+      shortcut.setIncludeFontPadding(false);
       shortcut.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
       shortcut.setPadding(dp(8), 0, dp(4), 0);
       row.addView(shortcut, new LinearLayout.LayoutParams(-2, dp(36)));
