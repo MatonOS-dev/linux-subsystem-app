@@ -57,7 +57,10 @@ than the socket's max datagram size fail loudly. There is no made-up cap.
 
 - **Unique name and names:** it gets a fresh unique name (`:1.N`, same counter) and owns
   each listed name. `NameOwnerChanged` and `NameAcquired` fire as they do for a real client.
-  A name the app already owns is not stolen: the bridge skips it and logs a warning.
+  Edge cases follow stock dbus-daemon semantics. A name that is already owned is not stolen:
+  the bridge queues for it (like `RequestName` without `REPLACE_EXISTING`), logs that, and
+  takes the name over when the current owner goes away.
+- **Rule:** wherever the bridge hits an edge case, it does what stock dbus-daemon does.
 - **Routing to the bridge:** everything routed to this client (method calls, replies,
   directed signals, matched broadcast signals) goes through the existing `send_raw()`.
   That function branches on the client kind and writes a datagram to the fd.
@@ -74,6 +77,11 @@ than the socket's max datagram size fail loudly. There is no made-up cap.
   `GDBusConnection` and an invocation. Make it reachable for the virtual client: either
   refactor it to work on a `GDBusMessage` and return a reply message, or build the reply
   in the bridge path. Real clients must behave exactly as before.
+
+## Known limits
+- No fds yet (`h` type). They could be added later via `SCM_RIGHTS` on the pair.
+- Caller credentials (`GetConnectionUnixUser` etc.) for a bridge peer return an error, never fake values.
+- Datagram size is bounded by the socket buffer. Raise `SO_SNDBUF` on the pair; overflow fails loudly.
 
 ## Java side
 
