@@ -19,8 +19,11 @@ caller UID), never in a D-Bus name filter.
   - intent action `org.matonos.dbus.SERVICE`
   - `<meta-data android:name="org.matonos.dbus.NAMES" android:value="name1,name2"/>`:
     the well-known D-Bus names it provides
-  - `android:permission="org.matonos.permission.BIND_DBUS_SERVICE"`. The subsystem app
-    declares this permission. Stubs request it, so only stubs can bind.
+  - no bind permission: the provider sees the caller via `Binder.getCallingUid()`.
+- Any installed app may provide names, except names that could leak app data. The
+  broker refuses to bridge a denylist (logged loudly): `org.freedesktop.secrets`,
+  `org.gnome.keyring*`, `org.kde.kwalletd*`, `org.freedesktop.portal.*`,
+  `org.freedesktop.Flatpak*`, `org.freedesktop.DBus*`, and names the broker reserves.
 - When a stub starts its session bus, it queries
   `PackageManager.queryIntentServices(org.matonos.dbus.SERVICE)`. Then, for each provider:
   1. It binds the service.
