@@ -16,9 +16,9 @@ caller UID), never in a D-Bus name filter.
 ## One bus per app
 
 A Linux app's private bus is the only D-Bus it has. Android's "system bus" is binder.
-Names that Flatpak would send to the host system bus (`--system-talk-name`: UPower,
-NetworkManager, logind, GeoClue, ...) are provided by bridged Android apps on that same
-private bus. The launch environment sets `DBUS_SYSTEM_BUS_ADDRESS` to the private bus
+Names that Flatpak would send to the host system bus (`--system-talk-name`) appear on
+that same private bus. Core services (UPower, logind, NetworkManager, ...) stay internal
+(broker/Java backends); bridged Android apps provide the rest. The launch environment sets `DBUS_SYSTEM_BUS_ADDRESS` to the private bus
 socket (env-var only; no fallback for a hard-coded `/run/dbus/system_bus_socket`).
 
 ## Model
@@ -100,6 +100,21 @@ A tiny separate APK (its own gradle module) provides `org.matonos.test.Echo`:
 - method `CallBack(s unique_name)`: calls `org.freedesktop.DBus.Peer.Ping` on that unique
   name and returns `"ok"` or the error name. This proves the reverse direction.
 
+## Linux apps as providers (stub ↔ stub)
+
+A stub is both consumer and provider. Example: Steam exports a "what is the user
+playing" name; Discord's stub finds it over binder and imports it onto Discord's bus.
+
+- Exported names = the app's Flatpak metadata `[Session Bus Policy] <name>=own` entries
+  (minus the denylist). The stub manifest advertises them on its bridge service.
+- The bridge service is that same `org.matonos.dbus.SERVICE` action, served by the stub.
+  Its `attach(fd)` adds the fd to the stub's broker as a bridge that owns **no** names:
+  calls arriving from the consumer route to the name's real owner on the provider's bus.
+  The consumer side adds its end with the exported names. Socket = broker ↔ broker.
+- No autostart of Linux apps: consumers bind with flags 0 (no `BIND_AUTO_CREATE`).
+  The provider stub starts its bridge service only once its bus is up, so a consumer's
+  pending binding connects when the provider app starts, and sees EOF when it exits.
+
 ## Phases
 
 1. **Bridge, phase 1.** Broker virtual client, JNI, AIDL, `DBusBridges`, echo provider,
@@ -107,6 +122,7 @@ A tiny separate APK (its own gradle module) provides `org.matonos.test.Echo`:
 2. **Tray app:** `StatusNotifierWatcher` + `StatusNotifierHost`, with DBusMenu read through
    the bridge.
 3. **Widget + menu popup.**
-4. **System names:** set `DBUS_SYSTEM_BUS_ADDRESS`, then providers for UPower/logind/... as needed.
+4. **Stub as provider** (exported own-names, flags-0 binding).
+5. **System names:** set `DBUS_SYSTEM_BUS_ADDRESS`, then providers for UPower/logind/... as needed.
 
 Patching the taskbar to host the widget comes later.
