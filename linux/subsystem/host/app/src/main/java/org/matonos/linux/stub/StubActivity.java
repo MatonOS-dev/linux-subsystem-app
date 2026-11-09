@@ -38,7 +38,17 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     /** Open an Android window for an app window that arrived while no
      * activity was hosting (e.g. after the app closed its last window). */
     public static void openWindow(android.content.Context context, int id, int width, int height) {
-        context.startActivity(windowIntent(context, id), launchBounds(context, width, height));
+        android.util.Log.i("MatonFlatpakStub", "Window needs activity decision=start window=" + id
+                + " package=" + context.getPackageName() + " uid=" + android.os.Process.myUid());
+        try {
+            context.startActivity(windowIntent(context, id), launchBounds(context, width, height));
+            android.util.Log.i("MatonFlatpakStub", "Window activity start result=started window=" + id
+                    + " package=" + context.getPackageName());
+        } catch (RuntimeException error) {
+            android.util.Log.e("MatonFlatpakStub", "Window activity start result=failed window=" + id
+                    + " package=" + context.getPackageName() + " uid=" + android.os.Process.myUid(), error);
+            throw error;
+        }
     }
     private static Intent windowIntent(android.content.Context context, int id) {
         return new Intent().setClassName(context, StubActivity.class.getName())

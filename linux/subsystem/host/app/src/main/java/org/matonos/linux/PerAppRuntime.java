@@ -135,10 +135,20 @@ public final class PerAppRuntime implements AutoCloseable {
         WindowHost h = host;
         if (h != null) h.windowOpened(id, width, height);
         else {
-            // No activity is hosting (the app closed its last window and is
-            // within its grace period): open a new Android window for it.
-            try { org.matonos.linux.stub.StubActivity.openWindow(context, id, width, height); }
-            catch (RuntimeException e) { android.util.Log.w("MatonRuntime", "Cannot open window " + id, e); }
+            // A tray action may have just foregrounded this stub via a
+            // PendingIntent. If no activity has claimed the new window yet,
+            // use the same StubActivity path as a launcher start.
+            android.util.Log.i("MatonRuntime", "Window needs activity decision=host_missing window="
+                    + id + " session=" + session + " width=" + width + " height=" + height
+                    + " uid=" + android.os.Process.myUid());
+            try {
+                org.matonos.linux.stub.StubActivity.openWindow(context, id, width, height);
+                android.util.Log.i("MatonRuntime", "Window activity start requested window=" + id
+                        + " session=" + session);
+            } catch (RuntimeException e) {
+                android.util.Log.e("MatonRuntime", "Window activity start failed window=" + id
+                        + " session=" + session + " uid=" + android.os.Process.myUid(), e);
+            }
         }
     }
 

@@ -36,6 +36,8 @@ public final class TrayMenuActivity extends Activity {
   private TrayItem item;
   private int currentMenuParentId;
   private boolean hadWindowFocus;
+  private boolean activationPending;
+  private boolean activityResumed;
   private final List<Integer> parentStack = new ArrayList<>();
   private final BroadcastReceiver updates = new BroadcastReceiver() {
     @Override
@@ -62,6 +64,7 @@ public final class TrayMenuActivity extends Activity {
     }
     registerReceiver(updates, new IntentFilter(TrayService.ACTION_ITEMS), RECEIVER_NOT_EXPORTED);
     if (!item.itemIsMenu && !getIntent().getBooleanExtra(EXTRA_OPEN_MENU, false)) {
+      activationPending = true;
       activateOrOpenMenu();
       return;
     }
@@ -81,7 +84,10 @@ public final class TrayMenuActivity extends Activity {
     }
     parentStack.clear();
     if (item.itemIsMenu || intent.getBooleanExtra(EXTRA_OPEN_MENU, false)) openRootMenu();
-    else activateOrOpenMenu();
+    else {
+      activationPending = true;
+      activateOrOpenMenu();
+    }
   }
 
   @Override
@@ -92,6 +98,19 @@ public final class TrayMenuActivity extends Activity {
       // The item can disappear before receiver registration completes.
     }
     super.onDestroy();
+  }
+
+  @Override
+  protected void onResume() {
+    super.onResume();
+    activityResumed = true;
+    if (activationPending) activateOrOpenMenu();
+  }
+
+  @Override
+  protected void onPause() {
+    activityResumed = false;
+    super.onPause();
   }
 
   @Override
@@ -125,6 +144,13 @@ public final class TrayMenuActivity extends Activity {
           + item.service + ": attached bus is unavailable");
       finish();
       return;
+    }
+    if (activationPending) {
+      // A tray activity can be created before it is resumed. Send the
+      // PendingIntent only once the tray itself has foreground sender status.
+      if (!activityResumed) return;
+      activationPending = false;
+      TrayWindowActivation.bringAppForward(this, item);
     }
     new Thread(() -> {
       try {
