@@ -43,7 +43,7 @@ public final class StubGenerator {
     // v14 adds bridge visibility for self-task Linux window capabilities.
     // v22 removes the per-package apply_extra service and extra split; stock
     // Flatpak now applies the downloaded data before the single EROFS image is built.
-    public static final int STUB_VERSION_CODE = 24;
+    public static final int STUB_VERSION_CODE = 25;
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
     /** Action every generated app and runtime package answers, so they can see each other. */

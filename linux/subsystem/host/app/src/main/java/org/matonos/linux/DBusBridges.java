@@ -10,6 +10,7 @@ import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.system.Os;
 import android.system.OsConstants;
+import java.io.FileDescriptor;
 import android.util.Log;
 
 import org.matonos.linux.runtime.NativeBroker;
@@ -33,7 +34,9 @@ final class DBusBridges implements AutoCloseable {
     private void discover() {
         PackageManager pm = context.getPackageManager();
         Intent query = new Intent(ACTION);
-        for (ResolveInfo info : pm.queryIntentServices(query, PackageManager.GET_META_DATA)) {
+        List<ResolveInfo> providers = pm.queryIntentServices(query, PackageManager.GET_META_DATA);
+        Log.i(TAG, "discovered " + providers.size() + " D-Bus provider(s) for " + ACTION);
+        for (ResolveInfo info : providers) {
             if (info.serviceInfo == null) continue;
             String pkg = info.serviceInfo.packageName;
             String raw = info.serviceInfo.metaData == null ? null :
@@ -61,27 +64,18 @@ final class DBusBridges implements AutoCloseable {
         ProviderConnection(String provider, String[] names) { this.provider=provider;this.names=names; }
         @Override public void onServiceConnected(ComponentName component, IBinder binder) {
             if (closed) return;
-            ParcelFileDescriptor providerFd = null;
-            ParcelFileDescriptor brokerFd = null;
-            FileDescriptor[] fds = null;
+            ParcelFileDescriptor[] pair = null;
             try {
-                fds = Os.socketpair(OsConstants.AF_UNIX, OsConstants.SOCK_SEQPACKET, 0);
-                providerFd = ParcelFileDescriptor.dup(fds[0]);
-                brokerFd = ParcelFileDescriptor.dup(fds[1]);
-                Os.close(fds[0]); fds[0] = null;
-                Os.close(fds[1]); fds[1] = null;
-                IDBusService service = IDBusService.Stub.asInterface(binder);
-                service.attach(providerFd);
-                providerFd = null; // The provider owns its parcel descriptor.
-                NativeBroker.nativeAddBridge(brokerFd.detachFd(), names);
-                brokerFd.close();
-                brokerFd = null;
+                FileDescriptor a = new FileDescriptor(), b = new FileDescriptor();
+                Os.socketpair(OsConstants.AF_UNIX, OsConstants.SOCK_SEQPACKET | OsConstants.SOCK_CLOEXEC, 0, a, b);
+                try { pair = new ParcelFileDescriptor[]{ParcelFileDescriptor.dup(a), ParcelFileDescriptor.dup(b)}; }
+                finally { Os.close(a); Os.close(b); }
+                IDBusService.Stub.asInterface(binder).attach(pair[0]); // binder dups it; we close ours below
+                NativeBroker.nativeAddBridge(pair[1].detachFd(), names);
             } catch (Exception e) {
                 Log.e(TAG, "provider " + provider + " bridge attach failed for " + String.join(",", names), e);
             } finally {
-                if (providerFd != null) try { providerFd.close(); } catch (Exception e) { Log.e(TAG, "provider " + provider + " provider fd close failed", e); }
-                if (brokerFd != null) try { brokerFd.close(); } catch (Exception e) { Log.e(TAG, "provider " + provider + " broker fd close failed", e); }
-                if (fds != null) for (FileDescriptor fd : fds) if (fd != null) try { Os.close(fd); } catch (Exception e) { Log.e(TAG, "provider " + provider + " socketpair fd close failed", e); }
+                if (pair != null) for (ParcelFileDescriptor fd : pair) try { fd.close(); } catch (Exception e) { Log.e(TAG, "provider " + provider + " socketpair fd close failed", e); }
             }
         }
         @Override public void onServiceDisconnected(ComponentName component) { /* Broker observes EOF. */ }
