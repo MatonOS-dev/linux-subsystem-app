@@ -5,6 +5,8 @@
         android:protectionLevel="normal" />
     <permission android:name="org.matonos.permission.READ_ICON_THEMES"
         android:protectionLevel="signature" />
+    <permission android:name="org.matonos.permission.SET_ICON_THEME"
+        android:protectionLevel="signature" />
     <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />

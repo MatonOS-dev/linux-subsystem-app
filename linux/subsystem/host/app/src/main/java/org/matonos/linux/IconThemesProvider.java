@@ -146,6 +146,33 @@ public final class IconThemesProvider extends ContentProvider {
         return root;
     }
 
+    /** Active icon theme: one stored value shared by the tray, Settings and (later) the portal. */
+    static final Uri ACTIVE_URI = Uri.parse("content://org.matonos.linux.icons/active");
+    private static final String PREFS = "icon_themes", ACTIVE = "active";
+    private static final String READ = "org.matonos.permission.READ_ICON_THEMES";
+    private static final String WRITE = "org.matonos.permission.SET_ICON_THEME";
+
+    @Override public android.os.Bundle call(String method, String arg, android.os.Bundle extras) {
+        android.content.SharedPreferences prefs = getContext().getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE);
+        if ("getActiveTheme".equals(method)) {
+            getContext().enforceCallingPermission(READ, "getActiveTheme needs " + READ);
+            android.os.Bundle out = new android.os.Bundle();
+            out.putString("theme", prefs.getString(ACTIVE, null));
+            return out;
+        }
+        if ("setActiveTheme".equals(method)) {
+            getContext().enforceCallingPermission(WRITE, "setActiveTheme needs " + WRITE);
+            String theme = arg == null || arg.isEmpty() ? null : arg;
+            if (theme != null && (theme.contains("/") || theme.startsWith(".")))
+                throw new IllegalArgumentException("Invalid icon theme id: " + theme);
+            prefs.edit().putString(ACTIVE, theme).apply();
+            Log.i(TAG, "Active icon theme set to " + theme + " by uid=" + Binder.getCallingUid());
+            getContext().getContentResolver().notifyChange(ACTIVE_URI, null);
+            return null;
+        }
+        throw new IllegalArgumentException("Unknown icon theme method: " + method);
+    }
+
     @Override public Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException("read-only"); }
     @Override public int delete(Uri uri, String selection, String[] selectionArgs) { throw new UnsupportedOperationException("read-only"); }
     @Override public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) { throw new UnsupportedOperationException("read-only"); }

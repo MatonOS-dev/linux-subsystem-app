@@ -13,9 +13,11 @@ import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Loads Papirus icons from the subsystem's signature-protected provider. */
+/** Loads icons of the active (user-chosen) icon theme from the subsystem's signature-protected provider. */
 final class IconThemeResolver {
-    static final String THEME = "Papirus";
+    static final Uri ACTIVE_URI = Uri.parse("content://org.matonos.linux.icons/active");
+    private static final String NONE = "";
+    private static volatile String theme;
     private static final String TAG = "MatonTrayIcons";
     private static final ConcurrentHashMap<String, Result> CACHE = new ConcurrentHashMap<>();
     private static final Result MISSING = new Result(null, false);
@@ -24,21 +26,44 @@ final class IconThemeResolver {
 
     static Result resolve(Context context, String name, int sizePx) {
         if (name == null || name.isEmpty() || sizePx <= 0) return MISSING;
-        String key = THEME + '\0' + name + '\0' + sizePx;
+        String active = activeTheme(context.getContentResolver());
+        if (active.isEmpty()) return MISSING;
+        String key = active + '\0' + name + '\0' + sizePx;
         Result cached = CACHE.get(key);
         if (cached != null) return cached;
-        Result result = load(context.getContentResolver(), name + "-symbolic", sizePx, true);
-        if (result.bitmap == null) result = load(context.getContentResolver(), name, sizePx, false);
+        Result result = load(context.getContentResolver(), active, name + "-symbolic", sizePx, true);
+        if (result.bitmap == null) result = load(context.getContentResolver(), active, name, sizePx, false);
         if (result.bitmap == null) result = MISSING;
         Result raced = CACHE.putIfAbsent(key, result);
         return raced == null ? result : raced;
     }
 
-    static void clearCache() { CACHE.clear(); }
+    static void clearCache() {
+        theme = null;
+        CACHE.clear();
+    }
 
-    private static Result load(ContentResolver resolver, String name, int size, boolean symbolic) {
+    /** The user's chosen theme id, or "" when none is chosen (themed icons off). */
+    private static String activeTheme(ContentResolver resolver) {
+        String cached = theme;
+        if (cached != null) return cached;
+        String value = NONE;
+        try {
+            android.os.Bundle out = resolver.call(ACTIVE_URI, "getActiveTheme", null, null);
+            String chosen = out == null ? null : out.getString("theme");
+            if (chosen != null) value = chosen;
+        } catch (IllegalArgumentException missingProvider) {
+            // Subsystem not installed: no icon themes (expected).
+        } catch (Exception error) {
+            Log.e(TAG, "Cannot read active icon theme from org.matonos.linux.icons", error);
+        }
+        theme = value;
+        return value;
+    }
+
+    private static Result load(ContentResolver resolver, String themeId, String name, int size, boolean symbolic) {
         Uri uri = new Uri.Builder().scheme("content").authority("org.matonos.linux.icons")
-                .appendPath("icon").appendPath(THEME).appendPath(name)
+                .appendPath("icon").appendPath(themeId).appendPath(name)
                 .appendPath(Integer.toString(size)).appendPath("1").build();
         try (ParcelFileDescriptor descriptor = resolver.openFileDescriptor(uri, "r")) {
             if (descriptor == null) return MISSING;
@@ -57,7 +82,7 @@ final class IconThemeResolver {
         } catch (FileNotFoundException missing) {
             return MISSING;
         } catch (Exception error) {
-            Log.e(TAG, "Cannot render themed icon theme=" + THEME + " name=" + name, error);
+            Log.e(TAG, "Cannot render themed icon theme=" + themeId + " name=" + name, error);
             return MISSING;
         }
     }

@@ -9,7 +9,7 @@ calls.
 
 The home-screen AppWidget renders non-Passive items from every attached bus in a
 horizontal strip. For `IconName`, it first asks the subsystem's protected icon
-provider for the Papirus themed icon, then uses `IconPixmap`, then text.
+provider for an icon from the active (user-chosen) icon theme, then uses `IconPixmap`, then text.
 NeedsAttention items get a badge. Tapping an item calls
 `Activate(0,0)`; ItemIsMenu items and items returning UnknownMethod open the
 menu popup.

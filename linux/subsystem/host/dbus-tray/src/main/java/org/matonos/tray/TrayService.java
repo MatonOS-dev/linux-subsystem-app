@@ -43,6 +43,14 @@ public final class TrayService extends Service {
     }
   };
 
+  private final android.database.ContentObserver themeChanges =
+      new android.database.ContentObserver(new android.os.Handler(android.os.Looper.getMainLooper())) {
+        @Override public void onChange(boolean selfChange) {
+          IconThemeResolver.clearCache();
+          sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
+        }
+      };
+
   static String key(long attach, String service) {
     return attach + "\n" + service;
   }
@@ -61,6 +69,11 @@ public final class TrayService extends Service {
     filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
     filter.addDataScheme("package");
     registerReceiver(iconPackages, filter, Context.RECEIVER_NOT_EXPORTED);
+    try {
+      getContentResolver().registerContentObserver(IconThemeResolver.ACTIVE_URI, false, themeChanges);
+    } catch (SecurityException e) {
+      Log.e(TAG, "Cannot watch the active icon theme (org.matonos.linux.icons)", e);
+    }
   }
 
   @Override
@@ -80,6 +93,7 @@ public final class TrayService extends Service {
   @Override
   public void onDestroy() {
     unregisterReceiver(iconPackages);
+    getContentResolver().unregisterContentObserver(themeChanges);
     for (Bus b : buses.values()) b.close();
     super.onDestroy();
   }
