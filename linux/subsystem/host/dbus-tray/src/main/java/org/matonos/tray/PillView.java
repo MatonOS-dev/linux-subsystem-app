@@ -139,8 +139,7 @@ final class PillView extends View {
     }
 
     private Bitmap resolveIcon(TrayItem item) {
-        IconThemeResolver.Result themed = IconThemeResolver.resolve(getContext(), item.iconName, iconSize);
-        return themed.bitmap != null ? themed.bitmap : item.icon;
+        return item.statusIcon(getContext(), iconSize);
     }
 
     @Override

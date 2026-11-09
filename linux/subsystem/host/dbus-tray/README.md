@@ -61,6 +61,19 @@ icon tree provides the exact `<app-id>-symbolic` asset. PNG and SVG inputs use
 the same rasterization path as the regular launcher icon. Without that asset,
 the generated adaptive icon remains foreground and background only.
 
+Each registered StatusNotifierItem also has an ongoing notification in the
+`tray_items` low-importance channel. Notification icons use the active theme,
+the item's pixmap, then the attached package's symbolic/monochrome launcher
+icon or alpha silhouette, rendered white on transparency. The pill uses the
+same cached resolver, so launcher fallbacks also appear there. Icon changes,
+theme changes, and package changes invalidate per-item icon caches. The
+notification title uses the SNI title or app label, its text uses the tooltip,
+and NeedsAttention adds a visible subtext while remaining silent. Tapping
+activates the item; items with a menu also have a Menu action that opens the
+existing popup near the top of the screen when no anchor is available. The app
+declares `POST_NOTIFICATIONS`; when permission is missing, it logs the reason
+once and continues serving the pill.
+
 The subsystem app exposes installed icon-theme files through the read-only
 `org.matonos.linux.icons` ContentProvider. It finds runtime icon-theme extension
 packages from their installed Flatpak ref metadata, mounts their EROFS image
@@ -93,8 +106,9 @@ the mounted images. Tray never opens those paths.
 From the repository root, use the regular `./build.sh` environment from the
 bridge task brief. It assembles `:dbus-tray` and runs
 `:dbus-tray:testDebugUnitTest`. JVM tests cover pixmap/menu wire decoding,
-popup placement clamping, and the menu-tree view model, including nested
-submenus, row types, icons, shortcuts, toggle states, and hidden items.
+popup placement clamping, the menu-tree view model, and notification text
+mapping. `AppIconResolverTest` covers the theme → item pixmap → launcher
+fallback order.
 `IconThemeLookupTest` builds a small fake theme tree and covers
 fixed/scalable sizes, scale, threshold, inheritance, hicolor fallback, and
 symbolic preference.

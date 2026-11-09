@@ -3,6 +3,8 @@ package org.matonos.tray;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.util.Log;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +26,8 @@ public final class TrayItem {
   public volatile String menuPath = "";
   public volatile boolean itemIsMenu;
   public volatile Bitmap icon;
+  private final java.util.concurrent.ConcurrentHashMap<Integer, Bitmap> statusIcons =
+      new java.util.concurrent.ConcurrentHashMap<>();
   public volatile List<MenuEntry> menu = new ArrayList<>();
   TrayService.Bus bus;
 
@@ -37,6 +41,38 @@ public final class TrayItem {
 
   public void activate(int x, int y) {
     invoke("Activate", x, y);
+  }
+
+  Bitmap statusIcon(Context context, int sizePx) {
+    Bitmap cached = statusIcons.get(sizePx);
+    if (cached != null && !cached.isRecycled()) return cached;
+    Bitmap source = IconThemeResolver.resolve(context, iconName, sizePx).bitmap;
+    if (source == null) source = icon;
+    if (source == null && bus != null) {
+      source = AppIconResolver.resolve(context, bus.uid, sizePx).bitmap;
+    }
+    Bitmap resolved = whiteAlphaMask(source, sizePx);
+    if (resolved != null) {
+      Bitmap raced = statusIcons.putIfAbsent(sizePx, resolved);
+      return raced == null ? resolved : raced;
+    }
+    return null;
+  }
+
+  void invalidateStatusIcons() {
+    statusIcons.clear();
+  }
+
+  private static Bitmap whiteAlphaMask(Bitmap source, int sizePx) {
+    if (source == null || source.isRecycled() || sizePx <= 0) return null;
+    Bitmap mask = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
+    Canvas canvas = new Canvas(mask);
+    android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG
+        | android.graphics.Paint.FILTER_BITMAP_FLAG);
+    paint.setColorFilter(new android.graphics.PorterDuffColorFilter(Color.WHITE,
+        android.graphics.PorterDuff.Mode.SRC_IN));
+    canvas.drawBitmap(source, null, new android.graphics.Rect(0, 0, sizePx, sizePx), paint);
+    return mask;
   }
 
   public void secondaryActivate(int x, int y) {

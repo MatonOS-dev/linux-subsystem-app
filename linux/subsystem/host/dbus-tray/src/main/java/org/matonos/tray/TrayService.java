@@ -40,7 +40,9 @@ public final class TrayService extends Service {
     @Override public void onReceive(android.content.Context context, Intent intent) {
       IconThemeResolver.clearCache();
       AppIconResolver.clearCache();
+      invalidateItemIcons();
       sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
+      TrayNotifications.refresh(TrayService.this);
     }
   };
 
@@ -49,7 +51,9 @@ public final class TrayService extends Service {
         @Override public void onChange(boolean selfChange) {
           IconThemeResolver.clearCache();
           AppIconResolver.clearCache();
+          invalidateItemIcons();
           sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
+          TrayNotifications.refresh(TrayService.this);
         }
       };
 
@@ -60,6 +64,11 @@ public final class TrayService extends Service {
   static void changed(TrayService s) {
     s.sendBroadcast(new Intent(ACTION_ITEMS).setPackage(s.getPackageName()));
     TrayHostService.modelChanged();
+    TrayNotifications.refresh(s);
+  }
+
+  private void invalidateItemIcons() {
+    for (TrayItem item : ITEMS.values()) item.invalidateStatusIcons();
   }
 
   @Override
@@ -97,6 +106,7 @@ public final class TrayService extends Service {
     unregisterReceiver(iconPackages);
     getContentResolver().unregisterContentObserver(themeChanges);
     for (Bus b : buses.values()) b.close();
+    TrayNotifications.cancelAll(this);
     super.onDestroy();
   }
 
@@ -392,6 +402,8 @@ public final class TrayService extends Service {
                 "s",
                 "org.kde.StatusNotifierItem");
         Map<String, DBusVariant> p = DBusMessage.dictionary(r.body.get(0));
+        String previousIconName = i.iconName;
+        Bitmap previousIcon = i.icon;
         i.id = str(p, "Id");
         i.title = str(p, "Title");
         i.status = str(p, "Status");
@@ -400,6 +412,16 @@ public final class TrayService extends Service {
         i.menuPath = str(p, "Menu");
         i.itemIsMenu = bool(p, "ItemIsMenu", false);
         i.icon = decodeIcon(p.get("IconPixmap"));
+        Bitmap currentIcon = i.icon;
+        boolean iconChanged = !Objects.equals(previousIconName, i.iconName)
+            || (previousIcon == null) != (currentIcon == null)
+            || (previousIcon != null && currentIcon != null && !previousIcon.sameAs(currentIcon));
+        if (iconChanged) {
+          i.invalidateStatusIcons();
+        } else if (currentIcon != null && currentIcon != previousIcon) {
+          currentIcon.recycle();
+          i.icon = previousIcon;
+        }
         if (!i.menuPath.isEmpty() && !"/".equals(i.menuPath)) {
           addMatch(
               "type='signal',sender='"

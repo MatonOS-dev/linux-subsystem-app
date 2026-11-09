@@ -33,6 +33,7 @@ import java.util.List;
 public final class TrayMenuActivity extends Activity {
   static final String EXTRA_ITEM_KEY = "item_key";
   static final String EXTRA_OPEN_MENU = "open_menu";
+  static final String EXTRA_TOP_FALLBACK = "top_fallback";
   private static final int FALLBACK_SURFACE = 0xff252525;
   private static final int FALLBACK_TEXT = 0xfff5f5f5;
   private static final int FALLBACK_MUTED = 0xffa5a5a5;
@@ -246,7 +247,12 @@ public final class TrayMenuActivity extends Activity {
     Rect anchor = getIntent().getSourceBounds();
     if (anchor == null) {
       int left = (screenWidth - width) / 2;
-      anchor = new Rect(left, screenHeight, left + width, screenHeight);
+      if (getIntent().getBooleanExtra(EXTRA_TOP_FALLBACK, false)) {
+        int y = Math.min(screenHeight, height + dp(8));
+        anchor = new Rect(left, y, left + width, y);
+      } else {
+        anchor = new Rect(left, screenHeight, left + width, screenHeight);
+      }
     }
     int[] placement = PopupPlacement.place(screenWidth, screenHeight,
         anchor.left, anchor.top, anchor.bottom, width, height);
