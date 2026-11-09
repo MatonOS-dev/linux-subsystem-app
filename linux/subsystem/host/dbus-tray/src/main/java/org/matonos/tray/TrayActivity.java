@@ -95,6 +95,14 @@ public final class TrayActivity extends Activity {
       status.setText(item.status);
       row.addView(status);
       row.setOnClickListener(v -> item.activateFromWidget(this));
+      row.setOnLongClickListener(
+          v -> {
+            startActivity(
+                new android.content.Intent(this, TrayMenuActivity.class)
+                    .putExtra(TrayMenuActivity.EXTRA_ITEM_KEY, TrayService.key(item.attachId, item.service))
+                    .putExtra(TrayMenuActivity.EXTRA_OPEN_MENU, true));
+            return true;
+          });
       rows.addView(row);
       View divider = new View(this);
       divider.setBackgroundColor(0xff888888);

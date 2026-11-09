@@ -22,6 +22,8 @@ import java.util.List;
 /** Dialog-themed recursive DBusMenu popup opened by a home-screen widget tap. */
 public final class TrayMenuActivity extends Activity {
   static final String EXTRA_ITEM_KEY = "item_key";
+  /** Open the item's menu without Activate, as plasma's right-click does. */
+  static final String EXTRA_OPEN_MENU = "open_menu";
   private TrayItem item;
   private AlertDialog currentDialog;
   private int currentMenuParentId;
@@ -54,15 +56,10 @@ public final class TrayMenuActivity extends Activity {
       return;
     }
     registerReceiver(updates, new IntentFilter(TrayService.ACTION_ITEMS), RECEIVER_NOT_EXPORTED);
-    if (!item.itemIsMenu) {
+    if (!item.itemIsMenu && !getIntent().getBooleanExtra(EXTRA_OPEN_MENU, false)) {
       activateOrOpenMenu();
       return;
     }
-    Window window = getWindow();
-    window.setBackgroundDrawableResource(android.R.color.transparent);
-    window.setLayout(
-        WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT);
-    window.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
     openRootMenu();
   }
 
@@ -124,7 +121,26 @@ public final class TrayMenuActivity extends Activity {
     return false;
   }
 
+  /** Popup window anchored at the tapped icon (launcher-supplied source bounds). */
+  private void placePopup() {
+    Window window = getWindow();
+    window.setBackgroundDrawableResource(android.R.color.transparent);
+    window.setLayout(
+        WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT);
+    android.graphics.Rect anchor = getIntent().getSourceBounds();
+    if (anchor == null) {
+      window.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+      return;
+    }
+    window.setGravity(Gravity.TOP | Gravity.START);
+    WindowManager.LayoutParams params = window.getAttributes();
+    params.x = anchor.left;
+    params.y = anchor.bottom;
+    window.setAttributes(params);
+  }
+
   private void openRootMenu() {
+    placePopup();
     if (item.bus == null || item.menuPath.isEmpty()) {
       showMenu(item.menu, item.title, 0);
       return;
