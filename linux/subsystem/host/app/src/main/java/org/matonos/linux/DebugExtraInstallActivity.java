@@ -10,7 +10,7 @@ import android.os.IBinder;
 import android.util.Log;
 import android.widget.TextView;
 
-/** adb-only trigger for the Chrome extra-data install smoke path on userdebug images. */
+/** adb-only install trigger on userdebug images; extra "ref" (default Chrome) picks the Flathub ref. */
 public final class DebugExtraInstallActivity extends Activity {
     public static final String ACTION = "org.matonos.linux.DEBUG_INSTALL_CHROME";
     private static final String TAG = "MatonExtraInstall";
@@ -27,15 +27,17 @@ public final class DebugExtraInstallActivity extends Activity {
         connection = new ServiceConnection() {
             @Override public void onServiceConnected(ComponentName name, IBinder binder) {
                 ILinuxAppStore store = ILinuxAppStore.Stub.asInterface(binder);
-                String id = "debug-chrome-" + android.os.Process.myPid();
+                String extra = getIntent().getStringExtra("ref");
+                String ref = extra == null ? "app/com.google.Chrome/x86_64/stable" : extra;
+                String id = "debug-install-" + android.os.Process.myPid();
                 try {
-                    store.install("app/com.google.Chrome/x86_64/stable", "flathub", id,
+                    store.install(ref, "flathub", id,
                             new ILinuxAppStoreCallback.Stub() {
                                 @Override public void onProgress(String operationId,String phase,int percent,long done,long total) {
                                     Log.i(TAG, "phase="+phase+" percent="+percent+" bytes="+done+"/"+total);
                                 }
                                 @Override public void onResult(String operationId,boolean ok,String error) {
-                                    Log.i(TAG, "Chrome extra-data install "+(ok?"succeeded":"failed")+(error==null?"":": "+error));
+                                    Log.i(TAG, ref+" install "+(ok?"succeeded":"failed")+(error==null?"":": "+error));
                                     runOnUiThread(()->{status.setText(ok?"Chrome install succeeded":"Chrome install failed: "+error);});
                                 }
                             });
