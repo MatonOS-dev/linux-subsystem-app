@@ -3,6 +3,15 @@
         <activity android:name=".TrayActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
+        <activity android:name=".TrayMenuActivity" android:exported="false"
+            android:theme="@style/TrayMenuTheme" />
+        <receiver android:name=".TrayWidgetProvider" android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="org.matonos.tray.ITEMS_CHANGED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/tray_widget_info" />
+        </receiver>
         <service android:name=".TrayService" android:exported="true">
             <intent-filter><action android:name="org.matonos.dbus.SERVICE"/></intent-filter>
             <meta-data android:name="org.matonos.dbus.NAMES" android:value="org.kde.StatusNotifierWatcher"/>
