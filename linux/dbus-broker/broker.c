@@ -51,6 +51,7 @@ struct _Broker {
     GPtrArray *services;
     GHashTable *owners; /* bus name -> Client* (NULL value for internal service) */
     GHashTable *name_flags; /* owned name -> RequestName flags */
+    GHashTable *name_queues; /* well-known name -> GQueue of waiting Client* */
     GHashTable *rules;  /* name -> access flags */
     guint next_id;
     char *id;
@@ -125,6 +126,64 @@ static const char *owner_of(Broker *b, const char *name) {
     if (c != NULL) return c->unique;
     if (g_hash_table_contains(b->owners, name)) return ":1.0";
     return NULL;
+}
+static gboolean bridge_send_message(Client *c, GDBusMessage *m) {
+    GError *error = NULL;
+    gsize size = 0;
+    guchar *blob = g_dbus_message_to_blob(m, &size, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
+    if (!blob) {
+        g_warning("bridge %s serialize failed: %s", c->unique ? c->unique : "<unregistered>", error->message);
+        g_clear_error(&error);
+        return FALSE;
+    }
+    GUnixFDList *fd_list = g_dbus_message_get_unix_fd_list(m);
+    int fd_count = fd_list ? g_unix_fd_list_get_length(fd_list) : 0;
+    guint declared_fds = g_dbus_message_get_num_unix_fds(m);
+    if (declared_fds != (guint)fd_count) {
+        g_warning("bridge %s outgoing UNIX_FDS mismatch declared=%u fd_list=%d",
+                  c->unique ? c->unique : "<unregistered>", declared_fds, fd_count);
+        g_free(blob); return FALSE;
+    }
+    struct iovec iov = { .iov_base = blob, .iov_len = size };
+    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
+    void *control = NULL;
+    if (fd_count > 0) {
+        gsize control_size = CMSG_SPACE(sizeof(int) * (gsize)fd_count);
+        control = g_try_malloc0(control_size);
+        if (!control) {
+            g_warning("bridge %s cannot allocate SCM_RIGHTS send buffer fd_count=%d bytes=%zu",
+                      c->unique ? c->unique : "<unregistered>", fd_count, control_size);
+            g_free(blob); return FALSE;
+        }
+        msg.msg_control = control;
+        msg.msg_controllen = control_size;
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int) * (gsize)fd_count);
+        int *fds = (int *)CMSG_DATA(cmsg);
+        for (int i = 0; i < fd_count; i++) {
+            fds[i] = g_unix_fd_list_get(fd_list, i, &error);
+            if (fds[i] < 0) {
+                g_warning("bridge %s fd-list lookup index=%d failed: %s", c->unique, i,
+                          error ? error->message : "unknown error");
+                g_clear_error(&error);
+                for (int j = 0; j < i; j++) close(fds[j]);
+                g_free(control); g_free(blob); return FALSE;
+            }
+        }
+    }
+    ssize_t sent = sendmsg(c->bridge_fd, &msg, MSG_NOSIGNAL);
+    int saved_errno = errno;
+    for (int i = 0; i < fd_count; i++) close(((int *)CMSG_DATA(CMSG_FIRSTHDR(&msg)))[i]);
+    g_free(control); g_free(blob);
+    if (sent < 0 || (gsize)sent != size) {
+        g_warning("bridge %s sendmsg fd=%d failed: sent=%zd expected=%zu errno=%d (%s)",
+                  c->unique ? c->unique : "<unregistered>", c->bridge_fd, sent, size,
+                  saved_errno, g_strerror(saved_errno));
+        return FALSE;
+    }
+    return TRUE;
 }
 static gboolean destination_has_talk_access(Broker *b, Client *destination) {
     GHashTableIter iter; gpointer key, value;
@@ -227,26 +286,7 @@ static gboolean match_rule_supported(const char *rule) {
 }
 static void send_raw(Client *c, GDBusMessage *m) {
     if (c->bridge) {
-        if (g_dbus_message_get_num_unix_fds(m) != 0) {
-            g_warning("bridge %s refused to send fd-carrying message type=%u fd_count=%u",
-                      c->unique ? c->unique : "<unregistered>", g_dbus_message_get_message_type(m),
-                      g_dbus_message_get_num_unix_fds(m));
-            return;
-        }
-        GError *error = NULL;
-        gsize size = 0;
-        g_dbus_message_set_serial(m, 0);
-        guchar *blob = g_dbus_message_to_blob(m, &size, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
-        if (blob == NULL) {
-            g_warning("bridge %s serialize failed: %s", c->unique ? c->unique : "<unregistered>", error->message);
-            g_clear_error(&error);
-            return;
-        }
-        ssize_t sent = send(c->bridge_fd, blob, size, MSG_NOSIGNAL);
-        if (sent < 0 || (gsize)sent != size)
-            g_warning("bridge %s send fd=%d failed: sent=%zd expected=%zu errno=%d (%s)",
-                      c->unique ? c->unique : "<unregistered>", c->bridge_fd, sent, size, errno, g_strerror(errno));
-        g_free(blob);
+        bridge_send_message(c, m);
         return;
     }
     if (g_dbus_connection_is_closed(c->connection)) return;
@@ -287,6 +327,45 @@ static void emit_changed(Broker *b, const char *name, const char *old_owner,
 }
 static void emit_name(Client *c, const char *member, const char *name) {
     emit_one(c, "org.freedesktop.DBus", member, g_variant_new("(s)", name));
+}
+static gboolean client_is_live(Broker *b, Client *client) {
+    for (guint i = 0; i < b->clients->len; i++)
+        if (g_ptr_array_index(b->clients, i) == client) return TRUE;
+    return FALSE;
+}
+static void remove_client_from_queues(Broker *b, Client *client) {
+    GHashTableIter iter; gpointer key, value;
+    g_hash_table_iter_init(&iter, b->name_queues);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        GQueue *queue = value;
+        g_queue_remove_all(queue, client);
+        if (g_queue_is_empty(queue)) g_hash_table_iter_remove(&iter);
+    }
+}
+static void promote_queued_name(Broker *b, const char *name, const char *old_owner) {
+    GQueue *queue = g_hash_table_lookup(b->name_queues, name);
+    while (queue && !g_queue_is_empty(queue)) {
+        Client *next = g_queue_pop_head(queue);
+        if (!client_is_live(b, next)) continue;
+        g_hash_table_insert(b->owners, g_strdup(name), next);
+        g_hash_table_insert(b->name_flags, g_strdup(name), GUINT_TO_POINTER(0));
+        emit_name(next, "NameAcquired", name);
+        emit_changed(b, name, old_owner, next->unique);
+        if (g_queue_is_empty(queue)) g_hash_table_remove(b->name_queues, name);
+        return;
+    }
+    if (queue) g_hash_table_remove(b->name_queues, name);
+    emit_changed(b, name, old_owner, NULL);
+}
+static gboolean queue_name(Broker *b, const char *name, Client *client) {
+    GQueue *queue = g_hash_table_lookup(b->name_queues, name);
+    if (!queue) {
+        queue = g_queue_new();
+        g_hash_table_insert(b->name_queues, g_strdup(name), queue);
+    }
+    if (g_queue_find(queue, client)) return FALSE;
+    g_queue_push_tail(queue, client);
+    return TRUE;
 }
 static const char *expected_signature(const char *interface, const char *method) {
     if (g_str_equal(interface, "org.freedesktop.DBus.Peer")) {
@@ -378,7 +457,13 @@ static GDBusMessage *bus_method_message(Client *c, GDBusMessage *call) {
                 emit_name(c, "NameAcquired", name);
                 emit_changed(b, name, old, c->unique);
                 return bus_reply(call, g_variant_new("(u)", 1u));
-            } else return bus_reply(call, g_variant_new("(u)", 3u));
+            } else {
+                if (!(flags & 4u)) {
+                    queue_name(b, name, c);
+                    return bus_reply(call, g_variant_new("(u)", 2u));
+                }
+                return bus_reply(call, g_variant_new("(u)", 3u));
+            }
         } else if (old_client == c) return bus_reply(call, g_variant_new("(u)", 4u));
         else {
             g_hash_table_insert(b->owners, g_strdup(name), c);
@@ -390,12 +475,18 @@ static GDBusMessage *bus_method_message(Client *c, GDBusMessage *call) {
         if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(s)"))) { return bus_error(call, "org.freedesktop.DBus.Error.InvalidArgs", "Expected (s)"); }
         const char *name; g_variant_get(parameters, "(&s)", &name);
         Client *owner = g_hash_table_lookup(b->owners, name);
-        if (!g_hash_table_contains(b->owners, name)) return bus_reply(call, g_variant_new("(u)", 3u));
-        else if (owner != c) return bus_reply(call, g_variant_new("(u)", 2u));
+        if (!g_hash_table_contains(b->owners, name)) {
+            GQueue *queue = g_hash_table_lookup(b->name_queues, name);
+            if (queue && g_queue_remove(queue, c)) {
+                if (g_queue_is_empty(queue)) g_hash_table_remove(b->name_queues, name);
+                return bus_reply(call, g_variant_new("(u)", 1u));
+            }
+            return bus_reply(call, g_variant_new("(u)", 3u));
+        } else if (owner != c) return bus_reply(call, g_variant_new("(u)", 2u));
         else {
             char *old = g_strdup(c->unique); g_hash_table_remove(b->owners, name);
             g_hash_table_remove(b->name_flags, name);
-            emit_name(c, "NameLost", name); emit_changed(b, name, old, NULL); g_free(old);
+            emit_name(c, "NameLost", name); promote_queued_name(b, name, old); g_free(old);
             return bus_reply(call, g_variant_new("(u)", 1u));
         }
     } else if (g_str_equal(method, "GetNameOwner") || g_str_equal(method, "NameHasOwner")) {
@@ -460,6 +551,8 @@ static GDBusMessage *bus_method_message(Client *c, GDBusMessage *call) {
         const char* name;g_variant_get(parameters,"(&s)",&name);
         const char* unique=owner_of(b,name);
         Client* target=unique ? find_client(b,unique) : NULL;
+        if (target && target->bridge)
+            return bus_error(call,"org.freedesktop.DBus.Error.Failed","bridge peer has no Unix credentials");
         GCredentials* credentials=target && target->connection ? g_dbus_connection_get_peer_credentials(target->connection) : NULL;
         gboolean internal=g_strcmp0(unique,":1.0")==0;
         if (!credentials && !internal) return bus_error(call,"org.freedesktop.DBus.Error.NameHasNoOwner","Peer credentials are unavailable");
@@ -484,7 +577,8 @@ static GDBusMessage *bus_method_message(Client *c, GDBusMessage *call) {
         }
         Client *target = unique ? find_client(b, unique) : NULL;
         if (target == NULL) { return bus_error(call, "org.freedesktop.DBus.Error.NameHasNoOwner", "Connection does not exist"); }
-        if (target->bridge) return bus_reply(call, g_variant_new("(u)", (guint)b->owner_uid));
+        if (target->bridge)
+            return bus_error(call, "org.freedesktop.DBus.Error.Failed", "bridge peer has no Unix credentials");
         GCredentials *credentials = g_dbus_connection_get_peer_credentials(target->connection);
         guint value = (guint)b->owner_uid;
         if (g_str_equal(method, "GetConnectionUnixProcessID")) {
@@ -554,10 +648,11 @@ static void client_bridge_closed(Client *c) {
     Broker *b=c->broker;
     if(c->bridge_source){g_source_remove(c->bridge_source);c->bridge_source=0;}
     for(guint i=0;i<b->clients->len;i++) if(g_ptr_array_index(b->clients,i)==c) {
+        remove_client_from_queues(b,c);
         GHashTableIter it; gpointer key,value; GPtrArray *names=g_ptr_array_new_with_free_func(g_free);
         g_hash_table_iter_init(&it,b->owners);
         while(g_hash_table_iter_next(&it,&key,&value)) if(value==c)g_ptr_array_add(names,g_strdup(key));
-        for(guint j=0;j<names->len;j++){const char*n=g_ptr_array_index(names,j);g_hash_table_remove(b->owners,n);g_hash_table_remove(b->name_flags,n);emit_changed(b,n,c->unique,NULL);}
+        for(guint j=0;j<names->len;j++){const char*n=g_ptr_array_index(names,j);g_hash_table_remove(b->owners,n);g_hash_table_remove(b->name_flags,n);promote_queued_name(b,n,c->unique);}
         g_ptr_array_unref(names);
         /* Calls originated by the bridge must be removed from every peer's
          * pending table. Calls addressed to it fail back to their origin. */
@@ -673,23 +768,10 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
         if (p != NULL) {
             if(p->flatpak)trace_flatpak_message(message,c->unique,TRUE);
             GDBusMessage *forward;
-            if (p->origin->bridge && g_dbus_message_get_num_unix_fds(message) != 0) {
-                g_warning("refusing fd-carrying reply from=%s to bridge=%s fd_count=%u",
-                          c->unique, p->origin->unique, g_dbus_message_get_num_unix_fds(message));
-                GDBusMessage *request = g_dbus_message_new();
-                g_dbus_message_set_message_type(request, G_DBUS_MESSAGE_TYPE_METHOD_CALL);
-                g_dbus_message_set_serial(request, p->serial);
-                forward = g_dbus_message_new_method_error_literal(request,
-                    "org.freedesktop.DBus.Error.NotSupported", "Bridge messages may not carry file descriptors");
-                g_dbus_message_set_destination(forward, p->origin->unique);
-                g_dbus_message_set_sender(forward, c->unique);
-                g_object_unref(request);
-            } else {
-                forward = g_dbus_message_copy(message, NULL);
-                g_dbus_message_set_reply_serial(forward, p->serial);
-                g_dbus_message_set_destination(forward, p->origin->unique);
-                g_dbus_message_set_sender(forward, c->unique);
-            }
+            forward = g_dbus_message_copy(message, NULL);
+            g_dbus_message_set_reply_serial(forward, p->serial);
+            g_dbus_message_set_destination(forward, p->origin->unique);
+            g_dbus_message_set_sender(forward, c->unique);
             send_raw(p->origin, forward); g_object_unref(forward);
             g_ptr_array_remove(p->origin->outgoing, p);
             g_hash_table_remove(c->pending, GUINT_TO_POINTER(reply));
@@ -824,20 +906,10 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
     guint32 forwarded = 0;
     GError *error = NULL;
     gboolean sent = FALSE;
-    if (target->bridge && g_dbus_message_get_num_unix_fds(message) != 0) {
-        g_warning("refusing fd-carrying method call from=%s to bridge=%s fd_count=%u",
-                  c->unique, target->unique, g_dbus_message_get_num_unix_fds(message));
-        GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
-            "org.freedesktop.DBus.Error.NotSupported", "Bridge messages may not carry file descriptors");
-        send_raw(c, err); g_object_unref(err); return NULL;
-    }
     if (target->bridge) {
         forwarded = b->next_id++;
         g_dbus_message_set_serial(copy, forwarded);
-        GError *blob_error = NULL; gsize blob_size = 0;
-        guchar *blob = g_dbus_message_to_blob(copy, &blob_size, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &blob_error);
-        if (blob) { ssize_t n=send(target->bridge_fd,blob,blob_size,MSG_NOSIGNAL); sent=n==(ssize_t)blob_size; if(!sent)g_warning("bridge %s method send fd=%d failed sent=%zd expected=%zu errno=%d (%s)",target->unique,target->bridge_fd,n,blob_size,errno,g_strerror(errno)); g_free(blob); }
-        if (blob_error) { g_warning("bridge %s method serialization failed: %s",target->unique,blob_error->message);g_clear_error(&blob_error); }
+        sent = bridge_send_message(target, copy);
     } else sent = g_dbus_connection_send_message(target->connection, copy,
             G_DBUS_SEND_MESSAGE_FLAGS_NONE, &forwarded, &error);
     if (sent) {
@@ -848,6 +920,9 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
     } else {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
             "org.freedesktop.DBus.Error.ServiceUnknown", error ? error->message : "Destination unavailable");
+        g_warning("cannot route method call from=%s to=%s: %s", c->unique ? c->unique : "<unregistered>",
+                  target->unique ? target->unique : target_name,
+                  error ? error->message : "bridge send failed");
         send_raw(c, err); g_object_unref(err); g_clear_error(&error);
     }
     g_object_unref(copy);
@@ -897,13 +972,14 @@ static void client_closed(GDBusConnection *connection, gboolean vanished,
     }
     g_ptr_array_set_size(c->outgoing, 0);
     for (guint i = 0; i < b->clients->len; i++) if (g_ptr_array_index(b->clients, i) == c) {
+        remove_client_from_queues(b,c);
         GHashTableIter iter; gpointer key, value; GPtrArray *gone = g_ptr_array_new_with_free_func(g_free);
         g_hash_table_iter_init(&iter, b->owners);
         while (g_hash_table_iter_next(&iter, &key, &value)) if (value == c) g_ptr_array_add(gone, g_strdup(key));
         for (guint j = 0; j < gone->len; j++) {
             const char *name = g_ptr_array_index(gone, j); g_hash_table_remove(b->owners, name);
             g_hash_table_remove(b->name_flags, name);
-            emit_name(c, "NameLost", name); emit_changed(b, name, c->unique, NULL);
+            emit_name(c, "NameLost", name); promote_queued_name(b, name, c->unique);
         }
         g_ptr_array_unref(gone);
         g_ptr_array_remove_index(b->clients, i);
@@ -987,25 +1063,70 @@ static gboolean bridge_readable(gint fd, GIOCondition condition, gpointer data) 
         g_warning("bridge %s fd=%d cannot allocate datagram buffer size=%zd", c->unique ? c->unique : "<unregistered>", fd, size);
         c->bridge_source = 0; client_bridge_closed(c); return G_SOURCE_REMOVE;
     }
-    ssize_t n = recv(fd, buffer, (gsize)size, MSG_DONTWAIT | MSG_TRUNC);
-    if (n != size) {
-        g_warning("bridge %s fd=%d datagram read size changed expected=%zd actual=%zd errno=%d (%s)", c->unique ? c->unique : "<unregistered>", fd, size, n, errno, g_strerror(errno));
+    ssize_t peeked = recv(fd, buffer, (gsize)size, MSG_PEEK | MSG_DONTWAIT | MSG_TRUNC);
+    if (peeked != size) {
+        g_warning("bridge %s fd=%d datagram peek changed expected=%zd actual=%zd errno=%d (%s)", c->unique, fd, size, peeked, errno, g_strerror(errno));
         g_free(buffer); c->bridge_source = 0; client_bridge_closed(c); return G_SOURCE_REMOVE;
     }
     GError *error = NULL;
+    GDBusMessage *peek_message = g_dbus_message_new_from_blob(buffer, (gsize)peeked,
+            G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
+    if (!peek_message) {
+        g_warning("bridge %s malformed D-Bus datagram fd=%d: %s", c->unique ? c->unique : "<unregistered>", fd, error->message);
+        g_clear_error(&error); g_free(buffer); return G_SOURCE_CONTINUE;
+    }
+    guint declared_fds = g_dbus_message_get_num_unix_fds(peek_message);
+    g_object_unref(peek_message);
+    gsize control_size = declared_fds ? CMSG_SPACE(sizeof(int) * (gsize)declared_fds) : 0;
+    void *control = control_size ? g_try_malloc0(control_size) : NULL;
+    if (control_size && !control) {
+        g_warning("bridge %s fd=%d cannot allocate SCM_RIGHTS receive buffer declared_fds=%u bytes=%zu; dropping datagram",
+                  c->unique ? c->unique : "<unregistered>", fd, declared_fds, control_size);
+        g_free(buffer); return G_SOURCE_CONTINUE;
+    }
+    struct iovec iov = { .iov_base = buffer, .iov_len = (gsize)size };
+    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = control_size };
+    ssize_t n = recvmsg(fd, &msg, MSG_DONTWAIT | MSG_TRUNC | MSG_CMSG_CLOEXEC);
+    if (n != size) {
+        g_warning("bridge %s fd=%d datagram read size changed expected=%zd actual=%zd errno=%d (%s)", c->unique ? c->unique : "<unregistered>", fd, size, n, errno, g_strerror(errno));
+        g_free(control); g_free(buffer); c->bridge_source = 0; client_bridge_closed(c); return G_SOURCE_REMOVE;
+    }
+    GUnixFDList *fd_list = g_unix_fd_list_new();
+    guint received_fds = 0;
+    gboolean ancillary_valid = !(msg.msg_flags & MSG_CTRUNC);
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+                cmsg->cmsg_len < CMSG_LEN(0) ||
+                (cmsg->cmsg_len - CMSG_LEN(0)) % sizeof(int) != 0) {
+            ancillary_valid = FALSE; continue;
+        }
+        guint count = (guint)((cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+        int *fds = (int *)CMSG_DATA(cmsg);
+        for (guint i = 0; i < count; i++) {
+            if (g_unix_fd_list_append(fd_list, fds[i], &error) < 0) {
+                g_warning("bridge %s fd=%d received fd append failed: %s", c->unique, fd, error->message);
+                g_clear_error(&error); ancillary_valid = FALSE;
+            }
+            close(fds[i]);
+            received_fds++;
+        }
+    }
+    g_free(control);
     GDBusMessage *message = g_dbus_message_new_from_blob(buffer, (gsize)n,
             G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
     g_free(buffer);
     if (message == NULL) {
         g_warning("bridge %s malformed D-Bus datagram fd=%d: %s", c->unique ? c->unique : "<unregistered>", fd, error->message);
-        g_clear_error(&error); return G_SOURCE_CONTINUE;
+        g_clear_error(&error); g_object_unref(fd_list); return G_SOURCE_CONTINUE;
     }
-    if (g_dbus_message_get_num_unix_fds(message) != 0) {
-        g_warning("bridge %s rejected fd-carrying message from %s", c->unique ? c->unique : "<unregistered>", c->unique ? c->unique : "<unregistered>");
-        GDBusMessage *reply = g_dbus_message_new_method_error_literal(message,
-            "org.freedesktop.DBus.Error.NotSupported", "Bridge messages may not carry file descriptors");
-        send_raw(c, reply); g_object_unref(reply); g_object_unref(message); return G_SOURCE_CONTINUE;
+    guint message_fds = g_dbus_message_get_num_unix_fds(message);
+    if (!ancillary_valid || received_fds != message_fds) {
+        g_warning("bridge %s fd=%d UNIX_FDS mismatch declared=%u received=%u flags=0x%x; dropping datagram",
+                  c->unique, fd, message_fds, received_fds, msg.msg_flags);
+        g_object_unref(fd_list); g_object_unref(message); return G_SOURCE_CONTINUE;
     }
+    if (received_fds) g_dbus_message_set_unix_fd_list(message, fd_list);
+    g_object_unref(fd_list);
     g_dbus_message_set_sender(message, c->unique);
     /* Bridge bus-driver messages enter the same handler used by real clients;
      * all other traffic enters the normal router. */
@@ -1024,6 +1145,7 @@ Broker *broker_new(const char *socket_path, const char *config_path, GError **er
     b->clients = g_ptr_array_new(); b->services = g_ptr_array_new();
     b->owners = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     b->name_flags = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    b->name_queues = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_queue_free);
     b->rules = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL); b->next_id = 1;
     b->trace_calls = g_strcmp0(g_getenv("MATONOS_DBUS_TRACE"), "1") == 0;
     b->id = g_dbus_generate_guid();
@@ -1081,7 +1203,7 @@ gboolean broker_add_bridge(Broker *b, int fd, const char *const *names, GError *
         if(!g_dbus_is_name(names[i])||names[i][0]==':'||name_is_reserved(names[i])){
             g_warning("bridge %s rejected invalid/reserved name '%s'",c->unique,names[i]);continue;
         }
-        if(owner_of(b,names[i])){g_warning("bridge %s skipped already-owned name '%s'",c->unique,names[i]);continue;}
+        if(owner_of(b,names[i])){g_warning("bridge %s queued for already-owned name '%s'",c->unique,names[i]);queue_name(b,names[i],c);continue;}
         g_hash_table_insert(b->owners,g_strdup(names[i]),c);
         emit_name(c,"NameAcquired",names[i]);emit_changed(b,names[i],NULL,c->unique);
     }
@@ -1141,6 +1263,7 @@ void broker_free(Broker *b) {
     if (b->services) { for (guint i=0; i<b->services->len; i++) { Service *s=g_ptr_array_index(b->services,i); g_free(s->name); g_free(s->path); g_dbus_interface_info_unref(s->interface_info); g_free(s); } g_ptr_array_unref(b->services); }
     if (b->owners) g_hash_table_unref(b->owners);
     if (b->name_flags) g_hash_table_unref(b->name_flags);
+    if (b->name_queues) g_hash_table_unref(b->name_queues);
     if (b->rules) g_hash_table_unref(b->rules);
     if (b->socket_path) { struct stat st; if (lstat(b->socket_path,&st)==0 && S_ISSOCK(st.st_mode) && st.st_uid==b->owner_uid) unlink(b->socket_path); }
     g_free(b->id); g_free(b->socket_path); g_free(b);

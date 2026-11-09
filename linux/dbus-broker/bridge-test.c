@@ -35,8 +35,7 @@ static GDBusMessage *receive_message(int fd) {
     return m;
 }
 
-static void send_fd_message(int fd, GDBusMessage *m) {
-    int passfd = open("/dev/null", O_RDONLY | O_CLOEXEC); assert(passfd >= 0);
+static void send_fd_message(int fd, GDBusMessage *m, int passfd, gboolean with_rights) {
     GError *error = NULL;
     GUnixFDList *fds = g_unix_fd_list_new();
     assert(g_unix_fd_list_append(fds, passfd, &error) == 0 && error == NULL);
@@ -44,6 +43,7 @@ static void send_fd_message(int fd, GDBusMessage *m) {
     g_object_unref(fds);
     gsize length = 0; guchar *blob = g_dbus_message_to_blob(m, &length, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
     assert(blob && error == NULL);
+    if (!with_rights) { assert(send(fd, blob, length, MSG_NOSIGNAL) == (ssize_t)length); g_free(blob); return; }
     struct iovec iov = { .iov_base = blob, .iov_len = length };
     char control[CMSG_SPACE(sizeof(int))]; memset(control, 0, sizeof(control));
     struct msghdr msg = {0}; msg.msg_iov = &iov; msg.msg_iovlen = 1;
@@ -51,7 +51,28 @@ static void send_fd_message(int fd, GDBusMessage *m) {
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg->cmsg_level = SOL_SOCKET; cmsg->cmsg_type = SCM_RIGHTS;
     cmsg->cmsg_len = CMSG_LEN(sizeof(int)); memcpy(CMSG_DATA(cmsg), &passfd, sizeof(passfd));
     assert(sendmsg(fd, &msg, MSG_NOSIGNAL) == (ssize_t)length);
-    close(passfd); g_free(blob);
+    g_free(blob);
+}
+static GDBusMessage *receive_fd_message(int fd) {
+    guint8 blob[65536]; char control[CMSG_SPACE(sizeof(int) * 8)];
+    struct iovec iov = { .iov_base = blob, .iov_len = sizeof(blob) };
+    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control) };
+    ssize_t n = recvmsg(fd, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return NULL;
+    assert(n > 0 && !(msg.msg_flags & MSG_CTRUNC));
+    GError *error = NULL;
+    GDBusMessage *m = g_dbus_message_new_from_blob(blob, (gsize)n, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
+    assert(m && error == NULL);
+    GUnixFDList *fds = g_unix_fd_list_new();
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        assert(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS);
+        int count = (int)((cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+        int *received = (int *)CMSG_DATA(cmsg);
+        for (int i = 0; i < count; i++) { assert(g_unix_fd_list_append(fds, received[i], &error) >= 0 && error == NULL); close(received[i]); }
+    }
+    if (g_unix_fd_list_get_length(fds)) g_dbus_message_set_unix_fd_list(m, fds);
+    g_object_unref(fds);
+    return m;
 }
 
 static void drain_context(void) { while (g_main_context_iteration(NULL, FALSE)); }
@@ -103,9 +124,22 @@ int main(void) {
     assert(owner_of(b,"org.freedesktop.portal.Test")==NULL);
     assert(owner_of(b,"org.freedesktop.DBus.Test")==NULL);
 
+    /* A conflicting bridge name queues and takes over when its owner reaches EOF. */
+    const char *queue_owner_names[]={"org.matonos.test.Queue",NULL};
+    int queue_owner[2]; attach(b,queue_owner,queue_owner_names);
+    expect_name_change(observer[1],"org.matonos.test.Queue","",":1.3");
+    GDBusMessage *queue_acquired=receive_message(queue_owner[1]);assert(queue_acquired && g_strcmp0(g_dbus_message_get_member(queue_acquired),"NameAcquired")==0);g_object_unref(queue_acquired);
+    const char *queue_waiter_names[]={"org.matonos.test.Queue",NULL};
+    int queue_waiter[2]; attach(b,queue_waiter,queue_waiter_names);
+    assert(g_strcmp0(owner_of(b,"org.matonos.test.Queue"),":1.3")==0);
+    close(queue_owner[1]);drain_context();
+    expect_name_change(observer[1],"org.matonos.test.Queue",":1.3",":1.4");
+    GDBusMessage *taken=receive_message(queue_waiter[1]);assert(taken && g_strcmp0(g_dbus_message_get_member(taken),"NameAcquired")==0);g_object_unref(taken);
+    assert(g_strcmp0(owner_of(b,"org.matonos.test.Queue"),":1.4")==0);
+
     /* Bridge client installs a match; provider's broadcast signal is delivered. */
     int client[2]; const char *client_names[]={"org.matonos.test.Client",NULL}; attach(b,client,client_names);
-    expect_name_change(observer[1],"org.matonos.test.Client","",":1.3");
+    expect_name_change(observer[1],"org.matonos.test.Client","",":1.5");
     GDBusMessage *client_acquired=receive_message(client[1]);assert(client_acquired && g_strcmp0(g_dbus_message_get_member(client_acquired),"NameAcquired")==0);g_object_unref(client_acquired);
     add_match(client[1],1,"type='signal',interface='org.matonos.test.Echo',member='Pinged'");
     GDBusMessage *signal=signal_message("/org/matonos/test/Echo","org.matonos.test.Echo","Pinged",g_variant_new("(s)","4242"));
@@ -120,15 +154,26 @@ int main(void) {
     send_message(client[1],echo);g_object_unref(echo);drain_context();
     GDBusMessage *forward=receive_message(provider[1]);
     assert(forward && g_dbus_message_get_message_type(forward)==G_DBUS_MESSAGE_TYPE_METHOD_CALL);
-    assert(g_strcmp0(g_dbus_message_get_sender(forward),":1.3")==0);
+    assert(g_strcmp0(g_dbus_message_get_sender(forward),":1.5")==0);
     GDBusMessage *echo_reply=g_dbus_message_new_method_reply(forward);g_dbus_message_set_body(echo_reply,g_variant_new("(s)","hello"));
     send_message(provider[1],echo_reply);g_object_unref(echo_reply);g_object_unref(forward);drain_context();
     GDBusMessage *roundtrip=receive_message(client[1]);
     assert(roundtrip && g_dbus_message_get_message_type(roundtrip)==G_DBUS_MESSAGE_TYPE_METHOD_RETURN);
     assert(g_dbus_message_get_reply_serial(roundtrip)==22);const char *echo_text;g_variant_get(g_dbus_message_get_body(roundtrip),"(&s)",&echo_text);assert(g_strcmp0(echo_text,"hello")==0);g_object_unref(roundtrip);
 
+    /* A pipe fd travels client -> bridge provider and EchoFd returns its first line. */
+    int pipe_fds[2];assert(pipe(pipe_fds)==0);assert(write(pipe_fds[1],"bridge fd line\nignored\n",23)==23);close(pipe_fds[1]);
+    GDBusMessage *fd_call=call_message("org.matonos.test.Echo","/org/matonos/test/Echo","org.matonos.test.Echo","EchoFd",g_variant_new("(h)",0),90);
+    send_fd_message(client[1],fd_call,pipe_fds[0],TRUE);g_object_unref(fd_call);drain_context();
+    GDBusMessage *fd_forward=receive_fd_message(provider[1]);assert(fd_forward && g_dbus_message_get_num_unix_fds(fd_forward)==1);
+    GUnixFDList *forward_fds=g_dbus_message_get_unix_fd_list(fd_forward);int forwarded_fd=g_unix_fd_list_get(forward_fds,0,NULL);assert(forwarded_fd>=0);
+    char line[64]={0};assert(read(forwarded_fd,line,sizeof(line)-1)>0);assert(g_str_has_prefix(line,"bridge fd line\n"));close(forwarded_fd);
+    GDBusMessage *fd_reply=g_dbus_message_new_method_reply(fd_forward);g_dbus_message_set_body(fd_reply,g_variant_new("(s)","bridge fd line"));send_message(provider[1],fd_reply);g_object_unref(fd_reply);g_object_unref(fd_forward);close(pipe_fds[0]);drain_context();
+    GDBusMessage *fd_result=receive_message(client[1]);assert(fd_result && g_dbus_message_get_message_type(fd_result)==G_DBUS_MESSAGE_TYPE_METHOD_RETURN);
+    const char *fd_text;g_variant_get(g_dbus_message_get_body(fd_result),"(&s)",&fd_text);assert(g_strcmp0(fd_text,"bridge fd line")==0);g_object_unref(fd_result);
+
     /* A bridge can invoke a method on another bridge's unique client. */
-    GDBusMessage *reverse=call_message(":1.3","/","org.freedesktop.DBus.Peer","Ping",NULL,44);
+    GDBusMessage *reverse=call_message(":1.5","/","org.freedesktop.DBus.Peer","Ping",NULL,44);
     send_message(provider[1],reverse);g_object_unref(reverse);drain_context();
     GDBusMessage *incoming=receive_message(client[1]);assert(incoming && g_dbus_message_get_message_type(incoming)==G_DBUS_MESSAGE_TYPE_METHOD_CALL);
     GDBusMessage *pong=g_dbus_message_new_method_reply(incoming);send_message(client[1],pong);g_object_unref(pong);g_object_unref(incoming);drain_context();
@@ -156,13 +201,26 @@ int main(void) {
     GDBusMessage *invalid_reply=receive_message(client[1]);assert(invalid_reply && g_dbus_message_get_message_type(invalid_reply)==G_DBUS_MESSAGE_TYPE_ERROR);
     assert(g_strcmp0(g_dbus_message_get_error_name(invalid_reply),"org.freedesktop.DBus.Error.InvalidArgs")==0);g_object_unref(invalid_reply);
 
-    /* A message declaring and carrying an fd is rejected before routing. */
-    GDBusMessage *with_fd=call_message("org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus.Peer","Ping",NULL,88);
-    send_fd_message(client[1],with_fd);g_object_unref(with_fd);drain_context();
-    GDBusMessage *fd_error=receive_message(client[1]);assert(fd_error && g_dbus_message_get_message_type(fd_error)==G_DBUS_MESSAGE_TYPE_ERROR);
-    assert(g_strcmp0(g_dbus_message_get_error_name(fd_error),"org.freedesktop.DBus.Error.NotSupported")==0);g_object_unref(fd_error);
+    /* Bridge peer credentials are unavailable; never return the broker UID. */
+    const char *credential_methods[]={"GetConnectionUnixUser","GetConnectionUnixProcessID","GetConnectionCredentials",NULL};
+    for(guint i=0;credential_methods[i];i++){
+        GDBusMessage *cred=call_message("org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus",credential_methods[i],g_variant_new("(s)",":1.5"),80+i);
+        send_message(client[1],cred);g_object_unref(cred);drain_context();
+        GDBusMessage *cred_error=receive_message(client[1]);assert(cred_error && g_dbus_message_get_message_type(cred_error)==G_DBUS_MESSAGE_TYPE_ERROR);
+        assert(g_strcmp0(g_dbus_message_get_error_name(cred_error),"org.freedesktop.DBus.Error.Failed")==0);
+        const char *cred_text;g_variant_get(g_dbus_message_get_body(cred_error),"(&s)",&cred_text);assert(g_strcmp0(cred_text,"bridge peer has no Unix credentials")==0);g_object_unref(cred_error);
+    }
 
-    close(client[1]);close(observer[1]);drain_context();broker_free(b);unlink(policy);rmdir(directory);
+    /* UNIX_FDS header/SCM_RIGHTS mismatch drops only that datagram. */
+    GDBusMessage *mismatch=call_message("org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus.Peer","Ping",NULL,91);
+    int mismatch_fd=open("/dev/null",O_RDONLY|O_CLOEXEC);assert(mismatch_fd>=0);
+    send_fd_message(client[1],mismatch,mismatch_fd,FALSE);close(mismatch_fd);g_object_unref(mismatch);drain_context();
+    assert(receive_message(client[1])==NULL);
+    GDBusMessage *alive=call_message("org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus.Peer","Ping",NULL,92);
+    send_message(client[1],alive);g_object_unref(alive);drain_context();GDBusMessage *alive_reply=receive_message(client[1]);
+    assert(alive_reply && g_dbus_message_get_message_type(alive_reply)==G_DBUS_MESSAGE_TYPE_METHOD_RETURN);g_object_unref(alive_reply);
+
+    close(client[1]);close(observer[1]);close(queue_waiter[1]);drain_context();broker_free(b);unlink(policy);rmdir(directory);
     puts("PASS: bridge Echo/reverse calls, broadcast matches, bus-driver parity, attach/EOF name changes and pending errors");
     return 0;
 }
