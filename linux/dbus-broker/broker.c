@@ -897,8 +897,11 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
             "org.freedesktop.DBus.Error.ServiceUnknown", "The name has no owner");
         send_raw(c, err); g_object_unref(err); return NULL;
     }
-    if ((dest[0] != ':' && !(access_for(b, target_name) & ACCESS_TALK)) ||
-        (dest[0] == ':' && !destination_has_talk_access(b, target))) {
+    /* Talk policy filters what the sandboxed app may call, as xdg-dbus-proxy
+     * does; calls from a bridge peer into the app (e.g. a tray host reading
+     * the item that registered with it) are inbound and pass, as there. */
+    if (!c->bridge && ((dest[0] != ':' && !(access_for(b, target_name) & ACCESS_TALK)) ||
+        (dest[0] == ':' && !destination_has_talk_access(b, target)))) {
         GDBusMessage *err = g_dbus_message_new_method_error_literal(message,
             "org.freedesktop.DBus.Error.AccessDenied", "Destination is denied by broker policy");
         send_raw(c, err); g_object_unref(err); return NULL;
