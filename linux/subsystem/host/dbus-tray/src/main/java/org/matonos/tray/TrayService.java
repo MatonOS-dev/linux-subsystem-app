@@ -42,7 +42,6 @@ public final class TrayService extends Service {
       AppIconResolver.clearCache();
       invalidateItemIcons();
       sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
-      TrayNotifications.refresh(TrayService.this);
     }
   };
 
@@ -53,7 +52,6 @@ public final class TrayService extends Service {
           AppIconResolver.clearCache();
           invalidateItemIcons();
           sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
-          TrayNotifications.refresh(TrayService.this);
         }
       };
 
@@ -64,7 +62,6 @@ public final class TrayService extends Service {
   static void changed(TrayService s) {
     s.sendBroadcast(new Intent(ACTION_ITEMS).setPackage(s.getPackageName()));
     TrayHostService.modelChanged();
-    TrayNotifications.refresh(s);
   }
 
   private void invalidateItemIcons() {
@@ -106,7 +103,6 @@ public final class TrayService extends Service {
     unregisterReceiver(iconPackages);
     getContentResolver().unregisterContentObserver(themeChanges);
     for (Bus b : buses.values()) b.close();
-    TrayNotifications.cancelAll(this);
     super.onDestroy();
   }
 
