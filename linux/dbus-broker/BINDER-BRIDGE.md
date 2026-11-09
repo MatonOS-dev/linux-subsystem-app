@@ -100,6 +100,15 @@ A tiny separate APK (its own gradle module) provides `org.matonos.test.Echo`:
 - method `CallBack(s unique_name)`: calls `org.freedesktop.DBus.Peer.Ping` on that unique
   name and returns `"ok"` or the error name. This proves the reverse direction.
 
+## What a stub imports and exports (from Flatpak metadata)
+
+- **Imports:** only names matching the app's `talk` entries, from `[Session Bus Policy]` and
+  `[System Bus Policy]` (wildcards like `org.mpris.MediaPlayer2.*` match). The stub queries
+  binder providers and bridges each one that provides such a name. Names served by internal
+  services (UPower, login1, portals, ...) are never imported. An app with `--socket=session-bus`
+  (full access, no list) imports every provider.
+- **Exports:** the app's `own` entries (minus the denylist), e.g. `com.valvesoftware.Steam`.
+
 ## Linux apps as providers (stub ↔ stub)
 
 A stub is both consumer and provider. Example: Steam exports a "what is the user
