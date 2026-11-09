@@ -9,7 +9,10 @@ import java.util.List;
 
 /** Mutable snapshot of one StatusNotifierItem on one attached private bus. */
 public final class TrayItem {
+  private static final java.util.concurrent.atomic.AtomicLong NEXT_REGISTRATION_ORDER =
+      new java.util.concurrent.atomic.AtomicLong();
   public final long attachId;
+  public final long registrationOrder = NEXT_REGISTRATION_ORDER.getAndIncrement();
   public final String service;
   public final String path;
   public final String owner;

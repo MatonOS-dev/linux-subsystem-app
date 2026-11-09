@@ -16,5 +16,10 @@
             <intent-filter><action android:name="org.matonos.dbus.SERVICE"/></intent-filter>
             <meta-data android:name="org.matonos.dbus.NAMES" android:value="org.kde.StatusNotifierWatcher"/>
         </service>
+        <service android:name=".TrayHostService" android:exported="true">
+            <intent-filter>
+                <action android:name="org.matonos.tray.HOST" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

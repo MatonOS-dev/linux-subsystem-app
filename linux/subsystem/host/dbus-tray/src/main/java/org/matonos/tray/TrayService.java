@@ -40,6 +40,7 @@ public final class TrayService extends Service {
 
   static void changed(TrayService s) {
     s.sendBroadcast(new Intent(ACTION_ITEMS).setPackage(s.getPackageName()));
+    TrayHostService.modelChanged();
   }
 
   @Override
