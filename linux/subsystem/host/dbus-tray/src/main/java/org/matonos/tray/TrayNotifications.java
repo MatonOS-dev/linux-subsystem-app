@@ -18,7 +18,7 @@ import java.util.Set;
 
 /** Posts one ongoing notification for each registered StatusNotifierItem. */
 final class TrayNotifications {
-  private static final String CHANNEL_ID = "tray_items";
+  private static final String CHANNEL_ID = "tray_items_default";
   private static final int NOTIFICATION_ID = 0;
   private static final int REQUEST_ACTIVATE = 1;
   private static final int REQUEST_MENU = 2;
@@ -75,7 +75,7 @@ final class TrayNotifications {
 
   private static void ensureChannel(NotificationManager manager) {
     NotificationChannel channel = new NotificationChannel(
-        CHANNEL_ID, "Tray items", NotificationManager.IMPORTANCE_LOW);
+        CHANNEL_ID, "Tray items", NotificationManager.IMPORTANCE_DEFAULT);
     channel.setDescription("Ongoing notifications for Linux desktop tray items");
     channel.setSound(null, null);
     channel.enableVibration(false);
