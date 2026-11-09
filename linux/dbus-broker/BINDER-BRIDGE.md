@@ -46,8 +46,11 @@ socket (env-var only; no fallback for a hard-coded `/run/dbus/system_bus_socket`
 ## Wire
 
 Each SEQPACKET datagram is exactly one D-Bus message in standard wire format
-(`g_dbus_message_to_blob`). There is no extra framing, no SASL handshake, and no fds:
-a message that carries fds is rejected with an error reply and logged. Messages larger
+(`g_dbus_message_to_blob`). There is no extra framing and no SASL handshake. Unix fds (the `h` type)
+travel in the same `sendmsg`/`recvmsg` call as `SCM_RIGHTS` ancillary data, in the message's
+fd-list order, exactly as on a real D-Bus Unix socket. `UNIX_FDS` in the header must match
+the number of fds received; a mismatch drops the message with a loud log (dbus-daemon
+behaviour). An fd that SELinux refuses to pass fails the send loudly. Messages larger
 than the socket's max datagram size fail loudly. There is no made-up cap.
 
 ## Broker side: a bridge is a virtual client
@@ -79,7 +82,6 @@ than the socket's max datagram size fail loudly. There is no made-up cap.
   in the bridge path. Real clients must behave exactly as before.
 
 ## Known limits
-- No fds yet (`h` type). They could be added later via `SCM_RIGHTS` on the pair.
 - Caller credentials (`GetConnectionUnixUser` etc.) for a bridge peer return an error, never fake values.
 - Datagram size is bounded by the socket buffer. Raise `SO_SNDBUF` on the pair; overflow fails loudly.
 
@@ -134,7 +136,8 @@ playing" name; Discord's stub finds it over binder and imports it onto Discord's
 
 ## Phases
 
-1. **Bridge, phase 1.** Broker virtual client, JNI, AIDL, `DBusBridges`, echo provider,
+1. **Bridge, phase 1.** (1.5: fd passing via SCM_RIGHTS, plus VM enforcing test with memfd/pipe/file fds.)
+   Phase 1 itself: Broker virtual client, JNI, AIDL, `DBusBridges`, echo provider,
    and tests. Not started: tray, widget.
 2. **Tray app:** `StatusNotifierWatcher` + `StatusNotifierHost`, with DBusMenu read through
    the bridge.
