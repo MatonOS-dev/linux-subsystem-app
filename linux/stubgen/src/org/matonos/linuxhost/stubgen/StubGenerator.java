@@ -740,7 +740,7 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", "org.matonos.dbus.SERVICE", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             for (String p : permissions) str(p);
             // Pre-intern commit info values if present
             if (commitInfo != null) {
@@ -771,6 +771,9 @@ public final class StubGenerator {
             startEnd("package",attrs(a("name","org.matonos.linux")));
             start("intent",null,attrs());
             startEnd("action",attrs(a("name",PACKAGE_ACTION)));
+            end("intent");
+            start("intent",null,attrs());
+            startEnd("action",attrs(a("name","org.matonos.dbus.SERVICE")));
             end("intent");
             end("queries");
             for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));

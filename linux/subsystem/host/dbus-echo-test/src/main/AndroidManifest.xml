@@ -1,7 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application android:label="D-Bus Echo Test">
-        <service android:name=".EchoService" android:exported="true"
-           >
+        <service android:name=".EchoService" android:exported="true">
             <intent-filter><action android:name="org.matonos.dbus.SERVICE" /></intent-filter>
             <meta-data android:name="org.matonos.dbus.NAMES" android:value="org.matonos.test.Echo" />
         </service>
