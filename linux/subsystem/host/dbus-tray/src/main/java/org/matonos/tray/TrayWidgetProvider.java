@@ -41,9 +41,19 @@ public final class TrayWidgetProvider extends AppWidgetProvider {
         continue;
       }
       RemoteViews child = new RemoteViews(context.getPackageName(), R.layout.tray_widget_item);
-      Bitmap icon = item.icon;
       IconThemeResolver.Result themed = IconThemeResolver.resolve(context, item.iconName, dp(context, 32));
-      if (themed.bitmap != null) icon = themed.bitmap;
+      Bitmap pixmap = item.icon;
+      IconThemeResolver.Result launcher =
+          themed.bitmap == null && pixmap == null && item.bus != null
+              ? AppIconResolver.resolve(context, item.bus.uid, dp(context, 32))
+              : new IconThemeResolver.Result(null, false);
+      int source = AppIconResolver.firstAvailable(
+          themed.bitmap != null, pixmap != null, launcher.bitmap != null);
+      Bitmap icon =
+          source == 0
+              ? themed.bitmap
+              : source == 1 ? pixmap : source == 2 ? launcher.bitmap : null;
+      if (source == 2) themed = launcher;
       if (icon != null) {
         child.setImageViewBitmap(R.id.tray_icon, icon);
         if (themed.bitmap != null && themed.symbolic) {

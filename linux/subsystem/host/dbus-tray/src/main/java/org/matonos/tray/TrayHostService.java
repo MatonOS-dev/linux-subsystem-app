@@ -126,13 +126,16 @@ public final class TrayHostService extends Service {
     }
     Intent intent = new Intent(this, TrayMenuActivity.class)
         .putExtra(TrayMenuActivity.EXTRA_ITEM_KEY, key);
+    intent.addFlags(
+        Intent.FLAG_ACTIVITY_NEW_TASK
+            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+            | Intent.FLAG_ACTIVITY_SINGLE_TOP);
     if (openMenu) {
       intent.putExtra(TrayMenuActivity.EXTRA_OPEN_MENU, true);
     }
     if (anchor != null) {
       intent.setSourceBounds(anchor);
     }
-    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     try {
       startActivity(intent);
     } catch (RuntimeException e) {

@@ -77,6 +77,11 @@ public final class TrayActivity extends Activity {
       IconThemeResolver.Result themed = IconThemeResolver.resolve(this, item.iconName,
           Math.round(32 * getResources().getDisplayMetrics().density));
       Bitmap displayed = themed.bitmap != null ? themed.bitmap : item.icon;
+      if (displayed == null && item.bus != null) {
+        themed = AppIconResolver.resolve(this, item.bus.uid,
+            Math.round(32 * getResources().getDisplayMetrics().density));
+        displayed = themed.bitmap;
+      }
       if (displayed != null) {
         icon.setImageBitmap(displayed);
         if (themed.bitmap != null && themed.symbolic) icon.setColorFilter(android.graphics.Color.WHITE);

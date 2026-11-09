@@ -64,6 +64,33 @@ public final class TrayMenuActivity extends Activity {
   }
 
   @Override
+  protected void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    setIntent(intent);
+    if (currentDialog != null) {
+      currentDialog.setOnDismissListener(null);
+      currentDialog.dismiss();
+      currentDialog = null;
+    }
+    item = TrayService.ITEMS.get(intent.getStringExtra(EXTRA_ITEM_KEY));
+    if (item == null) {
+      Log.e(
+          TrayService.TAG,
+          "menu Activity item missing package="
+              + getPackageName()
+              + " key="
+              + intent.getStringExtra(EXTRA_ITEM_KEY));
+      finish();
+      return;
+    }
+    if (item.itemIsMenu || intent.getBooleanExtra(EXTRA_OPEN_MENU, false)) {
+      openRootMenu();
+    } else {
+      activateOrOpenMenu();
+    }
+  }
+
+  @Override
   protected void onDestroy() {
     try {
       unregisterReceiver(updates);

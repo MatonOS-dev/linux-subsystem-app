@@ -38,6 +38,19 @@ final class IconThemeResolver {
         return raced == null ? result : raced;
     }
 
+    static Result resolveSymbolic(Context context, String name, int sizePx) {
+        if (name == null || name.isEmpty() || sizePx <= 0) return MISSING;
+        String active = activeTheme(context.getContentResolver());
+        if (active.isEmpty()) return MISSING;
+        String key = active + '\0' + name + "\0" + sizePx + "\0exact";
+        Result cached = CACHE.get(key);
+        if (cached != null) return cached;
+        Result result = load(context.getContentResolver(), active, name, sizePx, true);
+        if (result.bitmap == null) result = MISSING;
+        Result raced = CACHE.putIfAbsent(key, result);
+        return raced == null ? result : raced;
+    }
+
     static void clearCache() {
         theme = null;
         CACHE.clear();

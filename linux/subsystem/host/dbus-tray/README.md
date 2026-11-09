@@ -8,8 +8,25 @@ refresh, pixmap decoding, item action forwarding, and DBusMenu layout and event
 calls.
 
 The home-screen AppWidget renders non-Passive items from every attached bus in a
-horizontal strip. For `IconName`, it first asks the subsystem's protected icon
-provider for an icon from the active (user-chosen) icon theme, then uses `IconPixmap`, then text.
+horizontal strip. Icon selection is `IconName` from the active theme, then
+`IconPixmap`, then the attached Android package's launcher icon, then text. The
+tray records the attach UID and resolves its package with
+`PackageManager.getPackagesForUid()`. Flatpak packages use the subsystem's
+`flatpak.<kind>.<id>.<arch>.<branch>` package naming; the app ID segment is
+decoded by converting encoded underscores to dots for the exact
+`<app-id>-symbolic` theme lookup. `DeployManifest` encodes both dots and
+literal underscores as underscores, so this package-derived ID can be
+ambiguous for IDs containing literal underscores; the launcher icon fallback
+still works in that case. If the theme icon is absent, an adaptive icon's
+monochrome drawable is used, or its launcher drawable is reduced to an alpha
+silhouette. These symbolic fallbacks use the regular symbolic tint treatment.
+Launcher icon results are cached per UID and cleared on package add, remove, or
+replacement. PackageManager returns the known owner packages by UID, so no
+package visibility query is needed.
+
+Menu popups use a dedicated task affinity and a singleTask activity, so they
+open outside the debug-list task and a subsequent item tap reuses the popup
+activity with the new item and anchor bounds.
 NeedsAttention items get a badge. Tapping an item calls
 `Activate(0,0)`; ItemIsMenu items and items returning UnknownMethod open the
 menu popup.

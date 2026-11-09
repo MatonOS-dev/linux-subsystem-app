@@ -39,6 +39,7 @@ public final class TrayService extends Service {
   private final BroadcastReceiver iconPackages = new BroadcastReceiver() {
     @Override public void onReceive(android.content.Context context, Intent intent) {
       IconThemeResolver.clearCache();
+      AppIconResolver.clearCache();
       sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
     }
   };
@@ -47,6 +48,7 @@ public final class TrayService extends Service {
       new android.database.ContentObserver(new android.os.Handler(android.os.Looper.getMainLooper())) {
         @Override public void onChange(boolean selfChange) {
           IconThemeResolver.clearCache();
+          AppIconResolver.clearCache();
           sendBroadcast(new Intent(ACTION_ITEMS).setPackage(getPackageName()));
         }
       };

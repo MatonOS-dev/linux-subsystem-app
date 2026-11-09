@@ -5,7 +5,9 @@
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
         <activity android:name=".TrayMenuActivity" android:exported="false"
-            android:theme="@style/TrayMenuTheme" />
+            android:theme="@style/TrayMenuTheme"
+            android:taskAffinity="org.matonos.tray.menu"
+            android:launchMode="singleTask" />
         <receiver android:name=".TrayWidgetProvider" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
