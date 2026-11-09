@@ -116,6 +116,28 @@ public final class LauncherDataTest {
         assertNotNull("An exported app-id icon works without a desktop file", data.icon);
     }
 
+    @Test public void findsAppIdSymbolicPngAndSvgWithoutChangingRegularIcon() throws Exception {
+        Path deployment = Files.createTempDirectory("launcher-symbolic");
+        desktop(deployment, APP_ID, "Symbolic App", APP_ID, null);
+        Path regular = appearanceIcon(deployment, APP_ID);
+        png(regular);
+        Path symbolic = deployment.resolve("export/share/icons/hicolor/symbolic/apps/" + APP_ID + "-symbolic.png");
+        png(symbolic);
+        LauncherData data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
+        assertNotNull(data.icon);
+        assertNotNull(data.symbolicIcon);
+        assertArrayEquals(png(), data.symbolicIcon);
+    }
+
+    @Test public void noSymbolicExportLeavesMonochromeAbsent() throws Exception {
+        Path deployment = Files.createTempDirectory("launcher-no-symbolic");
+        desktop(deployment, APP_ID, "Regular App", APP_ID, null);
+        png(appearanceIcon(deployment, APP_ID));
+        LauncherData data = LauncherData.resolve(deployment.toFile(), APP_ID, null, null);
+        assertNotNull(data.icon);
+        assertNull(data.symbolicIcon);
+    }
+
     @Test public void ignoresASymlinkedExportedIcon() throws Exception {
         Path deployment = Files.createTempDirectory("launcher-symlink");
         desktop(deployment, APP_ID, "Linked App", APP_ID, null);

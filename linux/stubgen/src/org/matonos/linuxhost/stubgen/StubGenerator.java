@@ -364,10 +364,15 @@ public final class StubGenerator {
 
     /** Identity of the launcher components: the label, MIME types and icon. */
     public static String launcherSplitName(String label,List<String> mimeTypes,byte[] iconPng) throws Exception {
+        return launcherSplitName(label,mimeTypes,iconPng,null);
+    }
+
+    public static String launcherSplitName(String label,List<String> mimeTypes,byte[] iconPng,byte[] monochromePng) throws Exception {
         java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
         update(hash,cleanLabel(label).getBytes(StandardCharsets.UTF_8));
         for(String mime:cleanMimeTypes(mimeTypes)) update(hash,mime.getBytes(StandardCharsets.UTF_8));
         update(hash,iconPng);
+        if(monochromePng!=null)update(hash,monochromePng);
         return LAUNCHER_SPLIT_PREFIX+ObjectPacks.hex(hash.digest());
     }
 
@@ -381,6 +386,11 @@ public final class StubGenerator {
      * base. The base stub keeps no launcher entry of its own. */
     public static File generateLauncher(File workDir,String pkg,String label,
             List<String> mimeTypes,byte[] iconPng,File output,int revision) throws Exception {
+        return generateLauncher(workDir,pkg,label,mimeTypes,iconPng,null,output,revision);
+    }
+
+    public static File generateLauncher(File workDir,String pkg,String label,
+            List<String> mimeTypes,byte[] iconPng,byte[] monochromePng,File output,int revision) throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
         if(!packageName(pkg))throw new IllegalArgumentException("Invalid package name");
         if(iconPng==null||iconPng.length==0)throw new IllegalArgumentException("PNG icon size is invalid");
@@ -392,9 +402,10 @@ public final class StubGenerator {
         try {
             try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
                 put(zip,"AndroidManifest.xml",manifest.launcherManifest(split,clean,mimes,0x7f020000));
-                put(zip,"resources.arsc",iconResourceTable(pkg,2));
+                put(zip,"resources.arsc",iconResourceTable(pkg,2,monochromePng!=null));
                 put(zip,"res/drawable/foreground.png",iconPng);
-                put(zip,"res/drawable/icon.xml",new BinaryManifest("","","","flathub",Collections.emptyList()).adaptiveIcon(0x7f020000));
+                if(monochromePng!=null)put(zip,"res/drawable/monochrome.png",monochromePng);
+                put(zip,"res/drawable/icon.xml",new BinaryManifest("","","","flathub",Collections.emptyList()).adaptiveIcon(0x7f020000,monochromePng!=null));
             }
             sign(unsigned,output);return output;
         } finally {unsigned.delete();}
@@ -402,6 +413,15 @@ public final class StubGenerator {
 
     private static boolean packageName(String pkg) {
         return pkg!=null&&pkg.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+");
+    }
+
+    static byte[] launcherAdaptiveIconResource(boolean monochrome) throws IOException {
+        return new BinaryManifest("", "", "", "flathub", Collections.emptyList())
+                .adaptiveIcon(0x7f020000, monochrome);
+    }
+
+    static byte[] launcherIconResourceTable(boolean monochrome) throws IOException {
+        return iconResourceTable("flatpak.org.example.Test", 2, monochrome);
     }
 
     /** Legacy compatibility: no commit info, no images. */
@@ -586,19 +606,26 @@ public final class StubGenerator {
      * keeps that id.
      */
     private static byte[] iconResourceTable(String pkg,int typeId) throws IOException {
+        return iconResourceTable(pkg,typeId,false);
+    }
+
+    private static byte[] iconResourceTable(String pkg,int typeId,boolean monochrome) throws IOException {
         byte[] global = resourceStringPool("res/drawable/icon.xml", "res/drawable/foreground.png");
+        if(monochrome)global=resourceStringPool("res/drawable/icon.xml", "res/drawable/foreground.png", "res/drawable/monochrome.png");
         byte[] types = typeId==1?resourceStringPool("drawable"):resourceStringPool("matonos","drawable");
-        byte[] keys = resourceStringPool("icon", "foreground", "background");
+        byte[] keys = monochrome?resourceStringPool("icon", "foreground", "background", "monochrome"):resourceStringPool("icon", "foreground", "background");
+        int count=monochrome?4:3;
         byte[] spec = new byte[28];
         put16(spec,0,0x0202); put16(spec,2,16); putInt(spec,4,spec.length);
-        spec[8]=(byte)typeId; putInt(spec,12,3);
-        byte[] type = new byte[144];
+        spec[8]=(byte)typeId; putInt(spec,12,count);
+        byte[] type = new byte[84+count*4+count*16];
         put16(type,0,0x0201); put16(type,2,84); putInt(type,4,type.length);
-        type[8]=(byte)typeId; putInt(type,12,3); putInt(type,16,96); putInt(type,20,64);
-        putInt(type,84,0); putInt(type,88,16); putInt(type,92,32);
-        for (int i=0;i<3;i++) {
-            int offset=96+i*16; put16(type,offset,8); putInt(type,offset+4,i);
-            put16(type,offset+8,8); type[offset+11]=(byte)(i==2?0x1c:3); putInt(type,offset+12,i==2?0xfff5f5f5:i);
+        int entriesStart=84+count*4;
+        type[8]=(byte)typeId; putInt(type,12,count); putInt(type,16,entriesStart); putInt(type,20,count*4);
+        for(int i=0;i<count;i++)putInt(type,84+i*4,i*16);
+        for (int i=0;i<count;i++) {
+            int offset=entriesStart+i*16; put16(type,offset,8); putInt(type,offset+4,i);
+            put16(type,offset+8,8); type[offset+11]=(byte)(i==2?0x1c:3); putInt(type,offset+12,i==2?0xfff5f5f5:(i==3?2:i));
         }
         byte[] header = new byte[288];
         put16(header,0,0x0200); put16(header,2,288);
@@ -606,7 +633,7 @@ public final class StubGenerator {
         byte[] name = pkg.getBytes(StandardCharsets.UTF_16LE);
         System.arraycopy(name,0,header,12,Math.min(name.length,254));
         putInt(header,268,288); putInt(header,272,typeId);
-        putInt(header,276,288+types.length); putInt(header,280,3);
+        putInt(header,276,288+types.length); putInt(header,280,count);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         BinaryManifest.write16(out,2); BinaryManifest.write16(out,12);
         BinaryManifest.write32(out,12+global.length+header.length+types.length+keys.length+spec.length+type.length);
@@ -908,10 +935,14 @@ public final class StubGenerator {
         }
         byte[] adaptiveIcon() throws IOException { return adaptiveIcon(0x7f010000); }
         byte[] adaptiveIcon(int base) throws IOException {
+            return adaptiveIcon(base,false);
+        }
+        byte[] adaptiveIcon(int base,boolean monochrome) throws IOException {
             namespace(true);
             start("adaptive-icon", null, attrs());
             startEnd("background", attrs(new Attr("drawable", "@drawable/background", base+2, 1)));
             startEnd("foreground", attrs(new Attr("drawable", "@drawable/foreground", base+1, 1)));
+            if(monochrome)startEnd("monochrome", attrs(new Attr("drawable", "@drawable/monochrome", base+3, 1)));
             end("adaptive-icon"); namespace(false);
             ByteArrayOutputStream body=new ByteArrayOutputStream();
             writeStringPool(body);writeResourceMap(body);

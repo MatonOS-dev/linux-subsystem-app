@@ -613,7 +613,7 @@ public final class LinuxAppStoreService extends Service {
             StubGenerator.generateIndex(work,pkg,objects,new File(artifacts,index+".apk"),revision);available.add(index);
         }
         addErofsImageSplit(op,pkg,work,objects,artifacts,installed,prior,full,revision,desired,available);
-        if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,prior,full,desired,available);
+        if(launchable)addLauncherSplit(op,pkg,work,artifacts,revision,launcher.label,launcher.mimeTypes,baseIcon,launcher.symbolicIcon,prior,full,desired,available);
         // Everything needed after this point is now in the pack artifacts,
         // generated APKs, or the captured launcher values. Drop this package's
         // downloaded Flatpak repo and any stale pack-repo from an earlier attempt
@@ -649,13 +649,13 @@ public final class LinuxAppStoreService extends Service {
 
     /** Adds the code-free launcher split unless the same one is installed. */
     private void addLauncherSplit(Operation op,String pkg,File work,File artifacts,int revision,String label,
-            java.util.List<String> mimeTypes,byte[] icon,java.util.List<String> prior,boolean full,
+            java.util.List<String> mimeTypes,byte[] icon,byte[] monochrome,java.util.List<String> prior,boolean full,
             java.util.List<String> desired,java.util.List<String> available) throws Exception {
-        String split=StubGenerator.launcherSplitName(label,mimeTypes,icon);
+        String split=StubGenerator.launcherSplitName(label,mimeTypes,icon,monochrome);
         if(desired.contains(split))return;
         desired.add(split);
         if(full || !prior.contains(split)) {
-            StubGenerator.generateLauncher(work,pkg,label,mimeTypes,icon,new File(artifacts,split+".apk"),revision);
+            StubGenerator.generateLauncher(work,pkg,label,mimeTypes,icon,monochrome,new File(artifacts,split+".apk"),revision);
             available.add(split);
         }
     }

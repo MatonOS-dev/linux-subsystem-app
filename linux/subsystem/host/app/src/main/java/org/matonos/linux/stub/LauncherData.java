@@ -47,10 +47,13 @@ public final class LauncherData {
     public final List<String> mimeTypes;
     /** PNG bytes, or null meaning "use the caller's generic icon". */
     public final byte[] icon;
-    private LauncherData(String label, List<String> mimeTypes, byte[] icon) {
+    /** Symbolic launcher icon exported as {@code <app-id>-symbolic}, if present. */
+    public final byte[] symbolicIcon;
+    private LauncherData(String label, List<String> mimeTypes, byte[] icon, byte[] symbolicIcon) {
         this.label = label;
         this.mimeTypes = mimeTypes;
         this.icon = icon;
+        this.symbolicIcon = symbolicIcon;
     }
 
     /** Appstream lookup, injected so tests need no network. */
@@ -128,9 +131,9 @@ public final class LauncherData {
         if (appstream != null) {
             Appstream.Entry entry = appstream.lookup(appId);
             if (entry != null && entry.name != null && !entry.name.trim().isEmpty())
-                return new LauncherData(entry.name, Collections.<String>emptyList(), entry.icon);
+                return new LauncherData(entry.name, Collections.<String>emptyList(), entry.icon, null);
         }
-        return new LauncherData(appId, Collections.<String>emptyList(), null);
+        return new LauncherData(appId, Collections.<String>emptyList(), null, null);
     }
 
     /**
@@ -147,13 +150,35 @@ public final class LauncherData {
         File desktop = desktopFile(new File(root, "export/share/applications"), appId);
         if (desktop == null) {
             byte[] icon = exportIcon(root, appId, null);
-            return icon == null ? null : new LauncherData(appId, Collections.<String>emptyList(), icon);
+            byte[] symbolic = exportSymbolicIcon(root, appId);
+            return icon == null && symbolic == null ? null
+                    : new LauncherData(appId, Collections.<String>emptyList(), icon, symbolic);
         }
         byte[] content = PlaceholderFiles.readAllBytes(desktop);
         if (content.length == 0) throw new IOException("Desktop entry is empty");
         StubGenerator.DesktopEntry entry = StubGenerator.parseDesktop(new String(content, StandardCharsets.UTF_8));
         byte[] icon = exportIcon(root, appId, entry.iconName);
-        return new LauncherData(entry.name, entry.mimeTypes, icon);
+        return new LauncherData(entry.name, entry.mimeTypes, icon, exportSymbolicIcon(root, appId));
+    }
+
+    private static byte[] exportSymbolicIcon(File root, String appId) throws IOException {
+        return exportNamedIcon(new File(root, "export/share/icons/hicolor"), appId + "-symbolic");
+    }
+
+    private static byte[] exportNamedIcon(File hicolor, String name) throws IOException {
+        if (!hicolor.isDirectory()) return null;
+        File[] sizes = hicolor.listFiles();
+        if (sizes == null) return null;
+        Arrays.sort(sizes, Comparator.comparingInt(LauncherData::iconSize).reversed()
+                .thenComparing(File::getName));
+        for (File size : sizes) {
+            File apps = new File(size, "apps");
+            for (String extension : new String[]{".png", ".svg"}) {
+                byte[] icon = readIcon(new File(apps, name + extension));
+                if (icon != null) return icon;
+            }
+        }
+        return null;
     }
 
     /** The app's exported .desktop: the app id name first, else a lone file. */
