@@ -34,6 +34,29 @@ struct start_args {
     int portal_dir_fd;
 };
 
+struct bridge_args { int fd; char **names; };
+static char *dup_string(JNIEnv *env, jstring value);
+static gboolean add_bridge_on_context(gpointer data) {
+    struct bridge_args *a=data; GError *error=NULL;
+    pthread_mutex_lock(&g_lock); Broker *broker=g_broker; pthread_mutex_unlock(&g_lock);
+    if(!broker || !broker_add_bridge(broker,a->fd,(const char *const *)a->names,&error)) {
+        g_warning("DBus bridge attach failed: %s",error?error->message:"broker is stopped");
+        if(a->fd>=0)close(a->fd);
+    }
+    g_clear_error(&error);g_strfreev(a->names);free(a);return G_SOURCE_REMOVE;
+}
+
+JNIEXPORT void JNICALL
+Java_org_matonos_linux_runtime_NativeBroker_nativeAddBridge(JNIEnv *env,jclass clazz,jint fd,jobjectArray names) {
+    (void)clazz;
+    jsize n=names?(*env)->GetArrayLength(env,names):0;
+    struct bridge_args*a=calloc(1,sizeof(*a)); if(!a){g_warning("DBus bridge fd=%d: allocation failed",fd);close(fd);return;}
+    a->fd=fd;a->names=calloc((size_t)n+1,sizeof(char*));
+    if(!a->names){g_warning("DBus bridge fd=%d: name allocation failed",fd);close(fd);free(a);return;}
+    for(jsize i=0;i<n;i++){jstring s=(jstring)(*env)->GetObjectArrayElement(env,names,i);a->names[i]=dup_string(env,s);(*env)->DeleteLocalRef(env,s);}
+    g_main_context_invoke(NULL,add_bridge_on_context,a);
+}
+
 /* MBP1 capability handshake to the in-process portal backend. */
 static int connect_portal(const char *path, const char *secret) {
     struct sockaddr_un address = {.sun_family = AF_UNIX};

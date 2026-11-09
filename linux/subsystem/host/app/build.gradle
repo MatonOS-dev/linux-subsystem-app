@@ -239,6 +239,7 @@ android {
         main {
             java.srcDirs += file('../../../stubgen/src')
             java.srcDirs += file('../shared/src/main/java')
+            aidl.srcDirs += file('../shared/src/main/aidl')
             def compositorJni = System.getenv('MATON_COMPOSITOR_JNI_LIBS')
             if (!compositorJni) throw new GradleException('MATON_COMPOSITOR_JNI_LIBS is not set (build through ./build.sh)')
             jniLibs.srcDirs += file(compositorJni)

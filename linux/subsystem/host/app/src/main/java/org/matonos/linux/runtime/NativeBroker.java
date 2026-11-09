@@ -27,4 +27,7 @@ public final class NativeBroker {
 
     /** Stop the bus thread and wait for the GLib main loop to exit. */
     public static native void nativeStop();
+
+    /** Transfers ownership of fd and registers a provider as a virtual bus client. */
+    public static native void nativeAddBridge(int fd, String[] names);
 }

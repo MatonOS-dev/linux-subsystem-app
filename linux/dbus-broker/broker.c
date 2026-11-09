@@ -31,6 +31,9 @@ struct _Client {
     GPtrArray *outgoing; /* Pending calls originated here, for disconnect cleanup. */
     GHashTable *pending; /* forwarded serial -> Pending */
     guint filter_id, closed_id;
+    int bridge_fd;
+    guint bridge_source;
+    gboolean bridge;
 };
 struct _Service {
     char *name, *path;
@@ -91,7 +94,12 @@ static gboolean name_is_denied(const char *name) {
  * services it talks to, plus the always-denied host services. The managed
  * portal claims org.freedesktop.portal.Flatpak through its own check. */
 static gboolean name_is_reserved(const char *name) {
-    return name_is_denied(name) || g_str_has_prefix(name, "org.freedesktop.portal.") ||
+    return name_is_denied(name) ||
+           g_str_equal(name, "org.freedesktop.secrets") ||
+           g_str_has_prefix(name, "org.gnome.keyring") ||
+           g_str_has_prefix(name, "org.kde.kwalletd") ||
+           g_str_has_prefix(name, "org.freedesktop.portal.") ||
+           g_str_has_prefix(name, "org.freedesktop.Flatpak") ||
            g_str_has_prefix(name, "org.freedesktop.impl.portal.") ||
            g_str_equal(name, "org.freedesktop.DBus") || g_str_has_prefix(name, "org.freedesktop.DBus.");
 }
@@ -218,6 +226,23 @@ static gboolean match_rule_supported(const char *rule) {
     return supported;
 }
 static void send_raw(Client *c, GDBusMessage *m) {
+    if (c->bridge) {
+        GError *error = NULL;
+        gsize size = 0;
+        g_dbus_message_set_serial(m, 0);
+        guchar *blob = g_dbus_message_to_blob(m, &size, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
+        if (blob == NULL) {
+            g_warning("bridge %s serialize failed: %s", c->unique ? c->unique : "<unregistered>", error->message);
+            g_clear_error(&error);
+            return;
+        }
+        ssize_t sent = send(c->bridge_fd, blob, size, MSG_NOSIGNAL);
+        if (sent < 0 || (gsize)sent != size)
+            g_warning("bridge %s send fd=%d failed: sent=%zd expected=%zu errno=%d (%s)",
+                      c->unique ? c->unique : "<unregistered>", c->bridge_fd, sent, size, errno, g_strerror(errno));
+        g_free(blob);
+        return;
+    }
     if (g_dbus_connection_is_closed(c->connection)) return;
     /* Serial numbers belong to the sending connection, not the source peer. */
     g_dbus_message_set_serial(m, 0);
@@ -473,6 +498,75 @@ static void bus_method_call(GDBusConnection *connection, const char *sender,
 
 static const GDBusInterfaceVTable bus_vtable = { .method_call = bus_method_call };
 
+static GDBusMessage *route_message(GDBusConnection *, GDBusMessage *, gboolean, gpointer);
+static void client_bridge_closed(Client *c);
+static void bridge_bus_call(Client *c, GDBusMessage *m) {
+    Broker *b = c->broker;
+    const char *member = g_dbus_message_get_member(m);
+    GVariant *body = g_dbus_message_get_body(m);
+    GDBusMessage *reply = NULL;
+    if (g_strcmp0(member, "Hello") == 0 && c->unique == NULL) {
+        c->unique = g_strdup_printf(":1.%u", b->next_id++);
+        reply = g_dbus_message_new_method_reply(m);
+        g_dbus_message_set_body(reply, g_variant_new("(s)", c->unique));
+    } else if (g_strcmp0(member, "AddMatch") == 0 && body && g_variant_is_of_type(body, G_VARIANT_TYPE("(s)"))) {
+        const char *rule; g_variant_get(body, "(&s)", &rule);
+        if (!match_rule_supported(rule)) reply = g_dbus_message_new_method_error_literal(m,"org.freedesktop.DBus.Error.MatchRuleInvalid","Unsupported match rule key");
+        else { g_ptr_array_add(c->matches, g_strdup(rule)); reply = g_dbus_message_new_method_reply(m); }
+    } else if (g_strcmp0(member, "RemoveMatch") == 0 && body && g_variant_is_of_type(body, G_VARIANT_TYPE("(s)"))) {
+        const char *rule; g_variant_get(body, "(&s)", &rule); gboolean found = FALSE;
+        for (guint i=0;i<c->matches->len;i++) if (g_str_equal(rule,g_ptr_array_index(c->matches,i))) { g_ptr_array_remove_index(c->matches,i); found=TRUE; break; }
+        reply = found ? g_dbus_message_new_method_reply(m) : g_dbus_message_new_method_error_literal(m,"org.freedesktop.DBus.Error.MatchRuleNotFound","No matching rule");
+    } else if (g_strcmp0(member, "GetNameOwner") == 0 && body && g_variant_is_of_type(body,G_VARIANT_TYPE("(s)"))) {
+        const char *name; g_variant_get(body,"(&s)",&name); const char *owner=owner_of(b,name);
+        if(owner){reply=g_dbus_message_new_method_reply(m);g_dbus_message_set_body(reply,g_variant_new("(s)",owner));}
+        else reply=g_dbus_message_new_method_error_literal(m,"org.freedesktop.DBus.Error.NameHasNoOwner","Name has no owner");
+    } else if (g_strcmp0(member,"NameHasOwner")==0 && body && g_variant_is_of_type(body,G_VARIANT_TYPE("(s)"))) {
+        const char *name;g_variant_get(body,"(&s)",&name);reply=g_dbus_message_new_method_reply(m);g_dbus_message_set_body(reply,g_variant_new("(b)",owner_of(b,name)!=NULL));
+    } else if (g_strcmp0(member,"Ping")==0) reply=g_dbus_message_new_method_reply(m);
+    else reply=g_dbus_message_new_method_error_literal(m,"org.freedesktop.DBus.Error.UnknownMethod","Unknown bus method");
+    if (reply) { g_dbus_message_set_destination(reply,c->unique); send_raw(c,reply); g_object_unref(reply); }
+}
+
+static void client_bridge_closed(Client *c) {
+    Broker *b=c->broker;
+    if(c->bridge_source){g_source_remove(c->bridge_source);c->bridge_source=0;}
+    for(guint i=0;i<b->clients->len;i++) if(g_ptr_array_index(b->clients,i)==c) {
+        GHashTableIter it; gpointer key,value; GPtrArray *names=g_ptr_array_new_with_free_func(g_free);
+        g_hash_table_iter_init(&it,b->owners);
+        while(g_hash_table_iter_next(&it,&key,&value)) if(value==c)g_ptr_array_add(names,g_strdup(key));
+        for(guint j=0;j<names->len;j++){const char*n=g_ptr_array_index(names,j);g_hash_table_remove(b->owners,n);g_hash_table_remove(b->name_flags,n);emit_name(c,"NameLost",n);emit_changed(b,n,c->unique,NULL);}
+        g_ptr_array_unref(names);
+        /* Calls originated by the bridge must be removed from every peer's
+         * pending table. Calls addressed to it fail back to their origin. */
+        for(guint j=0;j<c->outgoing->len;j++){
+            Pending*p=g_ptr_array_index(c->outgoing,j);
+            for(guint k=0;k<b->clients->len;k++){
+                Client*d=g_ptr_array_index(b->clients,k);GHashTableIter pi;gpointer pk,pv;
+                g_hash_table_iter_init(&pi,d->pending);
+                while(g_hash_table_iter_next(&pi,&pk,&pv))if(pv==p)g_hash_table_iter_remove(&pi);
+            }
+        }
+        GHashTableIter pending_iter;gpointer pending_key,pending_value;
+        g_hash_table_iter_init(&pending_iter,c->pending);
+        while(g_hash_table_iter_next(&pending_iter,&pending_key,&pending_value)){
+            Pending*p=pending_value;g_ptr_array_remove(p->origin->outgoing,p);
+            GDBusMessage*request=g_dbus_message_new();
+            g_dbus_message_set_message_type(request,G_DBUS_MESSAGE_TYPE_METHOD_CALL);
+            g_dbus_message_set_serial(request,p->serial);
+            GDBusMessage*failure=g_dbus_message_new_method_error_literal(request,
+                "org.freedesktop.DBus.Error.ServiceUnknown","Bridge provider disconnected");
+            send_raw(p->origin,failure);g_object_unref(failure);g_object_unref(request);
+        }
+        g_hash_table_remove_all(c->pending);
+        g_ptr_array_set_size(c->outgoing,0);
+        g_ptr_array_remove_index(b->clients,i);break;
+    }
+    g_warning("bridge %s closed; releasing client state",c->unique?c->unique:"<unregistered>");
+    if(c->bridge_fd>=0){int fd=c->bridge_fd;c->bridge_fd=-1;g_warning("close fd=%d at broker.c bridge disconnect",fd);close(fd);}
+    g_hash_table_unref(c->pending);g_ptr_array_unref(c->outgoing);g_ptr_array_unref(c->matches);g_free(c->unique);g_free(c);
+}
+
 static void discard_client(Broker *b, Client *c) {
     if (c->closed_id) g_signal_handler_disconnect(c->connection, c->closed_id);
     if (c->filter_id) g_dbus_connection_remove_filter(c->connection, c->filter_id);
@@ -693,8 +787,17 @@ static GDBusMessage *route_message(GDBusConnection *connection, GDBusMessage *me
     g_dbus_message_set_serial(copy, 0);
     guint32 forwarded = 0;
     GError *error = NULL;
-    if (g_dbus_connection_send_message(target->connection, copy,
-            G_DBUS_SEND_MESSAGE_FLAGS_NONE, &forwarded, &error)) {
+    gboolean sent = FALSE;
+    if (target->bridge) {
+        forwarded = b->next_id++;
+        g_dbus_message_set_serial(copy, forwarded);
+        GError *blob_error = NULL; gsize blob_size = 0;
+        guchar *blob = g_dbus_message_to_blob(copy, &blob_size, G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &blob_error);
+        if (blob) { ssize_t n=send(target->bridge_fd,blob,blob_size,MSG_NOSIGNAL); sent=n==(ssize_t)blob_size; if(!sent)g_warning("bridge %s method send fd=%d failed sent=%zd expected=%zu errno=%d (%s)",target->unique,target->bridge_fd,n,blob_size,errno,g_strerror(errno)); g_free(blob); }
+        if (blob_error) { g_warning("bridge %s method serialization failed: %s",target->unique,blob_error->message);g_clear_error(&blob_error); }
+    } else sent = g_dbus_connection_send_message(target->connection, copy,
+            G_DBUS_SEND_MESSAGE_FLAGS_NONE, &forwarded, &error);
+    if (sent) {
         Pending *p = g_new0(Pending, 1); p->origin = c; p->serial = g_dbus_message_get_serial(message);
         p->flatpak=g_strcmp0(g_dbus_message_get_interface(message),"org.freedesktop.portal.Flatpak")==0;
         g_ptr_array_add(c->outgoing, p);
@@ -773,6 +876,7 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
     Broker *b = data;
     if (b->clients->len >= MAX_CLIENTS) return FALSE;
     Client *c = g_new0(Client, 1); c->broker = b; c->connection = g_object_ref(connection);
+    c->bridge_fd = -1;
     GIOStream *stream = g_dbus_connection_get_stream(connection);
     if (!G_IS_SOCKET_CONNECTION(stream)) { g_object_unref(c->connection); g_free(c); return FALSE; }
     int fd = g_socket_get_fd(g_socket_connection_get_socket(G_SOCKET_CONNECTION(stream)));
@@ -814,6 +918,49 @@ static gboolean on_new_connection(GDBusServer *server, GDBusConnection *connecti
     }
     c->filter_id = g_dbus_connection_add_filter(connection, filter_message, c, NULL);
     return TRUE;
+}
+
+static gboolean bridge_readable(gint fd, GIOCondition condition, gpointer data) {
+    Client *c = data;
+    if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL)) {
+        g_warning("bridge %s fd=%d disconnected condition=0x%x", c->unique ? c->unique : "<unregistered>", fd, condition);
+        /* The source is removed before cleanup so no callback can observe freed state. */
+        c->bridge_source = 0;
+        client_bridge_closed(c);
+        return G_SOURCE_REMOVE;
+    }
+    guint8 *buffer = g_malloc(65536);
+    ssize_t n = recv(fd, buffer, 65536, MSG_DONTWAIT | MSG_TRUNC);
+    if (n <= 0) {
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) { g_free(buffer); return G_SOURCE_CONTINUE; }
+        g_warning("bridge %s fd=%d receive failed: n=%zd errno=%d (%s)", c->unique ? c->unique : "<unregistered>", fd, n, errno, g_strerror(errno));
+        g_free(buffer); c->bridge_source = 0; client_bridge_closed(c); return G_SOURCE_REMOVE;
+    }
+    GError *error = NULL;
+    GDBusMessage *message = g_dbus_message_new_from_blob(buffer, (gsize)n,
+            G_DBUS_CAPABILITY_FLAGS_UNIX_FD_PASSING, &error);
+    g_free(buffer);
+    if (message == NULL) {
+        g_warning("bridge %s malformed D-Bus datagram fd=%d: %s", c->unique ? c->unique : "<unregistered>", fd, error->message);
+        g_clear_error(&error); return G_SOURCE_CONTINUE;
+    }
+    if (g_dbus_message_get_num_unix_fds(message) != 0) {
+        g_warning("bridge %s rejected fd-carrying message from %s", c->unique ? c->unique : "<unregistered>", c->unique ? c->unique : "<unregistered>");
+        GDBusMessage *reply = g_dbus_message_new_method_error_literal(message,
+            "org.freedesktop.DBus.Error.NotSupported", "Bridge messages may not carry file descriptors");
+        send_raw(c, reply); g_object_unref(reply); g_object_unref(message); return G_SOURCE_CONTINUE;
+    }
+    g_dbus_message_set_sender(message, c->unique);
+    /* Bridge traffic shares normal routing. Bus-driver calls are handled via
+     * the message adapter below because they have no GDBus invocation object. */
+    if (g_dbus_message_get_message_type(message) == G_DBUS_MESSAGE_TYPE_METHOD_CALL &&
+        g_strcmp0(g_dbus_message_get_destination(message), "org.freedesktop.DBus") == 0) {
+        bridge_bus_call(c, message);
+    } else {
+        route_message(NULL, message, TRUE, c);
+    }
+    g_object_unref(message);
+    return G_SOURCE_CONTINUE;
 }
 
 Broker *broker_new(const char *socket_path, const char *config_path, GError **error) {
@@ -866,6 +1013,26 @@ gboolean broker_add_service(Broker *b, const char *name, const char *path,
     g_ptr_array_add(b->services, s); g_hash_table_insert(b->owners, g_strdup(name), NULL);
     return TRUE;
 }
+
+gboolean broker_add_bridge(Broker *b, int fd, const char *const *names, GError **error) {
+    if(fd<0 || names==NULL){g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_INVALID_ARGUMENT,"bridge requires fd and names");return FALSE;}
+    Client*c=g_new0(Client,1);c->broker=b;c->bridge=TRUE;c->bridge_fd=fd;
+    c->matches=g_ptr_array_new_with_free_func(g_free);c->outgoing=g_ptr_array_new();
+    c->pending=g_hash_table_new_full(g_direct_hash,g_direct_equal,NULL,g_free);
+    c->unique=g_strdup_printf(":1.%u",b->next_id++);
+    g_ptr_array_add(b->clients,c);
+    for(guint i=0;names[i];i++){
+        if(!g_dbus_is_name(names[i])||names[i][0]==':'||name_is_reserved(names[i])){
+            g_warning("bridge %s rejected invalid/reserved name '%s'",c->unique,names[i]);continue;
+        }
+        if(owner_of(b,names[i])){g_warning("bridge %s skipped already-owned name '%s'",c->unique,names[i]);continue;}
+        g_hash_table_insert(b->owners,g_strdup(names[i]),c);
+        emit_name(c,"NameAcquired",names[i]);emit_changed(b,names[i],NULL,c->unique);
+    }
+    c->bridge_source=g_unix_fd_add_full(G_PRIORITY_DEFAULT,fd,G_IO_IN|G_IO_HUP|G_IO_ERR|G_IO_NVAL,bridge_readable,c,NULL);
+    if(!c->bridge_source){g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_FAILED,"cannot create bridge fd source");client_bridge_closed(c);return FALSE;}
+    return TRUE;
+}
 gboolean broker_run(Broker *b, GError **error) {
     struct stat st;
     if (lstat(b->socket_path, &st) == 0) {
@@ -905,6 +1072,7 @@ void broker_free(Broker *b) {
     if (b->clients) {
         while (b->clients->len) {
             Client *c = g_ptr_array_index(b->clients, b->clients->len - 1);
+            if(c->bridge){ if(c->bridge_source)g_source_remove(c->bridge_source); if(c->bridge_fd>=0){int fd=c->bridge_fd;g_warning("close fd=%d at broker.c shutdown",fd);close(fd);} g_ptr_array_remove_index(b->clients,b->clients->len-1);g_hash_table_unref(c->pending);g_ptr_array_unref(c->outgoing);g_ptr_array_unref(c->matches);g_free(c->unique);g_free(c);continue; }
             if (c->closed_id) g_signal_handler_disconnect(c->connection, c->closed_id);
             if (c->filter_id) g_dbus_connection_remove_filter(c->connection, c->filter_id);
             g_dbus_connection_close_sync(c->connection, NULL, NULL);

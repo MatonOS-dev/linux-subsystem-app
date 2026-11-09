@@ -1,0 +1,9 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'org.matonos.dbusechotest'
+    compileSdk 36
+    defaultConfig { applicationId 'org.matonos.dbusechotest'; minSdk 36; targetSdk 36 }
+    buildFeatures { aidl true }
+    sourceSets { main { aidl.srcDirs += file('../shared/src/main/aidl') } }
+}

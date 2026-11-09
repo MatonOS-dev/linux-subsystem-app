@@ -8,7 +8,9 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs gio-2.0)
 
 all: test
 
-test: $(OUT)/inhibit-test $(OUT)/portal-wire-test $(OUT)/policy-wildcard-test
+test: $(OUT)/inhibit-test $(OUT)/portal-wire-test $(OUT)/policy-wildcard-test $(OUT)/bridge-test
+	$(OUT)/policy-wildcard-test
+	$(OUT)/bridge-test
 
 $(OUT)/%.o: %.c broker.h | $(OUT)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
@@ -45,3 +47,6 @@ $(OUT)/policy-wildcard-test: policy-wildcard-test.c broker.c broker.h $(OUT)/por
 
 check-policy-wildcard: $(OUT)/policy-wildcard-test
 	$<
+
+$(OUT)/bridge-test: bridge-test.c broker.c broker.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ bridge-test.c $(OUT)/portals.o $(LDLIBS)

@@ -22,6 +22,7 @@ final class SessionBus implements AutoCloseable {
     final JavaPortal portals;
     private final File socket, policy;
     private volatile boolean running;
+    private DBusBridges bridges;
 
     SessionBus(Context context, File directory, String ref, int appUid,
                Consumer<Boolean> changed, JavaPortal.Launcher launcher) throws Exception {
@@ -54,6 +55,7 @@ final class SessionBus implements AutoCloseable {
             throw error;
         }
         if (!socket.exists()) { close(); throw new IOException("Session broker failed to become ready"); }
+        bridges = new DBusBridges(context);
     }
 
     boolean isAlive() { return running; }
@@ -63,6 +65,7 @@ final class SessionBus implements AutoCloseable {
 
     @Override public void close() {
         running = false;
+        if (bridges != null) { bridges.close(); bridges = null; }
         try { portals.close(); } finally {
             try { NativeBroker.nativeStop(); } finally {
                 socket.delete(); policy.delete();

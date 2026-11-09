@@ -3,6 +3,7 @@
         android:protectionLevel="signature|privileged" />
     <permission android:name="org.matonos.permission.QUERY_LINUX_APPS"
         android:protectionLevel="normal" />
+        android:protectionLevel="normal" />
     <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
@@ -18,6 +19,7 @@
         <intent><action android:name="flatpak.PACKAGE" /></intent>
         <!-- Minimal extra-data stubs have no launcher yet; the subsystem binds this service. -->
         <intent><action android:name="org.matonos.linuxhost.EXTRA_DATA_INSTALL" /></intent>
+        <intent><action android:name="org.matonos.dbus.SERVICE" /></intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
