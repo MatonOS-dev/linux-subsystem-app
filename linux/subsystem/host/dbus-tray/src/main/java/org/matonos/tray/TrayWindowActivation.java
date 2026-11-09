@@ -6,7 +6,9 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.os.RemoteException;
 import android.util.Log;
+import java.util.Arrays;
 
 /** Uses the foreground tray action to lend the normal Android BAL exemption. */
 final class TrayWindowActivation {
@@ -26,6 +28,29 @@ final class TrayWindowActivation {
       Log.e(TrayService.TAG, "Window activation lend failed service=" + item.service
           + " path=" + item.path + " uid=" + bus.uid + " reason=no packages for D-Bus UID");
       return false;
+    }
+    final boolean liveWindow;
+    try {
+      if (bus.icons == null) {
+        Log.e(TrayService.TAG, "Window activation decision failed service=" + item.service
+            + " path=" + item.path + " uid=" + bus.uid + " packages=" + Arrays.toString(packages)
+            + " reason=stub callback unavailable");
+        return false;
+      }
+      liveWindow = bus.icons.hasLiveWindow();
+      Log.i(TrayService.TAG, "Window activation decision service=" + item.service
+          + " path=" + item.path + " uid=" + bus.uid + " packages=" + Arrays.toString(packages)
+          + " hasLiveWindow=" + liveWindow);
+    } catch (RemoteException | RuntimeException error) {
+      Log.e(TrayService.TAG, "Window activation live-window query failed service=" + item.service
+          + " path=" + item.path + " uid=" + bus.uid + " packages=" + Arrays.toString(packages), error);
+      return false;
+    }
+    if (liveWindow) {
+      Log.i(TrayService.TAG, "Window activation result=existing-window-kept service=" + item.service
+          + " path=" + item.path + " uid=" + bus.uid + " packages=" + Arrays.toString(packages)
+          + " activityStart=skipped");
+      return true;
     }
     for (String packageName : packages) {
       ComponentName component = new ComponentName(packageName, STUB_ACTIVITY);
@@ -47,7 +72,8 @@ final class TrayWindowActivation {
             + " target=" + STUB_ACTIVITY);
         launch.send(context, 0, null, null, null, null, options.toBundle());
         Log.i(TrayService.TAG, "Lent foreground activity start sent service=" + item.service
-            + " path=" + item.path + " uid=" + bus.uid + " package=" + packageName);
+            + " path=" + item.path + " uid=" + bus.uid + " package=" + packageName
+            + " result=started");
         return true;
       } catch (PendingIntent.CanceledException | RuntimeException error) {
         Log.e(TrayService.TAG, "Lending foreground activity start failed service=" + item.service

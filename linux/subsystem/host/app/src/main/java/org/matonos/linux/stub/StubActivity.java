@@ -21,6 +21,16 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private volatile boolean destroyed;
     private static final String WINDOW = "org.matonos.linuxhost.WINDOW_ID";
     private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
+    private static final java.util.Set<StubActivity> LIVE_ACTIVITIES =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
+    /** A tray may only lend a new activity start when this app has no live host activity. */
+    public static boolean hasLiveWindow() {
+        for (StubActivity activity : LIVE_ACTIVITIES) {
+            if (!activity.destroyed && !activity.isFinishing()) return true;
+        }
+        return false;
+    }
     private final Runnable launchStatusChanged = () -> runOnUiThread(() -> {
         if (destroyed) return;
         try {
@@ -230,6 +240,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     }
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        LIVE_ACTIVITIES.add(this);
         WINDOWS.opened(this);
         StubService.updateWindowNotification(this, true);
         status=new TextView(this);status.setPadding(32,32,32,32);
@@ -360,6 +371,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     @Override protected void onPause() { foreground = false; super.onPause(); }
     @Override protected void onDestroy(){
         destroyed=true;
+        LIVE_ACTIVITIES.remove(this);
         MAIN.removeCallbacks(noWindowNotice);
         V3Launcher.removeLaunchStatusListener(launchStatusChanged);
         if(window!=0)SHOWING.remove(window,this);
