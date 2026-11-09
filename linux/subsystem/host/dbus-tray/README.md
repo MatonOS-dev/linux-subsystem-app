@@ -31,7 +31,9 @@ NeedsAttention items get a badge. Tapping an item calls
 `Activate(0,0)`; ItemIsMenu items and items returning UnknownMethod open the
 menu popup.
 
-The menu Activity is a compact dark popup positioned above the clicked item,
+The menu Activity uses a single dark palette for the popup, text, disabled and
+hover states, toggle controls, outline, and subtle one-pixel separators. It is
+positioned above the clicked item,
 with its left edge aligned to that item's screen bounds and clamped to the
 display. It renders a muted app-title header, hover highlighting, enabled
 state, separators, check switches, radio indicators, themed or supplied row

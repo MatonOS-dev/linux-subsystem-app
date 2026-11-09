@@ -1,0 +1,11 @@
+<resources>
+    <color name="tray_menu_surface">#FF252525</color>
+    <color name="tray_menu_text">#FFF5F5F5</color>
+    <color name="tray_menu_muted">#FFB0B0B0</color>
+    <color name="tray_menu_disabled">#FF969696</color>
+    <color name="tray_menu_outline">#FF484848</color>
+    <color name="tray_menu_separator">#28FFFFFF</color>
+    <color name="tray_menu_hover">#FF414141</color>
+    <color name="tray_menu_toggle">#FF80CBC4</color>
+    <color name="tray_menu_toggle_track">#6680CBC4</color>
+</resources>

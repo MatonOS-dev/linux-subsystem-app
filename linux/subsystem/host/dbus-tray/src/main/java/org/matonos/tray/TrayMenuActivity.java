@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Resources;
-import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Drawable;
@@ -34,10 +33,6 @@ public final class TrayMenuActivity extends Activity {
   static final String EXTRA_ITEM_KEY = "item_key";
   static final String EXTRA_OPEN_MENU = "open_menu";
   static final String EXTRA_TOP_FALLBACK = "top_fallback";
-  private static final int FALLBACK_SURFACE = 0xff252525;
-  private static final int FALLBACK_TEXT = 0xfff5f5f5;
-  private static final int FALLBACK_MUTED = 0xffa5a5a5;
-  private static final int FALLBACK_BORDER = 0xff484848;
   private TrayItem item;
   private int currentMenuParentId;
   private boolean hadWindowFocus;
@@ -175,10 +170,7 @@ public final class TrayMenuActivity extends Activity {
   private void showMenu(List<TrayItem.MenuEntry> entries, int parentId) {
     if (isFinishing()) return;
     currentMenuParentId = parentId;
-    int surface = themeColor("colorSurface", FALLBACK_SURFACE);
-    int textColor = themeColor("colorOnSurface", FALLBACK_TEXT);
-    int mutedColor = themeColor("colorOnSurfaceVariant", FALLBACK_MUTED);
-    int borderColor = themeColor("colorOutline", FALLBACK_BORDER);
+    Palette palette = Palette.from(this);
     int screenWidth = screenWidth();
     int screenHeight = screenHeight();
     int maxWidth = Math.min(dp(360), screenWidth);
@@ -188,16 +180,16 @@ public final class TrayMenuActivity extends Activity {
     card.setOrientation(LinearLayout.VERTICAL);
     card.setPadding(dp(4), dp(5), dp(4), dp(5));
     GradientDrawable background = new GradientDrawable();
-    background.setColor(surface);
+    background.setColor(palette.surface);
     background.setCornerRadius(dp(8));
-    background.setStroke(dp(1), borderColor);
+    background.setStroke(dp(1), palette.outline);
     card.setBackground(background);
     card.setElevation(dp(8));
 
     TextView header = new TextView(this);
     header.setText(item.title == null || item.title.isEmpty() ? item.id : item.title);
     header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-    header.setTextColor(mutedColor);
+    header.setTextColor(palette.muted);
     header.setGravity(Gravity.CENTER_VERTICAL);
     header.setPadding(dp(12), 0, dp(12), 0);
     card.addView(header, new LinearLayout.LayoutParams(-1, dp(34)));
@@ -205,7 +197,7 @@ public final class TrayMenuActivity extends Activity {
       TextView back = new TextView(this);
       back.setText("‹  Back");
       back.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-      back.setTextColor(textColor);
+      back.setTextColor(palette.text);
       back.setGravity(Gravity.CENTER_VERTICAL);
       back.setPadding(dp(12), 0, dp(12), 0);
       back.setOnClickListener(view -> {
@@ -220,12 +212,12 @@ public final class TrayMenuActivity extends Activity {
     for (MenuViewModel.Node node : MenuViewModel.from(entries).children) {
       if (node.separator) {
         View line = new View(this);
-        line.setBackgroundColor(borderColor);
+        line.setBackgroundColor(palette.separator);
         LinearLayout.LayoutParams lineParams = new LinearLayout.LayoutParams(-1, dp(1));
         lineParams.setMargins(dp(10), dp(3), dp(10), dp(3));
         rows.addView(line, lineParams);
       } else {
-        rows.addView(createRow(node, textColor, mutedColor));
+        rows.addView(createRow(node, palette));
       }
     }
     ScrollView scroll = new ScrollView(this);
@@ -262,25 +254,28 @@ public final class TrayMenuActivity extends Activity {
     window.setAttributes(params);
   }
 
-  private View createRow(MenuViewModel.Node node, int textColor, int mutedColor) {
+  private View createRow(MenuViewModel.Node node, Palette palette) {
     LinearLayout row = new LinearLayout(this);
     row.setGravity(Gravity.CENTER_VERTICAL);
     row.setPadding(dp(8), 0, dp(8), 0);
     row.setMinimumHeight(dp(36));
-    row.setBackground(hoverBackground());
+    row.setBackground(hoverBackground(palette, node.enabled));
     row.setEnabled(node.enabled);
-    row.setAlpha(node.enabled ? 1f : 0.45f);
 
     View indicator = null;
     if ("checkmark".equals(node.toggleType)) {
       Switch toggle = new Switch(this);
       toggle.setChecked(node.toggleState == 1);
       toggle.setClickable(false);
+      toggle.setThumbTintList(android.content.res.ColorStateList.valueOf(
+          node.enabled ? palette.toggle : palette.disabled));
+      toggle.setTrackTintList(android.content.res.ColorStateList.valueOf(
+          node.enabled ? palette.toggleTrack : palette.disabled));
       indicator = toggle;
     } else if ("radio".equals(node.toggleType)) {
       TextView radio = new TextView(this);
       radio.setText(node.toggleState == 1 ? "●" : "○");
-      radio.setTextColor(textColor);
+      radio.setTextColor(node.enabled ? palette.text : palette.disabled);
       radio.setGravity(Gravity.CENTER);
       indicator = radio;
     } else if (node.icon != null || (node.iconName != null && !node.iconName.isEmpty())) {
@@ -290,6 +285,7 @@ public final class TrayMenuActivity extends Activity {
         IconThemeResolver.Result themed = IconThemeResolver.resolve(this, node.iconName, dp(18));
         if (themed.bitmap != null) icon.setImageBitmap(themed.bitmap);
       }
+      if (!node.enabled) icon.setColorFilter(palette.disabled);
       indicator = icon;
     }
     LinearLayout.LayoutParams indicatorParams = new LinearLayout.LayoutParams(dp(24), dp(24));
@@ -300,14 +296,14 @@ public final class TrayMenuActivity extends Activity {
     TextView label = new TextView(this);
     label.setText(node.label);
     label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-    label.setTextColor(textColor);
+    label.setTextColor(node.enabled ? palette.text : palette.disabled);
     label.setSingleLine(true);
     row.addView(label, new LinearLayout.LayoutParams(0, dp(36), 1));
     if (node.shortcut != null && !node.shortcut.isEmpty()) {
       TextView shortcut = new TextView(this);
       shortcut.setText(node.shortcut);
       shortcut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-      shortcut.setTextColor(mutedColor);
+      shortcut.setTextColor(node.enabled ? palette.muted : palette.disabled);
       shortcut.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
       shortcut.setPadding(dp(8), 0, dp(4), 0);
       row.addView(shortcut, new LinearLayout.LayoutParams(-2, dp(36)));
@@ -316,7 +312,7 @@ public final class TrayMenuActivity extends Activity {
       TextView arrow = new TextView(this);
       arrow.setText("›");
       arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-      arrow.setTextColor(mutedColor);
+      arrow.setTextColor(node.enabled ? palette.muted : palette.disabled);
       arrow.setGravity(Gravity.CENTER);
       row.addView(arrow, new LinearLayout.LayoutParams(dp(22), dp(36)));
     }
@@ -324,24 +320,45 @@ public final class TrayMenuActivity extends Activity {
     return row;
   }
 
-  private Drawable hoverBackground() {
+  private Drawable hoverBackground(Palette palette, boolean enabled) {
     GradientDrawable normal = new GradientDrawable();
-    normal.setColor(Color.TRANSPARENT);
+    normal.setColor(android.graphics.Color.TRANSPARENT);
     normal.setCornerRadius(dp(5));
     GradientDrawable hovered = new GradientDrawable();
-    hovered.setColor(themeColor("colorPrimary", 0xff414141));
+    hovered.setColor(palette.hover);
     hovered.setCornerRadius(dp(5));
     android.graphics.drawable.StateListDrawable states = new android.graphics.drawable.StateListDrawable();
-    states.addState(new int[] {android.R.attr.state_hovered}, hovered);
+    if (enabled) states.addState(new int[] {android.R.attr.state_hovered}, hovered);
     states.addState(new int[] {}, normal);
     return states;
   }
 
-  private int themeColor(String attribute, int fallback) {
-    int id = getResources().getIdentifier(attribute, "attr", "android");
-    if (id == 0) return fallback;
-    TypedValue value = new TypedValue();
-    return getTheme().resolveAttribute(id, value, true) ? value.data : fallback;
+  private static final class Palette {
+    final int surface;
+    final int text;
+    final int muted;
+    final int disabled;
+    final int outline;
+    final int separator;
+    final int hover;
+    final int toggle;
+    final int toggleTrack;
+
+    private Palette(android.content.res.Resources resources) {
+      surface = resources.getColor(R.color.tray_menu_surface, null);
+      text = resources.getColor(R.color.tray_menu_text, null);
+      muted = resources.getColor(R.color.tray_menu_muted, null);
+      disabled = resources.getColor(R.color.tray_menu_disabled, null);
+      outline = resources.getColor(R.color.tray_menu_outline, null);
+      separator = resources.getColor(R.color.tray_menu_separator, null);
+      hover = resources.getColor(R.color.tray_menu_hover, null);
+      toggle = resources.getColor(R.color.tray_menu_toggle, null);
+      toggleTrack = resources.getColor(R.color.tray_menu_toggle_track, null);
+    }
+
+    static Palette from(Context context) {
+      return new Palette(context.getResources());
+    }
   }
 
   private int screenWidth() {

@@ -3,5 +3,8 @@
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowCloseOnTouchOutside">true</item>
+        <item name="android:colorAccent">@color/tray_menu_toggle</item>
+        <item name="android:textColorPrimary">@color/tray_menu_text</item>
+        <item name="android:textColorSecondary">@color/tray_menu_muted</item>
     </style>
 </resources>
