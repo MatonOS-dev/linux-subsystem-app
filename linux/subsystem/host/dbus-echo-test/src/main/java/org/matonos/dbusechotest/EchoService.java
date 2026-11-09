@@ -1,5 +1,7 @@
 package org.matonos.dbusechotest;
 
+import org.matonos.dbus.DBusMessage;
+
 import android.app.Service;
 import android.content.Intent;
 import android.os.Binder;
@@ -48,18 +50,32 @@ public final class EchoService extends Service {
         int nextSerial = 1;
         try (ParcelFileDescriptor owned = socket) {
             FileOutputStream output = new FileOutputStream(owned.getFileDescriptor());
+            Log.i(TAG, "attached by uid=" + uid);
+            // Self-test: ask the stub's bus who owns our name; the reply proves the round trip.
+            int selfTest = nextSerial++;
+            DBusMessage.Message probe = new DBusMessage.Message();
+            probe.type = 1; probe.serial = selfTest; probe.path = "/org/freedesktop/DBus";
+            probe.iface = "org.freedesktop.DBus"; probe.member = "GetNameOwner";
+            probe.destination = "org.freedesktop.DBus"; probe.signature = "s"; probe.body.add(NAME);
+            write(output, probe);
             while (true) {
                 Packet packet = readPacket(owned.getFileDescriptor());
                 if (packet == null) return;
                 java.util.ArrayList<java.io.FileDescriptor> descriptors = new java.util.ArrayList<>();
                 for (ParcelFileDescriptor descriptor : packet.descriptors) descriptors.add(descriptor.getFileDescriptor());
-                PortalWire.Message call;
-                try { call = PortalWire.decode(packet.bytes, descriptors); }
+                DBusMessage.Message call;
+                try { call = DBusMessage.decode(packet.bytes, descriptors); }
                 catch (Exception e) { closeDescriptors(packet.descriptors); throw e; }
+                if ((call.type == 2 || call.type == 3) && call.replySerial == selfTest) {
+                    if (call.type == 2) Log.i(TAG, "self-test uid=" + uid + ": " + NAME + " owner=" + call.body);
+                    else Log.e(TAG, "self-test uid=" + uid + " failed: " + call.error + " " + call.body);
+                    closeDescriptors(packet.descriptors);
+                    continue;
+                }
                 if (call.type == 2 || call.type == 3) {
                     Integer requestSerial = callbacks.remove(call.replySerial);
                     if (requestSerial != null) {
-                        PortalWire.Message result;
+                        DBusMessage.Message result;
                         if (call.type == 3) {
                             result = response(3, requestSerial, call.error, "s", call.body.isEmpty() ? "D-Bus Peer.Ping failed" : call.body.get(0));
                         } else {
@@ -95,7 +111,7 @@ public final class EchoService extends Service {
                     if (!call.signature.isEmpty() || !call.body.isEmpty()) {
                         write(output, error(call, "org.freedesktop.DBus.Error.InvalidArgs", "Ping expects no arguments"));
                     } else {
-                        PortalWire.Message signal = new PortalWire.Message();
+                        DBusMessage.Message signal = new DBusMessage.Message();
                         signal.type = 4;
                         signal.path = PATH;
                         signal.iface = INTERFACE;
@@ -111,7 +127,7 @@ public final class EchoService extends Service {
                     } else {
                         int serial = nextSerial++;
                         callbacks.put(serial, call.serial);
-                        PortalWire.Message peerCall = new PortalWire.Message();
+                        DBusMessage.Message peerCall = new DBusMessage.Message();
                         peerCall.type = 1;
                         peerCall.serial = serial;
                         peerCall.path = "/";
@@ -170,12 +186,12 @@ public final class EchoService extends Service {
         catch (IOException e) { Log.e(TAG, "provider descriptor close failed", e); }
     }
 
-    private static PortalWire.Message response(PortalWire.Message request, String signature, Object value) {
+    private static DBusMessage.Message response(DBusMessage.Message request, String signature, Object value) {
         return response(2, request.serial, null, signature, value);
     }
 
-    private static PortalWire.Message response(int type, int replySerial, String error, String signature, Object value) {
-        PortalWire.Message message = new PortalWire.Message();
+    private static DBusMessage.Message response(int type, int replySerial, String error, String signature, Object value) {
+        DBusMessage.Message message = new DBusMessage.Message();
         message.type = type;
         message.replySerial = replySerial;
         message.error = error;
@@ -184,11 +200,11 @@ public final class EchoService extends Service {
         return message;
     }
 
-    private static PortalWire.Message error(PortalWire.Message request, String name, String text) {
+    private static DBusMessage.Message error(DBusMessage.Message request, String name, String text) {
         return response(3, request.serial, name, "s", text);
     }
 
-    private static void write(FileOutputStream output, PortalWire.Message message) throws IOException {
-        output.write(PortalWire.encode(message));
+    private static void write(FileOutputStream output, DBusMessage.Message message) throws IOException {
+        output.write(DBusMessage.encode(message));
     }
 }
