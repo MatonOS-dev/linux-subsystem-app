@@ -22,12 +22,17 @@ public final class TrayItem {
   public volatile String title = "";
   public volatile String status = "Active";
   public volatile String iconName = "";
+  public volatile String iconThemePath = "";
+  public volatile String attentionIconName = "";
+  public volatile String overlayIconName = "";
   public volatile String toolTip = "";
   public volatile String menuPath = "";
   public volatile boolean itemIsMenu;
   public volatile Bitmap icon;
   private final java.util.concurrent.ConcurrentHashMap<Integer, Bitmap> statusIcons =
       new java.util.concurrent.ConcurrentHashMap<>();
+  final java.util.concurrent.atomic.AtomicBoolean loggedInitialProperties =
+      new java.util.concurrent.atomic.AtomicBoolean();
   public volatile List<MenuEntry> menu = new ArrayList<>();
   TrayService.Bus bus;
 

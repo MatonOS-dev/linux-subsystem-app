@@ -398,6 +398,7 @@ public final class TrayService extends Service {
       return Set.of(
               "NewTitle",
               "NewIcon",
+              "NewIconThemePath",
               "NewAttentionIcon",
               "NewOverlayIcon",
               "NewToolTip",
@@ -429,6 +430,9 @@ public final class TrayService extends Service {
         i.title = str(p, "Title");
         i.status = str(p, "Status");
         i.iconName = str(p, "IconName");
+        i.iconThemePath = str(p, "IconThemePath");
+        i.attentionIconName = str(p, "AttentionIconName");
+        i.overlayIconName = str(p, "OverlayIconName");
         i.toolTip = tooltip(p.get("ToolTip"));
         i.menuPath = str(p, "Menu");
         i.itemIsMenu = bool(p, "ItemIsMenu", false);
@@ -453,6 +457,11 @@ public final class TrayService extends Service {
           refreshMenu(i.menuPath, i.owner);
         }
         changed(TrayService.this);
+        if (i.loggedInitialProperties.compareAndSet(false, true)) {
+          Log.i(TAG, "StatusNotifierItem registration attach=" + id + " uid=" + uid
+              + " service=" + i.service + " path=" + i.path + " IconName=" + i.iconName
+              + " IconThemePath=" + i.iconThemePath);
+        }
       } catch (Exception e) {
         Log.e(
             TAG,
