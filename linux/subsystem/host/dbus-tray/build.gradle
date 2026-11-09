@@ -1,0 +1,12 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'org.matonos.tray'
+    compileSdk 36
+    defaultConfig { applicationId 'org.matonos.tray'; minSdk 36; targetSdk 36 }
+    buildFeatures { aidl true }
+    sourceSets { main { java.srcDirs += file('../shared/src/main/java'); aidl.srcDirs += file('../shared/src/main/aidl') } }
+    testOptions { unitTests.returnDefaultValues = true }
+}
+
+dependencies { testImplementation 'junit:junit:4.13.2' }

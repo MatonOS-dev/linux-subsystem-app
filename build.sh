@@ -71,7 +71,7 @@ GRADLE=${MATON_GRADLE_HOME:-$HOME/Documents/gradle-9.4.1}/bin/gradle
 REAL_VERSION_CODE=$(( $(git -C "$ROOT" rev-list --count HEAD) + 2 ))
 [[ $REAL_VERSION_CODE -gt 1 ]] || { echo 'Real subsystem versionCode must be greater than bootstrap versionCode 1' >&2; exit 2; }
 "$GRADLE" -p "$ROOT/linux/subsystem/host" --no-daemon --project-cache-dir "$OUTPUT/gradle-cache" --max-workers "$MATON_BUILD_JOBS" \
-  -PrealVersionCode="$REAL_VERSION_CODE" :app:assembleRelease :dbus-echo-test:assembleDebug
+  -PrealVersionCode="$REAL_VERSION_CODE" :app:assembleRelease :dbus-echo-test:assembleDebug :dbus-tray:assembleDebug :dbus-tray:testDebugUnitTest
 SDK_TOOLS=$ANDROID_HOME/build-tools/36.0.0
 python3 "$ROOT/tools/prepare-host-apk.py" "$OUTPUT/gradle/app/outputs/apk/release/app-release.apk" "$OUTPUT/stored.apk"
 "$SDK_TOOLS/zipalign" -P 16 -f 4 "$OUTPUT/stored.apk" "$OUTPUT/aligned.apk"

@@ -1,4 +1,4 @@
-package org.matonos.dbusechotest;
+package org.matonos.dbus;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -7,11 +7,11 @@ import java.util.List;
  * Parses D-Bus type signatures. Plain recursive descent, one explicit switch:
  * no reflection and no annotations.
  */
-final class DBusSignature {
+public final class DBusSignature {
     private DBusSignature() { }
 
     /** Index just past the complete type that starts at {@code pos}. */
-    static int end(String signature, int pos) {
+    public static int end(String signature, int pos) {
         return end(signature, pos, 0, 0, pos > 0 && signature.charAt(pos - 1) == 'a');
     }
 
@@ -40,18 +40,18 @@ final class DBusSignature {
         return pos;
     }
 
-    static void valueType(String signature) {
+    public static void valueType(String signature) {
         if (end(signature, 0, 0, 0, true) != signature.length())
             throw new IllegalArgumentException("Expected one complete D-Bus type");
     }
 
-    static void single(String signature) {
+    public static void single(String signature) {
         if (end(signature, 0) != signature.length())
             throw new IllegalArgumentException("Expected one complete D-Bus type");
     }
 
     /** Split a signature into its top-level complete types. */
-    static List<String> split(String signature) {
+    public static List<String> split(String signature) {
         if (signature == null || signature.length() > 255)
             throw new IllegalArgumentException("Invalid D-Bus signature");
         List<String> out = new ArrayList<>();
@@ -64,7 +64,7 @@ final class DBusSignature {
     }
 
     /** Byte alignment of the first byte of a complete type. */
-    static int alignment(char type) {
+    public static int alignment(char type) {
         switch (type) {
             case 'y': case 'g': case 'v': return 1;
             case 'n': case 'q': return 2;

@@ -5,5 +5,5 @@ android {
     compileSdk 36
     defaultConfig { applicationId 'org.matonos.dbusechotest'; minSdk 36; targetSdk 36 }
     buildFeatures { aidl true }
-    sourceSets { main { aidl.srcDirs += file('../shared/src/main/aidl') } }
+    sourceSets { main { java.srcDirs += file('../shared/src/main/java'); aidl.srcDirs += file('../shared/src/main/aidl') } }
 }

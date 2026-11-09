@@ -4,3 +4,4 @@ rootProject.name = "MatonLinuxSubsystem"
 include(":app")
 include(":bootstrap")
 include(":dbus-echo-test")
+include(":dbus-tray")

@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="D-Bus Tray Debug">
+        <activity android:name=".TrayActivity" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
+        <service android:name=".TrayService" android:exported="true">
+            <intent-filter><action android:name="org.matonos.dbus.SERVICE"/></intent-filter>
+            <meta-data android:name="org.matonos.dbus.NAMES" android:value="org.kde.StatusNotifierWatcher"/>
+        </service>
+    </application>
+</manifest>

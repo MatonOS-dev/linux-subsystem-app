@@ -1,4 +1,4 @@
-package org.matonos.dbusechotest;
+package org.matonos.dbus;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
@@ -11,43 +11,43 @@ import java.util.List;
  * Reads little- or big-endian D-Bus values with bounds checks. Explicit
  * per-type switch, no reflection.
  */
-final class DBusReader {
+public final class DBusReader {
     // D-Bus limits nested containers to 32 levels.
     private static final int MAX_DEPTH = 32;
 
     private final byte[] data;
     private int pos;
     private int limit;
-    boolean littleEndian = true;
+    public boolean littleEndian = true;
 
-    DBusReader(byte[] data) { this.data = data; this.limit = data.length; }
+    public DBusReader(byte[] data) { this.data = data; this.limit = data.length; }
 
-    void limit(int next) {
+    public void limit(int next) {
         if (next < pos || next > data.length) throw new IllegalArgumentException("Invalid read limit");
         limit = next;
     }
 
-    int position() { return pos; }
+    public int position() { return pos; }
 
-    void position(int next) {
+    public void position(int next) {
         if (next < 0 || next > limit)
             throw new IllegalArgumentException("D-Bus read out of bounds");
         pos = next;
     }
 
-    void align(int alignment) {
+    public void align(int alignment) {
         int pad = (alignment - (pos % alignment)) % alignment;
         check(pad);
         for (int i = 0; i < pad; i++)
             if (data[pos++] != 0) throw new IllegalArgumentException("Nonzero D-Bus padding");
     }
 
-    int u8() {
+    public int u8() {
         check(1);
         return data[pos++] & 255;
     }
 
-    int i16() {
+    public int i16() {
         align(2);
         check(2);
         int first = data[pos] & 255, second = data[pos + 1] & 255;
@@ -55,7 +55,7 @@ final class DBusReader {
         return littleEndian ? (short) (first | (second << 8)) : (short) ((first << 8) | second);
     }
 
-    long u32() {
+    public long u32() {
         align(4);
         check(4);
         long value = 0;
@@ -65,9 +65,9 @@ final class DBusReader {
         return value;
     }
 
-    int i32() { return (int) u32(); }
+    public int i32() { return (int) u32(); }
 
-    long i64() {
+    public long i64() {
         align(8);
         check(8);
         long value = 0;
@@ -99,7 +99,7 @@ final class DBusReader {
         return value;
     }
 
-    String signature() {
+    public String signature() {
         int n = u8();
         check(n + 1);
         String value = new String(data, pos, n, StandardCharsets.US_ASCII);
@@ -109,7 +109,7 @@ final class DBusReader {
         return value;
     }
 
-    Object value(String signature, int depth) {
+    public Object value(String signature, int depth) {
         if (depth > MAX_DEPTH)
             throw new IllegalArgumentException("D-Bus value too deeply nested");
         DBusSignature.valueType(signature);
@@ -131,7 +131,7 @@ final class DBusReader {
             case 'v': {
                 String inner = signature();
                 DBusSignature.single(inner);
-                return new PortalWire.Variant(inner, value(inner, depth + 1));
+                return new DBusVariant(inner, value(inner, depth + 1));
             }
             case 'a': return readArray(signature.substring(1), depth);
             case '(': case '{': return readStruct(signature, depth);

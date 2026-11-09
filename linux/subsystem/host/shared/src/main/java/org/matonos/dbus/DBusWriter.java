@@ -1,4 +1,4 @@
-package org.matonos.dbusechotest;
+package org.matonos.dbus;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -9,22 +9,22 @@ import java.util.List;
  *
  * <p>Values use plain Java types: {@code Integer} for y/n/q/i/u/h, {@code Boolean}
  * for b, {@code Long} for x/t, {@code Double} for d, {@code String} for s/o/g,
- * {@code List} for arrays and structs, and {@link PortalWire.Variant} for v.
+ * {@code List} for arrays and structs, and {@link DBusVariant} for v.
  */
-final class DBusWriter {
+public final class DBusWriter {
     private byte[] data = new byte[256];
     private int size;
 
-    int size() { return size; }
+    public int size() { return size; }
 
-    byte[] toBytes() { return Arrays.copyOf(data, size); }
+    public byte[] toBytes() { return Arrays.copyOf(data, size); }
 
-    void u8(int value) {
+    public void u8(int value) {
         need(1);
         data[size++] = (byte) value;
     }
 
-    void align(int alignment) {
+    public void align(int alignment) {
         int pad = (alignment - (size % alignment)) % alignment;
         need(pad);
         size += pad;
@@ -37,7 +37,7 @@ final class DBusWriter {
         data[size++] = (byte) (value >> 8);
     }
 
-    void i32(int value) {
+    public void i32(int value) {
         align(4);
         need(4);
         for (int i = 0; i < 4; i++) data[size++] = (byte) (value >> (8 * i));
@@ -71,17 +71,17 @@ final class DBusWriter {
     }
 
     /** Overwrite the little-endian uint32 that starts at {@code at}. */
-    void patchU32(int at, int value) {
+    public void patchU32(int at, int value) {
         for (int i = 0; i < 4; i++) data[at + i] = (byte) (value >> (8 * i));
     }
 
-    void variant(String signature, Object value) {
+    public void variant(String signature, Object value) {
         DBusSignature.single(signature);
         signature(signature);
         value(signature, value);
     }
 
-    void value(String signature, Object value) {
+    public void value(String signature, Object value) {
         DBusSignature.valueType(signature);
         char type = signature.charAt(0);
         switch (type) {
@@ -94,7 +94,7 @@ final class DBusWriter {
             case 's': case 'o': string((String) value); return;
             case 'g': signature((String) value); return;
             case 'v': {
-                PortalWire.Variant variant = (PortalWire.Variant) value;
+                DBusVariant variant = (DBusVariant) value;
                 variant(variant.signature, variant.value);
                 return;
             }

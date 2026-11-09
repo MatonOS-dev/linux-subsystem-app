@@ -1,4 +1,5 @@
-package org.matonos.dbusechotest;
+package org.matonos.dbus;
+
 
 import java.io.FileDescriptor;
 import java.nio.ByteBuffer;
@@ -15,29 +16,25 @@ import java.util.Map;
  * (eight bytes: little-endian payload length and descriptor count) is validated
  * here; framing and descriptor passing live in the transport.
  */
-final class PortalWire {
+public final class DBusMessage {
     /** Java arrays are int-indexed; the wire length itself is unsigned 32-bit. */
-    static final int MAX_MESSAGE = Integer.MAX_VALUE;
+    public static final int MAX_MESSAGE = Integer.MAX_VALUE;
     /** Linux SCM_RIGHTS accepts at most SCM_MAX_FD descriptors per message. */
-    static final int MAX_FDS = 253;
+    public static final int MAX_FDS = 253;
 
     /** One (signature, value) pair; the value model is documented on DBusWriter. */
-    static final class Variant {
-        final String signature;
-        final Object value;
-        Variant(String signature, Object value) { this.signature = signature; this.value = value; }
-    }
+
 
     /** A decoded or to-be-encoded D-Bus message. */
-    static final class Message {
-        int type, flags, serial, replySerial, fdCount;
-        String path, iface, member, error, destination, sender, signature = "";
-        List<Object> body = new ArrayList<>();
-        List<FileDescriptor> fds = Collections.emptyList();
+    public static final class Message {
+        public int type, flags, serial, replySerial, fdCount;
+        public String path, iface, member, error, destination, sender, signature = "";
+        public List<Object> body = new ArrayList<>();
+        public List<FileDescriptor> fds = Collections.emptyList();
     }
 
     /** Validate the MBP1 frame header; returns {payloadLength, descriptorCount}. */
-    static int[] validateFrameHeader(byte[] header) {
+    public static int[] validateFrameHeader(byte[] header) {
         if (header.length != 8) throw new IllegalArgumentException("Invalid portal frame header");
         ByteBuffer b = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
         int size = b.getInt(), fds = b.getInt();
@@ -46,11 +43,11 @@ final class PortalWire {
         return new int[] { size, fds };
     }
 
-    static Message decode(byte[] bytes) {
+    public static Message decode(byte[] bytes) {
         return decode(bytes, Collections.emptyList());
     }
 
-    static Message decode(byte[] bytes, List<FileDescriptor> descriptors) {
+    public static Message decode(byte[] bytes, List<FileDescriptor> descriptors) {
         if (bytes.length < 16 || bytes.length > MAX_MESSAGE)
             throw new IllegalArgumentException("Invalid message size");
         DBusReader reader = new DBusReader(bytes);
@@ -128,7 +125,7 @@ final class PortalWire {
         return message;
     }
 
-    static byte[] encode(Message message) {
+    public static byte[] encode(Message message) {
         List<String> parts = (message.signature == null || message.signature.isEmpty())
                 ? Collections.emptyList() : DBusSignature.split(message.signature);
         if (parts.size() != message.body.size())
@@ -173,16 +170,16 @@ final class PortalWire {
         writer.variant(signature, value);
     }
 
-    static Map<String, Variant> dictionary(Object array) {
-        Map<String, Variant> result = new LinkedHashMap<>();
+    public static Map<String, DBusVariant> dictionary(Object array) {
+        Map<String, DBusVariant> result = new LinkedHashMap<>();
         for (Object entry : (List<?>) array) {
             List<?> pair = (List<?>) entry;
-            result.put((String) pair.get(0), (Variant) pair.get(1));
+            result.put((String) pair.get(0), (DBusVariant) pair.get(1));
         }
         return result;
     }
 
-    static List<Object> dictionary(Map<String, Variant> values) {
+    public static List<Object> dictionary(Map<String, DBusVariant> values) {
         List<Object> result = new ArrayList<>();
         values.forEach((key, value) -> result.add(java.util.Arrays.asList(key, value)));
         return result;
