@@ -295,7 +295,8 @@ EOF
 # without calling them. ShmAttachFd and ShmCreateSegment carry a memfd over
 # SCM_RIGHTS (SHM_FD_PASSING from XTRANS_SEND_FDS) and mmap it, so clients
 # that speak MIT-SHM 1.2 still get shared-memory image transfers.
-[[ -d $SRC/xwayland-24.1.13 ]] || tar -xf "$DOWN/xwayland-24.1.13.tar.xz" -C "$SRC"
+rm -rf "$SRC/xwayland-24.1.13"  # fresh tree: edited patches must apply cleanly
+tar -xf "$DOWN/xwayland-24.1.13.tar.xz" -C "$SRC"
 GLX_PATCH=$ROOT/xwayland-egl-glx.patch
 if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$GLX_PATCH" >/dev/null 2>&1; then
   patch --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$GLX_PATCH"
