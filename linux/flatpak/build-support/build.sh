@@ -174,7 +174,7 @@ meson setup "$BUILD/bubblewrap" "$SRC/bubblewrap" $MCOMMON -Dtests=false -Dman=d
 "$NINJA" -C "$BUILD/bubblewrap" -j "$JOBS"
 
 mkdir -p "$BUILD/libarchive"; cd "$BUILD/libarchive"
-"$SRC/libarchive/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --disable-shared --enable-static --without-openssl --without-nettle --without-mbedtls --without-lzo2 --without-bz2lib --without-lz4 --without-zstd --without-xml2 CPPFLAGS="$CPPFLAGS" CFLAGS="$CFLAGS"
+"$SRC/libarchive/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --disable-shared --enable-static --without-openssl --without-nettle --without-mbedtls --without-lzo2 --without-bz2lib --without-lz4 --without-zstd --without-xml2 --disable-acl CPPFLAGS="$CPPFLAGS" CFLAGS="$CFLAGS"
 make -j"$JOBS"; make install; stage_metadata
 mkdir -p "$BUILD/curl"; cd "$BUILD/curl"
 "$SRC/curl/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --sysconfdir=/etc --localstatedir=/var --disable-shared --enable-static --with-ssl="$PREFIX" --with-zlib="$MUSL_PREFIX" --with-ca-path=/apex/com.android.conscrypt/cacerts --without-ca-bundle --without-ca-fallback --disable-ftp --enable-file --disable-websockets --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet --disable-tftp --disable-pop3 --disable-imap --disable-smb --disable-smtp --disable-gopher --disable-mqtt --without-libssh2 --without-nghttp2 --without-libidn2 --without-libpsl --without-brotli CFLAGS="$CFLAGS" CPPFLAGS="$CPPFLAGS" LDFLAGS="$LDFLAGS -lstdc++ -pthread" LIBS='-lstdc++ -pthread'
