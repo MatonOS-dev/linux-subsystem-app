@@ -973,6 +973,8 @@ void proxy_log(const char *kind,long nr,long result) {
 }
 static volatile int grave_depth;
 void proxy_close_grave(long nr,long first,long last,const char *file,int line) {
+    /* Per-close lines flood logcat; only under tracing. */
+    if(!proxy_trace)return;
     /* The log channel may close fds while opening; skip nested graves. */
     if(__atomic_fetch_add(&grave_depth,1,__ATOMIC_ACQ_REL)){__atomic_fetch_sub(&grave_depth,1,__ATOMIC_ACQ_REL);return;}
     const char *base=file;for(const char *p=file;*p;p++)if(*p=='/')base=p+1;
@@ -2212,6 +2214,7 @@ static int termios2_call(proxy_arg_t *a,long *result) {
  * close loop, so split the range around the small set of live protected fds. */
 static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
     if(first>last || (flags&~6u))return -EINVAL;
+    long result=0;
     long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/fd",O_RDONLY|O_DIRECTORY|O_CLOEXEC,0,0,0);
     if(fd<0)return fd;
     unsigned protected[256],count=0;
@@ -2232,7 +2235,7 @@ static long payload_close_range(unsigned first,unsigned last,unsigned flags) {
             }
         }
     }
-    unsigned cursor=first;int unshared=0;long result=0;
+    unsigned cursor=first;int unshared=0;
     if(n<0)goto done;
     for(unsigned i=1;i<count;i++){unsigned value=protected[i],j=i;while(j && protected[j-1]>value){protected[j]=protected[j-1];j--;}protected[j]=value;}
     for(unsigned i=0;i<count;i++){

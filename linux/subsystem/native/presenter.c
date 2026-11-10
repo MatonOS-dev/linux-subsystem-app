@@ -34,6 +34,7 @@ struct Layer {
   struct wlr_buffer* shown_source; /* client buffer the shm copy was made from (compared only) */
   uint32_t shown_seq;             /* surface commit the shm copy was made from */
   bool content_dirty;             /* a commit attached a buffer since the last shm copy */
+  bool described;                 /* first-buffer debug line written */
   bool visible, seen;
   /* Copies of shared-memory content; each is locked while SurfaceFlinger holds it. */
   struct PoolBuffer* pool;
@@ -305,6 +306,11 @@ static void present_node(struct wlr_scene_buffer* node, int sx, int sy, void* da
   if (!opaque) {
     pixman_box32_t whole = {0, 0, width, height};
     opaque = pixman_region32_contains_rectangle(&node->opaque_region, &whole) == PIXMAN_REGION_IN;
+  }
+  if (!l->described) {
+    l->described = true;
+    __android_log_print(ANDROID_LOG_DEBUG, "MatonPresenter", "layer first buffer %dx%d at %d,%d %s opaque=%d opacity=%.2f",
+        buffer->width, buffer->height, sx, sy, ahb ? "ahb" : "shm", opaque, node->opacity);
   }
   enum ASurfaceTransactionTransparency transparency = opaque && node->opacity >= 1.0f
       ? ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE : ASURFACE_TRANSACTION_TRANSPARENCY_TRANSLUCENT;

@@ -148,9 +148,9 @@
 +#include "misync.h"
 +#include "misyncstr.h"
 +
-+/* Every close leaves a gravestone naming its call site. */
-+#define MATON_CLOSE(fd) do { int maton_fd_ = (fd); \
-+    ErrorF("maton-ahb: close fd=%d at %s:%d\n", maton_fd_, __FILE__, __LINE__); close(maton_fd_); } while (0)
++#define MATON_CLOSE(fd) close(fd)
++
++
 +
 +struct ahb_screen {
 +    struct maton_ahb_buffer_manager_v1 *manager;
