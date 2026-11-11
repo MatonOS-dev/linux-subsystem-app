@@ -55,9 +55,27 @@ final class V3Launcher {
     private static void notifyLaunchStatusChanged() {
         for (Runnable listener : statusListeners) listener.run();
     }
-    static synchronized JSONObject launch(Context context, String ref)
+    /** The app's metadata command= (what its desktop entry runs). */
+    private static String appCommand;
+    static boolean running() { synchronized (V3Launcher.class) { return process != null; } }
+    static JSONObject launch(Context context, String ref) throws Exception {
+        return launch(context, ref, java.util.Collections.emptyList());
+    }
+    /** Starts the app with args; a running app gets args the desktop way:
+     * its command re-run with them inside the live sandbox. */
+    static synchronized JSONObject launch(Context context, String ref, java.util.List<String> args)
             throws Exception {
-        if (process != null) return getLaunchStatus();
+        if (process != null) {
+            if (!args.isEmpty()) {
+                if (appCommand == null) throw new IllegalStateException("The app metadata names no command to pass the link to");
+                PerAppRuntime live = StubService.runtime();
+                if (live == null) throw new IllegalStateException("Application runtime is unavailable");
+                java.util.List<String> argv = new ArrayList<>();
+                argv.add(appCommand); argv.addAll(args);
+                live.runInSandbox(argv);
+            }
+            return getLaunchStatus();
+        }
         if (ref == null || !ref.matches("app/[A-Za-z0-9_.-]+/x86_64/[A-Za-z0-9_.-]+"))
             throw new IllegalArgumentException("Invalid application reference");
         // PackageManager follows signature-verified updates of the image host.
@@ -127,6 +145,7 @@ final class V3Launcher {
             if(entry.record.ref.startsWith("runtime/org.freedesktop.Platform/x86_64/")) {
                 runtimeMetadata=new String(entry.record.metadata,StandardCharsets.UTF_8);break;
             }
+        appCommand=metadataCommand(packages.get(0).record.metadata);
         Context host=context.createPackageContext("org.matonos.linux",0);
         boolean matonGlEnabled=runtimeMetadata!=null;
         File deployment=PackageDeployment.prepare(context,ref);
@@ -213,6 +232,7 @@ final class V3Launcher {
         File x11Dir=new File(runtime.directory(),"x11");
         if(x11Dir.isDirectory())command.add("--filesystem="+x11Dir.getAbsolutePath());
         command.add(ref.substring(4));
+        command.addAll(args);
         ProcessBuilder builder = new ProcessBuilder(command);
         Map<String, String> env = builder.environment();
         env.clear();
@@ -294,6 +314,19 @@ final class V3Launcher {
             synchronized (V3Launcher.class) { error = "Interrupted while waiting for Linux payload tree"; }
             notifyLaunchStatusChanged();
         }
+    }
+
+    static String metadataCommand(byte[] metadata) {
+        boolean application=false;
+        for (String line : new String(metadata, StandardCharsets.UTF_8).split("\n")) {
+            line=line.trim();
+            if (line.startsWith("[")) application=line.equals("[Application]");
+            else if (application && line.startsWith("command=")) {
+                String command=line.substring(8).trim();
+                return command.isEmpty()?null:command;
+            }
+        }
+        return null;
     }
 
     private static void drain(java.io.InputStream stream,boolean stderr,CountDownLatch complete) {

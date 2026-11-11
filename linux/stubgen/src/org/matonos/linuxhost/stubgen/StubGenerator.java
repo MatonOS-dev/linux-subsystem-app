@@ -369,6 +369,8 @@ public final class StubGenerator {
 
     public static String launcherSplitName(String label,List<String> mimeTypes,byte[] iconPng,byte[] monochromePng) throws Exception {
         java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
+        // Manifest format: bump when launcherManifest's output changes for the same inputs.
+        update(hash,"launcher-format-2".getBytes(StandardCharsets.UTF_8));
         update(hash,cleanLabel(label).getBytes(StandardCharsets.UTF_8));
         for(String mime:cleanMimeTypes(mimeTypes)) update(hash,mime.getBytes(StandardCharsets.UTF_8));
         update(hash,iconPng);
@@ -492,6 +494,14 @@ public final class StubGenerator {
 
 
     /** De-duplicated, syntactically valid MIME type list. */
+    /** The URL scheme of an x-scheme-handler/<scheme> type (RFC 3986,
+     * lower-cased as Android matches it), else null. */
+    static String urlScheme(String mime) {
+        if (!mime.regionMatches(true, 0, "x-scheme-handler/", 0, 17)) return null;
+        String scheme = mime.substring(17).toLowerCase(java.util.Locale.ROOT);
+        return scheme.matches("[a-z][a-z0-9+.-]*") ? scheme : null;
+    }
+
     public static List<String> cleanMimeTypes(List<String> mimeTypes) {
         List<String> clean = new ArrayList<>();
         if (mimeTypes == null) return clean;
@@ -903,8 +913,8 @@ public final class StubGenerator {
         byte[] launcherManifest(String split,String launcherLabel,List<String> mimeTypes,int iconId) throws IOException {
             for (String s : Arrays.asList("targetActivity","activity-alias","data","android.intent.action.VIEW",
                     "android.intent.action.MAIN","android.intent.category.LAUNCHER","android.intent.category.DEFAULT",
-                    HOST_ACTIVITY,pkg,launcherLabel)) str(s);
-            for (String mime:mimeTypes) str(mime);
+                    HOST_ACTIVITY,pkg,launcherLabel,"scheme","android.intent.category.BROWSABLE")) str(s);
+            for (String mime:mimeTypes) str(urlScheme(mime)!=null?urlScheme(mime):mime);
             namespace(true);
             start("manifest",null,attrs(a("package",pkg),a("split",split),ai("versionCode",STUB_VERSION_CODE),ai("revisionCode",revisionCode)));
             startEnd("uses-sdk",attrs(ai("minSdkVersion",30),ai("targetSdkVersion",36)));
@@ -917,10 +927,14 @@ public final class StubGenerator {
             startEnd("category",attrs(a("name","android.intent.category.LAUNCHER")));
             end("intent-filter");
             for(String mime:mimeTypes) {
+                // x-scheme-handler/<scheme> is the desktop's URL handler
+                // type: Android matches links by scheme, not MIME type.
+                String scheme=urlScheme(mime);
                 start("intent-filter",null,attrs());
                 startEnd("action",attrs(a("name","android.intent.action.VIEW")));
                 startEnd("category",attrs(a("name","android.intent.category.DEFAULT")));
-                startEnd("data",attrs(a("mimeType",mime)));
+                if(scheme!=null)startEnd("category",attrs(a("name","android.intent.category.BROWSABLE")));
+                startEnd("data",attrs(scheme!=null?a("scheme",scheme):a("mimeType",mime)));
                 end("intent-filter");
             }
             end("activity-alias");
@@ -979,7 +993,7 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "targetActivity", "versionCode", "revisionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "scheme", "targetActivity", "versionCode", "revisionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
@@ -996,7 +1010,7 @@ public final class StubGenerator {
                 case "drawable": return 0x01010199; case "icon": return 0x01010002; case "name": return 0x01010003; case "label": return 0x01010001; case "exported": return 0x01010010; case "enabled": return 0x0101000e;
                 case "hasCode": return 0x0101000c; case "required": return 0x0101028e; case "value": return 0x01010024;
                 case "revisionCode": return 0x010104d5;
-                case "mimeType": return 0x01010026; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
+                case "mimeType": return 0x01010026; case "scheme": return 0x01010027; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
                 case "targetActivity": return 0x01010202;
                 case "minSdkVersion": return 0x0101020c; case "targetSdkVersion": return 0x01010270; default: return 0;
             }

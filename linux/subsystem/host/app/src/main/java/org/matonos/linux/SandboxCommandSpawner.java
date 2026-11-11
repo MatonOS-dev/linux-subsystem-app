@@ -45,6 +45,8 @@ final class SandboxCommandSpawner implements HostCommandBackend.Spawner {
             socket.setSoTimeout(0);return new Child(socket,pid);
         }catch(Exception e){socket.close();throw e;}
     }
+    /** Drops this client's socket path; unlike close(), the sandbox server keeps running. */
+    void release(){try{shortPath.close();}catch(IOException ignored){}}
     @Override public void close(){
         try(LocalSocket socket=new LocalSocket()){
             socket.connect(new LocalSocketAddress(shortPath.path("host-command"),LocalSocketAddress.Namespace.FILESYSTEM));

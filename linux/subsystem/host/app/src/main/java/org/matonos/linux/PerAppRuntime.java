@@ -170,6 +170,26 @@ public final class PerAppRuntime implements AutoCloseable {
 
     public synchronized boolean hasWindows() { return !windows.isEmpty(); }
     public synchronized boolean hasWindow(int id) { return windows.containsKey(id); }
+    /** Runs argv inside the app's live sandbox, as re-running the app's
+     * desktop entry does on a desktop (single-instance apps forward it). */
+    public void runInSandbox(java.util.List<String> argv) throws Exception {
+        java.util.List<byte[]> args=new java.util.ArrayList<>();
+        for(String arg:argv){
+            if(arg.indexOf(0)>=0)throw new IllegalArgumentException("NUL in sandbox command argument");
+            args.add((arg+"\0").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        SandboxCommandSpawner spawner=new SandboxCommandSpawner(directory);
+        HostCommandBackend.Child child;
+        try{child=spawner.spawn(new byte[]{0},args,java.util.Collections.emptyMap(),java.util.Collections.emptyMap(),0);}
+        finally{spawner.release();}
+        new Thread(()->{
+            try{
+                int status=child.waitStatus();
+                if(status!=0)android.util.Log.e("MatonStub","Sandbox command "+argv.get(0)+" exited with wait status "+status);
+            }catch(Exception error){android.util.Log.e("MatonStub","Lost sandbox command "+argv.get(0),error);}
+            finally{child.close();}
+        },"sandbox-command").start();
+    }
 
     public void attach(int id, Surface surface, int width, int height) { NativeCompositor.nativeAttach(id, surface, width, height); }
     public void detach(int id) { NativeCompositor.nativeDetach(id); }

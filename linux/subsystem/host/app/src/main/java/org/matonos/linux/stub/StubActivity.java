@@ -247,19 +247,35 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
                 }
                 if (destroyed) return;
                 if (runtime==null) throw new IllegalStateException("The app runtime did not become ready");
+                java.util.List<String> args=linkArguments(getIntent());
+                // A link for a running app goes to the app; this activity
+                // never becomes a window host.
+                if (!args.isEmpty() && window==0 && V3Launcher.running()) {
+                    V3Launcher.launch(this, ref, args);
+                    runOnUiThread(this::finish);
+                    return;
+                }
                 runtime.setWindowHost(this, window);
                 runOnUiThread(() -> {
                     if (!destroyed && window!=0) { if(view==null)showWindow(window);else attachIfReady(); }
                 });
                 V3Launcher.progress=this::message;
                 JSONObject result;
-                try { result=V3Launcher.launch(this, ref); }
+                try { result=V3Launcher.launch(this, ref, args); }
                 finally { V3Launcher.progress=null; }
                 if (!result.optBoolean("ok")) { message(result.optString("error","Application could not start"));return; }
                 message("Waiting for the application window…");
                 MAIN.postDelayed(noWindowNotice, 30_000);
             } catch(Exception error) { failure("Cannot start application",error); }
         }, "flatpak-stub-launch").start();
+    }
+    /** A VIEW link for a URL scheme the app's desktop entry handles
+     * (x-scheme-handler). Document URIs (content:, file:) are not passed. */
+    static java.util.List<String> linkArguments(Intent intent) {
+        android.net.Uri data=intent==null||!Intent.ACTION_VIEW.equals(intent.getAction())?null:intent.getData();
+        String scheme=data==null?null:data.getScheme();
+        if(scheme==null||scheme.equals("content")||scheme.equals("file"))return java.util.Collections.emptyList();
+        return java.util.Collections.singletonList(data.toString());
     }
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
