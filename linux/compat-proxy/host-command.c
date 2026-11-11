@@ -125,6 +125,15 @@ static int hc_children(int killing) {
     if(child){if(killing)RAW(PROXY_SC_kill,child,SIGKILL,0,0,0,0);count++;}
     RAW(PROXY_SC_close,fd,0,0,0,0,0);return count;
 }
+/* Report a failed request to the client and end this worker. */
+static __attribute__((noreturn)) void hc_fail(int socket,int error) {
+    if(error>=0)error=-EINVAL;
+    hc_io(socket,&error,4,1);RAW(PROXY_SC_exit_group,1,0,0,0,0,0);__builtin_unreachable();
+}
+/* Report a pre-exec child failure through the ready pipe and exit. */
+static __attribute__((noreturn)) void hc_child_fail(int ready,int error) {
+    proxy_internal_write(ready,&error,4);RAW(PROXY_SC_exit_group,127,0,0,0,0,0);__builtin_unreachable();
+}
 static void hc_worker(int socket,char *const *original,long server) {
     hc_parent(server);
     int received[HC_FDS],nfds=0;uint32_t header[6]={0};
@@ -133,42 +142,42 @@ static void hc_worker(int socket,char *const *original,long server) {
     struct timeval timeout={3,0};RAW(PROXY_SC_setsockopt,socket,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout),0);
     long n=RAW(PROXY_SC_recvmsg,socket,&msg,MSG_CMSG_CLOEXEC,0,0,0);int error=-EINVAL;
     for(size_t off=0;off+sizeof(struct cmsghdr)<=msg.msg_controllen;){
-        struct cmsghdr *c=(void *)(control+off);if(c->cmsg_len<sizeof(*c)||c->cmsg_len>msg.msg_controllen-off)goto fail;
+        struct cmsghdr *c=(void *)(control+off);if(c->cmsg_len<sizeof(*c)||c->cmsg_len>msg.msg_controllen-off)hc_fail(socket,error);
         off+=CMSG_ALIGN(c->cmsg_len);if(c->cmsg_level!=SOL_SOCKET||c->cmsg_type!=SCM_RIGHTS)continue;
         size_t count=(c->cmsg_len-CMSG_LEN(0))/sizeof(int);if(count>HC_FDS)count=HC_FDS;
-        if(nfds+(int)count>HC_FDS)goto fail;
+        if(nfds+(int)count>HC_FDS)hc_fail(socket,error);
         p_copy(received+nfds,CMSG_DATA(c),count*sizeof(int));nfds+=(int)count;
     }
-    if(n>0&&n<(long)sizeof(header)){if(hc_io(socket,(char *)header+n,sizeof(header)-(size_t)n,0))goto fail;}
-    else if(n!=(long)sizeof(header))goto fail;
+    if(n>0&&n<(long)sizeof(header)){if(hc_io(socket,(char *)header+n,sizeof(header)-(size_t)n,0))hc_fail(socket,error);}
+    else if(n!=(long)sizeof(header))hc_fail(socket,error);
     /* Private runtime shutdown, authenticated by the listener UID check. */
     if(header[0]==0x314d4348&&!header[1]&&!header[2]&&!header[3]&&!header[4]&&header[5]==4&&!nfds){RAW(PROXY_SC_kill,server,SIGTERM,0,0,0,0);RAW(PROXY_SC_exit_group,0,0,0,0,0,0);}
     /* HCM1, body size, argc, envc, fd count, flags. */
     if(header[0]!=0x314d4348||!header[2]||(uint64_t)header[2]+header[3]>header[1]||
-       header[4]!=(unsigned)nfds||header[5]&~3u||msg.msg_flags&MSG_CTRUNC)goto fail;
-    error=(int)RAW(PROXY_SC_prctl,PR_SET_CHILD_SUBREAPER,1,0,0,0,0);if(error)goto fail;
-    error=hc_children(0);if(error<0)goto fail;
-    char *body=vfs_alloc(header[1]);if(!body){error=-ENOMEM;goto fail;}
-    if(hc_io(socket,body,header[1],0))goto fail;
+       header[4]!=(unsigned)nfds||header[5]&~3u||msg.msg_flags&MSG_CTRUNC)hc_fail(socket,error);
+    error=(int)RAW(PROXY_SC_prctl,PR_SET_CHILD_SUBREAPER,1,0,0,0,0);if(error)hc_fail(socket,error);
+    error=hc_children(0);if(error<0)hc_fail(socket,error);
+    char *body=vfs_alloc(header[1]);if(!body){error=-ENOMEM;hc_fail(socket,error);}
+    if(hc_io(socket,body,header[1],0))hc_fail(socket,error);
     char *p=body,*end=body+header[1];
-    unsigned targets[HC_FDS];for(int i=0;i<nfds;i++){if(end-p<4)goto fail;p_copy(&targets[i],p,4);p+=4;if(targets[i]>INT_MAX||vfs_private_fd((int)targets[i]))goto fail;for(int j=0;j<i;j++)if(targets[i]==targets[j])goto fail;}
-    char *cwd=hc_next(&p,end);if(!cwd)goto fail;
-    if((uint64_t)header[2]+1>SIZE_MAX/sizeof(char *)) {error=-EOVERFLOW;goto fail;}
-    char **argv=vfs_alloc(((size_t)header[2]+1)*sizeof(char *));if(!argv){error=-ENOMEM;goto fail;}
-    for(unsigned i=0;i<header[2];i++){argv[i]=hc_next(&p,end);if(!argv[i])goto fail;}argv[header[2]]=NULL;
+    unsigned targets[HC_FDS];for(int i=0;i<nfds;i++){if(end-p<4)hc_fail(socket,error);p_copy(&targets[i],p,4);p+=4;if(targets[i]>INT_MAX||vfs_private_fd((int)targets[i]))hc_fail(socket,error);for(int j=0;j<i;j++)if(targets[i]==targets[j])hc_fail(socket,error);}
+    char *cwd=hc_next(&p,end);if(!cwd)hc_fail(socket,error);
+    if((uint64_t)header[2]+1>SIZE_MAX/sizeof(char *)) {error=-EOVERFLOW;hc_fail(socket,error);}
+    char **argv=vfs_alloc(((size_t)header[2]+1)*sizeof(char *));if(!argv){error=-ENOMEM;hc_fail(socket,error);}
+    for(unsigned i=0;i<header[2];i++){argv[i]=hc_next(&p,end);if(!argv[i])hc_fail(socket,error);}argv[header[2]]=NULL;
     size_t old=0;if(!(header[5]&1))while(original[old])old++;
-    if((uint64_t)old+header[3]+1>SIZE_MAX/sizeof(char *)) {error=-EOVERFLOW;goto fail;}
-    char **env=vfs_alloc(((size_t)old+header[3]+1)*sizeof(char *));if(!env){error=-ENOMEM;goto fail;}
+    if((uint64_t)old+header[3]+1>SIZE_MAX/sizeof(char *)) {error=-EOVERFLOW;hc_fail(socket,error);}
+    char **env=vfs_alloc(((size_t)old+header[3]+1)*sizeof(char *));if(!env){error=-ENOMEM;hc_fail(socket,error);}
     size_t ec=old;for(size_t i=0;i<old;i++)env[i]=original[i];
-    for(uint32_t i=0;i<header[3];i++){char *entry=hc_next(&p,end);if(!entry||!entry[0]||entry[0]=='=')goto fail;int equals=0;for(char *s=entry;*s;s++)if(*s=='=')equals=1;if(!equals)goto fail;
+    for(uint32_t i=0;i<header[3];i++){char *entry=hc_next(&p,end);if(!entry||!entry[0]||entry[0]=='=')hc_fail(socket,error);int equals=0;for(char *s=entry;*s;s++)if(*s=='=')equals=1;if(!equals)hc_fail(socket,error);
         size_t j=0;for(;j<ec;j++)if(hc_key(env[j],entry))break;env[j]=entry;if(j==ec)ec++;
-    }env[ec]=NULL;if(p!=end)goto fail;
+    }env[ec]=NULL;if(p!=end)hc_fail(socket,error);
     /* Duplicate above every destination before remapping (cycles and repeats). */
     unsigned high=3;for(int i=0;i<nfds;i++)if(targets[i]>=high)high=targets[i]+1;
-    int copies[HC_FDS];for(int i=0;i<nfds;i++){long fd=RAW(PROXY_SC_fcntl,received[i],F_DUPFD_CLOEXEC,high,0,0,0);if(fd<0){error=(int)fd;goto fail;}copies[i]=(int)fd;}
-    int pipe[2];error=(int)RAW(PROXY_SC_pipe2,pipe,O_CLOEXEC,0,0,0,0);if(error)goto fail;
-    if((unsigned)pipe[1]<high){long safe=RAW(PROXY_SC_fcntl,pipe[1],F_DUPFD_CLOEXEC,high,0,0,0);if(safe<0){error=(int)safe;goto fail;}RAW(PROXY_SC_close,pipe[1],0,0,0,0,0);pipe[1]=(int)safe;}
-    long worker=RAW(PROXY_SC_getpid,0,0,0,0,0,0),child=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);if(child<0){error=(int)child;goto fail;}
+    int copies[HC_FDS];for(int i=0;i<nfds;i++){long fd=RAW(PROXY_SC_fcntl,received[i],F_DUPFD_CLOEXEC,high,0,0,0);if(fd<0){error=(int)fd;hc_fail(socket,error);}copies[i]=(int)fd;}
+    int pipe[2];error=(int)RAW(PROXY_SC_pipe2,pipe,O_CLOEXEC,0,0,0,0);if(error)hc_fail(socket,error);
+    if((unsigned)pipe[1]<high){long safe=RAW(PROXY_SC_fcntl,pipe[1],F_DUPFD_CLOEXEC,high,0,0,0);if(safe<0){error=(int)safe;hc_fail(socket,error);}RAW(PROXY_SC_close,pipe[1],0,0,0,0,0);pipe[1]=(int)safe;}
+    long worker=RAW(PROXY_SC_getpid,0,0,0,0,0,0),child=RAW(PROXY_SC_clone,SIGCHLD,0,0,0,0,0);if(child<0){error=(int)child;hc_fail(socket,error);}
     if(!child){
         proxy_host_fork_child();
         RAW(PROXY_SC_close,pipe[0],0,0,0,0,0);RAW(PROXY_SC_prctl,PR_SET_PDEATHSIG,SIGKILL,0,0,0,0);
@@ -179,7 +188,7 @@ static void hc_worker(int socket,char *const *original,long server) {
         if(proxy_fd_is_private(socket))proxy_private_fd_release(socket);
         int keep[HC_FDS+1];for(int i=0;i<nfds;i++)keep[i]=copies[i];keep[nfds]=pipe[1];hc_close_except(keep,nfds+1);
         long null=RAW(PROXY_SC_openat,AT_FDCWD,"/dev/null",O_RDWR,0,0,0);
-        if(null<0){error=(int)null;goto child_fail;}
+        if(null<0){error=(int)null;hc_child_fail(pipe[1],error);}
         /* Keep upstream portal diagnostics attached to the stub's captured
          * output; other host commands remain silent as before. */
         int portal=argv[1]&&p_len(argv[1])==6&&argv[1][0]=='p'&&argv[1][1]=='o'&&
@@ -197,20 +206,18 @@ static void hc_worker(int socket,char *const *original,long server) {
         }
         if(null>2)RAW(PROXY_SC_close,null,0,0,0,0,0);
         for(int i=0;i<nfds;i++)if(resident_fd_owned((int)targets[i]))reset=1;
-        for(int i=0;i<nfds;i++){long r=RAW(PROXY_SC_dup3,copies[i],targets[i],0,0,0,0);if(r<0){error=(int)r;goto child_fail;}RAW(PROXY_SC_close,copies[i],0,0,0,0,0);resident_fd_set((int)targets[i],0);vfs_fd_close((int)targets[i]);}
+        for(int i=0;i<nfds;i++){long r=RAW(PROXY_SC_dup3,copies[i],targets[i],0,0,0,0);if(r<0){error=(int)r;hc_child_fail(pipe[1],error);}RAW(PROXY_SC_close,copies[i],0,0,0,0,0);resident_fd_set((int)targets[i],0);vfs_fd_close((int)targets[i]);}
         for(int i=0;i<nfds;i++)if(targets[i]<3){struct termios tty;if(RAW(PROXY_SC_ioctl,targets[i],TCGETS,&tty,0,0,0)==0){RAW(PROXY_SC_ioctl,targets[i],TIOCSCTTY,0,0,0,0);break;}}
-        if(*cwd){error=(int)vfs_chdir(AT_FDCWD,cwd);if(error)goto child_fail;}
+        if(*cwd){error=(int)vfs_chdir(AT_FDCWD,cwd);if(error)hc_child_fail(pipe[1],error);}
         /* A ready pipe replaces native exec's CLOEXEC handshake. Validate/load
          * first; success closes the pipe just before resident payload entry. */
-        error=(int)hc_exec(argv,env,pipe[1],reset);
-child_fail:
-        proxy_internal_write(pipe[1],&error,4);RAW(PROXY_SC_exit_group,127,0,0,0,0,0);
+        hc_child_fail(pipe[1],(int)hc_exec(argv,env,pipe[1],reset));
     }
     RAW(PROXY_SC_close,pipe[1],0,0,0,0,0);
     for(int i=0;i<nfds;i++){RAW(PROXY_SC_close,received[i],0,0,0,0,0);RAW(PROXY_SC_close,copies[i],0,0,0,0,0);}nfds=0;
     /* Child closes its handshake on successful load in hc_exec. */
     error=0;n=RAW(PROXY_SC_read,pipe[0],&error,4,0,0,0);RAW(PROXY_SC_close,pipe[0],0,0,0,0,0);
-    if(n!=0){if(n<0){error=(int)n;RAW(PROXY_SC_kill,child,SIGKILL,0,0,0,0);}RAW(PROXY_SC_wait4,child,0,0,0,0,0);goto fail;}
+    if(n!=0){if(n<0){error=(int)n;RAW(PROXY_SC_kill,child,SIGKILL,0,0,0,0);}RAW(PROXY_SC_wait4,child,0,0,0,0,0);hc_fail(socket,error);}
     int pid=(int)child;if(proxy_trace)proxy_log("host-command-child",child,worker);
     int lost=hc_io(socket,&pid,4,1)!=0;
     timeout=(struct timeval){0,0};RAW(PROXY_SC_setsockopt,socket,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout),0);
@@ -234,9 +241,6 @@ child_fail:
         }
     }
     RAW(PROXY_SC_exit_group,0,0,0,0,0,0);
-fail:
-    if(error>=0)error=-EINVAL;
-    hc_io(socket,&error,4,1);RAW(PROXY_SC_exit_group,1,0,0,0,0,0);
 }
 struct hc_worker_record {struct hc_worker_record *next;long pid;};
 static void hc_server(int listener,char *const *env,long parent) {

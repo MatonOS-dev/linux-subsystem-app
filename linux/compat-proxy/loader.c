@@ -187,7 +187,7 @@ static int supervise_launch(int argc,char **argv,char **environ) {
             siginfo_t info={0};
             long waited=RAW(PROXY_SC_waitid,0,0,&info,4|1,0,0); /* P_ALL, WEXITED|WNOHANG */
             if(waited==-EINTR)continue;
-            if(waited==-ECHILD)goto done;
+            if(waited==-ECHILD)return main_reaped?app_status:2;
             if(waited<0){proxy_log("fail supervisor-waitid",waited,supervisor);return 2;}
             if(!info.si_pid)break;
             long status=info.si_code==CLD_EXITED?(long)info.si_status<<8:
@@ -207,9 +207,6 @@ static int supervise_launch(int argc,char **argv,char **environ) {
         supervisor_kill_tree(supervisor);
         return 128+(int)signal[0];
     }
-done:
-    if(!main_reaped)return 2;
-    return app_status;
 }
 #endif
 
@@ -238,6 +235,19 @@ static long loader_open(const char *path){
 static void loader_close(int fd){RAW(PROXY_SC_close,fd,0,0,0,0,0);}
 /* File mappings use ordinary kernel descriptors and retain page-cache sharing.
  * Only permission refusals permit the private copy fallback. */
+/* Fill an anonymous replacement for a denied file mapping, then apply the
+ * requested protection. Bytes past EOF stay zero, as in a file mapping. */
+static long mmap_copy_file(proxy_arg_t *a,long area) {
+    size_t done=0;
+    while(done<(size_t)a[1]){
+        long n=proxy_pread_fd(a[4],(void *)((uintptr_t)area+done),a[1]-done,(uint64_t)a[5]+done);
+        if(n==-EINTR)continue;
+        if(n<0)return n;
+        if(!n)break;
+        done+=n;
+    }
+    return RAW(PROXY_SC_mprotect,area,a[1],a[2],0,0,0);
+}
 long proxy_file_mmap(proxy_arg_t *a) {
     long r=RAW(PROXY_SC_mmap,a[0],a[1],a[2],a[3],a[4],a[5]);
     if(r!=-EACCES && r!=-EPERM){
@@ -250,16 +260,8 @@ long proxy_file_mmap(proxy_arg_t *a) {
     long area=RAW(PROXY_SC_mmap,a[0],a[1],PROT_READ|PROT_WRITE,
                   (a[3]&~(MAP_SHARED|MAP_PRIVATE))|MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if((unsigned long)area>=(unsigned long)-4095)return area;
-    size_t done=0;
-    while(done<(size_t)a[1]){
-        long n=proxy_pread_fd(a[4],(void *)((uintptr_t)area+done),a[1]-done,(uint64_t)a[5]+done);
-        if(n==-EINTR)continue;
-        if(n<0){r=n;goto failed;}
-        if(!n)break;
-        done+=n;
-    }
-    r=RAW(PROXY_SC_mprotect,area,a[1],a[2],0,0,0);
-    if(r<0)goto failed;
+    r=mmap_copy_file(a,area);
+    if(r<0){RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;}
     struct proxy_stat st;
     struct copy_log {struct copy_log *next;uint64_t dev,ino;};
     static struct copy_log *logs;
@@ -275,8 +277,6 @@ long proxy_file_mmap(proxy_arg_t *a) {
     if((a[2]&(PROT_READ|PROT_EXEC))==(PROT_READ|PROT_EXEC) && !(a[2]&PROT_WRITE) && (a[3]&MAP_PRIVATE))
         proxy_rewrite_mapping((int)a[4],(uintptr_t)area,(size_t)a[1],(uint64_t)a[5]);
     return area;
-failed:
-    RAW(PROXY_SC_munmap,area,a[1],0,0,0,0);return r;
 }
 /* Android denies execmod: a private file mapping whose pages were written
  * (relocated PE images in Wine, patched code) cannot become executable.
@@ -322,6 +322,61 @@ static void loader_trace_resolve(const char *path,const char *stage){
 }
 /* Preflight both ELF classes before MAP_FIXED or a kernel exec of our peer.
  * Use fixed-width ELF records, not the current backend's native typedefs. */
+static int validate_exec(const char *path,long supplied_fd,int interpreter,unsigned depth);
+/* Check the ELF headers of an opened, executable regular file. */
+static int validate_elf(long fd,const struct proxy_stat *stat,int interpreter,unsigned depth) {
+    Elf64_Ehdr h={0};Elf32_Ehdr h32;
+    const int error=interpreter?-ELIBBAD:-ENOEXEC;
+    unsigned char ident[EI_NIDENT];
+    if(proxy_pread_fd(fd,ident,sizeof(ident),0)!=sizeof(ident))return error;
+    if(ident[0]!=127 || ident[1]!='E' || ident[2]!='L' || ident[3]!='F' ||
+       ident[EI_DATA]!=ELFDATA2LSB || ident[EI_VERSION]!=EV_CURRENT)return error;
+    int bits=ident[EI_CLASS];
+    if(interpreter && bits!=interpreter)return error;
+    if(bits==ELFCLASS32){
+        if(proxy_pread_fd(fd,&h32,sizeof(h32),0)!=sizeof(h32))return error;
+        h.e_type=h32.e_type;h.e_machine=h32.e_machine;h.e_phoff=h32.e_phoff;
+        h.e_phnum=h32.e_phnum;h.e_phentsize=h32.e_phentsize;
+        if(h.e_phentsize!=sizeof(Elf32_Phdr))return error;
+    }else if(bits==ELFCLASS64){
+        if(proxy_pread_fd(fd,&h,sizeof(h),0)!=sizeof(h))return error;
+        if(h.e_phentsize!=sizeof(Elf64_Phdr))return error;
+    }else return error;
+    if(arch_exec_class(bits,h.e_machine)<0)return error;
+    if((h.e_type!=ET_EXEC && h.e_type!=ET_DYN) || !h.e_phnum ||
+       h.e_phoff>(uint64_t)stat->st_size ||
+       (uint64_t)h.e_phnum*h.e_phentsize>(uint64_t)stat->st_size-h.e_phoff)return error;
+    char interp[4096];interp[0]=0;unsigned loads=0,has_phdr=0;
+    for(unsigned i=0;i<h.e_phnum;i++){
+        Elf64_Phdr p={0};uint64_t offset=h.e_phoff+(uint64_t)i*h.e_phentsize;
+        if(bits==ELFCLASS32){
+            Elf32_Phdr q;
+            if(proxy_pread_fd(fd,&q,sizeof(q),offset)!=sizeof(q))return error;
+            p.p_type=q.p_type;p.p_offset=q.p_offset;p.p_filesz=q.p_filesz;
+            p.p_memsz=q.p_memsz;p.p_vaddr=q.p_vaddr;p.p_align=q.p_align;
+        }else if(proxy_pread_fd(fd,&p,sizeof(p),offset)!=sizeof(p))return error;
+        if(p.p_type==PT_PHDR)has_phdr=1;
+        if(p.p_type!=PT_LOAD && p.p_type!=PT_INTERP)continue;
+        if(p.p_offset>(uint64_t)stat->st_size || p.p_filesz>(uint64_t)stat->st_size-p.p_offset)return error;
+        if(p.p_type==PT_LOAD){
+            uint64_t limit=bits==ELFCLASS32?UINT32_MAX:UINT64_MAX;
+            if(p.p_filesz>p.p_memsz || p.p_vaddr>limit-4095 || p.p_memsz>limit-4095-p.p_vaddr)return error;
+            if(p.p_memsz)loads++;
+            if(h.e_phoff>=p.p_offset && h.e_phoff-p.p_offset+(uint64_t)h.e_phnum*h.e_phentsize<=p.p_filesz)has_phdr=1;
+        }else{
+            if(interpreter || interp[0] || p.p_filesz<2 || p.p_filesz>sizeof(interp))return error;
+            if(proxy_pread_fd(fd,interp,p.p_filesz,p.p_offset)!=(long)p.p_filesz || interp[p.p_filesz-1])return error;
+        }
+    }
+    if(!loads || !has_phdr)return error;
+    if(interp[0]){
+        loader_trace_path("v3 exec validate PT_INTERP ",interp);
+        int interp_error=validate_exec(interp,-1,bits,depth+1);
+        if(proxy_trace)proxy_log("exec-validate-interp",interp_error,depth);
+        return interp_error;
+    }
+    return 0;
+}
 static int validate_exec(const char *path,long supplied_fd,int interpreter,unsigned depth) {
     if(depth>1)return -ELIBBAD;
     long error=0;
@@ -344,84 +399,34 @@ static int validate_exec(const char *path,long supplied_fd,int interpreter,unsig
      * and the runtime EROFS mount can be), which must not override Linux
      * execute bits after the virtual filesystem has resolved the path. */
     vfs_free(resolved);
-    Elf64_Ehdr h={0};Elf32_Ehdr h32;
-    if(error)goto done;
-    error=interpreter?-ELIBBAD:-ENOEXEC;
-    unsigned char ident[EI_NIDENT];
-    if(proxy_pread_fd(fd,ident,sizeof(ident),0)!=sizeof(ident))goto done;
-    if(ident[0]!=127 || ident[1]!='E' || ident[2]!='L' || ident[3]!='F' ||
-       ident[EI_DATA]!=ELFDATA2LSB || ident[EI_VERSION]!=EV_CURRENT)goto done;
-    int bits=ident[EI_CLASS];
-    if(interpreter && bits!=interpreter)goto done;
-    if(bits==ELFCLASS32){
-        if(proxy_pread_fd(fd,&h32,sizeof(h32),0)!=sizeof(h32))goto done;
-        h.e_type=h32.e_type;h.e_machine=h32.e_machine;h.e_phoff=h32.e_phoff;
-        h.e_phnum=h32.e_phnum;h.e_phentsize=h32.e_phentsize;
-        if(h.e_phentsize!=sizeof(Elf32_Phdr))goto done;
-    }else if(bits==ELFCLASS64){
-        if(proxy_pread_fd(fd,&h,sizeof(h),0)!=sizeof(h))goto done;
-        if(h.e_phentsize!=sizeof(Elf64_Phdr))goto done;
-    }else goto done;
-    if(arch_exec_class(bits,h.e_machine)<0)goto done;
-    if((h.e_type!=ET_EXEC && h.e_type!=ET_DYN) || !h.e_phnum ||
-       h.e_phoff>(uint64_t)st.st_size ||
-       (uint64_t)h.e_phnum*h.e_phentsize>(uint64_t)st.st_size-h.e_phoff)goto done;
-    char interp[4096];interp[0]=0;unsigned loads=0,has_phdr=0;
-    for(unsigned i=0;i<h.e_phnum;i++){
-        Elf64_Phdr p={0};uint64_t offset=h.e_phoff+(uint64_t)i*h.e_phentsize;
-        if(bits==ELFCLASS32){
-            Elf32_Phdr q;
-            if(proxy_pread_fd(fd,&q,sizeof(q),offset)!=sizeof(q))goto done;
-            p.p_type=q.p_type;p.p_offset=q.p_offset;p.p_filesz=q.p_filesz;
-            p.p_memsz=q.p_memsz;p.p_vaddr=q.p_vaddr;p.p_align=q.p_align;
-        }else if(proxy_pread_fd(fd,&p,sizeof(p),offset)!=sizeof(p))goto done;
-        if(p.p_type==PT_PHDR)has_phdr=1;
-        if(p.p_type!=PT_LOAD && p.p_type!=PT_INTERP)continue;
-        if(p.p_offset>(uint64_t)st.st_size || p.p_filesz>(uint64_t)st.st_size-p.p_offset)goto done;
-        if(p.p_type==PT_LOAD){
-            uint64_t limit=bits==ELFCLASS32?UINT32_MAX:UINT64_MAX;
-            if(p.p_filesz>p.p_memsz || p.p_vaddr>limit-4095 || p.p_memsz>limit-4095-p.p_vaddr)goto done;
-            if(p.p_memsz)loads++;
-            if(h.e_phoff>=p.p_offset && h.e_phoff-p.p_offset+(uint64_t)h.e_phnum*h.e_phentsize<=p.p_filesz)has_phdr=1;
-        }else{
-            if(interpreter || interp[0] || p.p_filesz<2 || p.p_filesz>sizeof(interp))goto done;
-            if(proxy_pread_fd(fd,interp,p.p_filesz,p.p_offset)!=(long)p.p_filesz || interp[p.p_filesz-1])goto done;
-        }
-    }
-    if(!loads || !has_phdr)goto done;
-    if(interp[0]){
-        loader_trace_path("v3 exec validate PT_INTERP ",interp);
-        error=validate_exec(interp,-1,bits,depth+1);
-        if(proxy_trace)proxy_log("exec-validate-interp",error,depth);
-    }else error=0;
-done:
+    if(!error)error=validate_elf(fd,&st,interpreter,depth);
     if(proxy_trace)proxy_log("exec-validate-result",error,depth);
     if(supplied_fd<0)loader_close(fd);
     return error;
 }
-static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
-    arch_elf_ehdr eh; arch_elf_phdr *ph=NULL;
-    long fd=supplied_fd;
-    if(fd<0){fd=loader_open(path);if(bad(fd))return (int)fd;}
-    int error=-ENOEXEC;out->spans=NULL;out->count=0;
-    if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=(long)sizeof(eh)) goto done;
+/* Stage and map the PT_LOAD segments of an opened ELF. The program header
+ * buffer is returned through *owned so the caller frees it on every path. */
+static int map_elf_fd(const char *path,long fd,struct mapped *out,arch_elf_phdr **owned) {
+    int error=-ENOEXEC;
+    arch_elf_ehdr eh; arch_elf_phdr *ph;
+    if(proxy_pread_fd(fd,&eh,sizeof(eh),0)!=(long)sizeof(eh)) return error;
     if(eh.e_ident[0]!=127 || eh.e_ident[1]!='E' || eh.e_ident[2]!='L' || eh.e_ident[3]!='F' ||
        eh.e_ident[EI_CLASS]!=ARCH_ELF_CLASS || eh.e_machine!=ARCH_ELF_MACHINE ||
        (eh.e_type!=ET_DYN && eh.e_type!=ET_EXEC) || !eh.e_phnum ||
-       eh.e_phentsize!=sizeof(arch_elf_phdr)) goto done;
+       eh.e_phentsize!=sizeof(arch_elf_phdr)) return error;
     size_t bytes=eh.e_phnum*sizeof(arch_elf_phdr);
-    ph=vfs_alloc(bytes);if(!ph){error=-ENOMEM;goto done;}
-    if(proxy_pread_fd(fd,ph,bytes,eh.e_phoff)!=(long)bytes) goto done;
+    ph=*owned=vfs_alloc(bytes);if(!ph)return -ENOMEM;
+    if(proxy_pread_fd(fd,ph,bytes,eh.e_phoff)!=(long)bytes) return error;
     unsigned loads=0;uintptr_t previous=0;
     for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD && ph[i].p_memsz) {
         if(ph[i].p_filesz>ph[i].p_memsz ||
-           (uint64_t)ph[i].p_vaddr+ph[i].p_memsz>UINTPTR_MAX-(PAGE-1)) goto done;
+           (uint64_t)ph[i].p_vaddr+ph[i].p_memsz>UINTPTR_MAX-(PAGE-1)) return error;
         /* ELF requires PT_LOAD ascending by p_vaddr; spans rely on it. */
-        if(loads && ph[i].p_vaddr<previous) goto done;
+        if(loads && ph[i].p_vaddr<previous) return error;
         previous=ph[i].p_vaddr;loads++;
     }
-    if(!loads) goto done;
-    out->spans=vfs_alloc(loads*sizeof(*out->spans));if(!out->spans){error=-ENOMEM;goto done;}
+    if(!loads) return error;
+    out->spans=vfs_alloc(loads*sizeof(*out->spans));if(!out->spans)return -ENOMEM;
     for(unsigned i=0;i<eh.e_phnum;i++) if(ph[i].p_type==PT_LOAD && ph[i].p_memsz) {
         uintptr_t low=DOWN(ph[i].p_vaddr),high=UP(ph[i].p_vaddr+ph[i].p_memsz);
         struct span *last=out->count?&out->spans[out->count-1]:NULL;
@@ -431,12 +436,12 @@ static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
     }
     /* Refuse collision with the resident proxy rather than overwriting it. */
     for(unsigned k=0;eh.e_type==ET_EXEC && k<out->count;k++)
-        if(resident_collision(out->spans[k].low,out->spans[k].low+out->spans[k].size)) goto done;
+        if(resident_collision(out->spans[k].low,out->spans[k].low+out->spans[k].size)) return error;
     /* Stage away from the caller, including fixed-address executables. */
     for(unsigned k=0;k<out->count;k++) {
         struct span *span=&out->spans[k];
         long area=RAW(PROXY_SC_mmap,0,span->size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-        if(bad(area)) {error=(int)area; goto done;}
+        if(bad(area)) return (int)area;
         span->area=area;span->target=eh.e_type==ET_EXEC?span->low:(uintptr_t)area;
     }
     /* Addresses the payload sees: ET_DYN at its staging area, ET_EXEC as linked. */
@@ -447,9 +452,9 @@ static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
     for(unsigned i=0;i<eh.e_phnum;i++) {
         arch_elf_phdr *p=&ph[i];
         if(p->p_type==PT_INTERP) {
-            if(p->p_filesz>sizeof(out->interp) || !p->p_filesz) goto done;
-            if(proxy_pread_fd(fd,out->interp,p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
-            if(out->interp[p->p_filesz-1])goto done;
+            if(p->p_filesz>sizeof(out->interp) || !p->p_filesz) return error;
+            if(proxy_pread_fd(fd,out->interp,p->p_filesz,p->p_offset)!=(long)p->p_filesz) return error;
+            if(out->interp[p->p_filesz-1])return error;
         }
         if(p->p_type==PT_PHDR) out->phdr=load_bias+p->p_vaddr;
         if(p->p_type!=PT_LOAD || !p->p_memsz) continue;
@@ -464,34 +469,40 @@ static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
         if(p->p_filesz && congruent){
             proxy_arg_t args[]={start,file_end-start,prot,MAP_PRIVATE|MAP_FIXED,fd,DOWN(p->p_offset)};
             r=proxy_file_mmap(args);
-            if(bad(r)){error=(int)r;goto done;}
+            if(bad(r))return (int)r;
             /* Only the last file page needs COW zeroing. Never dirty text
              * pages without BSS (including bytes beyond p_filesz). */
             if(p->p_memsz>p->p_filesz && file_end>bias+p->p_vaddr+p->p_filesz){
                 uintptr_t tail=bias+p->p_vaddr+p->p_filesz;
                 r=RAW(PROXY_SC_mprotect,DOWN(tail),PAGE,PROT_READ|PROT_WRITE,0,0,0);
-                if(bad(r)){error=(int)r;goto done;}
+                if(bad(r))return (int)r;
                 for(uintptr_t z=tail;z<file_end;z++)*(unsigned char *)z=0;
                 r=RAW(PROXY_SC_mprotect,DOWN(tail),PAGE,prot,0,0,0);
-                if(bad(r)){error=(int)r;goto done;}
+                if(bad(r))return (int)r;
             }
             if(end>file_end){
                 r=RAW(PROXY_SC_mmap,file_end,end-file_end,prot,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
-                if(bad(r)){error=(int)r;goto done;}
+                if(bad(r))return (int)r;
             }
         }else{
             r=RAW(PROXY_SC_mmap,start,end-start,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
-            if(bad(r)){error=(int)r;goto done;}
-            if(p->p_filesz && proxy_pread_fd(fd,(void *)(bias+p->p_vaddr),p->p_filesz,p->p_offset)!=(long)p->p_filesz) goto done;
+            if(bad(r))return (int)r;
+            if(p->p_filesz && proxy_pread_fd(fd,(void *)(bias+p->p_vaddr),p->p_filesz,p->p_offset)!=(long)p->p_filesz) return error;
             r=RAW(PROXY_SC_mprotect,start,end-start,prot,0,0,0);
-            if(bad(r)){error=(int)r;goto done;}
+            if(bad(r))return (int)r;
         }
         proxy_image_map(span->target+start-span->area,span->target+end-span->area,DOWN(p->p_vaddr),path);
         if(!out->phdr && eh.e_phoff>=p->p_offset && (uint64_t)eh.e_phoff+bytes<=(uint64_t)p->p_offset+p->p_filesz)
             out->phdr=load_bias+p->p_vaddr+eh.e_phoff-p->p_offset;
     }
-    error=out->phdr?0:-ENOEXEC;
-done:
+    return out->phdr?0:-ENOEXEC;
+}
+static int map_elf(const char *path,long supplied_fd,struct mapped *out) {
+    long fd=supplied_fd;
+    if(fd<0){fd=loader_open(path);if(bad(fd))return (int)fd;}
+    out->spans=NULL;out->count=0;
+    arch_elf_phdr *ph=NULL;
+    int error=map_elf_fd(path,fd,out,&ph);
     if(error)release_spans(out,1);
     vfs_free(ph);if(supplied_fd<0)loader_close(fd); return error;
 }
