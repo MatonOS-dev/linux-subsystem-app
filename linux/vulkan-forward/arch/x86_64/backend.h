@@ -90,16 +90,7 @@ static inline int switch_to_android(struct adopt_api *api,int fast,struct mv_sco
     if(!have_previous) s->previous=mv_tp_read(fast);
     mv_tp_write(s->thread->resident_fs,fast); return 1;
 }
-/* TEMPDIAG (Wine malloc crash): FS must still be the resident TLS when an
- * Android call returns; anything else means a handler or callee changed it. */
-static inline void mv_diag_hex(char *b,uintptr_t v){for(int i=15;i>=0;i--){b[i]="0123456789abcdef"[v&15];v>>=4;}}
 static inline void switch_back(struct mv_scope *s) {
-    uintptr_t now=mv_tp_read(s->fast);
-    if(s->thread && now!=s->thread->resident_fs) {
-        char m[]="maton-vulkan: TEMPDIAG fs changed during android call now=0000000000000000 resident=0000000000000000 restore=0000000000000000\n";
-        mv_diag_hex(m+58,now);mv_diag_hex(m+84,s->thread->resident_fs);mv_diag_hex(m+109,s->previous);
-        mv_write(m,sizeof(m)-1);
-    }
     mv_tp_write(s->previous,s->fast);
 }
 #endif

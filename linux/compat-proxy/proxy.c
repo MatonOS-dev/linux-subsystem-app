@@ -193,11 +193,6 @@ static void crash_report(int sig,siginfo_t *info,void *context) {
     proxy_rewrite_dump(context);
     /* Raw maps: bypass virtual proc paths; no libc/TLS/allocation in a crash. */
     crash_map("v3 fatal map=",pc);
-    #if defined(__x86_64__) /* TEMPDIAG */
-    {unsigned long fs=0;RAW(PROXY_SC_arch_prctl,0x1003,&fs,0,0,0,0);crash_text("v3 fatal fs=");crash_hex(fs);crash_text("\n");}
-#endif
-    {uintptr_t *sp=(uintptr_t *)ARCH_CONTEXT(uc,ARCH_STACK);unsigned shown=0; /* TEMPDIAG */
-        for(unsigned i=0;i<512 && shown<12;i++)if(crash_map("v3 fatal frame=",sp[i]))shown++;}
     struct kernel_action action={0};RAW(PROXY_SC_rt_sigaction,sig,&action,0,8,0,0);
     proxy_sigmask_t mask=UINT64_C(1)<<(sig-1);RAW(PROXY_SC_rt_sigprocmask,SIG_UNBLOCK,&mask,0,8,0,0);
     RAW(PROXY_SC_tgkill,RAW(PROXY_SC_getpid,0,0,0,0,0,0),RAW(PROXY_SC_gettid,0,0,0,0,0,0),sig,0,0,0);
@@ -1223,27 +1218,6 @@ void proxy_note_payload_argv(char *const *argv) {
     }
     payload_argv_used=used;
 }
-/* TEMPORARY diagnostic: read maps once, then report stack words inside executable mappings. */
-void proxy_exit_frames(uintptr_t sp) {
-    enum{CAP=4u<<20};char *maps=vfs_alloc(CAP);if(!maps)return;size_t len=0;
-    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
-    if(fd>=0){long n;while(len<CAP-1 && (n=RAW(PROXY_SC_read,fd,maps+len,CAP-1-len,0,0,0))>0)len+=(size_t)n;RAW(PROXY_SC_close,fd,0,0,0,0,0);}
-    maps[len]=0;uintptr_t words[64];unsigned shown=0;long self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
-    for(unsigned chunk=0;chunk<32 && shown<24;chunk++){
-        struct iovec local={words,sizeof(words)},remote={(void *)(sp+chunk*sizeof(words)),sizeof(words)};
-        if(RAW(PROXY_SC_process_vm_readv,self,&local,1,&remote,1,0)!=(long)sizeof(words))break;
-        for(unsigned i=0;i<64 && shown<24;i++){
-            for(char *line=maps;*line;){
-                char *eol=line;while(*eol && *eol!='\n')eol++;
-                const char *p=line;uintptr_t lo=maps_hex(&p),hi=0;if(*p=='-'){p++;hi=maps_hex(&p);}
-                if(words[i]>=lo && words[i]<hi && p[0] && p[3]=='x'){
-                    crash_text("v3 exit frame=");proxy_diagnostic_write(line,(size_t)(eol-line));crash_text(" offset=");crash_hex(words[i]-lo);crash_text("\n");shown++;break;}
-                line=*eol?eol+1:eol;
-            }
-        }
-    }
-    vfs_free(maps);
-}
 __attribute__((noinline)) void proxy_exit_report(int code) {
     (void)code;
     if(payload_argv_used){
@@ -1270,14 +1244,10 @@ __attribute__((noinline)) static void enomem_maps_dump(long nr,proxy_arg_t a[6])
 }
 __attribute__((noinline)) static void fail_trace(long nr,proxy_arg_t a[6],long result) {
     if((nr==PROXY_SC_mmap || nr==PROXY_SC_mremap) && result==-ENOMEM)enomem_maps_dump(nr,a);
-    /* TEMPDIAG: any hard socket I/O error, with the peer pid. */
-    if((nr==PROXY_SC_sendmsg||nr==PROXY_SC_recvmsg||nr==PROXY_SC_sendto||nr==PROXY_SC_recvfrom||nr==PROXY_SC_writev||nr==PROXY_SC_readv||nr==PROXY_SC_write||nr==PROXY_SC_read)
-       && result<0 && result!=-EAGAIN){struct{int pid,uid,gid;}cr={0};unsigned crl=sizeof(cr);
-       if(!RAW(PROXY_SC_getsockopt,(long)a[0],SOL_SOCKET,SO_PEERCRED,&cr,&crl,0)){proxy_log("sockio-fail nr",nr,result);proxy_log("sockio-fail fd/peer",(long)a[0],cr.pid);}}
     if(nr==PROXY_SC_recvmsg && a[1]) {
         struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);
         if(result>=0 && (m.flags&MSG_CTRUNC))proxy_log("fail recvmsg-ctrunc",(long)a[0],(long)m.controllen);
-        else if(result<0 && result!=-EAGAIN && result!=-EINTR && m.control){proxy_log("fail recvmsg-rights",(long)a[0],result);struct{int pid,uid,gid;}cr={0};unsigned crl=sizeof(cr);RAW(PROXY_SC_getsockopt,(long)a[0],SOL_SOCKET,SO_PEERCRED,&cr,&crl,0);proxy_log("recvmsg-reset peer-pid",(long)a[0],cr.pid);} /* TEMPDIAG */
+        else if(result<0 && result!=-EAGAIN && result!=-EINTR && m.control)proxy_log("fail recvmsg-rights",(long)a[0],result);
     } else if(nr==PROXY_SC_sendmsg && a[1] && result<0 && result!=-EAGAIN && result!=-EINTR) {
         struct proxy_message m=arch_message_read((void *)(uintptr_t)a[1]);
         if(m.control)proxy_log("fail sendmsg-rights",(long)a[0],result);
@@ -2642,9 +2612,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_fchmod:if(app_allowed(nr))result=links_fd_chmod(nr,a);break;
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
     case PROXY_SC_exit:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit",nr,a[0]);vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
-    case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit-group",nr,a[0]);else if((int)a[0]){proxy_log("exit-group nonzero",(long)a[0],(long)syscall_pc);proxy_exit_report((int)a[0]);
-        /* TEMPORARY diagnostic: who called exit(nonzero)? Scan the app stack for code addresses. */
-        proxy_exit_frames((uintptr_t)ARCH_CONTEXT(uc,ARCH_STACK));}ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit-group",nr,a[0]);else if((int)a[0]){proxy_log("exit-group nonzero",(long)a[0],(long)syscall_pc);proxy_exit_report((int)a[0]);}ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=RAW(nr,a[0],a[1],a[2],0,0,0);if(result>0 && sysctl_fds)sysctl_sync();break;
     case PROXY_SC_close_range:if(sysctl_fds)sysctl_sync();result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
     case PROXY_SC_close:result=file_dispatch(nr,a);break;

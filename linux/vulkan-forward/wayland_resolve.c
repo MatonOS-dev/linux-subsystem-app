@@ -3,8 +3,7 @@
 #include "backend.h"
 
 #include <elf.h>
-/* TEMPDIAG (Webbed SIGSYS) */
-static void MV_TD2(const char *what,long v){static const char m[]="maton-vulkan: TEMPDIAG resolve ";mv_write(m,sizeof(m)-1);size_t n=0;while(what[n])n++;mv_write(what,n);char h[20];int k=0;unsigned long u=(unsigned long)v;h[k++]=' ';for(int i=(int)sizeof(long)*2-1;i>=0;i--)h[k++]="0123456789abcdef"[(u>>(i*4))&15];h[k++]='\n';mv_write(h,k);}
+
 
 /* This process image is ELF32 when Flatpak launches an i386 payload. Keep
  * the same resolver logic, but use the runtime loader's native class. */
@@ -141,7 +140,6 @@ static void *from_link_map(const char *name,const char *library) {
     struct mv_aux aux;
     Elf64_Addr phdr=mv_hex(mv_env("MATON_LINUX_PHDR"));
     size_t phnum=mv_hex(mv_env("MATON_LINUX_PHNUM"));
-    MV_TD2("phdr",(long)phdr);
     /* Native host tests have no resident bootstrap. In production the kernel
      * auxv belongs to bionic's loader, not the manually mapped Linux image. */
     if (!phdr || !phnum) {
@@ -188,7 +186,6 @@ static int parse_hex(const char **p, Elf64_Addr *out) {
 
 static void *from_maps(const char *name,const char *library) {
     long fd=mv_open("/proc/self/maps");
-    MV_TD2("maps-open",fd);
     if(fd<0)return 0;
     char line[4096];size_t n=0;Elf64_Addr start=0,low=UINTPTR_MAX,high=0;int matched=0;void *result=0;
     for(;;) {
@@ -242,14 +239,10 @@ static void *from_namespace(const char *name,const char *library) {
     return 0;
 }
 
-/* TEMPDIAG (Webbed SIGSYS): mark resolver steps. */
-#define MV_TD(s) do{static const char m[]="maton-vulkan: TEMPDIAG resolve " s "\n";mv_write(m,sizeof(m)-1);}while(0)
 void *mv_wayland_symbol(const char *name) {
     if(!name || !*name)return 0;
-    MV_TD("link-map");
     void *symbol=from_namespace(name,"libwayland-client.so.0");
     if (!symbol) symbol=from_link_map(name,"libwayland-client.so.0");
-    MV_TD("done");
     if (!symbol) {
         static const char prefix[]="maton-vulkan: unresolved Wayland symbol ";
         mv_write(prefix,sizeof(prefix)-1);
@@ -273,10 +266,7 @@ static void *libc_function(const char *name) {
 }
 void *mv_client_library(const char *library) {
     void *(*open_library)(const char *,int)=libc_function("dlopen");
-    /* TEMPDIAG (Wine malloc crash): bracket dlopen so a crash inside it shows. */
-    {static const char m[]="maton-vulkan: TEMPDIAG dlopen enter ";mv_write(m,sizeof(m)-1);const char *l=library?library:"(global)";size_t n=0;while(l[n])n++;mv_write(l,n);mv_write("\n",1);}
     void *r=open_library?open_library(library,2):0;
-    {static const char m[]="maton-vulkan: TEMPDIAG dlopen leave\n";mv_write(m,sizeof(m)-1);}
     return r;
 }
 void *mv_client_symbol(void *library,const char *name) {

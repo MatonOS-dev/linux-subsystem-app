@@ -27,7 +27,7 @@ struct iterator { void *data;int rem,index; };
 struct visual { uint32_t id;uint8_t kind,bits;uint16_t entries;uint32_t red,green,blue,pad; };
 struct attributes { uint8_t type,backing;uint16_t sequence;uint32_t length,visual; };
 struct mv_x11 { void *connection,*queue; uint32_t window,event,stamp,serial,depth;
-    struct mv_x11_buffer *buffers; uint64_t next_msc; int pending_complete,mailbox; unsigned presents;
+    struct mv_x11_buffer *buffers; uint64_t next_msc; int pending_complete,mailbox;
     uint32_t width,height; int suboptimal; };
 struct mv_x11_buffer { struct mv_x11 *x; struct mv_x11_buffer *next;
     uint32_t pixmap,serial; int released; };
@@ -98,23 +98,6 @@ static int resolve(void) {
         register_queue&&unregister_queue&&poll_event&&wait_event&&select_input&&present&&present_id&&extension_data&&setup&&roots&&depths&&visuals&&next_screen&&next_depth&&next_visual&&get_attributes&&attributes_reply;
     __atomic_store_n(&init_lock,0,__ATOMIC_RELEASE);return ok;
 }
-/* TEMPDIAG: chain in front of the app's Xlib IO error handler to log the
- * dying Display's libxcb error code and X client index, then call it. */
-static int (*app_io_handler)(void *);
-static int io_diag(void *display) {
-    void *c=xlib_connection?xlib_connection(display):0;
-    if(c&&failed&&setup){uint32_t base;memcpy(&base,setup(c)+12,4);note("maton-vulkan: Xlib IO error, xcb error code",failed(c));note("maton-vulkan: Xlib IO error, X client",(long)(base>>21));}
-    else note("maton-vulkan: Xlib IO error, no xcb connection",0);
-    return app_io_handler?app_io_handler(display):0;
-}
-static void io_hook(void) {
-    static int io_hooked;
-    if(!__atomic_exchange_n(&io_hooked,1,__ATOMIC_ACQ_REL)) {
-        int (*(*set_io)(int (*)(void *)))(void *)=mv_client_symbol(mv_client_library("libX11.so.6"),"XSetIOErrorHandler");
-        if(!xlib_connection)xlib_connection=mv_client_symbol(mv_client_library("libX11-xcb.so.1"),"XGetXCBConnection");
-        if(set_io&&xlib_connection){app_io_handler=set_io(io_diag);note("maton-vulkan: Xlib IO handler chained",app_io_handler!=0);}
-    }
-}
 void *mv_x11_connection(void *display) {
     if(!display)return 0;
     /* Xlib-XCB must already cooperate with Xlib's event ownership; only our
@@ -122,16 +105,8 @@ void *mv_x11_connection(void *display) {
     if(!xlib_connection)xlib_connection=mv_client_symbol(mv_client_library("libX11-xcb.so.1"),"XGetXCBConnection");
     return xlib_connection?xlib_connection(display):0;
 }
-/* TEMPDIAG: log libxcb's connection error code (1 socket, 2 ext, 3 mem,
- * 4 req len, 5 parse, 6 screen, 7 fd passing) at the first place we see it. */
-static int xcb_err_seen;
-static void xcb_err(struct mv_x11 *x,int where){
-    int e=failed(x->connection);
-    if(e&&!__atomic_exchange_n(&xcb_err_seen,1,__ATOMIC_ACQ_REL)){note("maton-vulkan: xcb connection error code",e);note("maton-vulkan: xcb error seen at wsi_x11.c line",where);note("maton-vulkan: xcb error window",(long)x->window);}
-}
-#define XERR(x) xcb_err((x),__LINE__)
 static int checked(struct mv_x11 *x,struct cookie c) {
-    void *error=check(x->connection,c);XERR(x);if(error){xfree(error);return 0;}return !failed(x->connection);
+    void *error=check(x->connection,c);if(error){xfree(error);return 0;}return !failed(x->connection);
 }
 int mv_x11_extent(struct mv_x11 *x,uint32_t *width,uint32_t *height) {
     struct geometry *g=geometry_reply(x->connection,get_geometry(x->connection,x->window),0);
@@ -168,12 +143,8 @@ int mv_x11_visual_supported(void *connection,uint32_t id){return visual_check(co
 struct mv_x11 *mv_x11_create(void *connection,uint32_t window) {
     if(!connection||!window){note("maton-vulkan: X11 surface refused, null connection/window, window",(long)window);return 0;}
     if(!resolve()){note("maton-vulkan: X11 surface refused, XCB symbols unresolved, window",(long)window);return 0;}
-    io_hook();
     struct mv_x11 *x=mv_alloc(sizeof(*x));if(!x)return 0;memset(x,0,sizeof(*x));
     x->connection=connection;x->window=window;x->event=generate(connection);
-    /* TEMPDIAG: X client index of this connection (resource_id_base>>21) and
-     * the window's owner index, to match Xwayland's maton-close records. */
-    {const unsigned char *s=setup(connection);uint32_t base;memcpy(&base,s+12,4);note("maton-vulkan: X11 surface create, connection client",(long)(base>>21));note("maton-vulkan: X11 surface create, window owner client",(long)(window>>21));note("maton-vulkan: X11 surface create, window",(long)window);}
     uint32_t w,h;
     if(!mv_x11_extent(x,&w,&h)){mv_free(x);return 0;}
     struct attributes *attrs=attributes_reply(connection,get_attributes(connection,window),0);
@@ -200,7 +171,7 @@ int mv_x11_suboptimal(struct mv_x11 *x) { return x->suboptimal; }
 int mv_x11_has_alpha(struct mv_x11 *x) { return x->depth==32; }
 void mv_x11_destroy(struct mv_x11 *x) {
     if(!x)return;
-    note("maton-vulkan: X11 surface destroy, window",(long)x->window);XERR(x);
+    note("maton-vulkan: X11 surface destroy, window",(long)x->window);
     (void)checked(x,select_input(x->connection,x->event,x->window,0));
     unregister_queue(x->connection,x->queue);mv_free(x);
 }
@@ -304,7 +275,7 @@ struct mv_x11_buffer *mv_x11_buffer_create(struct mv_x11 *x,int transport,uint32
 void mv_x11_buffer_destroy(struct mv_x11_buffer *b) {
     struct mv_x11 *x=b->x;struct mv_x11_buffer **p=&x->buffers;
     while(*p&&*p!=b)p=&(*p)->next;if(*p)*p=b->next;
-    (void)free_pixmap(x->connection,b->pixmap);XERR(x);mv_free(b);
+    (void)free_pixmap(x->connection,b->pixmap);mv_free(b);
 }
 static int consume(struct mv_x11 *x,struct idle *e) {
     if(!e)return 0;
@@ -331,7 +302,7 @@ static int consume(struct mv_x11 *x,struct idle *e) {
 int mv_x11_dispatch(struct mv_x11 *x,int timeout_ms) {
     int n=0;struct idle *e;
     while((e=poll_event(x->connection,x->queue)))n+=consume(x,e);
-    XERR(x);
+
     if(x->next_msc==UINT64_MAX)return -1;
     if(failed(x->connection)){note("maton-vulkan: X11 connection failed, window",(long)x->window);return -1;}
     if(n||!timeout_ms)return n;
@@ -409,7 +380,5 @@ int mv_x11_present(struct mv_x11_buffer *b,int fence) {
     if(x->next_msc==UINT64_MAX){note("maton-vulkan: X11 present after surface loss, window",(long)x->window);return 0;}
     b->serial=++x->serial;
     if(!checked(x,present(x->connection,x->window,b->pixmap,b->serial,0,0,0,0,0,0,0,0,x->mailbox?0:x->next_msc,0,0,0,0))){note("maton-vulkan: X11 PresentPixmap rejected, window",(long)x->window);return 0;}
-    /* TEMPDIAG: Big Picture black window - do frames reach this window? */
-    if(!x->presents++||!(x->presents%600))note("maton-vulkan: X11 presents, window",(long)x->window),note("maton-vulkan: X11 presents, count",(long)x->presents),note("maton-vulkan: X11 presents, pixmap",(long)b->pixmap),note("maton-vulkan: X11 presents, size",(long)x->width<<16|x->height),note("maton-vulkan: X11 presents, depth",(long)x->depth),note("maton-vulkan: X11 presents, mailbox msc",x->mailbox?-1L:(long)x->next_msc);
-    b->released=0;x->pending_complete=1;int fl=flush(x->connection);XERR(x);return fl>0;
+    b->released=0;x->pending_complete=1;int fl=flush(x->connection);return fl>0;
 }

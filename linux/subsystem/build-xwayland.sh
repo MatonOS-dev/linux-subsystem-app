@@ -325,21 +325,6 @@ if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$AHB_PATC
 elif ! patch --dry-run --batch --reverse -p1 -d "$SRC/xwayland-24.1.13" < "$AHB_PATCH" >/dev/null 2>&1; then
   die 'Xwayland AHB patch neither applies nor is already applied'
 fi
-# TEMPORARY diagnostic: log every X client close (Steam webhelper reset hunt).
-CLOSE_PATCH=$ROOT/xwayland-close-log.patch
-if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$CLOSE_PATCH" >/dev/null 2>&1; then
-  patch --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$CLOSE_PATCH"
-fi
-# TEMPORARY diagnostic: log QueryExtension misses (xcb EXT_NOTSUPPORTED hunt).
-QE_PATCH=$ROOT/xwayland-qe-log.patch
-if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$QE_PATCH" >/dev/null 2>&1; then
-  patch --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$QE_PATCH"
-fi
-# TEMPORARY diagnostic: centre pixel of presented pixmaps (Big Picture black window).
-DIAG_PATCH=$ROOT/xwayland-present-diag.patch
-if patch --dry-run --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$DIAG_PATCH" >/dev/null 2>&1; then
-  patch --batch --forward -p1 -d "$SRC/xwayland-24.1.13" < "$DIAG_PATCH"
-fi
 configure_meson xwayland "$SRC/xwayland-24.1.13" \
   -Dglx=true -Dglamor=true -Dxv=false -Ddri3=true -Dmitshm=true \
   -Dsecure-rpc=false \
