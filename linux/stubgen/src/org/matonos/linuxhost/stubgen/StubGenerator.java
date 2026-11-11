@@ -43,7 +43,9 @@ public final class StubGenerator {
     // v14 adds bridge visibility for self-task Linux window capabilities.
     // v22 removes the per-package apply_extra service and extra split; stock
     // Flatpak now applies the downloaded data before the single EROFS image is built.
-    public static final int STUB_VERSION_CODE = 25;
+    public static final int STUB_VERSION_CODE = 26;
+    /** Smallest window the stub activity accepts, caption included. */
+    static final int MIN_WINDOW_DP = 96;
     public static final String HOST_ACTIVITY = "org.matonos.linux.stub.StubActivity";
     public static final String HOST_SERVICE = "org.matonos.linux.stub.StubService";
     /** Action every generated app and runtime package answers, so they can see each other. */
@@ -862,6 +864,9 @@ public final class StubGenerator {
             if (packs != null) startEnd("meta-data", attrs(a("name", PACKS_META), a("value", packs)));
             if (dependencyPackages != null && !dependencyPackages.isEmpty()) startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
             startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
+            // Android's default minimum freeform size (220dp) letterboxes small
+            // fixed-size Linux windows (e.g. a 400x129 updater) with black bars.
+            startEnd("layout",attrs(dp("minWidth",MIN_WINDOW_DP),dp("minHeight",MIN_WINDOW_DP)));
             // The base stub deliberately has no MAIN/LAUNCHER filter: the
             // launcher entry lives in the code-free launcher split so a label
             // or icon change never updates the base.
@@ -968,6 +973,8 @@ public final class StubGenerator {
         private int str(String s) { Integer i = strings.get(s); if (i != null) return i; int n = strings.size(); strings.put(s, n); return n; }
         private Attr a(String name, String value) { return new Attr(name, value, 0, 3); }
         private Attr ai(String name, int value) { return new Attr(name, Integer.toString(value), value, 0x10); }
+        /** TYPE_DIMENSION, integer radix, COMPLEX_UNIT_DIP. */
+        private Attr dp(String name, int value) { return new Attr(name, value + "dp", (value << 8) | 1, 0x05); }
         private Attr ab(String name, boolean value) { return new Attr(name, value ? "true" : "false", value ? 1 : 0, 0x12); }
         private List<Attr> attrs(Attr... a) { return Arrays.asList(a); }
         private void namespace(boolean start) throws IOException { int t = start ? 0x0100 : 0x0101; nodes.add(Chunk.namespace(t, str("android"), str(ANDROID))); }
@@ -993,7 +1000,7 @@ public final class StubGenerator {
         }
         private void writeResourceMap(ByteArrayOutputStream out) throws IOException {
             int[] ids = new int[strings.size()];
-            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "scheme", "targetActivity", "versionCode", "revisionCode", "versionName", "minSdkVersion", "targetSdkVersion")) {
+            for (String name : Arrays.asList("authorities", "grantUriPermissions", "version", "certDigest", "theme", "foregroundServiceType", "appComponentFactory", "drawable", "name", "label", "icon", "exported", "enabled", "hasCode", "required", "value", "mimeType", "scheme", "targetActivity", "versionCode", "revisionCode", "versionName", "minSdkVersion", "targetSdkVersion", "minWidth", "minHeight")) {
                 Integer i = strings.get(name); if (i != null) ids[i] = resourceId(name);
             }
             write16(out, 0x0180); write16(out, 8); write32(out, 8 + ids.length * 4); for (int id : ids) write32(out, id);
@@ -1012,6 +1019,7 @@ public final class StubGenerator {
                 case "revisionCode": return 0x010104d5;
                 case "mimeType": return 0x01010026; case "scheme": return 0x01010027; case "versionCode": return 0x0101021b; case "versionName": return 0x0101021c;
                 case "targetActivity": return 0x01010202;
+                case "minWidth": return 0x0101013f; case "minHeight": return 0x01010140;
                 case "minSdkVersion": return 0x0101020c; case "targetSdkVersion": return 0x01010270; default: return 0;
             }
         }

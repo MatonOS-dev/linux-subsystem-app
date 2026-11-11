@@ -35,6 +35,7 @@ public final class LinuxAppStoreService extends Service {
     private static final String QUERY = "org.matonos.permission.QUERY_LINUX_APPS";
     private static final String UPDATE_LOCALES = "org.matonos.linux.UPDATE_LOCALE_EXTENSIONS";
     private static final String LOCALE_PREFS = "flatpak-languages";
+    private static final String REFRESH_STUBS = "org.matonos.linux.REFRESH_OUTDATED_STUBS";
     private final java.util.Set<InstallTransaction> activeInstalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private android.os.PowerManager.WakeLock installWakeLock;
 
@@ -139,14 +140,15 @@ public final class LinuxAppStoreService extends Service {
         worker.execute(this::sweepWork); }
 
     @Override public int onStartCommand(Intent intent,int flags,int startId){
-        if(intent!=null&&UPDATE_LOCALES.equals(intent.getAction())) {
+        if(intent!=null&&(UPDATE_LOCALES.equals(intent.getAction())||REFRESH_STUBS.equals(intent.getAction()))) {
             android.app.NotificationManager manager=getSystemService(android.app.NotificationManager.class);
             manager.createNotificationChannel(new android.app.NotificationChannel("linux-install",
                     "Linux application downloads",android.app.NotificationManager.IMPORTANCE_LOW));
             startForeground(3,new android.app.Notification.Builder(this,"linux-install")
                     .setContentTitle("Linux application download").setSmallIcon(android.R.drawable.stat_sys_download)
                     .setOngoing(true).build(),android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-            worker.execute(()->queueLocaleUpdates(startId));
+            if(REFRESH_STUBS.equals(intent.getAction()))worker.execute(()->queueStubRefresh(startId));
+            else worker.execute(()->queueLocaleUpdates(startId));
             return START_NOT_STICKY;
         }
         if(intent!=null&&"org.matonos.linux.CLEAN_UNUSED_PACKAGES".equals(intent.getAction())){
@@ -361,13 +363,15 @@ public final class LinuxAppStoreService extends Service {
     /** System-scheduled cleanup avoids starting a background service from BOOT_COMPLETED. */
     public static final class CleanupJobService extends android.app.job.JobService {
         private static final int LOCALE_UPDATE_JOB_ID=0x4d415451;
+        private static final int STUB_REFRESH_JOB_ID=0x4d415452;
         private Thread cleanupThread;
         @Override public boolean onStartJob(android.app.job.JobParameters params) {
-            if(params.getJobId()==LOCALE_UPDATE_JOB_ID) {
+            if(params.getJobId()==LOCALE_UPDATE_JOB_ID||params.getJobId()==STUB_REFRESH_JOB_ID) {
+                String action=params.getJobId()==STUB_REFRESH_JOB_ID?REFRESH_STUBS:UPDATE_LOCALES;
                 cleanupThread=new Thread(()->{
                     boolean retry=false;
-                    try { startForegroundService(new Intent(this,LinuxAppStoreService.class).setAction(UPDATE_LOCALES)); }
-                    catch(RuntimeException error) { Log.w(TAG,"Cannot start locale extension update",error);retry=true; }
+                    try { startForegroundService(new Intent(this,LinuxAppStoreService.class).setAction(action)); }
+                    catch(RuntimeException error) { Log.e(TAG,"Cannot start queued store job "+action,error);retry=true; }
                     finally { jobFinished(params,retry);cleanupThread=null; }
                 },"matonos-locale-update-queue");
                 cleanupThread.start();return true;
@@ -388,8 +392,10 @@ public final class LinuxAppStoreService extends Service {
     public static final class BootReceiver extends android.content.BroadcastReceiver {
         private static final int CLEANUP_JOB_ID=0x4d41544f;
         @Override public void onReceive(Context context,Intent intent) {
-            if(Intent.ACTION_LOCALE_CHANGED.equals(intent.getAction())) {
-                android.app.job.JobInfo job=new android.app.job.JobInfo.Builder(CleanupJobService.LOCALE_UPDATE_JOB_ID,
+            if(Intent.ACTION_LOCALE_CHANGED.equals(intent.getAction())||Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())) {
+                int id=Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())?
+                        CleanupJobService.STUB_REFRESH_JOB_ID:CleanupJobService.LOCALE_UPDATE_JOB_ID;
+                android.app.job.JobInfo job=new android.app.job.JobInfo.Builder(id,
                         new ComponentName(context,CleanupJobService.class))
                         .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY).setPersisted(true).build();
                 android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
@@ -411,6 +417,40 @@ public final class LinuxAppStoreService extends Service {
         synchronized(this) {
             if(activeInstalls.isEmpty()) { stopForeground(STOP_FOREGROUND_REMOVE);stopSelf(startId); }
         }
+    }
+
+    /** After a subsystem update, regenerate every stub built by an older generator. */
+    private void queueStubRefresh(int startId) {
+        java.util.List<String> refs=new java.util.ArrayList<>();
+        try {
+            for(PackageInfo info:getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
+                if(info.packageName==null||!info.packageName.startsWith("flatpak.")||!packageSignerMatches(info))continue;
+                if(info.getLongVersionCode()==StubGenerator.STUB_VERSION_CODE)continue;
+                String ref=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
+                        info.splitNames,info.applicationInfo.splitSourceDirs).ref;
+                // Runtime stubs carry no activity; only app stubs change with the generator.
+                if(ref.startsWith("app/"))refs.add(ref);
+            }
+        } catch(Exception error) {
+            Log.e(TAG,"Cannot enumerate outdated stubs",error);
+            finishLocaleQueue(startId);return;
+        }
+        Log.i(TAG,"Refreshing "+refs.size()+" outdated stubs: "+refs);
+        if(refs.isEmpty()) { finishLocaleQueue(startId);return; }
+        ILinuxAppStoreCallback callback=new ILinuxAppStoreCallback.Stub() {
+            @Override public void onProgress(String id,String phase,int percent,long done,long total) {}
+            @Override public void onResult(String id,boolean ok,String error) {
+                if(ok)Log.i(TAG,"Stub refresh "+id+" succeeded");else Log.e(TAG,"Stub refresh "+id+" failed: "+error);
+            }
+        };
+        // One at a time: each repair stages a full deployment.
+        for(String ref:refs) {
+            String id="refresh-"+java.util.UUID.randomUUID().toString().replace("-","");
+            Operation op=new Operation(android.os.Process.myUid(),id,"repair",ref,null,null,null,callback);
+            operations.put(operationKey(op.uid,id),op);
+            execute(id,op);
+        }
+        finishLocaleQueue(startId);
     }
 
     private void queueLocaleUpdates(int startId) {
