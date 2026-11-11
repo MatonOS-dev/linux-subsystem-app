@@ -2454,75 +2454,19 @@ static void android_pc_cache_invalidate_range(uintptr_t lo,uintptr_t hi){
  * transition; the per-trap local/interrupted detail is kept for that line. */
 static unsigned long trace_stack_base,trace_stack_size;
 static long trace_stack_flags;
-static void handler(int sig,siginfo_t *info,void *opaque) {
-    void *paused_direct=vfs_direct_pause();
-    uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
-    ucontext_t *uc=opaque;
-    volatile unsigned char *selector=dispatch_selector;
-    unsigned char saved=0;
-    if(selector) {saved=*selector;*selector=SYSCALL_DISPATCH_FILTER_ALLOW;}
-    /* The retried clone inherits this pending record. Only its child adopts
-     * new namespace flags; the parent's monitor keeps the original namespace. */
-    if(namespace_clone_parent){
-        if(RAW(PROXY_SC_getpid,0,0,0,0,0,0)!=namespace_clone_parent){
-            vfs_raw_count_fork_child();proxy_count_child();
-            ipc_fork();
-            namespaces|=namespace_clone_flags;
-            if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;
-        }
-        namespace_clone_parent=0;namespace_clone_flags=0;
-    }
-    struct thread_state *thread=NULL;
-    if(proxy_trace) {
-        stack_t ss={0};RAW(PROXY_SC_sigaltstack,0,&ss,0,0,0,0);
-        if((uintptr_t)ss.ss_sp!=trace_stack_base || ss.ss_size!=trace_stack_size ||
-                ss.ss_flags!=trace_stack_flags){
-            trace_stack_base=(uintptr_t)ss.ss_sp;trace_stack_size=ss.ss_size;trace_stack_flags=ss.ss_flags;
-            emit("v3 handler-stack ");trace_word("local=",(uintptr_t)&ss);
-            trace_word("interrupted=",ARCH_CONTEXT(uc,ARCH_STACK));
-            trace_word("base=",trace_stack_base);trace_word("size=",trace_stack_size);
-            trace_word("flags=",trace_stack_flags);emit("\n");
-        }
-    }
-    uintptr_t internal_pc=(uintptr_t)info->si_call_addr;
-    struct thread_state *direct=NULL;
-    if(info->si_code==SYS_SECCOMP &&
-       (internal_pc==arch_gateway_pc(0) || internal_pc+2==arch_gateway_pc(0)))direct=thread_state();
-    int internal_trap=(direct && direct->direct_depth) || proxy_rewrite_internal_site(internal_pc);
-    if(info->si_code!=SYS_SECCOMP || internal_trap) {
-        if(proxy_trace) {
-            emit("v3 signal-delivery sig="); crash_hex(sig);
-            trace_word(" code=",info->si_code);
-            trace_word(" syscall=",(uint64_t)info->si_syscall);
-            trace_word(" call_addr=",(uintptr_t)info->si_call_addr);
-            trace_word(" pc=",ARCH_CONTEXT(uc,ARCH_PC)); emit("\n");
-        }
-        dispatch_app(sig,info,opaque);
-        (*arch_signal_mask(uc))&=~SIGSYS_BIT;
-        RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
-        arch_signal_stack_ready(uc);
-        if(selector && dispatch_selector==selector) *selector=saved;
-        vfs_direct_resume(paused_direct);
-        return;
-    }
-    vfs_trap_resume();
-    PROFILE_BEGIN();
-    thread=thread_state();
-    if(thread)vfs_trap_begin(thread->signal_stack,thread->signal_stack_size);
-    uint64_t raw_calls_at_entry=proxy_raw_count_now();
-    long nr,original;
-    proxy_arg_t a[6]={ARCH_CONTEXT(uc,ARCH_ARG0),ARCH_CONTEXT(uc,ARCH_ARG1),
-        ARCH_CONTEXT(uc,ARCH_ARG2),ARCH_CONTEXT(uc,ARCH_ARG3),
-        ARCH_CONTEXT(uc,ARCH_ARG4),ARCH_CONTEXT(uc,ARCH_ARG5)};
-    struct arch_call call=arch_decode_call(info->si_syscall,a);
-    nr=original=call.id;
-    long count_id=nr;
-    if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
+/* Translate one trapped syscall. Returns the result for trap_finish, or sets
+ * *resumed when the context was already rewritten (native fast path, app
+ * SIGSYS delivery, restarted poll, clone retry) and must not be finished. */
+static long trap_syscall(ucontext_t *uc,siginfo_t *info,struct thread_state *thread,
+        struct arch_call call,proxy_arg_t *a,long *nrp,
+        volatile unsigned char **selector,unsigned char *saved,int *resumed){
+    long nr=*nrp,original=nr;
+    *resumed=0;
     long result=-ENOSYS;
-    if(call.error){result=call.error;goto finish;}
+    if(call.error){result=call.error;return result;}
     /* Keep this ahead of Android-library fast paths, Flatpak's emulated
      * seccomp and i386 adoption, all of which can otherwise consume it. */
-    if(nr==PROXY_SC_personality) {result=personality_call(a,thread);goto finish;}
+    if(nr==PROXY_SC_personality) {result=personality_call(a,thread);return result;}
     proxy_rewrite_trap_site((uintptr_t)info->si_call_addr,info->si_syscall);
     uintptr_t syscall_pc=(uintptr_t)info->si_call_addr;
     int syscall_mapping=android_library_mapping_state(syscall_pc);
@@ -2549,7 +2493,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             trace_word(" result=",result);emit("\n");
         }
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_finish_call(call,result);
-        goto clean_mask;
+        {*resumed=1;return 0;}
     }
     /* Nested bwrap inherits the outer payload filter. Its namespace calls
      * construct our virtual filesystem/process view, not kernel namespaces;
@@ -2566,7 +2510,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
          * log every occurrence with its site. */
         proxy_log("blocked-enosys",info->si_syscall,filter_action&SECCOMP_RET_DATA);
         proxy_log("blocked-enosys-pc",original,(long)(uintptr_t)info->si_call_addr);
-        result=-ENOSYS;goto finish;
+        result=-ENOSYS;return result;
     }
     if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_TRAP) {
         /* Deliver against the interrupted payload frame, never a resident raw
@@ -2577,15 +2521,15 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         trap.si_syscall=info->si_syscall;trap.si_arch=ARCH_AUDIT;
         trap.si_call_addr=info->si_call_addr;
         dispatch_app(SIGSYS,&trap,uc);
-        goto clean_mask;
+        {*resumed=1;return 0;}
     }
     result=0;
     if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_ERRNO)
         result=payload_seccomp_errno_value(filter_action);
-    if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_ERRNO){if(proxy_trace)proxy_log("flatpak-seccomp-deny",info->si_syscall,result);goto finish;}
+    if((filter_action&SECCOMP_RET_ACTION_FULL)==SECCOMP_RET_ERRNO){if(proxy_trace)proxy_log("flatpak-seccomp-deny",info->si_syscall,result);return result;}
 #if defined(__i386__) && defined(MATON_GPU_BRIDGE)
     extern int adopt_i386_syscall(long,proxy_arg_t *,void *,long *);
-    if(adopt_i386_syscall(nr,a,uc,&result))goto finish;
+    if(adopt_i386_syscall(nr,a,uc,&result))return result;
 #endif
     /* signalfd readiness is evaluated against the thread's signal state.
      * Infinite poll must wait outside the SIGSYS frame, with the application's
@@ -2620,19 +2564,19 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
         ARCH_CONTEXT(uc,ARCH_ARG2)=0;ARCH_CONTEXT(uc,ARCH_ARG3)=0;
         ARCH_CONTEXT(uc,ARCH_ARG4)=8;arch_restart_syscall(uc);
         if(proxy_trace)proxy_log("android-poll-retry",nr,0);
-        goto clean_mask;
+        {*resumed=1;return 0;}
     }
-    nr=modernize(nr,a,&result);
-    if(nr<0)goto finish;
-    if(native_mapping_denied(nr,a)){proxy_log("fail native-overlap",nr,(long)a[0]);proxy_log("fail map-args",(long)a[1],(long)a[2]);result=-EACCES;goto finish;}
-    if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);goto finish;}
-    if(nr==PROXY_SC_mprotect && (a[2]&PROT_EXEC) && app_allowed(nr)){result=proxy_exec_mprotect(a);goto finish;}
-    if(ipc_ours(nr)){result=ipc_call(nr,a);goto finish;}
+    nr=modernize(nr,a,&result);*nrp=nr;
+    if(nr<0)return result;
+    if(native_mapping_denied(nr,a)){proxy_log("fail native-overlap",nr,(long)a[0]);proxy_log("fail map-args",(long)a[1],(long)a[2]);result=-EACCES;return result;}
+    if(nr==PROXY_SC_mmap && !(a[3]&MAP_ANONYMOUS) && (a[2]&PROT_EXEC)){result=proxy_file_mmap(a);return result;}
+    if(nr==PROXY_SC_mprotect && (a[2]&PROT_EXEC) && app_allowed(nr)){result=proxy_exec_mprotect(a);return result;}
+    if(ipc_ours(nr)){result=ipc_call(nr,a);return result;}
     int net_handled=0;result=net_call(nr,a,(namespaces&CLONE_NEWNET)!=0,&net_handled);
-    if(net_handled)goto finish;
+    if(net_handled)return result;
     result=-ENOSYS;
     if(!ours(nr) && nr!=PROXY_SC_close && nr!=PROXY_SC_close_range &&
-       nr!=PROXY_SC_dup2 && nr!=PROXY_SC_dup3) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);goto finish;}
+       nr!=PROXY_SC_dup2 && nr!=PROXY_SC_dup3) {if(app_allowed(nr))result=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);return result;}
     switch(nr) {
     case PROXY_SC_uname:
     case PROXY_SC_mprotect:case PROXY_SC_munmap:case PROXY_SC_mremap:
@@ -2708,7 +2652,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
                 unsigned char previous=*next;*next=SYSCALL_DISPATCH_FILTER_ALLOW;
                 result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);
                 if(!result) {dispatch_selector=next;dispatch_owner=tid;
-                    if(!selector) {selector=next;saved=previous;}
+                    if(!*selector) {*selector=next;*saved=previous;}
                 } else *next=previous;
             } else if(a[1]==PR_SYS_DISPATCH_OFF) {
                 result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);
@@ -2782,7 +2726,7 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
             case SIG_SETMASK:next=mask;break;
             case SIG_BLOCK:next|=mask;break;
             case SIG_UNBLOCK:next&=~mask;break;
-            default:result=-EINVAL;goto finish;
+            default:result=-EINVAL;return result;
             }
         }
         if(a[2] && proxy_copy((void *)(uintptr_t)a[2],&old,8)){result=-EFAULT;break;}
@@ -2905,7 +2849,7 @@ clone_retry:
         proxy_clone_resume=ARCH_CONTEXT(uc,ARCH_PC);
         ARCH_CONTEXT(uc,ARCH_RESULT)=arch_encode_syscall(nr);ARCH_CONTEXT(uc,ARCH_PC)=(uintptr_t)proxy_clone_entry;
         if(proxy_trace)proxy_log("ours-clone-retry",nr,0);
-        goto clean_mask;
+        {*resumed=1;return 0;}
     case PROXY_SC_clone3:result=-ENOSYS;break; /* libc falls back to clone. */
     case PROXY_SC_execve:case PROXY_SC_execveat: {
         const char *path=(const char *)(uintptr_t)a[nr==PROXY_SC_execve?0:1];
@@ -2990,7 +2934,12 @@ clone_retry:
     }
     default:break;
     }
-finish:
+    return result;
+}
+/* Trace, rewrite-after and cache invalidation for a translated syscall, then
+ * store its result in the interrupted context. */
+static void trap_finish(ucontext_t *uc,siginfo_t *info,struct thread_state *thread,
+        struct arch_call call,proxy_arg_t *a,long nr,long original,long result){
     /* Observe the actual kernel answer, including Bionic startup's persona.
      * Do not infer the OS architecture from this loader's ELF class. */
     if(proxy_trace && nr==PROXY_SC_uname) {
@@ -3051,7 +3000,74 @@ finish:
         }
     }
     else if(result==-ENOSYS)unhandled_once(original,info->si_syscall,(uintptr_t)info->si_call_addr);
-clean_mask:
+}
+static void handler(int sig,siginfo_t *info,void *opaque) {
+    void *paused_direct=vfs_direct_pause();
+    uint64_t count_started=proxy_count_fd>=0?proxy_count_now():0;
+    ucontext_t *uc=opaque;
+    volatile unsigned char *selector=dispatch_selector;
+    unsigned char saved=0;
+    if(selector) {saved=*selector;*selector=SYSCALL_DISPATCH_FILTER_ALLOW;}
+    /* The retried clone inherits this pending record. Only its child adopts
+     * new namespace flags; the parent's monitor keeps the original namespace. */
+    if(namespace_clone_parent){
+        if(RAW(PROXY_SC_getpid,0,0,0,0,0,0)!=namespace_clone_parent){
+            vfs_raw_count_fork_child();proxy_count_child();
+            ipc_fork();
+            namespaces|=namespace_clone_flags;
+            if((namespace_clone_flags&CLONE_NEWUSER) && userns_remaining && userns_remaining!=~0U)userns_remaining--;
+        }
+        namespace_clone_parent=0;namespace_clone_flags=0;
+    }
+    struct thread_state *thread=NULL;
+    if(proxy_trace) {
+        stack_t ss={0};RAW(PROXY_SC_sigaltstack,0,&ss,0,0,0,0);
+        if((uintptr_t)ss.ss_sp!=trace_stack_base || ss.ss_size!=trace_stack_size ||
+                ss.ss_flags!=trace_stack_flags){
+            trace_stack_base=(uintptr_t)ss.ss_sp;trace_stack_size=ss.ss_size;trace_stack_flags=ss.ss_flags;
+            emit("v3 handler-stack ");trace_word("local=",(uintptr_t)&ss);
+            trace_word("interrupted=",ARCH_CONTEXT(uc,ARCH_STACK));
+            trace_word("base=",trace_stack_base);trace_word("size=",trace_stack_size);
+            trace_word("flags=",trace_stack_flags);emit("\n");
+        }
+    }
+    uintptr_t internal_pc=(uintptr_t)info->si_call_addr;
+    struct thread_state *direct=NULL;
+    if(info->si_code==SYS_SECCOMP &&
+       (internal_pc==arch_gateway_pc(0) || internal_pc+2==arch_gateway_pc(0)))direct=thread_state();
+    int internal_trap=(direct && direct->direct_depth) || proxy_rewrite_internal_site(internal_pc);
+    if(info->si_code!=SYS_SECCOMP || internal_trap) {
+        if(proxy_trace) {
+            emit("v3 signal-delivery sig="); crash_hex(sig);
+            trace_word(" code=",info->si_code);
+            trace_word(" syscall=",(uint64_t)info->si_syscall);
+            trace_word(" call_addr=",(uintptr_t)info->si_call_addr);
+            trace_word(" pc=",ARCH_CONTEXT(uc,ARCH_PC)); emit("\n");
+        }
+        dispatch_app(sig,info,opaque);
+        (*arch_signal_mask(uc))&=~SIGSYS_BIT;
+        RAW(PROXY_SC_sigaltstack,0,arch_signal_stack(uc),0,0,0,0);
+        arch_signal_stack_ready(uc);
+        if(selector && dispatch_selector==selector) *selector=saved;
+        vfs_direct_resume(paused_direct);
+        return;
+    }
+    vfs_trap_resume();
+    PROFILE_BEGIN();
+    thread=thread_state();
+    if(thread)vfs_trap_begin(thread->signal_stack,thread->signal_stack_size);
+    uint64_t raw_calls_at_entry=proxy_raw_count_now();
+    long nr,original;
+    proxy_arg_t a[6]={ARCH_CONTEXT(uc,ARCH_ARG0),ARCH_CONTEXT(uc,ARCH_ARG1),
+        ARCH_CONTEXT(uc,ARCH_ARG2),ARCH_CONTEXT(uc,ARCH_ARG3),
+        ARCH_CONTEXT(uc,ARCH_ARG4),ARCH_CONTEXT(uc,ARCH_ARG5)};
+    struct arch_call call=arch_decode_call(info->si_syscall,a);
+    nr=original=call.id;
+    long count_id=nr;
+    if(proxy_count_fd>=0 && nr>=0 && nr<PROXY_SC_count)__atomic_fetch_add(&proxy_counts[nr],1,__ATOMIC_RELAXED);
+    int resumed;
+    long result=trap_syscall(uc,info,thread,call,a,&nr,&selector,&saved,&resumed);
+    if(!resumed)trap_finish(uc,info,thread,call,a,nr,original,result);
     /* Counter-disabled builds return zero here. Emitting a line of eight
      * zeroes cost dozens of log writes per filesystem syscall during runtime
      * scans, without providing any diagnostic information. */
