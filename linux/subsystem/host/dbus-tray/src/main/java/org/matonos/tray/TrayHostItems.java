@@ -1,5 +1,6 @@
 package org.matonos.tray;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.os.Bundle;
 import java.util.ArrayList;
@@ -10,12 +11,12 @@ import java.util.List;
 final class TrayHostItems {
   private TrayHostItems() {}
 
-  static List<Bundle> snapshot() {
+  static List<Bundle> snapshot(Context context) {
     List<TrayItem> ordered = new ArrayList<>(TrayService.ITEMS.values());
     ordered.sort(Comparator.comparingLong(item -> item.registrationOrder));
     List<Bundle> result = new ArrayList<>(ordered.size());
     for (TrayItem item : ordered) {
-      Bundle bundle = toBundle(item);
+      Bundle bundle = toBundle(context, item);
       if (bundle != null) {
         result.add(bundle);
       }
@@ -23,7 +24,14 @@ final class TrayHostItems {
     return result;
   }
 
-  static Bundle toBundle(TrayItem item) {
+  static Bundle toBundle(Context context, TrayItem item) {
+    if ("Passive".equalsIgnoreCase(item.status)) {
+      return null;
+    }
+    // Same resolver chain as the pill (theme path, icon theme, pixmap, app icon),
+    // so Launcher3 shows the icon the host desktop would show.
+    int sizePx = Math.round(ICON_DP * context.getResources().getDisplayMetrics().density);
+    Bitmap icon = item.statusIcon(context, sizePx);
     Bundle bundle = new Bundle();
     BundleWriter writer =
         new BundleWriter() {
@@ -37,17 +45,18 @@ final class TrayHostItems {
             bundle.putParcelable(key, value);
           }
         };
-    return writeToBundle(item, writer) ? bundle : null;
+    return writeToBundle(item, icon, writer) ? bundle : null;
   }
 
-  static boolean writeToBundle(TrayItem item, BundleWriter bundle) {
+  private static final int ICON_DP = 48;
+
+  static boolean writeToBundle(TrayItem item, Bitmap icon, BundleWriter bundle) {
     if ("Passive".equalsIgnoreCase(item.status)) {
       return false;
     }
     bundle.putString("key", TrayService.key(item.attachId, item.service));
     bundle.putString("title", item.title);
     bundle.putString("status", item.status);
-    Bitmap icon = item.icon;
     if (icon != null) {
       bundle.putParcelable("icon", icon);
     }

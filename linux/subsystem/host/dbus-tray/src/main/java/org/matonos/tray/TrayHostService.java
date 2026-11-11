@@ -41,7 +41,7 @@ public final class TrayHostService extends Service {
           synchronized (LISTENERS) {
             LISTENERS.register(listener);
           }
-          sendItems(listener, TrayHostItems.snapshot());
+          sendItems(listener, TrayHostItems.snapshot(TrayHostService.this));
         }
 
         @Override
@@ -127,7 +127,9 @@ public final class TrayHostService extends Service {
   }
 
   static void modelChanged() {
-    List<android.os.Bundle> items = TrayHostItems.snapshot();
+    TrayHostService service = instance;
+    if (service == null) return; // no listeners or pill without the host service
+    List<android.os.Bundle> items = TrayHostItems.snapshot(service);
     int count;
     synchronized (LISTENERS) {
       count = LISTENERS.beginBroadcast();

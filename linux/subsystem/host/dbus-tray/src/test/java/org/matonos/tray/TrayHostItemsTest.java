@@ -19,7 +19,7 @@ public final class TrayHostItemsTest {
     active.iconName = "example-symbolic";
 
     RecordingBundle bundle = new RecordingBundle();
-    TrayHostItems.writeToBundle(active, bundle);
+    TrayHostItems.writeToBundle(active, null, bundle);
 
     assertEquals("7\norg.example.Tray", bundle.values.get("key"));
     assertEquals("Example", bundle.values.get("title"));
@@ -28,19 +28,19 @@ public final class TrayHostItemsTest {
     assertFalse(bundle.values.containsKey("icon"));
 
     active.status = "Passive";
-    assertNull(TrayHostItems.toBundle(active));
+    assertNull(TrayHostItems.toBundle(null, active));
   }
 
   @Test
   public void passiveItemIsOmittedAndIconIsOptional() {
     TrayItem item = new TrayItem(9, "org.example.Passive", "/StatusNotifierItem", ":1.2", null);
     item.status = "Passive";
-    assertFalse(TrayHostItems.writeToBundle(item, new RecordingBundle()));
+    assertFalse(TrayHostItems.writeToBundle(item, null, new RecordingBundle()));
 
     item.status = "NeedsAttention";
     item.icon = null;
     RecordingBundle bundle = new RecordingBundle();
-    assertTrue(TrayHostItems.writeToBundle(item, bundle));
+    assertTrue(TrayHostItems.writeToBundle(item, null, bundle));
     assertEquals("NeedsAttention", bundle.values.get("status"));
     assertFalse(bundle.values.containsKey("icon"));
   }
