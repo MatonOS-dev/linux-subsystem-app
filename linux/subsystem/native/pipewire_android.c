@@ -22,8 +22,7 @@
 
 #define TAG "MatonAudio"
 #define LOG(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
-#define FRAMES 8192u
-#define PRIME 2048u /* ~43 ms at 48 kHz */
+#define MAX_QUANTUM 2048u /* default.clock.max-quantum in maton.conf */
 #define PORTS 256u
 struct port {
     uint32_t id, node, input;
@@ -47,7 +46,10 @@ static struct {
     atomic_bool primed;
     unsigned long reported_underruns, reported_dropped;
     bool reported_playback;
-    int16_t samples[FRAMES * 2];
+    // Sized from the AAudio burst: a callback drains a whole burst at once
+    // (4098 frames on the VM), so the prime must cover burst + one quantum.
+    unsigned frames, prime;
+    int16_t *samples;
 } audio;
 static int runtime_dir_fd = -1;
 
@@ -62,13 +64,13 @@ static aaudio_data_callback_result_t android_data(AAudioStream *stream, void *us
     // Hold playback until PRIME frames are queued so PipeWire scheduling jitter
     // does not punch zero-filled gaps (audible crackle) into the output.
     if (!atomic_load_explicit(&audio.primed, memory_order_relaxed)) {
-        if (write - read < PRIME) { memset(output, 0, (size_t)frames * 4); return AAUDIO_CALLBACK_RESULT_CONTINUE; }
+        if (write - read < audio.prime) { memset(output, 0, (size_t)frames * 4); return AAUDIO_CALLBACK_RESULT_CONTINUE; }
         atomic_store_explicit(&audio.primed, true, memory_order_relaxed);
     }
     for (int32_t i = 0; i < frames; i++) {
         if (read != write) {
-            output[2*i] = audio.samples[(read % FRAMES)*2];
-            output[2*i+1] = audio.samples[(read % FRAMES)*2+1];
+            output[2*i] = audio.samples[(read & (audio.frames - 1))*2];
+            output[2*i+1] = audio.samples[(read & (audio.frames - 1))*2+1];
             if (output[2*i] || output[2*i+1]) nonzero++;
             read++;
         } else {
@@ -106,6 +108,22 @@ static int open_android(void) {
             AAudioStream_getFormat(audio.android) != AAUDIO_FORMAT_PCM_I16) {
         AAudioStream_close(audio.android); audio.android = NULL; return -1;
     }
+    int32_t burst = AAudioStream_getFramesPerBurst(audio.android);
+    if (burst <= 0 || burst > (1 << 24)) {
+        LOG("AAudio burst %d unusable", burst);
+        AAudioStream_close(audio.android); audio.android = NULL; return -1;
+    }
+    unsigned prime = (unsigned)burst + MAX_QUANTUM, frames = 1;
+    while (frames < 2 * prime) frames <<= 1;
+    if (frames > audio.frames) {
+        // Reopen with a larger burst: only the PW loop writes, callback is stopped.
+        int16_t *samples = calloc((size_t)frames * 2, sizeof(int16_t));
+        if (!samples) { LOG("Cannot allocate %u-frame audio ring", frames); AAudioStream_close(audio.android); audio.android = NULL; return -1; }
+        free(audio.samples); audio.samples = samples; audio.frames = frames;
+        atomic_store(&audio.read, 0); atomic_store(&audio.write, 0);
+    }
+    audio.prime = prime;
+    __android_log_print(ANDROID_LOG_INFO, TAG, "AAudio burst=%d prime=%u ring=%u", burst, prime, audio.frames);
     atomic_store(&audio.primed, false);
     atomic_store(&audio.disconnected, false);
     return 0;
@@ -138,11 +156,11 @@ static void process(void *user) {
             unsigned size = SPA_MIN(data->chunk->size, data->maxsize - offset);
             unsigned read = atomic_load_explicit(&audio.read, memory_order_acquire);
             unsigned write = atomic_load_explicit(&audio.write, memory_order_relaxed);
-            unsigned frames = SPA_MIN(size / 4, FRAMES - (write - read));
+            unsigned frames = SPA_MIN(size / 4, audio.frames - (write - read));
             if (frames < size / 4) atomic_fetch_add_explicit(&audio.dropped_frames, size / 4 - frames, memory_order_relaxed);
             const unsigned char *input = (unsigned char *)data->data + offset;
             for (unsigned i = 0; i < frames; i++)
-                memcpy(&audio.samples[((write+i)%FRAMES)*2], input+i*4, 4);
+                memcpy(&audio.samples[((write+i)&(audio.frames-1))*2], input+i*4, 4);
             atomic_store_explicit(&audio.write, write+frames, memory_order_release);
         }
     }
