@@ -86,10 +86,25 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         if (width <= 0 || height <= 0) return null;
         android.graphics.Rect display = context.getSystemService(android.view.WindowManager.class)
                 .getMaximumWindowMetrics().getBounds();
-        int w = Math.min(width, display.width()), h = Math.min(height, display.height());
+        // Desktop task bounds include the caption bar; the app's size is the content area.
+        int w = Math.min(width, display.width()), h = Math.min(height + captionHeight(context), display.height());
         int left = display.left + (display.width() - w) / 2, top = display.top + (display.height() - h) / 2;
         return android.app.ActivityOptions.makeBasic()
                 .setLaunchBounds(new android.graphics.Rect(left, top, left + w, top + h)).toBundle();
+    }
+
+    private static final String WINDOW_PREFS = "window", CAPTION = "caption";
+    private static int captionHeight(android.content.Context context) {
+        return context.getSharedPreferences(WINDOW_PREFS, MODE_PRIVATE).getInt(CAPTION, 0);
+    }
+    /** Remember the caption height Android draws inside task bounds. Desktop
+     * captions are not reported as captionBar insets, so measure the gap
+     * between the task bounds and the laid-out content. */
+    private void learnCaption(android.view.View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+        if (!isInMultiWindowMode() || b - t <= 0) return;
+        int caption = getWindowManager().getCurrentWindowMetrics().getBounds().height() - (b - t);
+        if (caption > 0 && caption != captionHeight(this))
+            getSharedPreferences(WINDOW_PREFS, MODE_PRIVATE).edit().putInt(CAPTION, caption).apply();
     }
 
     /* Window id -> the activity showing it, for window-state requests. */
@@ -363,6 +378,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             }
         };view.getHolder().addCallback(this);
         view.setFocusableInTouchMode(true);
+        view.addOnLayoutChangeListener(this::learnCaption);
         view.setOnTouchListener((v,event)->motion(event));
         view.setOnGenericMotionListener((v,event)->motion(event));
         setContentView(view);view.requestFocus();
