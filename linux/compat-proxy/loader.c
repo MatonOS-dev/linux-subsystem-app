@@ -525,6 +525,13 @@ static void commit_elf(struct mapped *m){
 static uintptr_t stack_string(uintptr_t *cursor,const char *s) {
     size_t n=p_len(s)+1; *cursor-=n; p_copy((void *)*cursor,s,n); return *cursor;
 }
+/* Undo a partly built exec image: maps[0] main, maps[1] interpreter. */
+static int exec_failed(struct mapped *maps,long stack,size_t stack_size,uintptr_t *av,uintptr_t *ev,int r) {
+    if(proxy_trace)proxy_log("exec-load-failed",r,0);
+    release_spans(&maps[0],1);release_spans(&maps[1],1);
+    RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);
+    vfs_free(av);vfs_free(ev);vfs_free(maps);return r;
+}
 static int load_inner(const char *path,char *const *argv,char *const *env,struct image *image,unsigned depth) {
     if(depth>4) return -ELOOP;
     loader_trace_resolve(path,"exec-resolve");
@@ -580,18 +587,18 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     struct mapped *maps=vfs_alloc(2*sizeof(*maps));if(!maps){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);vfs_free(av);vfs_free(ev);EXEC_RETURN(-ENOMEM);}
     maps[0].spans=maps[1].spans=NULL;maps[0].count=maps[1].count=0;
     struct mapped *main=&maps[0],*interp=&maps[1];int r=map_elf(resolved,fd,main);loader_close(fd);vfs_free(resolved);fd=-1;resolved=NULL;if(proxy_trace)proxy_log("exec-map-main",r,main->count);
-    if(r)goto failed;
+    if(r)return exec_failed(maps,stack,stack_size,av,ev,r);
     uintptr_t entry=main->entry;
     if(main->interp[0]){
         loader_trace_path("v3 exec PT_INTERP ",main->interp);
         loader_trace_resolve(main->interp,"interp-resolve");
         char *translated=vfs_resolve(AT_FDCWD,main->interp,1,&path_error);
-        if(!translated){r=path_error;goto failed;}
-        r=map_elf(translated,-1,interp);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-interp",r,interp->count);if(r)goto failed;entry=interp->entry;
+        if(!translated){r=path_error;return exec_failed(maps,stack,stack_size,av,ev,r);}
+        r=map_elf(translated,-1,interp);vfs_free(translated);if(proxy_trace)proxy_log("exec-map-interp",r,interp->count);if(r)return exec_failed(maps,stack,stack_size,av,ev,r);entry=interp->entry;
     }
     uintptr_t platform=stack_string(&cur,ARCH_PLATFORM);
     cur-=16; uintptr_t random=cur;
-    if(RAW(PROXY_SC_getrandom,random,16,0,0,0,0)!=16){r=-EIO;goto failed;}
+    if(RAW(PROXY_SC_getrandom,random,16,0,0,0,0)!=16){r=-EIO;return exec_failed(maps,stack,stack_size,av,ev,r);}
     arch_elf_auxv aux[]={
         {AT_PHDR,{main->phdr}},{AT_PHENT,{sizeof(arch_elf_phdr)}},{AT_PHNUM,{main->phnum}},
         {AT_PAGESZ,{PAGE}},{AT_BASE,{interp->base}},{AT_ENTRY,{main->entry}},
@@ -618,11 +625,6 @@ static int load_inner(const char *path,char *const *argv,char *const *env,struct
     }
 #endif
     vfs_free(maps);return 0;
-failed:
-    if(proxy_trace)proxy_log("exec-load-failed",r,0);
-    release_spans(main,1);release_spans(interp,1);
-    RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);
-    vfs_free(av);vfs_free(ev);vfs_free(maps);return r;
 #undef EXEC_RETURN
 }
 int proxy_load(const char *path,char *const *argv,char *const *env,struct image *image) {
