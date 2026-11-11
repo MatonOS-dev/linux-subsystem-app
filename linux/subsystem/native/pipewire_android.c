@@ -23,6 +23,7 @@
 #define TAG "MatonAudio"
 #define LOG(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define FRAMES 8192u
+#define PRIME 2048u /* ~43 ms at 48 kHz */
 #define PORTS 256u
 struct port {
     uint32_t id, node, input;
@@ -42,7 +43,9 @@ static struct {
     AAudioStream *android;
     atomic_uint read, write;
     atomic_bool disconnected;
-    atomic_ulong nonzero_frames;
+    atomic_ulong nonzero_frames, underruns, dropped_frames;
+    atomic_bool primed;
+    unsigned long reported_underruns, reported_dropped;
     bool reported_playback;
     int16_t samples[FRAMES * 2];
 } audio;
@@ -56,13 +59,24 @@ static aaudio_data_callback_result_t android_data(AAudioStream *stream, void *us
     unsigned read = atomic_load_explicit(&audio.read, memory_order_relaxed);
     unsigned write = atomic_load_explicit(&audio.write, memory_order_acquire);
     unsigned nonzero = 0;
+    // Hold playback until PRIME frames are queued so PipeWire scheduling jitter
+    // does not punch zero-filled gaps (audible crackle) into the output.
+    if (!atomic_load_explicit(&audio.primed, memory_order_relaxed)) {
+        if (write - read < PRIME) { memset(output, 0, (size_t)frames * 4); return AAUDIO_CALLBACK_RESULT_CONTINUE; }
+        atomic_store_explicit(&audio.primed, true, memory_order_relaxed);
+    }
     for (int32_t i = 0; i < frames; i++) {
         if (read != write) {
             output[2*i] = audio.samples[(read % FRAMES)*2];
             output[2*i+1] = audio.samples[(read % FRAMES)*2+1];
             if (output[2*i] || output[2*i+1]) nonzero++;
             read++;
-        } else {output[2*i] = output[2*i+1] = 0;}
+        } else {
+            memset(output + 2*i, 0, (size_t)(frames - i) * 4);
+            atomic_fetch_add_explicit(&audio.underruns, 1, memory_order_relaxed);
+            atomic_store_explicit(&audio.primed, false, memory_order_relaxed);
+            break;
+        }
     }
     atomic_store_explicit(&audio.read, read, memory_order_release);
     atomic_fetch_add_explicit(&audio.nonzero_frames, nonzero, memory_order_relaxed);
@@ -92,6 +106,7 @@ static int open_android(void) {
             AAudioStream_getFormat(audio.android) != AAUDIO_FORMAT_PCM_I16) {
         AAudioStream_close(audio.android); audio.android = NULL; return -1;
     }
+    atomic_store(&audio.primed, false);
     atomic_store(&audio.disconnected, false);
     return 0;
 }
@@ -101,6 +116,11 @@ static void process(void *user) {
         __android_log_print(ANDROID_LOG_INFO, TAG,
                 "Android consumed non-silent PipeWire PCM (UID %u)", (unsigned)getuid());
         audio.reported_playback = true;
+    }
+    unsigned long underruns = atomic_load(&audio.underruns), dropped = atomic_load(&audio.dropped_frames);
+    if (underruns != audio.reported_underruns || dropped != audio.reported_dropped) {
+        LOG("Android output glitch: %lu underruns, %lu dropped frames (total)", underruns, dropped);
+        audio.reported_underruns = underruns; audio.reported_dropped = dropped;
     }
     struct pw_buffer *buffer = pw_stream_dequeue_buffer(audio.sink);
     if (!buffer) return;
@@ -119,6 +139,7 @@ static void process(void *user) {
             unsigned read = atomic_load_explicit(&audio.read, memory_order_acquire);
             unsigned write = atomic_load_explicit(&audio.write, memory_order_relaxed);
             unsigned frames = SPA_MIN(size / 4, FRAMES - (write - read));
+            if (frames < size / 4) atomic_fetch_add_explicit(&audio.dropped_frames, size / 4 - frames, memory_order_relaxed);
             const unsigned char *input = (unsigned char *)data->data + offset;
             for (unsigned i = 0; i < frames; i++)
                 memcpy(&audio.samples[((write+i)%FRAMES)*2], input+i*4, 4);
