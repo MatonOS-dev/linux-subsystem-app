@@ -35,31 +35,6 @@ int main(int argc,char **argv){
  if(argc==3 && !strcmp(argv[2],"--recover")){struct stat st;CHECK(stat("restored",&st)==0 && S_ISREG(st.st_mode));CHECK(stat("survivor",&st)==0 && st.st_nlink==1);int fd=open("restored",O_RDONLY);char buf[32]={0};CHECK(fd>=0 && read(fd,buf,31)==22 && !strcmp(buf,"interrupted conversion"));close(fd);puts("PASS crash conversion restoration and orphan collection");return 0;}
  if(argc==3 && !strcmp(argv[2],"--prepare")){int t=open("c",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);return 0;}
  if(argc==3 && !strcmp(argv[2],"--check")){struct stat st;CHECK(stat("c",&st)==0 && st.st_nlink==9);puts("PASS independent loader processes share persistent link counts");return 0;}
- if(argc==3 && !strcmp(argv[2],"--markers")){
-  /* Markers are prepared by the owner outside the payload. */
-  int t=open("outer/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  CHECK(link("outer/deep/a","outer/deep/b")==0);
-  t=open("outer/nested/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  CHECK(link("outer/nested/deep/a","outer/nested/deep/b")==0);
-  errno=0;CHECK(link("outer/deep/a","sibling/b")==-1 && errno==EXDEV);
-  errno=0;CHECK(link("outer/deep/a","outer/nested/c")==-1 && errno==EXDEV);
-  t=open("plain/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  errno=0;CHECK(link("plain/deep/a","plain/deep/b")==-1 && errno==EACCES);
-  t=open("symlink/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  errno=0;CHECK(link("symlink/deep/a","symlink/deep/b")==-1 && errno==EACCES);
-  t=open("foreign/deep/a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0);close(t);
-  errno=0;CHECK(link("foreign/deep/a","foreign/deep/b")==-1 && errno==EACCES);
-  const char *m="outer/.v3-store-root";
-  t=open(m,O_RDONLY);CHECK(t>=0);close(t);
-  DIR *d=opendir("outer");CHECK(d!=NULL);int seen=0;struct dirent *e;while((e=readdir(d)))if(!strcmp(e->d_name,".v3-store-root"))seen=1;closedir(d);CHECK(seen);
-  errno=0;CHECK(open(m,O_WRONLY)==-1 && errno==EPERM);
-  errno=0;CHECK(truncate(m,0)==-1 && errno==EPERM);
-  errno=0;CHECK(unlink(m)==-1 && errno==EPERM);
-  errno=0;CHECK(rename(m,"outer/moved")==-1 && errno==EPERM);
-  errno=0;CHECK(rename("plain/deep/a",m)==-1 && errno==EPERM);
-  errno=0;CHECK(link(m,"outer/alias")==-1 && errno==EPERM);
-  puts("PASS marker boundaries, visibility and mutation refusal");return 0;
- }
  if(argc==4 && !strcmp(argv[2],"--escape")){errno=0;CHECK(link("a",argv[3])==-1 && errno==EXDEV);return 0;}
  if(argc==4 && !strcmp(argv[2],"--replace")){
   CHECK(rename(argv[3],"b")==0);struct stat a,b;CHECK(stat("a",&a)==0 && a.st_nlink==1 && stat("b",&b)==0 && b.st_size==3);return 0;

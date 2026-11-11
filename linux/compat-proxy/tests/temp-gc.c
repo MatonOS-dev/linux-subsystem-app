@@ -13,7 +13,8 @@ int ipc_private_fd(int fd){(void)fd;return 0;}
 int state_private_fd(int fd){(void)fd;return 0;}
 int proxy_fd_is_private(long fd){(void)fd;return 0;}
 long proxy_private_fd(long fd){return fd;}
-void proxy_private_fd_release(int fd){(void)fd;}
+int proxy_private_fd_release(int fd){(void)fd;return 0;}
+void proxy_close_grave(long n,long a,long b,const char *f,int l){(void)n;(void)a;(void)b;(void)f;(void)l;}
 int proxy_trace;
 long proxy_fd_reserve=512,proxy_fd_reserve_end=0x7fffffff;
 void proxy_log(const char *m,long a,long b){(void)m;(void)a;(void)b;}

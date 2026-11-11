@@ -30,7 +30,6 @@ bash tests/native-reservation.sh "$native_out/guards" >"$native_out/guards.log" 
 grep '^PASS ' "$native_out/guards.log"
 bash tests/bionic32-start.sh "$native_out/bionic32"
 bash tests/bionic32-terminal.sh "$native_out/bionic32-terminal"
-bash tests/home-links.sh
 bash tests/exec-origin.sh
 bash tests/exec-relative.sh
 cc -O2 -Wall -Wextra -Werror tests/reopen-dirfd.c -o build/reopen-dirfd
@@ -293,48 +292,7 @@ rm -r "$links_fixture"
 # is a symlink to an external output tree with private ancestors.
 chmod g+w build
 cc -no-pie -O2 -Wall -Wextra -Werror tests/hardlinks.c -o build/hardlinks-test
-marker_fixture=$(mktemp -d "$PWD/build/marker-fixture.XXXXXX")
-python3 - "$marker_fixture" <<'PYMARKERS'
-import os, pathlib, sys
-root=pathlib.Path(sys.argv[1]).resolve()
-for name in ('outer/deep', 'outer/nested/deep', 'sibling', 'plain/deep', 'symlink/deep', 'foreign/deep'):
-    (root/name).mkdir(parents=True, mode=0o700)
-for directory in root.rglob('*'):
-    if directory.is_dir(): directory.chmod(0o700)
-for name in ('outer', 'outer/nested', 'sibling'):
-    (root/name/'.v3-store-root').touch(mode=0o600)
-(root/'symlink/.v3-store-root').symlink_to(root/'outer/.v3-store-root')
-foreign=root/'foreign/.v3-store-root'
-foreign.touch(mode=0o600)
-if os.geteuid()==0:
-    os.chown(foreign, 65534, -1)
-else:
-    foreign.unlink()
-    foreign.symlink_to('/etc/passwd')
-    print('SKIP foreign-owned regular marker fixture requires root; symlink covered')
-PYMARKERS
-cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/store-marker.c -o build/store-marker
-build/store-marker "$marker_fixture/outer"
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$marker_fixture" --markers >build/markers.out 2>build/markers.log
-cat build/markers.out
-# Inspect stores outside the proxy; unmarked roots must stay untouched.
-python3 - "$marker_fixture" <<'PYMARKERS'
-import pathlib, sys, shutil
-root=pathlib.Path(sys.argv[1]).resolve()
-for name, boundary in [('outer/deep','outer'), ('outer/nested/deep','outer/nested')]:
-    p=root/name/'a'; st=p.stat()
-    assert p.is_file() and not p.is_symlink() and st.st_size==0 and st.st_mode&0o1000
-    entry=root/boundary/'.v3-inodes'/f'p-{st.st_ino:016x}'
-    assert (entry.parent/entry.read_bytes().rstrip(b'\0').decode()).is_file()
-for name in ('plain','symlink','foreign'):
-    assert not (root/name/'deep/b').exists()
-assert not (root/'.v3-inodes').exists()
-assert not (root/'outer/deep/.v3-inodes').exists()
-shutil.rmtree(root)
-PYMARKERS
-printf 'PASS nearest/nested markers and no unmarked stores\n'
 hardlinks_fixture=$(mktemp -d "$PWD/build/hardlinks-fixture.XXXXXX")
-touch "$hardlinks_fixture/.v3-store-root"
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$hardlinks_fixture" >build/hardlinks-test.out 2>build/hardlinks-test.log
 if [[ -n ${MATON_TEST_GLNX_SOURCE:-} ]]; then bash tests/glnx-nofollow.sh; fi
 cat build/hardlinks-test.out
@@ -342,7 +300,6 @@ printf 'PASS no-follow stored-name and real-symlink regression checks\n'
 # Recovery runs in direct dispatch as well as on the signal stack. Exercise
 # its hard-link paths with a constrained payload stack.
 stack_fixture=$(mktemp -d "$PWD/build/hardlinks-stack.XXXXXX")
-touch "$stack_fixture/.v3-store-root"
 (ulimit -s 64; timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$stack_fixture") >build/hardlinks-stack.out 2>build/hardlinks-stack.log
 cat build/hardlinks-stack.out
 rm -r "$stack_fixture"
@@ -351,7 +308,6 @@ test "$(find "$hardlinks_fixture/.v3-inodes" -type f ! -name lock | wc -l)" -eq 
 rm -r "$hardlinks_fixture"
 
 crash_fixture=$(mktemp -d "$PWD/build/crash-fixture.XXXXXX")
-touch "$crash_fixture/.v3-store-root"
 python3 - "$crash_fixture" <<'PYCRASH'
 import pathlib, sys
 root=pathlib.Path(sys.argv[1]).resolve()
@@ -375,7 +331,6 @@ test ! -e "$crash_fixture/.v3-inodes/conversion"
 rm -r "$crash_fixture"
 
 independent_fixture=$(mktemp -d "$PWD/build/independent-fixture.XXXXXX")
-touch "$independent_fixture/.v3-store-root"
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --prepare >build/independent-test.out 2>build/independent-test.log
 independent_pids=()
 for i in {1..8}; do
@@ -426,7 +381,6 @@ python3 tests/erofs-ldconfig-host.py
 python3 tests/icd-dup-host.py
 bash tests/musl-host.sh
 logical_bind_fixture=$(mktemp -d "$PWD/build/logical-bind.XXXXXX")
-touch "$logical_bind_fixture/.v3-store-root"
 timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$logical_bind_fixture" --bind "$PWD/build/musl-host-root/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/bwrap" >build/logical-bind.out 2>build/logical-bind.log
 cat build/logical-bind.out
 rm -r "$logical_bind_fixture"

@@ -20,6 +20,7 @@ char *vfs_temp_create(long *e){*e=0;return strdup(proxy_tmpdir);}
 size_t p_len(const char *p){return strlen(p);}
 void p_copy(void *d,const void *s,size_t n){memcpy(d,s,n);}
 long proxy_private_fd(long fd){return fd;}
+void proxy_close_grave(long n,long a,long b,const char *f,int l){(void)n;(void)a;(void)b;(void)f;(void)l;}
 /* raw.S's unused clone continuation. */
 uintptr_t proxy_clone_resume;
 static long call(long nr,long x,long y,long z,long w){long a[6]={x,y,z,w,0,0};return ipc_call(nr,a);}

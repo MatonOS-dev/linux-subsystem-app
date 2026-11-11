@@ -5,7 +5,6 @@ cd "$(dirname "$0")/.."
 if ! command -v ostree >/dev/null; then echo 'SKIP host ostree unavailable'; exit 0; fi
 fixture=$(mktemp -d "$PWD/build/ostree-links.XXXXXX")
 trap 'rm -r "$fixture"' EXIT
-touch "$fixture/.v3-store-root"
 mkdir "$fixture/input"
 printf 'metadata content\n' >"$fixture/input/metadata"
 run() { timeout 60 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter /usr/bin/ostree --repo="$fixture/repo" "$@"; }
