@@ -1303,6 +1303,44 @@ __attribute__((noinline)) static void fail_trace(long nr,proxy_arg_t a[6],long r
         }
     }
 }
+static int apk_install_path(const char *p){const char d[]="/data/app/";for(size_t i=0;d[i];i++)if(p[i]!=d[i])return 0;return 1;}
+/* readlink reply: copy (truncating like the kernel) and free the source. */
+static long readlink_copy(proxy_arg_t *a,char *s){size_t n=p_len(s);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],s,n);vfs_free(s);return (long)n;}
+/* Link targets the proxy owns (tracked fds, /proc/self/exe, cwd);
+ * -ENOSYS means the kernel answers. */
+static long virtual_readlink(proxy_arg_t *a,const char *p){
+    char *s=vfs_proc_fd_name(p);if(s)return readlink_copy(a,s);
+    if(self_exe(p) && (s=vfs_exe()))return readlink_copy(a,s);
+    if(self_cwd(p)){long error=0;s=vfs_getcwd(&error);return s?readlink_copy(a,s):error;}
+    return -ENOSYS;
+}
+/* Common exit of path_call: errno fixups, create diagnostics, frees. */
+static long path_finish(long nr,proxy_arg_t *a,long e,int fd,const char *original_path,char *p,char *q){
+    /* Hardware passthrough is "where convenient": a host /dev node the app's
+     * sandbox may not use is reported absent, so bwrap/Flatpak *-try binds and
+     * device probes skip it instead of failing on EACCES. */
+    if(p && p[0]=='/' && p[1]=='d' && p[2]=='e' && p[3]=='v' && p[4]=='/') {
+        if(e==-EACCES && (nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx || nr==PROXY_SC_faccessat2 || nr==PROXY_SC_faccessat ||
+                (nr==PROXY_SC_openat && (a[2]&O_PATH))))e=-ENOENT;
+        /* O_PATH opens need no permission, so the denial would only surface at
+         * the caller's fstat (bwrap's bind source check): probe it here. */
+        if(e>=0 && nr==PROXY_SC_openat && (a[2]&O_PATH)) {
+            struct proxy_stat probe;
+            if(arch_stat_fd(e,&probe)==-EACCES){RAW(PROXY_SC_close,e,0,0,0,0,0);e=-ENOENT;}
+        }
+        /* Existence checks (access F_OK) need no permission either; Flatpak
+         * uses them to pick a mandatory --dev-bind, so answer consistently. */
+        if(e==0 && (nr==PROXY_SC_faccessat || nr==PROXY_SC_faccessat2)) {
+            struct proxy_stat probe;
+            if(arch_stat_at(AT_FDCWD,p,&probe,0)==-EACCES)e=-ENOENT;
+        }
+    }
+    /* A failed create must identify the translated path even without full
+     * tracing: callers such as libglnx otherwise report only "Creating temp
+     * file", hiding whether the failure precedes bwrap or is in its payload. */
+    create_denied(nr,a[2],e,fd,original_path,p);
+    vfs_free(p);vfs_free(q);return e;
+}
 static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     if(!app_allowed(nr))return -ENOSYS;
     int at=(one==1 && nr!=PROXY_SC_inotify_add_watch) || (nr==PROXY_SC_symlinkat && one==2);
@@ -1356,17 +1394,17 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
          * that mkdir the same shadowing behaviour as a missing EROFS target. */
         if(path_is_symlink(p)){
             e=vfs_bwrap_erofs_mkdir(p,fd,original_path);
-            if(e!=-ENOSYS)goto done;
+            if(e!=-ENOSYS)return path_finish(nr,a,e,fd,original_path,p,q);
         }
-        if(vfs_bwrap_shm_mkdir(original_path)){e=0;goto done;}
-        e=-EEXIST;goto done;
+        if(vfs_bwrap_shm_mkdir(original_path)){e=0;return path_finish(nr,a,e,fd,original_path,p,q);}
+        e=-EEXIST;return path_finish(nr,a,e,fd,original_path,p,q);
     }
     /* A package EROFS prefix must keep normal mkdir semantics: existing
      * directories were handled above, while a new payload directory is EROFS.
      * bwrap uses mkdir-parents for bind targets, so give it a temporary VFS
      * directory that the following virtual bind can replace. */
     if(nr==PROXY_SC_mkdirat){char *package_path=erofs_reverse(p);
-        if(package_path){vfs_free(package_path);e=vfs_bwrap_erofs_mkdir(p,fd,original_path);if(e==-ENOSYS)e=-EROFS;goto done;}
+        if(package_path){vfs_free(package_path);e=vfs_bwrap_erofs_mkdir(p,fd,original_path);if(e==-ENOSYS)e=-EROFS;return path_finish(nr,a,e,fd,original_path,p,q);}
     }
     /* bwrap creates absent regular-file bind destinations with open(O_CREAT)
      * before mounting over them. Give that operation a per-launch writable
@@ -1377,23 +1415,23 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
             vfs_free(package_path);
             e=vfs_bwrap_erofs_file(p,fd,original_path,(unsigned)a[3]&07777);
             if(e!=-ENOSYS){
-                if(e)goto done;
+                if(e)return path_finish(nr,a,e,fd,original_path,p,q);
                 /* The shadow file now exists by design, so this O_EXCL
                  * creation must complete against that file rather than
                  * report that the original package target existed. */
                 a[2]&=~O_EXCL;exclusive_create=0;
                 vfs_free(p);p=vfs_resolve_mount(fd,original_path,follow,&e,&pm);
-                if(!p)goto done;
+                if(!p)return path_finish(nr,a,e,fd,original_path,p,q);
             }
         }
     }
-    if(exclusive_create && path_exists(p)){e=-EEXIST;goto done;}
+    if(exclusive_create && path_exists(p)){e=-EEXIST;return path_finish(nr,a,e,fd,original_path,p,q);}
     if(create_readonly_open && path_exists(p))a[2]&=~O_CREAT;
-    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)goto done;if(pm!=qm){e=-EXDEV;goto done;}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
-    if(nr==PROXY_SC_openat){e=vfs_proc_open(p,(int)a[2]);if(e!=-ENOSYS)goto done;}
+    if(two>=0){q=vfs_resolve_mount(at?(int)a[two-1]:AT_FDCWD,(char *)(uintptr_t)a[two],0,&e,&qm);if(!q)return path_finish(nr,a,e,fd,original_path,p,q);if(pm!=qm){e=-EXDEV;return path_finish(nr,a,e,fd,original_path,p,q);}a[two]=(long)q;if(at)a[two-1]=AT_FDCWD;}
+    if(nr==PROXY_SC_openat){e=vfs_proc_open(p,(int)a[2]);if(e!=-ENOSYS)return path_finish(nr,a,e,fd,original_path,p,q);}
     if(writing)vfs_resolve_cache_invalidate();
-    if(writing){e=vfs_mount_readonly(pm);if(e || (q&&(e=vfs_mount_readonly(qm))))goto done;}
-    if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);goto done;}
+    if(writing){e=vfs_mount_readonly(pm);if(e || (q&&(e=vfs_mount_readonly(qm))))return path_finish(nr,a,e,fd,original_path,p,q);}
+    if((namespaces&CLONE_NEWUSER) && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR)) && p_equal(p,"/proc/sys/user/max_user_namespaces")){e=sysctl_open((a[2]&O_CLOEXEC)!=0);return path_finish(nr,a,e,fd,original_path,p,q);}
     /* Android's policy denies apps the generic proc_sysctl files. Serve
      * values that are fixed on MatonOS: the overflow IDs (kernel default, bwrap
      * reads them for its uid maps) and fs.file-max, which MatonOS init sets to
@@ -1406,23 +1444,23 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
             long len=(long)p_len(value);
             long fd=RAW(PROXY_SC_memfd_create,"v3-sysctl",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);
             if(fd>=0 && (RAW(PROXY_SC_write,fd,value,len,0,0,0)!=len || RAW(PROXY_SC_lseek,fd,0,SEEK_SET,0,0,0)!=0)){RAW(PROXY_SC_close,fd,0,0,0,0,0);fd=-EIO;}
-            e=fd;goto done;
+            e=fd;return path_finish(nr,a,e,fd,original_path,p,q);
         }
     }
     if(namespaces && nr==PROXY_SC_openat && (a[2]&(O_WRONLY|O_RDWR))){
         size_t n=p_len(p);const char *tail=p;while(*tail){if(*tail=='/')tail++;else break;}int proc=p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/';
-        if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(PROXY_SC_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);goto done;}
+        if(proc && ((n>=8 && p_equal(p+n-8,"/uid_map")) || (n>=8 && p_equal(p+n-8,"/gid_map")) || (n>=10 && p_equal(p+n-10,"/setgroups")))){e=RAW(PROXY_SC_memfd_create,"v3-namespace-map",(a[2]&O_CLOEXEC)?1:0,0,0,0,0);return path_finish(nr,a,e,fd,original_path,p,q);}
     }
     /* bwrap unlinks --bind-data/--ro-bind-data temp files right after binding;
      * a real mount keeps the inode, our virtual one needs the name. */
-    if(nr==PROXY_SC_unlinkat && !(a[2]&AT_REMOVEDIR) && vfs_is_mount_source(p)){e=0;goto done;}
+    if(nr==PROXY_SC_unlinkat && !(a[2]&AT_REMOVEDIR) && vfs_is_mount_source(p)){e=0;return path_finish(nr,a,e,fd,original_path,p,q);}
     /* bwrap --dev needs /dev/full, which Android apps may not open: serve
      * /dev/zero (reads identical; writes succeed instead of ENOSPC). */
     if(p_equal(p,"/dev/full")) {
         struct proxy_stat probe;
         if(arch_stat_at(AT_FDCWD,"/dev/full",&probe,0)==-EACCES) {
             char *zero=vfs_alloc(10);
-            if(!zero){e=-ENOMEM;goto done;}
+            if(!zero){e=-ENOMEM;return path_finish(nr,a,e,fd,original_path,p,q);}
             p_copy(zero,"/dev/zero",10);vfs_free(p);p=zero;
         }
     }
@@ -1433,16 +1471,19 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
         struct proxy_stat probe;
         if(!arch_stat_at(AT_FDCWD,"/dev/pts/ptmx",&probe,0) && !(probe.st_mode&0777)) {
             char *ptmx=vfs_alloc(10);
-            if(!ptmx){e=-ENOMEM;goto done;}
+            if(!ptmx){e=-ENOMEM;return path_finish(nr,a,e,fd,original_path,p,q);}
             p_copy(ptmx,"/dev/ptmx",10);vfs_free(p);p=ptmx;
         }
     }
     if(proxy_trace){proxy_diagnostic_write("v3 path ",8);proxy_diagnostic_write(p,p_len(p));proxy_diagnostic_write("\n",1);}
     a[one]=(long)p;if(at)a[one-1]=AT_FDCWD;
-    if(nr==PROXY_SC_readlinkat){char *tracked=vfs_proc_fd_name(p);if(tracked){size_t n=p_len(tracked);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],tracked,n);vfs_free(tracked);e=(long)n;goto done;}}
-    if(nr==PROXY_SC_readlinkat && self_exe(p)){char *exe=vfs_exe();if(exe){size_t n=p_len(exe);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],exe,n);vfs_free(exe);e=(long)n;goto done;}}
-    if(nr==PROXY_SC_readlinkat && self_cwd(p)){long error=0;char *logical=vfs_getcwd(&error);if(!logical){e=error;goto done;}size_t n=p_len(logical);if(n>(size_t)a[3])n=(size_t)a[3];p_copy((void *)(uintptr_t)a[2],logical,n);vfs_free(logical);e=(long)n;goto done;}
+    if(nr==PROXY_SC_readlinkat){e=virtual_readlink(a,p);if(e!=-ENOSYS)return path_finish(nr,a,e,fd,original_path,p,q);}
     if(nr==PROXY_SC_openat && (a[2]&O_TMPFILE)==O_TMPFILE)e=-EOPNOTSUPP;
+    /* App sandboxes may not watch APK install dirs (apk_data_file), so the
+     * kernel answers EACCES after logging an audit denial. GLib retries failed
+     * watches every 4 s (flatpak-portal watches its own /proc/self/exe), which
+     * flooded dmesg. Give the same answer without the syscall. */
+    else if(nr==PROXY_SC_inotify_add_watch && apk_install_path(p))e=-EACCES;
     else if(nr==PROXY_SC_linkat)e=links_publish(p,q,a[4]);
     else if(nr==PROXY_SC_unlinkat || nr==PROXY_SC_renameat || nr==PROXY_SC_renameat2)e=links_name_call(nr,a,p,q);
     else if(nr==PROXY_SC_readlinkat || nr==PROXY_SC_symlinkat || nr==PROXY_SC_mkdirat || nr==PROXY_SC_mknodat)e=RAW(nr,a[0],a[1],a[2],a[3],a[4],a[5]);
@@ -1451,7 +1492,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
     /* Native closes bypass proxy cleanup. A successful open starts a new fd
      * lifetime, so retire pathname metadata left by the prior occupant. */
     if(e>=0 && nr==PROXY_SC_openat){vfs_fd_close((int)e);vfs_fd_record((int)e,fd,original_path,!!((int)a[2]&O_DIRECTORY));}
-    if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;goto done;}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
+    if(e>=0 && nr==PROXY_SC_readlinkat){char *raw=vfs_alloc((size_t)e+1);if(!raw){e=-ENOMEM;return path_finish(nr,a,e,fd,original_path,p,q);}p_copy(raw,(void *)(uintptr_t)a[2],(size_t)e);raw[e]=0;
         /* Only proc magic links expose backing names. Ordinary symlink targets
          * retain their stored text, as required by readlink. */
         if(p_len(p)>=6 && p[0]=='/' && p[1]=='p' && p[2]=='r' && p[3]=='o' && p[4]=='c' && p[5]=='/' && raw[0]=='/'){
@@ -1461,31 +1502,7 @@ static long path_call(long nr,proxy_arg_t *a,int one,int two) {
             if(full && full!=raw)vfs_free(full);}
         vfs_free(raw);
     }
-done:
-    /* Hardware passthrough is "where convenient": a host /dev node the app's
-     * sandbox may not use is reported absent, so bwrap/Flatpak *-try binds and
-     * device probes skip it instead of failing on EACCES. */
-    if(p && p[0]=='/' && p[1]=='d' && p[2]=='e' && p[3]=='v' && p[4]=='/') {
-        if(e==-EACCES && (nr==PROXY_SC_newfstatat || nr==PROXY_SC_statx || nr==PROXY_SC_faccessat2 || nr==PROXY_SC_faccessat ||
-                (nr==PROXY_SC_openat && (a[2]&O_PATH))))e=-ENOENT;
-        /* O_PATH opens need no permission, so the denial would only surface at
-         * the caller's fstat (bwrap's bind source check): probe it here. */
-        if(e>=0 && nr==PROXY_SC_openat && (a[2]&O_PATH)) {
-            struct proxy_stat probe;
-            if(arch_stat_fd(e,&probe)==-EACCES){RAW(PROXY_SC_close,e,0,0,0,0,0);e=-ENOENT;}
-        }
-        /* Existence checks (access F_OK) need no permission either; Flatpak
-         * uses them to pick a mandatory --dev-bind, so answer consistently. */
-        if(e==0 && (nr==PROXY_SC_faccessat || nr==PROXY_SC_faccessat2)) {
-            struct proxy_stat probe;
-            if(arch_stat_at(AT_FDCWD,p,&probe,0)==-EACCES)e=-ENOENT;
-        }
-    }
-    /* A failed create must identify the translated path even without full
-     * tracing: callers such as libglnx otherwise report only "Creating temp
-     * file", hiding whether the failure precedes bwrap or is in its payload. */
-    create_denied(nr,a[2],e,fd,original_path,p);
-    vfs_free(p);vfs_free(q);return e;
+    return path_finish(nr,a,e,fd,original_path,p,q);
 }
 /* Shared file-path dispatch for the ordinary SIGSYS route and the first
  * direct-rewrite slice.  Keeping translation here preserves the same VFS,
