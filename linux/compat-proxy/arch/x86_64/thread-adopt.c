@@ -38,7 +38,6 @@ extern long proxy_raw(long,long,long,long,long,long,long);
 extern long proxy_sigaltstack_on_stack(stack_t *,void *);
 extern void proxy_log(const char *,long,long);
 extern void proxy_exit_report(int);
-extern void proxy_exit_frames(uintptr_t);
 extern int proxy_trace;
 extern char proxy_clone_entry[];
 extern void proxy_restore(void);
@@ -604,7 +603,7 @@ miss_record_logged:
         g[REG_RAX]=0; return;
     } else if(n==SYS_exit_group) {
         if(proxy_trace)proxy_log("adopt-exit-group",R(getpid,0,0,0,0,0,0),g[REG_RDI]);
-        else if((int)g[REG_RDI]){proxy_log("exit-group nonzero",(long)(int)g[REG_RDI],(long)g[REG_RIP]);proxy_exit_report((int)g[REG_RDI]);proxy_exit_frames(g[REG_RSP]);}
+        else if((int)g[REG_RDI]){proxy_log("exit-group nonzero",(long)(int)g[REG_RDI],(long)g[REG_RIP]);proxy_exit_report((int)g[REG_RDI]);}
         R(exit_group,g[REG_RDI],0,0,0,0,0);
     }
     else {

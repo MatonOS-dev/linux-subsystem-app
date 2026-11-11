@@ -7,7 +7,6 @@
 #include "arch/arch.h"
 long proxy_raw(long, long, long, long, long, long, long);
 void proxy_exit_report(int);
-void proxy_exit_frames(uintptr_t);
 /* Bounded copy of the current payload argv (space-joined), for exit logs. */
 /* Raw syscall error: only -4095..-1 (i386 addresses above 2 GB look negative). */
 #define PROXY_RAW_ERR(r) ((unsigned long)(r)>=(unsigned long)-4095L)
