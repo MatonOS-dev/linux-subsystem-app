@@ -33,5 +33,19 @@ int main(void) {
   assert(fabs(x-13.25)<1e-10&&fabs(y-10)<1e-10);
   f=maton_fit(640,480,640,480);
   assert(f.scale==1&&f.x==0&&f.y==0);
+  /* Output shorter than the minimum height: width grows by the same factor,
+   * so the scaled window fills the output (no side bars). */
+  int w,h;struct MatonSizeHints steam={1010,600,0,0};
+  maton_size_fill(1667,552,steam,&w,&h);
+  assert(h==600&&w==1812);
+  f=maton_fit(1667,552,w,h);
+  assert(fabs(f.x)<0.5&&fabs(f.y)<0.5);
+  maton_size_fill(1667,700,steam,&w,&h);
+  assert(w==1667&&h==700);
+  /* A maximum caps the grown side; bars are then unavoidable. */
+  maton_size_fill(1667,552,(struct MatonSizeHints){0,600,1700,0},&w,&h);
+  assert(w==1700&&h==600);
+  maton_size_fill(500,700,steam,&w,&h);
+  assert(w==1010&&h==1414);
   puts("window_fit_test: passed");
 }

@@ -339,8 +339,7 @@ static bool configure_window(struct Window* w) {
    * matches the requested mode. Forcing a fullscreen 1280x720 drawable to
    * 1600x900 disables that path and leaves the GL viewport in one corner. */
   if((!w->xsurface&&maton_size_fixed(w->hints))||(w->xsurface&&w->xsurface->fullscreen))return false;
-  int width=maton_size_clamp(w->width,w->hints.min_width,w->hints.max_width);
-  int height=maton_size_clamp(w->height,w->hints.min_height,w->hints.max_height);
+  int width,height;maton_size_fill(w->width,w->height,w->hints,&width,&height);
   if(w->toplevel&&w->toplevel->base->initialized){wlr_xdg_toplevel_set_size(w->toplevel,width,height);return true;}
   if(w->xsurface&&(w->xsurface->width!=width||w->xsurface->height!=height||(!maton_size_fixed(w->hints)&&(w->xsurface->x||w->xsurface->y)))) {
     wlr_xwayland_surface_configure(w->xsurface,
