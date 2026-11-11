@@ -6,8 +6,8 @@ import sys
 import tempfile
 
 base = pathlib.Path(__file__).resolve().parents[1]
-loader = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else base/'build/linux-layer-v3'
-with tempfile.TemporaryDirectory(prefix='steam-r45-marker-', dir='/mnt/data/aosp/out/pc-logs') as scratch:
+loader = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else base/'build/linux-layer-v3-linktest'
+with tempfile.TemporaryDirectory(prefix='steam-r45-marker-', dir=base/'build') as scratch:
     root = pathlib.Path(scratch)
     (root / '.v3-store-root').touch()
     source = root / 'copy.c'

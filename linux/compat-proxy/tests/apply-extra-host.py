@@ -17,6 +17,8 @@ base = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('bwrap_fixture', base/'tests/flatpak-bwrap-host.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+# Hard-link emulation only applies under app-data roots; the linktest loader adds build/<dir>.
+fixture.proxy[0] = str(base/'build/linux-layer-v3-linktest')
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
 extra = pathlib.Path(tempfile.mkdtemp(prefix='extra-', dir=out))
@@ -44,7 +46,6 @@ app_tmp = tempfile.TemporaryDirectory(prefix='maton-apply-extra-',
                                       dir=os.environ['MATON_NOEXEC_DIR'])
 app = pathlib.Path(app_tmp.name)/'app'
 app.mkdir(parents=True, exist_ok=True)
-(app/'.v3-store-root').touch()
 app.chmod(0o700)
 (app/'extra').mkdir(parents=True, exist_ok=True)
 (app/'bin').mkdir(parents=True, exist_ok=True)
@@ -116,7 +117,7 @@ try:
     # hardlinks (which would hide the loader's raw-open bug).
     for name in ['apply_extra', 'sh']:
         st = (app/'bin'/name).stat()
-        assert st.st_size == 0 and st.st_mode & 0o1777 == 0o1600
+        assert st.st_size == 35 and st.st_mode & 0o7777 == 0o1000  # id-carrying placeholder
     if result.returncode: raise RuntimeError(f'apply_extra exit {result.returncode}: see {out}/stderr.txt')
     assert (extra/'browser/browser').read_text() == 'extra-data-extracted\n'
     assert (extra/'browser/browser').stat().st_mode & 0o777 == 0o755

@@ -24,7 +24,7 @@ for phase in ('prepared','staged','exchanged','counted','target-staged'):
         survivor=store/('i-'+'a'*32);survivor.write_text('live')
         indexed(store,root/'survivor',survivor)
         pathlib.Path(str(survivor)+'.count').write_bytes((1).to_bytes(8,'little'))
-        args=[str(out/'link-deny'),str(out/'linux-layer-v3'),'--android-filter',str(out/'hardlinks-test'),str(root),'--recover']
+        args=[str(out/'link-deny'),str(out/'linux-layer-v3-linktest'),'--android-filter',str(out/'hardlinks-test'),str(root),'--recover']
         result=subprocess.run(args,capture_output=True,text=True,timeout=15)
         assert result.returncode==0,(phase,result.stderr)
         assert source.exists(),phase

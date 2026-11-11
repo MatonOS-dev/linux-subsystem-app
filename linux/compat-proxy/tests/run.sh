@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+# Hard-link emulation is limited to Android app data roots; link tests use
+# a loader that also treats each build/<fixture> directory as one.
+backend=arch/x86_64
+cc -DCOMPAT_LINKS_TEST_ROOT="\"$PWD/build\"" -nostdlib -static -no-pie -mcmodel=large -Wl,-Ttext-segment=0x600000000000 -Wl,--section-start=.proxy_gateway=0x600000300000 -O2 -fno-stack-protector -fno-builtin -Wall -Wextra -Werror -Wframe-larger-than=8192 loader.c proxy.c vfs.c links.c net.c sysvipc.c state.c "$backend/raw.S" "$backend/entry.S" -o build/linux-layer-v3-linktest
 cc -nostdlib -static -no-pie -Wl,-Ttext-segment=0x69000000 -mno-sse -mno-sse2 -O2 -Wall -Wextra -Werror tests/wine-reservation.c tests/wine-reservation-entry.S -o build/wine-reservation-x86_64
 cc -m32 -nostdlib -static -no-pie -Wl,-Ttext-segment=0x69000000 -mno-sse -mno-sse2 -O2 -Wall -Wextra -Werror tests/wine-reservation.c tests/wine-reservation-entry.S -o build/wine-reservation-i386
 timeout 15 build/linux-layer-v3 --android-filter "$PWD/build/wine-reservation-x86_64"
@@ -18,7 +22,7 @@ python3 tests/mount-scan.py
 python3 tests/walk-components.py
 python3 tests/marker-cache.py
 python3 tests/links-walk-cost.py
-python3 tests/link-pressure.py "$PWD/build/linux-layer-v3"
+python3 tests/link-pressure.py "$PWD/build/linux-layer-v3-linktest"
 python3 tests/exec-sigpipe.py
 python3 tests/child-status.py
 native_out=$(mktemp -d "${TMPDIR:-/mnt/data/aosp/out/pc-logs}/steam-personality-native.XXXXXX")
@@ -257,7 +261,7 @@ cc -no-pie -O2 -Wall -Wextra -Werror tests/publication.c -o build/publication
 mkdir -p build/publication-a build/publication-b
 chmod 700 build/publication-a build/publication-b
 rm -f build/publication-a/{run-environ,empty,new,different}
-timeout 15 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/publication" "$PWD/build/publication-a" "$PWD/build/publication-b" >build/publication.out 2>build/publication.log
+timeout 15 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/publication" "$PWD/build/publication-a" "$PWD/build/publication-b" >build/publication.out 2>build/publication.log
 cat build/publication.out
 
 # A valid i386 mmap result above 2 GiB is a pointer, not a negative errno.
@@ -281,7 +285,7 @@ cc -O2 -Wall -Wextra -Werror -pthread -ffunction-sections -fdata-sections -Wl,--
 timeout 5 build/dns-helper
 cc -no-pie -O2 -Wall -Wextra -Werror tests/links.c -o build/links-test
 links_fixture=$(mktemp -d "$PWD/build/links-fixture.XXXXXX")
-timeout 20 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/links-test" "$links_fixture" >build/links-test.out 2>build/links-test.log
+timeout 20 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/links-test" "$links_fixture" >build/links-test.out 2>build/links-test.log
 cat build/links-test.out
 rm -r "$links_fixture"
 
@@ -311,7 +315,7 @@ else:
 PYMARKERS
 cc -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections tests/store-marker.c -o build/store-marker
 build/store-marker "$marker_fixture/outer"
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$marker_fixture" --markers >build/markers.out 2>build/markers.log
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$marker_fixture" --markers >build/markers.out 2>build/markers.log
 cat build/markers.out
 # Inspect stores outside the proxy; unmarked roots must stay untouched.
 python3 - "$marker_fixture" <<'PYMARKERS'
@@ -331,7 +335,7 @@ PYMARKERS
 printf 'PASS nearest/nested markers and no unmarked stores\n'
 hardlinks_fixture=$(mktemp -d "$PWD/build/hardlinks-fixture.XXXXXX")
 touch "$hardlinks_fixture/.v3-store-root"
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$hardlinks_fixture" >build/hardlinks-test.out 2>build/hardlinks-test.log
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$hardlinks_fixture" >build/hardlinks-test.out 2>build/hardlinks-test.log
 if [[ -n ${MATON_TEST_GLNX_SOURCE:-} ]]; then bash tests/glnx-nofollow.sh; fi
 cat build/hardlinks-test.out
 printf 'PASS no-follow stored-name and real-symlink regression checks\n'
@@ -339,7 +343,7 @@ printf 'PASS no-follow stored-name and real-symlink regression checks\n'
 # its hard-link paths with a constrained payload stack.
 stack_fixture=$(mktemp -d "$PWD/build/hardlinks-stack.XXXXXX")
 touch "$stack_fixture/.v3-store-root"
-(ulimit -s 64; timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$stack_fixture") >build/hardlinks-stack.out 2>build/hardlinks-stack.log
+(ulimit -s 64; timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$stack_fixture") >build/hardlinks-stack.out 2>build/hardlinks-stack.log
 cat build/hardlinks-stack.out
 rm -r "$stack_fixture"
 # Backing objects and count sidecars disappear after the final name.
@@ -362,7 +366,7 @@ p=root/'survivor';p.touch();p.chmod(0o1600);st=p.stat()
 (store/'conversion').write_bytes(str(root/'restored').encode()+b'\0'+str(store/'i-restored').encode()+b'\0')
 (store/'dirty').touch()
 PYCRASH
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$crash_fixture" --recover >build/crash-test.out 2>build/crash-test.log
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$crash_fixture" --recover >build/crash-test.out 2>build/crash-test.log
 cat build/crash-test.out
 test ! -e "$crash_fixture/.v3-inodes/i-orphan"
 test ! -e "$crash_fixture/.v3-inodes/i-missing.count"
@@ -372,14 +376,14 @@ rm -r "$crash_fixture"
 
 independent_fixture=$(mktemp -d "$PWD/build/independent-fixture.XXXXXX")
 touch "$independent_fixture/.v3-store-root"
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --prepare >build/independent-test.out 2>build/independent-test.log
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --prepare >build/independent-test.out 2>build/independent-test.log
 independent_pids=()
 for i in {1..8}; do
-    timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --link "independent-$i" >>build/independent-test.out 2>>build/independent-test.log &
+    timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --link "independent-$i" >>build/independent-test.out 2>>build/independent-test.log &
     independent_pids+=("$!")
 done
 for pid in "${independent_pids[@]}"; do wait "$pid"; done
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --check >>build/independent-test.out 2>>build/independent-test.log
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$independent_fixture" --check >>build/independent-test.out 2>>build/independent-test.log
 cat build/independent-test.out
 rm -r "$independent_fixture"
 
@@ -423,7 +427,7 @@ python3 tests/icd-dup-host.py
 bash tests/musl-host.sh
 logical_bind_fixture=$(mktemp -d "$PWD/build/logical-bind.XXXXXX")
 touch "$logical_bind_fixture/.v3-store-root"
-timeout 30 build/link-deny "$PWD/build/linux-layer-v3" --android-filter "$PWD/build/hardlinks-test" "$logical_bind_fixture" --bind "$PWD/build/musl-host-root/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/bwrap" >build/logical-bind.out 2>build/logical-bind.log
+timeout 30 build/link-deny "$PWD/build/linux-layer-v3-linktest" --android-filter "$PWD/build/hardlinks-test" "$logical_bind_fixture" --bind "$PWD/build/musl-host-root/system_ext/priv-app/MatonLinuxSubsystem/lib/x86_64/bwrap" >build/logical-bind.out 2>build/logical-bind.log
 cat build/logical-bind.out
 rm -r "$logical_bind_fixture"
 chrome_out=${MATON_CHROME_TEST_OUT:-/mnt/data/aosp/out/pc-logs/chrome-sol-host-launch}

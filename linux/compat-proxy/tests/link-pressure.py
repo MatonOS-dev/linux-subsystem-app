@@ -9,7 +9,7 @@ import tempfile
 import time
 
 base = pathlib.Path(__file__).resolve().parents[1]
-loader = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else base / 'build/linux-layer-v3'
+loader = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else base / 'build/linux-layer-v3-linktest'
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 512
 
 def sample(pid):
@@ -19,7 +19,7 @@ def sample(pid):
     anonymous = sum(len(line.split()) == 5 and line.split()[1] == 'rw-p' for line in maps)
     return rss, anonymous
 
-with tempfile.TemporaryDirectory(prefix='steam-link-pressure-', dir='/mnt/data/aosp/out/pc-logs') as tmp:
+with tempfile.TemporaryDirectory(prefix='steam-link-pressure-', dir=base/'build') as tmp:
     root = pathlib.Path(tmp)
     (root / '.v3-store-root').touch()
     subprocess.run(['cc', '-O2', '-Wall', '-Wextra', '-Werror', str(base / 'tests/link-pressure.c'),

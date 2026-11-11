@@ -67,12 +67,12 @@ int main(int argc,char **argv){
  if(argc==3 && !strcmp(argv[2],"--placeholders")){
   int t=open("a",O_CREAT|O_EXCL|O_RDWR,0600);CHECK(t>=0 && write(t,"content",7)==7);close(t);CHECK(link("a","b")==0);
   CHECK(chmod("a",01700)==0);CHECK(chmod("stray",0600)==0);CHECK(chmod("ordinary",01600)==0);
-  struct stat st;CHECK(stat("stray",&st)==0 && (st.st_mode&S_ISVTX) && st.st_size==5);
-  CHECK(stat("ordinary",&st)==0 && !(st.st_mode&S_ISVTX));
-  CHECK(stat("a",&st)==0 && !(st.st_mode&S_ISVTX) && st.st_size==7 && st.st_nlink==2);
-  t=open("b",O_RDWR);CHECK(t>=0);CHECK(fchmod(t,01640)==0);CHECK(fstat(t,&st)==0 && !(st.st_mode&S_ISVTX));
-  errno=0;long cm=syscall(452,t,"",01640,AT_EMPTY_PATH);CHECK(cm==0 || (cm==-1 && errno==ENOSYS));CHECK(fstat(t,&st)==0 && !(st.st_mode&S_ISVTX));close(t);
-  puts("PASS chmod preserves physical marker, ignores sticky changes and leaves stray sticky ordinary");return 0;
+  struct stat st;CHECK(stat("stray",&st)==0 && !(st.st_mode&S_ISVTX) && st.st_size==5);
+  CHECK(stat("ordinary",&st)==0 && (st.st_mode&07777)==01600); /* only exact 01000 marks a placeholder */
+  CHECK(stat("a",&st)==0 && (st.st_mode&07777)==01700 && st.st_size==7 && st.st_nlink==2);
+  t=open("b",O_RDWR);CHECK(t>=0);CHECK(fchmod(t,01640)==0);CHECK(fstat(t,&st)==0 && (st.st_mode&07777)==01640);
+  errno=0;long cm=syscall(452,t,"",01640,AT_EMPTY_PATH);CHECK(cm==0 || (cm==-1 && errno==ENOSYS));CHECK(fstat(t,&st)==0 && (st.st_mode&07777)==01640);close(t);
+  puts("PASS chmod keeps placeholders, applies guest sticky bits and treats id-less sticky files as ordinary");return 0;
  }
  CHECK(argc==2);int fd=open("a",O_CREAT|O_RDWR|O_EXCL,0640);CHECK(fd>=0);CHECK(write(fd,"first",5)==5);CHECK(link("a","b")==0);
  struct stat a,b;CHECK(lstat("a",&a)==0 && stat("b",&b)==0 && S_ISREG(a.st_mode) && a.st_ino==b.st_ino && a.st_nlink==2);CHECK(fstat(fd,&b)==0 && b.st_nlink==2);
