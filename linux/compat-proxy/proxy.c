@@ -242,6 +242,7 @@ struct thread_state {
     long tid; stack_t app_stack; void *signal_stack; size_t signal_stack_size; int signal_stack_guarded;
     unsigned int personality,personality_valid;
     proxy_sigmask_t app_sigsys_mask;
+    int exited; /* 1: exit(2) issued; node + guarded handler stack reusable once tid is gone */
 #if ARCH_AUDIT == AUDIT_ARCH_I386
     struct tls_entry tls[PROXY_TLS_ENTRIES];
     unsigned reserved;
@@ -311,7 +312,30 @@ static struct thread_state *thread_state(void) {
     for(struct thread_stack_cache *c=__atomic_load_n(&thread_stack_caches,__ATOMIC_ACQUIRE);c;c=c->next)
         if(c->page==page){struct thread_state *cached=__atomic_load_n(&c->state,__ATOMIC_ACQUIRE);if(cached)return cached;break;}
     long tid=RAW(PROXY_SC_gettid,0,0,0,0,0,0);
-    for(struct thread_node *p=threads;p;p=p->next) if(p->state.tid==tid){thread_stack_cache_add(page,&p->state);return &p->state;}
+    for(struct thread_node *p=threads;p;p=p->next) if(p->state.tid==tid && !__atomic_load_n(&p->state.exited,__ATOMIC_ACQUIRE)){thread_stack_cache_add(page,&p->state);return &p->state;}
+#if ARCH_AUDIT != AUDIT_ARCH_I386
+    /* A thread cannot unmap the handler stack it exits on. Recycle the node and
+     * its guarded stack for a new thread once the kernel has released the old
+     * tid (a recycled tid equal to ours proves the same). */
+    {
+        stack_t current={0};
+        if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0) && !(current.ss_flags&SS_ONSTACK)) {
+            long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+            for(struct thread_node *p=threads;p;p=p->next) {
+                int one=1;
+                if(__atomic_load_n(&p->state.exited,__ATOMIC_ACQUIRE)!=1 || !p->state.signal_stack_guarded)continue;
+                if(p->state.tid!=tid && RAW(PROXY_SC_tgkill,pid,p->state.tid,0,0,0,0)!=-ESRCH)continue;
+                if(!__atomic_compare_exchange_n(&p->state.exited,&one,2,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED))continue;
+                stack_t own={.ss_sp=p->state.signal_stack,.ss_size=p->state.signal_stack_size};
+                if(RAW(PROXY_SC_sigaltstack,&own,0,0,0,0,0)){__atomic_store_n(&p->state.exited,1,__ATOMIC_RELEASE);break;}
+                p->state.direct_depth=0;p->state.tid=tid;p->state.app_stack=(stack_t){.ss_flags=SS_DISABLE};
+                p->state.personality_valid=0;p->state.app_sigsys_mask=0;
+                __atomic_store_n(&p->state.exited,0,__ATOMIC_RELEASE);
+                thread_stack_cache_add(page,&p->state);return &p->state;
+            }
+        }
+    }
+#endif
 #if ARCH_AUDIT == AUDIT_ARCH_I386 && defined(MATON_GPU_BRIDGE)
     long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
     if(threads_pid && pid!=threads_pid) {
@@ -339,7 +363,7 @@ static struct thread_state *thread_state(void) {
     struct thread_node *p=vfs_palloc(sizeof(*p));if(!p)return NULL;
     p->state.tid=tid;p->state.app_stack.ss_flags=SS_DISABLE;
     p->state.personality_valid=0;p->state.signal_stack_guarded=0;
-    p->state.app_sigsys_mask=0;
+    p->state.app_sigsys_mask=0;p->state.exited=0;
     stack_t current={0};
     if(!RAW(PROXY_SC_sigaltstack,0,&current,0,0,0,0)) {
         p->state.signal_stack=current.ss_sp;p->state.signal_stack_size=current.ss_size;
@@ -2611,7 +2635,11 @@ static void handler(int sig,siginfo_t *info,void *opaque) {
     case PROXY_SC_getdents64:result=file_dispatch(nr,a);break;
     case PROXY_SC_fchmod:if(app_allowed(nr))result=links_fd_chmod(nr,a);break;
     case PROXY_SC_fstat:result=file_dispatch(nr,a);break;
-    case PROXY_SC_exit:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit",nr,a[0]);vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
+    case PROXY_SC_exit:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit",nr,a[0]);vfs_direct_thread_exit(RAW(PROXY_SC_gettid,0,0,0,0,0,0));ipc_thread_exit();thread_state_cache_forget(thread);proxy_count_dump();
+#if ARCH_AUDIT != AUDIT_ARCH_I386
+        if(thread)__atomic_store_n(&thread->exited,1,__ATOMIC_RELEASE);
+#endif
+        result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_exit_group:proxy_rewrite_exit();if(proxy_trace)proxy_log("lifecycle-exit-group",nr,a[0]);else if((int)a[0]){proxy_log("exit-group nonzero",(long)a[0],(long)syscall_pc);proxy_exit_report((int)a[0]);}ipc_exit();proxy_count_dump();result=RAW(nr,a[0],0,0,0,0,0);break;
     case PROXY_SC_write:result=RAW(nr,a[0],a[1],a[2],0,0,0);if(result>0 && sysctl_fds)sysctl_sync();break;
     case PROXY_SC_close_range:if(sysctl_fds)sysctl_sync();result=payload_close_range((unsigned)a[0],(unsigned)a[1],(unsigned)a[2]);break;
