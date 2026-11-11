@@ -64,7 +64,7 @@ void (*mv_x11_log_hook)(const char *,unsigned long);
 static void note(const char *,long);
 static int fail_at(int stage){mv_x11_last_error=stage*1000+(xerrno?*xerrno():0);note("maton-vulkan: X11 buffer create failed, stage*1000+errno",mv_x11_last_error);return 0;}
 /* Gravestone: every close names its call site. */
-static void close_at(int fd,int line){note("maton-vulkan: close at wsi_x11.c line",line);note("maton-vulkan: close fd",fd);if(xclose(fd)<0)note("maton-vulkan: close failed, errno",xerrno?*xerrno():0);}
+static void close_at(int fd,int line){if(xclose(fd)<0){note("maton-vulkan: close failed at wsi_x11.c line",line);note("maton-vulkan: close failed, errno",xerrno?*xerrno():0);}}
 #define MV_CLOSE(fd) close_at((fd),__LINE__)
 static int resolve(void) {
     while(__atomic_exchange_n(&init_lock,1,__ATOMIC_ACQUIRE)){}

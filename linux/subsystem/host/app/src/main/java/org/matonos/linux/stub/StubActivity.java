@@ -16,6 +16,7 @@ import org.json.JSONObject;
 /** Shared activity code runs in the generated app's own package and task. */
 public final class StubActivity extends Activity implements SurfaceHolder.Callback, org.matonos.linux.PerAppRuntime.WindowHost {
     private static final int EROFS_PIN_REQUEST=0x4e31;
+    private static volatile boolean erofsPinned;
     private volatile boolean foreground;
     private volatile int window;
     private volatile boolean destroyed;
@@ -293,6 +294,8 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             V3Launcher.addLaunchStatusListener(launchStatusChanged);
             startForegroundService(new Intent(this, StubService.class).putExtra(HostContract.EXTRA_FLATPAK_REF, ref));
             // The pin activity lives in the subsystem app, not in this stub package.
+            // erofsd keeps the pin until reboot: later windows skip the round-trip.
+            if(erofsPinned){launchLocally();return;}
             startActivityForResult(new Intent().setClassName("org.matonos.linux","org.matonos.linux.ErofsPinActivity"),EROFS_PIN_REQUEST);
         } catch(Exception error) { failure("Cannot start the app runtime",error); }
     }
@@ -304,7 +307,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
         super.onActivityResult(requestCode,resultCode,data);
         if(requestCode==EROFS_PIN_REQUEST) {
-            if(resultCode==RESULT_OK)launchLocally();
+            if(resultCode==RESULT_OK){erofsPinned=true;launchLocally();}
             else failure("Cannot mount application image",new IllegalStateException("matonos-erofsd did not pin the stub certificate"));
         }
     }
