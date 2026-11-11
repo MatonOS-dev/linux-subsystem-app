@@ -786,6 +786,7 @@ static void xwindow_show_surface(struct Window* w) {
 }
 static void on_xsurface_geometry(struct wl_listener* l,void* data) {
   (void)data;struct Window* w=window_from_listener(l,offsetof(struct Window,xsurface_geometry));
+  if(w->xsurface)__android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: geometry %dx%d+%d+%d",w->id,w->xsurface->width,w->xsurface->height,w->xsurface->x,w->xsurface->y);
   /* Apply Android size within the current constraints. */
   if(w->xsurface)
     configure_window(w);
@@ -798,6 +799,7 @@ static void on_xsurface_request_fullscreen(struct wl_listener* l,void* data) {
 static void on_xsurface_request_minimize(struct wl_listener* l,void* data) {
   struct Window* w=window_from_listener(l,offsetof(struct Window,request_minimize));
   struct wlr_xwayland_minimize_event* e=data;
+  __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: minimize request %d",w->id,e?e->minimize:-1);
   if(e&&e->minimize)maton_java_window_state(w->id,MATON_STATE_MINIMIZE);
 }
 static void read_xsize_hints(struct Window* w) {
@@ -963,22 +965,42 @@ static void xwayland_overlay(struct wlr_xwayland_surface* xs,int session) {
 struct XTrack {
   struct wlr_xwayland_surface* xs;
   int session;
-  struct wl_listener associate, dissociate, configure, destroy;
+  struct wl_listener associate, dissociate, configure, destroy, map, unmap;
 };
 static struct Window* xtrack_window(struct XTrack* t) {
   for(struct Window* w=server.windows;w;w=w->next)if(w->xsurface==t->xs)return w;
   return NULL;
 }
-static void on_xtrack_associate(struct wl_listener* l,void* data) {
-  (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,associate));
-  if(!t->xs->override_redirect&&!xtrack_window(t))xwayland_window(t->xs,t->session);
-}
-static void on_xtrack_dissociate(struct wl_listener* l,void* data) {
-  (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,dissociate));
+/* wlroots keeps the X window's wl_surface associated across X unmaps and
+ * reports them as surface map/unmap: the Android window follows those. */
+static void xtrack_close(struct XTrack* t) {
   struct Window* w=xtrack_window(t);
   if(!w)return;
   if(w->scene_tree){wlr_scene_node_destroy(&w->scene_tree->node);w->scene_tree=NULL;}
   on_xsurface_destroy(&w->xsurface_destroy,NULL);
+}
+static void on_xtrack_map(struct wl_listener* l,void* data) {
+  (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,map));
+  __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X surface 0x%x mapped",t->xs->window_id);
+  if(!t->xs->override_redirect&&!xtrack_window(t))xwayland_window(t->xs,t->session);
+}
+static void on_xtrack_unmap(struct wl_listener* l,void* data) {
+  (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,unmap));
+  __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X surface 0x%x unmapped",t->xs->window_id);
+  xtrack_close(t);
+}
+static void on_xtrack_associate(struct wl_listener* l,void* data) {
+  (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,associate));
+  struct wlr_surface* s=t->xs->surface;
+  t->map.notify=on_xtrack_map;wl_signal_add(&s->events.map,&t->map);
+  t->unmap.notify=on_xtrack_unmap;wl_signal_add(&s->events.unmap,&t->unmap);
+  if(s->mapped)on_xtrack_map(&t->map,NULL);
+}
+static void on_xtrack_dissociate(struct wl_listener* l,void* data) {
+  (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,dissociate));
+  wl_list_remove(&t->map.link);wl_list_init(&t->map.link);
+  wl_list_remove(&t->unmap.link);wl_list_init(&t->unmap.link);
+  xtrack_close(t);
 }
 static void on_xtrack_configure(struct wl_listener* l,void* data) {
   struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,configure));
@@ -993,11 +1015,13 @@ static void on_xtrack_destroy(struct wl_listener* l,void* data) {
   (void)data;struct XTrack* t=(struct XTrack*)((char*)l-offsetof(struct XTrack,destroy));
   wl_list_remove(&t->associate.link);wl_list_remove(&t->dissociate.link);
   wl_list_remove(&t->configure.link);wl_list_remove(&t->destroy.link);
+  wl_list_remove(&t->map.link);wl_list_remove(&t->unmap.link);
   free(t);
 }
 static void xwayland_track(struct wlr_xwayland_surface* xs,int session) {
   struct XTrack* t=calloc(1,sizeof(*t));if(!t)return;
   t->xs=xs;t->session=session;
+  wl_list_init(&t->map.link);wl_list_init(&t->unmap.link);
   t->associate.notify=on_xtrack_associate;wl_signal_add(&xs->events.associate,&t->associate);
   t->dissociate.notify=on_xtrack_dissociate;wl_signal_add(&xs->events.dissociate,&t->dissociate);
   t->configure.notify=on_xtrack_configure;wl_signal_add(&xs->events.request_configure,&t->configure);

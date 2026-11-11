@@ -5,13 +5,13 @@ import subprocess,tempfile,sys
 root=Path(__file__).resolve().parents[2]
 s=(Path(sys.argv[1]) if len(sys.argv)>1 else root/'linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/StubActivity.java').read_text()
 a=s.index('    @Override public void windowClosed(');b=s.index('    private void launchLocally(',a)
-method=s[a:b].replace('@Override ', '')
+method=s[a:b].replace('@Override ', '').replace('StubActivity','ReplacementTest')
 code='''
 class ReplacementTest {
  boolean destroyed,foreground=true,attached=true;int window=3,finishes;
  Object surface=new Object();View view=new View();Status status=new Status();Runtime runtime=new Runtime();
  static final String WINDOW="window";
- static final java.util.Map<Integer,Object> SHOWING=new java.util.HashMap<>();
+ static final java.util.Map<Integer,ReplacementTest> SHOWING=new java.util.HashMap<>();
  static class Runtime {boolean windows;int detached;boolean hasWindows(){return windows;}void detach(int id){detached=id;}}
  static class Holder {void removeCallback(Object x){}}
  static class View {Holder getHolder(){return new Holder();}}
@@ -27,7 +27,10 @@ class ReplacementTest {
   t=new ReplacementTest();t.foreground=false;t.windowClosed(3);if(t.finishes!=1)throw new AssertionError("background close");
   t=new ReplacementTest();t.destroyed=true;t.windowClosed(3);if(t.finishes!=0||t.window!=3)throw new AssertionError("destroyed activity");
   t=new ReplacementTest();t.windowClosed(4);if(t.finishes!=0||t.window!=3)throw new AssertionError("another window");
-  System.out.println("PASS visible bootstrap waits for replacement; background/multiple/destroyed windows unchanged");
+  ReplacementTest host=new ReplacementTest(),dialog=new ReplacementTest();host.window=4;dialog.window=5;dialog.runtime.windows=true;
+  SHOWING.put(4,host);SHOWING.put(5,dialog);host.windowClosed(5);
+  if(dialog.finishes!=1||host.finishes!=0||host.window!=4)throw new AssertionError("close must reach the activity showing the window");
+  System.out.println("PASS visible bootstrap waits for replacement; closes route to the showing activity; background/multiple/destroyed windows unchanged");
  }
 }
 '''

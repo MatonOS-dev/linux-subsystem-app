@@ -211,7 +211,14 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             else startActivity(windowIntent(this, id), launchBounds(this, width, height));
         });
     }
+    /** The runtime reports closes to its single window host; route each to
+     * the activity showing that window (a dialog closed while the main
+     * window holds the host would otherwise stay as an empty task). */
     @Override public void windowClosed(int id) {
+        StubActivity target = SHOWING.get(id);
+        (target != null ? target : this).closeShown(id);
+    }
+    private void closeShown(int id) {
         runOnUiThread(() -> {
             if (destroyed || window != id) return;
             // A bootstrap/updater can close its last X/Wayland window long
@@ -320,6 +327,8 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         }
     }
     private void showWindow(int id) {
+        // The window can close before this activity starts (a short-lived dialog).
+        if(runtime!=null && !runtime.hasWindow(id)){finish();return;}
         window=id;SHOWING.put(id,this);
         view=new SurfaceView(this) {
             @Override public void onPointerCaptureChange(boolean captured) {
