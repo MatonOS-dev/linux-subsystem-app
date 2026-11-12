@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <limits.h>
+#include <sys/utsname.h>
 struct allocation {size_t size;};
 struct arena_block {struct arena_block *next;size_t size,used;};
 struct trap_arena {struct trap_arena *next;uintptr_t lo,hi;int active,suspended;long direct_tid;struct trap_arena *pause_next;uint64_t raw_calls,openat_calls,readlinkat_calls,newfstatat_calls,geteuid_calls,mmap_calls,munmap_calls,trap_count,raw_sum,openat_sum,readlinkat_sum,newfstatat_sum,geteuid_sum,mmap_sum,munmap_sum;uint64_t raw_by_nr[PROXY_SC_count],raw_sum_by_nr[PROXY_SC_count];struct arena_block *blocks;};
@@ -1239,7 +1240,16 @@ long vfs_pivot(const char *target,const char *old){long e=0;char *next=global_ta
         vfs_free(next_cwd);vfs_free(next);vfs_free(root);root=saved_next;vfs_free(oldroot_view);oldroot_view=next_oldroot;if(saved_cwd){vfs_free(cwd);cwd=saved_cwd;}return 0;}
     char *saved=pdupstr(next);vfs_free(next);if(!saved)return -ENOMEM;vfs_free(root);root=saved;vfs_free(cwd);cwd=NULL;return 0;
 }
-long vfs_proc_open(const char *path,int flags){(void)flags;long tcp=tcp_proc_open(path);if(tcp!=-ENOSYS)return tcp;size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
+/* Android denies untrusted apps /proc/version (proc_version label); Linux
+ * apps read it for kernel identification. Rebuild it from uname(), which they
+ * may call, in the kernel's "Linux version <release> (...) <version>" form. */
+static long proc_version_open(void){struct utsname u;long e=RAW(PROXY_SC_uname,&u,0,0,0,0,0);if(e<0)return e;
+    long fd=RAW(PROXY_SC_memfd_create,"v3-proc-version",1,0,0,0,0);if(fd<0)return fd;
+    const char *parts[]={"Linux version ",u.release," (matonos@android) ",u.version,"\n"};
+    for(unsigned i=0;i<5;i++){e=RAW(PROXY_SC_write,fd,parts[i],p_len(parts[i]),0,0,0);if(e<0){RAW(PROXY_SC_close,fd,0,0,0,0,0);return e;}}
+    RAW(PROXY_SC_lseek,fd,0,0,0,0,0);return fd;
+}
+long vfs_proc_open(const char *path,int flags){(void)flags;long tcp=tcp_proc_open(path);if(tcp!=-ENOSYS)return tcp;if(p_equal(path,"/proc/version"))return proc_version_open();size_t n=p_len(path);if(n<10 || !p_equal(path+n-10,"/mountinfo") || !table)return -ENOSYS;
     long fd=RAW(PROXY_SC_memfd_create,"v3-mountinfo",1,0,0,0,0);if(fd<0)return fd;
     const char *header="1 0 0:1 / ",*middle=" rw,nosuid - tmpfs compat-proxy rw\n";
     /* Virtual view required by bwrap's post-bind verification. Stable IDs are
