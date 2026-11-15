@@ -17,7 +17,7 @@ compile = command('common/libflatpak-common.a.p/flatpak-installation.c.o')
 # The inherited Flatpak command is generated from the static build graph and
 # may not carry an ISA flag. Clamp this standalone APK helper explicitly.
 compile = [arg for arg in compile if not arg.startswith(('-march=', '-mtune='))]
-compile.insert(1, '-march=x86-64-v2')
+compile[1:1] = ['-march=x86-64-v2'] + shlex.split(subprocess.check_output(['pkg-config', '--define-variable=prefix=' + str(build.parent / 'prefix'), '--cflags', 'appstream'], text=True))
 for flag in ('-o', '-MF', '-MQ'):
     if flag in compile:
         compile[compile.index(flag) + 1] = str(out / ('inspect.o.d' if flag == '-MF' else 'inspect.o'))
@@ -26,6 +26,7 @@ subprocess.check_call(compile, cwd=build)
 link = [arg for arg in command('common/test-libflatpak') if not arg.endswith('.o')]
 link[link.index('-o') + 1] = str(out / 'libmatonos-flatpak-plan.so')
 link.insert(1, str(out / 'inspect.o'))
+link.extend(shlex.split(subprocess.check_output(['pkg-config', '--define-variable=prefix=' + str(build.parent / 'prefix'), '--static', '--libs', 'appstream'], text=True)))
 subprocess.check_call(link, cwd=build)
 shutil.copy2(out / 'libmatonos-flatpak-plan.so', out / 'libmatonos-flatpak-plan.so.symbols')
 subprocess.check_call([os.environ.get('STRIP', 'strip'), '--strip-all', str(out / 'libmatonos-flatpak-plan.so')])

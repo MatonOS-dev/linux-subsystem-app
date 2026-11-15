@@ -357,28 +357,37 @@ final class V3Launcher {
         });
     }
 
+    static android.content.Intent storeRepairIntent(Context context) throws java.io.IOException {
+        android.content.Intent intent=new android.content.Intent(org.matonos.linux.store.StoreRepair.ACTION);
+        java.util.List<android.content.pm.ResolveInfo> services=context.getPackageManager().queryIntentServices(intent,android.content.pm.PackageManager.MATCH_SYSTEM_ONLY);
+        if(services.size()!=1){Log.e("MatonV3","Cannot resolve store repair service action="+intent.getAction()+" matches="+services.size());throw new java.io.IOException("Expected one store repair service, found "+services.size());}
+        android.content.pm.ServiceInfo service=services.get(0).serviceInfo;
+        return intent.setComponent(new android.content.ComponentName(service.packageName,service.name));
+    }
+
     static void repairDependency(Context context,String appRef,String dependencyRef) throws Exception {
-        java.util.concurrent.CountDownLatch complete=new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.atomic.AtomicReference<String> error=new java.util.concurrent.atomic.AtomicReference<>();
+        org.matonos.linux.store.StoreRepair repair=new org.matonos.linux.store.StoreRepair(appRef,dependencyRef);
         android.content.ServiceConnection connection=new android.content.ServiceConnection(){
             @Override public void onServiceConnected(android.content.ComponentName name,android.os.IBinder binder){
-                try{org.matonos.linux.ILinuxAppStore.Stub.asInterface(binder).repair(appRef,"repair-"+java.util.UUID.randomUUID().toString().replace("-",""),new org.matonos.linux.ILinuxAppStoreCallback.Stub(){
-                    @Override public void onProgress(String id,String phase,int percent,long done,long total){
-                        java.util.function.Consumer<String> shown=progress;
-                        if(shown!=null)shown.accept("Downloading dependencies…\n"+dependencyRef+"\n"+phase+(percent>=0?" "+percent+"%":""));
+                repair.request((id,result)->org.matonos.store.source.IStore.Stub.asInterface(binder).update(id,new org.matonos.store.source.ICommitResult.Stub(){
+                    @Override public void result(boolean ok,String message){
+                        if(!ok)Log.e("MatonV3","Store refused runtime repair app="+appRef+" dependency="+dependencyRef+" service="+name+": "+message);
+                        result.result(ok,message);
                     }
-                    @Override public void onResult(String id,boolean ok,String message){if(!ok)error.set(message==null?"Subsystem app repair failed":message);complete.countDown();}
-                });}catch(Exception e){error.set(e.getMessage());complete.countDown();}
+                }));
             }
-            @Override public void onServiceDisconnected(android.content.ComponentName name){error.set("Linux Subsystem disconnected during dependency repair");complete.countDown();}
+            @Override public void onServiceDisconnected(android.content.ComponentName name){Log.e("MatonV3","Store disconnected during repair app="+appRef+" dependency="+dependencyRef+" service="+name);repair.failed("Store disconnected: "+name);}
+            @Override public void onNullBinding(android.content.ComponentName name){repair.failed("Store returned null binding: "+name);}
+            @Override public void onBindingDied(android.content.ComponentName name){onServiceDisconnected(name);}
         };
-        android.content.Intent intent=new android.content.Intent().setClassName("org.matonos.linux","org.matonos.linux.LinuxAppStoreService");
-        if(!context.bindService(intent,connection,Context.BIND_AUTO_CREATE))throw new java.io.IOException("Cannot connect to Linux Subsystem to repair declared package "+dependencyRef);
-        boolean finished;
-        try{finished=complete.await(10,java.util.concurrent.TimeUnit.MINUTES);}
-        finally{try{context.unbindService(connection);}catch(Exception ignored){}}
-        if(!finished)throw new java.io.IOException("Timed out repairing declared package "+dependencyRef);
-        if(error.get()!=null)throw new java.io.IOException("Cannot repair declared package "+dependencyRef+": "+error.get());
+        android.content.Intent intent=storeRepairIntent(context);
+        if(!context.bindService(intent,connection,Context.BIND_AUTO_CREATE)){
+            Log.e("MatonV3","Cannot bind store repair app="+appRef+" dependency="+dependencyRef+" intent="+intent);
+            throw new java.io.IOException("Cannot connect to store to repair declared package "+dependencyRef);
+        }
+        try{repair.await(10,java.util.concurrent.TimeUnit.MINUTES);}
+        catch(Exception failure){Log.e("MatonV3","Store repair failed app="+appRef+" dependency="+dependencyRef,failure);throw failure;}
+        finally{try{context.unbindService(connection);}catch(Exception failure){Log.e("MatonV3","Store repair unbind failed app="+appRef+" dependency="+dependencyRef,failure);}}
     }
 
     static synchronized JSONObject getLaunchStatus() throws Exception {

@@ -132,7 +132,11 @@ meson setup "$BUILD/json-glib" "$SRC/json-glib" $MCOMMON -Dtests=false -Dman=fal
 "$NINJA" -C "$BUILD/json-glib" -j "$JOBS" install; stage_metadata
 meson setup "$BUILD/libxmlb" "$SRC/libxmlb" $MCOMMON -Dtests=false -Dcli=false -Dintrospection=false -Dgtkdoc=false
 "$NINJA" -C "$BUILD/libxmlb" -j "$JOBS" install; stage_metadata
-"$CMAKE" -S "$SRC/boringssl" -B "$BUILD/boringssl" -G Ninja -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DBUILD_TESTING=OFF -DOPENSSL_NO_ASM=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+# BoringSSL's Keccak vector kernels use target("avx2") even with
+# OPENSSL_NO_ASM. Disable optional compiler-attribute capabilities for this
+# portable static build; this selects upstream's scalar implementations.
+BSSL_FLAGS="$CFLAGS -include $HERE/baseline-compiler.h"
+"$CMAKE" -S "$SRC/boringssl" -B "$BUILD/boringssl" -G Ninja -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$BSSL_FLAGS" -DCMAKE_CXX_FLAGS="$BSSL_FLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DBUILD_TESTING=OFF -DOPENSSL_NO_ASM=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 "$CMAKE" --build "$BUILD/boringssl" --parallel "$JOBS" --target crypto ssl
 mkdir -p "$PREFIX/lib" "$PREFIX/include/openssl"
 cp "$BUILD/boringssl/libcrypto.a" "$PREFIX/lib/"; cp "$BUILD/boringssl/libssl.a" "$PREFIX/lib/"
@@ -181,7 +185,7 @@ mkdir -p "$BUILD/curl"; cd "$BUILD/curl"
 make -j"$JOBS"; make install; stage_metadata
 # BoringSSL's static archives contain C++ objects. Keep -lstdc++ in curl's
 # static dependency metadata so C-linker consumers resolve those objects.
-"$CMAKE" -S "$SRC/liblzma" -B "$BUILD/liblzma" -G Ninja -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DBUILD_SHARED_LIBS=OFF -DXZ_TOOL_XZ=OFF -DXZ_TOOL_LZMADEC=OFF -DXZ_TOOL_LZMAINFO=OFF -DXZ_DOC=OFF -DXZ_NLS=OFF
+"$CMAKE" -S "$SRC/liblzma" -B "$BUILD/liblzma" -G Ninja -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" -DBUILD_SHARED_LIBS=OFF -DXZ_CLMUL_CRC=OFF -DXZ_TOOL_XZ=OFF -DXZ_TOOL_LZMADEC=OFF -DXZ_TOOL_LZMAINFO=OFF -DXZ_DOC=OFF -DXZ_NLS=OFF
 "$CMAKE" --build "$BUILD/liblzma" --target install --parallel "$JOBS"; stage_metadata
 fi
 

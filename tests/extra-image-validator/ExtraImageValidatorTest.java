@@ -79,7 +79,12 @@ public final class ExtraImageValidatorTest {
             Path escape=temp.resolve("escape");copy(temp.resolve("good"),escape);Files.delete(escape.resolve("app/extra/blob"));
             Files.createSymbolicLink(escape.resolve("app/extra/blob"),temp.resolve("outside"));
             rejects(escape,expected,"extra-data symlink escape");
-            System.out.println("PASS EROFS extra-data validation");
+            Path runtime=Files.createDirectories(temp.resolve("runtime/stable/extra"));
+            mode(runtime.getParent(),0755);mode(runtime,0755);
+            Files.writeString(runtime.resolve("blob"),"runtime extra-data");mode(runtime.resolve("blob"),0644);
+            ExtraImageValidator.validate(temp.resolve("runtime").toFile(),
+                    List.of(entry("/stable","dir",0755,null,null)),"/stable/extra");
+            System.out.println("PASS EROFS extra-data validation (app and runtime roots)");
         } finally { remove(temp); }
     }
     private static ExtraImageValidator.Entry entry(String path,String kind,int mode,String hash,String target){return new ExtraImageValidator.Entry(path,kind,mode,target,hash,null);}

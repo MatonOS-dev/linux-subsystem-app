@@ -1,5 +1,6 @@
 /* Read-only adapter using only Flatpak's public API. */
 #include <flatpak.h>
+#include <appstream.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -52,7 +53,110 @@ static int local_requirements(const char *filename,const char *name) {
     g_autofree char *parent=parent_for_metadata(ref,metadata);
     string(runtime?runtime:"");string(parent?parent:"");number(has_extensions(metadata)?1:0);return fflush(stdout)?2:0;
 }
+/* AppStream owns OARS mappings; do not duplicate its territory/age tables in Java. */
+static int oars(int argc, char **argv) {
+    if(argc<4){fprintf(stderr,"flatpak-source OARS: expected kind and locale\n");return 2;}
+    g_autoptr(AsContentRating) rating=as_content_rating_new();
+    as_content_rating_set_kind(rating,argv[2]);
+    for(int i=4;i<argc;i++) {
+        char *equals=strchr(argv[i],'=');
+        if(!equals){fprintf(stderr,"flatpak-source OARS: malformed attribute %s\n",argv[i]);return 2;}
+        g_autofree char *id=g_strndup(argv[i],equals-argv[i]);
+        AsContentRatingValue value=as_content_rating_value_from_string(equals+1);
+        if(value==AS_CONTENT_RATING_VALUE_UNKNOWN){fprintf(stderr,"flatpak-source OARS: unknown level %s\n",equals+1);return 2;}
+        as_content_rating_set_value(rating,id,value);
+    }
+    guint age=as_content_rating_get_minimum_age(rating);
+    if(age==G_MAXUINT){fprintf(stderr,"flatpak-source OARS: unknown rating kind %s\n",argv[2]);return 1;}
+    AsContentRatingSystem system=as_content_rating_system_from_locale(argv[3]);
+    g_autofree char *label=as_content_rating_system_format_age(system,age);
+    printf("%u\n%s\n%s\n",age,as_content_rating_system_to_string(system),label?label:"");
+    if(fflush(stdout)){perror("flatpak-source OARS stdout");return 1;}
+    return 0;
+}
+static int installed_refs(const char *directory, gboolean updates) {
+    g_autoptr(GError) error=NULL;
+    g_autoptr(GFile) path=g_file_new_for_path(directory);
+    g_autoptr(FlatpakInstallation) installation=flatpak_installation_new_for_path(path,FALSE,NULL,&error);
+    g_autoptr(GPtrArray) refs=NULL;
+    if(!installation)goto failed;
+    refs=updates?flatpak_installation_list_installed_refs_for_update(installation,NULL,&error):
+        flatpak_installation_list_installed_refs(installation,NULL,&error);
+    if(!refs)goto failed;
+    for(guint i=0;i<refs->len;i++) {
+        FlatpakInstalledRef *ref=g_ptr_array_index(refs,i);
+        g_autofree char *name=flatpak_ref_format_ref((FlatpakRef*)ref);
+        printf("%s\t%s\n",name,flatpak_installed_ref_get_origin(ref));
+    }
+    if(fflush(stdout)){perror("flatpak-source installed stdout");return 1;}
+    return 0;
+failed:
+    fprintf(stderr,"flatpak-source installed directory=%s: %s\n",directory,error?error->message:"Invalid installation");return 1;
+}
+static int sizes(char **argv) {
+    g_autoptr(GError) error=NULL;
+    g_autoptr(GFile) path=g_file_new_for_path(argv[2]);
+    g_autoptr(FlatpakInstallation) installation=flatpak_installation_new_for_path(path,FALSE,NULL,&error);
+    g_autoptr(FlatpakRef) ref=NULL;
+    g_autoptr(FlatpakRemoteRef) remote=NULL;
+    if(!installation)goto failed;
+    ref=flatpak_ref_parse(argv[4],&error);
+    if(!ref)goto failed;
+    remote=flatpak_installation_fetch_remote_ref_sync(installation,argv[3],
+        flatpak_ref_get_kind(ref),flatpak_ref_get_name(ref),flatpak_ref_get_arch(ref),flatpak_ref_get_branch(ref),NULL,&error);
+    if(!remote)goto failed;
+    printf("%" G_GUINT64_FORMAT "\n%" G_GUINT64_FORMAT "\n",
+        flatpak_remote_ref_get_download_size(remote),flatpak_remote_ref_get_installed_size(remote));
+    if(fflush(stdout)){perror("flatpak-source sizes stdout");return 1;}
+    return 0;
+failed:
+    fprintf(stderr,"flatpak-source sizes remote=%s ref=%s: %s\n",argv[3],argv[4],error?error->message:"Invalid ref");return 1;
+}
+/* Download the transaction Flatpak resolved, but never deploy/apply_extra here. */
+static int stage(char **argv) {
+    g_autoptr(GError) error=NULL;
+    g_autoptr(GFile) path=g_file_new_for_path(argv[2]);
+    g_autoptr(FlatpakInstallation) installation=flatpak_installation_new_for_path(path,FALSE,NULL,&error);
+    g_autoptr(FlatpakTransaction) transaction=NULL;
+    if(!installation)goto failed;
+    transaction=flatpak_transaction_new_for_installation(installation,NULL,&error);
+    if(!transaction)goto failed;
+    flatpak_transaction_set_no_deploy(transaction,TRUE);
+    if(!flatpak_transaction_add_install(transaction,argv[3],argv[4],NULL,&error)||
+       !flatpak_transaction_run(transaction,NULL,&error))goto failed;
+    GList *operations=flatpak_transaction_get_operations(transaction);
+    for(GList *it=operations;it;it=it->next) {
+        FlatpakTransactionOperation *op=it->data;
+        if(flatpak_transaction_operation_get_operation_type(op)==FLATPAK_TRANSACTION_OPERATION_UNINSTALL) {
+            fprintf(stderr,"flatpak-source stage: unexpected uninstall ref=%s\n",flatpak_transaction_operation_get_ref(op));
+            g_list_free_full(operations,g_object_unref);return 1;
+        }
+        const char * const *subpaths=flatpak_transaction_operation_get_subpaths(op);
+        if(!flatpak_transaction_operation_get_commit(op)) {
+            fprintf(stderr,"flatpak-source stage: missing commit ref=%s\n",flatpak_transaction_operation_get_ref(op));
+            g_list_free_full(operations,g_object_unref);return 1;
+        }
+        printf("%s\t%s\t%s\t",flatpak_transaction_operation_get_ref(op),
+                flatpak_transaction_operation_get_remote(op),flatpak_transaction_operation_get_commit(op));
+        for(guint i=0;subpaths&&subpaths[i];i++) {
+            g_autofree char *encoded=g_uri_escape_string(subpaths[i],NULL,FALSE);
+            printf("%s%s",i?",":"",encoded);
+        }
+        putchar('\n');
+    }
+    g_list_free_full(operations,g_object_unref);
+    if(fflush(stdout)){perror("flatpak-source stage stdout");return 1;}
+    return 0;
+failed:
+    fprintf(stderr,"flatpak-source stage installation=%s remote=%s ref=%s: %s\n",
+            argv[2],argv[3],argv[4],error?error->message:"Invalid transaction");return 1;
+}
 int main(int argc,char **argv) {
+    if(argc==5&&!strcmp(argv[1],"--stage"))return stage(argv);
+    if(argc==3&&!strcmp(argv[1],"--installed"))return installed_refs(argv[2],FALSE);
+    if(argc==3&&!strcmp(argv[1],"--updates"))return installed_refs(argv[2],TRUE);
+    if(argc==5&&!strcmp(argv[1],"--sizes"))return sizes(argv);
+    if(argc>=2&&!strcmp(argv[1],"--oars"))return oars(argc,argv);
     if(argc==4&&!strcmp(argv[1],"--requirements"))return local_requirements(argv[2],argv[3]);
     if(argc!=4&&argc!=5)return 2;
     g_autoptr(GError) error=NULL;

@@ -32,8 +32,7 @@ export MATON_SIGNING_KEY_ALIAS=matonos-dev
 The script requires an existing external keystore; it never creates or stores
 keys in this public repository. It rejects signing inputs and output directories
 inside the repository. The password file contains the keystore/key password.
-Do not use shell tracing with signing environment variables. Maximum parallelism
-is four (`MATON_BUILD_JOBS=1..4`). The result is
+Do not use shell tracing with signing environment variables. Parallelism defaults to `nproc`; `MATON_BUILD_JOBS` accepts any positive integer. The result is
 `$MATON_SUBSYSTEM_OUT/MatonLinuxSubsystem.apk`; JNI/dex entries are stored,
 16 KiB aligned and signed again after ZIP normalization. Updates retain the
 same signer. The script verifies the final signature and alignment.
@@ -332,3 +331,70 @@ absolute image name without changing argv/AT_EXECFN. The mapped relative
 exec → chdir → child-exec regression fails on main and passes with the fix.
 See linux/compat-proxy/README.md for exact timestamps and the still-open
 portal/shared-runtime mismatch behind pv-adverb's ldso ENOENT warning.
+
+### Flatpak store source (contract 2, revision 1)
+
+`contract/` is the store-source-contract submodule pinned at
+`c21e8d94372d20fb1caf6f29a3d7331e36b15d79`. Initialize it with
+`git submodule update --init contract`. Gradle compiles its AIDL directly;
+there is no subsystem copy. Search, installed apps, updates, reviews and
+repositories return typed, offset/limit-paged parcelables. App IDs are full
+Flatpak app refs; `AppListing.repo` is the remote name, matching `Repo.id`.
+Details select that pair. Install forwards that ref and remote to Flatpak
+without requiring an AppStream refresh, including when repairing an installed
+app after its catalogue cache was lost. Changing remotes requires the store's
+explicit reinstall flow; signed installed origin checks remain in place.
+
+The operation table owns cancellation and revision-1 keep-alives. `running`
+only looks up the ID, even if downloads or a commit are stuck. Cancellation
+interrupts the worker, kills registered Flatpak/OSTree processes, reaches the
+stub's extra-data downloader, and stops further commits; it retains already
+committed packages. One terminal callback wins, with exactly `cancelled` for a
+cancelled operation. Unknown/finished IDs report false and cancel quietly.
+
+Missing-runtime launch repair binds `org.matonos.store.STORE` and calls
+`IStore.update` with the installed app ref. The store chooses its recorded
+source and remote. There is no legacy `ILinuxAppStore.repair` call in
+V3Launcher. A refusal, binding failure or disconnect reports app/dependency
+context in the permanent MatonV3 log and fails launch visibly.
+
+The static Flatpak build uses the x86-64-v2 baseline. BoringSSL's optional
+compiler-attribute vector paths are disabled for its portable build, because
+its AVX2 Keccak functions are otherwise compiled even with OPENSSL_NO_ASM.
+liblzma uses `XZ_CLMUL_CRC=OFF`. These choices remove the optional instructions
+from the binaries; no ISA audit suppression or allowlist was added. The
+tracked multicall and its SOURCE hashes were rebuilt together.
+
+Round-4 verification (isolated `GRADLE_USER_HOME`, no image build or VM):
+
+- `linux/subsystem/host/test-store-source.sh OUT`: passes paging boundaries,
+  overflow/invalid arguments, same-ref remote routing, cancellation (including
+  multiple subprocesses), unknown/active/terminal running states, store repair
+  success/refusal/request failure, and existing AppStream/commit-chain tests.
+- `:app:testDebugUnitTest --tests org.matonos.linux.SourceTypesTest`: three
+  passing tests cover typed listings, all list adapters, review epoch-ms dates,
+  remote names, sizes, permissions and OARS fields.
+- `build-musl.sh` and `build-flatpak-plan-musl.sh`: successful native rebuilds.
+  `test-store-flatpak.sh`: local repository resolver, exact sizes, publishing
+  an update, and metadata-only installed snapshots pass.
+  `linux/flatpak/tests/appstream-host.py`: local AppStream refresh/search pass.
+- `:app:assembleRelease`: passes, reusing unchanged prepared native/assets
+  through `-x :app:preBuild`; the rebuilt Flatpak CLI and plan helper were
+  packaged separately first. The release APK and the standalone multicall
+  pass the existing ISA checker. The multicall needs zero dispatch exceptions.
+
+Host acceptance output and logs are under
+`~/matonos/build/flatpak-source2-out/round4-*`; the release APK is
+`subsystem/gradle/app/outputs/apk/release/app-release.apk` beneath that output.
+Device Binder, real store ownership checks and extra-data cancellation across
+processes still need a fresh installed release test; no VM boot was authorized.
+On any supported PC, enable this source, install from a chosen remote, cancel
+one download, check updates, then uninstall a runtime and launch its app.
+Verify the store restores the runtime using the recorded remote; with the
+source disabled, verify an explicit contextual refusal instead.
+
+Shared change needed outside this worktree: remove the copied-AIDL drift
+check at `device/maton/pc_x86_64/tools/build-subsystem.sh` lines 22–27. It still
+instructs maintainers to copy the contract; this repository now consumes its
+own pinned submodule. That external script was not edited. No kernel changes
+are needed.

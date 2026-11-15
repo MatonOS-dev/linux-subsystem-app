@@ -19,23 +19,37 @@ public final class ExtraDataInstallService extends Service {
     private static final String TAG = "MatonExtraData";
     private static final android.os.IBinder EROFS_TOKEN = new android.os.Binder();
 
+    private final org.matonos.linux.store.SourceOperations extraOperations=new org.matonos.linux.store.SourceOperations();
+    private final ThreadLocal<org.matonos.linux.store.SourceOperations.Operation> cancellation=new ThreadLocal<>();
+
     /** Binder call 1: result pipe fd, ref, remote, url, subpaths. FDs cannot travel in service Intents. */
     @Override public IBinder onBind(Intent intent) {
         return new android.os.Binder() {
             @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
                     throws android.os.RemoteException {
+                if(code==4){extraOperations.cancel("extra");return true;}
                 if (code == 2) {
                     File root=new File(getDataDir(), "install");
                     if (new File(root, ".erofs-handback").isFile()) deleteTree(root);
                     return true;
                 }
-                if (code != 1) return super.onTransact(code, data, reply, flags);
+                if (code != 1 && code != 3) return super.onTransact(code, data, reply, flags);
                 ParcelFileDescriptor result = data.readFileDescriptor();
                 Intent request = new Intent(ACTION).putExtra("ref", data.readString()).putExtra("remote", data.readString())
                         .putExtra("url", data.readString()).putExtra("subpaths", data.readString())
-                        .putExtra("runtime", data.readString());
+                        .putExtra("runtime", data.readString()).putExtra("storeSplit", code == 3);
+                if(code==3)request.putExtra("remoteDescriptor",data.readString());
                 if (result == null) return false;
-                new Thread(() -> {
+                org.matonos.linux.store.SourceOperations.Operation operation;
+                try{operation=extraOperations.start("extra");}
+                catch(RuntimeException error){
+                    android.util.Log.e(TAG,"Cannot start extra-data request ref="+request.getStringExtra("ref"),error);
+                    android.util.Log.i(TAG,"close fd="+result.getFd()+" at ExtraDataInstallService.onTransact rejected request");
+                    try{result.close();}catch(IOException closeError){android.util.Log.e(TAG,"Cannot close rejected extra-data result",closeError);}
+                    throw error;
+                }
+                Thread worker=new Thread(() -> {
+                    cancellation.set(operation);
                     try (ParcelFileDescriptor fd = result;
                             java.io.DataOutputStream out = new java.io.DataOutputStream(new FileOutputStream(fd.getFileDescriptor()))) {
                         try {
@@ -45,9 +59,13 @@ public final class ExtraDataInstallService extends Service {
                             android.util.Log.e(TAG, "Extra-data deployment failed", error);
                             out.writeInt(-1);
                             out.writeUTF(String.valueOf(error.getMessage()));
+                        } finally {
+                            android.util.Log.i(TAG,"close fd="+fd.getFd()+" at ExtraDataInstallService.onTransact result pipe ref="+request.getStringExtra("ref"));
                         }
                     } catch (Exception error) { android.util.Log.e(TAG, "Could not return extra-data result", error); }
-                }, "maton-extra-data").start();
+                    finally{operation.finish();cancellation.remove();}
+                }, "maton-extra-data");
+                operation.worker=worker;worker.start();
                 return true;
             }
         };
@@ -72,7 +90,8 @@ public final class ExtraDataInstallService extends Service {
         File flatpakUser = new File(userData, "flatpak");
         File flatpakSystem = null;
         boolean erofsAvailable = ErofsLaunch.available();
-        if (erofsAvailable) flatpakSystem = prepareRuntimeSystem(root, request.getStringExtra("runtime"));
+        if (erofsAvailable && request.getStringExtra("runtime")!=null && !request.getStringExtra("runtime").isEmpty())
+            flatpakSystem = prepareRuntimeSystem(root, request.getStringExtra("runtime"));
         String dns=LoaderCommand.resolverAddress();
         File resolv=LoaderCommand.writeResolv(new File(run,"install-resolv.conf"),dns);
         List<String> prefix=new ArrayList<>();
@@ -80,6 +99,12 @@ public final class ExtraDataInstallService extends Service {
         if (new File(getCacheDir(), "v3-trace").exists()) prefix.add("--trace");
         prefix.add("--parent-pid");
         prefix.add(Integer.toString(android.os.Process.myPid()));LoaderCommand.addDns(prefix,dns);LoaderCommand.addResolvMaps(this,prefix,resolv);
+        String descriptor=request.getStringExtra("remoteDescriptor");
+        if(descriptor!=null) {
+            File repoFile=new File(root,"source.flatpakrepo");
+            Files.write(repoFile.toPath(),descriptor.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            url=repoFile.getAbsolutePath();
+        }
         runFlatpak(prefix,home, tmp, run, cache, flatpakUser, flatpakSystem, "remote-add", "--user", "--if-not-exists", remote, url);
         String tags=android.os.LocaleList.getDefault().toLanguageTags();
         List<String> localeTags=new ArrayList<>();if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));
@@ -118,6 +143,9 @@ public final class ExtraDataInstallService extends Service {
             // TODO: launch directly from this full app+runtime installation
             // when matonos-erofsd is absent; retain install/ as the fallback.
         }
+        if(request.getBooleanExtra("storeSplit",false))
+            handback=org.matonos.linuxhost.stubgen.StubGenerator.generateErofsPackUnsigned(
+                    root,getPackageName(),handback,0);
         try (java.io.InputStream in = org.matonos.linuxhost.stubgen.PlaceholderFiles.open(handback)) {
             out.writeInt(0); out.writeLong(handback.length());
             byte[] buffer = new byte[65536]; int count;
@@ -177,7 +205,9 @@ public final class ExtraDataInstallService extends Service {
         if (systemDir != null) env.put("FLATPAK_SYSTEM_DIR", systemDir.getAbsolutePath());
         env.put("FLATPAK_SYSTEM_CACHE_DIR",cache.getAbsolutePath());
         for(String key:new String[]{"SSL_CERT_DIR","CURL_CA_BUNDLE","G_TLS_CA_PATH"})env.put(key,"/apex/com.android.conscrypt/cacerts");
-        Process process = builder.start(); StringBuilder log = new StringBuilder();
+        org.matonos.linux.store.SourceOperations.Operation operation=cancellation.get();operation.check();
+        Process process = builder.start();operation.process(process); StringBuilder log = new StringBuilder();
+        try {
         // Stream evidence while the operation is running, including successful
         // apply_extra output; full proxy traces must not wait for process exit.
         try (java.io.BufferedReader in = new java.io.BufferedReader(new java.io.InputStreamReader(
@@ -189,6 +219,8 @@ public final class ExtraDataInstallService extends Service {
             }
         }
         if (process.waitFor() != 0) throw new IOException("Stock Flatpak failed: " + log);
+        operation.check();
+        }finally{operation.release(process);process.destroyForcibly();}
     }
 
 }

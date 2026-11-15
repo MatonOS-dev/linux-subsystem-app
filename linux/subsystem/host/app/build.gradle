@@ -188,9 +188,9 @@ tasks.named('preBuild').configure { dependsOn packageXwayland }
 
 android {
     namespace 'org.matonos.linux'
-    compileSdk 36
+    compileSdk 37
     defaultConfig {
-        applicationId 'org.matonos.linux'; minSdk 36; targetSdk 36
+        applicationId 'org.matonos.linux'; minSdk 37; targetSdk 37
         def realVersionCode = project.findProperty('realVersionCode')?.toString()?.toInteger()
         if (realVersionCode == null || realVersionCode <= 1)
             throw new GradleException('Pass -PrealVersionCode with a value greater than bootstrap versionCode 1')
@@ -241,6 +241,7 @@ android {
             java.srcDirs += file('../../../stubgen/src')
             java.srcDirs += file('../shared/src/main/java')
             aidl.srcDirs += file('../shared/src/main/aidl')
+            aidl.srcDirs += file('../../../../contract/aidl')
             def compositorJni = System.getenv('MATON_COMPOSITOR_JNI_LIBS')
             if (!compositorJni) throw new GradleException('MATON_COMPOSITOR_JNI_LIBS is not set (build through ./build.sh)')
             jniLibs.srcDirs += file(compositorJni)
