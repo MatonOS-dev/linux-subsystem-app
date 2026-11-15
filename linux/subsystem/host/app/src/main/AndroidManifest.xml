@@ -41,6 +41,12 @@
         <activity android:name=".stub.StubActivity" android:exported="true" />
         <activity android:name=".stub.InstallActivity" android:exported="true" />
         <service android:name=".stub.StubService" android:exported="false" />
+        <provider android:name=".store.FlatpakIconProvider" android:authorities="org.matonos.linux.store.icons"
+            android:exported="true" android:readPermission="org.matonos.permission.BIND_STORE_SOURCE" />
+        <service android:name=".FlatpakSourceService" android:exported="true" android:foregroundServiceType="dataSync"
+            android:permission="org.matonos.permission.BIND_STORE_SOURCE">
+            <intent-filter><action android:name="org.matonos.store.SOURCE" /></intent-filter>
+        </service>
         <service android:name=".LinuxAppStoreService" android:exported="true"
             android:foregroundServiceType="dataSync" />
         <service android:name=".LinuxAppStoreService$CleanupJobService" android:exported="false"

@@ -248,10 +248,10 @@ public final class DeployManifest {
         return new Deployment(ref, metadata.commit, metadata.subpaths);
     }
 
-    private static final class Metadata {
-        final String origin;
-        final String commit;
-        final List<String> subpaths;
+    public static final class Metadata {
+        public final String origin;
+        public final String commit;
+        public final List<String> subpaths;
         Metadata(String origin, String commit, List<String> subpaths) {
             this.origin = origin; this.commit = commit; this.subpaths = subpaths;
         }
@@ -265,7 +265,7 @@ public final class DeployManifest {
      * subpath array is the only variable-size member this reader needs, and it
      * is followed by alignment padding, the 8-byte version and the dictionary.
      */
-    private static Metadata parse(byte[] data) throws IOException {
+    public static Metadata parse(byte[] data) throws IOException {
         int length = data.length;
         if (length < 4) throw new IOException("deploy variant too small");
         int originEnd = cstringEnd(data, 0);
@@ -359,7 +359,7 @@ public final class DeployManifest {
 
     /* Ref and subpath validation. */
 
-    static boolean validRef(String ref) {
+    public static boolean validRef(String ref) {
         if (ref == null) return false;
         int parts = 0, length = 0;
         for (int i = 0; i < ref.length(); i++) {
