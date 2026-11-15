@@ -1,0 +1,32 @@
+{
+  "description": "Flatpak ref -> stub Android package name (DeployManifest.packageFor). Canonical copy: linux-subsystem-app linux/subsystem/host/app/src/test/resources/stub-package-names.json; the MatonOS store keeps an identical copy. Change both together.",
+  "valid": [
+    {
+      "ref": "app/org.kde.kate/x86_64/stable",
+      "package": "flatpak.app.org_kde_kate.x86_64.stable"
+    },
+    {
+      "ref": "app/com.valvesoftware.Steam/x86_64/stable",
+      "package": "flatpak.app.com_valvesoftware_Steam.x86_64.stable"
+    },
+    {
+      "ref": "runtime/org.freedesktop.Platform/x86_64/25.08",
+      "package": "flatpak.runtime.org_freedesktop_Platform.x86_64.v25_08"
+    },
+    {
+      "ref": "runtime/org.freedesktop.Platform.GL.default/i386/25.08-extra",
+      "package": "flatpak.runtime.org_freedesktop_Platform_GL_default.i386.v25_08_extra"
+    },
+    {
+      "ref": "app/io.github._foo-bar.App/aarch64/master",
+      "package": "flatpak.app.io_github__foo_bar_App.aarch64.master"
+    }
+  ],
+  "invalid": [
+    "app/org.kde.kate/x86_64",
+    "app//x86_64/stable",
+    "app/../x86_64/stable",
+    "app/org kde/x86_64/stable",
+    "app/org.kde.kate/x86_64/stable/extra"
+  ]
+}
