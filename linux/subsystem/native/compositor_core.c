@@ -836,6 +836,29 @@ static void close_xwindow(struct Window* w) {
   for(size_t i=0;atom&&i<w->xsurface->protocols_len;i++)if(w->xsurface->protocols[i]==atom){wlr_xwayland_surface_close(w->xsurface);return;}
   __android_log_print(ANDROID_LOG_INFO,"MatonCompositor","X window %d class=%s: close without WM_DELETE_WINDOW; leaving client alive",w->id,w->xsurface->class?w->xsurface->class:"");
 }
+/* X clients position their windows on the virtual monitor (Steam puts its
+ * toasts in the bottom-right corner). Pass where the window sits within the
+ * monitor's free space so Android opens it at the same relative spot. A
+ * window at the origin made no choice and stays centred. */
+static int placement_frac(int pos,int size,int monitor) {
+  int free=monitor-size;
+  if(free<=0)return 5000;
+  if(pos<=0)return 0;
+  if(pos>=free)return 10000;
+  return (int)((int64_t)pos*10000/free);
+}
+static void xwindow_send_placement(struct Window* w) {
+  struct wlr_xwayland_surface* xs=w->xsurface;
+  if(!server.monitor||xs->fullscreen||(xs->x==0&&xs->y==0))return;
+  int mw=server.monitor->width,mh=server.monitor->height;
+  if(xs->x<-(int)xs->width||xs->y<-(int)xs->height||xs->x>=mw||xs->y>=mh){
+    __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: position %+d%+d off the %dx%d monitor; centring",w->id,xs->x,xs->y,mw,mh);
+    return;
+  }
+  int fx=placement_frac(xs->x,w->width,mw),fy=placement_frac(xs->y,w->height,mh);
+  __android_log_print(ANDROID_LOG_DEBUG,"MatonCompositor","X window %d: placed %+d%+d on %dx%d -> %d/%d",w->id,xs->x,xs->y,mw,mh,fx,fy);
+  maton_java_place_window(w->id,fx,fy);
+}
 static struct Window* xwayland_window(struct wlr_xwayland_surface* xs,int session) {
   for(struct Window* w=server.windows;w;w=w->next)if(w->xsurface==xs)return w;
   struct Window* w=calloc(1,sizeof(*w));if(!w)return NULL;
@@ -867,6 +890,7 @@ static struct Window* xwayland_window(struct wlr_xwayland_surface* xs,int sessio
   if(!xs->fullscreen && maton_size_fixed(w->hints)){
     w->width=w->hints.min_width;w->height=w->hints.min_height;
   }
+  xwindow_send_placement(w);
   w->activity=1;maton_java_request_window(session,w->id,w->width,w->height);
   /* Windows mapped already fullscreen (e.g. Steam Big Picture) ask now. */
   if(xs->fullscreen)maton_java_window_state(w->id,MATON_STATE_FULLSCREEN_ON);

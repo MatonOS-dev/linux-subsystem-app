@@ -26,6 +26,10 @@ void maton_core_motion(int id, float x, float y, float vertical_scroll,
 
 void maton_java_request_window(int session, int id, int width, int height);
 void maton_java_close_window(int id);
+/* Where an X window asked to appear: its origin within the free space of the
+ * virtual monitor, in 1/10000 (0 = left/top, 10000 = right/bottom). Sent
+ * before maton_java_request_window; windows at the origin send nothing. */
+void maton_java_place_window(int id, int x_frac, int y_frac);
 /* Window-state requests from the app (X11 _NET_WM_STATE, xdg_toplevel):
  * MATON_STATE_* below. Java answers fullscreen with maton_core_set_fullscreen. */
 #define MATON_STATE_FULLSCREEN_ON 1

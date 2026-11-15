@@ -66,7 +66,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         android.util.Log.i("MatonFlatpakStub", "Window needs activity decision=start window=" + id
                 + " package=" + context.getPackageName() + " uid=" + android.os.Process.myUid());
         try {
-            context.startActivity(windowIntent(context, id), launchBounds(context, width, height));
+            context.startActivity(windowIntent(context, id), launchBounds(context, id, width, height));
             android.util.Log.i("MatonFlatpakStub", "Window activity start result=started window=" + id
                     + " package=" + context.getPackageName());
         } catch (RuntimeException error) {
@@ -80,15 +80,25 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
                 .putExtra(WINDOW, id)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
     }
-    /** Freeform windows open at the size the app asked for, centred and
-     * clamped to the display. Later resizes stay with Android and the user. */
-    private static Bundle launchBounds(android.content.Context context, int width, int height) {
+    /* Window id -> requested spot within the display's free space, 1/10000
+     * per axis (X windows that chose a position, e.g. notification toasts). */
+    private static final java.util.Map<Integer, int[]> PLACEMENT = new java.util.concurrent.ConcurrentHashMap<>();
+    public static void placeWindow(int id, int xFrac, int yFrac) { PLACEMENT.put(id, new int[]{xFrac, yFrac}); }
+    public static void forgetPlacement(int id) { PLACEMENT.remove(id); }
+
+    /** Freeform windows open at the size the app asked for, clamped to the
+     * display: at the app's chosen spot if it has one, else centred. Later
+     * resizes stay with Android and the user. */
+    private static Bundle launchBounds(android.content.Context context, int id, int width, int height) {
         if (width <= 0 || height <= 0) return null;
         android.graphics.Rect display = context.getSystemService(android.view.WindowManager.class)
                 .getMaximumWindowMetrics().getBounds();
         // Desktop task bounds include the caption bar; the app's size is the content area.
         int w = Math.min(width, display.width()), h = Math.min(height + captionHeight(context), display.height());
-        int left = display.left + (display.width() - w) / 2, top = display.top + (display.height() - h) / 2;
+        int[] place = PLACEMENT.get(id);
+        int xFrac = place != null ? place[0] : 5000, yFrac = place != null ? place[1] : 5000;
+        int left = display.left + (int) ((long) (display.width() - w) * xFrac / 10000);
+        int top = display.top + (int) ((long) (display.height() - h) * yFrac / 10000);
         return android.app.ActivityOptions.makeBasic()
                 .setLaunchBounds(new android.graphics.Rect(left, top, left + w, top + h)).toBundle();
     }
@@ -118,7 +128,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             StubActivity activity = SHOWING.get(id);
             if (activity == null || activity.destroyed || activity.isFinishing()
                     || !activity.isInMultiWindowMode()) return;
-            Bundle bounds = launchBounds(activity, width, height);
+            Bundle bounds = launchBounds(activity, id, width, height);
             if (bounds == null) return;
             activity.startActivity(windowIntent(activity, id), bounds);
             // Detach before the replacement activity can attach. Finishing a
@@ -218,13 +228,13 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             // The launcher opened this activity before the app's size was
             // known, and an app cannot resize its own task: reopen the first
             // window at the requested size like any later one.
-            Bundle bounds = window == 0 && isInMultiWindowMode() ? launchBounds(this, width, height) : null;
+            Bundle bounds = window == 0 && isInMultiWindowMode() ? launchBounds(this, id, width, height) : null;
             if (bounds != null) { startActivity(windowIntent(this, id), bounds); finish(); }
             else if (window == 0) showWindow(id);
             // The runtime has exactly one window host at a time, so whichever
             // activity holds it opens further windows. The root activity may
             // already be gone (its window closed, e.g. an updater window).
-            else startActivity(windowIntent(this, id), launchBounds(this, width, height));
+            else startActivity(windowIntent(this, id), launchBounds(this, id, width, height));
         });
     }
     /** The runtime reports closes to its single window host; route each to

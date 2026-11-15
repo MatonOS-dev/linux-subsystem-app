@@ -155,6 +155,11 @@ public final class PerAppRuntime implements AutoCloseable {
         }
     }
 
+    /** Called from native before onNativeToplevel when an X window chose its position. */
+    @SuppressWarnings("unused") private void onNativeWindowPlacement(int id, int xFrac, int yFrac) {
+        org.matonos.linux.stub.StubActivity.placeWindow(id, xFrac, yFrac);
+    }
+
     /** Called from native when the app asks for a window state. */
     @SuppressWarnings("unused") private void onNativeWindowState(int id, int state) {
         org.matonos.linux.stub.StubActivity.windowState(id, state);
@@ -164,6 +169,7 @@ public final class PerAppRuntime implements AutoCloseable {
     /** Called from native when the app's window is destroyed. */
     @SuppressWarnings("unused") private synchronized void onNativeToplevelClosed(int id) {
         windows.remove(id);
+        org.matonos.linux.stub.StubActivity.forgetPlacement(id);
         WindowHost h = host;
         if (h != null) h.windowClosed(id);
     }

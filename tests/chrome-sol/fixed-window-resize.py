@@ -19,7 +19,7 @@ class StubActivity {
  static class Intent {boolean removed;void removeExtra(String s){removed=true;}}
  static class Bundle {int width,height;Bundle(int w,int h){width=w;height=h;}}
  Intent intent=new Intent();Intent getIntent(){return intent;}
- static Bundle launchBounds(StubActivity a,int w,int h){return w>0&&h>0?new Bundle(w,h):null;}
+ static Bundle launchBounds(StubActivity a,int id,int w,int h){return w>0&&h>0?new Bundle(w,h):null;}
  static Intent windowIntent(StubActivity a,int id){if(id!=3)throw new AssertionError();return new Intent();}
  void startActivity(Intent i,Bundle b){if(b.width!=700||b.height!=330)throw new AssertionError();starts++;}
  boolean isInMultiWindowMode(){return multi;}boolean isFinishing(){return finishing;}
