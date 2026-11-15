@@ -12,11 +12,12 @@ oneway interface IInstallCallback {
     void progress(String operationId, String phase, int percent, long bytesDone, long bytesTotal);
     /**
      * One PackageInstaller session for packageName. names[i] is the APK file
-     * name of files[i] in the session (base.apk, split_<name>.apk). inherit:
-     * keep the installed package's other splits (MODE_INHERIT_EXISTING);
-     * removeSplits are split names to drop in the same session.
+     * name of files[i] in the session (base.apk, split_<name>.apk). With
+     * base.apk it is a full install or update; without it the splits are added
+     * to (or replace same-named splits of) the installed package. removeSplits
+     * are split names to drop in the same session.
      */
-    void commit(String operationId, String packageName, boolean inherit, in String[] names,
+    void commit(String operationId, String packageName, in String[] names,
             in ParcelFileDescriptor[] files, in String[] removeSplits, ICommitResult result);
     /** The whole install or update finished. */
     void done(String operationId);

@@ -36,7 +36,7 @@ public final class StoreFlatpak {
         try {
             process=builder.start();byte[] output;
             try(InputStream stream=process.getInputStream()){output=stream.readAllBytes();}
-            int status=process.waitFor();String diagnostics=new String(Files.readAllBytes(errors.toPath()),StandardCharsets.UTF_8);
+            int status=process.waitFor();String diagnostics=new String(org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(errors),StandardCharsets.UTF_8);
             if(!diagnostics.isBlank())Log.i("FlatpakSource","command="+Arrays.toString(arguments)+" pid="+process.toString()+" stderr="+diagnostics);
             if(status!=0)throw new IOException("Flatpak "+Arrays.toString(arguments)+" pid="+process.toString()+" exit="+status+": "+diagnostics);
             return new String(output,StandardCharsets.UTF_8);
@@ -52,7 +52,7 @@ public final class StoreFlatpak {
             File descriptor=new File(target.root,fields[0]+".flatpakrepo");
             if(encoded.equals("flathub")) {
                 try(InputStream input=context.getAssets().open("flatpak/remotes.d/flathub.flatpakrepo")) {
-                    Files.copy(input,descriptor.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    try(OutputStream out=Files.newOutputStream(descriptor.toPath())){input.transferTo(out);}
                 }
             }else Files.write(descriptor.toPath(),org.matonos.linuxhost.stubgen.RemoteOrigin.parse(encoded).flatpakrepo().getBytes(StandardCharsets.UTF_8));
             target.cli("remote-add","--system",fields[0],descriptor.getAbsolutePath());
@@ -64,7 +64,7 @@ public final class StoreFlatpak {
         for(String line:cli("remotes","--system","--columns=name,url").split("\n")) {
             String[] fields=line.split("\t",-1);
             if(fields.length==2&&fields[0].equals(name)) {
-                byte[] key=Files.readAllBytes(new File(installation,"repo/"+name+".trustedkeys.gpg").toPath());
+                byte[] key=org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(installation,"repo/"+name+".trustedkeys.gpg"));
                 return new org.matonos.linuxhost.stubgen.RemoteOrigin(name,fields[1],Base64.getEncoder().encodeToString(key)).encode();
             }
         }
@@ -101,7 +101,7 @@ public final class StoreFlatpak {
     }
     public void preset() throws Exception {
         File descriptor=new File(root,"flathub.flatpakrepo");
-        try(InputStream in=context.getAssets().open("flatpak/remotes.d/flathub.flatpakrepo")){Files.copy(in,descriptor.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);}
+        try(InputStream in=context.getAssets().open("flatpak/remotes.d/flathub.flatpakrepo")){try(OutputStream out=Files.newOutputStream(descriptor.toPath())){in.transferTo(out);}}
         cli("remote-add","--system","--if-not-exists","flathub",descriptor.getAbsolutePath());
     }
 }

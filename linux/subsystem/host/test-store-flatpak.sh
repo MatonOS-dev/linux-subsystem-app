@@ -28,6 +28,19 @@ flatpak build-export --runtime --arch=x86_64 "$output/repo" "$output/runtime" 1
 flatpak build-finish "$output/app"
 flatpak build-export --arch=x86_64 "$output/repo" "$output/app" stable
 flatpak remote-add --user --no-gpg-verify --if-not-exists store-test "$output/repo"
+# The store path must resolve/download without a deployment or host apply_extra.
+FLATPAK_USER_DIR="$output/staged" FLATPAK_SYSTEM_DIR="$output/staged" flatpak remote-add --user --no-gpg-verify store-test "$output/repo"
+"$helper" --stage "$output/staged" store-test app/org.matonos.StoreTest.App/x86_64/stable > "$output/staged.tsv"
+python3 - "$output" <<'STAGE'
+import pathlib,sys
+out=pathlib.Path(sys.argv[1]); rows=[line.split('\t') for line in (out/'staged.tsv').read_text().splitlines()]
+assert {row[0] for row in rows}=={'app/org.matonos.StoreTest.App/x86_64/stable','runtime/org.matonos.StoreTest.Platform/x86_64/1'},rows
+for ref,origin,commit,subpaths in rows:
+ assert origin=='store-test' and len(commit)==64,(ref,origin,commit,subpaths)
+ assert not (out/'staged'/ref/'active').exists(), 'no-deploy transaction deployed a ref'
+ assert (out/'staged/repo/objects'/commit[:2]/(commit[2:]+'.commit')).is_file(), 'verified commit missing'
+print('Store staging: PASS (Flatpak resolves app/runtime and downloads without deploying)')
+STAGE
 flatpak install --user --noninteractive --assumeyes store-test app/org.matonos.StoreTest.App/x86_64/stable
 "$helper" --installed "$output/installation" > "$output/installed.tsv"
 "$helper" --sizes "$output/installation" store-test app/org.matonos.StoreTest.App/x86_64/stable > "$output/sizes.txt"

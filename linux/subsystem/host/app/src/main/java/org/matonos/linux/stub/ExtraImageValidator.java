@@ -24,6 +24,10 @@ public final class ExtraImageValidator {
 
     /** Runs the pinned fsck.erofs extractor, then validates the result against the trusted commit entries. */
     public static void checkImage(File fsck,File image,File extracted,Iterable<Entry> committed)throws IOException,InterruptedException {
+        checkImage(fsck,image,extracted,committed,"/app/extra");
+    }
+    public static void checkImage(File fsck,File image,File extracted,Iterable<Entry> committed,String extraRoot)throws IOException,InterruptedException {
+        canonical(extraRoot);
         if(extracted.exists())throw new IOException("EROFS validation directory already exists");
         if(!extracted.mkdirs())throw new IOException("Cannot create EROFS validation directory");
         Process process=new ProcessBuilder(fsck.getAbsolutePath(),"--extract="+extracted.getAbsolutePath(),
@@ -34,7 +38,7 @@ public final class ExtraImageValidator {
         int status=process.waitFor();
         if(status!=0)throw new IOException("fsck.erofs rejected stub image (exit status "+status+
                 signalHint(status)+"): "+new String(output,java.nio.charset.StandardCharsets.UTF_8));
-        validate(extracted,committed);
+        validate(extracted,committed,extraRoot);
     }
 
     /** Process.waitFor exposes signal deaths as 128+signal on Linux, without a separate signal field. */
@@ -80,27 +84,31 @@ public final class ExtraImageValidator {
     }
 
     public static void validate(File root, Iterable<Entry> committed) throws IOException {
+        validate(root,committed,"/app/extra");
+    }
+    public static void validate(File root,Iterable<Entry> committed,String extraRoot)throws IOException {
+        canonical(extraRoot);
         Path base=root.toPath().toRealPath(LinkOption.NOFOLLOW_LINKS);
         Map<String,Entry> expected=new HashMap<>();
         for(Entry e:committed) {
             String p=canonical(e.path);
             if(expected.put(p,e)!=null)throw new IOException("Duplicate committed image path: "+p);
         }
-        expected.keySet().removeIf(p->p.equals("/app/extra")||p.startsWith("/app/extra/"));
-        walk(base,base,expected);
+        expected.keySet().removeIf(p->p.equals(extraRoot)||p.startsWith(extraRoot+"/"));
+        walk(base,base,expected,extraRoot);
         for(String path:expected.keySet())if(!Files.exists(base.resolve(path.substring(1)),LinkOption.NOFOLLOW_LINKS))
             throw new IOException("EROFS image omits committed path: "+path);
     }
 
-    private static void walk(Path base,Path dir,Map<String,Entry> expected)throws IOException {
+    private static void walk(Path base,Path dir,Map<String,Entry> expected,String extraRoot)throws IOException {
         try(java.nio.file.DirectoryStream<Path> children=Files.newDirectoryStream(dir)) {
             for(Path item:children) {
                 String relative="/"+base.relativize(item).toString().replace(File.separatorChar,'/');
-                boolean extra=relative.equals("/app/extra")||relative.startsWith("/app/extra/");
+                boolean extra=relative.equals(extraRoot)||relative.startsWith(extraRoot+"/");
                 if(extra) {
-                    if(relative.equals("/app/extra")&&!Files.isDirectory(item,LinkOption.NOFOLLOW_LINKS))
-                        throw new IOException("/app/extra must be a directory");
-                    validateExtra(base.resolve("app/extra"),item); continue;
+                    if(relative.equals(extraRoot)&&!Files.isDirectory(item,LinkOption.NOFOLLOW_LINKS))
+                        throw new IOException(extraRoot+" must be a directory");
+                    validateExtra(base.resolve(extraRoot.substring(1)),item); continue;
                 }
                 Entry entry=expected.remove(relative);
                 if(entry==null)throw new IOException("EROFS image contains uncommitted path: "+relative);
@@ -110,7 +118,7 @@ public final class ExtraImageValidator {
                         "EROFS mode differs from commit: %s (expected %04o, actual %04o)",relative,expectedMode,actualMode));
                 if(entry.kind.equals("dir")) {
                     if(!directory)throw new IOException("EROFS type differs from commit: "+relative);
-                    walk(base,item,expected);
+                    walk(base,item,expected,extraRoot);
                 } else if(entry.kind.equals("symlink")) {
                     if(!symlink||!Files.readSymbolicLink(item).toString().equals(entry.target))throw new IOException("EROFS symlink differs from commit: "+relative);
                 } else if(entry.kind.equals("file")) {

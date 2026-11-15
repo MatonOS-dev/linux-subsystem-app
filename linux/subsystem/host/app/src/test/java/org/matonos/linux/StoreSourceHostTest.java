@@ -36,7 +36,7 @@ public final class StoreSourceHostTest {
                 item(locale,List.of(),false),item(gl,List.of(),false),item(compat,List.of(),false));
     }
     private static CommitChain.Package item(String name,List<String> dependencies,boolean inherit) {
-        return new CommitChain.Package(name,dependencies,inherit,new String[]{"base.apk","index_abc.apk","erofs_def.apk"},inherit?new String[]{"erofs_old"}:new String[0]);
+        return new CommitChain.Package(name,dependencies,new String[]{"base.apk","index_abc.apk","erofs_def.apk"},inherit?new String[]{"erofs_old"}:new String[0]);
     }
     private static void chain(boolean fail) throws Exception {
         List<String> committed=new ArrayList<>();boolean[] terminal={false,false};
@@ -44,7 +44,7 @@ public final class StoreSourceHostTest {
             public void commit(CommitChain.Package item) throws Exception {
                 check(committed.containsAll(item.dependencies),"dependency not committed before "+item.name);
                 check(item.names.length==3,"base and splits included");
-                if(item.inherit)check(item.remove.length==1,"obsolete splits removed on update");
+                if(item.remove.length>0)check(item.remove.length==1,"obsolete splits removed on update");
                 CompletableFuture<Boolean> result=new CompletableFuture<>();
                 Thread callback=new Thread(()->result.complete(!(fail&&item.name.equals("org.freedesktop.Platform"))));callback.start();
                 if(!result.get())throw new IOException("Runtime rejected by PackageInstaller");callback.join();committed.add(item.name);
@@ -62,5 +62,22 @@ public final class StoreSourceHostTest {
             public void commit(CommitChain.Package p){commits[0]++;}public void done(){throw new AssertionError();}public void failed(Exception e){failures[0]++;}
         });check(commits[0]==0&&failures[0]==1,"validate before first commit");
     }
-    public static void main(String[] args) throws Exception {catalogue();chain(false);chain(true);invalidGraph();System.out.println("StoreSourceHostTest: PASS (AppStream, five-package Steam success/failure, missing dependency)");}
+    private static void extraData(boolean invalid) throws Exception {
+        List<String> events=new ArrayList<>();
+        CommitChain.run(List.of(item("extra-app",List.of(),false)),new CommitChain.Sink(){
+            public void commit(CommitChain.Package p) {
+                events.add(Arrays.asList(p.names).contains("base.apk")?"stub":"split");
+                if(events.size()==2)check(p.names.length==1&&p.remove.length==1,"one replacement image split, preserving base and normal splits");
+            }
+            public CommitChain.Followup followup(CommitChain.Package p) {return ()->{
+                events.add("stub apply_extra");events.add("OSTree validation");
+                if(invalid)throw new IOException("returned image differs from OSTree");
+                return new CommitChain.Package(p.name,List.of(),new String[]{"erofs_extra.apk"},new String[]{"erofs_normal"});
+            };}
+            public void done(){events.add("done");}public void failed(Exception e){events.add("failed");}
+        });
+        check(events.equals(invalid?List.of("stub","stub apply_extra","OSTree validation","failed"):
+                List.of("stub","stub apply_extra","OSTree validation","split","done")),"extra-data ordering/validation failure: "+events);
+    }
+    public static void main(String[] args) throws Exception {catalogue();chain(false);chain(true);invalidGraph();extraData(false);extraData(true);System.out.println("StoreSourceHostTest: PASS (AppStream, five-package Steam success/failure, missing dependency, extra-data success/validation failure)");}
 }

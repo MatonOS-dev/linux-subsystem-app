@@ -29,11 +29,12 @@ public final class ExtraDataInstallService extends Service {
                     if (new File(root, ".erofs-handback").isFile()) deleteTree(root);
                     return true;
                 }
-                if (code != 1) return super.onTransact(code, data, reply, flags);
+                if (code != 1 && code != 3) return super.onTransact(code, data, reply, flags);
                 ParcelFileDescriptor result = data.readFileDescriptor();
                 Intent request = new Intent(ACTION).putExtra("ref", data.readString()).putExtra("remote", data.readString())
                         .putExtra("url", data.readString()).putExtra("subpaths", data.readString())
-                        .putExtra("runtime", data.readString());
+                        .putExtra("runtime", data.readString()).putExtra("storeSplit", code == 3);
+                if(code==3)request.putExtra("remoteDescriptor",data.readString());
                 if (result == null) return false;
                 new Thread(() -> {
                     try (ParcelFileDescriptor fd = result;
@@ -45,6 +46,8 @@ public final class ExtraDataInstallService extends Service {
                             android.util.Log.e(TAG, "Extra-data deployment failed", error);
                             out.writeInt(-1);
                             out.writeUTF(String.valueOf(error.getMessage()));
+                        } finally {
+                            android.util.Log.i(TAG,"close fd="+fd.getFd()+" at ExtraDataInstallService.onTransact result pipe ref="+request.getStringExtra("ref"));
                         }
                     } catch (Exception error) { android.util.Log.e(TAG, "Could not return extra-data result", error); }
                 }, "maton-extra-data").start();
@@ -72,7 +75,8 @@ public final class ExtraDataInstallService extends Service {
         File flatpakUser = new File(userData, "flatpak");
         File flatpakSystem = null;
         boolean erofsAvailable = ErofsLaunch.available();
-        if (erofsAvailable) flatpakSystem = prepareRuntimeSystem(root, request.getStringExtra("runtime"));
+        if (erofsAvailable && request.getStringExtra("runtime")!=null && !request.getStringExtra("runtime").isEmpty())
+            flatpakSystem = prepareRuntimeSystem(root, request.getStringExtra("runtime"));
         String dns=LoaderCommand.resolverAddress();
         File resolv=LoaderCommand.writeResolv(new File(run,"install-resolv.conf"),dns);
         List<String> prefix=new ArrayList<>();
@@ -80,6 +84,12 @@ public final class ExtraDataInstallService extends Service {
         if (new File(getCacheDir(), "v3-trace").exists()) prefix.add("--trace");
         prefix.add("--parent-pid");
         prefix.add(Integer.toString(android.os.Process.myPid()));LoaderCommand.addDns(prefix,dns);LoaderCommand.addResolvMaps(this,prefix,resolv);
+        String descriptor=request.getStringExtra("remoteDescriptor");
+        if(descriptor!=null) {
+            File repoFile=new File(root,"source.flatpakrepo");
+            Files.write(repoFile.toPath(),descriptor.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            url=repoFile.getAbsolutePath();
+        }
         runFlatpak(prefix,home, tmp, run, cache, flatpakUser, flatpakSystem, "remote-add", "--user", "--if-not-exists", remote, url);
         String tags=android.os.LocaleList.getDefault().toLanguageTags();
         List<String> localeTags=new ArrayList<>();if(tags!=null&&!tags.isEmpty())java.util.Collections.addAll(localeTags,tags.split(","));
@@ -118,6 +128,9 @@ public final class ExtraDataInstallService extends Service {
             // TODO: launch directly from this full app+runtime installation
             // when matonos-erofsd is absent; retain install/ as the fallback.
         }
+        if(request.getBooleanExtra("storeSplit",false))
+            handback=org.matonos.linuxhost.stubgen.StubGenerator.generateErofsPackUnsigned(
+                    root,getPackageName(),handback,0);
         try (java.io.InputStream in = org.matonos.linuxhost.stubgen.PlaceholderFiles.open(handback)) {
             out.writeInt(0); out.writeLong(handback.length());
             byte[] buffer = new byte[65536]; int count;

@@ -9,15 +9,18 @@ public final class CommitChain {
         public final String name;
         public final List<String> dependencies;
         public final String[] names,remove;
-        public final boolean inherit;
-        public Package(String name,List<String> dependencies,boolean inherit,String[] names,String[] remove) {
-            this.name=name;this.dependencies=new ArrayList<>(dependencies);this.inherit=inherit;
+        public Package(String name,List<String> dependencies,String[] names,String[] remove) {
+            this.name=name;this.dependencies=new ArrayList<>(dependencies);
             this.names=names.clone();this.remove=remove.clone();
         }
+    }
+    public interface Followup {
+        Package prepare() throws Exception;
     }
     public interface Sink {
         /** Must return only after the store's final session result, or throw on failure. */
         void commit(Package item) throws Exception;
+        default Followup followup(Package item) throws Exception { return null; }
         void done() throws Exception;
         void failed(Exception failure) throws Exception;
     }
@@ -37,7 +40,16 @@ public final class CommitChain {
                 }
                 if(!advanced)throw new IOException("Cyclic Android package dependencies: "+pending.keySet());
             }
-            for(Package item:ordered)sink.commit(item);
+            for(Package item:ordered) {
+                sink.commit(item);
+                Followup followup=sink.followup(item);
+                if(followup!=null) {
+                    Package split=followup.prepare();
+                    if(!item.name.equals(split.name)||Arrays.asList(split.names).contains("base.apk"))
+                        throw new IOException("Invalid split-only followup for "+item.name);
+                    sink.commit(split);
+                }
+            }
             sink.done();
         }catch(Exception failure){sink.failed(failure);}
     }

@@ -14,7 +14,7 @@ import org.matonos.linux.stub.*;
 import org.matonos.linuxhost.stubgen.*;
 import org.matonos.store.source.IInstallCallback;
 
-/** Flatpak resolves and deploys in a private installation. Android commits belong to the store. */
+/** Flatpak resolves and downloads into a private installation. Android commits belong to the store. */
 public final class StorePackages {
     public static void install(Context context,StoreFlatpak catalogue,Map<String,Object> app,String operation,IInstallCallback callback) throws Exception {
         String ref=(String)app.get("ref"),remote=(String)app.get("origin");
@@ -24,29 +24,28 @@ public final class StorePackages {
             catalogue.copyRemotesTo(staging);
             callback.progress(operation,"Flatpak download and verification",0,0,-1);
             // Flatpak selects dependencies, related extensions and subpaths, and verifies signatures.
-            staging.cli("install","--system","--noninteractive","--assumeyes",remote,ref);
-            callback.progress(operation,"Preparing Android packages",80,-1,-1);
             List<String> refs=new ArrayList<>();Map<String,String> origins=new LinkedHashMap<>();
-            for(String line:staging.helper("--installed",staging.installation.getAbsolutePath()).split("\n")) {
-                if(line.isBlank())continue;String[] fields=line.split("\t",-1);
-                if(fields.length!=2||!DeployManifest.validRef(fields[0]))throw new IOException("Invalid deployed ref row: "+line);
-                refs.add(fields[0]);origins.put(fields[0],fields[1]);
-            }
-            if(!refs.contains(ref))throw new IOException("Flatpak did not deploy requested ref "+ref);
             Map<String,JSONObject> manifests=new LinkedHashMap<>();Map<String,String> metadata=new LinkedHashMap<>();
-            for(String item:refs) {
-                // Read the exact deployment identity and subpaths selected by Flatpak.
-                String location=staging.cli("info","--system","--show-location",item).trim();
-                File deployment=new File(location).getCanonicalFile();
-                if(!deployment.toPath().startsWith(staging.installation.getCanonicalFile().toPath()))throw new IOException("Flatpak deployment escapes staging: "+location);
-                String commit=staging.cli("info","--system","--show-commit",item).trim();
-                DeployManifest.Metadata record=DeployManifest.parse(Files.readAllBytes(new File(deployment,"deploy").toPath()));
-                if(!record.commit.equals(commit)||!record.origin.equals(origins.get(item)))throw new IOException("Deployment identity changed: "+item);
-                JSONArray subpaths=new JSONArray(record.subpaths);
-                JSONObject identity=new JSONObject().put("appRef",item).put("appCommit",commit).put("subpaths",subpaths);
-                if(!DeployManifest.stagedDeployment(staging.installation,identity).getCanonicalFile().equals(deployment))throw new IOException("Unexpected deployment location for "+item);
-                manifests.put(item,identity);metadata.put(item,DeployManifest.stagedMetadata(staging.installation,identity));
+            for(String line:staging.helper("--stage",staging.installation.getAbsolutePath(),remote,ref).split("\n")) {
+                if(line.isBlank())continue;String[] fields=line.split("\t",-1);
+                if(fields.length!=4||!DeployManifest.validRef(fields[0])||!fields[2].matches("[0-9a-f]{64}"))
+                    throw new IOException("Invalid Flatpak staged transaction row: "+line);
+                String item=fields[0];refs.add(item);origins.put(item,fields[1]);
+                List<String> paths=new ArrayList<>();
+                if(!fields[3].isEmpty())for(String path:fields[3].split(","))
+                    paths.add(java.net.URLDecoder.decode(path,java.nio.charset.StandardCharsets.UTF_8));
+                JSONObject identity=new JSONObject().put("appRef",item).put("appCommit",fields[2]).put("subpaths",new JSONArray(paths));
+                File deployment=DeployManifest.stagedDeploymentPath(staging.installation,identity);
+                Files.createDirectories(deployment.getParentFile().toPath());
+                List<String> checkout=new ArrayList<>(Arrays.asList("checkout","--user-mode"));
+                for(String path:paths)checkout.add("--subpath="+path);
+                checkout.add(fields[2]);checkout.add(deployment.getAbsolutePath());
+                StagedPacks.command(context,work,new File(staging.installation,"repo"),()->false).run(checkout.toArray(new String[0]));
+                byte[] text=PlaceholderFiles.readAllBytes(new File(deployment,"metadata"));
+                DeployManifest.recordVerifiedPull(staging.installation,item,fields[1],fields[2],paths,text);
+                manifests.put(item,identity);metadata.put(item,new String(text,java.nio.charset.StandardCharsets.UTF_8));
             }
+            if(!refs.contains(ref))throw new IOException("Flatpak did not stage requested ref "+ref);
             StagedPacks.verify(context,staging.installation,()->false);
             // These edges describe Android mount carriers AFTER Flatpak has resolved the transaction.
             // Extensions are leaves; each parent carries its selected extensions, and the app carries
@@ -61,6 +60,7 @@ public final class StorePackages {
                     .put("commit",manifests.get(item).getString("appCommit"))
                     .put("origin",catalogue.origin(origins.get(item)))
                     .put("mount",item.equals(ref)?"/app":PackageMounts.mountPoint(item,metadata.get(item),metadata)));
+            Map<String,CommitChain.Followup> extraData=new LinkedHashMap<>();
             Map<String,File> artifacts=new LinkedHashMap<>();List<CommitChain.Package> packages=new ArrayList<>();
             ForkJoinPool pool=new ForkJoinPool(Runtime.getRuntime().availableProcessors());
             try {
@@ -93,7 +93,7 @@ public final class StorePackages {
                     }
                     File base=new File(artifactsDir,"base.apk");
                     StubGenerator.generatePackage(scratch,item,origins.get(item),launcher.label,icon,
-                            StubGenerator.permissionsForMetadata(metadata.get(item)),pkg,base,objects,required,mounts,launchable,mount);
+                            StubGenerator.permissionsForMetadata(metadata.get(item)),pkg,base,objects,required,mounts,launchable,mount,StoreExtraData.required(metadata.get(item)));
                     List<String> previous=prior==null||prior.splitNames==null?Collections.emptyList():Arrays.asList(prior.splitNames);
                     boolean full=prior==null||prior.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE||!PackSessionPlan.sameBase(base,new File(prior.applicationInfo.sourceDir));
                     int revision=PackSessionPlan.nextRevision(prior==null?0:prior.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
@@ -108,12 +108,19 @@ public final class StorePackages {
                         StubGenerator.generateLauncher(scratch,pkg,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon,new File(artifactsDir,launch+".apk"),revision);
                     }
                     PackSessionPlan plan=PackSessionPlan.create(prior!=null,prior==null?0:prior.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,previous,desired,desired,full);
-                    packages.add(new CommitChain.Package(pkg,required,plan.mode==PackSessionPlan.Mode.INHERIT,plan.write.toArray(new String[0]),plan.remove.toArray(new String[0])));
+                    packages.add(new CommitChain.Package(pkg,required,plan.write.toArray(new String[0]),plan.remove.toArray(new String[0])));
                     artifacts.put(pkg,artifactsDir);
+                    if(StoreExtraData.required(metadata.get(item))) {
+                        String normalImage=erofs;
+                        extraData.put(pkg,()->StoreExtraData.prepare(context,staging,item,origins.get(item),identity,
+                                metadata.get(item),artifactsDir,normalImage,revision));
+                    }
                 }
             }finally{pool.shutdownNow();}
             callback.progress(operation,"Waiting for Software Centre",95,-1,-1);
-            CommitChain.run(packages,new StoreCommitInstaller(operation,callback,artifacts));
+            CommitChain.run(packages,new StoreCommitInstaller(operation,callback,artifacts) {
+                @Override public CommitChain.Followup followup(CommitChain.Package item) {return extraData.get(item.name);}
+            });
         }finally {
             try{WorkDirs.remove(work);}catch(Exception error){Log.e("FlatpakSource","cleanup op="+operation+" path="+work+" failed",error);}
         }

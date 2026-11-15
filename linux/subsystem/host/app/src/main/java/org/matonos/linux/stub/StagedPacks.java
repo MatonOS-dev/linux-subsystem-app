@@ -192,7 +192,7 @@ public final class StagedPacks {
         command(context,installation.getParentFile(),new File(installation,"repo"),cancelled).run("fsck");
     }
 
-    static OstreePacks.Command command(Context context,File operation,File repo,
+    public static OstreePacks.Command command(Context context,File operation,File repo,
             BooleanSupplier cancelled) {
         return (String... args)-> {
             if(cancelled.getAsBoolean())throw new IOException("Pack production cancelled");

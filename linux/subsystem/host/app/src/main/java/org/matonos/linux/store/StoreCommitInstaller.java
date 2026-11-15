@@ -8,7 +8,7 @@ import java.util.concurrent.*;
 import org.matonos.store.source.*;
 
 /** Read-only descriptors live until the store reports the final session result. */
-public final class StoreCommitInstaller implements CommitChain.Sink {
+public class StoreCommitInstaller implements CommitChain.Sink {
     private final String operation;
     private final IInstallCallback callback;
     private final Map<String,File> artifacts;
@@ -26,7 +26,7 @@ public final class StoreCommitInstaller implements CommitChain.Sink {
         try {
             for(String name:item.names)opened.add(ParcelFileDescriptor.open(
                     org.matonos.linux.stub.PackInstaller.validateArtifact(artifacts.get(item.name),name),ParcelFileDescriptor.MODE_READ_ONLY));
-            callback.commit(operation,item.name,item.inherit,item.names,opened.toArray(new ParcelFileDescriptor[0]),item.remove,
+            callback.commit(operation,item.name,item.names,opened.toArray(new ParcelFileDescriptor[0]),item.remove,
                     new ICommitResult.Stub(){@Override public void result(boolean ok,String error){
                         if(ok)completed.complete(null);else completed.completeExceptionally(new IOException("Store commit failed package="+item.name+": "+error));
                     }});
