@@ -359,7 +359,7 @@ final class V3Launcher {
 
     static android.content.Intent storeRepairIntent(Context context) throws java.io.IOException {
         android.content.Intent intent=new android.content.Intent(org.matonos.linux.store.StoreRepair.ACTION);
-        java.util.List<android.content.pm.ResolveInfo> services=context.getPackageManager().queryIntentServices(intent,0);
+        java.util.List<android.content.pm.ResolveInfo> services=context.getPackageManager().queryIntentServices(intent,android.content.pm.PackageManager.MATCH_SYSTEM_ONLY);
         if(services.size()!=1){Log.e("MatonV3","Cannot resolve store repair service action="+intent.getAction()+" matches="+services.size());throw new java.io.IOException("Expected one store repair service, found "+services.size());}
         android.content.pm.ServiceInfo service=services.get(0).serviceInfo;
         return intent.setComponent(new android.content.ComponentName(service.packageName,service.name));
