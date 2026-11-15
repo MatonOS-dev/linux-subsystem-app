@@ -7,6 +7,7 @@ import android.os.*;
 import android.util.Log;
 import org.json.*;
 import org.matonos.store.source.*;
+import org.matonos.store.source.types.*;
 import org.matonos.linux.store.*;
 import org.matonos.linux.stub.StoreFlatpak;
 import org.matonos.linuxhost.stubgen.*;
@@ -21,6 +22,7 @@ import java.util.*;
 public final class FlatpakSourceService extends Service {
     private static final String TAG="FlatpakSource";
     private StoreFlatpak flatpak;
+    private final SourceOperations operations=new SourceOperations();
     private List<Map<String,Object>> cachedCatalogue;
     private final Map<String,Boolean> brokenRemotes=new HashMap<>();
     private android.os.PowerManager.WakeLock installWakeLock;
@@ -38,9 +40,10 @@ public final class FlatpakSourceService extends Service {
         if(active.isEmpty())stopForeground(STOP_FOREGROUND_REMOVE);
     }
     private final Set<String> active=java.util.concurrent.ConcurrentHashMap.newKeySet();
-    private interface Call {String run() throws Exception;}
-    private synchronized String call(String operation,Call body) {
+    private interface Call<T> {T run() throws Exception;}
+    private synchronized <T> T call(String operation,Call<T> body) {
         try {ensure();return body.run();}
+        catch(IllegalArgumentException|IllegalStateException|SecurityException|UnsupportedOperationException error){Log.e(TAG,operation+" failed",error);throw error;}
         catch(Exception error){Log.e(TAG,operation+" failed",error);throw new IllegalStateException(operation+": "+error,error);}
     }
     private void ensure() throws Exception {
@@ -50,10 +53,10 @@ public final class FlatpakSourceService extends Service {
         flatpak=candidate;
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
-        @Override public String info(){return "{\"version\":1,\"name\":\"Flathub\",\"label\":\"Flathub\",\"capabilities\":[\"HAS_REPOSITORIES\",\"HAS_AGE_RATINGS\",\"HAS_REVIEWS\",\"HAS_PERMISSIONS\"]}";}
-        @Override public String search(String term){return call("search term="+term,()->{cachedCatalogue=null;return new JSONArray(AppStreamCatalogue.search(catalogue(),term)).toString();});}
-        @Override public String details(String id){return call("details id="+id,()->{
-            Map<String,Object> row=find(id);String remote=(String)row.get("origin"),ref=(String)row.get("ref");
+        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.capabilities=CAP_REPOSITORIES|CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
+        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(AppStreamCatalogue.search(catalogue(),term),offset,limit));}
+        @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
+            Map<String,Object> row=find(id,repo);String remote=(String)row.get("origin"),ref=(String)row.get("ref");
             String metadata=flatpak.cli("remote-info","--system","--show-metadata",remote,ref);
             List<String> permissions=new ArrayList<>();String section="";
             for(String line:metadata.split("\n")) {
@@ -78,31 +81,43 @@ public final class FlatpakSourceService extends Service {
             String[] sizes=flatpak.helper("--sizes",flatpak.installation.getAbsolutePath(),remote,ref).trim().split("\n");
             if(sizes.length!=2)throw new IOException("Invalid Flatpak size response");
             row.put("downloadSize",Long.parseLong(sizes[0]));row.put("installedSize",Long.parseLong(sizes[1]));
-            return new JSONObject(row).toString();
+            return SourceTypes.details(new JSONObject(row));
         });}
-        @Override public String reviews(String id){return call("reviews id="+id,()->odrs(id));}
-        @Override public String installed(){return call("installed",()->installedListings(false).toString());}
-        @Override public String updates(){return call("updates",()->installedListings(true).toString());}
-        @Override public String repos(){return call("repos",()->repositories().toString());}
+        @Override public Review[] reviews(String id,int offset,int limit){return call("reviews id="+id,()->SourceTypes.reviews(new JSONArray(odrs(id)),offset,limit));}
+        @Override public AppListing[] installed(int offset,int limit){return call("installed",()->SourceTypes.listings(installedListings(false),offset,limit));}
+        @Override public AppListing[] updates(int offset,int limit){return call("updates",()->SourceTypes.listings(installedListings(true),offset,limit));}
+        @Override public Repo[] repos(int offset,int limit){return call("repos",()->SourceTypes.repos(repositories(),offset,limit));}
         @Override public void addRepo(String url){call("addRepo url="+url,()->{
             URI uri=URI.create(url);if(!"https".equals(uri.getScheme()))throw new IOException("Repository descriptor requires HTTPS");
             String name="store-"+java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(url.getBytes(StandardCharsets.UTF_8)));
             flatpak.cli("remote-add","--system","--if-not-exists",name,url);cachedCatalogue=null;return "";
         });}
         @Override public void delRepo(String id){call("delRepo id="+id,()->{validateRemote(id);flatpak.cli("remote-delete","--system",id);cachedCatalogue=null;return "";});}
-        @Override public void install(String id,String operation,IInstallCallback callback){
-            if(callback==null||operation==null||operation.isEmpty())throw new IllegalArgumentException("Operation and callback required");
-            if(!active.add(operation))throw new IllegalArgumentException("Operation already active: "+operation);
-            try{beginInstall();}catch(RuntimeException error){active.remove(operation);Log.e(TAG,"Cannot start install foreground op="+operation,error);throw error;}
-            new Thread(()->{
+        @Override public void cancel(String operation){operations.cancel(operation);}
+        @Override public boolean running(String operation){return operations.running(operation);}
+        @Override public void install(String id,String repo,String operation,IInstallCallback callback){
+            if(callback==null)throw new IllegalArgumentException("Callback required");
+            Map<String,Object> candidate=SourceCandidates.install(id,repo);
+            SourceOperations.Operation op=operations.start(operation);
+            IInstallCallback terminal=new IInstallCallback.Stub(){
+                @Override public void progress(String key,String phase,int percent,long done,long total)throws RemoteException{if(!op.cancelled())callback.progress(key,phase,percent,done,total);}
+                @Override public void commit(String key,String pkg,String[] names,ParcelFileDescriptor[] files,String[] remove,ICommitResult result)throws RemoteException{op.check();callback.commit(key,pkg,names,files,remove,result);}
+                @Override public void done(String key)throws RemoteException{if(op.claimTerminal())try{if(op.cancelled())callback.failed(key,"cancelled");else callback.done(key);}finally{op.finish();}}
+                @Override public void failed(String key,String error)throws RemoteException{if(op.claimTerminal())try{callback.failed(key,op.cancelled()?"cancelled":error);}finally{op.finish();}}
+            };
+            active.add(operation);
+            Thread worker=new Thread(()->{
+                boolean began=false;
                 try {
-                    Map<String,Object> row;
-                    synchronized(FlatpakSourceService.this){ensure();row=find(id);}
-                    StorePackages.install(FlatpakSourceService.this,flatpak,row,operation,callback);
-                }catch(Exception error){Log.e(TAG,"install id="+id+" op="+operation+" failed",error);try{callback.failed(operation,error.toString());}catch(RemoteException delivery){Log.e(TAG,"failed callback op="+operation,delivery);}}
-                finally{endInstall(operation);}
-            },"flatpak-source-install").start();
+                    beginInstall();began=true;op.check();
+                    synchronized(FlatpakSourceService.this){ensure();}
+                    op.check();StorePackages.install(FlatpakSourceService.this,flatpak,candidate,operation,terminal,op);
+                }catch(Exception error){Log.e(TAG,"install id="+id+" repo="+repo+" op="+operation+" failed",error);try{terminal.failed(operation,error.toString());}catch(RemoteException delivery){Log.e(TAG,"failed callback op="+operation,delivery);}}
+                finally{op.finish();if(began)endInstall(operation);else active.remove(operation);}
+            },"flatpak-source-install");
+            op.worker=worker;worker.start();
         }
+
     };
     @Override public IBinder onBind(Intent intent){return binder;}
     private JSONArray repositories() throws Exception {
@@ -131,22 +146,18 @@ public final class FlatpakSourceService extends Service {
                 String icon=(String)row.get("icon");
                 if(icon.startsWith("cached:"))row.put("icon",new android.net.Uri.Builder().scheme("content").authority("org.matonos.linux.store.icons")
                         .appendPath(remote).appendPath(icon.substring(7)).build().toString());
-                row.put("id",remote+"::"+row.get("ref"));
+                row.put("id",row.get("ref"));
                 row.put("packageName",org.matonos.linux.stub.DeployManifest.packageForPublic((String)row.get("ref")));result.add(row);
             }}
         }
         if(readable==0&&last!=null)throw last;
         cachedCatalogue=result;return result;
     }
-    private Map<String,Object> find(String id) throws Exception {
-        Map<String,Object> found=null;
-        for(Map<String,Object> row:catalogue())if(id.equals(row.get("id"))||id.equals(row.get("ref"))||id.equals(((String)row.get("ref")).split("/")[1])) {
-            if(found!=null&&!found.get("ref").equals(row.get("ref")))throw new IOException("Ambiguous app ID; use full Flatpak ref: "+id);
-            if(found!=null&&!found.get("origin").equals(row.get("origin")))throw new IOException("App exists in several remotes; select an origin-qualified ID: "+id);
-            found=row;
-        }
-        if(found==null)throw new IOException("AppStream application missing: "+id);return new LinkedHashMap<>(found);
+    private Map<String,Object> find(String id) throws Exception {return find(id,null);}
+    private Map<String,Object> find(String id,String repo) throws Exception {
+        return SourceCandidates.find(catalogue(),id,repo);
     }
+
     private JSONArray installedListings(boolean updates) throws Exception {
         if(updates)cachedCatalogue=null;
         Set<String> selected=flatpak.installedRefs(updates);
@@ -164,7 +175,7 @@ public final class FlatpakSourceService extends Service {
             RemoteOrigin origin=RemoteOrigin.parse(record.remote);
             if(!selected.contains(record.ref))continue;
             Map<String,Object> listing=new LinkedHashMap<>();for(Map<String,Object> row:catalogue)if(record.ref.equals(row.get("ref"))&&origin.name.equals(row.get("origin"))){listing.putAll(row);break;}
-            listing.put("id",origin.name+"::"+record.ref);listing.put("name",listing.getOrDefault("name",parts[1]));listing.put("origin",origin.name);listing.put("packageName",pkg.packageName);listing.put("installed",true);
+            listing.put("id",record.ref);listing.put("name",listing.getOrDefault("name",parts[1]));listing.put("origin",origin.name);listing.put("packageName",pkg.packageName);listing.put("installed",true);
             result.put(new JSONObject(AppStreamCatalogue.search(Collections.singletonList(listing),"").get(0)));
         }
         return result;

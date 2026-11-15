@@ -16,11 +16,11 @@ import org.matonos.store.source.IInstallCallback;
 
 /** Flatpak resolves and downloads into a private installation. Android commits belong to the store. */
 public final class StorePackages {
-    public static void install(Context context,StoreFlatpak catalogue,Map<String,Object> app,String operation,IInstallCallback callback) throws Exception {
+    public static void install(Context context,StoreFlatpak catalogue,Map<String,Object> app,String operation,IInstallCallback callback,SourceOperations.Operation cancellation) throws Exception {
         String ref=(String)app.get("ref"),remote=(String)app.get("origin");
         File work=Files.createTempDirectory(WorkDirs.directory(context,"store-installs").toPath(),"operation-").toFile();
         try(AutoCloseable lease=WorkDirs.keep(work)) {
-            StoreFlatpak staging=new StoreFlatpak(context,work);
+            cancellation.check();StoreFlatpak staging=new StoreFlatpak(context,work);staging.cancellation=cancellation;
             catalogue.copyRemotesTo(staging);
             callback.progress(operation,"Flatpak download and verification",0,0,-1);
             // Flatpak selects dependencies, related extensions and subpaths, and verifies signatures.
@@ -40,13 +40,13 @@ public final class StorePackages {
                 List<String> checkout=new ArrayList<>(Arrays.asList("checkout","--user-mode"));
                 for(String path:paths)checkout.add("--subpath="+path);
                 checkout.add(fields[2]);checkout.add(deployment.getAbsolutePath());
-                StagedPacks.command(context,work,new File(staging.installation,"repo"),()->false).run(checkout.toArray(new String[0]));
+                StagedPacks.command(context,work,new File(staging.installation,"repo"),cancellation).run(checkout.toArray(new String[0]));
                 byte[] text=PlaceholderFiles.readAllBytes(new File(deployment,"metadata"));
                 DeployManifest.recordVerifiedPull(staging.installation,item,fields[1],fields[2],paths,text);
                 manifests.put(item,identity);metadata.put(item,new String(text,java.nio.charset.StandardCharsets.UTF_8));
             }
             if(!refs.contains(ref))throw new IOException("Flatpak did not stage requested ref "+ref);
-            StagedPacks.verify(context,staging.installation,()->false);
+            StagedPacks.verify(context,staging.installation,cancellation);
             // These edges describe Android mount carriers AFTER Flatpak has resolved the transaction.
             // Extensions are leaves; each parent carries its selected extensions, and the app carries
             // the whole transaction. No parent edge is inferred from ExtensionOf (which would cycle).
@@ -65,7 +65,7 @@ public final class StorePackages {
             ForkJoinPool pool=new ForkJoinPool(Runtime.getRuntime().availableProcessors());
             try {
                 for(int i=0;i<refs.size();i++) {
-                    String item=refs.get(i),pkg=DeployManifest.packageForPublic(item);JSONObject identity=manifests.get(item);
+                    cancellation.check();String item=refs.get(i),pkg=DeployManifest.packageForPublic(item);JSONObject identity=manifests.get(item);
                     String mount=item.equals(ref)?"/app":PackageMounts.mountPoint(item,metadata.get(item),metadata);
                     JSONObject manifest=new JSONObject(identity.toString()).put("origin",catalogue.origin(origins.get(item)))
                             .put("mount",mount).put("dependencies",new JSONArray(dependencies.get(item))).put("deployments",rows);
@@ -80,7 +80,7 @@ public final class StorePackages {
                     }
                     // StagedPacks uses a private pack-repo in installation.getParentFile(); clear it per package.
                     File packRepo=new File(work,"pack-repo");if(packRepo.exists())WorkDirs.remove(packRepo);
-                    StagedPacks.build(context,staging.installation,manifest,objects,()->false,prior,pool);
+                    StagedPacks.build(context,staging.installation,manifest,objects,cancellation,prior,pool);
                     File scratch=new File(artifactsDir,"signing");Files.createDirectories(scratch.toPath());
                     boolean launchable=item.equals(ref);String appId=item.split("/")[1];
                     LauncherData launcher=LauncherData.resolve(DeployManifest.stagedDeployment(staging.installation,identity),appId,
@@ -113,7 +113,7 @@ public final class StorePackages {
                     if(StoreExtraData.required(metadata.get(item))) {
                         String normalImage=erofs;
                         extraData.put(pkg,()->StoreExtraData.prepare(context,staging,item,origins.get(item),identity,
-                                metadata.get(item),artifactsDir,normalImage,revision));
+                                metadata.get(item),artifactsDir,normalImage,revision,cancellation));
                     }
                 }
             }finally{pool.shutdownNow();}

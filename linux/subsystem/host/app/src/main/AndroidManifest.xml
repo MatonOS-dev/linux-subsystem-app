@@ -20,6 +20,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <queries>
+        <intent><action android:name="org.matonos.store.STORE" /></intent>
         <intent><action android:name="flatpak.PACKAGE" /></intent>
         <!-- Minimal extra-data stubs have no launcher yet; the subsystem binds this service. -->
         <intent><action android:name="org.matonos.linuxhost.EXTRA_DATA_INSTALL" /></intent>

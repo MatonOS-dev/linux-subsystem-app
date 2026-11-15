@@ -79,5 +79,38 @@ public final class StoreSourceHostTest {
         check(events.equals(invalid?List.of("stub","stub apply_extra","OSTree validation","failed"):
                 List.of("stub","stub apply_extra","OSTree validation","split","done")),"extra-data ordering/validation failure: "+events);
     }
-    public static void main(String[] args) throws Exception {catalogue();chain(false);chain(true);invalidGraph();extraData(false);extraData(true);System.out.println("StoreSourceHostTest: PASS (AppStream, five-package Steam success/failure, missing dependency, extra-data success/validation failure)");}
+    private static void sourceContract() throws Exception {
+        List<Integer> rows=List.of(0,1,2,3,4);
+        check(SourcePaging.page(rows,0,2).equals(List.of(0,1)),"first page");
+        check(SourcePaging.page(rows,2,2).equals(List.of(2,3)),"middle page");
+        check(SourcePaging.page(rows,4,2).equals(List.of(4)),"short last page");
+        check(SourcePaging.page(rows,5,2).isEmpty(),"end page");
+        check(SourcePaging.page(rows,Integer.MAX_VALUE,Integer.MAX_VALUE).isEmpty(),"paging overflow");
+        for(int[] bad:new int[][]{{-1,2},{0,0},{0,-1}})try{SourcePaging.page(rows,bad[0],bad[1]);throw new AssertionError("invalid paging accepted");}catch(IllegalArgumentException expected){}
+        List<Map<String,Object>> candidates=List.of(Map.of("id","app/example/x86_64/stable","origin","alpha"),Map.of("id","app/example/x86_64/stable","origin","beta"));
+        check(SourceCandidates.find(candidates,"app/example/x86_64/stable","beta").get("origin").equals("beta"),"selected remote routes install");
+        try{SourceCandidates.find(candidates,"app/example/x86_64/stable","missing");throw new AssertionError("remote fallback");}catch(IOException expected){}
+        check(SourceCandidates.install("app/example/x86_64/stable","beta").get("origin").equals("beta"),"install routes supplied remote without catalogue fallback");
+        try{SourceCandidates.install("app/example/x86_64/stable","--bad");throw new AssertionError("invalid remote accepted");}catch(IllegalArgumentException expected){}
+        SourceOperations table=new SourceOperations();check(!table.running("unknown"),"unknown idle");table.cancel("unknown");
+        SourceOperations.Operation operation=table.start("test");
+        try{table.start("test");throw new AssertionError("duplicate accepted");}catch(IllegalArgumentException expected){}
+        CountDownLatch stuck=new CountDownLatch(1),entered=new CountDownLatch(1);
+        Thread worker=new Thread(()->{entered.countDown();try{stuck.await();}catch(InterruptedException cancelled){}});operation.worker=worker;worker.start();entered.await();
+        check(table.running("test"),"stuck worker still running");table.cancel("test");worker.join(2000);check(!worker.isAlive()&&operation.cancelled(),"cancel interrupts work");
+        check(table.running("test"),"cancelled operation retained until terminal callback");
+        int[] cleanup={0};operation.onCancel(()->cleanup[0]++);check(cleanup[0]==1,"late cancel resource cleaned");
+        check(operation.finish()&&!operation.finish()&&!table.running("test"),"terminal event once");table.cancel("test");
+        SourceOperations.Operation success=table.start("success");check(success.claimTerminal()&&!success.claimTerminal(),"terminal delivery claimed once");check(table.running("success"),"running until terminal callback dispatched");table.cancel("success");check(!success.cancelled(),"completion wins late cancellation");success.finish();check(!table.running("success"),"done idle");
+        SourceOperations.Operation failure=table.start("failure");failure.finish();check(!table.running("failure"),"failed idle");
+        SourceOperations.Operation download=table.start("download");Process process=new ProcessBuilder("sleep","60").start();download.process(process);Process parallel=new ProcessBuilder("sleep","60").start();download.process(parallel);table.cancel("download");check(process.waitFor(2,TimeUnit.SECONDS)&&parallel.waitFor(2,TimeUnit.SECONDS),"cancel terminates every download process");download.release(process);download.release(parallel);download.finish();
+        StoreRepair repair=new StoreRepair("app/example/x86_64/stable","runtime/missing/x86_64/1");
+        repair.request((id,result)->{check(id.equals("app/example/x86_64/stable"),"repair requests installed app ID");result.result(true,null);});repair.await(1,TimeUnit.SECONDS);
+        StoreRepair rejected=new StoreRepair("app/id","runtime/id");rejected.request((id,result)->result.result(false,"source disabled"));
+        try{rejected.await(1,TimeUnit.SECONDS);throw new AssertionError("store refusal ignored");}catch(IOException expected){check(expected.getMessage().contains("source disabled")&&expected.getMessage().contains("app/id")&&expected.getMessage().contains("runtime/id"),"repair refusal context");}
+        StoreRepair crashed=new StoreRepair("app/id","runtime/id");crashed.request((id,result)->{throw new IOException("binder failed");});
+        try{crashed.await(1,TimeUnit.SECONDS);throw new AssertionError("request failure ignored");}catch(IOException expected){check(expected.getMessage().contains("binder failed"),"request exception propagated");}
+    }
+    public static void main(String[] args) throws Exception {
+        sourceContract();catalogue();chain(false);chain(true);invalidGraph();extraData(false);extraData(true);System.out.println("StoreSourceHostTest: PASS (paging, remote routing, cancel/process termination, running states, store repair, AppStream, five-package Steam success/failure, missing dependency, extra-data success/validation failure)");}
 }

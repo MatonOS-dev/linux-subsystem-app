@@ -214,6 +214,8 @@ public final class StagedPacks {
                 env.put("TMPDIR",new File(operation,"tmp").getAbsolutePath());
                 pb.directory(new File(operation,"home"));
                 Process child=pb.start();
+                org.matonos.linux.store.SourceOperations.Operation operationCancellation=cancelled instanceof org.matonos.linux.store.SourceOperations.Operation?(org.matonos.linux.store.SourceOperations.Operation)cancelled:null;
+                if(operationCancellation!=null)operationCancellation.process(child);
                 try {
                     ByteArrayOutputStream out=new ByteArrayOutputStream();
                     try(InputStream in=child.getInputStream()) {
@@ -227,7 +229,7 @@ public final class StagedPacks {
                     if(child.waitFor()!=0)throw new IOException("Pack ostree "+args[0]+" failed: "+
                             new String(Files.readAllBytes(error.toPath()),StandardCharsets.UTF_8));
                     return out.toString("UTF-8");
-                } finally {child.destroyForcibly();}
+                } finally {if(operationCancellation!=null)operationCancellation.release(child);child.destroyForcibly();}
             } finally {error.delete();}
         };
     }

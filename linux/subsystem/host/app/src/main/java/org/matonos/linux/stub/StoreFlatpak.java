@@ -10,6 +10,7 @@ import java.util.*;
 /** Persistent catalogue installation; operation-private payload installations use the same CLI. */
 public final class StoreFlatpak {
     private final Context context;
+    public org.matonos.linux.store.SourceOperations.Operation cancellation;
     public final File root,installation;
     public StoreFlatpak(Context context,File root) throws Exception {
         this.context=context;this.root=root;installation=new File(root,"installation");
@@ -34,14 +35,15 @@ public final class StoreFlatpak {
         for(String key:Arrays.asList("SSL_CERT_DIR","CURL_CA_BUNDLE","G_TLS_CA_PATH"))env.put(key,"/apex/com.android.conscrypt/cacerts");
         Process process=null;
         try {
-            process=builder.start();byte[] output;
+            if(cancellation!=null)cancellation.check();
+            process=builder.start();if(cancellation!=null)cancellation.process(process);byte[] output;
             try(InputStream stream=process.getInputStream()){output=stream.readAllBytes();}
             int status=process.waitFor();String diagnostics=new String(org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(errors),StandardCharsets.UTF_8);
             if(!diagnostics.isBlank())Log.i("FlatpakSource","command="+Arrays.toString(arguments)+" pid="+process.toString()+" stderr="+diagnostics);
             if(status!=0)throw new IOException("Flatpak "+Arrays.toString(arguments)+" pid="+process.toString()+" exit="+status+": "+diagnostics);
             return new String(output,StandardCharsets.UTF_8);
         }catch(Exception error){Log.e("FlatpakSource","command="+Arrays.toString(arguments)+" failed",error);throw error;}
-        finally {if(process!=null)process.destroy();if(!errors.delete())Log.e("FlatpakSource","Cannot delete diagnostics "+errors);}
+        finally {if(cancellation!=null)cancellation.release(process);if(process!=null)process.destroy();if(!errors.delete())Log.e("FlatpakSource","Cannot delete diagnostics "+errors);}
     }
     /** Export keys along with URLs; bare remote-add URL would lose signature verification. */
     public synchronized void copyRemotesTo(StoreFlatpak target) throws Exception {

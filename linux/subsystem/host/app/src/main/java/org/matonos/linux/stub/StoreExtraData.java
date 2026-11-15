@@ -19,8 +19,9 @@ public final class StoreExtraData {
         return java.util.regex.Pattern.compile("(?m)^\\s*\\[Extra Data\\]\\s*$").matcher(metadata).find();
     }
     public static CommitChain.Package prepare(Context context,StoreFlatpak staging,String ref,String remote,
-            JSONObject identity,String metadata,File artifacts,String previousImage,int revision) throws Exception {
+            JSONObject identity,String metadata,File artifacts,String previousImage,int revision,org.matonos.linux.store.SourceOperations.Operation cancellation) throws Exception {
         String pkg=DeployManifest.packageForPublic(ref);
+        cancellation.check();
         Log.i(TAG,"extra-data begin package="+pkg+" ref="+ref);
         File returned=new File(artifacts,"stub-extra.apk"),image=new File(artifacts,"extra.erofs");
         CompletableFuture<IBinder> bound=new CompletableFuture<>();
@@ -43,9 +44,15 @@ public final class StoreExtraData {
                 Log.e(TAG,"extra-data stub died package="+pkg);
                 close(pipe[0],pkg);close(pipe[1],pkg);
             };
+            Runnable cancel=()->{
+                Parcel request=Parcel.obtain();
+                try {if(!binder.transact(4,request,null,IBinder.FLAG_ONEWAY))Log.e(TAG,"Stub refused extra-data cancellation package="+pkg);}
+                catch(Exception error){Log.e(TAG,"Extra-data cancellation failed package="+pkg,error);}
+                finally{request.recycle();close(pipe[0],pkg);close(pipe[1],pkg);}
+            };
             boolean linked=false;
             try {
-                binder.linkToDeath(death,0);linked=true;
+                cancellation.check();binder.linkToDeath(death,0);linked=true;
                 Parcel request=Parcel.obtain();
                 try {
                     request.writeFileDescriptor(pipe[1].getFileDescriptor());request.writeString(ref);request.writeString(remote);
@@ -62,6 +69,7 @@ public final class StoreExtraData {
                     request.writeString(descriptor);
                     if(!binder.transact(3,request,null,0))throw new IOException("Installed stub rejected extra-data request package="+pkg);
                 } finally {request.recycle();}
+                cancellation.onCancel(cancel);cancellation.check();
                 close(pipe[1],pkg);
                 int readNumber=pipe[0].getFd();
                 try(DataInputStream in=new DataInputStream(new ParcelFileDescriptor.AutoCloseInputStream(pipe[0]));
@@ -106,7 +114,7 @@ public final class StoreExtraData {
                 Log.i(TAG,"extra-data validated package="+pkg+" ref="+ref+" split="+split);
                 return new CommitChain.Package(pkg,Collections.emptyList(),new String[]{split+".apk"},
                         split.equals(previousImage)?new String[0]:new String[]{previousImage});
-            } finally {if(linked)binder.unlinkToDeath(death,0);close(pipe[0],pkg);close(pipe[1],pkg);}
+            } finally {cancellation.removeCancel(cancel);if(linked)binder.unlinkToDeath(death,0);close(pipe[0],pkg);close(pipe[1],pkg);}
         } catch(Exception error){Log.e(TAG,"extra-data failed package="+pkg+" ref="+ref,error);throw error;}
         finally {context.unbindService(connection);}
     }

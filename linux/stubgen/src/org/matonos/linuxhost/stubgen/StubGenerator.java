@@ -819,6 +819,7 @@ public final class StubGenerator {
                 startEnd("uses-permission",attrs(a("name","android.permission.FOREGROUND_SERVICE_DATA_SYNC")));
             }
             start("queries",null,attrs());
+            start("intent",null,attrs());startEnd("action",attrs(a("name","org.matonos.store.STORE")));end("intent");
             startEnd("package",attrs(a("name","org.matonos.linux")));
             start("intent",null,attrs());
             startEnd("action",attrs(a("name",PACKAGE_ACTION)));

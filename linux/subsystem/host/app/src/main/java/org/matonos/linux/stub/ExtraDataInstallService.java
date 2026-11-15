@@ -19,11 +19,15 @@ public final class ExtraDataInstallService extends Service {
     private static final String TAG = "MatonExtraData";
     private static final android.os.IBinder EROFS_TOKEN = new android.os.Binder();
 
+    private final org.matonos.linux.store.SourceOperations extraOperations=new org.matonos.linux.store.SourceOperations();
+    private final ThreadLocal<org.matonos.linux.store.SourceOperations.Operation> cancellation=new ThreadLocal<>();
+
     /** Binder call 1: result pipe fd, ref, remote, url, subpaths. FDs cannot travel in service Intents. */
     @Override public IBinder onBind(Intent intent) {
         return new android.os.Binder() {
             @Override protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags)
                     throws android.os.RemoteException {
+                if(code==4){extraOperations.cancel("extra");return true;}
                 if (code == 2) {
                     File root=new File(getDataDir(), "install");
                     if (new File(root, ".erofs-handback").isFile()) deleteTree(root);
@@ -36,7 +40,16 @@ public final class ExtraDataInstallService extends Service {
                         .putExtra("runtime", data.readString()).putExtra("storeSplit", code == 3);
                 if(code==3)request.putExtra("remoteDescriptor",data.readString());
                 if (result == null) return false;
-                new Thread(() -> {
+                org.matonos.linux.store.SourceOperations.Operation operation;
+                try{operation=extraOperations.start("extra");}
+                catch(RuntimeException error){
+                    android.util.Log.e(TAG,"Cannot start extra-data request ref="+request.getStringExtra("ref"),error);
+                    android.util.Log.i(TAG,"close fd="+result.getFd()+" at ExtraDataInstallService.onTransact rejected request");
+                    try{result.close();}catch(IOException closeError){android.util.Log.e(TAG,"Cannot close rejected extra-data result",closeError);}
+                    throw error;
+                }
+                Thread worker=new Thread(() -> {
+                    cancellation.set(operation);
                     try (ParcelFileDescriptor fd = result;
                             java.io.DataOutputStream out = new java.io.DataOutputStream(new FileOutputStream(fd.getFileDescriptor()))) {
                         try {
@@ -50,7 +63,9 @@ public final class ExtraDataInstallService extends Service {
                             android.util.Log.i(TAG,"close fd="+fd.getFd()+" at ExtraDataInstallService.onTransact result pipe ref="+request.getStringExtra("ref"));
                         }
                     } catch (Exception error) { android.util.Log.e(TAG, "Could not return extra-data result", error); }
-                }, "maton-extra-data").start();
+                    finally{operation.finish();cancellation.remove();}
+                }, "maton-extra-data");
+                operation.worker=worker;worker.start();
                 return true;
             }
         };
@@ -190,7 +205,9 @@ public final class ExtraDataInstallService extends Service {
         if (systemDir != null) env.put("FLATPAK_SYSTEM_DIR", systemDir.getAbsolutePath());
         env.put("FLATPAK_SYSTEM_CACHE_DIR",cache.getAbsolutePath());
         for(String key:new String[]{"SSL_CERT_DIR","CURL_CA_BUNDLE","G_TLS_CA_PATH"})env.put(key,"/apex/com.android.conscrypt/cacerts");
-        Process process = builder.start(); StringBuilder log = new StringBuilder();
+        org.matonos.linux.store.SourceOperations.Operation operation=cancellation.get();operation.check();
+        Process process = builder.start();operation.process(process); StringBuilder log = new StringBuilder();
+        try {
         // Stream evidence while the operation is running, including successful
         // apply_extra output; full proxy traces must not wait for process exit.
         try (java.io.BufferedReader in = new java.io.BufferedReader(new java.io.InputStreamReader(
@@ -202,6 +219,8 @@ public final class ExtraDataInstallService extends Service {
             }
         }
         if (process.waitFor() != 0) throw new IOException("Stock Flatpak failed: " + log);
+        operation.check();
+        }finally{operation.release(process);process.destroyForcibly();}
     }
 
 }
