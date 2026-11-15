@@ -17,6 +17,9 @@ for line in (seccomp / 'src/syscalls.perf').read_text().splitlines():
     columns = line.split(',')
     if len(columns) == 17:
         rows[columns[0]] = columns[3]  # name,index,x86,x86_64,x32,...
+    elif len(columns) == 38:
+        # libseccomp 2.6 adds a kernel-version column after each syscall.
+        rows[columns[0]] = columns[4]  # name,index,x86,kver,x86_64,kver,...
 assert names and all(name in rows for name in names)
 code = '#include <seccomp.h>\n#include "flatpak-syscalls-private.h"\n'
 code += '_Static_assert(sizeof(void*) == 8, "LP64 required");\n'

@@ -10,7 +10,7 @@ FLATPAK_WORKTREE=$SCRATCH/flatpak-work
 ALPINE_VERSION=3.24.2
 ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-${ALPINE_VERSION}-x86_64.tar.gz"
 ALPINE_SHA256=c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677
-FLATPAK_COMMIT=8078df1477d6b6f1c15efaf327889a52a8adfedc
+FLATPAK_COMMIT=aa04a5765686f766f590cb6a20b01b0b452fcd61
 
 for tool in bwrap curl git sha256sum tar; do
   command -v "$tool" >/dev/null || { echo "Required host tool missing: $tool" >&2; exit 2; }
@@ -49,8 +49,8 @@ fi
 # native builds, EROFS configure step, source tools, and bubblewrap's libcap.
 PACKAGES=(
   autoconf automake bash bison build-base cmake curl file flex gettext-dev gettext-static git
-  gperf gzip libcap-dev libtool linux-headers meson ninja patch perl pkgconf
-  py3-parsing python3 tar xz zlib-dev zlib-static zstd
+  gperf gzip itstool libcap-dev libtool linux-headers meson ninja patch perl pkgconf
+  py3-parsing python3 shared-mime-info tar xz zlib-dev zlib-static zstd
 )
 "$BWRAP" \
   --bind "$ROOTFS" / \
@@ -74,7 +74,7 @@ actual=$(git -C "$FLATPAK_WORKTREE" rev-parse HEAD)
 [[ $actual == "$FLATPAK_COMMIT" ]] || { echo "Flatpak checkout mismatch: $actual" >&2; exit 1; }
 
 CACHE_DIR=$CACHE sh "$HERE/fetch.sh"
-grep -q $'flatpak\t8078df1477d6b6f1c15efaf327889a52a8adfedc\t' "$CACHE/src/flatpak.pin"
+grep -q $'flatpak\taa04a5765686f766f590cb6a20b01b0b452fcd61\t' "$CACHE/src/flatpak.pin"
 touch "$SCRATCH/.scratch-ready"
 printf 'Alpine %s scratch ready: %s\nFlatpak source cache ready: %s\n' \
   "$ALPINE_VERSION" "$ROOTFS" "$CACHE"

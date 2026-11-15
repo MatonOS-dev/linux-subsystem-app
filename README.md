@@ -52,8 +52,8 @@ StubLoader resolves the installed host library from PackageManager, so
 generated stubs become usable after the bootstrap finishes.
 
 Flatpak's source/dependency lock is `linux/flatpak/build-support/sources.lock`:
-MatonOS-dev/flatpak branch `matonos/v26.10`, commit
-`8078df1477d6b6f1c15efaf327889a52a8adfedc`. Its CLI/multicall recipe was
+MatonOS-dev/flatpak branch `matonos/v26.10-update`, commit
+`aa04a5765686f766f590cb6a20b01b0b452fcd61`. Its CLI/multicall recipe was
 carried from MatonOS_apexs; image-only store helpers are excluded. The build
 keeps source archives and dependency output outside this repository. An existing
 verified dependency cache can be selected with `MATON_FLATPAK_CACHE`,

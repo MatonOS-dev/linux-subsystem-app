@@ -1,11 +1,11 @@
 # name|kind|location|revision-or-version|sha256
-# Static-musl Flatpak inputs; Flatpak is MatonOS-dev/flatpak branch matonos/v26.10.
+# Static-musl Flatpak inputs; Flatpak is MatonOS-dev/flatpak branch matonos/v26.10-update.
 glib|git|https://github.com/GNOME/glib.git|6f873bc0e6265995cebd797b969dcd5f548f91f6|-
 glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08f2dcb400|-
 ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-
 ostree-libglnx|git|https://github.com/GNOME/libglnx.git|b415d046880d585e5161bf230590543adeea4fe6|-
 ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462ef9e2657ca4ccd7667|-
-flatpak|git|https://github.com/MatonOS-dev/flatpak|8078df1477d6b6f1c15efaf327889a52a8adfedc|-
+flatpak|git|https://github.com/MatonOS-dev/flatpak|aa04a5765686f766f590cb6a20b01b0b452fcd61|-
 flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
 variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
 DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
@@ -25,3 +25,5 @@ glib-proxy-libintl|tar|https://github.com/frida/proxy-libintl/archive/refs/tags/
 libffi|tar|https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz|3.5.2|f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc
 pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pcre2-10.46.tar.bz2|10.46|15fbc5aba6beee0b17aecb04602ae39432393aba1ebd8e39b7cabf7db883299f
 e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
+appstream|tar|https://www.freedesktop.org/software/appstream/releases/AppStream-1.2.3.tar.xz|1.2.3|8daa01a4d66c73f036aa92af9bf76abfe8408eaa76fcda6ca54fa8ef5b93ed17
+libfyaml|tar|https://github.com/pantoniou/libfyaml/releases/download/v0.9.6/libfyaml-0.9.6.tar.gz|0.9.6|a59cc3331e2eb903ec36933ad52a45888041cac31e44f553a00511131242c483

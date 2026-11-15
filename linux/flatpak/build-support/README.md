@@ -10,9 +10,9 @@ the app cache. This supplies POSIX shared memory on Android hosts without
 
 `setup-scratch.sh` recreates the Alpine 3.24.2 root, installs `autoconf`,
 `automake`, `bash`, `bison`, `build-base`, `cmake`, `curl`, `file`, `flex`,
-`gettext-dev`, `git`, `gperf`, `gzip`, `libcap-dev`, `libtool`, `linux-headers`,
-`meson`, `ninja`, `patch`, `perl`, `pkgconf`, `py3-parsing`, `python3`, `tar`,
-`xz`, `zlib-dev`, `zlib-static` and `zstd` from the pinned Alpine 3.24
+`gettext-dev`, `gettext-static`, `git`, `gperf`, `gzip`, `libcap-dev`, `libtool`, `linux-headers`,
+`itstool`, `meson`, `ninja`, `patch`, `perl`, `pkgconf`, `py3-parsing`, `python3`, `tar`,
+`shared-mime-info`, `xz`, `zlib-dev`, `zlib-static` and `zstd` from the pinned Alpine 3.24
 repositories. It checks out the pinned Flatpak commit and runs
 `fetch.sh` to verify the immutable source cache, including GLib's Meson
 `proxy-libintl` fallback archive. The default scratch directory
@@ -88,3 +88,29 @@ records a new logger open, so Steam startup beyond its early bootstrap remains
 unresolved. The VM screenshot and logs are in
 `/mnt/data/aosp/out/pc-logs/agents/steam5/`. Do not set
 `STEAM_DISABLE_SANDBOX` as a default.
+
+## November 2026 upstream update and AppStream
+
+The fork merges upstream/main at `e6febd33` in `effac9a9`, then restores
+AppStream in `aa04a576`. The final source pin includes both commits. Search,
+remote metadata and AppStream refresh use upstream's current implementations.
+AppStream 1.2.3 and libfyaml 0.9.6 are hash-checked release archives; libxmlb
+0.3.29 was already part of the static dependency set. libfyaml is the YAML
+library required by current AppStream (libyaml is not needed). AppStream's
+optional Qt, compose, stemming, systemd and display backends are disabled.
+The selected new library licences are LGPL-2.1 and MIT; no dependency requiring
+GPLv3/LGPLv3 is introduced. `itstool` and `shared-mime-info` are build/test-only
+prerequisites in the Alpine root, not shipped libraries or APK assets.
+
+Run the offline refresh/read test with:
+
+```sh
+python3 linux/flatpak/tests/appstream-host.py \
+  linux/flatpak/prebuilt/static/x86_64/matonos-flatpak /path/to/test-output
+```
+
+The root `tests/run.sh` includes this test. It creates an isolated local OSTree
+repository, runs `flatpak update --appstream fixture`, verifies the
+`appstream/fixture/<arch>/active/` XML and reads it through libappstream using
+`flatpak search`. It never reads or changes the host user's installation.
+See [UPDATE-2026-11.md](UPDATE-2026-11.md) for merge resolutions and validation.

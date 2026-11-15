@@ -116,7 +116,7 @@ meson setup "$BUILD/glib" "$SRC/glib" $MCOMMON -Dtests=false -Dman-pages=disable
 # GLib's pkg-config files expose these target-native generators as /usr/bin
 # paths. Make those paths resolve to this exact build's static-musl tools so
 # later cross-built Meson projects can execute them without network access.
-for tool in glib-mkenums gdbus-codegen; do
+for tool in glib-mkenums gdbus-codegen glib-compile-resources; do
   rm -f "$MUSL_PREFIX/bin/$tool"
   cat > "$MUSL_PREFIX/bin/$tool" <<EOF
 #!/bin/sh
@@ -211,12 +211,30 @@ fi
 
 fi
 
+# AppStream needs curl, GLib, libxml2, libxmlb and libfyaml. Build it here,
+# after the existing dependencies, including when resuming at Flatpak.
+mkdir -p "$BUILD/libfyaml"; cd "$BUILD/libfyaml"
+"$SRC/libfyaml/configure" --host="$HOST" --prefix="$INSTALL_PREFIX" --disable-shared --enable-static --disable-tests --disable-tools CFLAGS="$CFLAGS"
+make -j"$JOBS"; make install; stage_metadata
+# libfyaml 0.9.6 writes Autoconf's "none required" result for trunc()
+# literally into Libs on musl, where trunc lives in libc.
+sed -i 's/none required//g' "$PREFIX/lib/pkgconfig/libfyaml.pc"
+# These x86_64 musl generators run directly inside Alpine. A native file
+# avoids AppStream's cross-build requirement for a separate appstreamcli.
+sed '/^\[host_machine\]/,$d' "$BUILD/musl.ini" > "$BUILD/musl-native.ini"
+meson setup --clearcache --reconfigure "$BUILD/appstream" "$SRC/appstream" --native-file "$BUILD/musl-native.ini" --prefix "$INSTALL_PREFIX" --libdir lib --default-library static --prefer-static -Dc_link_args=-static -Dbash-completion=false -Dstemming=false -Dsystemd=false -Dgir=false -Dqt=false -Dcompose=false -Dtools=false -Ddocs=false -Dapidocs=false -Dinstall-docs=false -Dman=false -Ddisplay-detection=none
+"$NINJA" -C "$BUILD/appstream" -j "$JOBS" install; stage_metadata
+# Upstream removes private dependencies from appstream.pc for shared builds.
+# Our static consumers need the complete transitive dependency list.
+sed -i '/^Requires.private:/d' "$PREFIX/lib/pkgconfig/appstream.pc"
+printf 'Requires.private: libcurl libxml-2.0 libfyaml xmlb libzstd\nLibs.private: -lm\n' >> "$PREFIX/lib/pkgconfig/appstream.pc"
+
 FLATPAK_CFLAGS="$COMPAT_CFLAGS"
 FLATPAK_CXXFLAGS="$COMPAT_CXXFLAGS"
 # system_dbus_proxy names a path that is deliberately NOT shipped: since v1 the
 # stub-hosted per-app bus (dbus-java + broker) filters D-Bus, so no app uses
 # xdg-dbus-proxy. Leaving the option unset would build Flatpak's bundled copy.
-meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dgtkdoc=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-app-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="-static-pie -static" -Dcpp_link_args="-static-pie -static"
+meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dapi_docs=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-app-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="-static-pie -static" -Dcpp_link_args="-static-pie -static"
 # Build the CLI and the stock org.freedesktop.portal.Flatpak daemon; the
 # multicall relinker consumes both sets of objects.
 "$NINJA" -C "$BUILD/flatpak" -j "$JOBS" app/flatpak portal/flatpak-portal

@@ -3,6 +3,8 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:?output directory outside the repository required}
 mkdir -p "$OUT"
+python3 "$ROOT/linux/flatpak/tests/appstream-host.py" \
+  "$ROOT/linux/flatpak/prebuilt/static/x86_64/matonos-flatpak" "$OUT/appstream"
 bash "$ROOT/tests/gui-process.sh" "$OUT/gui-process"
 python3 "$ROOT/tests/chrome-sol/window-state-dispatch.py"
 python3 "$ROOT/tests/chrome-sol/window-replacement.py"

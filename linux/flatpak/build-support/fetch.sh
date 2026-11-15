@@ -16,7 +16,14 @@ while IFS='|' read -r name kind location revision digest; do
         esac
         git clone --no-checkout "$source" "$dest"
       fi
-      git -C "$dest" fetch --no-tags origin "$revision" 2>/dev/null || :
+      # Reuse immutable cached commits offline. A missing commit must be
+      # fetched successfully; report the repository and revision on failure.
+      if ! git -C "$dest" cat-file -e "$revision^{commit}" 2>/dev/null; then
+        git -C "$dest" fetch --no-tags origin "$revision" || {
+          echo "Failed to fetch locked source $name revision=$revision from $location" >&2
+          exit 1
+        }
+      fi
       git -C "$dest" cat-file -e "$revision^{commit}" || { echo "Missing locked commit $name $revision" >&2; exit 1; }
       actual=$(git -C "$dest" rev-parse "$revision^{commit}")
       case "$actual" in "$revision"*) ;; *) echo "Commit mismatch for $name: $actual != $revision" >&2; exit 1;; esac
@@ -56,7 +63,9 @@ while IFS='|' read -r name kind location revision digest; do
   archive_name=${location##*/}; case "$archive_name" in download) archive_name=$name.tar.gz;; esac
   archive=$CACHE/tar/$archive_name; dest=$CACHE/src/$name
   rm -rf "$dest"; mkdir -p "$dest"
-  tar -xf "$archive" -C "$dest" --strip-components=1
+  # AppStream release archives include a leading ./ before the root directory.
+  case "$name" in appstream) strip=2;; *) strip=1;; esac
+  tar -xf "$archive" -C "$dest" --strip-components="$strip"
 done < "$HERE/sources.lock"
 # Meson needs this pinned fallback when the target musl prefix has no intl
 # library. Its subproject is intentionally offline during the build.

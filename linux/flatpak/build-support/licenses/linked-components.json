@@ -294,6 +294,36 @@
         "spdx_license": "BSD-3-Clause OR GPL-2.0-or-later",
         "upstream_license": "BSD-3-Clause OR GPL-2.0-or-later",
         "version": "1.5.7-r2"
+      },
+      {
+        "name": "AppStream",
+        "version": "1.2.3",
+        "chosen_license": "LGPL-2.1-or-later",
+        "spdx_license": "LGPL-2.1-or-later",
+        "upstream_license": "LGPL-2.1-or-later",
+        "license_terms": [
+          "LGPL-2.1-or-later"
+        ]
+      },
+      {
+        "name": "libfyaml",
+        "version": "0.9.6",
+        "chosen_license": "MIT",
+        "spdx_license": "MIT",
+        "upstream_license": "MIT",
+        "license_terms": [
+          "MIT"
+        ]
+      },
+      {
+        "name": "libxmlb",
+        "version": "0.3.29",
+        "chosen_license": "LGPL-2.1-or-later",
+        "spdx_license": "LGPL-2.1-or-later",
+        "upstream_license": "LGPL-2.1-or-later",
+        "license_terms": [
+          "LGPL-2.1-or-later"
+        ]
       }
     ],
     "matonos-flatpak-store": [
