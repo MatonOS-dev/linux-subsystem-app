@@ -30,6 +30,7 @@ SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$SCRATCH/flatpak-mus
 SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$SCRATCH/flatpak-musl/cache" GPGME_LITE_SRC="$GPGME_LITE_SRC" \
   MATON_FLATPAK_PLAN_BUILD="$(work_inner_path "$PLAN_BUILD")" \
   "$ROOT/linux/flatpak/build-support/alpine-enter.sh" \
+  env PKG_CONFIG_LIBDIR=/scratch/work/build/prefix/lib/pkgconfig:/scratch/work/build/prefix/share/pkgconfig \
   python3 /scratch/work/plan-source/build.py /scratch/work/plan-out
 install -m755 "$WORK/plan-out/libmatonos-flatpak-plan.so" "$PLAN_OUT/libmatonos-flatpak-plan.so"
 install -m755 "$WORK/plan-out/libmatonos-flatpak-plan.so.symbols" "$PLAN_OUT/libmatonos-flatpak-plan.so.symbols"
