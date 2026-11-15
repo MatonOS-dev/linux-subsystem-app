@@ -33,10 +33,10 @@ toolchain: Alpine 3.24.2; x86_64-alpine-linux-musl-gcc (Alpine 15.2.0) 15.2.0; m
 
 
 static musl APK helper artifacts
-d8126e49c718082832073c9fdd20fcfe1021d23ac860cb90647339e13dcde041  matonos-flatpak
+43c486edc156070cd844699e6a7bf31a66acc25a086f7b5e437017e57bde226d  matonos-flatpak
 be389e69d4d11f3394ba54a3fb723958f0ca2ea3d58427ebfb4fef138668d532  matonos-app-flatpak
 c377c15b6ba90df136082e2786ea1f22751a590ceaa0584eb6070f484bb0ace0  matonos-app-bwrap
 7ad291c8b94f97f67ee77fda26ec0e7cfe47f4d6952adf46637bce6f0447aaa5  matonos-app-tool
 
 static musl plan helper artifact
-4b7d2541ee6f5e664643674f3f7825a8c08c4efe183cb79e3e0b37d3cf8e3a9e  libmatonos-flatpak-plan.so
+d473412f08f7a563527ae0e211af7b1355b32df335693b77777a053af359d21d  libmatonos-flatpak-plan.so
