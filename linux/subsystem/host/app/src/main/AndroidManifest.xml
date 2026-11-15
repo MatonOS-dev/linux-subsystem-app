@@ -8,7 +8,6 @@
     <permission android:name="org.matonos.permission.SET_ICON_THEME"
         android:protectionLevel="signature" />
     <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
-    <uses-permission android:name="android.permission.DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <!-- Provider choices can arrive after read-only network planning, when the store
          is no longer foreground. Only the subsystem-owned confirmation UI uses this. -->
@@ -38,9 +37,8 @@
             android:exported="true" android:readPermission="org.matonos.permission.READ_ICON_THEMES" />
         <activity android:name=".WindowActivity" android:exported="false" android:resizeableActivity="true"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
-        <activity android:name=".ConfirmInstallActivity" android:exported="false" />
+        <activity android:name=".ProviderChoiceActivity" android:exported="false" />
         <activity android:name=".stub.StubActivity" android:exported="true" />
-        <activity android:name=".stub.InstallActivity" android:exported="true" />
         <service android:name=".stub.StubService" android:exported="false" />
         <provider android:name=".store.FlatpakIconProvider" android:authorities="org.matonos.linux.store.icons"
             android:exported="true" android:readPermission="org.matonos.permission.BIND_STORE_SOURCE" />
@@ -48,24 +46,11 @@
             android:permission="org.matonos.permission.BIND_STORE_SOURCE">
             <intent-filter><action android:name="org.matonos.store.SOURCE" /></intent-filter>
         </service>
-        <service android:name=".LinuxAppStoreService" android:exported="true"
-            android:foregroundServiceType="dataSync" />
-        <service android:name=".LinuxAppStoreService$CleanupJobService" android:exported="false"
-            android:permission="android.permission.BIND_JOB_SERVICE" />
-        <receiver android:name=".LinuxAppStoreService$BootReceiver" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCALE_CHANGED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-            </intent-filter>
-        </receiver>
         <!-- Same component name as the bootstrap so PackageInstaller can report
              the result after the bootstrap APK has been replaced. -->
         <receiver android:name=".bootstrap.BootstrapResultReceiver" android:exported="false" />
         <!-- Internal support UI; Linux apps have their own launcher entries. -->
         <activity android:name=".MainActivity" android:exported="false" />
-        <activity android:name=".DebugExtraInstallActivity" android:exported="true"
-            android:excludeFromRecents="true" android:noHistory="false" />
         <!-- Stubs wait on this before their first EROFS mount (pin set after boot). -->
         <activity android:name=".ErofsPinActivity" android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"

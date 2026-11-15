@@ -4,9 +4,9 @@
 `org.matonos.permission.BIND_STORE_SOURCE`. All three AIDL files are copied
 byte for byte from `store-sources/contract/aidl/org/matonos/store/source/`
 in the device tree (version 1). `commit` has no `inherit` argument: the store
-infers full vs inherited sessions from whether `base.apk` is supplied. The legacy `ILinuxAppStore`
-implementation and its installer are unchanged. The host now targets and
-requires API 37, as requested for this source.
+infers full vs inherited sessions from whether `base.apk` is supplied. The
+store owns package installation. The host now targets and requires API 37, as
+requested for this source.
 
 Catalogue data comes from Flatpak's `update --appstream` path and the remotes'
 `appstream/<remote>/x86_64/active/appstream.xml[.gz]`. There is no Flathub web
@@ -78,8 +78,8 @@ carriers commit first. The store then commits the app base and normal splits
 and returns success before the subsystem binds the installed stub.
 
 Only that stub's UID executes stock Flatpak deploy/`apply_extra`. Protocol 3
-returns an unsigned EROFS APK split; legacy protocol 1 and ILinuxAppStore remain
-available. Remote descriptors retain their GPG keys. The subsystem extracts the
+returns an unsigned EROFS APK split; protocol 1 remains supported by the stub
+protocol implementation. Remote descriptors retain their GPG keys. The subsystem extracts the
 returned image and runs the existing ExtraImageValidator against the original
 verified OSTree commit, respecting Flatpak's selected subpaths. Content outside
 `/app/extra` (or the runtime branch’s `/extra`) must match the commit. The subsystem regenerates/signs the APK
@@ -167,7 +167,7 @@ pkg-config search path for both of its isolated container invocations.
    successful launch. Check shared-runtime updates across multiple apps.
 6. Kill the store while awaiting a commit; confirm an error log, operation
    cleanup and no further dependent commit. Check parallel operations involving
-   shared runtimes for PackageInstaller revision conflicts.
+   shared runtimes for store-owned revision conflicts.
 7. Test large unfiltered catalogues for Binder payload suitability. The v1
    contract has no pagination; this source adds no arbitrary result cap.
 

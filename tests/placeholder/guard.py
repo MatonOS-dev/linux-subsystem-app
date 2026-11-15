@@ -42,7 +42,6 @@ SCAN = [
     "linux/stubgen/src/org/matonos/linuxhost/stubgen",
 ]
 SCAN_FILES = [
-    "linux/subsystem/host/app/src/main/java/org/matonos/linux/LinuxAppStoreService.java",
     "linux/subsystem/host/app/src/main/java/org/matonos/linux/XwaylandFiles.java",
 ]
 

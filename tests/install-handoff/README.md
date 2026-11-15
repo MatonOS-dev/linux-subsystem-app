@@ -31,6 +31,6 @@ letter, and the optional filename check limits the name to 255 characters.
 
 The broader `tests/run.sh` also runs the real compatibility-proxy/OSTree
 placeholder fixture. The focused hand-off test does not yet invoke Android's
-`LinuxAppStoreService.onComplete`, `StagedPacks.build`, or `PackageInstaller`
+`StagedPacks.build` or the store-owned `PackageInstaller` commit
 with an Android `Context`; it verifies their JSON boundary and generated APK
 before that platform-only session boundary.

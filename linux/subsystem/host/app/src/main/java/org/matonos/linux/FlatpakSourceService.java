@@ -18,7 +18,7 @@ import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.*;
 
-/** Software Centre source. The legacy ILinuxAppStore service remains independent. */
+/** Software Centre source; installation is committed by the bound store. */
 public final class FlatpakSourceService extends Service {
     private static final String TAG="FlatpakSource";
     private StoreFlatpak flatpak;

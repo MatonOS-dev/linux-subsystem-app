@@ -120,7 +120,7 @@ exception are in `UPSTREAMS` (the static musl Flatpak prefix cannot replace it).
 
 Device checks after a fresh image boot: confirm the subsystem uses `priv_app`,
 execute its own APK native helpers (Flatpak and both Xwayland entry points),
-install/download using network and PackageInstaller, then launch an X11 app,
+install/download through the Software Centre store, then launch an X11 app,
 type several keyboard layouts and close/reopen it. Verify Xwayland and xkbcomp
 come from the host nativeLibraryDir, no `/system_ext/bin/Xwayland` exists and
 no SELinux denials occur. Install a same-signer host update and relaunch an
@@ -354,8 +354,7 @@ cancelled operation. Unknown/finished IDs report false and cancel quietly.
 
 Missing-runtime launch repair binds `org.matonos.store.STORE` and calls
 `IStore.update` with the installed app ref. The store chooses its recorded
-source and remote. There is no legacy `ILinuxAppStore.repair` call in
-V3Launcher. A refusal, binding failure or disconnect reports app/dependency
+source and remote. V3Launcher uses the store source and the store-owned update path. A refusal, binding failure or disconnect reports app/dependency
 context in the permanent MatonV3 log and fails launch visibly.
 
 The static Flatpak build uses the x86-64-v2 baseline. BoringSSL's optional

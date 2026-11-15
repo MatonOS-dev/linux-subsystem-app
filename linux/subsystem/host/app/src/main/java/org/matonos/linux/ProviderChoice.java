@@ -20,7 +20,7 @@ public final class ProviderChoice {
     public static String choose(Context context,String ref,List<String> origins,BooleanSupplier cancelled)throws Exception {
         String token=UUID.randomUUID().toString();Request request=new Request(ref,origins);pending.put(token,request);
         try {
-            context.startActivity(new Intent(context,ConfirmInstallActivity.class).putExtra("providerChoice",token).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            context.startActivity(new Intent(context,ProviderChoiceActivity.class).putExtra("providerChoice",token).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             long deadline=System.nanoTime()+TimeUnit.MINUTES.toNanos(15);
             while(!cancelled.getAsBoolean()&&System.nanoTime()<deadline)try{return request.answer.get(1,TimeUnit.SECONDS);}catch(TimeoutException waiting){}
             throw new IOException("Dependency origin selection cancelled or expired");

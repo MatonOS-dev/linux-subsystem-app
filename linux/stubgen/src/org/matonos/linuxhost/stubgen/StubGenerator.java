@@ -56,13 +56,6 @@ public final class StubGenerator {
     public static final String LAUNCHER_SPLIT_PREFIX = "launcher_";
     /** Host-side AppComponentFactory: loads the stub's components from the current host APK. */
     public static final String HOST_LOADER = "org.matonos.linux.stub.StubLoader";
-    /** Unprivileged entry point (the store uses it): asks the bridge to install this stub's Flatpak; no-op when installed. */
-    public static final String INSTALL_ACTIVITY = "org.matonos.linux.stub.InstallActivity";
-    /** Action the store resolves (by its FLATPAK_REF metadata) to find a new stub's install activity. */
-    public static final String INSTALL_ACTION = "org.matonos.linuxhost.INSTALL";
-    /** "Update me": same lookup as INSTALL_ACTION. */
-    public static final String UPDATE_ACTIVITY = "org.matonos.linux.stub.UpdateActivity";
-    public static final String UPDATE_ACTION = "org.matonos.linuxhost.UPDATE";
     public static final String REF_META = "org.matonos.linuxhost.FLATPAK_REF";
     public static final String REMOTE_META = "org.matonos.linuxhost.FLATPAK_REMOTE";
     public static final String MIN_INTERFACE_META = "org.matonos.linuxhost.MIN_INTERFACE_VERSION";
@@ -789,7 +782,7 @@ public final class StubGenerator {
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
-            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, INSTALL_ACTIVITY, INSTALL_ACTION, UPDATE_ACTIVITY, UPDATE_ACTION, "android.intent.action.MAIN", "android.intent.category.DEFAULT", "org.matonos.dbus.SERVICE", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, FLATPAK_ID_META, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
+            for (String s : Arrays.asList(ANDROID, "android", "manifest", "package", "versionCode", "versionName", "uses-sdk", "minSdkVersion", "targetSdkVersion", "uses-permission", "name", "application", "label", "hasCode", "appComponentFactory", "activity", "exported", "enabled", "meta-data", "value", "intent-filter", "action", "category", "service", "org.matonos.linux.stub.StubActivity", "org.matonos.linux.stub.StubService", HOST_LOADER, "android.intent.action.MAIN", "android.intent.category.DEFAULT", "org.matonos.dbus.SERVICE", REF_META, REMOTE_META, MIN_INTERFACE_META, APP_COMMIT_META, RUNTIME_REF_META, RUNTIME_COMMIT_META, PACKS_META, DEPENDENCIES_META, APP_REF_META, FLATPAK_ID_META, "targetActivity", "activity-alias", "data", "android.intent.category.LAUNCHER", "android.intent.action.VIEW", pkg, label, ref, remote, "1", "1.0", "30", "36")) str(s);
             String internedFlatpakId = flatpakId(ref);
             if (internedFlatpakId != null) str(internedFlatpakId);
             for (String p : permissions) str(p);
@@ -871,24 +864,6 @@ public final class StubGenerator {
             // The base stub deliberately has no MAIN/LAUNCHER filter: the
             // launcher entry lives in the code-free launcher split so a label
             // or icon change never updates the base.
-            end("activity");
-            // Stays enabled while the launcher is hidden, so the store can
-            // resume an install interrupted by a crash or power cut.
-            start("activity", null, attrs(a("name", INSTALL_ACTIVITY), ab("exported", true),
-                    new Attr("theme", "@android:style/Theme.Translucent.NoTitleBar", android.R.style.Theme_Translucent_NoTitleBar, 1)));
-            startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
-            start("intent-filter", null, attrs());
-            startEnd("action", attrs(a("name", INSTALL_ACTION)));
-            startEnd("category", attrs(a("name", "android.intent.category.DEFAULT")));
-            end("intent-filter");
-            end("activity");
-            start("activity", null, attrs(a("name", UPDATE_ACTIVITY), ab("exported", true),
-                    new Attr("theme", "@android:style/Theme.Translucent.NoTitleBar", android.R.style.Theme_Translucent_NoTitleBar, 1)));
-            startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
-            start("intent-filter", null, attrs());
-            startEnd("action", attrs(a("name", UPDATE_ACTION)));
-            startEnd("category", attrs(a("name", "android.intent.category.DEFAULT")));
-            end("intent-filter");
             end("activity");
             start("service", null, attrs(a("name", HOST_SERVICE), ab("exported", false), ai("foregroundServiceType", android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)));
             startEnd("property", attrs(a("name", "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"),
