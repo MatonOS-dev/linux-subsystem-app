@@ -397,3 +397,7 @@ check at `device/maton/pc_x86_64/tools/build-subsystem.sh` lines 22–27. It sti
 instructs maintainers to copy the contract; this repository now consumes its
 own pinned submodule. That external script was not edited. No kernel changes
 are needed.
+
+The revision 2 `new` collection orders compatible entries by their index
+`added` timestamp, newest first. `popular` is an empty page because F-Droid
+exposes no popularity ranking.

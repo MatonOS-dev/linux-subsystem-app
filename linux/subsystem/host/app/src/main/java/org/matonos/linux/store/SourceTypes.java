@@ -10,6 +10,7 @@ public final class SourceTypes {
         AppListing out=new AppListing();out.id=row.optString("id");out.repo=row.optString("origin");
         out.name=row.optString("name");out.summary=row.optString("summary");out.icon=row.optString("icon");
         out.developer=row.optString("developer");out.installed=row.optBoolean("installed");
+        JSONObject rating=row.optJSONObject("rating");if(rating!=null){out.rating=new Rating();out.rating.average=(float)rating.optDouble("average");out.rating.count=rating.optInt("count");JSONArray histogram=rating.optJSONArray("histogram");if(histogram!=null){out.rating.histogram=new int[histogram.length()];for(int i=0;i<histogram.length();i++)out.rating.histogram[i]=histogram.optInt(i);}}
         out.versionName=row.optString("versionName",null);out.packageName=row.optString("packageName",null);return out;
     }
     public static AppListing[] listings(List<Map<String,Object>> rows,int offset,int limit){

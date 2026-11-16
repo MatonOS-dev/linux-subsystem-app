@@ -175,3 +175,11 @@ No image builds, VM boots, main-worktree changes, AOSP patches, kernel changes,
 or shared device-tree changes were made. Download staging currently downloads
 a complete dependency closure even for Android-carrier updates; object-cache
 reuse is a future performance improvement.
+
+## Browse collections and ratings
+
+The revision 2 source method supplies `popular` and `new` from Flathub's
+collection API. Results join against configured Flathub AppStream refs so
+installs retain the remote-qualified identity. Collection and detail listings
+carry the ODRS average, count and five-star histogram through the existing
+`AppListing.rating` field; reviews continue to use the review API.

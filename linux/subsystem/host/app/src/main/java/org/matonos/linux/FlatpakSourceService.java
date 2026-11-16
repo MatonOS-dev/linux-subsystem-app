@@ -24,6 +24,8 @@ public final class FlatpakSourceService extends Service {
     private StoreFlatpak flatpak;
     private final SourceOperations operations=new SourceOperations();
     private List<Map<String,Object>> cachedCatalogue;
+    private final Map<String,List<Map<String,Object>>> cachedCollections=new HashMap<>();
+    private Map<String, JSONObject> cachedRatings;
     private final Map<String,Boolean> brokenRemotes=new HashMap<>();
     private android.os.PowerManager.WakeLock installWakeLock;
     private synchronized void beginInstall() {
@@ -54,9 +56,12 @@ public final class FlatpakSourceService extends Service {
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
         @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.capabilities=CAP_REPOSITORIES|CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
-        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(AppStreamCatalogue.search(catalogue(),term),offset,limit));}
+        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(withRatings(AppStreamCatalogue.search(catalogue(),term)),offset,limit));}
+        @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(collectionListings(kind),offset,limit));}
         @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
             Map<String,Object> row=find(id,repo);String remote=(String)row.get("origin"),ref=(String)row.get("ref");
+            String appId=id.startsWith("app/")&&id.split("/").length>1?id.split("/")[1]:id;
+            JSONObject ratingAggregate=ratingFor(appId);if(ratingAggregate!=null)row.put("rating",ratingAggregate);
             String metadata=flatpak.cli("remote-info","--system","--show-metadata",remote,ref);
             List<String> permissions=new ArrayList<>();String section="";
             for(String line:metadata.split("\n")) {
@@ -90,9 +95,9 @@ public final class FlatpakSourceService extends Service {
         @Override public void addRepo(String url){call("addRepo url="+url,()->{
             URI uri=URI.create(url);if(!"https".equals(uri.getScheme()))throw new IOException("Repository descriptor requires HTTPS");
             String name="store-"+java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(url.getBytes(StandardCharsets.UTF_8)));
-            flatpak.cli("remote-add","--system","--if-not-exists",name,url);cachedCatalogue=null;return "";
+            flatpak.cli("remote-add","--system","--if-not-exists",name,url);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return "";
         });}
-        @Override public void delRepo(String id){call("delRepo id="+id,()->{validateRemote(id);flatpak.cli("remote-delete","--system",id);cachedCatalogue=null;return "";});}
+        @Override public void delRepo(String id){call("delRepo id="+id,()->{validateRemote(id);flatpak.cli("remote-delete","--system",id);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return "";});}
         @Override public void cancel(String operation){operations.cancel(operation);}
         @Override public boolean running(String operation){return operations.running(operation);}
         @Override public void install(String id,String repo,String operation,IInstallCallback callback){
@@ -153,6 +158,56 @@ public final class FlatpakSourceService extends Service {
         if(readable==0&&last!=null)throw last;
         cachedCatalogue=result;return result;
     }
+    private List<Map<String,Object>> collectionListings(String kind) throws Exception {
+        if(!"popular".equals(kind)&&!"new".equals(kind))return Collections.emptyList();
+        synchronized(cachedCollections){List<Map<String,Object>> cached=cachedCollections.get(kind);if(cached!=null)return cached;}
+        String collection="new".equals(kind)?"recently-added":"popular";
+        JSONArray response=getJson("https://flathub.org/api/v2/collection/"+collection).getJSONArray("hits");
+        Map<String,Map<String,Object>> appsById=new HashMap<>();
+        for(Map<String,Object> row:catalogue()) {
+            String ref=(String)row.get("id"),remote=(String)row.get("origin");
+            if(ref==null||!ref.startsWith("app/")||remote==null)continue;
+            if(!"flathub".equals(remote))continue;
+            String[] parts=ref.split("/");if(parts.length==4)appsById.putIfAbsent(parts[1],row);
+        }
+        List<Map<String,Object>> result=new ArrayList<>();
+        for(int i=0;i<response.length();i++) {
+            JSONObject hit=response.getJSONObject(i);Map<String,Object> row=appsById.get(hit.optString("app_id"));
+            if(row==null)continue;
+            Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
+            JSONObject rating=ratingFor(hit.optString("app_id"));if(rating!=null)listing.put("rating",rating);
+            result.add(listing);
+        }
+        synchronized(cachedCollections){cachedCollections.put(kind,result);}return result;
+    }
+    private List<Map<String,Object>> withRatings(List<Map<String,Object>> rows) {
+        for(Map<String,Object> row:rows) {
+            Object rawId=row.get("id");if(!(rawId instanceof String))continue;
+            String id=(String)rawId;if(id.startsWith("app/")){String[] parts=id.split("/");if(parts.length>1)id=parts[1];}
+            JSONObject rating=ratingFor(id);if(rating!=null)row.put("rating",rating);
+        }
+        return rows;
+    }
+    private JSONObject getJson(String address) throws Exception {
+        HttpURLConnection connection=(HttpURLConnection)new URL(address).openConnection();
+        try {connection.setConnectTimeout(15000);connection.setReadTimeout(30000);
+            if(connection.getResponseCode()!=200)throw new IOException("HTTP "+connection.getResponseCode()+" url="+address);
+            try(InputStream in=connection.getInputStream()){return new JSONObject(new String(in.readAllBytes(),StandardCharsets.UTF_8));}
+        } finally {connection.disconnect();}
+    }
+    private synchronized JSONObject ratingFor(String id) {
+        try {
+            if(cachedRatings==null) {
+                JSONObject raw=getJson("https://odrs.gnome.org/1.0/reviews/api/ratings");
+                cachedRatings=new HashMap<>();java.util.Iterator<String> keys=raw.keys();while(keys.hasNext()){String key=keys.next();cachedRatings.put(key,raw.getJSONObject(key));}
+            }
+            JSONObject raw=cachedRatings.get(id);if(raw==null)raw=cachedRatings.get(id+".desktop");if(raw==null)return null;
+            int[] histogram={raw.optInt("star1"),raw.optInt("star2"),raw.optInt("star3"),raw.optInt("star4"),raw.optInt("star5")};
+            int count=0;long sum=0;for(int i=0;i<histogram.length;i++){count+=histogram[i];sum+=(long)histogram[i]*(i+1);}
+            if(count==0)return null;Rating result=new Rating();result.average=(float)Math.round((sum/(double)count)*10.0)/10.0f;result.count=count;result.histogram=histogram;
+            JSONObject out=new JSONObject().put("average",result.average).put("count",result.count).put("histogram",new JSONArray(result.histogram));return out;
+        } catch(Exception error) {Log.e(TAG,"ODRS rating lookup id="+id+" failed",error);cachedRatings=Collections.emptyMap();return null;}
+    }
     private Map<String,Object> find(String id) throws Exception {return find(id,null);}
     private Map<String,Object> find(String id,String repo) throws Exception {
         return SourceCandidates.find(catalogue(),id,repo);
@@ -176,7 +231,9 @@ public final class FlatpakSourceService extends Service {
             if(!selected.contains(record.ref))continue;
             Map<String,Object> listing=new LinkedHashMap<>();for(Map<String,Object> row:catalogue)if(record.ref.equals(row.get("ref"))&&origin.name.equals(row.get("origin"))){listing.putAll(row);break;}
             listing.put("id",record.ref);listing.put("name",listing.getOrDefault("name",parts[1]));listing.put("origin",origin.name);listing.put("packageName",pkg.packageName);listing.put("installed",true);
-            result.put(new JSONObject(AppStreamCatalogue.search(Collections.singletonList(listing),"").get(0)));
+            Map<String,Object> visible=AppStreamCatalogue.search(Collections.singletonList(listing),"").get(0);
+            JSONObject rating=ratingFor(parts[1]);if(rating!=null)visible.put("rating",rating);
+            result.put(new JSONObject(visible));
         }
         return result;
     }
