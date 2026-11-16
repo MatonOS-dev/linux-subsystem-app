@@ -1,0 +1,12 @@
+diff --git a/src/virtio/vdrm/meson.build b/src/virtio/vdrm/meson.build
+index 6f6a6e529a6..7c0f4cdb741 100644
+--- a/src/virtio/vdrm/meson.build
++++ b/src/virtio/vdrm/meson.build
+@@ -30,6 +30,7 @@ libvdrm = static_library(
+   gnu_symbol_visibility: 'hidden',
+   dependencies: [
+     dep_libdrm,
++    dep_libdrm_amdgpu,
+     dep_valgrind,
+     idep_mesautil,
+   ],
