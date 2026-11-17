@@ -12,13 +12,16 @@ export MATON_BUILD_JOBS=${MATON_BUILD_JOBS:-$(nproc)}
 [[ $MATON_BUILD_JOBS =~ ^[1-9][0-9]*$ ]] || { echo "jobs must be a positive integer" >&2; exit 2; }
 # Install JDK 21+ or set JAVA_HOME explicitly.
 if [[ -n ${JAVA_HOME:-} ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
-export ANDROID_HOME=${MATON_ANDROID_SDK:-$HOME/Documents/matonos-android-sdk}
+: "${MATON_ANDROID_SDK:?set MATON_ANDROID_SDK (see DEPENDENCIES.md in the device tree)}"
+: "${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}"
+: "${MATON_GRADLE_HOME:?set MATON_GRADLE_HOME (see DEPENDENCIES.md in the device tree)}"
+: "${MATON_MUSL_SCRATCH:?set MATON_MUSL_SCRATCH (see DEPENDENCIES.md in the device tree)}"
+export ANDROID_HOME=$MATON_ANDROID_SDK
 export ANDROID_SDK_ROOT=$ANDROID_HOME
 export MATON_ANDROID_JAR=$ANDROID_HOME/platforms/android-36/android.jar
 export MATON_AAPT2=$ANDROID_HOME/build-tools/36.0.0/aapt2
 export MATON_BUILD_ROOT=$MATON_SUBSYSTEM_OUT/context
 export MATON_AOSP_ROOT=${MATON_AOSP_ROOT:-$MATON_BUILD_ROOT}
-export MATON_NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
 export MATON_ANDROID_NDK=$MATON_NDK ANDROID_NDK=$MATON_NDK
 export MATON_COMPOSITOR_BUILD=${MATON_COMPOSITOR_BUILD:-$MATON_SUBSYSTEM_OUT/deps/compositor}
 export MATON_COMPOSITOR_JNI_LIBS=$MATON_COMPOSITOR_BUILD/jniLibs
@@ -37,7 +40,9 @@ export CMAKE=${CMAKE:-/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake}
 if [[ ! -s $MATON_VULKAN_HEADERS/registry/vk.xml ]]; then
   bash "$ROOT/linux/vulkan-forward/build-tools.sh" "$VULKAN_DEPS"
 fi
-export MUSL_SCRATCH=${MATON_MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
+export MUSL_SCRATCH=$MATON_MUSL_SCRATCH
+export SCRATCH=$MATON_MUSL_SCRATCH EROFS_MUSL_SCRATCH=$MATON_MUSL_SCRATCH
+export MUSL_ROOTFS=$MATON_MUSL_SCRATCH/rootfs/x86_64
 export FLATPAK_MUSL_WORK=${MATON_FLATPAK_SCRATCH:-$OUTPUT/flatpak/scratch/flatpak-musl}
 # Source downloads are immutable during builds and remain shared. Every
 # generated Flatpak file lives under this invocation's subsystem output.
@@ -45,12 +50,11 @@ export CACHE_DIR=${MATON_FLATPAK_CACHE:-$MUSL_SCRATCH/flatpak-musl/cache}
 export BUILD_DIR=${MATON_FLATPAK_BUILD:-$FLATPAK_MUSL_WORK/build}
 export OUT_DIR=${MATON_FLATPAK_OUT:-$FLATPAK_MUSL_WORK/out}
 # Used by the separately Android-linked session broker build.
-export MATON_FLATPAK_NDK=$OUTPUT/flatpak
 export MATON_FLATPAK_PLAN_BUILD=${MATON_FLATPAK_PLAN_BUILD:-$BUILD_DIR/flatpak}
 export MATON_FLATPAK_PLAN_OUT=${MATON_FLATPAK_PLAN_OUT:-$BUILD_DIR/plan}
-# The Android-linked session broker still links the existing NDK dependency
-# prefix; only Linux-side Flatpak executables use the musl prefix above.
-export MATON_FLATPAK_PREFIX=$OUTPUT/flatpak/build/prefix
+# The JNI session broker owns a separate bionic GLib dependency prefix.
+export MATON_BROKER_GLIB_PREFIX=$OUTPUT/deps/broker-glib
+export FLATPAK_CACHE=$CACHE_DIR
 export MATON_FLATPAK_PLAN_OUT=$OUTPUT/plan
 export MATON_FLATPAK_HELPER_WORK=$FLATPAK_MUSL_WORK/helper-build
 export MATON_DBUS_ANDROID_OUT=$OUTPUT/broker
@@ -63,11 +67,12 @@ if [[ ${1:-} == --build-dependencies ]]; then
   MATON_COMPOSITOR_BOOTSTRAP=1 bash "$ROOT/linux/subsystem/build-compositor.sh"
   bash "$ROOT/linux/subsystem/build-xwayland.sh"
   bash "$ROOT/linux/subsystem/build-compositor.sh"
+  bash "$ROOT/linux/dbus-broker/build-glib-android.sh"
 fi
 [[ -s $BUILD_DIR/flatpak/build.ninja ]] || { echo 'Build pinned dependencies first with --build-dependencies (see README)' >&2; exit 2; }
 grep -q $'flatpak\taa04a5765686f766f590cb6a20b01b0b452fcd61\t' "$CACHE_DIR/src/flatpak.pin" || { echo 'Flatpak cache does not match the v3.5 source pin' >&2; exit 2; }
 bash "$ROOT/tests/run.sh" "$OUTPUT/tests"
-GRADLE=${MATON_GRADLE_HOME:-$HOME/Documents/gradle-9.4.1}/bin/gradle
+GRADLE=$MATON_GRADLE_HOME/bin/gradle
 REAL_VERSION_CODE=$(( $(git -C "$ROOT" rev-list --count HEAD) + 2 ))
 [[ $REAL_VERSION_CODE -gt 1 ]] || { echo 'Real subsystem versionCode must be greater than bootstrap versionCode 1' >&2; exit 2; }
 "$GRADLE" -p "$ROOT/linux/subsystem/host" --no-daemon --project-cache-dir "$OUTPUT/gradle-cache" --max-workers "$MATON_BUILD_JOBS" \

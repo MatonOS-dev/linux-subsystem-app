@@ -15,12 +15,12 @@ the app cache. This supplies POSIX shared memory on Android hosts without
 `shared-mime-info`, `xz`, `zlib-dev`, `zlib-static` and `zstd` from the pinned Alpine 3.24
 repositories. It checks out the pinned Flatpak commit and runs
 `fetch.sh` to verify the immutable source cache, including GLib's Meson
-`proxy-libintl` fallback archive. The default scratch directory
-is `$HOME/matonos/build/musl-324`.
+`proxy-libintl` fallback archive. Set the required `MATON_MUSL_SCRATCH`
+variable to choose the scratch directory.
 
 `build-musl.sh` runs the current
 `build.sh` recipe inside the offline Alpine 3.24.2 x86_64 root at
-`$HOME/matonos/build/musl-324`. Flatpak, OSTree, bubblewrap and their
+`$MATON_MUSL_SCRATCH`. Flatpak, OSTree, bubblewrap and their
 static dependency set are linked with musl as static PIEs, then the Flatpak,
 OSTree and bubblewrap CLI objects are relinked through `make-multicall.py`.
 The result is packaged as `libmatonos-flatpak.so`; `tools/build-flatpak-helpers.sh`

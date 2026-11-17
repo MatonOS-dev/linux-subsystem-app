@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?external output directory}
 aosp=${MATON_AOSP_ROOT:-/mnt/data/aosp}
-ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/android-ndk-r30}}
+ndk=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 compiler=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android36-clang
 runtime=$aosp/out/target/product/pc_x86_64/apex/com.android.runtime
 mkdir -p "$out"

@@ -6,7 +6,7 @@ output=${1:?usage: i386-adopt-device.sh external-output-dir [adb-serial]}
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
 case "$output/" in "$source_dir/"*) echo 'Use an output directory outside the source tree' >&2;exit 2;; esac
-ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/android-ndk-r30}}
+ndk=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 compiler=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android36-clang
 adb_bin=${ADB:-/mnt/data/aosp/out/host/linux-x86/bin/adb}
 adb=("$adb_bin" -s "${2:-127.0.0.1:5556}")

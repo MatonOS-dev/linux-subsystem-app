@@ -10,8 +10,7 @@ import tempfile
 source = Path(__file__).resolve().parent.parent
 out = Path(os.environ["COMPAT_LINKS_TEST_OUT"]).resolve()
 out.mkdir(parents=True, exist_ok=True)
-ndk = Path(os.environ.get("MATON_ANDROID_NDK", os.environ.get(
-    "MATON_NDK", str(Path.home() / "Documents/android-ndk-r30"))))
+ndk = Path(os.environ["MATON_NDK"])
 compiler = ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android36-clang"
 libc = os.environ.get("MATON_V3_I386_LIBC", "/usr/lib32/libc.so.6")
 interpreter = os.environ.get("MATON_V3_I386_INTERPRETER", "/lib/ld-linux.so.2")

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 die() { echo "ERROR: $*" >&2; exit 1; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 AOSP=${MATON_AOSP_ROOT:?set MATON_AOSP_ROOT to the AOSP SDK/header checkout}
-NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
+NDK=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 # API 36 adds per-buffer SurfaceControl release callbacks. The compositor
 # uses them to avoid exporting a transaction-completion Binder callback for

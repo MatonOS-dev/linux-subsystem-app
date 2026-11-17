@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/trap-cost
 cc -O2 -Wall -Wextra -Werror tests/trap-cost.c -o build/trap-cost/bench64
-ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/matonos-android-sdk/ndk/28.2.13676358}}
+ndk=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 compiler=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android35-clang
 "$compiler" -c -O2 -fno-stack-protector -Wall -Wextra -Werror tests/trap-cost.c -o build/trap-cost/bench32.o
 cc -m32 -c tests/i386-entry.S -o build/trap-cost/entry32.o

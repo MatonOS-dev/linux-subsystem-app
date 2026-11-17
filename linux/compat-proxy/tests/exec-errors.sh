@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/android-ndk-r30}}
+ndk=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 compiler=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android36-clang
 mkdir -p build/exec-errors
 b=$PWD/build/exec-errors

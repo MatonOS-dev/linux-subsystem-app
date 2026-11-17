@@ -684,9 +684,9 @@ MATON_BUILD_ROOT=/mnt/data/aosp MATON_AOSP_ROOT=/mnt/data/aosp \
   MATON_PIPEWIRE_BUILD=/mnt/data/aosp/out/pc-logs/chrome-sol-round22/deps/pipewire \
   MATON_SIGNING_STORE_FILE=/mnt/data/aosp/out/pc-logs/chrome-sol-r30-android-compile/no-signing-used.jks \
   MATON_SIGNING_KEY_ALIAS=unused MATON_SIGNING_STORE_PASSWORD=unused \
-  MATON_SIGNING_KEY_PASSWORD=unused ANDROID_HOME=/home/hanro50/Documents/matonos-android-sdk \
-  ANDROID_SDK_ROOT=/home/hanro50/Documents/matonos-android-sdk \
-  /home/hanro50/Documents/gradle-9.4.1/bin/gradle -p linux/subsystem/host \
+  MATON_SIGNING_KEY_PASSWORD=unused MATON_ANDROID_SDK=/path/to/android-sdk \
+  ANDROID_HOME=/path/to/android-sdk ANDROID_SDK_ROOT=/path/to/android-sdk \
+  /path/to/gradle-9.4.1/bin/gradle -p linux/subsystem/host \
   --no-daemon --project-cache-dir /mnt/data/aosp/out/pc-logs/chrome-sol-r30-android-compile/gradle-cache \
   -PrealVersionCode=9999 :app:compileDebugJavaWithJavac -x :app:preBuild
 ```

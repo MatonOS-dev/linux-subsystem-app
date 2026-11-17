@@ -235,7 +235,9 @@ android {
         if (System.getenv('MATON_SUBSYSTEM_OUT')) buildStagingDirectory file(System.getenv('MATON_SUBSYSTEM_OUT') + '/cxx')
     } }
     ndkVersion '30.0.16248370'
-    ndkPath System.getenv('MATON_NDK') ?: "${System.getProperty('user.home')}/Documents/android-ndk-r30"
+    def matonNdk = System.getenv('MATON_NDK')
+    if (!matonNdk) throw new GradleException('MATON_NDK is not set (see DEPENDENCIES.md in the device tree)')
+    ndkPath matonNdk
     sourceSets {
         main {
             java.srcDirs += file('../../../stubgen/src')

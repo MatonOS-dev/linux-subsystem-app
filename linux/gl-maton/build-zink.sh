@@ -9,8 +9,8 @@
 # Usage: build-zink.sh [mesa source] [out dir]
 # Prints the install trees to pass as MATON_ZINK_STAGE / MATON_ZINK_STAGE_I386.
 set -Eeuo pipefail
-MESA=${1:-$HOME/matonos/repos/mesa}
-OUT=${2:-$HOME/matonos/build/zink-linux-out}
+MESA=${1:-${MESA_DIR:?set MESA_DIR to the Mesa source checkout}}
+OUT=${2:-${MATON_ZINK_OUT:?set MATON_ZINK_OUT to an output directory}}
 SDK=${MATON_ZINK_SDK:-org.freedesktop.Sdk//25.08}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT/pydeps"

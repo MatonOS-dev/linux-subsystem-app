@@ -4,7 +4,7 @@ set -euo pipefail
 source_dir=$(cd "$(dirname "$0")" && pwd)
 aosp_root=${MATON_AOSP_ROOT:-/mnt/data/aosp}
 output=${MATON_V3_ANDROID_OUT:-$aosp_root/out/matonos/compat-proxy}
-ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/android-ndk-r30}}
+ndk=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 compiler=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android36-clang
 counter_flags=()
 if [[ ${PROXY_RAW_COUNTER:-0} == 1 ]]; then counter_flags=(-DPROXY_RAW_COUNTER); fi

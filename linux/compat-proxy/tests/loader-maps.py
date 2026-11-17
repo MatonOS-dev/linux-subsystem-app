@@ -8,7 +8,7 @@ run('cc','-O2','-Wall','-Wextra','-Werror',base/'tests/mmap-deny.c','-o',root/'d
 run('cc','-O2','-Wall','-Wextra','-Werror','-DREFUSAL=EPERM',base/'tests/mmap-deny.c','-o',root/'deny-perm')
 for kind,flags in [('dynamic',[]),('static',['-static'])]:
  run('cc',*flags,base/'tests/loader-maps.c','-o',root/kind)
-ndk=pathlib.Path(os.environ.get('MATON_ANDROID_NDK',os.environ.get('MATON_NDK',str(pathlib.Path.home()/'Documents/android-ndk-r30'))))
+ndk=pathlib.Path(os.environ['MATON_NDK'])
 compiler=ndk/'toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android36-clang'
 run(compiler,'-O2','-fno-stack-protector','-c',base/'tests/loader-maps.c','-o',root/'maps32.o')
 run('cc','-m32','-c',base/'tests/i386-entry.S','-o',root/'entry32.o')

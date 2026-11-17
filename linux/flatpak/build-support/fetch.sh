@@ -3,7 +3,7 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CACHE=${CACHE_DIR:-$HERE/cache}
 mkdir -p "$CACHE/git" "$CACHE/tar" "$CACHE/src"
-LOCAL_REPOS=${LOCAL_REPOS:-$HOME/matonos/repos}
+LOCAL_REPOS=${LOCAL_REPOS:?set LOCAL_REPOS to the local source repository directory}
 while IFS='|' read -r name kind location revision digest; do
   case "$name" in ''|'#'*) continue;; esac
   case "$kind" in

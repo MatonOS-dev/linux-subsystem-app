@@ -11,7 +11,7 @@ set -Eeuo pipefail
 die() { echo "ERROR: $*" >&2; exit 1; }
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 AOSP=${MATON_AOSP_ROOT:?set MATON_AOSP_ROOT to the AOSP SDK/header checkout}
-NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
+NDK=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 API=35
 JOBS=${MATON_BUILD_JOBS:-$(nproc)}
@@ -258,7 +258,7 @@ crypto_build libgcrypt-1.11.1 'compat mpi cipher random src' \
 
 # Glamor uses the platform Android EGL/GLES dispatch and full AHB handles.
 # No private Mesa/GBM loader is installed in Xwayland's library path.
-MESA_SRC=${MESA_DIR:-$HOME/Documents/mesa-26.2.3}
+MESA_SRC=${MESA_DIR:?set MESA_DIR to the Mesa source checkout}
 # libepoxy: GL dispatch for glamor; on Android it opens libEGL.so/libGLESv2.so.
 [[ -d $SRC/libepoxy-1.5.10 ]] || tar -xzf "$DOWN/libepoxy-1.5.10.tar.gz" -C "$SRC"
 configure_meson libepoxy "$SRC/libepoxy-1.5.10" -Degl=yes -Dglx=no -Dx11=false -Dtests=false

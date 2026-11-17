@@ -34,7 +34,7 @@ for variant in profiles profiles-offscreen; do
   "$mesa/src/gallium/drivers/zink/check_requirements/zink_check_requirements.cpp" \
   -L"$deps/loader-build/loader" -lvulkan -o "$out/tests/zink-check-$variant"
 done
-ndk=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
+ndk=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android36-clang++" \
  -std=c++17 -O2 -DVP_DEBUG_MESSAGE_CALLBACK=maton_profile_message -I"$out/tests/profiles" -I"$mesa/include" \
  "$out/tests/profile-message.cpp" "$mesa/src/gallium/drivers/zink/check_requirements/zink_check_requirements.cpp" \

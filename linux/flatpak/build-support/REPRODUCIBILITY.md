@@ -10,8 +10,8 @@ Bubblewrap is also a static musl PIE at `libmatonos-app-bwrap.so`.
 
 `build-support/fetch.sh` verifies `sources.lock` into `CACHE_DIR`.
 `build-support/build-musl.sh` enters the offline root at
-`$HOME/matonos/build/musl-324/rootfs/x86_64` and runs the current
-`build-support/build.sh` recipe there. `MUSL_SCRATCH` can select another Alpine
+`$MATON_MUSL_SCRATCH/rootfs/x86_64` and runs the current
+`build-support/build.sh` recipe there. `MATON_MUSL_SCRATCH` selects the Alpine
 root/scratch pair; `CACHE_DIR`, `BUILD_DIR` and `OUT_DIR` must remain below that
 scratch path because `alpine-enter.sh` exposes it as `/scratch`.
 

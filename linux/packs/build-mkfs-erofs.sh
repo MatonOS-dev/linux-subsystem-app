@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-SCRATCH=${EROFS_MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
-WORK=${EROFS_MUSL_WORK:-$HOME/matonos/build/erofs-pipeline}
+SCRATCH=${MATON_MUSL_SCRATCH:?set MATON_MUSL_SCRATCH (see DEPENDENCIES.md in the device tree)}
+WORK=${EROFS_MUSL_WORK:?set EROFS_MUSL_WORK}
 ROOTFS=$SCRATCH/rootfs/x86_64
 ARCHIVE=$WORK/src/erofs-utils-v1.9.4.tar.gz
 SOURCE=$WORK/src/erofs-utils-1.9.4

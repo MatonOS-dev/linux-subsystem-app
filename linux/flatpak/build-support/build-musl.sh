@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-SCRATCH=${MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
+SCRATCH=${MATON_MUSL_SCRATCH:?set MATON_MUSL_SCRATCH (see DEPENDENCIES.md in the device tree)}
 WORK=${FLATPAK_MUSL_WORK:-$SCRATCH/flatpak-musl}
 HOST_CACHE=${CACHE_DIR:-$WORK/cache}
 HOST_BUILD=${BUILD_DIR:-$WORK/build}

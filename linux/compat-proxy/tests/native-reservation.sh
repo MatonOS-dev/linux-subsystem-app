@@ -15,7 +15,7 @@ cc -DPROXY_LIBRARY -nostdlib -static -no-pie -mcmodel=large \
  "$root/tests/native-state.c" "$root"/{loader.c,vfs.c,links.c,net.c,sysvipc.c,state.c} \
  "$root"/arch/x86_64/{raw.S,entry.S} -o "$out/native-state"
 cc -O2 -Wall -Wextra -Werror "$root/tests/native-state-payload.c" -o "$out/payload64"
-ndk=${MATON_ANDROID_NDK:-${MATON_NDK:-$HOME/Documents/android-ndk-r30}}
+ndk=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android36-clang" \
  -c -O2 -Wall -Wextra -Werror "$root/tests/native-state-payload.c" -o "$out/payload32.o"
 cc -m32 -c "$root/tests/i386-entry.S" -o "$out/entry.o"

@@ -2,15 +2,16 @@
 set -Eeuo pipefail
 
 DEVICE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-AOSP=${MATON_AOSP_ROOT:-$(cd "$DEVICE_DIR/../../.." && pwd)}
-FLATPAK_NDK=${MATON_FLATPAK_NDK:-$AOSP/out/matonos/flatpak-ndk}
-NDK=${MATON_ANDROID_NDK:-${MATON_NDK:?set MATON_NDK}}
-PREFIX=${MATON_FLATPAK_PREFIX:?set MATON_FLATPAK_PREFIX to the pinned Flatpak dependency prefix}
+NDK=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
+PREFIX=${MATON_BROKER_GLIB_PREFIX:?set MATON_BROKER_GLIB_PREFIX to the Android broker GLib prefix}
 OUT=${MATON_DBUS_ANDROID_OUT:?set MATON_DBUS_ANDROID_OUT}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 GLIB_PREFIX=$PREFIX
 PCRE_BUILD=$PREFIX/lib
 FFI_BUILD=$PREFIX/lib
+if [[ ! -s $GLIB_PREFIX/lib/libgio-2.0.a || ! -s $PCRE_BUILD/libpcre2-8.a || ! -s $FFI_BUILD/libffi.a ]]; then
+  bash "$DEVICE_DIR/linux/dbus-broker/build-glib-android.sh"
+fi
 mkdir -p "$OUT"
 INCLUDES=(-I"$GLIB_PREFIX/include/glib-2.0" \
   -I"$GLIB_PREFIX/lib/glib-2.0/include" -I"$GLIB_PREFIX/include" \

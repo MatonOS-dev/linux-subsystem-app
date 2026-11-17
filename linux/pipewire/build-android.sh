@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 DEVICE=$(cd "$ROOT/../.." && pwd)
 AOSP=${MATON_AOSP_ROOT:-$(cd "$DEVICE/../../.." && pwd)}
-NDK=${MATON_NDK:-$HOME/Documents/android-ndk-r30}
+NDK=${MATON_NDK:?set MATON_NDK (see DEPENDENCIES.md in the device tree)}
 BUILD=${MATON_PIPEWIRE_BUILD:-$AOSP/out/matonos/pipewire}
 TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 REV=8fa27cabdc6c0c1350c69c026af5850ef0af1e26 # PipeWire 1.6.9

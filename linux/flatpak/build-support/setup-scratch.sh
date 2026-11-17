@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-SCRATCH=${MUSL_SCRATCH:-$HOME/matonos/build/musl-324}
+SCRATCH=${MATON_MUSL_SCRATCH:?set MATON_MUSL_SCRATCH (see DEPENDENCIES.md in the device tree)}
 ROOTFS=$SCRATCH/rootfs/x86_64
 CACHE=$SCRATCH/flatpak-musl/cache
 FLATPAK_WORKTREE=$SCRATCH/flatpak-work

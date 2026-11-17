@@ -63,10 +63,9 @@ recipes retain the other version/hash pins; this extraction does not upgrade the
 After deleting build scratch, recreate it with
 `bash linux/flatpak/build-support/setup-scratch.sh`. The script verifies and
 extracts Alpine minirootfs 3.24.2, installs the static-build toolchain, checks
-out the locked Flatpak commit, and fills the verified source cache. Its default
-location is `$HOME/matonos/build/musl-324` (`MUSL_SCRATCH` overrides it).
-The EROFS build uses `$HOME/matonos/build/erofs-pipeline` by default; set
-`EROFS_MUSL_WORK` to override that path.
+out the locked Flatpak commit, and fills the verified source cache. Set the
+required `MATON_MUSL_SCRATCH` to its location (`build.sh` derives
+`MUSL_SCRATCH`). The EROFS build requires `EROFS_MUSL_WORK`.
 
 `tests/run.sh OUTPUT` runs signed carrier/stub/planner tests, pack C/Java
 round trips, host commands, Java portals and native bus interoperability.
