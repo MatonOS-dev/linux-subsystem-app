@@ -9,9 +9,12 @@ TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 GLIB_PREFIX=$PREFIX
 PCRE_BUILD=$PREFIX/lib
 FFI_BUILD=$PREFIX/lib
-if [[ ! -s $GLIB_PREFIX/lib/libgio-2.0.a || ! -s $PCRE_BUILD/libpcre2-8.a || ! -s $FFI_BUILD/libffi.a ]]; then
-  bash "$DEVICE_DIR/linux/dbus-broker/build-glib-android.sh"
-fi
+for lib in libgio-2.0.a libgobject-2.0.a libgmodule-2.0.a libglib-2.0.a libintl.a libpcre2-8.a libffi.a; do
+  [[ -s $GLIB_PREFIX/lib/$lib ]] || {
+    echo "Missing broker GLib dependency: $GLIB_PREFIX/lib/$lib; run linux/dbus-broker/build-glib-ndk.sh (or build.sh --build-dependencies)" >&2
+    exit 2
+  }
+done
 mkdir -p "$OUT"
 INCLUDES=(-I"$GLIB_PREFIX/include/glib-2.0" \
   -I"$GLIB_PREFIX/lib/glib-2.0/include" -I"$GLIB_PREFIX/include" \

@@ -97,8 +97,8 @@ The native `linux/dbus-broker` is **still used on this source branch**:
 `libmatonos-dbus-broker.so`. Java implements desktop portals and their wire
 codec; it has not replaced that session bus. Removing the JNI broker would
 break per-app bus startup, so it and its tests are retained. It now links the
-same pinned Flatpak GLib dependency build, eliminating its former separate
-AOSP libffi/PCRE build. PipeWire is also live (`NativeAudio` and
+separately pinned NDK/bionic GLib dependency build (GLib 2.90.0, PCRE2 10.46,
+libffi 3.5.2 and proxy-libintl 0.5). PipeWire is also live (`NativeAudio` and
 `libmaton_pipewire.so`); its embedded library and notices remain here.
 
 Xwayland, xkbcomp, X11 libraries, GL forwarders and keyboard data are packaged

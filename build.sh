@@ -68,7 +68,7 @@ if [[ ${1:-} == --build-dependencies ]]; then
   MATON_COMPOSITOR_BOOTSTRAP=1 bash "$ROOT/linux/subsystem/build-compositor.sh"
   bash "$ROOT/linux/subsystem/build-xwayland.sh"
   bash "$ROOT/linux/subsystem/build-compositor.sh"
-  bash "$ROOT/linux/dbus-broker/build-glib-android.sh"
+  bash "$ROOT/linux/dbus-broker/build-glib-ndk.sh"
 fi
 [[ -s $BUILD_DIR/flatpak/build.ninja ]] || { echo 'Build pinned dependencies first with --build-dependencies (see README)' >&2; exit 2; }
 grep -q $'flatpak\taa04a5765686f766f590cb6a20b01b0b452fcd61\t' "$CACHE_DIR/src/flatpak.pin" || { echo 'Flatpak cache does not match the v3.5 source pin' >&2; exit 2; }

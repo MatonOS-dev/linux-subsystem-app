@@ -17,12 +17,13 @@ the internal JavaPortal backend. The Flatpak interface bypasses that backend
 so the upstream process receives the call. The SessionHelper query continues
 to report unavailable, as it did when JNI supplied no monitor path.
 
-`build-glib-android.sh` reads the pinned GLib, PCRE2, libffi and proxy-libintl
-sources from `sources.lock` and `$FLATPAK_CACHE`, then builds their static
-Android libraries under `$MATON_SUBSYSTEM_OUT/deps/broker-glib`. Run
-`build.sh --build-dependencies` to populate it; `build-android.sh` also builds
-it on demand if its required archives are missing. `MATON_BROKER_GLIB_PREFIX`
-selects that prefix and is derived by the top-level build script.
+`build-glib-ndk.sh` downloads the pinned GLib 2.90.0, PCRE2 10.46, libffi
+3.5.2 and proxy-libintl 0.5 source tarballs, verifies their SHA-256 digests,
+and builds static Android/bionic libraries for x86_64 at API 35. Archives use
+the existing Flatpak source cache's `tar/` directory; extracted inputs use
+`src/dbus-broker/`. Run `build.sh --build-dependencies` to populate the
+prefix. `build-android.sh` reports the missing library and names this script
+when the prefix is incomplete. `MATON_BROKER_GLIB_PREFIX` selects the prefix.
 
 `build-android.sh` links only the JNI broker/core/portal sources against GLib.
 The Makefile builds current portal-wire, inhibition and wildcard-policy tests.
