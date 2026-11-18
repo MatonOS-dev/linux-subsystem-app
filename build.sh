@@ -36,7 +36,8 @@ FLATPAK=$ROOT/linux/flatpak/build-support
 VULKAN_DEPS=${MATON_VULKAN_DEPS:-$OUTPUT/vulkan-forward}
 export MATON_VULKAN_OUT=${MATON_VULKAN_OUT:-$VULKAN_DEPS/forward}
 export MATON_VULKAN_HEADERS=${MATON_VULKAN_HEADERS:-$VULKAN_DEPS/src/Vulkan-Headers-1.4.341}
-export CMAKE=${CMAKE:-/mnt/data/aosp/prebuilts/cmake/linux-x86/bin/cmake}
+export CMAKE=${CMAKE:-$(command -v cmake)}
+[[ -x $CMAKE ]] || { echo "cmake not found: set CMAKE in matonos.local.env" >&2; exit 2; }
 if [[ ! -s $MATON_VULKAN_HEADERS/registry/vk.xml ]]; then
   bash "$ROOT/linux/vulkan-forward/build-tools.sh" "$VULKAN_DEPS"
 fi
