@@ -141,7 +141,7 @@ public final class FlatpakSourceService extends Service {
     private JSONArray repositories() throws Exception {
         JSONArray result=new JSONArray();
         for(String line:flatpak.cli("remotes","--system","--show-disabled","--columns=name,url,title,options").split("\n")) {
-            if(line.isBlank())continue;String[] fields=line.split("\t",-1);if(fields.length!=4)throw new IOException("Invalid Flatpak remote row: "+line);
+            if(line.isBlank())continue;String[] fields=line.split("\t",-1);if(fields.length==3)fields=new String[]{fields[0],fields[1],fields[2],""};if(fields.length!=4)throw new IOException("Invalid Flatpak remote row: "+line);
             String remote=fields[0];File active=new File(flatpak.installation,"appstream/"+remote+"/x86_64/active");File index=new File(active,"appstream.xml.gz");if(!index.isFile())index=new File(active,"appstream.xml");
             int count=-1;if(cachedCatalogue!=null){count=0;for(Map<String,Object> app:cachedCatalogue)if(remote.equals(app.get("origin")))count++;}
             long refreshed=index.isFile()?index.lastModified()/1000L:0;
