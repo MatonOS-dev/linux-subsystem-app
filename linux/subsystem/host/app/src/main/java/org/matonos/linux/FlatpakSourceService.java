@@ -57,15 +57,33 @@ public final class FlatpakSourceService extends Service {
         flatpak=candidate;
     }
     private void seedDefaultRemotes(StoreFlatpak candidate) {
-        File marker=new File(candidate.root,"default-remotes-seeded");
-        if(marker.exists())return;
         String[][] defaults={{"flathub","https://dl.flathub.org/repo/flathub.flatpakrepo"},{"flatpark","https://dl.flatpark.org/flatpark.flatpakrepo"}};
-        for(String[] remote:defaults)try {
-            candidate.cli("remote-add","--system","--if-not-exists","--from",remote[0],remote[1]);
-            candidate.cli("remote-modify","--system","--prio="+(remote[0].equals("flathub")?"1":"0"),remote[0]);
-        } catch(Exception error) { Log.e(TAG,"Seeding default remote="+remote[0]+" url="+remote[1]+" failed",error); }
-        try { Files.write(marker.toPath(),new byte[]{49}); }
-        catch(IOException error) { Log.e(TAG,"Recording default remote seed state failed",error); }
+        for(String[] remote:defaults) {
+            String name=remote[0];File descriptor=new File(candidate.root,name+".flatpakrepo");
+            try {
+                byte[] contents=readRemoteDescriptor(name,remote[1]);Files.write(descriptor.toPath(),contents);
+                candidate.cli("remote-add","--system","--if-not-exists","--from",name,descriptor.getAbsolutePath());
+                String key=flatpakRepoField(new String(contents,StandardCharsets.UTF_8),"GPGKey");
+                if(key==null||key.isBlank())throw new IOException("Remote descriptor has no GPGKey remote="+name+" url="+remote[1]);
+                File keyFile=new File(candidate.root,name+".gpg");Files.write(keyFile.toPath(),Base64.getMimeDecoder().decode(key));
+                try {candidate.cli("remote-modify","--system","--gpg-import="+keyFile.getAbsolutePath(),name);}
+                finally {if(keyFile.exists()&&!keyFile.delete())Log.e(TAG,"Cannot delete refreshed remote key file remote="+name+" path="+keyFile);}
+                candidate.cli("remote-modify","--system","--prio="+(name.equals("flathub")?"1":"0"),name);
+            } catch(Exception error) { Log.e(TAG,"Refreshing default remote descriptor/trust remote="+name+" url="+remote[1]+" failed",error); }
+        }
+    }
+    private byte[] readRemoteDescriptor(String name,String url) throws Exception {
+        if(name.equals("flathub"))try(InputStream input=getAssets().open("flatpak/remotes.d/flathub.flatpakrepo")) {return input.readAllBytes();}
+        URLConnection connection=new URL(url).openConnection();connection.setConnectTimeout(5000);connection.setReadTimeout(10000);
+        try(InputStream input=connection.getInputStream()) {return input.readAllBytes();}
+    }
+    private static String flatpakRepoField(String descriptor,String field) throws IOException {
+        boolean section=false;String prefix=field+"=";
+        for(String line:descriptor.split("\\R")) {
+            String value=line.trim();if(value.startsWith("[")&&value.endsWith("]")){section=value.equals("[Flatpak Repo]");continue;}
+            if(section&&value.startsWith(prefix))return value.substring(prefix.length()).trim();
+        }
+        return null;
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
         @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_REPOSITORIES|CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
@@ -152,29 +170,27 @@ public final class FlatpakSourceService extends Service {
     }
     private List<Map<String,Object>> catalogue() throws Exception {
         if(cachedCatalogue!=null)return cachedCatalogue;
-        List<Map<String,Object>> result=new ArrayList<>();JSONArray remotes=repositories();Exception last=null;int readable=0;
+        List<String> readableRemotes=new ArrayList<>();JSONArray remotes=repositories();
         for(int i=0;i<remotes.length();i++) {
             JSONObject repository=remotes.getJSONObject(i);if(!repository.optBoolean("enabled",true))continue;
-            String remote=repository.getString("id");validateRemote(remote);
-            try {flatpak.cli("update","--system","--appstream","--noninteractive",remote);brokenRemotes.put(remote,false);}
-            catch(Exception error){Log.e(TAG,"AppStream refresh remote="+remote+" failed; checking cached data",error);brokenRemotes.put(remote,true);last=error;}
+            String remote=repository.getString("id");validateRemote(remote);readableRemotes.add(remote);
+        }
+        List<Map<String,Object>> result=RemoteAppStream.load(readableRemotes,brokenRemotes,
+                remote->flatpak.cli("update","--system","--appstream","--noninteractive",remote),remote->{
             File active=new File(flatpak.installation,"appstream/"+remote+"/x86_64/active");File xml=new File(active,"appstream.xml.gz");
             boolean gzip=xml.isFile();if(!gzip)xml=new File(active,"appstream.xml");
-            if(!xml.isFile()) {
-                IOException missing=new IOException("AppStream XML missing remote="+remote+" active="+active);
-                Log.e(TAG,missing.getMessage());brokenRemotes.put(remote,true);last=missing;continue;
-            }
-            readable++;
+            if(!xml.isFile())throw new IOException("AppStream XML missing remote="+remote+" active="+active);
+            List<Map<String,Object>> rows=new ArrayList<>();
             try(InputStream input=new FileInputStream(xml)) {for(Map<String,Object> row:AppStreamCatalogue.read(input,gzip,remote)) {
                 String icon=(String)row.get("icon");
                 if(icon.startsWith("cached:"))row.put("icon",new android.net.Uri.Builder().scheme("content").authority("org.matonos.linux.store.icons")
                         .appendPath(remote).appendPath(icon.substring(7)).build().toString());
                 row.put("id",row.get("ref"));
                 row.put("badges",badges(row));
-                row.put("packageName",org.matonos.linux.stub.DeployManifest.packageForPublic((String)row.get("ref")));result.add(row);
+                row.put("packageName",org.matonos.linux.stub.DeployManifest.packageForPublic((String)row.get("ref")));rows.add(row);
             }}
-        }
-        if(readable==0&&last!=null)throw last;
+            return rows;
+        },(remote,stage,error)->Log.e(TAG,"AppStream "+stage+" failed remote="+remote+"; "+(stage.equals("refresh")?"checking cached XML":"skipping remote"),error));
         cachedCatalogue=result;return result;
     }
 

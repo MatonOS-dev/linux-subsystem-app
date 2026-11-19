@@ -29,6 +29,19 @@ public final class StoreSourceHostTest {
         try {AppStreamCatalogue.read(new ByteArrayInputStream("<!DOCTYPE components [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><components/>".getBytes()),false,"bad");throw new AssertionError("DOCTYPE accepted");}
         catch(org.xml.sax.SAXException expected) { }
     }
+    private static void remoteAppStream() {
+        Map<String,Boolean> broken=new HashMap<>();List<String> failures=new ArrayList<>();
+        List<Map<String,Object>> rows=RemoteAppStream.load(List.of("broken","healthy","cached"),broken,
+                remote->{if(!remote.equals("healthy"))throw new IOException("summary index unavailable");},
+                remote->{if(remote.equals("broken"))throw new IOException("AppStream XML missing");return List.of(Map.of("origin",remote));},
+                (remote,stage,error)->failures.add(remote+":"+stage+":"+error.getMessage()));
+        check(rows.size()==2&&rows.get(0).get("origin").equals("healthy")&&rows.get(1).get("origin").equals("cached"),"one unreadable remote is skipped while other catalogs remain");
+        check(Boolean.TRUE.equals(broken.get("broken"))&&!Boolean.TRUE.equals(broken.get("healthy")),"broken state is remote-local");
+        check(Boolean.TRUE.equals(broken.get("cached")),"refresh failure remains visible when cached XML is readable");
+        check(failures.equals(List.of("broken:refresh:summary index unavailable","broken:read:AppStream XML missing","cached:refresh:summary index unavailable")),"failures retain remote and stage context");
+        List<Map<String,Object>> empty=RemoteAppStream.load(List.of("offline"),new HashMap<>(),remote->{throw new IOException("offline");},remote->{throw new IOException("no cache");},(remote,stage,error)->{});
+        check(empty.isEmpty(),"all remotes unavailable yields an empty catalogue, not a backend exception");
+    }
     private static List<CommitChain.Package> steam() {
         String runtime="org.freedesktop.Platform",locale="org.freedesktop.Platform.Locale",gl="org.freedesktop.Platform.GL.default",compat="org.freedesktop.Platform.Compat.i386",steam="com.valvesoftware.Steam";
         // Deliberately put the dependant first to exercise ordering.
@@ -112,5 +125,5 @@ public final class StoreSourceHostTest {
         try{crashed.await(1,TimeUnit.SECONDS);throw new AssertionError("request failure ignored");}catch(IOException expected){check(expected.getMessage().contains("binder failed"),"request exception propagated");}
     }
     public static void main(String[] args) throws Exception {
-        sourceContract();catalogue();chain(false);chain(true);invalidGraph();extraData(false);extraData(true);System.out.println("StoreSourceHostTest: PASS (paging, remote routing, cancel/process termination, running states, store repair, AppStream, five-package Steam success/failure, missing dependency, extra-data success/validation failure)");}
+        sourceContract();catalogue();remoteAppStream();chain(false);chain(true);invalidGraph();extraData(false);extraData(true);System.out.println("StoreSourceHostTest: PASS (paging, remote routing, cancel/process termination, running states, store repair, AppStream parsing and per-remote failure isolation, five-package Steam success/failure, missing dependency, extra-data success/validation failure)");}
 }

@@ -33,6 +33,26 @@ retrieved 451 Steam reviews. Empty versions must be sent as `unknown`: the
 service rejects an empty version. Reference: https://odrs.gnome.org/ and the
 GNOME ODRS fetch implementation.
 
+## AppStream summary-index failures
+
+The pinned Flatpak 1.19.2 reads `summary.idx` before the full OSTree summary.
+If it cannot fetch or verify the index, its remote state has no refs, so the
+AppStream refresh reports both `appstream2/<arch>` and `appstream/<arch>` as
+missing even when the full `summary` lists them. This was reproduced with the
+shipped Flatpak on the host; the system Flatpak 1.14.6 completed the same
+FlatPark refresh. The default-remote seed marker also meant an already-seeded
+installation never imported newer signing keys from an updated descriptor.
+Default descriptor keys are now imported at service initialization. This
+refresh is generic for built-in descriptors and does not special-case a remote's
+catalogue contents.
+
+Catalogue refresh and XML parsing are isolated per enabled remote. A failed
+refresh uses readable cached XML and leaves that repository marked broken; a
+missing or invalid XML file is logged with the remote and skipped. If every
+remote is unavailable, browse operations receive an empty catalogue, while
+installed listings retain their signed package records. The host test covers a
+mixed healthy/broken set and the all-broken case.
+
 ## Installed refs and real updates
 
 Android's signed index split is the persistent deployment record. Querying
