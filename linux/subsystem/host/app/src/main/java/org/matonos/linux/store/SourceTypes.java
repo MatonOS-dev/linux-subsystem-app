@@ -10,6 +10,7 @@ public final class SourceTypes {
         AppListing out=new AppListing();out.id=row.optString("id");out.repo=row.optString("origin");
         out.name=row.optString("name");out.summary=row.optString("summary");out.icon=row.optString("icon");
         out.developer=row.optString("developer");out.installed=row.optBoolean("installed");
+        out.added=epochSeconds(row.opt("added"));
         JSONObject rating=row.optJSONObject("rating");if(rating!=null){out.rating=new Rating();out.rating.average=(float)rating.optDouble("average");out.rating.count=rating.optInt("count");JSONArray histogram=rating.optJSONArray("histogram");if(histogram!=null){out.rating.histogram=new int[histogram.length()];for(int i=0;i<histogram.length();i++)out.rating.histogram[i]=histogram.optInt(i);}}
         out.versionName=row.optString("versionName",null);out.packageName=row.optString("packageName",null);return out;
     }
@@ -24,6 +25,18 @@ public final class SourceTypes {
     public static String[] strings(JSONArray values)throws JSONException {
         if(values==null)return new String[0];String[] out=new String[values.length()];for(int i=0;i<out.length;i++)out[i]=values.getString(i);return out;
     }
+    public static long epochSeconds(Object... values) {
+        for(Object value:values) {
+            if(value instanceof Number)return ((Number)value).longValue();
+            if(!(value instanceof String)||((String)value).isBlank())continue;
+            String text=((String)value).trim();
+            try{return Long.parseLong(text);}catch(NumberFormatException ignored){}
+            try{return java.time.Instant.parse(text).getEpochSecond();}catch(java.time.format.DateTimeParseException ignored){}
+            try{return java.time.OffsetDateTime.parse(text).toEpochSecond();}catch(java.time.format.DateTimeParseException ignored){}
+            try{return java.time.LocalDate.parse(text).atStartOfDay(java.time.ZoneOffset.UTC).toEpochSecond();}catch(java.time.format.DateTimeParseException ignored){}
+        }
+        return 0;
+    }
     public static AppDetails details(JSONObject row)throws JSONException {
         AppDetails out=new AppDetails();out.listing=listing(row);out.description=row.optString("description");
         out.screenshots=strings(row.optJSONArray("screenshots"));out.permissions=strings(row.optJSONArray("permissions"));
@@ -37,7 +50,7 @@ public final class SourceTypes {
     }
     public static Repo[] repos(JSONArray rows,int offset,int limit)throws JSONException {
         int end=SourcePaging.end(rows.length(),offset,limit);Repo[] result=new Repo[Math.max(0,end-offset)];
-        for(int i=0;i<result.length;i++){JSONObject row=rows.getJSONObject(offset+i);Repo out=new Repo();out.id=row.getString("id");out.url=row.getString("url");out.label=row.getString("label");out.official=row.getBoolean("official");out.broken=row.getBoolean("broken");result[i]=out;}return result;
+        for(int i=0;i<result.length;i++){JSONObject row=rows.getJSONObject(offset+i);Repo out=new Repo();out.id=row.getString("id");out.url=row.getString("url");out.label=row.getString("label");out.official=row.getBoolean("official");out.broken=row.getBoolean("broken");out.enabled=row.optBoolean("enabled",true);out.appCount=row.optInt("appCount",-1);out.lastRefreshed=row.optLong("lastRefreshed");result[i]=out;}return result;
     }
     public static Review[] reviews(JSONArray rows,int offset,int limit)throws JSONException {
         int end=SourcePaging.end(rows.length(),offset,limit);Review[] result=new Review[Math.max(0,end-offset)];
