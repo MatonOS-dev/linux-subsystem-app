@@ -52,6 +52,28 @@ static void *mock_dnsproxyd(void *unused){
     }return NULL;
 }
 static int make_udp(void){proxy_arg_t a[6]={AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0};return (int)dns_call(PROXY_SC_socket,a);}
+static void test_reused_dns_fd_connects_ipv6(void){
+    /* A close issued outside the proxy can leave the fd number in its DNS
+     * table. Reusing it for an IPv6 web socket must reach the kernel rather
+     * than inheriting the old resolver socket's synthetic ECONNREFUSED. */
+    int old=make_udp();assert(old>=0);
+    proxy_arg_t resolver[6]={old,(uintptr_t)&dns_endpoint,sizeof(dns_endpoint)};
+    assert(dns_call(PROXY_SC_connect,resolver)==0);
+    assert(syscall(SYS_close,old)==0);
+    int fd=(int)syscall(SYS_socket,AF_INET6,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);
+    assert(fd==old);
+    int domain=0;socklen_t domain_len=sizeof(domain);
+    assert(getsockopt(fd,SOL_SOCKET,SO_DOMAIN,&domain,&domain_len)==0&&domain==AF_INET6);
+    struct sockaddr_in6 target={.sin6_family=AF_INET6,.sin6_port=htons(443)};
+    assert(inet_pton(AF_INET6,"2001:db8::1",&target.sin6_addr)==1);
+    proxy_arg_t args[6]={fd,(uintptr_t)&target,sizeof(target)};
+    long result=dns_call(PROXY_SC_connect,args);
+    assert(result!=-ECONNREFUSED);
+    assert(result==-1&&(errno==ENETUNREACH||errno==EHOSTUNREACH));
+    printf("PASS reused DNS fd IPv6 connect reached kernel (errno=%d)\n",errno);
+    assert(syscall(SYS_close,fd)==0);
+    dns_close(fd);
+}
 static void send_dns(int fd,int connected,const unsigned char *query,size_t size){
     struct sockaddr_in dns=dns_endpoint;proxy_arg_t a[6]={fd,0,size,0,0,0};
     if(connected){a[1]=(uintptr_t)query;assert(dns_call(PROXY_SC_sendto,a)==(long)size);}
@@ -108,6 +130,7 @@ int main(void){
     test_netd_result_errors();
     assert(!proxy_dns_forwarder("127.0.0.53:53"));
     pthread_t server;assert(!pthread_create(&server,NULL,mock_dnsproxyd,NULL));usleep(20000);
+    test_reused_dns_fd_connects_ipv6();
     static const unsigned char query[]={0x12,0x34,1,0,0,1,0,0,0,0,0,0,1,'x',0,0,1,0,1};
     int connected=make_udp();assert(connected>=0);proxy_arg_t c[6]={connected,(uintptr_t)&dns_endpoint,sizeof(dns_endpoint)};
     assert(dns_call(PROXY_SC_connect,c)==0);send_dns(connected,1,query,sizeof(query));receive_dns(connected,query,sizeof(query));
