@@ -6,6 +6,7 @@ import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import java.io.*;
+import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 import java.util.*;
 
 /** AppStream cached icons readable by the same permission-checked store client. */
@@ -20,7 +21,7 @@ public final class FlatpakIconProvider extends ContentProvider {
             File active=new File(getContext().getNoBackupFilesDir(),"store-flatpak/installation/appstream/"+parts.get(0)+"/x86_64/active").getCanonicalFile();
             for(String size:Arrays.asList("128x128","64x64")) {
                 File icon=new File(active,"icons/"+size+"/"+parts.get(1)).getCanonicalFile();
-                if(icon.toPath().startsWith(active.toPath())&&icon.isFile())return ParcelFileDescriptor.open(icon,ParcelFileDescriptor.MODE_READ_ONLY);
+                if(icon.toPath().startsWith(active.toPath())&&icon.isFile())return ParcelFileDescriptor.open(PlaceholderFiles.resolve(icon),ParcelFileDescriptor.MODE_READ_ONLY);
             }
             throw new IOException("AppStream icon missing: "+uri);
         }catch(Exception error){Log.e("FlatpakSource","open icon uri="+uri+" failed",error);throw new FileNotFoundException(error.toString());}
