@@ -74,6 +74,8 @@ public final class StubGenerator {
     private static final String KEY_ALIAS = "org.matonos.linux.flatpak_stub_v1";
 
     public static final String GAME_CONTROLLERS = "org.matonos.permission.GAME_CONTROLLERS";
+    public static final String RECORD_AUDIO = "android.permission.RECORD_AUDIO";
+    public static final String CAMERA = "android.permission.CAMERA";
 
     /** Validate a 64-char hex commit checksum (lowercase). */
     public static boolean validCommit(String commit) {
@@ -84,6 +86,7 @@ public final class StubGenerator {
     public static List<String> permissionsForMetadata(String metadata) throws IOException {
         boolean context = false;
         String devices = "";
+        String sockets = "";
         try (BufferedReader reader = new BufferedReader(new StringReader(metadata))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -94,15 +97,24 @@ public final class StubGenerator {
                 if (context && equals >= 0) {
                     String key = line.substring(0, equals).trim();
                     if (key.equals("devices")) devices = line.substring(equals + 1).trim();
+                    if (key.equals("sockets")) sockets = line.substring(equals + 1).trim();
                 }
             }
         }
         List<String> permissions = new ArrayList<>(templatePermissions());
-        for (String device : devices.split(";"))
-            if (device.trim().equals("all") || device.trim().equals("input")) {
-                permissions.add(GAME_CONTROLLERS);
+        for (String socket : sockets.split(";"))
+            if (socket.trim().equals("pulseaudio") || socket.trim().equals("pipewire")) {
+                permissions.add(RECORD_AUDIO);
                 break;
             }
+        boolean allDevices = false;
+        boolean inputDevice = false;
+        for (String device : devices.split(";")) {
+            if (device.trim().equals("all")) allDevices = true;
+            if (device.trim().equals("input")) inputDevice = true;
+        }
+        if (allDevices) permissions.add(CAMERA);
+        if (allDevices || inputDevice) permissions.add(GAME_CONTROLLERS);
         return permissions;
     }
 
