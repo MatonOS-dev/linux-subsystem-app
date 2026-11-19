@@ -33,12 +33,22 @@ public final class AppStreamCatalogue {
         private final String remote;
         private final ArrayDeque<String> path=new ArrayDeque<>();
         private final ArrayDeque<StringBuilder> texts=new ArrayDeque<>();
+        private final ArrayDeque<Integer> orderedLists=new ArrayDeque<>();
         private Component current;
         Handler(String remote){this.remote=remote;}
 
         @Override public void startElement(String uri,String local,String qName,Attributes attrs) {
             if(current==null) {if("component".equals(qName)){current=new Component();path.clear();}return;}
-            path.addLast(qName);texts.addLast(new StringBuilder());
+            String parentPath=String.join("/",path);path.addLast(qName);texts.addLast(new StringBuilder());
+            if(qName.equals("ol"))orderedLists.addLast(0);
+            if(String.join("/",path).startsWith("description/")) {
+                switch(qName) {case "p": case "ul": case "ol": case "li": case "em": case "code":
+                    if(qName.equals("p")||qName.equals("li"))mdBreak();
+                    if(qName.equals("li")){if(parentPath.endsWith("/ol")&&!orderedLists.isEmpty()){int next=orderedLists.removeLast()+1;orderedLists.addLast(next);current.descriptionMarkdown.append(next).append(". ");}else current.descriptionMarkdown.append("- ");}
+                    if(qName.equals("em"))current.descriptionMarkdown.append('*');
+                    if(qName.equals("code"))current.descriptionMarkdown.append('`');
+                }
+            }
             String at=String.join("/",path);
             if(at.equals("bundle"))current.bundleType=attrs.getValue("type");
             else if(at.equals("icon"))current.iconType=attrs.getValue("type");
@@ -51,11 +61,19 @@ public final class AppStreamCatalogue {
         }
         @Override public void characters(char[] ch,int start,int length) {
             for(StringBuilder text:texts)text.append(ch,start,length);
+            if(current!=null&&String.join("/",path).startsWith("description/"))for(int i=start;i<start+length;i++){char c=ch[i];if("\\`*_{}[]<>#+-.!|".indexOf(c)>=0)current.descriptionMarkdown.append('\\');current.descriptionMarkdown.append(c);}
         }
         @Override public void endElement(String uri,String local,String qName) throws SAXException {
             if(current==null)return;
             if(path.isEmpty()) {finish();current=null;return;}
-            String at=String.join("/",path);String text=texts.removeLast().toString().trim();path.removeLast();
+            String at=String.join("/",path);String text=texts.removeLast().toString().trim();
+            if(at.startsWith("description/")) {
+                if(qName.equals("em"))current.descriptionMarkdown.append('*');
+                if(qName.equals("code"))current.descriptionMarkdown.append('`');
+                if(qName.equals("p")||qName.equals("li"))mdBreak();
+            }
+            if(qName.equals("ol")&&!orderedLists.isEmpty())orderedLists.removeLast();
+            path.removeLast();
             Component c=current;
             switch(at) {
                 case "bundle": if("flatpak".equals(c.bundleType))c.ref=text; break;
@@ -72,6 +90,7 @@ public final class AppStreamCatalogue {
                 default: break;
             }
         }
+        private void mdBreak(){if(current.descriptionMarkdown.length()>0&&current.descriptionMarkdown.charAt(current.descriptionMarkdown.length()-1)!='\n')current.descriptionMarkdown.append("\n\n");}
         private void finish() throws SAXException {
             Component c=current;
             if(c.ref==null||!c.ref.startsWith("app/"))return;
@@ -79,7 +98,7 @@ public final class AppStreamCatalogue {
             Map<String,Object> row=new LinkedHashMap<>();
             row.put("id",parts[1]);row.put("ref",c.ref);row.put("origin",remote);
             row.put("name",c.get("name"));row.put("summary",c.get("summary"));
-            row.put("description",c.get("description"));row.put("license",c.get("project_license"));
+            row.put("description",c.get("description"));row.put("descriptionMarkdown",c.descriptionMarkdown.toString().replaceAll("\\n{3,}","\\n\\n").trim());row.put("license",c.get("project_license"));
             row.put("developer",c.developerName!=null?c.developerName:c.get("developer_name"));
             row.put("icon",c.remoteIcon!=null?c.remoteIcon:c.cachedIcon);
             row.put("screenshots",c.screenshots);
@@ -94,6 +113,7 @@ public final class AppStreamCatalogue {
         String ref,bundleType,iconType,imageType,urlType,attributeId,lang,version,rating,developerName,remoteIcon,homepage;
         String cachedIcon="";
         final List<String> screenshots=new ArrayList<>();
+        final StringBuilder descriptionMarkdown=new StringBuilder();
         final Map<String,String> attributes=new LinkedHashMap<>();
         // Unlocalized value wins regardless of XML order; else the first one.
         private final Map<String,String> plain=new HashMap<>(),firstSeen=new HashMap<>();
@@ -107,7 +127,7 @@ public final class AppStreamCatalogue {
     public static List<Map<String,Object>> search(List<Map<String,Object>> rows,String term) {
         String needle=term==null?"":term.toLowerCase(Locale.ROOT);List<Map<String,Object>> result=new ArrayList<>();
         for(Map<String,Object> row:rows)if((row.get("id")+" "+row.get("name")+" "+row.get("summary")+" "+row.get("developer")).toLowerCase(Locale.ROOT).contains(needle)) {
-            Map<String,Object> listing=new LinkedHashMap<>();for(String key:Arrays.asList("id","packageName","name","summary","icon","developer","versionName","origin","installed"))if(row.containsKey(key))listing.put(key,row.get(key));result.add(listing);
+            Map<String,Object> listing=new LinkedHashMap<>();for(String key:Arrays.asList("id","packageName","name","summary","icon","developer","versionName","origin","installed","added","badges"))if(row.containsKey(key))listing.put(key,row.get(key));result.add(listing);
         }
         return result;
     }

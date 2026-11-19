@@ -97,13 +97,19 @@ public final class StubGenerator {
                 }
             }
         }
-        List<String> permissions = new ArrayList<>();
+        List<String> permissions = new ArrayList<>(templatePermissions());
         for (String device : devices.split(";"))
             if (device.trim().equals("all") || device.trim().equals("input")) {
                 permissions.add(GAME_CONTROLLERS);
                 break;
             }
         return permissions;
+    }
+
+    /** Permissions unconditionally emitted by the generated stub manifest. */
+    public static List<String> templatePermissions() {
+        return Arrays.asList("android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+                "android.permission.FOREGROUND_SERVICE_SPECIAL_USE", "android.permission.WAKE_LOCK", "android.permission.INTERNET");
     }
 
     private StubGenerator() { }
@@ -821,7 +827,7 @@ public final class StubGenerator {
             startEnd("action",attrs(a("name","org.matonos.dbus.SERVICE")));
             end("intent");
             end("queries");
-            for (String p : permissions) startEnd("uses-permission", attrs(a("name", p)));
+            for (String p : permissions) if (!templatePermissions().contains(p)) startEnd("uses-permission", attrs(a("name", p)));
             List<Attr> appAttrs=new ArrayList<>(Arrays.asList(a("label",label),ab("hasCode",true),a("appComponentFactory",HOST_LOADER),new Attr("theme","@android:style/Theme.Material.Light.NoActionBar",android.R.style.Theme_Material_Light_NoActionBar,1)));
             if(!minimalStub)appAttrs.add(new Attr("icon","@drawable/icon",0x7f010000,1));
             start("application",null,attrs(appAttrs.toArray(new Attr[0])));

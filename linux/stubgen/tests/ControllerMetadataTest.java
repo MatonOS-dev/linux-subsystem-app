@@ -7,7 +7,10 @@ public final class ControllerMetadataTest {
         if (requested != allowed) throw new AssertionError(metadata);
     }
     public static void main(String[] args) throws Exception {
+        java.util.List<String> baseline = StubGenerator.permissionsForMetadata("");
+        if (!baseline.equals(StubGenerator.templatePermissions())) throw new AssertionError("stub template permissions missing from common mapper: " + baseline);
         check("[Context]\ndevices=all;\n", true);
+        if (!StubGenerator.permissionsForMetadata("[Context]\ndevices=all;\n").containsAll(StubGenerator.templatePermissions())) throw new AssertionError("template permissions missing for mapped stub");
         check("[Context]\ndevices=dri;input;\n", true);
         check(" [Context] \r\n devices = input ; \r\n", true);
         check("[Context]\ndevices=dri;kvm;\n", false);

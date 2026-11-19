@@ -11,6 +11,7 @@ public final class SourceTypes {
         out.name=row.optString("name");out.summary=row.optString("summary");out.icon=row.optString("icon");
         out.developer=row.optString("developer");out.installed=row.optBoolean("installed");
         out.added=epochSeconds(row.opt("added"));
+        JSONArray badgeRows=row.optJSONArray("badges");if(badgeRows!=null){out.badges=new AppBadge[badgeRows.length()];for(int i=0;i<out.badges.length;i++){JSONObject value=badgeRows.optJSONObject(i);if(value==null)continue;AppBadge badge=new AppBadge();badge.id=value.optString("id");badge.label=value.optString("label");badge.icon=value.optString("icon");out.badges[i]=badge;}}
         JSONObject rating=row.optJSONObject("rating");if(rating!=null){out.rating=new Rating();out.rating.average=(float)rating.optDouble("average");out.rating.count=rating.optInt("count");JSONArray histogram=rating.optJSONArray("histogram");if(histogram!=null){out.rating.histogram=new int[histogram.length()];for(int i=0;i<histogram.length();i++)out.rating.histogram[i]=histogram.optInt(i);}}
         out.versionName=row.optString("versionName",null);out.packageName=row.optString("packageName",null);return out;
     }
@@ -38,7 +39,7 @@ public final class SourceTypes {
         return 0;
     }
     public static AppDetails details(JSONObject row)throws JSONException {
-        AppDetails out=new AppDetails();out.listing=listing(row);out.description=row.optString("description");
+        AppDetails out=new AppDetails();out.listing=listing(row);out.description=row.optString("description");out.descriptionMarkdown=row.optString("descriptionMarkdown",null);
         out.screenshots=strings(row.optJSONArray("screenshots"));out.permissions=strings(row.optJSONArray("permissions"));
         out.license=row.optString("license",null);out.homepage=row.optString("homepage",null);
         out.downloadSize=row.optLong("downloadSize",-1);out.installedSize=row.optLong("installedSize",-1);
@@ -50,7 +51,7 @@ public final class SourceTypes {
     }
     public static Repo[] repos(JSONArray rows,int offset,int limit)throws JSONException {
         int end=SourcePaging.end(rows.length(),offset,limit);Repo[] result=new Repo[Math.max(0,end-offset)];
-        for(int i=0;i<result.length;i++){JSONObject row=rows.getJSONObject(offset+i);Repo out=new Repo();out.id=row.getString("id");out.url=row.getString("url");out.label=row.getString("label");out.official=row.getBoolean("official");out.broken=row.getBoolean("broken");out.enabled=row.optBoolean("enabled",true);out.appCount=row.optInt("appCount",-1);out.lastRefreshed=row.optLong("lastRefreshed");result[i]=out;}return result;
+        for(int i=0;i<result.length;i++){JSONObject row=rows.getJSONObject(offset+i);Repo out=new Repo();out.id=row.getString("id");out.url=row.getString("url");out.label=row.getString("label");out.official=row.getBoolean("official");out.broken=row.getBoolean("broken");out.enabled=row.optBoolean("enabled",true);out.appCount=row.optInt("appCount",-1);out.lastRefreshed=row.optLong("lastRefreshed");out.builtIn=row.optBoolean("builtIn",false);out.removable=row.optBoolean("removable",true);out.description=row.optString("description",null);result[i]=out;}return result;
     }
     public static Review[] reviews(JSONArray rows,int offset,int limit)throws JSONException {
         int end=SourcePaging.end(rows.length(),offset,limit);Review[] result=new Review[Math.max(0,end-offset)];
