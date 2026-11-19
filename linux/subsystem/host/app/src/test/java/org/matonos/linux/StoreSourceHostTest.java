@@ -9,14 +9,22 @@ import org.matonos.linux.store.*;
 
 public final class StoreSourceHostTest {
     private static void check(boolean condition,String message){if(!condition)throw new AssertionError(message);}
-    private static void flathubBeta() {
+    private static void flathubBeta() throws Exception {
         check(FlathubBetaPolicy.parseEnabled("true"), "enable request accepted");
         check(!FlathubBetaPolicy.parseEnabled("false"), "disable request accepted");
         check(FlathubBetaPolicy.DESCRIPTOR.equals("https://dl.flathub.org/beta-repo/flathub-beta.flatpakrepo"), "official beta descriptor");
         check(FlathubBetaPolicy.BETA_PRIORITY < FlathubBetaPolicy.STABLE_PRIORITY, "beta remote has lower priority than stable");
-        check(FlathubBetaPolicy.removalError(Collections.emptyList()) == null, "beta remote can be removed without beta apps");
-        String blocked=FlathubBetaPolicy.removalError(List.of("Example App", "Second App"));
+        List<String> calls=new ArrayList<>();FlathubBetaPolicy.RemoteActions actions=new FlathubBetaPolicy.RemoteActions(){
+            public void enable(){calls.add("add");calls.add("stable-priority");calls.add("beta-priority");}
+            public void remove(){calls.add("remove");}
+        };
+        check(FlathubBetaPolicy.setEnabled(true,Collections.emptyList(),actions)==null, "beta enable succeeds");
+        check(calls.equals(List.of("add","stable-priority","beta-priority")), "enabling adds beta and restores stable-first priorities");
+        calls.clear();check(FlathubBetaPolicy.setEnabled(false,Collections.emptyList(),actions)==null, "beta disable succeeds without installed beta apps");
+        check(calls.equals(List.of("remove")), "unreferenced beta remote is removed");
+        calls.clear();String blocked=FlathubBetaPolicy.setEnabled(false,List.of("Example App","Second App"),actions);
         check(blocked!=null&&blocked.contains("Example App")&&blocked.contains("Second App"), "installed beta apps block remote removal by name");
+        check(calls.isEmpty(), "blocked disable does not remove remote");
     }
     private static void catalogue() throws Exception {
         String xml="<components><component type='desktop-application'><id>com.example.App.desktop</id>"

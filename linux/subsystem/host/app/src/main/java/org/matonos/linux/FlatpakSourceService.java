@@ -145,8 +145,11 @@ public final class FlatpakSourceService extends Service {
         @Override public String setSetting(String id,String value){return call("setSetting id="+id,()->{
             if("flathub_beta".equals(id)){
                 boolean enabled=FlathubBetaPolicy.parseEnabled(value);
-                if(enabled){flatpak.cli("remote-add","--system","--if-not-exists","--from","--title","Flathub Beta",FlathubBetaPolicy.REMOTE,FlathubBetaPolicy.DESCRIPTOR);flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.STABLE_PRIORITY,"flathub");flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.BETA_PRIORITY,FlathubBetaPolicy.REMOTE);}
-                else {List<String> installed=new ArrayList<>();JSONArray apps=installedListings(false);for(int i=0;i<apps.length();i++){JSONObject app=apps.getJSONObject(i);if(app.optString("origin").equals(FlathubBetaPolicy.REMOTE))installed.add(app.optString("name",app.optString("id")));}String blocked=FlathubBetaPolicy.removalError(installed);if(blocked!=null)return blocked;flatpak.cli("remote-delete","--system",FlathubBetaPolicy.REMOTE);}
+                List<String> installed=new ArrayList<>();if(!enabled){JSONArray apps=installedListings(false);for(int i=0;i<apps.length();i++){JSONObject app=apps.getJSONObject(i);if(app.optString("origin").equals(FlathubBetaPolicy.REMOTE))installed.add(app.optString("name",app.optString("id")));}}
+                String error=FlathubBetaPolicy.setEnabled(enabled,installed,new FlathubBetaPolicy.RemoteActions(){
+                    @Override public void enable() throws Exception {flatpak.cli("remote-add","--system","--if-not-exists","--from","--title","Flathub Beta",FlathubBetaPolicy.REMOTE,FlathubBetaPolicy.DESCRIPTOR);flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.STABLE_PRIORITY,"flathub");flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.BETA_PRIORITY,FlathubBetaPolicy.REMOTE);}
+                    @Override public void remove() throws Exception {flatpak.cli("remote-delete","--system",FlathubBetaPolicy.REMOTE);}
+                });if(error!=null)return error;
                 cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;
             }
             if(id!=null&&id.startsWith("remote-enabled:")){String remote=id.substring("remote-enabled:".length());validateRemote(remote);flatpak.cli("remote-modify","--system",Boolean.parseBoolean(value)?"--enable":"--disable",remote);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;}
