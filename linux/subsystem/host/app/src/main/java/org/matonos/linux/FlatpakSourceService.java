@@ -64,7 +64,7 @@ public final class FlatpakSourceService extends Service {
                 byte[] contents=readRemoteDescriptor(name,remote[1]);Files.write(descriptor.toPath(),contents);
                 candidate.cli("remote-add","--system","--if-not-exists","--from",name,descriptor.getAbsolutePath());
                 String key=flatpakRepoField(new String(contents,StandardCharsets.UTF_8),"GPGKey");
-                if(key==null||key.isBlank())throw new IOException("Remote descriptor has no GPGKey remote="+name+" url="+remote[1]);
+                if(key==null||key.isBlank())throw new IOException("Remote descriptor has no GPGKey remote="+name+" url="+remote[1]+" received="+descriptorSummary(contents));
                 File keyFile=new File(candidate.root,name+".gpg");Files.write(keyFile.toPath(),Base64.getMimeDecoder().decode(key));
                 try {candidate.cli("remote-modify","--system","--gpg-import="+keyFile.getAbsolutePath(),name);}
                 finally {if(keyFile.exists()&&!keyFile.delete())Log.e(TAG,"Cannot delete refreshed remote key file remote="+name+" path="+keyFile);}
@@ -73,9 +73,13 @@ public final class FlatpakSourceService extends Service {
         }
     }
     private byte[] readRemoteDescriptor(String name,String url) throws Exception {
-        if(name.equals("flathub"))try(InputStream input=getAssets().open("flatpak/remotes.d/flathub.flatpakrepo")) {return input.readAllBytes();}
         URLConnection connection=new URL(url).openConnection();connection.setConnectTimeout(5000);connection.setReadTimeout(10000);
         try(InputStream input=connection.getInputStream()) {return input.readAllBytes();}
+    }
+    private static String descriptorSummary(byte[] contents) {
+        String received=new String(contents,StandardCharsets.UTF_8).replaceAll("GPGKey=[^\\r\\n]+","GPGKey=<redacted>");
+        if(received.length()>512)received=received.substring(0,512)+"…";
+        return "bytes="+contents.length+" text="+JSONObject.quote(received);
     }
     private static String flatpakRepoField(String descriptor,String field) throws IOException {
         boolean section=false;String prefix=field+"=";
@@ -251,7 +255,7 @@ public final class FlatpakSourceService extends Service {
         for(int i=0;i<response.length();i++) {
             JSONObject hit=response.getJSONObject(i);Map<String,Object> row=appsById.get(hit.optString("app_id"));
             if(row==null)continue;
-            addVerifiedBadge(row);Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
+            Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
             listing.put("added",SourceTypes.epochSeconds(hit.opt("added"),hit.opt("timestamp"),hit.opt("date")));
             JSONObject rating=ratingFor(hit.optString("app_id"));if(rating!=null)listing.put("rating",rating);
             result.add(listing);
@@ -277,7 +281,7 @@ public final class FlatpakSourceService extends Service {
         double denominator=Math.log1p(maximum);List<Map<String,Object>> listings=new ArrayList<>();List<Double> scores=new ArrayList<>();
         for(int i=0;i<accepted.size()&&listings.size()<limit;i++) {
             JSONObject hit=accepted.get(i);Map<String,Object> row=appsById.get(hit.optString("app_id"));
-            addVerifiedBadge(row);Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
+            Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
             JSONObject rating=ratingFor(hit.optString("app_id"));if(rating!=null)listing.put("rating",rating);
             long installs=hit.optLong("_matonos_installs");
             double score=denominator>0?10.0*Math.log1p(installs)/denominator:10.0*(accepted.size()-i)/(double)Math.max(1,accepted.size());
