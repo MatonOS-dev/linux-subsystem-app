@@ -204,7 +204,9 @@ public final class FlatpakSourceService extends Service {
             String remote=repository.getString("id");validateRemote(remote);readableRemotes.add(remote);
         }
         List<Map<String,Object>> result=RemoteAppStream.load(readableRemotes,brokenRemotes,
-                remote->flatpak.cli("update","--system","--appstream","--noninteractive",remote),remote->{
+                remote->{try{flatpak.cli("update","--system","--appstream","--noninteractive",remote);}catch(Exception error){
+                    Log.e(TAG,"AppStream refresh command failed remote="+remote+"; fetch stderr/cause follows",error);throw error;
+                }},remote->{
             File active=new File(flatpak.installation,"appstream/"+remote+"/x86_64/active");File xml=new File(active,"appstream.xml.gz");
             boolean gzip=xml.isFile();if(!gzip)xml=new File(active,"appstream.xml");
             if(!xml.isFile())throw new IOException("AppStream XML missing remote="+remote+" active="+active);

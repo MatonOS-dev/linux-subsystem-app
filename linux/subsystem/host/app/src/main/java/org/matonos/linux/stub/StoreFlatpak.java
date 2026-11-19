@@ -19,11 +19,15 @@ public final class StoreFlatpak {
     public synchronized String cli(String... arguments) throws Exception {return command(LoaderCommand.FLATPAK_CLI,arguments);}
     public synchronized String helper(String... arguments) throws Exception {return command("libmatonos-flatpak-plan.so",arguments);}
     private String command(String tool,String... arguments) throws Exception {
+        boolean flatpak=LoaderCommand.FLATPAK_CLI.equals(tool);
+        boolean verbose=flatpak&&verboseEnabled();
         List<String> command=new ArrayList<>();String dns=LoaderCommand.resolverAddress();
         File resolv=LoaderCommand.writeResolv(new File(root,"run/resolv.conf"),dns);
         command.add(LoaderCommand.loader(context).getAbsolutePath());command.add("--parent-pid");command.add(Integer.toString(android.os.Process.myPid()));
         LoaderCommand.addDns(command,dns);LoaderCommand.addResolvMaps(context,command,resolv);
-        command.add(LoaderCommand.tool(context,tool).getAbsolutePath());Collections.addAll(command,arguments);
+        command.add(LoaderCommand.tool(context,tool).getAbsolutePath());
+        if(verbose){command.add("-vv");command.add("--ostree-verbose");}
+        Collections.addAll(command,arguments);
         File errors=File.createTempFile("store-flatpak-",".log",new File(root,"tmp"));
         ProcessBuilder builder=new ProcessBuilder(command).directory(new File(root,"home")).redirectError(errors);
         Map<String,String> env=builder.environment();env.clear();String nativeDir=LoaderCommand.nativeLibraryDir(context).getAbsolutePath();
@@ -32,7 +36,10 @@ public final class StoreFlatpak {
         env.put("XDG_DATA_HOME",new File(root,"home/.local/share").getAbsolutePath());env.put("XDG_CONFIG_HOME",new File(root,"home/.config").getAbsolutePath());env.put("XDG_CACHE_HOME",new File(root,"cache").getAbsolutePath());
         for(String key:Arrays.asList("FLATPAK_SYSTEM_DIR","FLATPAK_USER_DIR"))env.put(key,installation.getAbsolutePath());
         env.put("FLATPAK_SYSTEM_CACHE_DIR",new File(root,"cache").getAbsolutePath());
-        for(String key:Arrays.asList("SSL_CERT_DIR","CURL_CA_BUNDLE","G_TLS_CA_PATH"))env.put(key,"/apex/com.android.conscrypt/cacerts");
+        // CURL_CA_BUNDLE names a single PEM file for curl's CLI. The static
+        // libcurl uses its build-time Android Conscrypt CApath instead.
+        for(String key:Arrays.asList("SSL_CERT_DIR","G_TLS_CA_PATH"))env.put(key,"/apex/com.android.conscrypt/cacerts");
+        if(verbose)env.put("OSTREE_DEBUG_HTTP","1");
         Process process=null;
         try {
             if(cancellation!=null)cancellation.check();
@@ -44,6 +51,20 @@ public final class StoreFlatpak {
             return new String(output,StandardCharsets.UTF_8);
         }catch(Exception error){Log.e("FlatpakSource","command="+Arrays.toString(arguments)+" failed",error);throw error;}
         finally {if(cancellation!=null)cancellation.release(process);if(process!=null)process.destroy();if(!errors.delete())Log.e("FlatpakSource","Cannot delete diagnostics "+errors);}
+    }
+    /** Read the public Android system property without depending on hidden APIs. */
+    private boolean verboseEnabled() {
+        Process process=null;
+        try {
+            process=new ProcessBuilder("/system/bin/getprop","debug.matonos.flatpak.verbose").start();
+            byte[] value;
+            try(InputStream stream=process.getInputStream()){value=stream.readAllBytes();}
+            int status=process.waitFor();
+            if(status!=0){Log.e("FlatpakSource","getprop debug.matonos.flatpak.verbose exited "+status);return false;}
+            return "1".equals(new String(value,StandardCharsets.UTF_8).trim());
+        } catch(Exception error) {
+            Log.e("FlatpakSource","Could not read debug.matonos.flatpak.verbose",error);return false;
+        } finally {if(process!=null)process.destroy();}
     }
     /** Export keys along with URLs; bare remote-add URL would lose signature verification. */
     public synchronized void copyRemotesTo(StoreFlatpak target) throws Exception {
