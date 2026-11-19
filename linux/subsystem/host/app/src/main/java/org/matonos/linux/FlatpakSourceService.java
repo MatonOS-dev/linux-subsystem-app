@@ -62,17 +62,18 @@ public final class FlatpakSourceService extends Service {
         String[][] defaults={{"flathub","https://dl.flathub.org/repo/flathub.flatpakrepo"},{"flatpark","https://dl.flatpark.org/flatpark.flatpakrepo"}};
         for(String[] remote:defaults)try {
             candidate.cli("remote-add","--system","--if-not-exists","--from",remote[0],remote[1]);
+            candidate.cli("remote-modify","--system","--prio="+(remote[0].equals("flathub")?"1":"0"),remote[0]);
         } catch(Exception error) { Log.e(TAG,"Seeding default remote="+remote[0]+" url="+remote[1]+" failed",error); }
         try { Files.write(marker.toPath(),new byte[]{49}); }
         catch(IOException error) { Log.e(TAG,"Recording default remote seed state failed",error); }
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
-        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Linux apps";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_REPOSITORIES|CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
-        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(withRatings(AppStreamCatalogue.search(catalogue(),term)),offset,limit));}
-        @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(collectionListings(kind),offset,limit));}
+        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_REPOSITORIES|CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
+        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(withRepositoryOptions(withRatings(AppStreamCatalogue.search(catalogue(),term))),offset,limit));}
+        @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(withRepositoryOptions(collectionListings(kind)),offset,limit));}
         @Override public PopularApp[] getPopularApps(int limit){return call("popular apps limit="+limit,()->popularApps(limit));}
         @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
-            Map<String,Object> row=find(id,repo);String remote=(String)row.get("origin"),ref=(String)row.get("ref");
+            Map<String,Object> row=find(id,repo);row=withRepositoryOptions(Collections.singletonList(row)).get(0);String remote=(String)row.get("origin"),ref=(String)row.get("ref");
             String appId=id.startsWith("app/")&&id.split("/").length>1?id.split("/")[1]:id;
             JSONObject ratingAggregate=ratingFor(appId);if(ratingAggregate!=null)row.put("rating",ratingAggregate);
             String metadata=flatpak.cli("remote-info","--system","--show-metadata",remote,ref);
@@ -98,8 +99,8 @@ public final class FlatpakSourceService extends Service {
             addVerifiedBadge(row);return SourceTypes.details(new JSONObject(row));
         });}
         @Override public Review[] reviews(String id,int offset,int limit){return call("reviews id="+id,()->SourceTypes.reviews(new JSONArray(odrs(id)),offset,limit));}
-        @Override public AppListing[] installed(int offset,int limit){return call("installed",()->SourceTypes.listings(installedListings(false),offset,limit));}
-        @Override public AppListing[] updates(int offset,int limit){return call("updates",()->SourceTypes.listings(installedListings(true),offset,limit));}
+        @Override public AppListing[] installed(int offset,int limit){return call("installed",()->SourceTypes.listings(withRepositoryOptions(installedListings(false)),offset,limit));}
+        @Override public AppListing[] updates(int offset,int limit){return call("updates",()->SourceTypes.listings(withRepositoryOptions(installedListings(true)),offset,limit));}
         @Override public Repo[] repos(int offset,int limit){return call("repos",()->SourceTypes.repos(repositories(),offset,limit));}
         @Override public void setRepoEnabled(String id,boolean enabled){call("setRepoEnabled id="+id+" enabled="+enabled,()->{validateRemote(id);flatpak.cli("remote-modify","--system",enabled?"--enable":"--disable",id);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return "";});}
         @Override public void addRepo(String url){addRepoNamed("",url);}
@@ -176,6 +177,34 @@ public final class FlatpakSourceService extends Service {
         if(readable==0&&last!=null)throw last;
         cachedCatalogue=result;return result;
     }
+
+    private JSONArray withRepositoryOptions(JSONArray rows) throws Exception {
+        List<Map<String,Object>> values=new ArrayList<>();
+        for(int i=0;i<rows.length();i++){JSONObject object=rows.getJSONObject(i);Map<String,Object> value=new LinkedHashMap<>();Iterator<String> keys=object.keys();while(keys.hasNext()){String key=keys.next();value.put(key,object.get(key));}values.add(value);}
+        JSONArray result=new JSONArray();for(Map<String,Object> value:withRepositoryOptions(values))result.put(new JSONObject(value));return result;
+    }
+
+    private List<Map<String,Object>> withRepositoryOptions(List<Map<String,Object>> rows) throws Exception {
+        if(rows.isEmpty())return rows;
+        Map<String,List<Map<String,Object>>> byId=new HashMap<>();
+        for(Map<String,Object> candidate:catalogue())byId.computeIfAbsent(String.valueOf(candidate.get("id")),key->new ArrayList<>()).add(candidate);
+        JSONArray remotes=repositories();Map<String,String> names=new HashMap<>();Map<String,Integer> order=new HashMap<>();
+        for(int i=0;i<remotes.length();i++){JSONObject remote=remotes.getJSONObject(i);String id=remote.getString("id");names.put(id,remote.optString("label",id));order.put(id,i);}
+        Map<String,String> installedOrigins=new HashMap<>();JSONArray installedRows=installedListings(false);for(int i=0;i<installedRows.length();i++){JSONObject installed=installedRows.getJSONObject(i);installedOrigins.put(installed.optString("id"),installed.optString("origin"));}
+        Map<String,Integer> priorities=new HashMap<>();
+        try {for(String line:flatpak.cli("remote-list","--system","--columns=name,priority").split("\\n")){String[] fields=line.trim().split("\\s+");if(fields.length==2)priorities.put(fields[0],Integer.parseInt(fields[1]));}}
+        catch(Exception error){Log.w(TAG,"Reading Flatpak remote priorities failed; using backend remote order",error);}
+        for(Map<String,Object> row:rows){String id=String.valueOf(row.get("id"));List<Map<String,Object>> candidates=byId.getOrDefault(id,Collections.singletonList(row));
+            candidates=new ArrayList<>(candidates);candidates.sort((a,b)->{String ar=String.valueOf(a.get("origin")),br=String.valueOf(b.get("origin"));int ap=priorities.getOrDefault(ar,Integer.MIN_VALUE),bp=priorities.getOrDefault(br,Integer.MIN_VALUE);if(ap!=bp)return Integer.compare(bp,ap);return Integer.compare(order.getOrDefault(ar,Integer.MAX_VALUE),order.getOrDefault(br,Integer.MAX_VALUE));});
+            String installedOrigin=installedOrigins.get(id);if(installedOrigin==null&&Boolean.TRUE.equals(row.get("installed")))installedOrigin=String.valueOf(row.get("origin"));
+            if(installedOrigin!=null){row.put("installed",true);row.put("origin",installedOrigin);}
+            List<Map<String,Object>> options=new ArrayList<>();Set<String> seen=new HashSet<>();
+            for(Map<String,Object> candidate:candidates){String remote=String.valueOf(candidate.get("origin"));if(!seen.add(remote))continue;boolean installable=installedOrigin==null||installedOrigin.equals(remote);Map<String,Object> option=new LinkedHashMap<>();option.put("repoId",remote);option.put("name",names.getOrDefault(remote,remote));option.put("installable",installable);if(!installable)option.put("note","Reinstall from this repository");options.add(option);}
+            if(installedOrigin!=null&&seen.add(installedOrigin)){Map<String,Object> option=new LinkedHashMap<>();option.put("repoId",installedOrigin);option.put("name",names.getOrDefault(installedOrigin,installedOrigin));option.put("installable",false);option.put("note","Installed repository is unavailable");options.add(option);}
+            row.put("repoOptions",options);
+        }
+        return rows;
+    }
     private void addVerifiedBadge(Map<String,Object> row) {
         if(!"flathub".equals(row.get("origin")))return;
         String ref=String.valueOf(row.getOrDefault("ref",row.get("id")));String[] parts=ref.split("/");if(parts.length<2)return;String appId=parts[1];Boolean verified=verifiedApps.get(appId);
@@ -184,8 +213,7 @@ public final class FlatpakSourceService extends Service {
         if(verified){@SuppressWarnings("unchecked") List<Map<String,Object>> badges=(List<Map<String,Object>>)row.computeIfAbsent("badges",key->new ArrayList<>());badges.add(Map.of("id","verified","label","Verified developer","icon","verified"));}
     }
     private List<Map<String,Object>> badges(Map<String,Object> row) {
-        List<Map<String,Object>> badges=new ArrayList<>();String remote=String.valueOf(row.get("origin"));
-        if(remote.equals("flatpark"))badges.add(Map.of("id","third-party","label","Third-party","icon","warning"));
+        List<Map<String,Object>> badges=new ArrayList<>();
         String license=String.valueOf(row.getOrDefault("license",""));
         if(license.matches("(?i).*(GPL|LGPL|AGPL|MIT|Apache|BSD|MPL|CC0|ISC|Zlib).*"))badges.add(Map.of("id","open-source","label","Open source","icon","code"));
         Object added=row.get("added");if(added instanceof Number&&((Number)added).longValue()>System.currentTimeMillis()/1000L-30L*86400)badges.add(Map.of("id","new","label","New","icon","fiber_new"));
@@ -230,16 +258,17 @@ public final class FlatpakSourceService extends Service {
             long installs=Math.max(0,hit.optLong("installs_last_month",hit.optLong("installsLastMonth",hit.optLong("installs",0))));
             hit.put("_matonos_installs",installs);maximum=Math.max(maximum,installs);accepted.add(hit);
         }
-        double denominator=Math.log1p(maximum);List<PopularApp> result=new ArrayList<>();
-        for(int i=0;i<accepted.size()&&result.size()<limit;i++) {
+        double denominator=Math.log1p(maximum);List<Map<String,Object>> listings=new ArrayList<>();List<Double> scores=new ArrayList<>();
+        for(int i=0;i<accepted.size()&&listings.size()<limit;i++) {
             JSONObject hit=accepted.get(i);Map<String,Object> row=appsById.get(hit.optString("app_id"));
             addVerifiedBadge(row);Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
             JSONObject rating=ratingFor(hit.optString("app_id"));if(rating!=null)listing.put("rating",rating);
             long installs=hit.optLong("_matonos_installs");
             double score=denominator>0?10.0*Math.log1p(installs)/denominator:10.0*(accepted.size()-i)/(double)Math.max(1,accepted.size());
-            listing.put("badges",row.get("badges"));PopularApp item=new PopularApp();item.app=SourceTypes.listings(Collections.singletonList(listing),0,1)[0];
-            item.score=Math.round(score*10.0)/10.0;result.add(item);
+            listing.put("badges",row.get("badges"));listings.add(listing);scores.add(Math.round(score*10.0)/10.0);
         }
+        List<PopularApp> result=new ArrayList<>();listings=withRepositoryOptions(listings);
+        for(int i=0;i<listings.size();i++){PopularApp item=new PopularApp();item.app=SourceTypes.listings(Collections.singletonList(listings.get(i)),0,1)[0];item.score=scores.get(i);result.add(item);}
         return result.toArray(new PopularApp[0]);
     }
     private List<Map<String,Object>> withRatings(List<Map<String,Object>> rows) {
