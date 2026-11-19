@@ -23,8 +23,6 @@ public class SourceTypesTest {
             repos.put(new JSONObject().put("id","remote-"+i).put("url","https://example.org/").put("label","Example").put("official",false).put("broken",i==2));
             reviews.put(new JSONObject().put("id","review-"+i).put("author","Example").put("rating",4.5).put("summary","").put("description","").put("version","1").put("date","2026-01-01T00:00:00Z"));
         }
-        assertEquals("remote-2",SourceTypes.repos(repos,2,2)[0].id);assertTrue(SourceTypes.repos(repos,2,2)[0].broken);
-        assertEquals(0,SourceTypes.repos(repos,3,2).length);
         Review[] page=SourceTypes.reviews(reviews,2,2);assertEquals(1,page.length);assertEquals("review-2",page[0].id);assertEquals(1767225600000L,page[0].date);assertEquals(5,page[0].rating);
         assertEquals(0,SourceTypes.reviews(reviews,3,2).length);
     }

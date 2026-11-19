@@ -9,6 +9,15 @@ import org.matonos.linux.store.*;
 
 public final class StoreSourceHostTest {
     private static void check(boolean condition,String message){if(!condition)throw new AssertionError(message);}
+    private static void flathubBeta() {
+        check(FlathubBetaPolicy.parseEnabled("true"), "enable request accepted");
+        check(!FlathubBetaPolicy.parseEnabled("false"), "disable request accepted");
+        check(FlathubBetaPolicy.DESCRIPTOR.equals("https://dl.flathub.org/beta-repo/flathub-beta.flatpakrepo"), "official beta descriptor");
+        check(FlathubBetaPolicy.BETA_PRIORITY < FlathubBetaPolicy.STABLE_PRIORITY, "beta remote has lower priority than stable");
+        check(FlathubBetaPolicy.removalError(Collections.emptyList()) == null, "beta remote can be removed without beta apps");
+        String blocked=FlathubBetaPolicy.removalError(List.of("Example App", "Second App"));
+        check(blocked!=null&&blocked.contains("Example App")&&blocked.contains("Second App"), "installed beta apps block remote removal by name");
+    }
     private static void catalogue() throws Exception {
         String xml="<components><component type='desktop-application'><id>com.example.App.desktop</id>"
                 +"<name xml:lang='fr'>Autre</name><name>Example</name><summary>Editor</summary><description><p>Rich <em>text</em></p><ol><li>First</li><li>Second with <code>inline</code></li></ol></description>"
@@ -125,5 +134,6 @@ public final class StoreSourceHostTest {
         try{crashed.await(1,TimeUnit.SECONDS);throw new AssertionError("request failure ignored");}catch(IOException expected){check(expected.getMessage().contains("binder failed"),"request exception propagated");}
     }
     public static void main(String[] args) throws Exception {
-        sourceContract();catalogue();remoteAppStream();chain(false);chain(true);invalidGraph();extraData(false);extraData(true);System.out.println("StoreSourceHostTest: PASS (paging, remote routing, cancel/process termination, running states, store repair, AppStream parsing and per-remote failure isolation, five-package Steam success/failure, missing dependency, extra-data success/validation failure)");}
+        flathubBeta();
+        sourceContract();catalogue();remoteAppStream();chain(false);chain(true);invalidGraph();extraData(false);extraData(true);System.out.println("StoreSourceHostTest: PASS (paging, remote routing, cancel/process termination, running states, store repair, AppStream parsing and per-remote failure isolation, five-package Steam success/failure, missing dependency, extra-data success/validation failure, Flathub Beta enable/disable safety)");}
 }

@@ -90,7 +90,7 @@ public final class FlatpakSourceService extends Service {
         return null;
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
-        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_REPOSITORIES|CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
+        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
         @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(withRepositoryOptions(withRatings(AppStreamCatalogue.search(catalogue(),term))),offset,limit));}
         @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(withRepositoryOptions(collectionListings(kind)),offset,limit));}
         @Override public PopularApp[] getPopularApps(int limit){return call("popular apps limit="+limit,()->popularApps(limit));}
@@ -123,16 +123,37 @@ public final class FlatpakSourceService extends Service {
         @Override public Review[] reviews(String id,int offset,int limit){return call("reviews id="+id,()->SourceTypes.reviews(new JSONArray(odrs(id)),offset,limit));}
         @Override public AppListing[] installed(int offset,int limit){return call("installed",()->SourceTypes.listings(withRepositoryOptions(installedListings(false)),offset,limit));}
         @Override public AppListing[] updates(int offset,int limit){return call("updates",()->SourceTypes.listings(withRepositoryOptions(installedListings(true)),offset,limit));}
-        @Override public Repo[] repos(int offset,int limit){return call("repos",()->SourceTypes.repos(repositories(),offset,limit));}
-        @Override public void setRepoEnabled(String id,boolean enabled){call("setRepoEnabled id="+id+" enabled="+enabled,()->{validateRemote(id);flatpak.cli("remote-modify","--system",enabled?"--enable":"--disable",id);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return "";});}
-        @Override public void addRepo(String url){addRepoNamed("",url);}
-        @Override public void addRepoNamed(String label,String url){call("addRepo url="+url,()->{
-            URI uri=URI.create(url);if(!"https".equals(uri.getScheme())||uri.getHost()==null)throw new IOException("Repository descriptor requires an HTTPS host");
-            String name="store-"+java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(url.getBytes(StandardCharsets.UTF_8)));
-            String title=label==null||label.isBlank()?uri.getHost():label.trim();
-            flatpak.cli("remote-add","--system","--if-not-exists","--title",title,name,url);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return "";
+        @Override public SourceSetting[] settings(){return call("settings",()->{
+            List<SourceSetting> result=new ArrayList<>();
+            SourceSetting beta=new SourceSetting();beta.id="flathub_beta";beta.label="Enable Flathub Beta (testing versions)";beta.type="boolean";
+            JSONArray remotes=repositories();boolean betaEnabled=false;for(int i=0;i<remotes.length();i++){JSONObject remote=remotes.getJSONObject(i);if(remote.optString("id").equals("flathub-beta"))betaEnabled=remote.optBoolean("enabled",true);}
+            beta.value=Boolean.toString(betaEnabled);result.add(beta);
+            SourceSetting add=setting("add_repository","Add repository","action",null);SourceSetting url=setting("url","Repository URL","text",null);SourceSetting name=setting("name","Name","text",null);add.fields=new SourceSetting[]{url,name};result.add(add);
+            for(int i=0;i<remotes.length();i++){JSONObject remote=remotes.getJSONObject(i);String id=remote.optString("id");SourceSetting group=setting("repository:"+id,remote.optString("label",id),"group",null);group.removable=!id.equals("flathub")&&!id.equals("flatpark")&&!id.equals("flathub-beta");
+                SourceSetting enabled=setting("remote-enabled:"+id,"Enabled","boolean",Boolean.toString(remote.optBoolean("enabled",true)));
+                String base="/var/lib/flatpak/repo/refs/remotes/"+id;File appstream=new File(base,"appstream.xml");int count=-1;
+                if(cachedCatalogue!=null){count=0;for(Map<String,Object> app:cachedCatalogue)if(id.equals(app.get("origin")))count++;}
+                File index=new File(base,"appstream.xml");long refreshed=index.isFile()?index.lastModified()/1000L:0;
+                SourceSetting lineUrl=setting("url","URL", "text",remote.optString("url"));lineUrl.readOnly=true;
+                SourceSetting lineCount=setting("count","App count","text",count<0?"Unknown":Integer.toString(count));lineCount.readOnly=true;
+                SourceSetting lineRefresh=setting("refresh","Last refreshed","text",refreshed==0?"Never":java.text.DateFormat.getDateTimeInstance().format(new Date(refreshed*1000L)));lineRefresh.readOnly=true;
+                group.children=new SourceSetting[]{enabled,lineUrl,lineCount,lineRefresh};result.add(group);
+            }
+            return result.toArray(new SourceSetting[0]);
         });}
-        @Override public void delRepo(String id){call("delRepo id="+id,()->{validateRemote(id);if(id.equals("flathub")||id.equals("flatpark"))throw new IllegalArgumentException("Built-in repository cannot be removed");flatpak.cli("remote-delete","--system",id);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return "";});}
+        private SourceSetting setting(String id,String label,String type,String value){SourceSetting row=new SourceSetting();row.id=id;row.label=label;row.type=type;row.value=value;return row;}
+        @Override public String setSetting(String id,String value){return call("setSetting id="+id,()->{
+            if("flathub_beta".equals(id)){
+                boolean enabled=FlathubBetaPolicy.parseEnabled(value);
+                if(enabled){flatpak.cli("remote-add","--system","--if-not-exists","--from","--title","Flathub Beta",FlathubBetaPolicy.REMOTE,FlathubBetaPolicy.DESCRIPTOR);flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.STABLE_PRIORITY,"flathub");flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.BETA_PRIORITY,FlathubBetaPolicy.REMOTE);}
+                else {List<String> installed=new ArrayList<>();JSONArray apps=installedListings(false);for(int i=0;i<apps.length();i++){JSONObject app=apps.getJSONObject(i);if(app.optString("origin").equals(FlathubBetaPolicy.REMOTE))installed.add(app.optString("name",app.optString("id")));}String blocked=FlathubBetaPolicy.removalError(installed);if(blocked!=null)return blocked;flatpak.cli("remote-delete","--system",FlathubBetaPolicy.REMOTE);}
+                cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;
+            }
+            if(id!=null&&id.startsWith("remote-enabled:")){String remote=id.substring("remote-enabled:".length());validateRemote(remote);flatpak.cli("remote-modify","--system",Boolean.parseBoolean(value)?"--enable":"--disable",remote);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;}
+            if(id!=null&&id.startsWith("repository:")&&value==null){String remote=id.substring("repository:".length());validateRemote(remote);if(remote.equals("flathub")||remote.equals("flatpark")||remote.equals("flathub-beta"))return "Built-in repository cannot be removed";flatpak.cli("remote-delete","--system",remote);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;}
+            return "Unknown or read-only setting";
+        });}
+        @Override public ActionResult runAction(String id,String[] values,boolean confirmed){ActionResult result=new ActionResult();if(!"add_repository".equals(id)){result.error="Unknown action";return result;}try{String url=values.length>0?values[0].trim():"";String name=values.length>1?values[1].trim():"";URI uri=URI.create(url);if(!"https".equals(uri.getScheme())||uri.getHost()==null)throw new IllegalArgumentException("Repository descriptor requires an HTTPS host");String remote="store-"+java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(url.getBytes(StandardCharsets.UTF_8)));String title=name.isBlank()?uri.getHost():name;if(url.endsWith(".flatpakrepo"))flatpak.cli("remote-add","--system","--if-not-exists","--from","--title",title,remote,url);else flatpak.cli("remote-add","--system","--if-not-exists","--title",title,remote,url);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}}catch(Exception error){result.error=error.getMessage();}return result;}
         @Override public void cancel(String operation){operations.cancel(operation);}
         @Override public boolean running(String operation){return operations.running(operation);}
         @Override public void install(String id,String repo,String operation,IInstallCallback callback){

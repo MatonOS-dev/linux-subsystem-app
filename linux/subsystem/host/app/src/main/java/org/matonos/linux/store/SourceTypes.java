@@ -50,10 +50,7 @@ public final class SourceTypes {
             for(int i=0;i<categories.length();i++){JSONObject value=categories.getJSONObject(i);AgeRatingCategory item=new AgeRatingCategory();item.id=value.getString("id");item.title=value.getString("title");item.description=value.getString("description");item.level=value.getString("level");out.ageRating.categories[i]=item;}
         }return out;
     }
-    public static Repo[] repos(JSONArray rows,int offset,int limit)throws JSONException {
-        int end=SourcePaging.end(rows.length(),offset,limit);Repo[] result=new Repo[Math.max(0,end-offset)];
-        for(int i=0;i<result.length;i++){JSONObject row=rows.getJSONObject(offset+i);Repo out=new Repo();out.id=row.getString("id");out.url=row.getString("url");out.label=row.getString("label");out.official=row.getBoolean("official");out.broken=row.getBoolean("broken");out.enabled=row.optBoolean("enabled",true);out.appCount=row.optInt("appCount",-1);out.lastRefreshed=row.optLong("lastRefreshed");out.builtIn=row.optBoolean("builtIn",false);out.removable=row.optBoolean("removable",true);out.description=row.optString("description",null);result[i]=out;}return result;
-    }
+
     public static Review[] reviews(JSONArray rows,int offset,int limit)throws JSONException {
         int end=SourcePaging.end(rows.length(),offset,limit);Review[] result=new Review[Math.max(0,end-offset)];
         for(int i=0;i<result.length;i++){JSONObject row=rows.getJSONObject(offset+i);Review out=new Review();out.id=row.getString("id");out.author=row.getString("author");out.rating=Math.max(1,Math.min(5,(int)Math.round(row.getDouble("rating"))));out.summary=row.getString("summary");out.description=row.getString("description");out.version=row.getString("version");out.date=java.time.Instant.parse(row.getString("date")).toEpochMilli();result[i]=out;}return result;
