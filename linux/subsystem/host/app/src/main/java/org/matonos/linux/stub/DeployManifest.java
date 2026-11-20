@@ -2,7 +2,7 @@ package org.matonos.linux.stub;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.matonos.flatpak.AndroidIdentity;
+import org.matonos.linuxhost.stubgen.AndroidIdentity;
 import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 import java.io.File;
 import java.io.IOException;

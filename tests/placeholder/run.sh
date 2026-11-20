@@ -44,7 +44,7 @@ APKSIG_JAR=${MATON_APKSIG_JAR:-$ROOT/linux/stubgen/prebuilt/apksig.jar}
 
 # The fixture class lives in the subsystem stub package so it can call the
 # package-private DeployManifest entry points.
-javac -cp "$ANDROID_JAR:$APKSIG_JAR" -d "$CLASSES" \
+javac -cp "$ANDROID_JAR:$APKSIG_JAR" -sourcepath "$ROOT/linux/stubgen/src" -d "$CLASSES" \
     "$ROOT"/linux/stubgen/src/org/matonos/linuxhost/stubgen/*.java \
     "$ROOT"/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployManifest.java \
     "$ROOT"/linux/subsystem/host/app/src/main/java/org/matonos/linux/stub/DeployRecord.java \
