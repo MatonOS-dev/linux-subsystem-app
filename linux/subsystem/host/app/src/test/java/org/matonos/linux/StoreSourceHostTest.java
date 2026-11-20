@@ -38,6 +38,7 @@ public final class StoreSourceHostTest {
         ByteArrayOutputStream output=new ByteArrayOutputStream();try(GZIPOutputStream gz=new GZIPOutputStream(output)){gz.write(xml.getBytes(StandardCharsets.UTF_8));}
         List<Map<String,Object>> rows=AppStreamCatalogue.read(new ByteArrayInputStream(output.toByteArray()),true,"test");
         check(rows.size()==1,"only app components");Map<String,Object> row=rows.get(0);
+        check(AppStreamCatalogue.search(rows,"example").get(0).get("icon").equals("https://example.org/icon.png"),"search listing keeps its AppStream icon");
         check(row.get("id").equals("com.example.App"),"bundle ID, not desktop suffix");check(row.get("name").equals("Example"),"unlocalized fallback");
         check(row.get("description").equals("Rich textFirstSecond with inline"),"description markup text");check(row.get("descriptionMarkdown").toString().contains("1. First")&&row.get("descriptionMarkdown").toString().contains("2. Second with `inline`"),"AppStream markup converts to CommonMark");check(row.get("developer").equals("Example developers"),"developer");
         check(row.get("screenshots").equals(List.of("screen")),"full screenshots");check(row.containsKey("ageRating"),"OARS attributes");
