@@ -78,6 +78,8 @@ public final class FlatpakSourceService extends Service {
     }
     private synchronized void ensure() throws Exception {
         if(flatpak!=null)return;
+        // A killed process leaves its operation trees behind; this fresh process holds no leases yet.
+        for(String name:new String[]{"store-installs","store-queries"})WorkDirs.sweep(WorkDirs.directory(this,name));
         StoreFlatpak candidate=new StoreFlatpak(this,new File(getNoBackupFilesDir(),"store-flatpak"));
         if(!new File(candidate.root,"configured").exists()){candidate.preset();Files.write(new File(candidate.root,"configured").toPath(),new byte[]{49});}
         seedDefaultRemotes(candidate);
