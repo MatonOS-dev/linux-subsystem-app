@@ -49,7 +49,8 @@ public final class StorePackages {
             Map<String,String> packageIds=new HashMap<>();
             Map<String,String> splitRefs=new HashMap<>();
             for(String item:refs) {
-                String[] identity=item.split("/",-1),previous=packageIds.putIfAbsent(
+                String[] identity=item.split("/",-1);
+                String previous=packageIds.putIfAbsent(
                         DeployManifest.packageForPublic(item),identity[1]);
                 if(previous!=null&&!previous.equals(identity[1]))
                     throw new IOException("Android package name collision between Flatpak app ids "+previous+" and "+identity[1]);

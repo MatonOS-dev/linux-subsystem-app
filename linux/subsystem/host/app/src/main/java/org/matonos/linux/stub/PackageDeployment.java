@@ -36,7 +36,7 @@ final class PackageDeployment {
         // A process has one launch. A fresh tree also discards removed extensions.
         remove(root.toPath());Files.createDirectories(root.toPath());
 
-        java.util.List<DeclaredPackages.Entry> packages=DeclaredPackages.resolve(context,null);
+        java.util.List<DeclaredPackages.Entry> packages=DeclaredPackages.resolve(context,null,appRef);
         if(!packages.get(0).record.ref.equals(appRef))throw new IOException("Installed deployment ref mismatch");
         for(int i=0;i<packages.size();i++) {
             DeclaredPackages.Entry entry=packages.get(i);
@@ -157,7 +157,7 @@ final class PackageDeployment {
         if(source==null||!"org.matonos.linux".equals(source.getInitiatingPackageName()))
             throw new SecurityException(name+" was not installed by the subsystem");
         org.matonos.linuxhost.stubgen.DeploymentRecord record=
-                org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,appRef);
+                org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,ref);
         String extensionParent=PackageMounts.extensionParent(new String(record.metadata,StandardCharsets.UTF_8));
         if(!record.ref.equals(ref)||!new String(record.metadata,StandardCharsets.UTF_8).contains("name = "+metadataName)
                 ||extensionParent==null||!extensionParent.matches("runtime/org\\.freedesktop\\.Platform/(?:i386|x86_64)/"+java.util.regex.Pattern.quote(branch)))
@@ -174,7 +174,7 @@ final class PackageDeployment {
         Files.write(version.resolve("deploy"),DeployRecord.extension(record.remote,record.commit,branch));
         File apk=new File(pkg.applicationInfo.sourceDir);
         java.util.List<String> args=new java.util.ArrayList<>(ErofsLaunch.arguments(
-                apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount,branch,appRef));
+                apk,pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,mount,branch,ref));
         // Flatpak may bind the deployment's files dir elsewhere (an app's own
         // extension point under /app); map the image there too so every bind
         // of the scaffold sees the payload instead of an empty placeholder.

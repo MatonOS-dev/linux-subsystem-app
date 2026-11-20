@@ -170,7 +170,7 @@ public final class ExtraDataInstallService extends Service {
                 || runtimeSigners==null || runtimeSigners.length!=1 || !selfSigners[0].equals(runtimeSigners[0]))
             throw new SecurityException("Untrusted installed Flatpak runtime");
         org.matonos.linuxhost.stubgen.DeploymentRecord runtime = org.matonos.linuxhost.stubgen.DeploymentRecord.installed(
-                pkg.splitNames, pkg.applicationInfo.splitSourceDirs,request.getStringExtra("runtime"));
+                pkg.splitNames, pkg.applicationInfo.splitSourceDirs,runtimeRef);
         if (!runtime.ref.equals(runtimeRef)) throw new IOException("Installed runtime ref mismatch");
         String mounted = ErofsLaunch.mountInstalledImage(pkg.splitNames, pkg.applicationInfo.splitSourceDirs, EROFS_TOKEN,runtime.ref);
         File system = new File(root, "system");
