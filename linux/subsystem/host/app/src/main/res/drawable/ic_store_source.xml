@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flatpak store-source icon: a package box on blue. Drawn for MatonOS. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="#3D7BD9" android:pathData="M10,0h28a10,10 0,0 1,10 10v28a10,10 0,0 1,-10 10h-28a10,10 0,0 1,-10 -10v-28a10,10 0,0 1,10 -10z" />
+    <path android:fillColor="#FFFFFF" android:fillAlpha="0.25" android:pathData="M24,10L36,17L24,24L12,17Z" />
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="2.5" android:strokeLineJoin="round" android:strokeLineCap="round"
+        android:pathData="M24,10L36,17L36,31L24,38L12,31L12,17Z M12,17L24,24L36,17 M24,24L24,38" />
+</vector>

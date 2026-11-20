@@ -42,7 +42,7 @@
         <service android:name=".stub.StubService" android:exported="false" />
         <provider android:name=".store.FlatpakIconProvider" android:authorities="org.matonos.linux.store.icons"
             android:exported="true" android:readPermission="org.matonos.permission.BIND_STORE_SOURCE" />
-        <service android:name=".FlatpakSourceService" android:exported="true" android:foregroundServiceType="dataSync"
+        <service android:name=".FlatpakSourceService" android:icon="@drawable/ic_store_source" android:exported="true" android:foregroundServiceType="dataSync"
             android:permission="org.matonos.permission.BIND_STORE_SOURCE">
             <intent-filter><action android:name="org.matonos.store.SOURCE" /></intent-filter>
         </service>
