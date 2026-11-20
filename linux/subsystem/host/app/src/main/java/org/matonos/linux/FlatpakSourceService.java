@@ -314,7 +314,7 @@ public final class FlatpakSourceService extends Service {
 
     private JSONObject catalogueRow(Map<String,Object> row)throws Exception{
         JSONObject value=new JSONObject();
-        for(String key:new String[]{"id","name","summary","icon","developer","installed","repo","versionName","packageName","added","badges","repoOptions"})if(row.containsKey(key))value.put(key,row.get(key));
+        for(String key:new String[]{"id","name","summary","icon","developer","installed","repo","versionName","packageName","added","badges","repoOptions"})if(row.containsKey(key))value.put(key,JSONObject.wrap(row.get(key)));
         value.put("repo",row.getOrDefault("repo",row.get("origin")));value.put("repoLabel",row.getOrDefault("repoLabel",row.getOrDefault("originTitle",row.get("origin"))));
         value.put("popularityScore",row.get("popularityScore") instanceof Number?((Number)row.get("popularityScore")).doubleValue():0.0);
         value.put("currentVersionName",row.get("currentVersionName")==null?JSONObject.NULL:row.get("currentVersionName"));value.put("repoPriority",row.get("repoPriority") instanceof Number?((Number)row.get("repoPriority")).intValue():0);value.put("signerMatches",true);value.put("installable",true);value.put("updateAvailable",Boolean.TRUE.equals(row.get("updateAvailable")));
