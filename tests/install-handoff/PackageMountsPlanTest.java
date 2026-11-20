@@ -109,6 +109,28 @@ public final class PackageMountsPlanTest {
         check("/usr/share/runtime/locale".equals(gnomeTargets.get(gnomeAppLocale)),"GNOME 51 Locale target mismatch");
         System.out.println("PASS GNOME 51 launch runtime and Locale targets are derived from app metadata");
 
+        // Klotski: org.gnome.Platform//51 declares the freedesktop points itself and
+        // org.freedesktop.Platform//26.08 is never staged.
+        String gnomeOnlyMeta="[Extension org.gnome.Platform.Locale]\ndirectory=share/runtime/locale\n"+
+                "[Extension org.freedesktop.Platform.GL]\nversions=26.08;26.08-extra;1.4\nversion=1.4\ndirectory=lib/x86_64-linux-gnu/GL\n"+
+                "[Extension org.freedesktop.Platform.codecs-extra]\ndirectory=lib/x86_64-linux-gnu/codecs-extra\nversion=26.08-extra\n";
+        String codecsExtra="runtime/org.freedesktop.Platform.codecs-extra/x86_64/26.08-extra";
+        Map<String,String> gnomeOnly=new LinkedHashMap<>();gnomeOnly.put(gnome,gnomeOnlyMeta);
+        check("/usr/lib/x86_64-linux-gnu/GL".equals(PackageMounts.mountPoint(gl,parent,gnomeOnly)),"GL must mount under the declaring GNOME runtime");
+        check(gnome.equals(PackageMounts.mountParent(gl,parent,gnomeOnly)),"GL mount parent must be the GNOME runtime");
+        check("/usr/lib/x86_64-linux-gnu/codecs-extra".equals(PackageMounts.mountPoint(codecsExtra,parent,gnomeOnly)),"codecs-extra must use version=");
+        try {
+            PackageMounts.mountPoint(codecs,parent,gnomeOnly);
+            throw new AssertionError("codecs-extra//26.08 accepted although GNOME declares only 26.08-extra");
+        } catch(IOException expected) {
+            check(expected.getMessage().contains(codecs),"missing parent error must name the extension: "+expected.getMessage());
+        }
+        DeploymentRecord klotski=record("app/org.gnome.Klotski/x86_64/stable","[Application]\nruntime=org.gnome.Platform/x86_64/51\n",dep(gnome,"/usr"));
+        Map<String,String> klotskiTargets=PackageMounts.launchTargets(Arrays.asList(klotski,
+                record(gnome,gnomeOnlyMeta,dep(gl,"/usr/lib/x86_64-linux-gnu/GL/default")),record(gl,parent)));
+        check("/usr/lib/x86_64-linux-gnu/GL/default".equals(klotskiTargets.get(gl)),"GL launch target under GNOME runtime: "+klotskiTargets);
+        System.out.println("PASS freedesktop extensions mount under a GNOME runtime when freedesktop is not staged");
+
         String duplicateA="runtime/org.example.ExtensionA/x86_64/stable";
         String duplicateB="runtime/org.example.ExtensionB/x86_64/stable";
         String duplicateRuntime="runtime/org.example.Platform/x86_64/stable";

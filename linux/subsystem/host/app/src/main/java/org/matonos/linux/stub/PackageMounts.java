@@ -81,14 +81,10 @@ public final class PackageMounts {
                 org.matonos.linuxhost.stubgen.DeploymentRecord child=records.get(dependency.ref);
                 if(child==null)throw new IOException("Launch dependency is missing from the signed package graph: "+dependency.ref);
                 String declaredParent=extensionParent(metadata.get(child.ref));
-                boolean belongs=parentRef.equals(declaredParent);
-                String pointMetadata=metadata.get(parentRef);
-                if(!belongs&&declaredParent!=null) {
-                    Parent resolved=plannedX86_64Parent(child.ref,extensionId(child.ref),declaredParent,metadata);
-                    belongs=resolved!=null&&parentRef.equals(resolved.ref);
-                    if(belongs)pointMetadata=resolved.metadata;
-                }
-                if(!belongs)continue;
+                if(declaredParent==null)continue;
+                Parent resolved=resolveParent(child.ref,declaredParent,metadata);
+                if(!parentRef.equals(resolved.ref))continue;
+                String pointMetadata=resolved.metadata;
                 byMetadata.computeIfAbsent(pointMetadata,ignored->new java.util.ArrayList<>()).add(dependency);
             }
             for(java.util.Map.Entry<String,java.util.List<org.matonos.linuxhost.stubgen.DeploymentRecord.Dependency>> group:byMetadata.entrySet()) {
@@ -152,12 +148,7 @@ public final class PackageMounts {
     }
     public static String mountPoint(String ref,String metadata,java.util.Map<String,String> parentMetadata) throws IOException {
         String parent=extensionParent(metadata);if(parent==null){if(ref.startsWith("runtime/"))return "/usr";throw new IOException("Application deployment is not a Flatpak extension: "+ref);}
-        String parentText=parentMetadata.get(parent);
-        if(parentText==null) {
-            Parent resolved=plannedX86_64Parent(ref,extensionId(ref),parent,parentMetadata);
-            if(resolved!=null){parent=resolved.ref;parentText=resolved.metadata;}
-        }
-        if(parentText==null)throw new IOException("Extension parent deployment is missing: "+parent);
+        Parent resolved=resolveParent(ref,parent,parentMetadata);parent=resolved.ref;String parentText=resolved.metadata;
         String id=extensionId(ref);String dir=extensionDirectory(parentText,id);if(dir==null)throw new IOException("Flatpak metadata has no directory for extension "+id);return (parent.startsWith("app/")?"/app/":"/usr/")+dir;
     }
     /**
@@ -169,6 +160,54 @@ public final class PackageMounts {
     private static final class Parent {
         final String ref,metadata;
         Parent(String ref,String metadata){this.ref=ref;this.metadata=metadata;}
+    }
+    /** The staged ref an extension mounts into, or null for a non-extension (see resolveParent). */
+    public static String mountParent(String ref,String metadata,java.util.Map<String,String> staged) throws IOException {
+        String declared=extensionParent(metadata);return declared==null?null:resolveParent(ref,declared,staged).ref;
+    }
+    /**
+     * ExtensionOf.ref when that parent is staged. Otherwise the staged runtime or app
+     * that declares a matching extension point, as Flatpak mounts by declaration:
+     * org.gnome.Platform declares the freedesktop GL/codecs/GStreamer points, so their
+     * extensions name an org.freedesktop.Platform parent that is never installed.
+     */
+    private static Parent resolveParent(String extension,String declared,
+            java.util.Map<String,String> metadata) throws IOException {
+        String text=metadata.get(declared);if(text!=null)return new Parent(declared,text);
+        Parent resolved=plannedX86_64Parent(extension,extensionId(extension),declared,metadata);
+        if(resolved==null)resolved=declaringParent(extension,metadata);
+        if(resolved==null)throw new IOException("Extension parent deployment is missing for "+extension+
+                ": "+declared+" is not staged and no staged ref declares its extension point");
+        return resolved;
+    }
+    private static Parent declaringParent(String extension,java.util.Map<String,String> metadata) throws IOException {
+        String[] parts=extension.split("/",-1);if(parts.length!=4)return null;
+        String id=extensionId(extension);Parent match=null;
+        for(java.util.Map.Entry<String,String> entry:metadata.entrySet()) {
+            if(entry.getKey().equals(extension))continue;
+            String[] candidate=entry.getKey().split("/",-1);
+            if(candidate.length!=4||!candidate[2].equals(parts[2]))continue;
+            String point=extensionPoint(entry.getValue(),id);if(point==null)continue;
+            if(!pointVersions(entry.getValue(),point,candidate[3]).contains(parts[3]))continue;
+            Parent found=new Parent(entry.getKey(),entry.getValue());
+            if(match!=null&&!match.ref.equals(found.ref))
+                throw new IOException("Ambiguous staged parent for extension "+extension+": "+match.ref+" and "+found.ref);
+            match=found;
+        }
+        return match;
+    }
+    private static String extensionPoint(String metadata,String id) throws IOException {
+        for(String candidate=id;;) {
+            if(value(metadata,"Extension "+candidate,"directory")!=null)return candidate;
+            int dot=candidate.lastIndexOf('.');if(dot<1)return null;candidate=candidate.substring(0,dot);
+        }
+    }
+    /** Flatpak: versions= (;-separated) wins, then version=, else the parent's own branch. */
+    private static java.util.List<String> pointVersions(String metadata,String point,String parentBranch) throws IOException {
+        String versions=value(metadata,"Extension "+point,"versions");
+        if(versions!=null)return java.util.Arrays.asList(versions.split(";",-1));
+        String version=value(metadata,"Extension "+point,"version");
+        return java.util.List.of(version!=null?version:parentBranch);
     }
     private static Parent plannedX86_64Parent(String extension,String id,String missingParent,
             java.util.Map<String,String> metadata) throws IOException {

@@ -66,7 +66,7 @@ public final class StorePackages {
             for(String item:refs)dependencies.put(item,new ArrayList<>());
             for(String item:refs)if(!item.equals(ref))dependencies.get(ref).add(item);
             for(String parent:refs)if(!parent.equals(ref))for(String child:refs)
-                if(!child.equals(parent)&&parent.equals(PackageMounts.extensionParent(metadata.get(child))))dependencies.get(parent).add(child);
+                if(!child.equals(parent)&&parent.equals(PackageMounts.mountParent(child,metadata.get(child),metadata)))dependencies.get(parent).add(child);
             JSONArray rows=new JSONArray();
             for(String item:refs)rows.put(new JSONObject(manifests.get(item).toString()).put("ref",item)
                     .put("commit",manifests.get(item).getString("appCommit"))
