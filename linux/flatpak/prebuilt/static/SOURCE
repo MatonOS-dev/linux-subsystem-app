@@ -9,7 +9,7 @@ ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462e
 flatpak|git|https://github.com/MatonOS-dev/flatpak|aa04a5765686f766f590cb6a20b01b0b452fcd61|-
 flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
 variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
-DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
+DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|e3f321d522751de1e4865bdfbed0fa8d85e277ae|-
 zstd|tar|https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz|1.5.7|eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 libxml2|tar|https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.2.tar.xz|2.15.2|c8b9bc81f8b590c33af8cc6c336dbff2f53409973588a351c95f1c621b13d09d
 json-glib|tar|https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.8.tar.xz|1.10.8|55c5c141a564245b8f8fbe7698663c87a45a7333c2a2c56f06f811ab73b212dd
@@ -33,7 +33,7 @@ toolchain: Alpine 3.24.2; x86_64-alpine-linux-musl-gcc (Alpine 15.2.0) 15.2.0; m
 
 
 static musl APK helper artifacts
-43c486edc156070cd844699e6a7bf31a66acc25a086f7b5e437017e57bde226d  matonos-flatpak
+f6056a5d0b5164f0a7da4abe2eb08bcfb2240d6966af88304a9efdb4ddf9cef5  matonos-flatpak
 be389e69d4d11f3394ba54a3fb723958f0ca2ea3d58427ebfb4fef138668d532  matonos-app-flatpak
 c377c15b6ba90df136082e2786ea1f22751a590ceaa0584eb6070f484bb0ace0  matonos-app-bwrap
 7ad291c8b94f97f67ee77fda26ec0e7cfe47f4d6952adf46637bce6f0447aaa5  matonos-app-tool
