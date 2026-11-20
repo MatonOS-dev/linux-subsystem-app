@@ -1,6 +1,7 @@
 package org.matonos.linux;
 
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.pm.*;
 import android.os.*;
@@ -23,12 +24,18 @@ public final class FlatpakSourceService extends Service {
     private static final String TAG="FlatpakSource";
     private StoreFlatpak flatpak;
     private final SourceOperations operations=new SourceOperations();
-    private List<Map<String,Object>> cachedCatalogue;
+    private volatile List<Map<String,Object>> cachedCatalogue;
+    private final Object mutationLock=new Object();
+    private final Object updateLock=new Object();
+    private volatile AppListing[] cachedUpdates;
+    private volatile long cachedUpdatesAt;
+    private static final long UPDATE_CACHE_MILLIS=60_000L;
     private final Map<String,List<Map<String,Object>>> cachedCollections=new HashMap<>();
     private Map<String, JSONObject> cachedRatings;
     private final Map<String,Boolean> verifiedApps=new java.util.concurrent.ConcurrentHashMap<>();
-    private final Map<String,Boolean> brokenRemotes=new HashMap<>();
+    private final Map<String,Boolean> brokenRemotes=new java.util.concurrent.ConcurrentHashMap<>();
     private android.os.PowerManager.WakeLock installWakeLock;
+    private BroadcastReceiver packageReceiver;
     private synchronized void beginInstall() {
         android.app.NotificationManager manager=getSystemService(android.app.NotificationManager.class);
         manager.createNotificationChannel(new android.app.NotificationChannel("store-source-install","Software Centre downloads",android.app.NotificationManager.IMPORTANCE_LOW));
@@ -43,13 +50,27 @@ public final class FlatpakSourceService extends Service {
         if(active.isEmpty())stopForeground(STOP_FOREGROUND_REMOVE);
     }
     private final Set<String> active=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    @Override public void onCreate() {
+        super.onCreate();
+        packageReceiver=new BroadcastReceiver() {
+            @Override public void onReceive(android.content.Context context,Intent intent) { invalidateUpdates(); }
+        };
+        android.content.IntentFilter filter=new android.content.IntentFilter();
+        filter.addAction(Intent.ACTION_PACKAGE_ADDED);filter.addAction(Intent.ACTION_PACKAGE_REMOVED);filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
+        filter.addDataScheme("package");
+        registerReceiver(packageReceiver,filter,android.content.Context.RECEIVER_NOT_EXPORTED);
+    }
+    @Override public void onDestroy() {
+        if(packageReceiver!=null)unregisterReceiver(packageReceiver);
+        super.onDestroy();
+    }
     private interface Call<T> {T run() throws Exception;}
-    private synchronized <T> T call(String operation,Call<T> body) {
+    private <T> T call(String operation,Call<T> body) {
         try {ensure();return body.run();}
         catch(IllegalArgumentException|IllegalStateException|SecurityException|UnsupportedOperationException error){Log.e(TAG,operation+" failed",error);throw error;}
         catch(Exception error){Log.e(TAG,operation+" failed",error);throw new IllegalStateException(operation+": "+error,error);}
     }
-    private void ensure() throws Exception {
+    private synchronized void ensure() throws Exception {
         if(flatpak!=null)return;
         StoreFlatpak candidate=new StoreFlatpak(this,new File(getNoBackupFilesDir(),"store-flatpak"));
         if(!new File(candidate.root,"configured").exists()){candidate.preset();Files.write(new File(candidate.root,"configured").toPath(),new byte[]{49});}
@@ -91,7 +112,7 @@ public final class FlatpakSourceService extends Service {
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
         @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
-        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->{List<Map<String,Object>> page=new ArrayList<>(SourcePaging.page(AppStreamCatalogue.search(catalogue(),term),offset,limit));return SourceTypes.listings(withRepositoryOptions(withRatings(page)),0,page.size());});}
+        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->{List<Map<String,Object>> page=copyRows(SourcePaging.page(AppStreamCatalogue.search(catalogue(),term),offset,limit));return SourceTypes.listings(withRepositoryOptions(withRatings(page)),0,page.size());});}
         @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(withRepositoryOptions(collectionListings(kind)),offset,limit));}
         @Override public PopularApp[] getPopularApps(int limit){return call("popular apps limit="+limit,()->popularApps(limit));}
         @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
@@ -122,7 +143,17 @@ public final class FlatpakSourceService extends Service {
         });}
         @Override public Review[] reviews(String id,int offset,int limit){return call("reviews id="+id,()->SourceTypes.reviews(new JSONArray(odrs(id)),offset,limit));}
         @Override public AppListing[] installed(int offset,int limit){return call("installed",()->SourceTypes.listings(withRepositoryOptions(installedListings(false)),offset,limit));}
-        @Override public AppListing[] updates(int offset,int limit){return call("updates",()->SourceTypes.listings(withRepositoryOptions(installedListings(true)),offset,limit));}
+        @Override public AppListing[] updates(int offset,int limit){return call("updates",()->{
+            AppListing[] rows=cachedUpdates;
+            if(rows==null||System.currentTimeMillis()-cachedUpdatesAt>UPDATE_CACHE_MILLIS) synchronized(updateLock) {
+                rows=cachedUpdates;
+                if(rows==null||System.currentTimeMillis()-cachedUpdatesAt>UPDATE_CACHE_MILLIS) {
+                    rows=SourceTypes.listings(installedListings(true),0,Integer.MAX_VALUE);
+                    cachedUpdates=rows;cachedUpdatesAt=System.currentTimeMillis();
+                }
+            }
+            return page(rows,offset,limit);
+        });}
         @Override public SourceSetting[] settings(){return call("settings",()->{
             List<SourceSetting> result=new ArrayList<>();
             SourceSetting beta=new SourceSetting();beta.id="flathub_beta";beta.label="Enable Flathub Beta (testing versions)";beta.type="boolean";
@@ -142,7 +173,7 @@ public final class FlatpakSourceService extends Service {
             return result.toArray(new SourceSetting[0]);
         });}
         private SourceSetting setting(String id,String label,String type,String value){SourceSetting row=new SourceSetting();row.id=id;row.label=label;row.type=type;row.value=value;return row;}
-        @Override public String setSetting(String id,String value){return call("setSetting id="+id,()->{
+        @Override public String setSetting(String id,String value){return call("setSetting id="+id,()->{synchronized(mutationLock){
             if("flathub_beta".equals(id)){
                 boolean enabled=FlathubBetaPolicy.parseEnabled(value);
                 List<String> installed=new ArrayList<>();if(!enabled){JSONArray apps=installedListings(false);for(int i=0;i<apps.length();i++){JSONObject app=apps.getJSONObject(i);if(app.optString("origin").equals(FlathubBetaPolicy.REMOTE))installed.add(app.optString("name",app.optString("id")));}}
@@ -150,13 +181,13 @@ public final class FlatpakSourceService extends Service {
                     @Override public void enable() throws Exception {flatpak.cli("remote-add","--system","--if-not-exists","--from","--title","Flathub Beta",FlathubBetaPolicy.REMOTE,FlathubBetaPolicy.DESCRIPTOR);flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.STABLE_PRIORITY,"flathub");flatpak.cli("remote-modify","--system","--prio="+FlathubBetaPolicy.BETA_PRIORITY,FlathubBetaPolicy.REMOTE);}
                     @Override public void remove() throws Exception {flatpak.cli("remote-delete","--system",FlathubBetaPolicy.REMOTE);}
                 });if(error!=null)return error;
-                cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;
+                cachedCatalogue=null;invalidateUpdates();synchronized(cachedCollections){cachedCollections.clear();}return null;
             }
-            if(id!=null&&id.startsWith("remote-enabled:")){String remote=id.substring("remote-enabled:".length());validateRemote(remote);flatpak.cli("remote-modify","--system",Boolean.parseBoolean(value)?"--enable":"--disable",remote);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;}
-            if(id!=null&&id.startsWith("repository:")&&value==null){String remote=id.substring("repository:".length());validateRemote(remote);if(remote.equals("flathub")||remote.equals("flatpark")||remote.equals("flathub-beta"))return "Built-in repository cannot be removed";flatpak.cli("remote-delete","--system",remote);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}return null;}
+            if(id!=null&&id.startsWith("remote-enabled:")){String remote=id.substring("remote-enabled:".length());validateRemote(remote);flatpak.cli("remote-modify","--system",Boolean.parseBoolean(value)?"--enable":"--disable",remote);cachedCatalogue=null;invalidateUpdates();synchronized(cachedCollections){cachedCollections.clear();}return null;}
+            if(id!=null&&id.startsWith("repository:")&&value==null){String remote=id.substring("repository:".length());validateRemote(remote);if(remote.equals("flathub")||remote.equals("flatpark")||remote.equals("flathub-beta"))return "Built-in repository cannot be removed";flatpak.cli("remote-delete","--system",remote);cachedCatalogue=null;invalidateUpdates();synchronized(cachedCollections){cachedCollections.clear();}return null;}
             return "Unknown or read-only setting";
-        });}
-        @Override public ActionResult runAction(String id,String[] values,boolean confirmed){ActionResult result=new ActionResult();if(!"add_repository".equals(id)){result.error="Unknown action";return result;}try{String url=values.length>0?values[0].trim():"";String name=values.length>1?values[1].trim():"";URI uri=URI.create(url);if(!"https".equals(uri.getScheme())||uri.getHost()==null)throw new IllegalArgumentException("Repository descriptor requires an HTTPS host");String remote="store-"+java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(url.getBytes(StandardCharsets.UTF_8)));String title=name.isBlank()?uri.getHost():name;if(url.endsWith(".flatpakrepo"))flatpak.cli("remote-add","--system","--if-not-exists","--from","--title",title,remote,url);else flatpak.cli("remote-add","--system","--if-not-exists","--title",title,remote,url);cachedCatalogue=null;synchronized(cachedCollections){cachedCollections.clear();}}catch(Exception error){result.error=error.getMessage();}return result;}
+        }});}
+        @Override public ActionResult runAction(String id,String[] values,boolean confirmed){return call("runAction id="+id,()->{ActionResult result=new ActionResult();if(!"add_repository".equals(id)){result.error="Unknown action";return result;}synchronized(mutationLock){try{String url=values.length>0?values[0].trim():"";String name=values.length>1?values[1].trim():"";URI uri=URI.create(url);if(!"https".equals(uri.getScheme())||uri.getHost()==null)throw new IllegalArgumentException("Repository descriptor requires an HTTPS host");String remote="store-"+java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(url.getBytes(StandardCharsets.UTF_8)));String title=name.isBlank()?uri.getHost():name;if(url.endsWith(".flatpakrepo"))flatpak.cli("remote-add","--system","--if-not-exists","--from","--title",title,remote,url);else flatpak.cli("remote-add","--system","--if-not-exists","--title",title,remote,url);cachedCatalogue=null;invalidateUpdates();synchronized(cachedCollections){cachedCollections.clear();}}catch(Exception error){result.error=error.getMessage();}return result;}});}
         @Override public void cancel(String operation){operations.cancel(operation);}
         @Override public boolean running(String operation){return operations.running(operation);}
         @Override public void install(String id,String repo,String operation,IInstallCallback callback){
@@ -174,10 +205,9 @@ public final class FlatpakSourceService extends Service {
                 boolean began=false;
                 try {
                     beginInstall();began=true;op.check();
-                    synchronized(FlatpakSourceService.this){ensure();}
-                    op.check();StorePackages.install(FlatpakSourceService.this,flatpak,candidate,operation,terminal,op);
+                    ensure();op.check();synchronized(mutationLock){StorePackages.install(FlatpakSourceService.this,flatpak,candidate,operation,terminal,op);}
                 }catch(Exception error){Log.e(TAG,"install id="+id+" repo="+repo+" op="+operation+" failed",error);try{terminal.failed(operation,error.toString());}catch(RemoteException delivery){Log.e(TAG,"failed callback op="+operation,delivery);}}
-                finally{op.finish();if(began)endInstall(operation);else active.remove(operation);}
+                finally{invalidateUpdates();op.finish();if(began)endInstall(operation);else active.remove(operation);}
             },"flatpak-source-install");
             op.worker=worker;worker.start();
         }
@@ -196,7 +226,7 @@ public final class FlatpakSourceService extends Service {
         }
         return result;
     }
-    private List<Map<String,Object>> catalogue() throws Exception {
+    private synchronized List<Map<String,Object>> catalogue() throws Exception {
         if(cachedCatalogue!=null)return cachedCatalogue;
         List<String> readableRemotes=new ArrayList<>();JSONArray remotes=repositories();
         for(int i=0;i<remotes.length();i++) {
@@ -221,13 +251,19 @@ public final class FlatpakSourceService extends Service {
             }}
             return rows;
         },(remote,stage,error)->Log.e(TAG,"AppStream "+stage+" failed remote="+remote+"; "+(stage.equals("refresh")?"checking cached XML":"skipping remote"),error));
-        cachedCatalogue=result;return result;
+        cachedCatalogue=result;invalidateUpdates();return result;
     }
 
     private JSONArray withRepositoryOptions(JSONArray rows) throws Exception {
         List<Map<String,Object>> values=new ArrayList<>();
         for(int i=0;i<rows.length();i++){JSONObject object=rows.getJSONObject(i);Map<String,Object> value=new LinkedHashMap<>();Iterator<String> keys=object.keys();while(keys.hasNext()){String key=keys.next();value.put(key,object.get(key));}values.add(value);}
         JSONArray result=new JSONArray();for(Map<String,Object> value:withRepositoryOptions(values))result.put(new JSONObject(value));return result;
+    }
+
+    private static List<Map<String,Object>> copyRows(List<Map<String,Object>> rows) {
+        List<Map<String,Object>> result=new ArrayList<>(rows.size());
+        for(Map<String,Object> row:rows)result.add(new LinkedHashMap<>(row));
+        return result;
     }
 
     private List<Map<String,Object>> withRepositoryOptions(List<Map<String,Object>> rows) throws Exception {
@@ -267,7 +303,7 @@ public final class FlatpakSourceService extends Service {
     }
     private List<Map<String,Object>> collectionListings(String kind) throws Exception {
         if(!"popular".equals(kind)&&!"new".equals(kind))return Collections.emptyList();
-        synchronized(cachedCollections){List<Map<String,Object>> cached=cachedCollections.get(kind);if(cached!=null)return cached;}
+        synchronized(cachedCollections){List<Map<String,Object>> cached=cachedCollections.get(kind);if(cached!=null)return copyRows(cached);}
         String collection="new".equals(kind)?"recently-added":"popular";
         JSONArray response=getJson("https://flathub.org/api/v2/collection/"+collection).getJSONArray("hits");
         Map<String,Map<String,Object>> appsById=new HashMap<>();
@@ -286,7 +322,7 @@ public final class FlatpakSourceService extends Service {
             JSONObject rating=ratingFor(hit.optString("app_id"));if(rating!=null)listing.put("rating",rating);
             result.add(listing);
         }
-        synchronized(cachedCollections){cachedCollections.put(kind,result);}return result;
+        synchronized(cachedCollections){cachedCollections.put(kind,copyRows(result));}return copyRows(result);
     }
     private PopularApp[] popularApps(int limit) throws Exception {
         if(limit<=0)throw new IllegalArgumentException("limit must be positive");
@@ -349,14 +385,22 @@ public final class FlatpakSourceService extends Service {
     }
     private Map<String,Object> find(String id) throws Exception {return find(id,null);}
     private Map<String,Object> find(String id,String repo) throws Exception {
-        return SourceCandidates.find(catalogue(),id,repo);
+        return new LinkedHashMap<>(SourceCandidates.find(catalogue(),id,repo));
     }
 
+    private void invalidateUpdates() { cachedUpdates=null;cachedUpdatesAt=0; }
+    private static AppListing[] page(AppListing[] rows,int offset,int limit) {
+        if(offset<0||limit<=0)throw new IllegalArgumentException("offset must be non-negative and limit positive");
+        if(offset>=rows.length)return new AppListing[0];
+        return Arrays.copyOfRange(rows,offset,(int)Math.min((long)rows.length,(long)offset+limit));
+    }
     private JSONArray installedListings(boolean updates) throws Exception {
-        if(updates)cachedCatalogue=null;
         Set<String> selected=flatpak.installedRefs(updates);
         List<Map<String,Object>> catalogue;
-        try{catalogue=catalogue();}catch(Exception error){
+        if(updates) {
+            catalogue=cachedCatalogue;
+            if(catalogue==null)catalogue=Collections.emptyList();
+        } else try{catalogue=catalogue();}catch(Exception error){
             Log.e(TAG,"Cannot decorate installed refs with AppStream; retaining signed installed listings",error);catalogue=Collections.emptyList();
         }
         JSONArray result=new JSONArray();
@@ -371,7 +415,7 @@ public final class FlatpakSourceService extends Service {
             Map<String,Object> listing=new LinkedHashMap<>();for(Map<String,Object> row:catalogue)if(record.ref.equals(row.get("ref"))&&origin.name.equals(row.get("origin"))){listing.putAll(row);break;}
             listing.put("id",record.ref);listing.put("name",listing.getOrDefault("name",parts[1]));listing.put("origin",origin.name);listing.put("packageName",pkg.packageName);listing.put("installed",true);
             Map<String,Object> visible=AppStreamCatalogue.search(Collections.singletonList(listing),"").get(0);
-            JSONObject rating=ratingFor(parts[1]);if(rating!=null)visible.put("rating",rating);
+            if(!updates){JSONObject rating=ratingFor(parts[1]);if(rating!=null)visible.put("rating",rating);}
             result.put(new JSONObject(visible));
         }
         return result;

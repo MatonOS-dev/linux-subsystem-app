@@ -16,8 +16,8 @@ public final class StoreFlatpak {
         this.context=context;this.root=root;installation=new File(root,"installation");
         for(String dir:Arrays.asList("installation","home","cache","tmp","run"))Files.createDirectories(new File(root,dir).toPath());
     }
-    public synchronized String cli(String... arguments) throws Exception {return command(LoaderCommand.FLATPAK_CLI,arguments);}
-    public synchronized String helper(String... arguments) throws Exception {return command("libmatonos-flatpak-plan.so",arguments);}
+    public String cli(String... arguments) throws Exception {return command(LoaderCommand.FLATPAK_CLI,arguments);}
+    public String helper(String... arguments) throws Exception {return command("libmatonos-flatpak-plan.so",arguments);}
     private String command(String tool,String... arguments) throws Exception {
         boolean flatpak=LoaderCommand.FLATPAK_CLI.equals(tool);
         boolean verbose=flatpak&&verboseEnabled();
@@ -71,7 +71,7 @@ public final class StoreFlatpak {
         for(String line:cli("remotes","--system","--columns=name,url").split("\n")) {
             if(line.isBlank())continue;
             String[] fields=line.split("\t",-1);if(fields.length!=2)throw new IOException("Malformed remote row: "+line);
-            String encoded=origin(fields[0]);
+            String encoded=fields[0].equals("flathub")?"flathub":origin(fields[0],fields[1]);
             File descriptor=new File(target.root,fields[0]+".flatpakrepo");
             if(encoded.equals("flathub")) {
                 try(InputStream input=context.getAssets().open("flatpak/remotes.d/flathub.flatpakrepo")) {
@@ -86,12 +86,14 @@ public final class StoreFlatpak {
         if(!name.matches("[A-Za-z0-9_][A-Za-z0-9_.-]*"))throw new IOException("Invalid remote name: "+name);
         for(String line:cli("remotes","--system","--columns=name,url").split("\n")) {
             String[] fields=line.split("\t",-1);
-            if(fields.length==2&&fields[0].equals(name)) {
-                byte[] key=org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(installation,"repo/"+name+".trustedkeys.gpg"));
-                return new org.matonos.linuxhost.stubgen.RemoteOrigin(name,fields[1],Base64.getEncoder().encodeToString(key)).encode();
-            }
+            if(fields.length==2&&fields[0].equals(name))return origin(name,fields[1]);
         }
         throw new IOException("Remote disappeared: "+name);
+    }
+    private String origin(String name,String url) throws Exception {
+        if(!name.matches("[A-Za-z0-9_][A-Za-z0-9_.-]*"))throw new IOException("Invalid remote name: "+name);
+        byte[] key=org.matonos.linuxhost.stubgen.PlaceholderFiles.readAllBytes(new File(installation,"repo/"+name+".trustedkeys.gpg"));
+        return new org.matonos.linuxhost.stubgen.RemoteOrigin(name,url,Base64.getEncoder().encodeToString(key)).encode();
     }
     /** Reconstruct only signed deployment metadata; payloads stay in their Android packages. */
     public Set<String> installedRefs(boolean updates) throws Exception {
