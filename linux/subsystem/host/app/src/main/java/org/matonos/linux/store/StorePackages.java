@@ -76,12 +76,26 @@ public final class StorePackages {
             Map<String,File> artifacts=new LinkedHashMap<>();List<CommitChain.Package> packages=new ArrayList<>();
             ForkJoinPool pool=new ForkJoinPool(Runtime.getRuntime().availableProcessors());
             try {
-                for(int i=0;i<refs.size();i++) {
-                    cancellation.check();String item=refs.get(i),pkg=DeployManifest.packageForPublic(item);JSONObject identity=manifests.get(item);
-                    String mount=item.equals(ref)?"/app":PackageMounts.mountPoint(item,metadata.get(item),metadata);
-                    JSONObject manifest=new JSONObject(identity.toString()).put("origin",catalogue.origin(origins.get(item)))
-                            .put("mount",mount).put("dependencies",new JSONArray(dependencies.get(item))).put("deployments",rows);
-                    File artifactsDir=new File(work,"package-"+i),objects=new File(artifactsDir,"objects");Files.createDirectories(artifactsDir.toPath());
+                // One Android package owns every branch of a Flatpak id (e.g. GL.default 25.08 and 25.08-extra);
+                // each branch is its own deployment split inside that package.
+                Map<String,List<String>> groups=new LinkedHashMap<>();
+                for(String item:refs)groups.computeIfAbsent(DeployManifest.packageForPublic(item),key->new ArrayList<>()).add(item);
+                int index=0;
+                for(Map.Entry<String,List<String>> group:groups.entrySet()) {
+                    cancellation.check();String pkg=group.getKey();List<String> members=group.getValue();
+                    // The base describes the requested app, else the last branch: Flatpak binds branches in order, last wins.
+                    String primary=members.contains(ref)?ref:members.get(members.size()-1);
+                    Map<String,String> mountsOf=new LinkedHashMap<>();
+                    for(String item:members)mountsOf.put(item,item.equals(ref)?"/app":PackageMounts.mountPoint(item,metadata.get(item),metadata));
+                    String mount=mountsOf.get(primary);
+                    for(String item:members)if(!mountsOf.get(item).equals(mount))
+                        throw new IOException("Flatpak branches of "+pkg+" mount at different paths: "+primary+" at "+mount+", "+item+" at "+mountsOf.get(item));
+                    String extraItem=null;
+                    for(String item:members)if(StoreExtraData.required(metadata.get(item))) {
+                        if(extraItem!=null)throw new IOException("More than one extra-data branch in "+pkg+": "+extraItem+" and "+item);
+                        extraItem=item;
+                    }
+                    File artifactsDir=new File(work,"package-"+(index++));Files.createDirectories(artifactsDir.toPath());
                     PackageInfo prior=null;try {prior=context.getPackageManager().getPackageInfo(pkg,PackageManager.GET_SIGNING_CERTIFICATES);}
                     catch(PackageManager.NameNotFoundException absent) { }
                     boolean priorHasState=false;
@@ -90,9 +104,9 @@ public final class StorePackages {
                         List<DeploymentRecord> priorRecords;
                         try{priorRecords=DeploymentRecord.installedAll(prior.splitNames,prior.applicationInfo.splitSourceDirs);priorHasState=true;}
                         catch(IOException missingState){Log.w("FlatpakSource","Existing package has no installed Flatpak state package="+pkg+"; treating as empty",missingState);priorRecords=Collections.emptyList();}
-                        for(DeploymentRecord installed:priorRecords) {
+                        for(DeploymentRecord installed:priorRecords)for(String item:members) {
                             String installedId=installed.ref.split("/",-1)[1];
-                            if(!installedId.equals(identity.getString("appRef").split("/",-1)[1]))
+                            if(!installedId.equals(manifests.get(item).getString("appRef").split("/",-1)[1]))
                                 throw new IOException("Android package name collision: "+pkg+" already belongs to Flatpak app id "+installedId);
                             if(installed.ref.equals(item)&&!installed.remote.equals(catalogue.origin(origins.get(item))))
                                 throw new IOException("Existing package has another origin: "+pkg+"; uninstall before changing origin");
@@ -100,56 +114,64 @@ public final class StorePackages {
                                 throw new IOException("Android split name collision between Flatpak refs "+installed.ref+" and "+item);
                         }
                     }
-                    // StagedPacks uses a private pack-repo in installation.getParentFile(); clear it per package.
-                    File packRepo=new File(work,"pack-repo");if(packRepo.exists())WorkDirs.remove(packRepo);
-                    StagedPacks.build(context,staging.installation,manifest,objects,cancellation,prior,pool);
                     File scratch=new File(artifactsDir,"signing");Files.createDirectories(scratch.toPath());
-                    boolean launchable=item.equals(ref);String appId=item.split("/")[1];
-                    LauncherData launcher=LauncherData.resolve(DeployManifest.stagedDeployment(staging.installation,identity),appId,
-                            new File(DeployManifest.stagedDeployment(staging.installation,identity),"files/extra"),null);
-                    byte[] icon=launcher.icon==null?fallbackIcon():LauncherData.insetIcon(launcher.icon);
-                    List<String> required=new ArrayList<>();Map<String,String> mounts=new TreeMap<>();
-                    for(String dep:dependencies.get(item)) {
-                        String target=PackageMounts.mountPoint(dep,metadata.get(dep),metadata);
-                        String depPkg=DeployManifest.packageForPublic(dep);required.add(depPkg);mounts.put(dep,depPkg+">"+target);
-                    }
-                    File base=new File(artifactsDir,"base.apk");
-                    StubGenerator.generatePackage(scratch,item,origins.get(item),launcher.label,icon,
-                            StubGenerator.permissionsForMetadata(metadata.get(item)),pkg,base,objects,required,mounts,launchable,mount,StoreExtraData.required(metadata.get(item)));
-                    List<String> previous=prior==null||prior.splitNames==null?Collections.emptyList():Arrays.asList(prior.splitNames);
                     boolean full=prior==null||!priorHasState||prior.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE;
                     int revision=PackSessionPlan.nextRevision(prior==null?0:prior.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
                             prior==null?0:prior.baseRevisionCode,prior==null?null:prior.splitRevisionCodes);
-                    List<String> desired=new ArrayList<>();
-                    File image=new File(objects,"deployment.erofs");
-                    String deploymentSplit=DeployManifest.splitForPublic(item);desired.add(deploymentSplit);
-                    StubGenerator.generateDeploymentSplit(scratch,pkg,item,objects,image,
-                            new File(artifactsDir,deploymentSplit+".apk"),revision);
+                    List<String> desired=new ArrayList<>(),replacements=new ArrayList<>();
+                    List<String> required=new ArrayList<>();Map<String,String> mounts=new TreeMap<>();
+                    File primaryObjects=null;
+                    for(int j=0;j<members.size();j++) {
+                        cancellation.check();String item=members.get(j);
+                        JSONObject manifest=new JSONObject(manifests.get(item).toString()).put("origin",catalogue.origin(origins.get(item)))
+                                .put("mount",mount).put("dependencies",new JSONArray(dependencies.get(item))).put("deployments",rows);
+                        // StoreExtraData expects the extra-data branch's objects at <artifacts>/objects.
+                        File objects=new File(artifactsDir,item.equals(extraItem)?"objects":"objects-"+j);
+                        // StagedPacks uses a private pack-repo in installation.getParentFile(); clear it per deployment.
+                        File packRepo=new File(work,"pack-repo");if(packRepo.exists())WorkDirs.remove(packRepo);
+                        StagedPacks.build(context,staging.installation,manifest,objects,cancellation,prior,pool);
+                        String deploymentSplit=DeployManifest.splitForPublic(item);desired.add(deploymentSplit);replacements.add(deploymentSplit);
+                        StubGenerator.generateDeploymentSplit(scratch,pkg,item,objects,new File(objects,"deployment.erofs"),
+                                new File(artifactsDir,deploymentSplit+".apk"),revision);
+                        if(item.equals(primary))primaryObjects=objects;
+                        for(String dep:dependencies.get(item)) {
+                            String depPkg=DeployManifest.packageForPublic(dep);
+                            if(depPkg.equals(pkg))throw new IOException("Flatpak ref "+item+" depends on its own Android package via "+dep);
+                            if(!required.contains(depPkg))required.add(depPkg);
+                            mounts.put(dep,depPkg+">"+PackageMounts.mountPoint(dep,metadata.get(dep),metadata));
+                        }
+                    }
+                    boolean launchable=members.contains(ref);String appId=primary.split("/")[1];JSONObject identity=manifests.get(primary);
+                    LauncherData launcher=LauncherData.resolve(DeployManifest.stagedDeployment(staging.installation,identity),appId,
+                            new File(DeployManifest.stagedDeployment(staging.installation,identity),"files/extra"),null);
+                    byte[] icon=launcher.icon==null?fallbackIcon():LauncherData.insetIcon(launcher.icon);
+                    File base=new File(artifactsDir,"base.apk");
+                    StubGenerator.generatePackage(scratch,primary,origins.get(primary),launcher.label,icon,
+                            StubGenerator.permissionsForMetadata(metadata.get(primary)),pkg,base,primaryObjects,required,mounts,launchable,mount,extraItem!=null);
                     String launchSplit=null;
                     if(launchable) {
-                        launchSplit=StubGenerator.launcherSplitName(item,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon);desired.add(launchSplit);
-                        StubGenerator.generateLauncher(scratch,pkg,item,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon,new File(artifactsDir,launchSplit+".apk"),revision);
+                        launchSplit=StubGenerator.launcherSplitName(primary,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon);desired.add(launchSplit);replacements.add(launchSplit);
+                        StubGenerator.generateLauncher(scratch,pkg,primary,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon,new File(artifactsDir,launchSplit+".apk"),revision);
                     }
+                    List<String> previous=prior==null||prior.splitNames==null?Collections.emptyList():Arrays.asList(prior.splitNames);
                     List<String> retained=new ArrayList<>();
                     if(prior!=null)for(String split:previous)if(split.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+")||split.matches("launcher_[0-9a-f]{64}"))retained.add(split);
                     for(String split:retained)if(!desired.contains(split))desired.add(split);
-                    List<String> available=new ArrayList<>();available.add(deploymentSplit);
-                    if(launchable)available.add(launchSplit);
-                    if(full&&prior!=null)for(String split:retained)if(!split.equals(deploymentSplit)&&!split.equals(launchSplit)) {
+                    List<String> available=new ArrayList<>(replacements);
+                    if(full&&prior!=null)for(String split:retained)if(!replacements.contains(split)) {
                         for(int j=0;j<prior.splitNames.length&&j<prior.applicationInfo.splitSourceDirs.length;j++)if(split.equals(prior.splitNames[j])) {
                             Files.copy(new File(prior.applicationInfo.splitSourceDirs[j]).toPath(),new File(artifactsDir,split+".apk").toPath());
                             available.add(split);break;
                         }
                     }
-                    List<String> replacements=new ArrayList<>();replacements.add(deploymentSplit);
-                    if(launchable)replacements.add(launchSplit);
                     PackSessionPlan plan=PackSessionPlan.create(prior!=null,prior==null?0:prior.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,previous,desired,
                             available,full,replacements);
                     packages.add(new CommitChain.Package(pkg,required,plan.write.toArray(new String[0]),plan.remove.toArray(new String[0])));
                     artifacts.put(pkg,artifactsDir);
-                    if(StoreExtraData.required(metadata.get(item))) {
-                        extraData.put(pkg,()->StoreExtraData.prepare(context,staging,item,origins.get(item),identity,
-                                metadata.get(item),artifactsDir,revision,cancellation));
+                    if(extraItem!=null) {
+                        String extra=extraItem;File extraArtifacts=artifactsDir;
+                        extraData.put(pkg,()->StoreExtraData.prepare(context,staging,extra,origins.get(extra),manifests.get(extra),
+                                metadata.get(extra),extraArtifacts,revision,cancellation));
                     }
                 }
             }finally{pool.shutdownNow();}
