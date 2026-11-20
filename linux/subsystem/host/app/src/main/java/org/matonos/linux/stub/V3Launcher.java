@@ -139,7 +139,7 @@ final class V3Launcher {
             if(shown!=null)shown.accept("Downloading dependencies…\n"+dependencyRef);
             DependencyRepair repair=dependencyRepair;
             if(repair!=null)repair.repair(dependencyRef);else repairDependency(context,ref,dependencyRef);
-        });
+        },ref);
         String runtimeMetadata=null;
         for(DeclaredPackages.Entry entry:packages)
             if(entry.record.ref.startsWith("runtime/org.freedesktop.Platform/x86_64/")) {
@@ -159,9 +159,9 @@ final class V3Launcher {
             }
         }
         File appIconFiles = ErofsLaunch.mountedRoot(appDeployment.pkg.splitNames,
-                appDeployment.pkg.applicationInfo.splitSourceDirs);
+                appDeployment.pkg.applicationInfo.splitSourceDirs,appDeployment.record.ref);
         File runtimeIconFiles = platformRuntime == null ? null : ErofsLaunch.mountedRoot(
-                platformRuntime.pkg.splitNames, platformRuntime.pkg.applicationInfo.splitSourceDirs);
+                platformRuntime.pkg.splitNames, platformRuntime.pkg.applicationInfo.splitSourceDirs,platformRuntime.record.ref);
         runtime.setIconDirectories(appIconFiles, runtimeIconFiles);
         if(matonGlEnabled) {
             String runtimeRef=null;

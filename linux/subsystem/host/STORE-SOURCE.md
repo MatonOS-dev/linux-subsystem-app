@@ -51,11 +51,22 @@ mixed healthy/broken set and the all-broken case.
 
 ## Installed refs and real updates
 
-Android's signed index split is the persistent deployment record. Querying
-creates a disposable Flatpak metadata installation from those verified records;
+One Android package represents a Flatpak app id: `flatpak.` plus the app id,
+with the id's dots kept. Architecture and branch are represented by one split
+named `<arch>.<branch>`. Android-invalid characters map deterministically to
+`_`, and identifier segments that do not start with a letter get a leading
+`v`. The signed deployment split contains that ref's record, object indexes,
+and EROFS image. The base APK carries the reusable stub runtime; launcher
+aliases carry their exact Flatpak ref in split metadata. If two distinct app
+ids encode to the same Android package name, installation fails with a
+collision error.
+
+Installed-ref queries read all signed deployment splits in each package and
+create a disposable Flatpak metadata installation from those verified records;
 payloads remain in their APK images. Remotes are registered after materializing
 the records so their key configuration is retained. Subpath deployment names
-are preserved. The native helper calls
+are preserved. Missing deployment state is treated as empty; old-format stubs
+are not migrated. The native helper calls
 `flatpak_installation_list_installed_refs()` or
 `flatpak_installation_list_installed_refs_for_update()`; the latter resolves a
 Flatpak update transaction without installing it. The plugin does not implement
@@ -69,8 +80,9 @@ notification/wake lock. A public-API Flatpak transaction resolves the requested 
 related extensions and subpaths and downloads with `no_deploy` enabled.
 The helper returns the transaction's exact refs/origins/commits/subpaths.
 Verified commits are checked out without running deploy hooks or `apply_extra`.
-OSTree fsck runs before the existing StagedPacks and StubGenerator produce
-signed base/index/EROFS/launcher APKs. Android carrier dependency edges are
+OSTree fsck runs before StagedPacks and StubGenerator produce the signed base,
+the requested `<arch>.<branch>` deployment split, and its launcher split.
+Android carrier dependency edges are
 constructed only after Flatpak has selected the deployment set; they do not
 select/download dependencies. App carriers reference the selected transaction;
 runtime parents reference their selected extension carriers.
@@ -79,8 +91,9 @@ runtime parents reference their selected extension carriers.
 passes read-only APK descriptors to the store and waits for its terminal
 `ICommitResult` before allowing dependants. A failed runtime stops the chain,
 so the application is never submitted. Store Binder death releases a waiter.
-An update uses PackSessionPlan's base omission and removeSplits decisions; unchanged
-packages need no session. Each changed package has its own store-owned commit.
+An update uses PackSessionPlan to replace the matching branch split while
+retaining other branch splits and the reusable base. Each changed package has
+its own store-owned commit.
 This path never creates PackageInstaller sessions or uninstalls a package.
 Artifacts remain leased until terminal results and are removed afterwards.
 Successful dependencies remain installed if a later package fails; the source
@@ -100,11 +113,9 @@ returned image and runs the existing ExtraImageValidator against the original
 verified OSTree commit, respecting Flatpak's selected subpaths. Content outside
 `/app/extra` (or the runtime branch’s `/extra`) must match the commit. The subsystem regenerates/signs the APK
 envelope from validated image bytes, so a returned manifest is never trusted.
-It submits a second store commit containing only that EROFS split and removal
-of the initial EROFS split. No base, index or launcher is sent in this commit;
-the store retains those installed splits. The image contains the complete app
-including extra-data, preserving the one-image-per-package mount architecture.
-The existing index still records the original deployment identity; extra-data
+It rebuilds and submits the same `<arch>.<branch>` split with the validated
+image and original signed deployment metadata. No base or other branch split
+is sent in this commit; the store retains those installed splits. Extra-data
 is regenerated on subsequent updates rather than used as an OSTree delta base.
 
 CommitChain waits for both terminal results before advancing to dependants or

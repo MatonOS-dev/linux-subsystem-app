@@ -13,12 +13,12 @@ final class DeclaredPackages {
         final PackageInfo pkg;final DeploymentRecord record;final String mount;
         Entry(PackageInfo pkg,DeploymentRecord record,String mount){this.pkg=pkg;this.record=record;this.mount=mount;}
     }
-    static List<Entry> resolve(Context context,Repair repair)throws Exception {
+    static List<Entry> resolve(Context context,Repair repair,String rootRef)throws Exception {
         PackageManager pm=context.getPackageManager();
         PackageInfo own=pm.getPackageInfo(context.getPackageName(),PackageManager.GET_SIGNING_CERTIFICATES);
         if(own.signingInfo==null||own.signingInfo.hasMultipleSigners()||own.signingInfo.getApkContentsSigners().length!=1)throw new SecurityException("Invalid package signer");
         Signature expected=own.signingInfo.getApkContentsSigners()[0];
-        DeploymentRecord root=DeploymentRecord.installed(own.splitNames,own.applicationInfo.splitSourceDirs);
+        DeploymentRecord root=DeploymentRecord.installed(own.splitNames,own.applicationInfo.splitSourceDirs,rootRef);
         Map<String,PackageInfo> packages=new HashMap<>();packages.put(root.ref,own);
         List<PackageGraph.Entry> graph=PackageGraph.resolve(root,ref->{
             String name=DeployManifest.packageForPublic(ref);PackageInfo pkg;
@@ -30,7 +30,7 @@ final class DeclaredPackages {
             if(pkg.signingInfo==null||pkg.signingInfo.hasMultipleSigners()||pkg.signingInfo.getApkContentsSigners().length!=1
                     ||!expected.equals(pkg.signingInfo.getApkContentsSigners()[0]))throw new SecurityException("Untrusted declared package: "+name);
             packages.put(ref,pkg);
-            return DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
+            return DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,ref);
         });
         List<Entry> result=new ArrayList<>();
         for(PackageGraph.Entry entry:graph)result.add(new Entry(packages.get(entry.record.ref),entry.record,entry.mount));
@@ -50,7 +50,7 @@ final class DeclaredPackages {
             // dependency resolution, but unrelated staged packages do not
             // overlay a path in this app's filesystem.
             if(target==null)continue;
-            args.addAll(ErofsLaunch.arguments(new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,target,branch));
+            args.addAll(ErofsLaunch.arguments(new File(pkg.applicationInfo.sourceDir),pkg.splitNames,pkg.applicationInfo.splitSourceDirs,cache,target,branch,entry.record.ref));
             if(deployment!=null) {
                 File installation=i==0?deployment:new File(deployment,"system");
                 File files=new File(installation,entry.record.ref+"/"+entry.record.commit+"/files");

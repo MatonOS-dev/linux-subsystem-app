@@ -22,6 +22,8 @@ public final class StubPackageNameVectorTest {
             JSONObject entry = valid.getJSONObject(i);
             assertEquals(entry.getString("ref"), entry.getString("package"),
                     DeployManifest.packageForPublic(entry.getString("ref")));
+            assertEquals(entry.getString("ref"), entry.getString("split"),
+                    DeployManifest.splitForPublic(entry.getString("ref")));
         }
         JSONArray invalid = vector.getJSONArray("invalid");
         for (int i = 0; i < invalid.length(); i++) {

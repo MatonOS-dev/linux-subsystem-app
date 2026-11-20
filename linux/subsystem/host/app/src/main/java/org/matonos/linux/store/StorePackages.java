@@ -46,6 +46,17 @@ public final class StorePackages {
                 manifests.put(item,identity);metadata.put(item,new String(text,java.nio.charset.StandardCharsets.UTF_8));
             }
             if(!refs.contains(ref))throw new IOException("Flatpak did not stage requested ref "+ref);
+            Map<String,String> packageIds=new HashMap<>();
+            Map<String,String> splitRefs=new HashMap<>();
+            for(String item:refs) {
+                String[] identity=item.split("/",-1),previous=packageIds.putIfAbsent(
+                        DeployManifest.packageForPublic(item),identity[1]);
+                if(previous!=null&&!previous.equals(identity[1]))
+                    throw new IOException("Android package name collision between Flatpak app ids "+previous+" and "+identity[1]);
+                String split=DeployManifest.splitForPublic(item),other=splitRefs.putIfAbsent(
+                        DeployManifest.packageForPublic(item)+"/"+split,item);
+                if(other!=null&&!other.equals(item))throw new IOException("Android split name collision between Flatpak refs "+other+" and "+item);
+            }
             StagedPacks.verify(context,staging.installation,cancellation);
             // These edges describe Android mount carriers AFTER Flatpak has resolved the transaction.
             // Extensions are leaves; each parent carries its selected extensions, and the app carries
@@ -72,11 +83,21 @@ public final class StorePackages {
                     File artifactsDir=new File(work,"package-"+i),objects=new File(artifactsDir,"objects");Files.createDirectories(artifactsDir.toPath());
                     PackageInfo prior=null;try {prior=context.getPackageManager().getPackageInfo(pkg,PackageManager.GET_SIGNING_CERTIFICATES);}
                     catch(PackageManager.NameNotFoundException absent) { }
+                    boolean priorHasState=false;
                     if(prior!=null) {
                         if(!FlatpakSourceService.trusted(prior))throw new IOException("Existing package has another signer: "+pkg);
-                        DeploymentRecord installed=DeploymentRecord.installed(prior.splitNames,prior.applicationInfo.splitSourceDirs);
-                        if(!installed.ref.equals(item)||!installed.remote.equals(catalogue.origin(origins.get(item))))
-                            throw new IOException("Existing package has another origin or ref: "+pkg+"; uninstall before changing origin");
+                        List<DeploymentRecord> priorRecords;
+                        try{priorRecords=DeploymentRecord.installedAll(prior.splitNames,prior.applicationInfo.splitSourceDirs);priorHasState=true;}
+                        catch(IOException missingState){Log.w("FlatpakSource","Existing package has no installed Flatpak state package="+pkg+"; treating as empty",missingState);priorRecords=Collections.emptyList();}
+                        for(DeploymentRecord installed:priorRecords) {
+                            String installedId=installed.ref.split("/",-1)[1];
+                            if(!installedId.equals(identity.getString("appRef").split("/",-1)[1]))
+                                throw new IOException("Android package name collision: "+pkg+" already belongs to Flatpak app id "+installedId);
+                            if(installed.ref.equals(item)&&!installed.remote.equals(catalogue.origin(origins.get(item))))
+                                throw new IOException("Existing package has another origin: "+pkg+"; uninstall before changing origin");
+                            if(!installed.ref.equals(item)&&DeployManifest.splitForPublic(installed.ref).equals(DeployManifest.splitForPublic(item)))
+                                throw new IOException("Android split name collision between Flatpak refs "+installed.ref+" and "+item);
+                        }
                     }
                     // StagedPacks uses a private pack-repo in installation.getParentFile(); clear it per package.
                     File packRepo=new File(work,"pack-repo");if(packRepo.exists())WorkDirs.remove(packRepo);
@@ -95,25 +116,39 @@ public final class StorePackages {
                     StubGenerator.generatePackage(scratch,item,origins.get(item),launcher.label,icon,
                             StubGenerator.permissionsForMetadata(metadata.get(item)),pkg,base,objects,required,mounts,launchable,mount,StoreExtraData.required(metadata.get(item)));
                     List<String> previous=prior==null||prior.splitNames==null?Collections.emptyList():Arrays.asList(prior.splitNames);
-                    boolean full=prior==null||prior.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE||!PackSessionPlan.sameBase(base,new File(prior.applicationInfo.sourceDir));
+                    boolean full=prior==null||!priorHasState||prior.getLongVersionCode()!=StubGenerator.STUB_VERSION_CODE;
                     int revision=PackSessionPlan.nextRevision(prior==null?0:prior.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,
                             prior==null?0:prior.baseRevisionCode,prior==null?null:prior.splitRevisionCodes);
                     List<String> desired=new ArrayList<>();
-                    String index=StubGenerator.indexSplitName(objects);desired.add(index);
-                    StubGenerator.generateIndex(scratch,pkg,objects,new File(artifactsDir,index+".apk"),revision);
-                    File image=new File(objects,"deployment.erofs");String erofs=StubGenerator.erofsSplitName(image);desired.add(erofs);
-                    StubGenerator.generateErofsPack(scratch,pkg,image,new File(artifactsDir,erofs+".apk"),revision);
+                    File image=new File(objects,"deployment.erofs");
+                    String deploymentSplit=DeployManifest.splitForPublic(item);desired.add(deploymentSplit);
+                    StubGenerator.generateDeploymentSplit(scratch,pkg,item,objects,image,
+                            new File(artifactsDir,deploymentSplit+".apk"),revision);
+                    String launchSplit=null;
                     if(launchable) {
-                        String launch=StubGenerator.launcherSplitName(launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon);desired.add(launch);
-                        StubGenerator.generateLauncher(scratch,pkg,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon,new File(artifactsDir,launch+".apk"),revision);
+                        launchSplit=StubGenerator.launcherSplitName(item,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon);desired.add(launchSplit);
+                        StubGenerator.generateLauncher(scratch,pkg,item,launcher.label,launcher.mimeTypes,icon,launcher.symbolicIcon,new File(artifactsDir,launchSplit+".apk"),revision);
                     }
-                    PackSessionPlan plan=PackSessionPlan.create(prior!=null,prior==null?0:prior.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,previous,desired,desired,full);
+                    List<String> retained=new ArrayList<>();
+                    if(prior!=null)for(String split:previous)if(split.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+")||split.matches("launcher_[0-9a-f]{64}"))retained.add(split);
+                    for(String split:retained)if(!desired.contains(split))desired.add(split);
+                    List<String> available=new ArrayList<>();available.add(deploymentSplit);
+                    if(launchable)available.add(launchSplit);
+                    if(full&&prior!=null)for(String split:retained)if(!split.equals(deploymentSplit)&&!split.equals(launchSplit)) {
+                        for(int j=0;j<prior.splitNames.length&&j<prior.applicationInfo.splitSourceDirs.length;j++)if(split.equals(prior.splitNames[j])) {
+                            Files.copy(new File(prior.applicationInfo.splitSourceDirs[j]).toPath(),new File(artifactsDir,split+".apk").toPath());
+                            available.add(split);break;
+                        }
+                    }
+                    List<String> replacements=new ArrayList<>();replacements.add(deploymentSplit);
+                    if(launchable)replacements.add(launchSplit);
+                    PackSessionPlan plan=PackSessionPlan.create(prior!=null,prior==null?0:prior.getLongVersionCode(),StubGenerator.STUB_VERSION_CODE,previous,desired,
+                            available,full,replacements);
                     packages.add(new CommitChain.Package(pkg,required,plan.write.toArray(new String[0]),plan.remove.toArray(new String[0])));
                     artifacts.put(pkg,artifactsDir);
                     if(StoreExtraData.required(metadata.get(item))) {
-                        String normalImage=erofs;
                         extraData.put(pkg,()->StoreExtraData.prepare(context,staging,item,origins.get(item),identity,
-                                metadata.get(item),artifactsDir,normalImage,revision,cancellation));
+                                metadata.get(item),artifactsDir,revision,cancellation));
                     }
                 }
             }finally{pool.shutdownNow();}

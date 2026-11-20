@@ -217,6 +217,7 @@ public final class StubGenerator {
         if(!validRef(ref)||(packageName==null||!packageName.matches("[A-Za-z][A-Za-z0-9_.]+")))throw new IllegalArgumentException("Invalid package identity");
         if(!launchable&&(mountPoint==null||!mountPoint.matches("/(?:usr|app)(?:/[A-Za-z0-9_.+-]+)*")||Arrays.asList(mountPoint.split("/")).contains("..")))throw new IllegalArgumentException("Invalid package mount");
         BinaryManifest manifest=new BinaryManifest(packageName,cleanLabel(label),ref,remote,permissions);
+        manifest.deploymentMetadataInSplits=true;
         manifest.minInterfaceVersion=2;manifest.noActivities=!launchable&&!minimal;
         manifest.minimalStub=minimal;
         manifest.packs=launchable?String.join(";",requiredPackages):mountPoint;
@@ -224,7 +225,7 @@ public final class StubGenerator {
         File unsigned=File.createTempFile("matonos-stub-meta-",".apk",workDir);
         try {
             // Runtimes are ordinary stub packages without a launcher activity.
-            writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages,!launchable&&!minimal,minimal);
+            writeUnsigned(unsigned,packageName,cleanLabel(label),ref,remote,iconPng,permissions,null,2,packDirectory,manifest.packs,manifest.dependencyPackages,!launchable&&!minimal,minimal,true);
             sign(unsigned,output);return output;
         } finally {unsigned.delete();}
     }
@@ -278,6 +279,40 @@ public final class StubGenerator {
             hash.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length).array());hash.update(bytes);
         }
         return "index_"+ObjectPacks.hex(hash.digest());
+    }
+
+    /** Android split that owns one ref's signed metadata and EROFS payload. */
+    public static String deploymentSplitName(String ref) throws Exception {
+        if (!validRef(ref)) throw new IOException("Invalid Flatpak deployment ref");
+        String[] parts=ref.split("/",-1);
+        return AndroidIdentity.splitName(parts[2],parts[3]);
+    }
+
+    /** One arch.branch split carries the deployment record, indexes and image. */
+    public static File generateDeploymentSplit(File workDir,String packageName,String ref,
+            File objects,File image,File output,int revision) throws Exception {
+        if(revision<0||!packageName(packageName))throw new IOException("Invalid deployment split identity");
+        if(!new File(objects,"deployment.bin").isFile()||!new File(objects,"objects.index").isFile()
+                ||!new File(objects,"objects.ostree").isFile()||!image.isFile()||image.length()==0)
+            throw new IOException("Incomplete deployment split content");
+        String split=deploymentSplitName(ref),digest=fileSha256(image);
+        String entry="assets/matonos/deployment.erofs";
+        byte[] pack=("{\"format\":\"matonos-erofs-pack-v1\",\"image_entry\":\""+entry+
+                "\",\"image_size\":"+image.length()+",\"image_sha256\":\""+digest+
+                "\",\"offset_rule\":\"zip-local-header-v1\",\"offset_entry\":\""+entry+
+                "\",\"compression\":\"lz4hc\"}\n").getBytes(StandardCharsets.UTF_8);
+        BinaryManifest encoder=new BinaryManifest(packageName,"","","flathub",Collections.emptyList());
+        encoder.revisionCode=revision;
+        File unsigned=File.createTempFile("matonos-deployment-",".apk",workDir);
+        try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
+            put(zip,"AndroidManifest.xml",encoder.packManifest(split));
+            for(String asset:indexAssets(objects))put(zip,"assets/matonos/"+asset,
+                    java.nio.file.Files.readAllBytes(new File(objects,asset).toPath()));
+            put(zip,"assets/matonos/erofs-pack.json",pack);
+            putStoredAligned(zip,entry,image,4096);
+            if(!digest.equals(fileSha256(image)))throw new IOException("EROFS image changed while creating deployment split");
+        } catch(Exception error) {unsigned.delete();throw error;}
+        try {sign(unsigned,output);return output;} finally {unsigned.delete();}
     }
     public static File generateIndex(File workDir,String pkg,File objects,File output,int revision) throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
@@ -390,6 +425,12 @@ public final class StubGenerator {
         if(monochromePng!=null)update(hash,monochromePng);
         return LAUNCHER_SPLIT_PREFIX+ObjectPacks.hex(hash.digest());
     }
+    public static String launcherSplitName(String ref,String label,List<String> mimeTypes,byte[] iconPng,byte[] monochromePng) throws Exception {
+        java.security.MessageDigest hash=java.security.MessageDigest.getInstance("SHA-256");
+        update(hash,"launcher-ref-format-1".getBytes(StandardCharsets.US_ASCII));
+        update(hash,ref.getBytes(StandardCharsets.UTF_8));
+        return LAUNCHER_SPLIT_PREFIX+ObjectPacks.hex(hash.digest());
+    }
 
     private static void update(java.security.MessageDigest hash,byte[] bytes) {
         hash.update(java.nio.ByteBuffer.allocate(8).putLong(bytes.length).array());hash.update(bytes);
@@ -406,17 +447,21 @@ public final class StubGenerator {
 
     public static File generateLauncher(File workDir,String pkg,String label,
             List<String> mimeTypes,byte[] iconPng,byte[] monochromePng,File output,int revision) throws Exception {
+        return generateLauncher(workDir,pkg,null,label,mimeTypes,iconPng,monochromePng,output,revision);
+    }
+    public static File generateLauncher(File workDir,String pkg,String ref,String label,
+            List<String> mimeTypes,byte[] iconPng,byte[] monochromePng,File output,int revision) throws Exception {
         if(revision<0)throw new IllegalArgumentException("Negative split revision");
         if(!packageName(pkg))throw new IllegalArgumentException("Invalid package name");
         if(iconPng==null||iconPng.length==0)throw new IllegalArgumentException("PNG icon size is invalid");
         String clean=cleanLabel(label);List<String> mimes=cleanMimeTypes(mimeTypes);
-        String split=launcherSplitName(clean,mimes,iconPng);
+        String split=ref==null?launcherSplitName(clean,mimes,iconPng,monochromePng):launcherSplitName(ref,clean,mimes,iconPng,monochromePng);
         BinaryManifest manifest=new BinaryManifest(pkg,"","","flathub",Collections.emptyList());
         manifest.revisionCode=revision;
         File unsigned=File.createTempFile("matonos-launcher-",".apk",workDir);
         try {
             try(AlignedZipOutputStream zip=new AlignedZipOutputStream(new FileOutputStream(unsigned))) {
-                put(zip,"AndroidManifest.xml",manifest.launcherManifest(split,clean,mimes,0x7f020000));
+                put(zip,"AndroidManifest.xml",manifest.launcherManifest(split,clean,mimes,0x7f020000,ref));
                 put(zip,"resources.arsc",iconResourceTable(pkg,2,monochromePng!=null));
                 put(zip,"res/drawable/foreground.png",iconPng);
                 if(monochromePng!=null)put(zip,"res/drawable/monochrome.png",monochromePng);
@@ -579,6 +624,9 @@ public final class StubGenerator {
         writeUnsigned(file,pkg,label,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,packs,dependencyPackages,noActivities,false);
     }
     private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String dependencyPackages,boolean noActivities,boolean minimalStub) throws IOException {
+        writeUnsigned(file,pkg,label,ref,remote,icon,permissions,commitInfo,minInterfaceVersion,packDirectory,packs,dependencyPackages,noActivities,minimalStub,false);
+    }
+    private static void writeUnsigned(File file,String pkg,String label,String ref,String remote,byte[] icon,List<String> permissions,CommitInfo commitInfo,int minInterfaceVersion,File packDirectory,String packs,String dependencyPackages,boolean noActivities,boolean minimalStub,boolean deploymentMetadataInSplits) throws IOException {
         List<String> cleanPermissions = new ArrayList<>();
         if (permissions != null) for (String p : permissions) {
             if (p == null || !p.matches("[A-Za-z0-9_.]+")) throw new IllegalArgumentException("Invalid Android permission: " + p);
@@ -601,6 +649,7 @@ public final class StubGenerator {
         encoder.dependencyPackages=dependencyPackages;
         encoder.noActivities=noActivities;
         encoder.minimalStub=minimalStub;
+        encoder.deploymentMetadataInSplits=deploymentMetadataInSplits;
         byte[] manifest = encoder.encode();
         try (AlignedZipOutputStream zip = new AlignedZipOutputStream(new FileOutputStream(file))) {
             put(zip, "AndroidManifest.xml", manifest);
@@ -797,6 +846,7 @@ public final class StubGenerator {
         String dependencyPackages;
         boolean noActivities;
         boolean minimalStub;
+        boolean deploymentMetadataInSplits;
         int minInterfaceVersion = 2;
         int revisionCode;
         byte[] encode() throws IOException {
@@ -845,9 +895,11 @@ public final class StubGenerator {
             start("application",null,attrs(appAttrs.toArray(new Attr[0])));
             String flatpakId = flatpakId(ref);
             if (flatpakId != null) startEnd("meta-data",attrs(a("name",FLATPAK_ID_META),a("value",flatpakId)));
-            startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
-            startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
-            if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
+            if (!deploymentMetadataInSplits) {
+                startEnd("meta-data",attrs(a("name",REF_META),a("value",ref)));
+                startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
+                if(dependencyPackages!=null&&!dependencyPackages.isEmpty())startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
+            }
             // Package visibility: the subsystem and stubs query flatpak.PACKAGE, so every
             // generated package answers it. Only the system can bind (job permission).
             start("service",null,attrs(a("name",PACKAGE_SERVICE),ab("exported",true),a("permission","android.permission.BIND_JOB_SERVICE")));
@@ -856,7 +908,7 @@ public final class StubGenerator {
             end("intent-filter");
             end("service");
             if(noActivities){
-                startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
+                if(!deploymentMetadataInSplits)startEnd("meta-data",attrs(a("name",PACKS_META),a("value",packs)));
                 if(minimalStub)extraDataService();
                 end("application");end("manifest");namespace(false);return finish();
             }
@@ -865,17 +917,21 @@ public final class StubGenerator {
             List<Attr> activityAttrs=new ArrayList<>(Arrays.asList(a("name",HOST_ACTIVITY),ab("exported",true),ab("enabled",true),a("label",label)));
             if(!minimalStub)activityAttrs.add(new Attr("icon","@drawable/icon",0x7f010000,1));
             start("activity",null,attrs(activityAttrs.toArray(new Attr[0])));
-            startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
-            startEnd("meta-data", attrs(a("name", REMOTE_META), a("value", remote)));
+            if(!deploymentMetadataInSplits) {
+                startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
+                startEnd("meta-data", attrs(a("name", REMOTE_META), a("value", remote)));
+            }
             startEnd("meta-data", attrs(a("name", MIN_INTERFACE_META), ai("value", minInterfaceVersion)));
             if (commitInfo != null) {
                 startEnd("meta-data", attrs(a("name", APP_COMMIT_META), a("value", commitInfo.appCommit)));
                 startEnd("meta-data", attrs(a("name", RUNTIME_REF_META), a("value", commitInfo.runtimeRef)));
                 startEnd("meta-data", attrs(a("name", RUNTIME_COMMIT_META), a("value", commitInfo.runtimeCommit)));
             }
-            if (packs != null) startEnd("meta-data", attrs(a("name", PACKS_META), a("value", packs)));
-            if (dependencyPackages != null && !dependencyPackages.isEmpty()) startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
-            startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
+            if (!deploymentMetadataInSplits) {
+                if (packs != null) startEnd("meta-data", attrs(a("name", PACKS_META), a("value", packs)));
+                if (dependencyPackages != null && !dependencyPackages.isEmpty()) startEnd("meta-data",attrs(a("name",DEPENDENCIES_META),a("value",dependencyPackages)));
+                startEnd("meta-data",attrs(a("name",APP_REF_META),a("value",ref)));
+            }
             // Android's default minimum freeform size (220dp) letterboxes small
             // fixed-size Linux windows (e.g. a 400x129 updater) with black bars.
             startEnd("layout",attrs(dp("minWidth",MIN_WINDOW_DP),dp("minHeight",MIN_WINDOW_DP)));
@@ -886,7 +942,7 @@ public final class StubGenerator {
             start("service", null, attrs(a("name", HOST_SERVICE), ab("exported", false), ai("foregroundServiceType", android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)));
             startEnd("property", attrs(a("name", "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"),
                     a("value", "Owns the Linux application runtime and its background network operations")));
-            startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
+            if(!deploymentMetadataInSplits)startEnd("meta-data", attrs(a("name", REF_META), a("value", ref)));
             end("service");
             if(minimalStub)extraDataService();
             startEnd("service", attrs(a("name", "org.matonos.linux.stub.InstallService"),
@@ -909,18 +965,20 @@ public final class StubGenerator {
         }
         /** Launcher split manifest: an activity-alias that targets the base
          * stub activity, with the LAUNCHER filter and VIEW filters. */
-        byte[] launcherManifest(String split,String launcherLabel,List<String> mimeTypes,int iconId) throws IOException {
+        byte[] launcherManifest(String split,String launcherLabel,List<String> mimeTypes,int iconId,String flatpakRef) throws IOException {
             for (String s : Arrays.asList("targetActivity","activity-alias","data","android.intent.action.VIEW",
                     "android.intent.action.MAIN","android.intent.category.LAUNCHER","android.intent.category.DEFAULT",
-                    HOST_ACTIVITY,pkg,launcherLabel,"scheme","android.intent.category.BROWSABLE")) str(s);
+                    HOST_ACTIVITY,pkg,launcherLabel,"scheme","android.intent.category.BROWSABLE",REF_META)) str(s);
+            if(flatpakRef!=null)str(flatpakRef);
             for (String mime:mimeTypes) str(urlScheme(mime)!=null?urlScheme(mime):mime);
             namespace(true);
             start("manifest",null,attrs(a("package",pkg),a("split",split),ai("versionCode",STUB_VERSION_CODE),ai("revisionCode",revisionCode)));
             startEnd("uses-sdk",attrs(ai("minSdkVersion",30),ai("targetSdkVersion",36)));
             start("application",null,attrs(ab("hasCode",false)));
-            start("activity-alias",null,attrs(a("name",pkg+".Launcher"),a("targetActivity",HOST_ACTIVITY),
+            start("activity-alias",null,attrs(a("name",pkg+".Launcher_"+split.substring(LAUNCHER_SPLIT_PREFIX.length(),LAUNCHER_SPLIT_PREFIX.length()+12)),a("targetActivity",HOST_ACTIVITY),
                     ab("exported",true),ab("enabled",true),a("label",launcherLabel),
                     new Attr("icon","@drawable/icon",iconId,1)));
+            if(flatpakRef!=null)startEnd("meta-data",attrs(a("name",REF_META),a("value",flatpakRef)));
             start("intent-filter",null,attrs());
             startEnd("action",attrs(a("name","android.intent.action.MAIN")));
             startEnd("category",attrs(a("name","android.intent.category.LAUNCHER")));

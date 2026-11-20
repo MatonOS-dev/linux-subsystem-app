@@ -410,16 +410,23 @@ public final class FlatpakSourceService extends Service {
         JSONArray result=new JSONArray();
         for(PackageInfo pkg:getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
             if(!trusted(pkg))continue;
-            DeploymentRecord record;
-            try{record=DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);}
+            List<DeploymentRecord> records;
+            try{records=DeploymentRecord.installedAll(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);}
             catch(IOException incomplete){Log.w(TAG,"Incomplete installed carrier package="+pkg.packageName,incomplete);continue;}
-            String[] parts=record.ref.split("/");if(!parts[0].equals("app"))continue;
-            RemoteOrigin origin=RemoteOrigin.parse(record.remote);
-            if(!selected.contains(record.ref))continue;
-            Map<String,Object> listing=new LinkedHashMap<>();for(Map<String,Object> row:catalogue)if(record.ref.equals(row.get("ref"))&&origin.name.equals(row.get("origin"))){listing.putAll(row);break;}
-            listing.put("id",record.ref);listing.put("name",listing.getOrDefault("name",parts[1]));listing.put("origin",origin.name);listing.put("packageName",pkg.packageName);listing.put("installed",true);
-            Map<String,Object> visible=AppStreamCatalogue.search(Collections.singletonList(listing),"").get(0);
-            result.put(new JSONObject(visible));
+            for(DeploymentRecord record:records) {
+                String expectedPackage=org.matonos.linux.stub.DeployManifest.packageForPublic(record.ref);
+                if(!pkg.packageName.equals(expectedPackage)) {
+                    Log.e(TAG,"Installed carrier package/ref mismatch package="+pkg.packageName+" ref="+record.ref+" expected="+expectedPackage);
+                    continue;
+                }
+                String[] parts=record.ref.split("/");if(!parts[0].equals("app"))continue;
+                RemoteOrigin origin=RemoteOrigin.parse(record.remote);
+                if(!selected.contains(record.ref))continue;
+                Map<String,Object> listing=new LinkedHashMap<>();for(Map<String,Object> row:catalogue)if(record.ref.equals(row.get("ref"))&&origin.name.equals(row.get("origin"))){listing.putAll(row);break;}
+                listing.put("id",record.ref);listing.put("name",listing.getOrDefault("name",parts[1]));listing.put("origin",origin.name);listing.put("packageName",expectedPackage);listing.put("installed",true);
+                Map<String,Object> visible=AppStreamCatalogue.search(Collections.singletonList(listing),"").get(0);
+                result.put(new JSONObject(visible));
+            }
         }
         return result;
     }

@@ -22,7 +22,6 @@ import org.matonos.erofs.IErofsMounter;
 /** Read-only icon-theme access for signed MatonOS clients. */
 public final class IconThemesProvider extends ContentProvider {
     private static final String TAG = "MatonIconThemes";
-    private static final String REF_META = "org.matonos.linuxhost.FLATPAK_REF";
     private final Map<String, List<File>> roots = new HashMap<>();
     private final Map<String, File> packageRoots = new HashMap<>();
     private final Map<String, IBinder> mountTokens = new HashMap<>();
@@ -103,13 +102,17 @@ public final class IconThemesProvider extends ContentProvider {
         List<PackageInfo> packages = pm.getInstalledPackages(PackageManager.GET_META_DATA);
         Map<String, PackageInfo> byRef = new HashMap<>();
         for (PackageInfo info : packages) {
-            if (info.applicationInfo == null || info.applicationInfo.metaData == null) continue;
-            String ref = info.applicationInfo.metaData.getString(REF_META);
-            if (ref != null) byRef.put(ref, info);
+            if(info.applicationInfo==null||info.splitNames==null||info.applicationInfo.splitSourceDirs==null)continue;
+            try{for(org.matonos.linuxhost.stubgen.DeploymentRecord record:org.matonos.linuxhost.stubgen.DeploymentRecord.installedAll(info.splitNames,info.applicationInfo.splitSourceDirs))byRef.put(record.ref,info);}
+            catch(IOException incomplete){Log.w(TAG,"Skipping incomplete installed icon package="+info.packageName,incomplete);}
         }
         for (PackageInfo info : packages) {
-            if (info.applicationInfo == null || info.applicationInfo.metaData == null) continue;
-            String ref = info.applicationInfo.metaData.getString(REF_META);
+            if(info.applicationInfo==null||info.splitNames==null||info.applicationInfo.splitSourceDirs==null)continue;
+            List<org.matonos.linuxhost.stubgen.DeploymentRecord> records;
+            try{records=org.matonos.linuxhost.stubgen.DeploymentRecord.installedAll(info.splitNames,info.applicationInfo.splitSourceDirs);}
+            catch(IOException incomplete){continue;}
+            for(org.matonos.linuxhost.stubgen.DeploymentRecord record:records) {
+            String ref = record.ref;
             if (ref == null || !ref.startsWith("runtime/org.freedesktop.Platform.Icontheme.")) continue;
             String[] pieces = ref.split("/");
             if (pieces.length != 4 || !pieces[2].equals("x86_64")) continue;
@@ -117,31 +120,33 @@ public final class IconThemesProvider extends ContentProvider {
             List<File> iconRoots = roots.get(theme);
             if (iconRoots == null) {
                 iconRoots = new java.util.ArrayList<>();
-                File extensionRoot = packageIconRoot(info, pieces[3]);
+                File extensionRoot = packageIconRoot(info, pieces[3],ref);
                 if (extensionRoot == null || !extensionRoot.isDirectory()) continue;
                 iconRoots.add(extensionRoot);
                 String parentRef = "runtime/org.freedesktop.Platform/x86_64/" + pieces[3];
                 PackageInfo parent = byRef.get(parentRef);
                 if (parent != null) {
-                    File runtimeRoot = packageIconRoot(parent, pieces[3]);
+                    File runtimeRoot = packageIconRoot(parent, pieces[3],parentRef);
                     if (runtimeRoot != null && runtimeRoot.isDirectory()) iconRoots.add(runtimeRoot);
                 }
                 roots.put(theme, iconRoots);
             }
             result.put(theme, iconRoots);
+            }
         }
         return result;
     }
 
-    private File packageIconRoot(PackageInfo info, String branch) throws Exception {
-        File root = packageRoots.get(info.packageName);
+    private File packageIconRoot(PackageInfo info, String branch,String ref) throws Exception {
+        String key=info.packageName+"/"+ref;
+        File root = packageRoots.get(key);
         if (root != null) return root;
         IBinder token = new Binder();
-        String mounted = ErofsLaunchBridge.mount(info, token);
+        String mounted = ErofsLaunchBridge.mount(info, token,ref);
         root = new File(new File(mounted, branch), "share/icons").getCanonicalFile();
-        packageRoots.put(info.packageName, root);
-        mountTokens.put(info.packageName, token);
-        Log.i(TAG, "Mounted icon files ref=" + info.applicationInfo.metaData.getString(REF_META)
+        packageRoots.put(key, root);
+        mountTokens.put(key, token);
+        Log.i(TAG, "Mounted icon files ref="+ref
                 + " package=" + info.packageName + " root=" + root);
         return root;
     }
@@ -178,7 +183,7 @@ public final class IconThemesProvider extends ContentProvider {
     @Override public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) { throw new UnsupportedOperationException("read-only"); }
 
     private static final class ErofsLaunchBridge {
-        static String mount(PackageInfo info, IBinder token) throws Exception {
+        static String mount(PackageInfo info, IBinder token,String ref) throws Exception {
             if (info.splitNames == null || info.applicationInfo.splitSourceDirs == null)
                 throw new IOException("Icon extension has no split image package=" + info.packageName);
             IBinder binder = (IBinder) Class.forName("android.os.ServiceManager").getMethod("getService", String.class).invoke(null, "matonos.erofs");
@@ -186,12 +191,12 @@ public final class IconThemesProvider extends ContentProvider {
             if (mounter == null) throw new IOException("matonos-erofsd is unavailable for package=" + info.packageName);
             String image = null;
             for (int i = 0; i < info.splitNames.length && i < info.applicationInfo.splitSourceDirs.length; i++) {
-                if (info.splitNames[i].matches("erofs_[0-9a-f]{64}")) {
-                    if (image != null) throw new IOException("Multiple EROFS images package=" + info.packageName);
+                if (info.splitNames[i].equals(org.matonos.linuxhost.stubgen.StubGenerator.deploymentSplitName(ref))) {
+                    if (image != null) throw new IOException("Multiple EROFS images package=" + info.packageName+" ref="+ref);
                     image = info.applicationInfo.splitSourceDirs[i];
                 }
             }
-            if (image == null) throw new IOException("Icon extension package has no EROFS image: " + info.packageName);
+            if (image == null) throw new IOException("Icon extension package has no EROFS image: " + info.packageName+" ref="+ref);
             String path = mounter.mountSplit(image, "assets/matonos/deployment.erofs", token);
             if (path == null || !path.startsWith("/mnt/matonos/")) throw new IOException("Invalid EROFS mount for package=" + info.packageName);
             return path;

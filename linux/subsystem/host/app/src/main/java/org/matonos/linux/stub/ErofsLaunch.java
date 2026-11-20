@@ -28,6 +28,16 @@ final class ErofsLaunch {
         Log.i(TAG,"Mounted one EROFS image at "+target+" from "+path);
         return Arrays.asList("--erofs-mount",target,path);
     }
+    static List<String> arguments(File base,String[] names,String[] paths,File cache,String target,String subdirectory,String ref) throws Exception {
+        if(target==null||!target.matches("/(?:[A-Za-z0-9_.+-]+/?)*"))throw new IOException("Invalid EROFS deployment target");
+        String path=mountInstalledImage(names,paths,TOKEN,ref);
+        if(subdirectory!=null&&!subdirectory.isEmpty()) {
+            if(!subdirectory.matches("[A-Za-z0-9_.+-]+"))throw new IOException("Invalid EROFS branch directory");
+            path=path+"/"+subdirectory;
+        }
+        Log.i(TAG,"Mounted EROFS deployment ref="+ref+" at "+target+" from "+path);
+        return Arrays.asList("--erofs-mount",target,path);
+    }
 
     static String mountInstalledImage(String[] names,String[] paths,IBinder token) throws Exception {
         if(names==null||paths==null||names.length!=paths.length)throw new IOException("Missing package split paths for EROFS image");
@@ -42,9 +52,26 @@ final class ErofsLaunch {
         return path;
     }
 
+    static String mountInstalledImage(String[] names,String[] paths,IBinder token,String ref) throws Exception {
+        if(names==null||paths==null||names.length!=paths.length)throw new IOException("Missing package split paths for EROFS image");
+        String expected=org.matonos.linuxhost.stubgen.StubGenerator.deploymentSplitName(ref);
+        String apk=null;
+        for(int i=0;i<names.length;i++)if(names[i].equals(expected)) {
+            if(apk!=null)throw new IOException("Duplicate deployment image split ref="+ref);
+            apk=paths[i];
+        }
+        if(apk==null)throw new IOException("Package lacks deployment image split ref="+ref);
+        String path=mounter().mountSplit(apk,"assets/matonos/deployment.erofs",token);
+        if(path==null||!path.startsWith("/mnt/matonos/"))throw new IOException("EROFS daemon returned an invalid mount path for ref="+ref);
+        return path;
+    }
+
     /** The same per-stub mount used by V3Launcher, for owner-UID host reads. */
     static File mountedRoot(String[] names, String[] paths) throws Exception {
         return new File(mountInstalledImage(names, paths, TOKEN));
+    }
+    static File mountedRoot(String[] names,String[] paths,String ref) throws Exception {
+        return new File(mountInstalledImage(names,paths,TOKEN,ref));
     }
 
     private static IErofsMounter mounter() throws Exception {

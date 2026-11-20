@@ -20,8 +20,6 @@ public final class InstallTransaction {
     private static final String TAG = "MatonInstall";
     private static final java.util.regex.Pattern OPERATION_ID =
             java.util.regex.Pattern.compile("[A-Za-z0-9_-]{1,64}");
-    private static final java.util.regex.Pattern INDEX_SPLIT =
-            java.util.regex.Pattern.compile("index_[0-9a-f]{64}");
     // Flatpak/OSTree content is addressed by digest. A shared cache plus a
     // per-snapshot monitor lets the next job reuse completed object downloads.
     private static final Map<String,SnapshotLock> PULL_LOCKS=new java.util.HashMap<>();
@@ -346,13 +344,13 @@ public final class InstallTransaction {
             android.content.pm.PackageInfo pkg=context.getPackageManager().getPackageInfo(
                     DeployManifest.packageForPublic(ref),0);
             android.os.IBinder imageLease=new android.os.Binder();
-            File imageRoot=new File(ErofsLaunch.mountInstalledImage(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,imageLease));
+            File imageRoot=new File(ErofsLaunch.mountInstalledImage(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,imageLease,ref));
             String imagePrefix=ref.startsWith("runtime/")?ref.substring(ref.lastIndexOf('/')+1):"";
             File currentIndex=File.createTempFile("installed-image-",".index",root);
             java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> entries;
             try {
                 Files.write(currentIndex.toPath(),org.matonos.linuxhost.stubgen.PackLaunch.installedIndexAsset(
-                        pkg.splitNames,pkg.applicationInfo.splitSourceDirs,"objects.index"));
+                        pkg.splitNames,pkg.applicationInfo.splitSourceDirs,"objects.index",ref));
                 entries=org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(currentIndex);
             } finally {currentIndex.delete();}
             long required=org.matonos.linuxhost.stubgen.PackSeed.bytes(entries,
@@ -361,12 +359,12 @@ public final class InstallTransaction {
             if(required>available)throw new java.io.IOException("Insufficient space for installed update base: "+required+" bytes required, "+available+" available");
             try {
                 org.matonos.linuxhost.stubgen.PackSeed.seedFromImage(entries,imageRoot,imagePrefix,new File(installation,"repo"),()->cancelled.get());
-                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
+                org.matonos.linuxhost.stubgen.DeploymentRecord record=org.matonos.linuxhost.stubgen.DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs,ref);
                 File originalIndex=File.createTempFile("installed-original-",".index",root);
                 java.util.List<org.matonos.linuxhost.stubgen.ObjectPacks.Entry> originalEntries;
                 try {
                     Files.write(originalIndex.toPath(),org.matonos.linuxhost.stubgen.PackLaunch.installedIndexAsset(
-                            pkg.splitNames,pkg.applicationInfo.splitSourceDirs,"original.index"));
+                            pkg.splitNames,pkg.applicationInfo.splitSourceDirs,"original.index",ref));
                     originalEntries=org.matonos.linuxhost.stubgen.ObjectPacks.readIndex(originalIndex);
                 } finally {originalIndex.delete();}
                 long originalBytes=org.matonos.linuxhost.stubgen.PackSeed.bytes(originalEntries,new android.os.StatFs(root.getAbsolutePath()).getBlockSizeLong());
@@ -375,7 +373,8 @@ public final class InstallTransaction {
                 org.matonos.linuxhost.stubgen.PackSeed.seedFromImage(originalEntries,imageRoot,imagePrefix,"/files",
                         new File(installation,"repo"),()->cancelled.get());
                 imageLease.pingBinder(); // Hold the mounted-image lease through both seed passes.
-                for(int i=0;i<pkg.splitNames.length;i++)if(INDEX_SPLIT.matcher(pkg.splitNames[i]).matches()) {
+                String deploymentSplit=org.matonos.linuxhost.stubgen.StubGenerator.deploymentSplitName(ref);
+                for(int i=0;i<pkg.splitNames.length;i++)if(deploymentSplit.equals(pkg.splitNames[i])) {
                     try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(pkg.applicationInfo.splitSourceDirs[i])) {
                         java.util.zip.ZipEntry metadata=zip.getEntry("assets/matonos/original.ostree");
                         if(metadata==null)throw new java.io.IOException("Installed index lacks original metadata");

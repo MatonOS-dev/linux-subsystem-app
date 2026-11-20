@@ -58,6 +58,16 @@ public final class DeploymentRecordTest {
         if(!Files.readString(deployedRef,StandardCharsets.US_ASCII).equals(commit+"\n"))
             throw new AssertionError("Flatpak deployed ref does not name the active commit");
         if(!Arrays.equals(Files.readAllBytes(version.resolve("metadata")),record.metadata))throw new AssertionError();
+        DeploymentRecord beta=new DeploymentRecord("app/org.test.App/x86_64/beta",commit,"flathub",record.metadata,record.deploy,object);
+        Path stableSplit=scratch.resolve("x86_64.stable.apk"),betaSplit=scratch.resolve("x86_64.beta.apk");
+        for(Map.Entry<Path,DeploymentRecord> item:Map.of(stableSplit,record,betaSplit,beta).entrySet())
+            try(java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(Files.newOutputStream(item.getKey()))) {
+                zip.putNextEntry(new java.util.zip.ZipEntry("assets/matonos/deployment.bin"));zip.write(item.getValue().encode());zip.closeEntry();
+            }
+        List<DeploymentRecord> branches=DeploymentRecord.installedAll(new String[]{"x86_64.stable","x86_64.beta"},new String[]{stableSplit.toString(),betaSplit.toString()});
+        if(branches.size()!=2||!DeploymentRecord.installed(new String[]{"x86_64.stable","x86_64.beta"},new String[]{stableSplit.toString(),betaSplit.toString()},beta.ref).ref.equals(beta.ref))
+            throw new AssertionError("Multiple branch splits were not selected by ref");
+        rejects(()->DeploymentRecord.installed(new String[]{"x86_64.stable","x86_64.beta"},new String[]{stableSplit.toString(),betaSplit.toString()}));
         rejects(()->DeploymentRecord.decode(Arrays.copyOf(bytes,bytes.length-1)));
         rejects(()->DeploymentRecord.decode(Arrays.copyOf(bytes,bytes.length+1)));
         rejects(()->new DeploymentRecord("app/../x86_64/stable",commit,"flathub",new byte[]{1},new byte[]{1},object));

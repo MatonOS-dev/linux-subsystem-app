@@ -53,7 +53,7 @@ public final class PackInstaller implements PackSessionPlan.Installer {
     }
     /** Validate the exact basename and staged file used by write(). */
     public static File validateArtifact(File artifacts,String name) throws IOException {
-        if(artifacts==null || name==null || !name.matches("base\\.apk|(?:erofs|index|extra|launcher)_[0-9a-f]{64}\\.apk"))
+        if(artifacts==null || name==null || !name.matches("base\\.apk|(?:(?:erofs|index|extra|launcher)_[0-9a-f]{64}|[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+)\\.apk"))
             throw new IOException("Invalid session artifact");
         File apk=new File(artifacts,name);
         if(!apk.isFile() || !apk.getCanonicalFile().getParentFile().equals(artifacts.getCanonicalFile()))

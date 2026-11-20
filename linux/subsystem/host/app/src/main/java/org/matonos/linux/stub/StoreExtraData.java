@@ -19,7 +19,7 @@ public final class StoreExtraData {
         return java.util.regex.Pattern.compile("(?m)^\\s*\\[Extra Data\\]\\s*$").matcher(metadata).find();
     }
     public static CommitChain.Package prepare(Context context,StoreFlatpak staging,String ref,String remote,
-            JSONObject identity,String metadata,File artifacts,String previousImage,int revision,org.matonos.linux.store.SourceOperations.Operation cancellation) throws Exception {
+            JSONObject identity,String metadata,File artifacts,int revision,org.matonos.linux.store.SourceOperations.Operation cancellation) throws Exception {
         String pkg=DeployManifest.packageForPublic(ref);
         cancellation.check();
         Log.i(TAG,"extra-data begin package="+pkg+" ref="+ref);
@@ -106,14 +106,14 @@ public final class StoreExtraData {
                             ExtraImageValidator.flatpakFiles(trusted,prefix),prefix+"/extra");
                 } finally {if(extracted.exists())org.matonos.linux.WorkDirs.remove(extracted);}
                 // Rebuild the APK envelope from validated bytes; never trust a stub-supplied manifest.
-                String split=StubGenerator.erofsSplitName(image);
-                StubGenerator.generateErofsPack(new File(artifacts,"signing"),pkg,image,new File(artifacts,split+".apk"),revision);
+                String split=DeployManifest.splitForPublic(ref);
+                StubGenerator.generateDeploymentSplit(new File(artifacts,"signing"),pkg,ref,
+                        new File(artifacts,"objects"),image,new File(artifacts,split+".apk"),revision);
                 Parcel cleanup=Parcel.obtain();
                 try {if(!binder.transact(2,cleanup,null,0))throw new IOException("Stub refused validated handback cleanup package="+pkg);}
                 finally {cleanup.recycle();}
                 Log.i(TAG,"extra-data validated package="+pkg+" ref="+ref+" split="+split);
-                return new CommitChain.Package(pkg,Collections.emptyList(),new String[]{split+".apk"},
-                        split.equals(previousImage)?new String[0]:new String[]{previousImage});
+                return new CommitChain.Package(pkg,Collections.emptyList(),new String[]{split+".apk"},new String[0]);
             } finally {cancellation.removeCancel(cancel);if(linked)binder.unlinkToDeath(death,0);close(pipe[0],pkg);close(pipe[1],pkg);}
         } catch(Exception error){Log.e(TAG,"extra-data failed package="+pkg+" ref="+ref,error);throw error;}
         finally {context.unbindService(connection);}

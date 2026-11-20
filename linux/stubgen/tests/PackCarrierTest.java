@@ -9,6 +9,7 @@ import java.lang.reflect.*;
 import org.matonos.linuxhost.stubgen.ObjectPacks;
 import org.matonos.linuxhost.stubgen.PackLaunch;
 import com.android.apksig.ApkVerifier;
+import com.android.apksig.ApkSigner;
 
 /** Uses a disposable real signer; checks the signed ZIP's original indexed offsets. */
 public final class PackCarrierTest {
@@ -44,10 +45,10 @@ public final class PackCarrierTest {
   String rxml=new String(rmanifest.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(rmanifest.waitFor()!=0||rxml.contains("E: activity")||!rxml.contains("org.matonos.linuxhost.FLATPAK_REF")||!rxml.contains("org.matonos.linuxhost.PACKS")||rxml.contains("uses-library"))throw new AssertionError("Runtime manifest must be activity-free, carry its ref and pack metadata, and declare no uses-library\n"+rxml);
   Field revision=manifest.getDeclaredField("revisionCode");revision.setAccessible(true);revision.setInt(encoder,42);
-  Method lm=manifest.getDeclaredMethod("launcherManifest",String.class,String.class,List.class,int.class);lm.setAccessible(true);
+  Method lm=manifest.getDeclaredMethod("launcherManifest",String.class,String.class,List.class,int.class,String.class);lm.setAccessible(true);
   String launcherSplit="launcher_"+"d".repeat(64);
   File launcherManifest=new File(dir,"launcher-manifest.apk");
-  try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(launcherManifest))){z.putNextEntry(new ZipEntry("AndroidManifest.xml"));z.write((byte[])lm.invoke(encoder,launcherSplit,"Editor",Arrays.asList("text/plain","image/png","x-scheme-handler/Steam"),0x7f020000));z.closeEntry();}
+  try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(launcherManifest))){z.putNextEntry(new ZipEntry("AndroidManifest.xml"));z.write((byte[])lm.invoke(encoder,launcherSplit,"Editor",Arrays.asList("text/plain","image/png","x-scheme-handler/Steam"),0x7f020000,null));z.closeEntry();}
   Process lp=new ProcessBuilder(args[1],"dump","xmltree",launcherManifest.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String lxml=new String(lp.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(lp.waitFor()!=0||!lxml.contains("E: activity-alias")||!lxml.contains("targetActivity(0x01010202)=\"org.matonos.linux.stub.StubActivity\"")||!lxml.contains("split=\""+launcherSplit+"\"")||!lxml.contains("label(0x01010001)=\"Editor\"")||!lxml.contains("icon(0x01010002)=@0x7f020000")||!lxml.contains("android.intent.category.LAUNCHER")||!lxml.contains("android.intent.action.VIEW")||!lxml.contains("mimeType(0x01010026)=\"text/plain\"")||!lxml.contains("mimeType(0x01010026)=\"image/png\"")||!lxml.contains("scheme(0x01010027)=\"steam\"")||!lxml.contains("android.intent.category.BROWSABLE")||lxml.contains("x-scheme-handler"))throw new AssertionError("Launcher split manifest is wrong\n"+lxml);
@@ -56,6 +57,16 @@ public final class PackCarrierTest {
   Class<?> material=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$KeyMaterial");
   Constructor<?> kc=material.getDeclaredConstructor(PrivateKey.class,X509Certificate.class);kc.setAccessible(true);
   Method sign=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator").getDeclaredMethod("sign",File.class,File.class,material);sign.setAccessible(true);
+  Class<?> signingBackend=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator$SigningBackend");
+  Object backend=Proxy.newProxyInstance(signingBackend.getClassLoader(),new Class<?>[]{signingBackend},(proxy,method,args1)->{
+   if(!method.getName().equals("sign"))throw new UnsupportedOperationException(method.getName());
+   ApkSigner.SignerConfig signerConfig=new ApkSigner.SignerConfig.Builder("test",key,Collections.singletonList(cert)).build();
+   new ApkSigner.Builder(Collections.singletonList(signerConfig)).setInputApk((File)args1[0]).setOutputApk((File)args1[1])
+           .setV1SigningEnabled(false).setV2SigningEnabled(true).setV3SigningEnabled(true).setV4SigningEnabled(false)
+           .setAlignmentPreserved(true).build().sign();return null;
+  });
+  Method setBackend=Class.forName("org.matonos.linuxhost.stubgen.StubGenerator").getDeclaredMethod("setSigningBackendForTest",signingBackend);
+  setBackend.setAccessible(true);setBackend.invoke(null,backend);
   File erofsUnsigned=org.matonos.linuxhost.stubgen.StubGenerator.generateErofsPackUnsigned(
           dir,"flatpak.org.example.Test",payload,44);
   File erofsSigned=new File(dir,"erofs-signed.apk");sign.invoke(null,erofsUnsigned,erofsSigned,kc.newInstance(key,cert));
@@ -82,7 +93,7 @@ public final class PackCarrierTest {
   Files.deleteIfExists(erofsUnsigned.toPath());
   // Multi-entry carrier: embedded index/metadata and a raster icon must not move the payload.
   java.util.Map<String,byte[]> entries=new java.util.LinkedHashMap<>();
-  entries.put("AndroidManifest.xml",(byte[])lm.invoke(encoder,launcherSplit,"Editor",Collections.singletonList("text/plain"),0x7f020000));
+  entries.put("AndroidManifest.xml",(byte[])lm.invoke(encoder,launcherSplit,"Editor",Collections.singletonList("text/plain"),0x7f020000,null));
   entries.put("assets/matonos/objects.index",new byte[]{1,2,3,4,5});
   entries.put("assets/matonos/objects.ostree",new byte[]{9,8,7});
   entries.put("res/drawable/foreground.png",new byte[]{(byte)0x89,0x50,0x4e,0x47,6,7,8});
@@ -114,6 +125,13 @@ public final class PackCarrierTest {
   org.matonos.linuxhost.stubgen.DeploymentRecord record=new org.matonos.linuxhost.stubgen.DeploymentRecord(
           "app/org.example.Test/x86_64/stable",commit,"flathub",new byte[]{1},new byte[]{2},commitObject);
   Files.write(new File(dir,"deployment.bin").toPath(),record.encode());
+  File runtimeBase=new File(dir,"stub-runtime.apk");
+  org.matonos.linuxhost.stubgen.StubGenerator.generatePackage(dir,record.ref,"flathub","Editor",new byte[]{1},
+          Collections.emptyList(),"flatpak.org.example.Test",runtimeBase,dir,Collections.emptyList(),Collections.emptyMap(),true,"/app");
+  Process bp=new ProcessBuilder(args[1],"dump","xmltree",runtimeBase.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
+  String bxml=new String(bp.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+  if(bp.waitFor()!=0||bxml.contains("org.matonos.linuxhost.FLATPAK_REF")||bxml.contains("org.matonos.linuxhost.APP_REF")||bxml.contains("org.matonos.linuxhost.PACKS"))
+      throw new AssertionError("Reusable base APK must not pin one deployment branch\n"+bxml);
   Files.copy(index.toPath(),new File(dir,"original.index").toPath(),StandardCopyOption.REPLACE_EXISTING);
   Files.write(new File(dir,"original.ostree").toPath(),new byte[]{3,5,7});
   String identity=org.matonos.linuxhost.stubgen.StubGenerator.indexSplitName(dir);
@@ -137,6 +155,14 @@ public final class PackCarrierTest {
   Process ip=new ProcessBuilder(args[1],"dump","xmltree",base.getPath(),"--file","AndroidManifest.xml").redirectErrorStream(true).start();
   String ix=new String(ip.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
   if(ip.waitFor()!=0 || !ix.contains("split=\""+indexName+"\"") || !ix.contains("revisionCode(0x010104d5)=43"))throw new AssertionError(ix);
+  File deploymentSplit=new File(dir,"x86_64.stable.apk");
+  org.matonos.linuxhost.stubgen.StubGenerator.generateDeploymentSplit(dir,"flatpak.org.example.Test",record.ref,dir,payload,deploymentSplit,44);
+  if(!new ApkVerifier.Builder(deploymentSplit).setMinCheckedPlatformVersion(30).build().verify().isVerified())throw new AssertionError("Deployment split signature");
+  org.matonos.linuxhost.stubgen.DeploymentRecord[] branchRecords=org.matonos.linuxhost.stubgen.DeploymentRecord.installedAll(
+          new String[]{"x86_64.stable"},new String[]{deploymentSplit.getAbsolutePath()}).toArray(new org.matonos.linuxhost.stubgen.DeploymentRecord[0]);
+  if(branchRecords.length!=1||!branchRecords[0].ref.equals(record.ref))throw new AssertionError("Branch split lost its deployment record");
+  if(!Arrays.equals(PackLaunch.installedIndexAsset(new String[]{"x86_64.stable"},new String[]{deploymentSplit.getAbsolutePath()},"objects.index",record.ref),Files.readAllBytes(index.toPath())))throw new AssertionError("Branch split lost its index");
+  try(ZipFile zip=new ZipFile(deploymentSplit)){if(zip.getEntry("assets/matonos/deployment.erofs")==null||zip.getEntry("assets/matonos/deployment.bin")==null)throw new AssertionError("Branch split must carry both image and ref metadata");}
   File deploymentFiles=new File(dir,"app/org.example.App/x86_64/stable/commit/files").getAbsoluteFile();
   List<String> backing=PackLaunch.backingArguments("/app",deploymentFiles);
   if(!backing.equals(Arrays.asList("--erofs-backing","/app",deploymentFiles.toString())))throw new AssertionError(backing);

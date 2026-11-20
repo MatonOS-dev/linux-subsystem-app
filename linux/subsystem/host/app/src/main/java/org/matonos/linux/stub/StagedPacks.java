@@ -138,11 +138,11 @@ public final class StagedPacks {
         try {
             String imageApk=null;
             for(int i=0;i<installed.splitNames.length&&i<installed.applicationInfo.splitSourceDirs.length;i++)
-                if(installed.splitNames[i].matches("erofs_[0-9a-f]{64}")){imageApk=installed.applicationInfo.splitSourceDirs[i];break;}
+                if(installed.splitNames[i].equals(org.matonos.linuxhost.stubgen.StubGenerator.deploymentSplitName(ref))){imageApk=installed.applicationInfo.splitSourceDirs[i];break;}
             if(imageApk==null)return null;
             Map<String,ObjectPacks.Entry> old=new HashMap<>();
             File index=File.createTempFile("old-image-",".index",new File(operation,"tmp"));
-            try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(installed.applicationInfo.sourceDir)) {
+            try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(imageApk)) {
                 java.util.zip.ZipEntry item=zip.getEntry("assets/matonos/objects.index");if(item==null)return null;
                 try(InputStream in=zip.getInputStream(item);OutputStream out=new FileOutputStream(index)){
                     byte[] buffer=new byte[8192];int n;while((n=in.read(buffer))!=-1)out.write(buffer,0,n);

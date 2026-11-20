@@ -76,20 +76,32 @@ public final class DeploymentRecord {
         byte[] bytes=new byte[length];in.readFully(bytes);return bytes;
     }
     public static DeploymentRecord installed(String[] names,String[] paths) throws IOException {
+        List<DeploymentRecord> records=installedAll(names,paths);
+        if(records.size()!=1)throw new IOException(records.isEmpty()?"Missing deployment split; reinstall app":"Deployment ref required for multi-branch package");
+        return records.get(0);
+    }
+    public static DeploymentRecord installed(String[] names,String[] paths,String ref) throws IOException {
+        if(ref==null)throw new IOException("Missing requested deployment ref");
+        for(DeploymentRecord record:installedAll(names,paths))if(record.ref.equals(ref))return record;
+        throw new IOException("Missing deployment split for ref "+ref);
+    }
+    public static List<DeploymentRecord> installedAll(String[] names,String[] paths) throws IOException {
         if(names==null||paths==null||names.length!=paths.length)throw new IOException("Missing deployment split");
-        DeploymentRecord found=null;
-        for(int i=0;i<names.length;i++)if(names[i].matches("index_[0-9a-f]{64}")) {
-            if(found!=null)throw new IOException("Multiple deployment splits");
+        List<DeploymentRecord> found=new ArrayList<>();Set<String> refs=new HashSet<>();
+        for(int i=0;i<names.length;i++) {
             try(ZipFile zip=new ZipFile(paths[i])) {
                 ZipEntry entry=zip.getEntry("assets/matonos/deployment.bin");
-                if(entry==null)throw new IOException("Missing deployment record; reinstall app");
+                if(entry==null)continue;
                 try(InputStream in=zip.getInputStream(entry)) {
                     byte[] bytes=in.readAllBytes();
-                    found=decode(bytes);
+                    DeploymentRecord record=decode(bytes);
+                    if(!refs.add(record.ref))throw new IOException("Duplicate deployment record for ref "+record.ref);
+                    found.add(record);
                 }
-            }
+            } catch(IOException error) { throw new IOException("Cannot read deployment split "+names[i],error); }
         }
-        if(found==null)throw new IOException("Missing deployment record; reinstall app");return found;
+        if(found.isEmpty())throw new IOException("Missing deployment split; reinstall app");
+        return List.copyOf(found);
     }
     /** Build disposable metadata only. Payload bytes stay mounted from the APK. */
     public void materialize(File installation,String mount) throws IOException {

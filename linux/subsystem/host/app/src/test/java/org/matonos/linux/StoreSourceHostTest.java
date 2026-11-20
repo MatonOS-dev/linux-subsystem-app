@@ -6,6 +6,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.zip.GZIPOutputStream;
 import org.matonos.linux.store.*;
+import org.matonos.linuxhost.stubgen.AndroidIdentity;
 
 public final class StoreSourceHostTest {
     private static void check(boolean condition,String message){if(!condition)throw new AssertionError(message);}
@@ -27,6 +28,10 @@ public final class StoreSourceHostTest {
         check(calls.isEmpty(), "blocked disable does not remove remote");
     }
     private static void catalogue() throws Exception {
+        check(AndroidIdentity.packageName("org.mozilla.firefox").equals("flatpak.org.mozilla.firefox"),"app id becomes package name");
+        check(AndroidIdentity.splitName("x86_64","stable").equals("x86_64.stable"),"architecture and branch become the split name");
+        check(AndroidIdentity.splitName("x86_64","25.08-extra").equals("x86_64.v25_08_extra"),"numeric branch and rejected punctuation are encoded deterministically");
+        check(AndroidIdentity.packageName("io.github.foo-bar.App").equals(AndroidIdentity.packageName("io.github.foo_bar.App")),"sanitisation collisions remain visible for the installer to reject");
         String xml="<components><component type='desktop-application'><id>com.example.App.desktop</id>"
                 +"<name xml:lang='fr'>Autre</name><name>Example</name><summary>Editor</summary><description><p>Rich <em>text</em></p><ol><li>First</li><li>Second with <code>inline</code></li></ol></description>"
                 +"<developer><name>Example developers</name></developer><project_license>MIT</project_license>"

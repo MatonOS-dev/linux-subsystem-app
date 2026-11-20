@@ -29,6 +29,11 @@ public class PackSessionPlanTest {
         PackSessionPlan first=PackSessionPlan.create(false,0,1,list(),list(b,a),list(a,b),true);
         check(first.mode==PackSessionPlan.Mode.FULL);
         check(first.write.equals(list("base.apk",a+".apk",b+".apk")) && first.remove.isEmpty());
+        PackSessionPlan branch=PackSessionPlan.create(true,26,26,list("x86_64.stable","launcher_"+"a".repeat(64)),
+                list("x86_64.stable","x86_64.beta","launcher_"+"a".repeat(64),"launcher_"+"b".repeat(64)),
+                list("x86_64.stable","x86_64.beta","launcher_"+"b".repeat(64)),false,list("x86_64.stable"));
+        check(branch.mode==PackSessionPlan.Mode.INHERIT&&branch.write.equals(list("launcher_"+"b".repeat(64)+".apk","x86_64.beta.apk","x86_64.stable.apk"))
+                &&branch.remove.isEmpty());
         PackSessionPlan update=PackSessionPlan.create(true,1,1,list(a,b),list(a,c),list(c),false);
         check(update.mode==PackSessionPlan.Mode.INHERIT);
         check(update.write.equals(list(c+".apk")) && update.remove.equals(list(b)));

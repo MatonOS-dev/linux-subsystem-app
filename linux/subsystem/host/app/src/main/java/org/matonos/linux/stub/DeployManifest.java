@@ -2,6 +2,7 @@ package org.matonos.linux.stub;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.matonos.flatpak.AndroidIdentity;
 import org.matonos.linuxhost.stubgen.PlaceholderFiles;
 import java.io.File;
 import java.io.IOException;
@@ -96,21 +97,24 @@ public final class DeployManifest {
     private static String packageFor(String ref) throws Exception {
         if(!validRef(ref))throw new IOException("Invalid Flatpak ref");
         String[] parts=ref.split("/",-1);
-        StringBuilder safe=new StringBuilder("flatpak");
-        for(String part:parts) {
-            safe.append('.');
-            // PackageManager requires every package segment to start with a letter
-            // (branches like 25.08, IDs starting with '_').
-            char first=part.isEmpty()?'0':part.charAt(0);
-            if(!((first>='A'&&first<='Z')||(first>='a'&&first<='z')))safe.append('v');
-            for(int i=0;i<part.length();i++) {
-                char c=part.charAt(i);
-                safe.append((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'?c:'_');
-            }
-        }
-        String value=safe.toString();
+        // One package owns all installed architectures and branches of a Flatpak
+        // app id. Keep the id's dots as Android package separators; arch/branch
+        // are represented by APK split names instead.
+        String value=AndroidIdentity.packageName(parts[1]);
         if(value.length()>255)throw new IOException("Flatpak ref is too long for an Android package name");
         return value;
+    }
+
+    /** Android segment encoding shared by package ids and arch/branch splits. */
+    public static String androidIdentifier(String value) throws IOException {
+        return AndroidIdentity.identifier(value);
+    }
+
+    /** Canonical Android split carrying one Flatpak architecture and branch. */
+    public static String splitForPublic(String ref) throws Exception {
+        if(!validRef(ref))throw new IOException("Invalid Flatpak ref");
+        String[] parts=ref.split("/",-1);
+        return AndroidIdentity.splitName(parts[2],parts[3]);
     }
 
     /** Read the stub metadata directly from this app's private staged tree. */

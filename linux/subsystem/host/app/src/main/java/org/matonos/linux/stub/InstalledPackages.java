@@ -16,13 +16,15 @@ final class InstalledPackages {
         this.context=context;certificate=StubGenerator.getExistingSigningCertificate();
         for(PackageInfo pkg:context.getPackageManager().getInstalledPackages(PackageManager.GET_SIGNING_CERTIFICATES)) {
             if(pkg.packageName==null||!pkg.packageName.startsWith("flatpak.")||!trusted(pkg))continue;
-            DeploymentRecord record;
-            // An interrupted install leaves a stub without its deployment
-            // split; treat it as not installed instead of failing every scan.
-            try{record=read(pkg);}
+            List<DeploymentRecord> packageRecords;
+            // An interrupted install leaves a stub without a deployment split;
+            // treat missing state as empty instead of inventing a migration.
+            try{packageRecords=DeploymentRecord.installedAll(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);}
             catch(java.io.IOException incomplete){android.util.Log.w("MatonInstall","Skipping incomplete package "+pkg.packageName+": "+incomplete.getMessage());continue;}
-            if(!pkg.packageName.equals(DeployManifest.packageForPublic(record.ref)))throw new IOException("Package name/ref mismatch");
-            if(records.put(record.ref,record)!=null)throw new IOException("Duplicate installed ref");
+            for(DeploymentRecord record:packageRecords) {
+                if(!pkg.packageName.equals(DeployManifest.packageForPublic(record.ref)))throw new IOException("Package name/ref mismatch");
+                if(records.put(record.ref,record)!=null)throw new IOException("Duplicate installed ref");
+            }
         }
     }
     private boolean trusted(PackageInfo pkg) {
@@ -30,16 +32,13 @@ final class InstalledPackages {
         Signature[] signers=pkg.signingInfo.getApkContentsSigners();
         return signers!=null&&signers.length==1&&MessageDigest.isEqual(certificate,signers[0].toByteArray());
     }
-    private DeploymentRecord read(PackageInfo pkg)throws Exception {
-        if(!trusted(pkg))throw new SecurityException("Declared package is not signed by this subsystem");
-        return DeploymentRecord.installed(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);
-    }
     DeploymentRecord installed(String ref)throws Exception {
         try {
             PackageInfo pkg=context.getPackageManager().getPackageInfo(DeployManifest.packageForPublic(ref),PackageManager.GET_SIGNING_CERTIFICATES);
-            DeploymentRecord record=read(pkg);
-            if(!record.ref.equals(ref))throw new SecurityException("Installed package ref mismatch");
-            return record;
+            if(!trusted(pkg))throw new SecurityException("Declared package is not signed by this subsystem");
+            for(DeploymentRecord record:DeploymentRecord.installedAll(pkg.splitNames,pkg.applicationInfo.splitSourceDirs))
+                if(record.ref.equals(ref))return record;
+            return null;
         }catch(PackageManager.NameNotFoundException missing){return null;}
     }
     String recordedOrigin(String ref)throws Exception {

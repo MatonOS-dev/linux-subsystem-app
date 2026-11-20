@@ -33,6 +33,28 @@ public final class PackLaunch {
         }
     }
 
+    /** Select the branch split whose signed deployment record names {@code ref}. */
+    public static byte[] installedIndexAsset(String[] names,String[] paths,String assetName,String ref) throws IOException {
+        if(assetName==null||!assetName.matches("(?:original\\.index|objects\\.index)"))
+            throw new IOException("Invalid installed index asset");
+        if(names==null||paths==null||names.length!=paths.length)throw new IOException("Missing or inconsistent package splits");
+        String selected=null;
+        for(int i=0;i<names.length;i++)try(ZipFile zip=new ZipFile(paths[i])) {
+            ZipEntry record=zip.getEntry("assets/matonos/deployment.bin");if(record==null)continue;
+            DeploymentRecord decoded;
+            try(java.io.InputStream input=zip.getInputStream(record)){decoded=DeploymentRecord.decode(input.readAllBytes());}
+            if(!decoded.ref.equals(ref))continue;
+            if(selected!=null)throw new IOException("Duplicate deployment content splits for ref "+ref);
+            selected=paths[i];
+        }
+        if(selected==null)throw new IOException("Missing deployment split for ref "+ref);
+        try(ZipFile zip=new ZipFile(selected)) {
+            ZipEntry entry=zip.getEntry("assets/matonos/"+assetName);
+            if(entry==null)throw new IOException("Deployment split lacks "+assetName+" ref="+ref);
+            try(java.io.InputStream input=zip.getInputStream(entry)){return input.readAllBytes();}
+        }
+    }
+
     private static String indexPath(String[] names,String[] paths) throws IOException {
         if(names==null||paths==null||names.length!=paths.length)throw new IOException("Missing or inconsistent package splits");
         String path=null;
