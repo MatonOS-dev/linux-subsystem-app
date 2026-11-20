@@ -3,15 +3,16 @@
 `FlatpakSourceService` exports `org.matonos.store.SOURCE` under
 `org.matonos.permission.BIND_STORE_SOURCE`. All three AIDL files are copied
 byte for byte from `store-sources/contract/aidl/org/matonos/store/source/`
-in the device tree (version 1). `commit` has no `inherit` argument: the store
+in the device tree (contract version 5). `commit` has no `inherit` argument: the store
 infers full vs inherited sessions from whether `base.apk` is supplied. The
 store owns package installation. The host now targets and requires API 37, as
 requested for this source.
 
 Catalogue data comes from Flatpak's `update --appstream` path and the remotes'
 `appstream/<remote>/x86_64/active/appstream.xml[.gz]`. There is no Flathub web
-catalogue client. Searches return basic listings; details read AppStream
-text, screenshots, licence, developer, release, homepage and OARS attributes.
+catalogue client. The service streams an AppStream catalogue file to the store;
+the store indexes and searches it locally. Details read AppStream text,
+screenshots, licence, developer, release, homepage and OARS attributes.
 The existing native inspection helper now uses libappstream for territory age
 mapping, and Flatpak's public API for exact download/installed byte sizes.
 Permissions come from Flatpak remote metadata. Cached icons are exposed through
@@ -44,7 +45,7 @@ catalogue contents.
 Catalogue refresh and XML parsing are isolated per enabled remote. A failed
 refresh uses readable cached XML and leaves that repository marked broken; a
 missing or invalid XML file is logged with the remote and skipped. If every
-remote is unavailable, browse operations receive an empty catalogue, while
+remote is unavailable, the catalogue can be empty, while
 installed listings retain their signed package records. The host test covers a
 mixed healthy/broken set and the all-broken case.
 
@@ -183,8 +184,8 @@ pkg-config search path for both of its isolated container invocations.
 6. Kill the store while awaiting a commit; confirm an error log, operation
    cleanup and no further dependent commit. Check parallel operations involving
    shared runtimes for store-owned revision conflicts.
-7. Test large unfiltered catalogues for Binder payload suitability. The v1
-   contract has no pagination; this source adds no arbitrary result cap.
+7. Exercise large unfiltered catalogue transfer through the read-only fd and
+   verify that the store imports it incrementally into SQLite/FTS.
 
 No image builds, VM boots, main-worktree changes, AOSP patches, kernel changes,
 or shared device-tree changes were made. Download staging currently downloads
@@ -199,3 +200,10 @@ installs retain the remote-qualified identity. Collections, search results, and 
 are fetched and submitted by the Software Centre through its single generic
 ratings service, independent of source. Flatpak no longer uses ODRS for ratings
 or reviews; Flathub verification badges and Popular download scores remain.
+
+
+## Store catalogue v5
+
+The Flatpak source emits an UTF-8 JSON catalogue file from its AppStream index and returns a read-only file descriptor. It includes the repository candidate, installed/update flags, AppStream added date, Flathub popularity score, signer/installable state, and repository display/priority metadata. The source generation changes on repository configuration or package changes and when the catalogue refreshes after six hours. Search and browse queries belong to the Software Centre's SQLite/FTS index.
+
+The existing source host suite still covers AppStream parsing and Flatpak source support helpers. A fresh Software Centre image is still needed to verify Binder descriptor transfer and on-device query/import behavior.

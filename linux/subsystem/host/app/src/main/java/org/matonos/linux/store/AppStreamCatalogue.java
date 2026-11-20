@@ -10,14 +10,15 @@ import org.xml.sax.helpers.DefaultHandler;
 /** AppStream XML, never the Flathub web catalogue. Android-independent for host tests. */
 public final class AppStreamCatalogue {
     /** Streams the XML: Flathub's catalogue as a DOM exceeds an app heap. */
-    public static List<Map<String,Object>> read(InputStream input, boolean gzip, String remote) throws Exception {
-        SAXParserFactory factory=SAXParserFactory.newInstance();
-        XMLReader reader=factory.newSAXParser().getXMLReader();
+    public interface RowConsumer { void accept(Map<String,Object> row) throws Exception; }
+    public static List<Map<String,Object>> read(InputStream input,boolean gzip,String remote)throws Exception {
+        List<Map<String,Object>> rows=new ArrayList<>();readEach(input,gzip,remote,rows::add);return rows;
+    }
+    public static void readEach(InputStream input,boolean gzip,String remote,RowConsumer consumer)throws Exception {
+        SAXParserFactory factory=SAXParserFactory.newInstance();XMLReader reader=factory.newSAXParser().getXMLReader();
         reader.setEntityResolver((publicId,systemId)->{throw new SAXException("AppStream XML references external entity "+systemId);});
-        Handler handler=new Handler(remote);reader.setContentHandler(handler);
-        reader.setProperty("http://xml.org/sax/properties/lexical-handler",handler);  // rejects DOCTYPE
+        Handler handler=new Handler(remote,consumer);reader.setContentHandler(handler);reader.setProperty("http://xml.org/sax/properties/lexical-handler",handler);
         reader.parse(new InputSource(gzip?new GZIPInputStream(input):input));
-        return handler.result;
     }
 
     /** One component at a time; paths are element names below <component>. */
@@ -29,13 +30,13 @@ public final class AppStreamCatalogue {
         @Override public void startCDATA() { }
         @Override public void endCDATA() { }
         @Override public void comment(char[] ch,int start,int length) { }
-        final List<Map<String,Object>> result=new ArrayList<>();
         private final String remote;
+        private final RowConsumer consumer;
         private final ArrayDeque<String> path=new ArrayDeque<>();
         private final ArrayDeque<StringBuilder> texts=new ArrayDeque<>();
         private final ArrayDeque<Integer> orderedLists=new ArrayDeque<>();
         private Component current;
-        Handler(String remote){this.remote=remote;}
+        Handler(String remote,RowConsumer consumer){this.remote=remote;this.consumer=consumer;}
 
         @Override public void startElement(String uri,String local,String qName,Attributes attrs) {
             if(current==null) {if("component".equals(qName)){current=new Component();path.clear();}return;}
@@ -105,7 +106,7 @@ public final class AppStreamCatalogue {
             if(c.homepage!=null)row.put("homepage",c.homepage);
             if(c.version!=null)row.put("versionName",c.version);
             if(c.rating!=null){Map<String,Object> age=new LinkedHashMap<>();age.put("type",c.rating);age.put("attributes",c.attributes);row.put("ageRating",age);}
-            result.add(row);
+            try{consumer.accept(row);}catch(Exception error){throw new SAXException("AppStream row consumer failed remote="+remote,error);}
         }
     }
 
