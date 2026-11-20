@@ -54,7 +54,7 @@ javac -d "$OUT/extra-data-files" \
   "$ROOT/tests/extra-data-files/ExtraDataFilesTest.java"
 java -cp "$OUT/extra-data-files" org.matonos.linux.stub.ExtraDataFilesTest
 mkdir -p "$OUT/extra-data-handoff"
-javac -d "$OUT/extra-data-handoff" \
+javac -sourcepath "$ROOT/linux/stubgen/src" -d "$OUT/extra-data-handoff" \
   "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderCleanup.java" \
   "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/PlaceholderFiles.java" \
   "$ROOT/linux/stubgen/src/org/matonos/linuxhost/stubgen/ObjectPacks.java" \
