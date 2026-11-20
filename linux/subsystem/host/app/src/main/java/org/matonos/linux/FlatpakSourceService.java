@@ -37,7 +37,6 @@ public final class FlatpakSourceService extends Service {
     private volatile long cachedUpdatesAt;
     private static final long UPDATE_CACHE_MILLIS=60_000L;
     private final Map<String,List<Map<String,Object>>> cachedCollections=new HashMap<>();
-    private Map<String, JSONObject> cachedRatings;
     private final Map<String,Boolean> verifiedApps=new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String,Boolean> brokenRemotes=new java.util.concurrent.ConcurrentHashMap<>();
     private android.os.PowerManager.WakeLock installWakeLock;
@@ -117,14 +116,12 @@ public final class FlatpakSourceService extends Service {
         return null;
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
-        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
-        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->{long started=System.nanoTime();List<Map<String,Object>> catalogue=catalogue();long catalogueDone=System.nanoTime();List<Map<String,Object>> page=copyRows(SourcePaging.page(AppStreamCatalogue.search(catalogue,term),offset,limit));long filtered=System.nanoTime();withRatings(page);long decorated=System.nanoTime();List<Map<String,Object>> options=withRepositoryOptions(page);long repositories=System.nanoTime();Log.i(TAG,"search timing offset="+offset+" count="+page.size()+" catalogue_ms="+elapsedMs(started,catalogueDone)+" filter_ms="+elapsedMs(catalogueDone,filtered)+" rating_badge_ms="+elapsedMs(filtered,decorated)+" repo_options_ms="+elapsedMs(decorated,repositories));return SourceTypes.listings(options,0,options.size());});}
+        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_PERMISSIONS;return info;}
+        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->{long started=System.nanoTime();List<Map<String,Object>> catalogue=catalogue();long catalogueDone=System.nanoTime();List<Map<String,Object>> page=copyRows(SourcePaging.page(AppStreamCatalogue.search(catalogue,term),offset,limit));long filtered=System.nanoTime();withVerifiedBadges(page);long decorated=System.nanoTime();List<Map<String,Object>> options=withRepositoryOptions(page);long repositories=System.nanoTime();Log.i(TAG,"search timing offset="+offset+" count="+page.size()+" catalogue_ms="+elapsedMs(started,catalogueDone)+" filter_ms="+elapsedMs(catalogueDone,filtered)+" verified_badges_ms="+elapsedMs(filtered,decorated)+" repo_options_ms="+elapsedMs(decorated,repositories));return SourceTypes.listings(options,0,options.size());});}
         @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(withRepositoryOptions(collectionListings(kind)),offset,limit));}
         @Override public PopularApp[] getPopularApps(int limit){return call("popular apps limit="+limit,()->popularApps(limit));}
         @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
             Map<String,Object> row=find(id,repo);row=withRepositoryOptions(Collections.singletonList(row)).get(0);String remote=(String)row.get("origin"),ref=(String)row.get("ref");
-            String appId=id.startsWith("app/")&&id.split("/").length>1?id.split("/")[1]:id;
-            JSONObject ratingAggregate=ratingFor(appId);if(ratingAggregate!=null)row.put("rating",ratingAggregate);
             String metadata=flatpak.cli("remote-info","--system","--show-metadata",remote,ref);
             row.put("permissions",StubGenerator.permissionsForMetadata(metadata));
             row.put("descriptionMarkdown",row.getOrDefault("descriptionMarkdown",row.get("description")));
@@ -147,7 +144,7 @@ public final class FlatpakSourceService extends Service {
             row.put("downloadSize",Long.parseLong(sizes[0]));row.put("installedSize",Long.parseLong(sizes[1]));
             addVerifiedBadge(row);return SourceTypes.details(new JSONObject(row));
         });}
-        @Override public Review[] reviews(String id,int offset,int limit){return call("reviews id="+id,()->SourceTypes.reviews(new JSONArray(odrs(id)),offset,limit));}
+        @Override public Review[] reviews(String id,int offset,int limit){return new Review[0];}
         @Override public AppListing[] installed(int offset,int limit){return call("installed",()->SourceTypes.listings(withRepositoryOptions(installedListings(false)),offset,limit));}
         @Override public AppListing[] updates(int offset,int limit){return call("updates",()->{
             AppListing[] rows=cachedUpdates;
@@ -356,7 +353,6 @@ public final class FlatpakSourceService extends Service {
             if(row==null)continue;
             Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
             listing.put("added",SourceTypes.epochSeconds(hit.opt("added"),hit.opt("timestamp"),hit.opt("date")));
-            JSONObject rating=ratingFor(hit.optString("app_id"));if(rating!=null)listing.put("rating",rating);
             result.add(listing);
         }
         synchronized(cachedCollections){cachedCollections.put(kind,copyRows(result));}return copyRows(result);
@@ -381,7 +377,6 @@ public final class FlatpakSourceService extends Service {
         for(int i=0;i<accepted.size()&&listings.size()<limit;i++) {
             JSONObject hit=accepted.get(i);Map<String,Object> row=appsById.get(hit.optString("app_id"));
             Map<String,Object> listing=AppStreamCatalogue.search(Collections.singletonList(row),"").get(0);
-            JSONObject rating=ratingFor(hit.optString("app_id"));if(rating!=null)listing.put("rating",rating);
             long installs=hit.optLong("_matonos_installs");
             double score=denominator>0?10.0*Math.log1p(installs)/denominator:10.0*(accepted.size()-i)/(double)Math.max(1,accepted.size());
             listing.put("badges",row.get("badges"));listings.add(listing);scores.add(Math.round(score*10.0)/10.0);
@@ -390,18 +385,12 @@ public final class FlatpakSourceService extends Service {
         for(int i=0;i<listings.size();i++){PopularApp item=new PopularApp();item.app=SourceTypes.listings(Collections.singletonList(listings.get(i)),0,1)[0];item.score=scores.get(i);result.add(item);}
         return result.toArray(new PopularApp[0]);
     }
-    private List<Map<String,Object>> withRatings(List<Map<String,Object>> rows) {
+    private List<Map<String,Object>> withVerifiedBadges(List<Map<String,Object>> rows) {
         long started=System.nanoTime();
-        for(Map<String,Object> row:rows) {
-            Object rawId=row.get("id");if(!(rawId instanceof String))continue;
-            String id=(String)rawId;if(id.startsWith("app/")){String[] parts=id.split("/");if(parts.length>1)id=parts[1];}
-            JSONObject rating=ratingFor(id);if(rating!=null)row.put("rating",rating);
-        }
-        long ratingsDone=System.nanoTime();
         // Verification is one HTTP request per Flathub app: fetch the page's lookups in parallel.
         rows.parallelStream().forEach(this::addVerifiedBadge);
         long verifiedDone=System.nanoTime();
-        Log.i(TAG,"search enrichment count="+rows.size()+" odrs_ratings_ms="+elapsedMs(started,ratingsDone)+" verified_badges_ms="+elapsedMs(ratingsDone,verifiedDone)+" uncached_verified="+rows.stream().filter(row->"flathub".equals(row.get("origin"))).count());
+        Log.i(TAG,"search enrichment count="+rows.size()+" verified_badges_ms="+elapsedMs(started,verifiedDone)+" uncached_verified="+rows.stream().filter(row->"flathub".equals(row.get("origin"))).count());
         return rows;
     }
     private JSONObject getJson(String address) throws Exception {
@@ -410,19 +399,6 @@ public final class FlatpakSourceService extends Service {
             if(connection.getResponseCode()!=200)throw new IOException("HTTP "+connection.getResponseCode()+" url="+address);
             try(InputStream in=connection.getInputStream()){return new JSONObject(new String(in.readAllBytes(),StandardCharsets.UTF_8));}
         } finally {connection.disconnect();}
-    }
-    private synchronized JSONObject ratingFor(String id) {
-        try {
-            if(cachedRatings==null) {
-                JSONObject raw=getJson("https://odrs.gnome.org/1.0/reviews/api/ratings");
-                cachedRatings=new HashMap<>();java.util.Iterator<String> keys=raw.keys();while(keys.hasNext()){String key=keys.next();cachedRatings.put(key,raw.getJSONObject(key));}
-            }
-            JSONObject raw=cachedRatings.get(id);if(raw==null)raw=cachedRatings.get(id+".desktop");if(raw==null)return null;
-            int[] histogram={raw.optInt("star1"),raw.optInt("star2"),raw.optInt("star3"),raw.optInt("star4"),raw.optInt("star5")};
-            int count=0;long sum=0;for(int i=0;i<histogram.length;i++){count+=histogram[i];sum+=(long)histogram[i]*(i+1);}
-            if(count==0)return null;Rating result=new Rating();result.average=(float)Math.round((sum/(double)count)*10.0)/10.0f;result.count=count;result.histogram=histogram;
-            JSONObject out=new JSONObject().put("average",result.average).put("count",result.count).put("histogram",new JSONArray(result.histogram));return out;
-        } catch(Exception error) {Log.e(TAG,"ODRS rating lookup id="+id+" failed",error);cachedRatings=Collections.emptyMap();return null;}
     }
     private Map<String,Object> find(String id) throws Exception {return find(id,null);}
     private Map<String,Object> find(String id,String repo) throws Exception {
@@ -481,7 +457,6 @@ public final class FlatpakSourceService extends Service {
             Map<String,Object> listing=new LinkedHashMap<>();for(Map<String,Object> row:catalogue)if(record.ref.equals(row.get("ref"))&&origin.name.equals(row.get("origin"))){listing.putAll(row);break;}
             listing.put("id",record.ref);listing.put("name",listing.getOrDefault("name",parts[1]));listing.put("origin",origin.name);listing.put("packageName",pkg.packageName);listing.put("installed",true);
             Map<String,Object> visible=AppStreamCatalogue.search(Collections.singletonList(listing),"").get(0);
-            if(!updates){JSONObject rating=ratingFor(parts[1]);if(rating!=null)visible.put("rating",rating);}
             result.put(new JSONObject(visible));
         }
         return result;
@@ -490,24 +465,6 @@ public final class FlatpakSourceService extends Service {
         if(pkg.packageName==null||!pkg.packageName.startsWith("flatpak.")||pkg.signingInfo==null||pkg.signingInfo.hasMultipleSigners())return false;
         Signature[] signatures=pkg.signingInfo.getApkContentsSigners();byte[] expected=StubGenerator.getExistingSigningCertificate();
         return expected!=null&&signatures.length==1&&MessageDigest.isEqual(expected,signatures[0].toByteArray());
-    }
-    private String odrs(String id) throws Exception {
-        Map<String,Object> app=find(id);String appId=((String)app.get("ref")).split("/")[1];
-        JSONObject request=new JSONObject().put("app_id",appId).put("locale",Locale.getDefault().toString()).put("version",String.valueOf(app.getOrDefault("versionName","unknown")).isEmpty()?"unknown":app.getOrDefault("versionName","unknown"))
-                .put("user_hash",java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(getPackageName().getBytes(StandardCharsets.UTF_8))))
-                .put("distro","MatonOS").put("limit",-1);
-        HttpURLConnection connection=(HttpURLConnection)new URL("https://odrs.gnome.org/1.0/reviews/api/fetch").openConnection();
-        try {
-            connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json");
-            try(OutputStream out=connection.getOutputStream()){out.write(request.toString().getBytes(StandardCharsets.UTF_8));}
-            if(connection.getResponseCode()!=200)throw new IOException("ODRS HTTP "+connection.getResponseCode()+" app="+id);
-            JSONArray raw;try(InputStream in=connection.getInputStream()){raw=new JSONArray(new String(in.readAllBytes(),StandardCharsets.UTF_8));}
-            JSONArray result=new JSONArray();for(int i=0;i<raw.length();i++){JSONObject review=raw.getJSONObject(i);if(!review.has("review_id"))continue;result.put(new JSONObject()
-                    .put("id",String.valueOf(review.get("review_id"))).put("author",review.optString("user_display"))
-                    .put("rating",review.getDouble("rating")/20.0).put("summary",review.optString("summary"))
-                    .put("description",review.optString("description")).put("version",review.optString("version"))
-                    .put("date",java.time.Instant.ofEpochSecond(review.getLong("date_created")).toString()));}return result.toString();
-        }finally{connection.disconnect();}
     }
     private static void validateRemote(String remote) throws IOException {if(remote==null||!remote.matches("[A-Za-z0-9_.-]+")||remote.startsWith("-"))throw new IOException("Invalid remote name: "+remote);}
 }

@@ -26,12 +26,7 @@ GPG key as well as its URL. Changing the origin of an installed Android carrier
 requires uninstalling it first. Broken AppStream refreshes are logged and
 reported in repos; available cached metadata can still be read.
 
-Reviews use ODRS's fetch endpoint, with the bundle's application ID, a
-40-character read-only anonymous client hash, locale, version and unlimited
-review request (`limit=-1`). ODRS may apply its own server policy. Host validation
-retrieved 451 Steam reviews. Empty versions must be sent as `unknown`: the
-service rejects an empty version. Reference: https://odrs.gnome.org/ and the
-GNOME ODRS fetch implementation.
+Flatpak does not provide third-party user ratings or reviews; the store owns ratings through its generic service.
 
 ## AppStream summary-index failures
 
@@ -167,7 +162,7 @@ pkg-config search path for both of its isolated container invocations.
 
 1. Install a complete API-37 subsystem APK and bind from the permitted store.
    Check discovery, basic search, details, cached content-provider icons, OARS,
-   permissions and ODRS rendering. A caller without the bind permission must
+   permissions, and store-owned ratings. A caller without the bind permission must
    not bind or open the icon provider.
 2. Add a signed HTTPS remote, select an origin-qualified app, install, query
    installed/updates, remove the remote, and check cached/offline behaviour.
@@ -200,6 +195,7 @@ reuse is a future performance improvement.
 
 The revision 2 source method supplies `popular` and `new` from Flathub's
 collection API. Results join against configured Flathub AppStream refs so
-installs retain the remote-qualified identity. Collection and detail listings
-carry the ODRS average, count and five-star histogram through the existing
-`AppListing.rating` field; reviews continue to use the review API.
+installs retain the remote-qualified identity. Collections, search results, and details contain no user rating data. Ratings
+are fetched and submitted by the Software Centre through its single generic
+ratings service, independent of source. Flatpak no longer uses ODRS for ratings
+or reviews; Flathub verification badges and Popular download scores remain.
