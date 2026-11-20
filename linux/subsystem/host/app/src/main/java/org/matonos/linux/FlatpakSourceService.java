@@ -116,7 +116,7 @@ public final class FlatpakSourceService extends Service {
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
         @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
-        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(AppStreamCatalogue.search(catalogueSnapshot(),term),offset,limit));}
+        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->{List<Map<String,Object>> page=copyRows(SourcePaging.page(AppStreamCatalogue.search(catalogue(),term),offset,limit));return SourceTypes.listings(withRepositoryOptions(withRatings(page)),0,page.size());});}
         @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(withRepositoryOptions(collectionListings(kind)),offset,limit));}
         @Override public PopularApp[] getPopularApps(int limit){return call("popular apps limit="+limit,()->popularApps(limit));}
         @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
@@ -287,11 +287,6 @@ public final class FlatpakSourceService extends Service {
     }
 
     /** A search is a local filter only; it never refreshes AppStream or performs network decoration. */
-    private List<Map<String,Object>> catalogueSnapshot() {
-        List<Map<String,Object>> snapshot=cachedCatalogue;
-        return snapshot==null?Collections.emptyList():snapshot;
-    }
-
     private void invalidateCatalogue() {
         synchronized(catalogueLock){cachedCatalogue=null;catalogueLoad=null;}
     }
