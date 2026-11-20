@@ -97,7 +97,7 @@ public final class AppStreamCatalogue {
             if(c.ref==null||!c.ref.startsWith("app/"))return;
             String[] parts=c.ref.split("/",-1);if(parts.length!=4)throw new SAXException("Invalid AppStream Flatpak bundle: "+c.ref);
             Map<String,Object> row=new LinkedHashMap<>();
-            row.put("id",parts[1]);row.put("ref",c.ref);row.put("origin",remote);
+            row.put("id",parts[1]);row.put("packageName","flatpak."+parts[1]);row.put("ref",c.ref);row.put("origin",remote);
             row.put("name",c.get("name"));row.put("summary",c.get("summary"));
             row.put("description",c.get("description"));row.put("descriptionMarkdown",c.descriptionMarkdown.toString().replaceAll("\\n{3,}","\\n\\n").trim());row.put("license",c.get("project_license"));
             row.put("developer",c.developerName!=null?c.developerName:c.get("developer_name"));
