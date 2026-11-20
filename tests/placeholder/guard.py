@@ -85,7 +85,7 @@ ALLOW = {
     ("DeploymentRecord.java", "zipfile"): (
         1, "reads the installed index_ split APK (app-owned), not staging"),
     ("PackLaunch.java", "zipfile"): (
-        1, "reads installed index metadata from the PackageManager split; deployment payload files come from EROFS"),
+        3, "reads installed index metadata and per-branch deployment records from PackageManager splits; deployment payload files come from EROFS"),
     ("PackageDeployment.java", "zipfile"): (
         2, "reads ref/commit metadata and materializes the signed subsystem GL extension tree from an app-owned APK, not staging"),
     ("V3Launcher.java", "files-readAllBytes"): (
@@ -95,7 +95,7 @@ ALLOW = {
     ("PackSessionPlan.java", "zipfile"): (
         1, "compares two installed base APKs in sameBase(), not staging"),
     ("StubGenerator.java", "files-readAllBytes"): (
-        2, "reads objects/index writer artifacts under the app-owned pack directory"),
+        3, "reads objects/index writer artifacts under the app-owned pack directory (index and deployment splits)"),
 }
 
 # Files that read staged content and must keep routing through the helper.
