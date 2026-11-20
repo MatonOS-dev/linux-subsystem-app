@@ -26,7 +26,7 @@ public final class FlatpakSourceService extends Service {
     private List<Map<String,Object>> cachedCatalogue;
     private final Map<String,List<Map<String,Object>>> cachedCollections=new HashMap<>();
     private Map<String, JSONObject> cachedRatings;
-    private final Map<String,Boolean> verifiedApps=new HashMap<>();
+    private final Map<String,Boolean> verifiedApps=new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String,Boolean> brokenRemotes=new HashMap<>();
     private android.os.PowerManager.WakeLock installWakeLock;
     private synchronized void beginInstall() {
@@ -91,7 +91,7 @@ public final class FlatpakSourceService extends Service {
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
         @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_REVIEWS|CAP_PERMISSIONS;return info;}
-        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->SourceTypes.listings(withRepositoryOptions(withRatings(AppStreamCatalogue.search(catalogue(),term))),offset,limit));}
+        @Override public AppListing[] search(String term,int offset,int limit){return call("search term="+term,()->{List<Map<String,Object>> page=new ArrayList<>(SourcePaging.page(AppStreamCatalogue.search(catalogue(),term),offset,limit));return SourceTypes.listings(withRepositoryOptions(withRatings(page)),0,page.size());});}
         @Override public AppListing[] collection(String kind,int offset,int limit){return call("collection kind="+kind,()->SourceTypes.listings(withRepositoryOptions(collectionListings(kind)),offset,limit));}
         @Override public PopularApp[] getPopularApps(int limit){return call("popular apps limit="+limit,()->popularApps(limit));}
         @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
@@ -321,8 +321,10 @@ public final class FlatpakSourceService extends Service {
         for(Map<String,Object> row:rows) {
             Object rawId=row.get("id");if(!(rawId instanceof String))continue;
             String id=(String)rawId;if(id.startsWith("app/")){String[] parts=id.split("/");if(parts.length>1)id=parts[1];}
-            JSONObject rating=ratingFor(id);if(rating!=null)row.put("rating",rating);addVerifiedBadge(row);
+            JSONObject rating=ratingFor(id);if(rating!=null)row.put("rating",rating);
         }
+        // Verification is one HTTP request per Flathub app: fetch the page's lookups in parallel.
+        rows.parallelStream().forEach(this::addVerifiedBadge);
         return rows;
     }
     private JSONObject getJson(String address) throws Exception {
