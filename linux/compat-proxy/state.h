@@ -18,6 +18,8 @@ int state_exec(const char *,const unsigned char *,size_t,char *const *,char *con
 int state_reexec(const char *,char *const *,char *const *,int);
 void state_notify_ready(int);
 extern int state_android, state_gpu_bridge;
+extern long state_android_owner_pid;
+void state_android_initialized(void);
 extern char **state_environment;
 int state_import(const char *,const char *);
 void vfs_state(struct state *);

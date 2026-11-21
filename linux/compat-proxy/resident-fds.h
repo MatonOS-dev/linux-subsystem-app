@@ -58,6 +58,15 @@ done:
     }
     return error;
 }
+void proxy_resident_fds_drop(void) {
+    for(struct resident_fd *p=resident_fds;p;p=p->next) {
+        if(__atomic_exchange_n(&p->state,0,__ATOMIC_ACQ_REL)==2) {
+            proxy_log("close resident fd",p->fd,0);
+            long r=RAW(PROXY_SC_close,p->fd,0,0,0,0,0);
+            if(r<0 && r!=-EBADF)proxy_log("fail resident-fd-drop",p->fd,r);
+        }
+    }
+}
 /* Trap only descriptor lifetime operations even in the BPF native ranges.
  * Driver mmap/ioctl and Android pthread/allocator calls remain native. */
 static int resident_fd_call(long n) {
@@ -96,6 +105,11 @@ static long resident_fd_native(long n,proxy_arg_t a[6]) {
      * native open on another thread. Linux closes the fd even on EINTR. */
     if(n==PROXY_SC_close && resident_fds_enabled)resident_fd_set((int)a[0],0);
     long r=RAW(n,a[0],a[1],a[2],a[3],a[4],a[5]);
+    if(r>=0 && n==PROXY_SC_openat && a[1] &&
+       (p_equal((const char *)(uintptr_t)a[1],"/dev/binderfs/binder") ||
+        p_equal((const char *)(uintptr_t)a[1],"/dev/binder") ||
+        p_equal((const char *)(uintptr_t)a[1],"/dev/vndbinder")))
+        state_android_initialized();
     if(r<0 || !resident_fds_enabled || !resident_fd_call(n))return r;
     /* dup2/dup3 may replace a resident descriptor with an ordinary payload
      * descriptor. Once the kernel has performed that replacement, retire the

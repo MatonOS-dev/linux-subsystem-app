@@ -13,6 +13,10 @@
 #include <elf.h>
 #include <linux/memfd.h>
 int state_android, state_gpu_bridge;
+long state_android_owner_pid;
+void state_android_initialized(void){
+ if(!state_android_owner_pid)state_android_owner_pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+}
 char **state_environment;
 static int private_fd=-1;
 static int ready_fd=-1;
@@ -174,6 +178,7 @@ void state_string(struct state *s,char **p){
 }
 static void transfer(struct state *s){
  state_android=state_word(s,state_android);state_gpu_bridge=state_word(s,state_gpu_bridge);
+ state_android_owner_pid=(long)state_word(s,(uint64_t)state_android_owner_pid);
  vfs_state(s);if(s->error){if(s->reading && proxy_trace)proxy_log("exec-state-vfs-error",s->pos,s->error);return;}
  ipc_state(s);if(s->error){if(s->reading && proxy_trace)proxy_log("exec-state-ipc-error",s->pos,s->error);return;}
  net_state(s);if(s->error){if(s->reading && proxy_trace)proxy_log("exec-state-net-error",s->pos,s->error);return;}
@@ -210,7 +215,7 @@ int state_import(const char *number,const char *token){
  uint64_t magic=state_word(&s,0),version=state_word(&s,0),pid=state_word(&s,0),key=state_word(&s,0);
  uint64_t self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
  if(magic!=UINT64_C(0x335854454e4f544d)){import_reject("resident-import-magic",(long)magic,(long)version);s.error=-EPERM;}
- else if(version!=18){import_reject("resident-import-version",(long)version,18);s.error=-EPERM;}
+ else if(version!=19){import_reject("resident-import-version",(long)version,19);s.error=-EPERM;}
  else if(pid!=self){import_reject("resident-import-pid",(long)pid,(long)self);s.error=-EPERM;}
  else if(key!=nonce){import_reject("resident-import-nonce",0,0);s.error=-EPERM;}
  /* Restore the diagnostic sink before importing VFS/fd state. Payload stderr
@@ -272,7 +277,7 @@ static int exec_resident_impl(const char *path,char *const *args,char *const *en
  if(private_fd<0){error=private_fd;private_fd=-1;RAW(PROXY_SC_close,fd,0,0,0,0,0);return error;}
  uint64_t nonce=0;if(RAW(PROXY_SC_getrandom,&nonce,8,0,0,0,0)!=8)error=-EIO;
  struct state s={.fd=private_fd,.error=error};
- state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,18);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
+ state_word(&s,UINT64_C(0x335854454e4f544d));state_word(&s,19);state_word(&s,RAW(PROXY_SC_getpid,0,0,0,0,0,0));state_word(&s,nonce);
  state_word(&s,proxy_trace);state_word(&s,proxy_diagnostic_fd);state_word(&s,(uint64_t)(int64_t)ready_fd);
  /* The resident is an Android executable, not the Linux payload. Its linker
   * must not consume payload LD_* settings (paths are still virtual here).
@@ -326,6 +331,14 @@ static int exec_resident(const char *path,char *const *args,char *const *env,int
 
 int state_exec(const char *path,const unsigned char *header,size_t header_size,char *const *args,char *const *env){
  int reset=proxy_resident_reset_pending();
+ long self=RAW(PROXY_SC_getpid,0,0,0,0,0,0);
+ if(state_android_owner_pid>0 && state_android_owner_pid!=self){
+  reset=1;
+  proxy_log("android-state-fresh-exec",state_android_owner_pid,self);
+  extern void proxy_resident_fds_drop(void);
+  proxy_resident_fds_drop();
+  state_android_owner_pid=0;
+ }
  if(reset)proxy_log("resident-reset-exec",ARCH_AUDIT,0);
  return exec_resident(path,args,env,reset,header,header_size);
 }

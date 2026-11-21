@@ -1316,6 +1316,10 @@ static long virtual_readlink(proxy_arg_t *a,const char *p){
 }
 /* Common exit of path_call: errno fixups, create diagnostics, frees. */
 static long path_finish(long nr,proxy_arg_t *a,long e,int fd,const char *original_path,char *p,char *q){
+    if(e>=0 && nr==PROXY_SC_openat &&
+       ((original_path && (p_equal(original_path,"/dev/binderfs/binder") || p_equal(original_path,"/dev/binder") || p_equal(original_path,"/dev/vndbinder"))) ||
+        (p && (p_equal(p,"/dev/binderfs/binder") || p_equal(p,"/dev/binder") || p_equal(p,"/dev/vndbinder")))))
+        state_android_initialized();
     /* Hardware passthrough is "where convenient": a host /dev node the app's
      * sandbox may not use is reported absent, so bwrap/Flatpak *-try binds and
      * device probes skip it instead of failing on EACCES. */
