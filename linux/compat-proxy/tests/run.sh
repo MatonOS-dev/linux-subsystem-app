@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh
+bash tests/getifaddrs-route.sh
 # Hard-link emulation is limited to Android app data roots; link tests use
 # a loader that also treats each build/<fixture> directory as one.
 backend=arch/x86_64

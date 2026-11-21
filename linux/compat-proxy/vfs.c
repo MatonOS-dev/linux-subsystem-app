@@ -408,12 +408,44 @@ void vfs_network_payload(int isolated){
     if(info && !arch_stat_at(AT_FDCWD,info,&st,0))hide_resolver=1;
     vfs_free(info);
 }
+static char *basepath(int fd,long *error);
+/* Lexically drop "." and ".." from an absolute path, in place. */
+static void lexical_normalize(char *s){
+    size_t out=0;
+    for(size_t i=0;s[i];){
+        while(s[i]=='/')i++;
+        size_t start=i;
+        while(s[i]&&s[i]!='/')i++;
+        size_t len=i-start;
+        if(!len||(len==1&&s[start]=='.'))continue;
+        if(len==2&&s[start]=='.'&&s[start+1]=='.'){while(out&&s[--out]!='/'){}continue;}
+        s[out++]='/';for(size_t k=0;k<len;k++)s[out++]=s[start+k];
+    }
+    if(!out)s[out++]='/';
+    s[out]=0;
+}
 void vfs_executable(const char *path){
     /* Linux's proc exe names the resolved image, never execve's relative
      * spelling. Keep AT_EXECFN/argv unchanged; CEF uses this link to find
-     * and spawn its subprocess executable after a chdir. */
+     * and spawn its subprocess executable after a chdir. The kernel names
+     * the file through the mount it was executed via, so prefer the exec
+     * spelling (made absolute, "."/".." dropped) whenever it reaches the
+     * same image without a final symlink; reverse-mapping the host path is
+     * ambiguous when two binds share a source (Flatpak --persist). */
     long error=0;char *host=vfs_resolve(AT_FDCWD,path,1,&error);
-    char *logical=host?vfs_reverse(host):NULL;
+    char *logical=NULL;
+    if(host){
+        char *absolute=NULL;
+        if(path[0]=='/')absolute=dupstr(path);
+        else {long e=0;char *base=basepath(AT_FDCWD,&e);if(base){absolute=join(base,path);vfs_free(base);}}
+        if(absolute){
+            lexical_normalize(absolute);
+            long e=0;char *direct=vfs_resolve(AT_FDCWD,absolute,0,&e);
+            if(direct && p_equal(direct,host))logical=absolute;else vfs_free(absolute);
+            vfs_free(direct);
+        }
+        if(!logical)logical=vfs_reverse(host);
+    }
     char *saved=pdupstr(logical?logical:path);
     vfs_free(logical);vfs_free(host);
     if(saved){
