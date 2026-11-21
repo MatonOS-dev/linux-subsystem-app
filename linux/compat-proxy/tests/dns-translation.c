@@ -18,6 +18,7 @@ long proxy_raw(long nr,long a,long b,long c,long d,long e,long f){(void)a;(void)
  if(nr==SYS_getsockname){struct sockaddr_in *out=(void *)b;*out=(struct sockaddr_in){.sin_family=AF_INET,.sin_port=dns_swap(32123)};*(unsigned *)c=sizeof(*out);raw_names++;return 0;}
  if(nr==SYS_connect)return 0;
  if(nr==SYS_close)return 0;
+ if(nr==SYS_fstat){struct stat *st=(void *)b;memset(st,0,sizeof(*st));st->st_mode=S_IFSOCK;st->st_ino=1000+(unsigned long)a;return 0;}
  assert(!"unexpected mocked syscall");return -1;
 }
 static int make_socket(int type){proxy_arg_t a[6]={AF_INET,type,0};return (int)dns_call(PROXY_SC_socket,a);}

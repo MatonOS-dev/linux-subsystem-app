@@ -108,11 +108,13 @@ static void dns_servfail(int server,unsigned char *query,size_t len,const struct
 static struct dns_pending *dns_pending;
 static int dns_server_fd=-1,dns_epoll_fd=-1;
 static long dns_helper_pid;
-#define DNS_PORTS 256
-static unsigned dns_ports[DNS_PORTS];
-static int dns_port_owned(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++)if(__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE)==port)return 1;return 0;}
-static void dns_track_port(unsigned short port){if(!port||dns_port_owned(port))return;for(unsigned i=0;i<DNS_PORTS;i++){unsigned empty=0;if(__atomic_compare_exchange_n(&dns_ports[i],&empty,port,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED))return;}proxy_log("fail dns-port-table-full",port,DNS_PORTS);}
-static void dns_untrack_port(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++){unsigned value=__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE);if(value==port)__atomic_compare_exchange_n(&dns_ports[i],&value,0,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED);}}
+/* One bit per possible UDP port: covers every port, no table cap. */
+static unsigned long dns_ports[65536/(8*sizeof(unsigned long))];
+#define DNS_PORT_WORD(p) dns_ports[(p)/(8*sizeof(unsigned long))]
+#define DNS_PORT_BIT(p) (1UL<<((p)%(8*sizeof(unsigned long))))
+static int dns_port_owned(unsigned short port){return (__atomic_load_n(&DNS_PORT_WORD(port),__ATOMIC_ACQUIRE)&DNS_PORT_BIT(port))!=0;}
+static void dns_track_port(unsigned short port){if(port)__atomic_fetch_or(&DNS_PORT_WORD(port),DNS_PORT_BIT(port),__ATOMIC_RELEASE);}
+static void dns_untrack_port(unsigned short port){if(port)__atomic_fetch_and(&DNS_PORT_WORD(port),~DNS_PORT_BIT(port),__ATOMIC_ACQ_REL);}
 static void dns_worker(void *unused){(void)unused;
     /* This is a layer thread, not a payload thread: it never traps, so it has
      * no thread state, no alternate signal stack and no registered stack
