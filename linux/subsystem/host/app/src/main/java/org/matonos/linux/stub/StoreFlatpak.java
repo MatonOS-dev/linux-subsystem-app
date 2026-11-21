@@ -96,7 +96,21 @@ public final class StoreFlatpak {
         return new org.matonos.linuxhost.stubgen.RemoteOrigin(name,url,Base64.getEncoder().encodeToString(key)).encode();
     }
     /** Reconstruct only signed deployment metadata; payloads stay in their Android packages. */
-    public Set<String> installedRefs(boolean updates) throws Exception {
+    public Set<String> installedRefs(boolean updates) throws Exception {return snapshotRefs(updates?"--updates":"--installed");}
+    /** Installed refs stock flatpak uninstall --unused would remove. */
+    public Set<String> unusedRefs() throws Exception {return snapshotRefs("--unused");}
+    /** Carrier packages whose every installed ref is unused; a package still holding a needed branch stays. */
+    public Set<String> unusedPackages() throws Exception {
+        Set<String> unused=unusedRefs();java.util.Map<String,Boolean> packages=new java.util.LinkedHashMap<>();
+        InstalledPackages installed=new InstalledPackages(context);
+        for(String pkg:installed.empty)packages.put(pkg,true);
+        for(String ref:installed.records.keySet()) {
+            String pkg=DeployManifest.packageForPublic(ref);packages.put(pkg,packages.getOrDefault(pkg,true)&&unused.contains(ref));
+        }
+        Set<String> result=new LinkedHashSet<>();for(java.util.Map.Entry<String,Boolean> entry:packages.entrySet())if(entry.getValue())result.add(entry.getKey());
+        return result;
+    }
+    private Set<String> snapshotRefs(String query) throws Exception {
         File work=Files.createTempDirectory(org.matonos.linux.WorkDirs.directory(context,"store-queries").toPath(),"snapshot-").toFile();
         try(AutoCloseable lease=org.matonos.linux.WorkDirs.keep(work)) {
             StoreFlatpak snapshot=new StoreFlatpak(context,work);
@@ -116,7 +130,7 @@ public final class StoreFlatpak {
             if(installed.records.isEmpty())return Collections.emptySet();
             copyRemotesTo(snapshot);
             Set<String> refs=new LinkedHashSet<>();
-            for(String line:snapshot.helper(updates?"--updates":"--installed",snapshot.installation.getAbsolutePath()).split("\n")) {
+            for(String line:snapshot.helper(query,snapshot.installation.getAbsolutePath()).split("\n")) {
                 if(line.isBlank())continue;String[] fields=line.split("\t",-1);
                 if(fields.length!=2||!installed.records.containsKey(fields[0]))throw new IOException("Unexpected Flatpak installed ref: "+line);
                 refs.add(fields[0]);

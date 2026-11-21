@@ -133,6 +133,7 @@ public final class FlatpakSourceService extends Service {
             if(!temp.renameTo(file)){Log.e(TAG,"Cannot publish catalogue file source="+getPackageName()+" temp="+temp+" target="+file);throw new IOException("Cannot publish Flatpak catalogue");}
             if(refreshExpired)invalidateCatalogue();catalogueFile=file;catalogueFileVersion=catalogueGeneration.get();catalogueFileCheckedAt=now;return ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY);
         });}
+        @Override public String[] unusedPackages(){return call("unusedPackages",()->{ensure();synchronized(mutationLock){return flatpak.unusedPackages().toArray(new String[0]);}});}
         @Override public long catalogueVersion(){return catalogueGeneration.get();}
         @Override public AppDetails details(String id,String repo){return call("details id="+id,()->{
             Map<String,Object> row=find(id,repo);row=withRepositoryOptions(Collections.singletonList(row)).get(0);String remote=(String)row.get("origin"),ref=(String)row.get("ref");

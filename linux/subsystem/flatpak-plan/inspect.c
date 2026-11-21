@@ -74,13 +74,16 @@ static int oars(int argc, char **argv) {
     if(fflush(stdout)){perror("flatpak-source OARS stdout");return 1;}
     return 0;
 }
-static int installed_refs(const char *directory, gboolean updates) {
+enum installed_query {INSTALLED_ALL,INSTALLED_UPDATES,INSTALLED_UNUSED};
+static int installed_refs(const char *directory, enum installed_query query) {
     g_autoptr(GError) error=NULL;
     g_autoptr(GFile) path=g_file_new_for_path(directory);
     g_autoptr(FlatpakInstallation) installation=flatpak_installation_new_for_path(path,FALSE,NULL,&error);
     g_autoptr(GPtrArray) refs=NULL;
     if(!installation)goto failed;
-    refs=updates?flatpak_installation_list_installed_refs_for_update(installation,NULL,&error):
+    // Unused = stock flatpak uninstall --unused selection (runtimes/extensions no installed app needs).
+    refs=query==INSTALLED_UPDATES?flatpak_installation_list_installed_refs_for_update(installation,NULL,&error):
+        query==INSTALLED_UNUSED?flatpak_installation_list_unused_refs(installation,NULL,NULL,&error):
         flatpak_installation_list_installed_refs(installation,NULL,&error);
     if(!refs)goto failed;
     for(guint i=0;i<refs->len;i++) {
@@ -153,8 +156,9 @@ failed:
 }
 int main(int argc,char **argv) {
     if(argc==5&&!strcmp(argv[1],"--stage"))return stage(argv);
-    if(argc==3&&!strcmp(argv[1],"--installed"))return installed_refs(argv[2],FALSE);
-    if(argc==3&&!strcmp(argv[1],"--updates"))return installed_refs(argv[2],TRUE);
+    if(argc==3&&!strcmp(argv[1],"--installed"))return installed_refs(argv[2],INSTALLED_ALL);
+    if(argc==3&&!strcmp(argv[1],"--updates"))return installed_refs(argv[2],INSTALLED_UPDATES);
+    if(argc==3&&!strcmp(argv[1],"--unused"))return installed_refs(argv[2],INSTALLED_UNUSED);
     if(argc==5&&!strcmp(argv[1],"--sizes"))return sizes(argv);
     if(argc>=2&&!strcmp(argv[1],"--oars"))return oars(argc,argv);
     if(argc==4&&!strcmp(argv[1],"--requirements"))return local_requirements(argv[2],argv[3]);

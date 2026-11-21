@@ -10,6 +10,8 @@ import org.matonos.linuxhost.stubgen.*;
 /** PackageManager attests each snapshot; names and declaring packages are never caller input. */
 final class InstalledPackages {
     final Map<String,DeploymentRecord> records=new LinkedHashMap<>();
+    /** Carriers that deploy nothing (no deployment split or no records). */
+    final Set<String> empty=new LinkedHashSet<>();
     private final Context context;
     private final byte[] certificate;
     InstalledPackages(Context context)throws Exception {
@@ -19,8 +21,10 @@ final class InstalledPackages {
             List<DeploymentRecord> packageRecords;
             // An interrupted install leaves a stub without a deployment split;
             // treat missing state as empty instead of inventing a migration.
+            // Base and deployment split commit in one session, so this is never an install in flight.
             try{packageRecords=DeploymentRecord.installedAll(pkg.splitNames,pkg.applicationInfo.splitSourceDirs);}
-            catch(java.io.IOException incomplete){android.util.Log.w("MatonInstall","Skipping incomplete package "+pkg.packageName+": "+incomplete.getMessage());continue;}
+            catch(java.io.IOException incomplete){android.util.Log.w("MatonInstall","Skipping incomplete package "+pkg.packageName+": "+incomplete.getMessage());empty.add(pkg.packageName);continue;}
+            if(packageRecords.isEmpty())empty.add(pkg.packageName);
             for(DeploymentRecord record:packageRecords) {
                 if(!pkg.packageName.equals(DeployManifest.packageForPublic(record.ref)))throw new IOException("Package name/ref mismatch");
                 if(records.put(record.ref,record)!=null)throw new IOException("Duplicate installed ref");
