@@ -192,6 +192,10 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     private boolean stopped;
     private boolean trayPlaceholder;
     private String ref;
+    /* The Flatpak ref this stub process runs. The base activity carries no ref
+     * (it lives on the launcher alias split), so window activities reuse the
+     * ref the launcher activity resolved in this process. */
+    private static volatile String processRef;
     private boolean attached;
     private TextView status;
     // Captured mice expose deltas as X/Y on Android; some sources also
@@ -281,6 +285,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
                     return;
                 }
                 runtime.setWindowHost(this, window);
+                android.util.Log.i("MatonFlatpakStub","Window host set window="+window);
                 runOnUiThread(() -> {
                     if (!destroyed && window!=0) { if(view==null)showWindow(window);else attachIfReady(); }
                 });
@@ -325,8 +330,10 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
                 if(base.metaData!=null){ref=base.metaData.getString(HostContract.META_FLATPAK_REF);minimum=base.metaData.getInt(HostContract.META_MIN_INTERFACE,1);}
             }
         } catch(Exception e){failure("Cannot read application reference",e);return;}
-        if(ref==null||ref.trim().isEmpty()){message("This launcher has no application reference.");return;}
-        if(minimum>HostContract.getInterfaceVersion()){message("Update the Linux host to launch this application.");return;}
+        if((ref==null||ref.trim().isEmpty())&&window!=0)ref=processRef;
+        if(ref==null||ref.trim().isEmpty()){android.util.Log.e("MatonFlatpakStub","No Flatpak ref for window="+window);message("This launcher has no application reference.");return;}
+        processRef=ref;
+        if(minimum>HostContract.getInterfaceVersion()){android.util.Log.e("MatonFlatpakStub","Host interface too old: need "+minimum+" window="+window);message("Update the Linux host to launch this application.");return;}
         // Start the per-app runtime (session bus + portal) in THIS process/UID.
         startRuntimeAndConnect();
     }
@@ -336,6 +343,7 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
             startForegroundService(new Intent(this, StubService.class).putExtra(HostContract.EXTRA_FLATPAK_REF, ref));
             // The pin activity lives in the subsystem app, not in this stub package.
             // erofsd keeps the pin until reboot: later windows skip the round-trip.
+            android.util.Log.i("MatonFlatpakStub","Runtime connect window="+window+" pinned="+erofsPinned);
             if(erofsPinned){launchLocally();return;}
             startActivityForResult(new Intent().setClassName("org.matonos.linux","org.matonos.linux.ErofsPinActivity"),EROFS_PIN_REQUEST);
         } catch(Exception error) { failure("Cannot start the app runtime",error); }
@@ -372,7 +380,8 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
     }
     private void showWindow(int id) {
         // The window can close before this activity starts (a short-lived dialog).
-        if(runtime!=null && !runtime.hasWindow(id)){finish();return;}
+        if(runtime!=null && !runtime.hasWindow(id)){android.util.Log.i("MatonFlatpakStub","Window gone before show window="+id);finish();return;}
+        android.util.Log.i("MatonFlatpakStub","Show window="+id);
         window=id;SHOWING.put(id,this);
         view=new SurfaceView(this) {
             @Override public void onPointerCaptureChange(boolean captured) {
