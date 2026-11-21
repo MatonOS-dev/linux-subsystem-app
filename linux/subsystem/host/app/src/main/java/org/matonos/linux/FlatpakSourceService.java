@@ -30,6 +30,8 @@ public final class FlatpakSourceService extends Service {
     private volatile File catalogueFile;
     private volatile long catalogueFileVersion=-1;
     private volatile long catalogueFileCheckedAt;
+    // Guarded by binder.catalogue()'s lock; network-derived data refreshed on the catalogue interval.
+    private boolean appStreamFetchDue=true;private Map<String,Long> addedCache;private Map<String,Double> popularityCache;
     private final java.util.concurrent.atomic.AtomicLong catalogueGeneration=new java.util.concurrent.atomic.AtomicLong(1);
     private final Object catalogueLock=new Object();
     private CompletableFuture<List<Map<String,Object>>> catalogueLoad;
@@ -122,6 +124,8 @@ public final class FlatpakSourceService extends Service {
         @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_PERMISSIONS;return info;}
         @Override public synchronized ParcelFileDescriptor catalogue(){return call("catalogue",()->{
             File file=new File(getFilesDir(),"store-catalogue.json");long generation=catalogueGeneration.get(),now=System.currentTimeMillis();boolean refreshExpired=file.isFile()&&now-catalogueFileCheckedAt>=6L*60*60*1000;if(file.isFile()&&catalogueFileVersion==generation&&!refreshExpired)return ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY);
+            // Package changes only change installed/update state; AppStream is fetched on the refresh interval.
+            appStreamFetchDue=!file.isFile()||refreshExpired;
             File temp=new File(getFilesDir(),"store-catalogue.json.tmp");
             try(FileOutputStream output=new FileOutputStream(temp,false);OutputStreamWriter writer=new OutputStreamWriter(output,StandardCharsets.UTF_8)){
                 StoreCatalogueWriter.write(writer,getPackageName(),System.currentTimeMillis()/1000L,FlatpakSourceService.this::writeCatalogueRows);
@@ -287,11 +291,12 @@ public final class FlatpakSourceService extends Service {
         JSONArray remoteRows=repositories();Map<String,String> labels=new HashMap<>();Map<String,Integer> priorities=new HashMap<>();List<String> enabled=new ArrayList<>();
         for(int i=0;i<remoteRows.length();i++){JSONObject remote=remoteRows.getJSONObject(i);String id=remote.getString("id");labels.put(id,remote.optString("label",id));if(remote.optBoolean("enabled",true))enabled.add(id);}
         try{for(String line:flatpak.cli("remote-list","--system","--columns=name,priority").split("\\n")){String[] fields=line.trim().split("\\s+");if(fields.length==2)priorities.put(fields[0],Integer.parseInt(fields[1]));}}catch(Exception error){Log.e(TAG,"Reading repository priorities failed; using source order",error);for(int i=0;i<enabled.size();i++)priorities.put(enabled.get(i),enabled.size()-i);}
-        Map<String,Long> added=addedByAppId();Map<String,Double> scores=popularityByAppId();Set<String> installed=flatpak.installedRefs(false),updates=flatpak.installedRefs(true);
+        if(appStreamFetchDue||addedCache==null){addedCache=addedByAppId();popularityCache=popularityByAppId();}Map<String,Long> added=addedCache;Map<String,Double> scores=popularityCache;Set<String> installed=flatpak.installedRefs(false),updates=flatpak.installedRefs(true);
         boolean[] first={true};int[] succeeded={0};Exception[] last={null};
         for(String remote:enabled){
-            boolean refreshFailed=false;try{flatpak.cli("update","--system","--appstream","--noninteractive",remote);}catch(Exception error){refreshFailed=true;brokenRemotes.put(remote,true);Log.e(TAG,"AppStream refresh failed remote="+remote+"; reading cached index",error);}
             File active=new File(flatpak.installation,"appstream/"+remote+"/x86_64/active"),xml=new File(active,"appstream.xml.gz");boolean gzip=xml.isFile();if(!gzip)xml=new File(active,"appstream.xml");
+            boolean refreshFailed=false,fetched=appStreamFetchDue||!xml.isFile();if(fetched){try{flatpak.cli("update","--system","--appstream","--noninteractive",remote);}catch(Exception error){refreshFailed=true;brokenRemotes.put(remote,true);Log.e(TAG,"AppStream refresh failed remote="+remote+"; reading cached index",error);}
+            xml=new File(active,"appstream.xml.gz");gzip=xml.isFile();if(!gzip)xml=new File(active,"appstream.xml");}
             if(!xml.isFile()){Log.e(TAG,"AppStream index missing remote="+remote+" path="+active);continue;}
             try(InputStream input=new FileInputStream(xml)){
                 AppStreamCatalogue.readEach(input,gzip,remote,row->{
@@ -302,7 +307,7 @@ public final class FlatpakSourceService extends Service {
                     row.put("badges",badges(row));row.put("popularityScore",scores.getOrDefault(appId,0.0));row.put("installed",installed.contains(ref));row.put("updateAvailable",updates.contains(ref));row.put("currentVersionName",JSONObject.NULL);row.put("installable",true);row.put("signerMatches",true);
                     if(!first[0])output.write(',');output.write(catalogueRow(row).toString());first[0]=false;succeeded[0]++;
                 });
-                brokenRemotes.put(remote,refreshFailed);
+                if(fetched)brokenRemotes.put(remote,refreshFailed);
             }catch(Exception error){brokenRemotes.put(remote,true);last[0]=error;Log.e(TAG,"Reading AppStream catalogue failed remote="+remote,error);}
         }
         if(succeeded[0]==0&&last[0]!=null)throw last[0];
