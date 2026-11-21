@@ -2289,7 +2289,7 @@ static int ours(long n) {
 #endif
     case PROXY_SC_utime:case PROXY_SC_utimes:case PROXY_SC_creat:case PROXY_SC_rmdir:case PROXY_SC_mknod:case PROXY_SC_mknodat:
     case PROXY_SC_signalfd4:case PROXY_SC_rt_sigtimedwait:
-    case PROXY_SC_seccomp:case PROXY_SC_prctl:case PROXY_SC_prlimit64:case PROXY_SC_setrlimit:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
+    case PROXY_SC_seccomp:case PROXY_SC_prctl:case PROXY_SC_prlimit64:case PROXY_SC_getrlimit:case PROXY_SC_setrlimit:case PROXY_SC_execve:case PROXY_SC_execveat:case PROXY_SC_rt_sigaction:case PROXY_SC_rt_sigprocmask:
     case PROXY_SC_sigaltstack:case PROXY_SC_unshare:case PROXY_SC_mount:case PROXY_SC_umount2:case PROXY_SC_pivot_root:
     case PROXY_SC_vfork:case PROXY_SC_clone:case PROXY_SC_clone3:case PROXY_SC_io_uring_setup:case PROXY_SC_io_uring_enter:case PROXY_SC_io_uring_register:
     case PROXY_SC_open:case PROXY_SC_openat:case PROXY_SC_openat2:case PROXY_SC_open_tree:case PROXY_SC_open_tree_attr:
@@ -2362,6 +2362,64 @@ static void unhandled_once(long id,long kernel_nr,uintptr_t pc){
 }
 /* Android loads platform libraries lazily, after the initial syscall filter
  * snapshot. Their syscall sites keep native Android semantics. */
+/* RLIMIT_AS counts address space. Every proxied process also carries the
+ * resident Android host: scudo primary reserves, the CFI shadow and the
+ * bionic libraries, about 10 GiB of mostly PROT_NONE reservations a desktop
+ * process never has. An app limit such as glycin's 8 GB loader cap would fail
+ * before the app maps anything. The kernel enforces app limit + host
+ * reservations (measured on the first finite set; fork and in-process exec
+ * keep it) and the app reads back the value it set. */
+static uint64_t as_host_offset;
+static int as_host_measured;
+__attribute__((noinline))
+static long host_reserved_bytes(uint64_t *total) {
+    char *scratch=vfs_alloc(8192);if(!scratch)return -ENOMEM;
+    long fd=RAW(PROXY_SC_openat,AT_FDCWD,"/proc/self/maps",O_RDONLY|O_CLOEXEC,0,0,0);
+    if(fd<0){vfs_free(scratch);proxy_log("fail as-limit-maps",0,fd);return fd;}
+    char *input=scratch,*line=scratch+4096;size_t used=0;uint64_t sum=0;long n;
+    while((n=RAW(PROXY_SC_read,fd,input,4096,0,0,0))>0){
+        for(long i=0;i<n;i++){
+            char c=input[i];
+            if(c!='\n'){if(used+1<4096)line[used++]=c;continue;}
+            line[used]=0;used=0;
+            const char *p=line;uintptr_t lo=resident_maps_hex(&p),hi=0;
+            if(*p=='-'){p++;hi=resident_maps_hex(&p);}
+            while(*p==' ')p++;
+            for(unsigned field=0;field<4&&*p;field++){while(*p&&*p!=' ')p++;while(*p==' ')p++;}
+            const char *anon="[anon:";size_t k=0;while(anon[k]&&p[k]==anon[k])k++;
+            if(hi<=lo)continue;
+            if(!anon[k]||resident_bionic_path(p)||resident_android_library_path(p)){sum+=hi-lo;continue;}
+            /* Session-wide native runtime regions (GPU forwarders). */
+            uint64_t ranges[2][2]={{proxy_bionic64_base,proxy_bionic64_base?proxy_bionic64_base+BIONIC64_SIZE:0},
+                {proxy_bionic32_base,proxy_bionic32_base?(uint64_t)proxy_bionic32_base+BIONIC32_SIZE:0}};
+            for(int r=0;r<2;r++){
+                uint64_t from=lo>ranges[r][0]?lo:ranges[r][0],to=hi<ranges[r][1]?hi:ranges[r][1];
+                if(to>from)sum+=to-from;
+            }
+        }
+    }
+    RAW(PROXY_SC_close,fd,0,0,0,0,0);vfs_free(scratch);
+    if(n<0){proxy_log("fail as-limit-maps-read",0,n);return n;}
+    *total=sum;return 0;
+}
+static uint64_t as_to_kernel(uint64_t v){return v==UINT64_MAX||v>UINT64_MAX-as_host_offset?UINT64_MAX:v+as_host_offset;}
+static uint64_t as_from_kernel(uint64_t v){return v==UINT64_MAX?v:v>as_host_offset?v-as_host_offset:0;}
+/* prlimit64(self, RLIMIT_AS) with app values in and out. */
+static long as_limit(const uint64_t *next,uint64_t *old) {
+    uint64_t kernel[2];
+    if(next){
+        if(!as_host_measured && (next[0]!=UINT64_MAX || next[1]!=UINT64_MAX)){
+            long r=host_reserved_bytes(&as_host_offset);if(r<0)return r;
+            as_host_measured=1;
+        }
+        kernel[0]=as_to_kernel(next[0]);kernel[1]=as_to_kernel(next[1]);
+    }
+    uint64_t previous[2];
+    long r=RAW(PROXY_SC_prlimit64,0,RLIMIT_AS,next?kernel:0,previous,0,0);
+    if(r<0)return r;
+    if(old){old[0]=as_from_kernel(previous[0]);old[1]=as_from_kernel(previous[1]);}
+    return 0;
+}
 struct android_pc_cache_entry {volatile uintptr_t begin,end;volatile unsigned long epoch;int state;};
 static struct android_pc_cache_entry android_pc_cache[256];
 static volatile unsigned long android_pc_cache_epoch=1;
@@ -2482,7 +2540,7 @@ static long trap_syscall(ucontext_t *uc,siginfo_t *info,struct thread_state *thr
         trace_word(" a2=",a[2]);trace_word(" a3=",a[3]);
         trace_word(" a4=",a[4]);trace_word(" a5=",a[5]);emit("\n");
     }
-    if(syscall_mapping && nr!=PROXY_SC_prlimit64 && nr!=PROXY_SC_setrlimit) {
+    if(syscall_mapping && nr!=PROXY_SC_prlimit64 && nr!=PROXY_SC_getrlimit && nr!=PROXY_SC_setrlimit) {
         if(nr==PROXY_SC_close && proxy_fd_is_private(a[0]))result=-EBADF;
         else if((nr==PROXY_SC_dup2 || nr==PROXY_SC_dup3) && proxy_fd_is_private(a[1]))result=descriptor_dup_dispatch(nr,a);
         else if(nr==PROXY_SC_fcntl && (a[1]==F_DUPFD || a[1]==F_DUPFD_CLOEXEC) && proxy_fd_is_private(a[2]))result=descriptor_dup_dispatch(nr,a);
@@ -2793,13 +2851,43 @@ static long trap_syscall(ucontext_t *uc,siginfo_t *info,struct thread_state *thr
     case PROXY_SC_setreuid:case PROXY_SC_setregid:case PROXY_SC_setfsuid:case PROXY_SC_setfsgid:case PROXY_SC_setgroups:case PROXY_SC_setuid:case PROXY_SC_setgid:case PROXY_SC_setresuid:case PROXY_SC_setresgid:result=0;break;
     case PROXY_SC_capset:result=0;break;
     case PROXY_SC_prlimit64:{
+        if((int)a[1]==RLIMIT_AS && ((int)a[0]==0 || (long)(int)a[0]==RAW(PROXY_SC_getpid,0,0,0,0,0,0))){
+            uint64_t next[2],old[2];
+            if(a[2]){p_copy(next,(const void *)(uintptr_t)a[2],sizeof(next));}
+            result=as_limit(a[2]?next:0,a[3]?old:0);
+            if(!result && a[3])p_copy((void *)(uintptr_t)a[3],old,sizeof(old));
+            break;
+        }
         if((int)a[0]==0 && (int)a[1]==RLIMIT_NOFILE && a[2]){
             struct {uint64_t cur,max;} *next=(void *)(uintptr_t)a[2];
             long moved=proxy_private_fd_limit(next->cur);if(moved<0){result=moved;break;}
         }
         result=RAW(nr,a[0],a[1],a[2],a[3],a[4],0);break;
     }
+    case PROXY_SC_getrlimit:{
+        if((int)a[0]!=RLIMIT_AS){result=RAW(nr,a[0],a[1],0,0,0,0);break;}
+        if(!a[1]){result=-EFAULT;break;}
+        uint64_t old[2];result=as_limit(0,old);if(result)break;
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+        uint32_t value[2];for(int i=0;i<2;i++)value[i]=old[i]>=UINT32_MAX?UINT32_MAX:(uint32_t)old[i];
+        p_copy((void *)(uintptr_t)a[1],value,sizeof(value));
+#else
+        p_copy((void *)(uintptr_t)a[1],old,sizeof(old));
+#endif
+        break;
+    }
     case PROXY_SC_setrlimit:{
+        if((int)a[0]==RLIMIT_AS){
+            if(!a[1]){result=-EFAULT;break;}
+            uint64_t next[2];
+#if ARCH_AUDIT == AUDIT_ARCH_I386
+            uint32_t value[2];p_copy(value,(const void *)(uintptr_t)a[1],sizeof(value));
+            for(int i=0;i<2;i++)next[i]=value[i]==UINT32_MAX?UINT64_MAX:value[i];
+#else
+            p_copy(next,(const void *)(uintptr_t)a[1],sizeof(next));
+#endif
+            result=as_limit(next,0);break;
+        }
         if((int)a[0]==RLIMIT_NOFILE && a[1]){
 #if ARCH_AUDIT == AUDIT_ARCH_I386
             uint32_t cur=*(uint32_t *)(uintptr_t)a[1];
@@ -2865,6 +2953,7 @@ clone_retry:
             !next_options.joined && !next_options.blocked && (next_options.uid || next_options.gid);
         struct image image;
         result=proxy_load(path,(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?1:2],(char *const *)(uintptr_t)a[nr==PROXY_SC_execve?2:3],&image);
+        if(result)proxy_log("fail exec",nr,result);
         if(!result) {
 #if ARCH_AUDIT == AUDIT_ARCH_I386
             if(ldt_entries){vfs_free(ldt_entries);ldt_entries=NULL;ldt_capacity=0;}
