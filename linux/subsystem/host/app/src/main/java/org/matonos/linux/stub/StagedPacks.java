@@ -49,7 +49,7 @@ public final class StagedPacks {
             List<ExtraImageValidator.Entry> committed=new ArrayList<>();
             String trustedPrefix=manifest.getString("appRef").startsWith("runtime/")
                     ? "/"+manifest.getString("appRef").substring(manifest.getString("appRef").lastIndexOf('/')+1)
-                    : "/app";
+                    : "/";
             for(ObjectPacks.Entry sourceEntry:original.entries)
                 committed.add(new ExtraImageValidator.Entry(sourceEntry.path,sourceEntry.kind,sourceEntry.mode,
                         sourceEntry.target,sourceEntry.checksum,sourceEntry.source));
@@ -57,11 +57,12 @@ public final class StagedPacks {
             File extracted=new File(installation,"extra-image-validated");
             try {
                 ExtraImageValidator.checkImage(
-                        LoaderCommand.tool(context,"libmatonos-fsck-erofs.so"),returnedImage,extracted,trusted);
+                        LoaderCommand.tool(context,"libmatonos-fsck-erofs.so"),returnedImage,extracted,trusted,
+                        ExtraImageValidator.extraRoot(trustedPrefix));
                 // This is only the stub's extra-data payload image. Merge its
                 // /app/extra into the complete verified deployment, then build
                 // the published image from the full tree below.
-                ExtraDataImage.mergeExtra(extracted,deployedFiles);
+                ExtraDataImage.mergeExtra(extracted,ExtraImageValidator.extraRoot(trustedPrefix),deployedFiles);
             } finally {delete(extracted);}
         }
 
@@ -69,6 +70,13 @@ public final class StagedPacks {
         // Reading this tree earlier leaves /extra out of both the published
         // EROFS image and its object index, even though the APK has an image
         // split and the deployment directory now contains the payload.
+        // Flatpak's deploy writes an empty files/.ref, and apply_extra passes
+        // --lock-file /usr/.ref unconditionally; images must carry it as well.
+        java.nio.file.Path ref=deployedFiles.toPath().resolve(".ref");
+        if(!java.nio.file.Files.isRegularFile(ref,java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            java.nio.file.Files.write(ref,new byte[0]);
+        // Same 0644 as Flatpak; the app umask would leave it 0600 (bwrap: EACCES).
+        java.nio.file.Files.setPosixFilePermissions(ref,java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
         long deployStarted=System.nanoTime();
         String commit=OstreePacks.commitDeployed(deployedFiles,local);
         Log.i("MatonInstall","phase=deploy ref="+manifest.optString("ref","unknown")+" ms="+

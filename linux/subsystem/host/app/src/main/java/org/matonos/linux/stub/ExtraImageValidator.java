@@ -65,9 +65,11 @@ public final class ExtraImageValidator {
     /** Commit entries are exact outside /app/extra. That subtree is only type/mode checked. */
     public static java.util.List<Entry> flatpakFiles(java.lang.Iterable<Entry> commitEntries,String targetRoot)
             throws IOException {
-        if(targetRoot==null||!targetRoot.startsWith("/")||targetRoot.equals("/")
-                ||targetRoot.endsWith("/")||targetRoot.contains("//"))
+        if(targetRoot==null||!targetRoot.startsWith("/")
+                ||(targetRoot.endsWith("/")&&!targetRoot.equals("/"))||targetRoot.contains("//"))
             throw new IOException("Invalid Flatpak deployment target");
+        // "/" = the image root (app images); "/<branch>" for runtimes.
+        String base=targetRoot.equals("/")?"":targetRoot;
         java.util.List<Entry> result=new java.util.ArrayList<>();
         boolean foundFilesRoot=false;
         for(Entry entry:commitEntries) {
@@ -75,12 +77,20 @@ public final class ExtraImageValidator {
                 foundFilesRoot=true;
                 result.add(new Entry(targetRoot,entry.kind,entry.mode,entry.target,entry.sha256,entry.content));
             } else if(entry.path.startsWith("/files/")) {
-                result.add(new Entry(targetRoot+entry.path.substring("/files".length()),entry.kind,
+                result.add(new Entry(base+entry.path.substring("/files".length()),entry.kind,
                         entry.mode,entry.target,entry.sha256,entry.content));
             }
         }
         if(!foundFilesRoot)throw new IOException("Flatpak commit has no /files deployment tree");
+        // Flatpak's deploy adds an empty 0644 files/.ref that is not in the commit (optional).
+        result.add(new Entry(base+"/.ref","file",0100644,"",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",null));
         return result;
+    }
+
+    /** Where apply_extra output lives inside an image rooted at targetRoot. */
+    public static String extraRoot(String targetRoot) {
+        return (targetRoot.equals("/")?"":targetRoot)+"/extra";
     }
 
     public static void validate(File root, Iterable<Entry> committed) throws IOException {
@@ -91,11 +101,15 @@ public final class ExtraImageValidator {
         Path base=root.toPath().toRealPath(LinkOption.NOFOLLOW_LINKS);
         Map<String,Entry> expected=new HashMap<>();
         for(Entry e:committed) {
+            // The image root is the extraction directory itself (app images); walk() checks children only.
+            if(e.path.equals("/"))continue;
             String p=canonical(e.path);
             if(expected.put(p,e)!=null)throw new IOException("Duplicate committed image path: "+p);
         }
         expected.keySet().removeIf(p->p.equals(extraRoot)||p.startsWith(extraRoot+"/"));
         walk(base,base,expected,extraRoot);
+        // The deploy marker (see flatpakFiles) is allowed, not required.
+        expected.keySet().removeIf(p->p.endsWith("/.ref")&&p.lastIndexOf('/')==Math.max(0,p.indexOf('/',1)));
         for(String path:expected.keySet())if(!Files.exists(base.resolve(path.substring(1)),LinkOption.NOFOLLOW_LINKS))
             throw new IOException("EROFS image omits committed path: "+path);
     }

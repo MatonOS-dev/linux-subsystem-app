@@ -23,7 +23,7 @@ public final class ExtraDataImageTest {
             Files.createDirectories(returned);
             Files.writeString(returned.resolve("chrome"),"chrome executable payload\n");
             Files.setPosixFilePermissions(returned.resolve("chrome"),PosixFilePermissions.fromString("rwxr-xr-x"));
-            ExtraDataImage.mergeExtra(root.resolve("returned").toFile(),deployed.toFile());
+            ExtraDataImage.mergeExtra(root.resolve("returned").toFile(),"/app/extra",deployed.toFile());
             if(Files.exists(root.resolve("returned/app/extra/chrome")))
                 throw new AssertionError("extra-data payload was not moved into deployment");
 

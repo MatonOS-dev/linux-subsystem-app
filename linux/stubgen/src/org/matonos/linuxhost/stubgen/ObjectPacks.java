@@ -84,7 +84,7 @@ public final class ObjectPacks {
         List<Entry> entries=new ArrayList<>();
         String normalized=prefix.endsWith("/")?prefix:prefix+"/";
         if(preserveModes) {
-            String path=normalized.substring(0,normalized.length()-1);
+            String path=normalized.equals("/")?"/":normalized.substring(0,normalized.length()-1);
             Entry top=new Entry(path,pathChecksum(path,"dir"),"dir",unixMode(root.toPath()));entries.add(top);
         }
         fromTreeInto(root,"",normalized,entries,preserveModes);

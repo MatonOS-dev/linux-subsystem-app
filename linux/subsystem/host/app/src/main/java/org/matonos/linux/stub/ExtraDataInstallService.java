@@ -120,7 +120,7 @@ public final class ExtraDataInstallService extends Service {
         File current = new File(flatpakUser, ref + "/active/files");
         if (!current.isDirectory()) throw new IOException("Flatpak did not create a deployed files tree");
         String imagePrefix = ref.startsWith("runtime/")
-                ? "/" + ref.substring(ref.lastIndexOf('/') + 1) + "/" : "/app/";
+                ? "/" + ref.substring(ref.lastIndexOf('/') + 1) + "/" : "/";
         List<ObjectPacks.Entry> entries = ObjectPacks.fromTreeWithModes(current, imagePrefix);
         File output = new File(root, "deployment.erofs");
         File handback = output;

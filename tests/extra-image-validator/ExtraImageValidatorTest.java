@@ -52,7 +52,8 @@ public final class ExtraImageValidatorTest {
                     entry("/export","dir",0755,null,null),entry("/metadata","file",0644,null,null));
             List<ExtraImageValidator.Entry> expected=ExtraImageValidator.flatpakFiles(commit,"/app");
             ExtraImageValidator.validate(temp.resolve("good").toFile(),expected);
-            if(expected.size()!=5||!expected.stream().anyMatch(e->e.path.equals("/app/include/header.h")))
+            if(expected.size()!=6||!expected.stream().anyMatch(e->e.path.equals("/app/include/header.h"))
+                    ||!expected.stream().anyMatch(e->e.path.equals("/app/.ref")))
                 throw new AssertionError("Flatpak /files subtree was not projected onto /app");
             try {
                 ExtraImageValidator.flatpakFiles(Arrays.asList(entry("/metadata","file",0644,null,null)),"/app");

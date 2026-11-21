@@ -11,8 +11,8 @@ import java.nio.file.attribute.BasicFileAttributes;
 
 /** Merges the stub's generated extra-data payload into the full app deployment. */
 final class ExtraDataImage {
-    static void mergeExtra(File extractedImage, File deployedFiles) throws IOException {
-        Path source=extractedImage.toPath().resolve("app/extra");
+    static void mergeExtra(File extractedImage, String extraRoot, File deployedFiles) throws IOException {
+        Path source=extractedImage.toPath().resolve(extraRoot.substring(1));
         Path target=deployedFiles.toPath().resolve("extra");
         if(!Files.exists(source,LinkOption.NOFOLLOW_LINKS))return;
         deleteTree(target);

@@ -99,11 +99,11 @@ public final class StoreExtraData {
                         },paths(identity));
                 List<ExtraImageValidator.Entry> trusted=new ArrayList<>();
                 for(ObjectPacks.Entry entry:original.entries)trusted.add(new ExtraImageValidator.Entry(entry.path,entry.kind,entry.mode,entry.target,entry.checksum,entry.source));
-                String prefix=ref.startsWith("app/")?"/app":"/"+ref.substring(ref.lastIndexOf('/')+1);
+                String prefix=ref.startsWith("app/")?"/":"/"+ref.substring(ref.lastIndexOf('/')+1);
                 File extracted=new File(artifacts,"extra-validated");
                 try {
                     ExtraImageValidator.checkImage(LoaderCommand.tool(context,"libmatonos-fsck-erofs.so"),image,extracted,
-                            ExtraImageValidator.flatpakFiles(trusted,prefix),prefix+"/extra");
+                            ExtraImageValidator.flatpakFiles(trusted,prefix),ExtraImageValidator.extraRoot(prefix));
                 } finally {if(extracted.exists())org.matonos.linux.WorkDirs.remove(extracted);}
                 // Rebuild the APK envelope from validated bytes; never trust a stub-supplied manifest.
                 String split=DeployManifest.splitForPublic(ref);
