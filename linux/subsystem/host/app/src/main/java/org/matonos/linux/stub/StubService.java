@@ -89,6 +89,13 @@ public final class StubService extends Service {
             V3Launcher.requestQuit();
             return START_NOT_STICKY;
         }
+        if ((flags & START_FLAG_RETRY) != 0) {
+            // A start that crashed (e.g. the host APK was replaced under a running
+            // stub) must not come back as a headless runtime with no app launch.
+            Log.w("MatonStub", "refusing retried start after a crash; launch the app again");
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
         String ref = intent != null ? intent.getStringExtra(HostContract.EXTRA_FLATPAK_REF) : null;
         if (ref == null) {
             try {
