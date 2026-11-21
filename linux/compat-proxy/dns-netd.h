@@ -95,14 +95,23 @@ static int dns_address(const void *addr,unsigned long len){if(!dns_endpoint.sin_
 static struct sockaddr_in dns_helper_addr;
 static int dns_helper_ready;
 static volatile int dns_helper_state;
-struct dns_pending {int fd;struct sockaddr_in peer;struct dns_pending *next;};
+struct dns_pending {int fd;struct sockaddr_in peer;unsigned char *query;size_t query_len;struct dns_pending *next;};
+/* A query netd could not answer gets SERVFAIL, as from any stub resolver:
+ * the query echoed with QR, RA and RCODE=2, so the client fails over at once
+ * instead of waiting out its timeout on a silently dropped datagram. */
+static void dns_servfail(int server,unsigned char *query,size_t len,const struct sockaddr_in *peer){
+    if(len<12)return;
+    query[2]=(unsigned char)(query[2]|0x80);query[3]=(unsigned char)((query[3]&0x70)|0x80|2);
+    long r=proxy_internal_sendto(server,query,len,0,peer,sizeof(*peer));
+    if(r<0)proxy_log("fail dns-servfail-send",(long)len,r);
+}
 static struct dns_pending *dns_pending;
 static int dns_server_fd=-1,dns_epoll_fd=-1;
 static long dns_helper_pid;
 #define DNS_PORTS 256
 static unsigned dns_ports[DNS_PORTS];
 static int dns_port_owned(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++)if(__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE)==port)return 1;return 0;}
-static void dns_track_port(unsigned short port){if(!port||dns_port_owned(port))return;for(unsigned i=0;i<DNS_PORTS;i++){unsigned empty=0;if(__atomic_compare_exchange_n(&dns_ports[i],&empty,port,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED))return;}}
+static void dns_track_port(unsigned short port){if(!port||dns_port_owned(port))return;for(unsigned i=0;i<DNS_PORTS;i++){unsigned empty=0;if(__atomic_compare_exchange_n(&dns_ports[i],&empty,port,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED))return;}proxy_log("fail dns-port-table-full",port,DNS_PORTS);}
 static void dns_untrack_port(unsigned short port){for(unsigned i=0;i<DNS_PORTS;i++){unsigned value=__atomic_load_n(&dns_ports[i],__ATOMIC_ACQUIRE);if(value==port)__atomic_compare_exchange_n(&dns_ports[i],&value,0,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED);}}
 static void dns_worker(void *unused){(void)unused;
     /* This is a layer thread, not a payload thread: it never traps, so it has
@@ -128,15 +137,20 @@ static void dns_worker(void *unused){(void)unused;
     for(;;){struct epoll_event events[32];long n=RAW(PROXY_SC_epoll_pwait,ep,events,32,-1,0,8);if(n<0)continue;
         for(long i=0;i<n;i++){
             int fd=events[i].data.fd;
-            if(fd==server){struct sockaddr_in peer={0};unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,65536,0,&peer,&plen);if(q<=0||!dns_port_owned(peer.sin_port))continue;
-                int r=dns_netd_send(query,(size_t)q);if(r<0)continue;struct dns_pending *p=vfs_palloc(sizeof(*p));if(!p){RAW(PROXY_SC_close,r,0,0,0,0,0);continue;}*p=(struct dns_pending){.fd=r,.peer=peer,.next=dns_pending};dns_pending=p;struct epoll_event re={.events=EPOLLIN,.data.fd=r};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,r,&re,0,0);
-            }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_netd_result(fd,&rcode,answer,65536);RAW(PROXY_SC_close,fd,0,0,0,0,0);if(sz>0)proxy_internal_sendto(server,answer,sz,0,&p->peer,sizeof(p->peer));*pp=p->next;vfs_free(p);}
+            if(fd==server){struct sockaddr_in peer={0};unsigned plen=sizeof(peer);long q=RAW(PROXY_SC_recvfrom,server,query,65536,0,&peer,&plen);if(q<=0){if(q<0&&q!=-EAGAIN&&q!=-EINTR)proxy_log("fail dns-recv",q,0);continue;}
+                if(!dns_port_owned(peer.sin_port)){proxy_log("fail dns-unowned-port",peer.sin_port,q);continue;}
+                int r=dns_netd_send(query,(size_t)q);if(r<0){proxy_log("fail dns-netd-send",q,r);dns_servfail(server,query,(size_t)q,&peer);continue;}
+                struct dns_pending *p=vfs_palloc(sizeof(*p));unsigned char *copy=vfs_alloc((size_t)q);if(!p||!copy){proxy_log("fail dns-pending-alloc",q,-ENOMEM);vfs_free(p);vfs_free(copy);RAW(PROXY_SC_close,r,0,0,0,0,0);dns_servfail(server,query,(size_t)q,&peer);continue;}
+                p_copy(copy,query,(size_t)q);*p=(struct dns_pending){.fd=r,.peer=peer,.query=copy,.query_len=(size_t)q,.next=dns_pending};dns_pending=p;struct epoll_event re={.events=EPOLLIN,.data.fd=r};RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_ADD,r,&re,0,0);
+            }else {struct dns_pending **pp=&dns_pending;while(*pp&&(*pp)->fd!=fd)pp=&(*pp)->next;if(!*pp)continue;struct dns_pending *p=*pp;int rcode=0;RAW(PROXY_SC_epoll_ctl,ep,EPOLL_CTL_DEL,fd,0,0,0);int sz=dns_netd_result(fd,&rcode,answer,65536);RAW(PROXY_SC_close,fd,0,0,0,0,0);if(sz>0){long sr=proxy_internal_sendto(server,answer,sz,0,&p->peer,sizeof(p->peer));if(sr<0)proxy_log("fail dns-answer-send",sz,sr);}
+                else {proxy_log("fail dns-netd-result",sz,rcode);dns_servfail(server,p->query,p->query_len,&p->peer);}
+                *pp=p->next;vfs_free(p->query);vfs_free(p);}
         }
     }
 }
 /* i386 may map the helper stack above 2 GiB. Only Linux's reserved
  * errno range denotes mmap failure; a signed pointer test rejects valid RAM. */
-static int dns_start(void){long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);if(dns_helper_pid&&dns_helper_pid!=pid){if(dns_server_fd>=0)RAW(PROXY_SC_close,dns_server_fd,0,0,0,0,0);if(dns_epoll_fd>=0)RAW(PROXY_SC_close,dns_epoll_fd,0,0,0,0,0);while(dns_pending){struct dns_pending *p=dns_pending;dns_pending=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p);}dns_server_fd=dns_epoll_fd=-1;dns_helper_pid=0;dns_helper_ready=0;dns_helper_addr=(struct sockaddr_in){0};__atomic_store_n(&dns_helper_state,0,__ATOMIC_RELEASE);}if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)==1)return 0;if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)<0)return -EIO;
+static int dns_start(void){long pid=RAW(PROXY_SC_getpid,0,0,0,0,0,0);if(dns_helper_pid&&dns_helper_pid!=pid){if(dns_server_fd>=0)RAW(PROXY_SC_close,dns_server_fd,0,0,0,0,0);if(dns_epoll_fd>=0)RAW(PROXY_SC_close,dns_epoll_fd,0,0,0,0,0);while(dns_pending){struct dns_pending *p=dns_pending;dns_pending=p->next;RAW(PROXY_SC_close,p->fd,0,0,0,0,0);vfs_free(p->query);vfs_free(p);}dns_server_fd=dns_epoll_fd=-1;dns_helper_pid=0;dns_helper_ready=0;dns_helper_addr=(struct sockaddr_in){0};__atomic_store_n(&dns_helper_state,0,__ATOMIC_RELEASE);}if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)==1)return 0;if(__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE)<0)return -EIO;
     int expected=0;if(__atomic_compare_exchange_n(&dns_helper_state,&expected,2,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){size_t stack_size=1024*1024;void *stack=(void *)(uintptr_t)RAW(PROXY_SC_mmap,0,stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if((unsigned long)stack>=(unsigned long)-4095){__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return -ENOMEM;}proxy_sigmask_t all=~UINT64_C(0),old=0;RAW(PROXY_SC_rt_sigprocmask,SIG_BLOCK,&all,&old,8,0,0);unsigned long flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM;long r=proxy_raw_clone_thread(flags,(char *)stack+stack_size,dns_worker,NULL);RAW(PROXY_SC_rt_sigprocmask,SIG_SETMASK,&old,0,8,0,0);if(r<0){RAW(PROXY_SC_munmap,stack,stack_size,0,0,0,0);__atomic_store_n(&dns_helper_state,-1,__ATOMIC_RELEASE);return (int)r;}}
     for(unsigned i=0;i<10000000;i++){int s=__atomic_load_n(&dns_helper_state,__ATOMIC_ACQUIRE);if(s==1)return 0;if(s<0)return -EIO;__asm__ volatile("pause");}return -ETIMEDOUT;
 }
