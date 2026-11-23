@@ -87,17 +87,16 @@ public final class DBusProviderSettings extends ContentProvider {
 
     private void requireReadCaller() {
         // Generated stubs use per-app signing keys, so they cannot hold this subsystem signature permission.
-        // Their loader and Flatpak-ref manifest markers identify the read-only session-bus clients.
+        // PackageManager's initiating-package field is set by the installer session and cannot be declared
+        // by an app, so "installed by the subsystem" identifies the stubs (same check as PackageDeployment).
         if (getContext().checkCallingPermission(READ) == PackageManager.PERMISSION_GRANTED) return;
         int uid = Binder.getCallingUid();
         String[] packages = getContext().getPackageManager().getPackagesForUid(uid);
         if (packages != null) for (String packageName : packages) {
             try {
-                android.content.pm.ApplicationInfo app = getContext().getPackageManager().getApplicationInfo(
-                        packageName, PackageManager.GET_META_DATA);
-                String ref = app.metaData == null ? null : app.metaData.getString("org.matonos.linuxhost.FLATPAK_REF");
-                if (app.uid == uid && "org.matonos.linux.stub.StubLoader".equals(app.appComponentFactory)
-                        && ref != null && ref.matches("app/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")) return;
+                android.content.pm.InstallSourceInfo source =
+                        getContext().getPackageManager().getInstallSourceInfo(packageName);
+                if (source != null && getContext().getPackageName().equals(source.getInitiatingPackageName())) return;
             } catch (PackageManager.NameNotFoundException error) {
                 Log.e(TAG, "Cannot verify D-Bus settings caller uid=" + uid + " package=" + packageName, error);
             }
