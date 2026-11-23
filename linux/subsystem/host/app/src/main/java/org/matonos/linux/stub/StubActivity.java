@@ -10,6 +10,8 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.WindowInsets;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 import org.json.JSONObject;
 
@@ -400,7 +402,24 @@ public final class StubActivity extends Activity implements SurfaceHolder.Callba
         view.addOnLayoutChangeListener(this::learnCaption);
         view.setOnTouchListener((v,event)->motion(event));
         view.setOnGenericMotionListener((v,event)->motion(event));
-        setContentView(view);view.requestFocus();
+        FrameLayout host = new FrameLayout(this);
+        FrameLayout.LayoutParams surfaceParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+        host.addView(view, surfaceParams);
+        host.setOnApplyWindowInsetsListener((root, insets) -> {
+            int safeTypes = WindowInsets.Type.systemGestures() | WindowInsets.Type.displayCutout();
+            if (insets.isVisible(WindowInsets.Type.systemBars()))
+                safeTypes |= WindowInsets.Type.systemBars();
+            android.graphics.Insets safe = insets.getInsetsIgnoringVisibility(safeTypes);
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
+            if (params.leftMargin != safe.left || params.topMargin != safe.top
+                    || params.rightMargin != safe.right || params.bottomMargin != safe.bottom) {
+                params.setMargins(safe.left, safe.top, safe.right, safe.bottom);
+                view.setLayoutParams(params);
+            }
+            return insets;
+        });
+        setContentView(host);view.requestFocus();
     }
     private void message(String text) {
         runOnUiThread(()->{if(!destroyed&&window==0)status.setText(text);});
