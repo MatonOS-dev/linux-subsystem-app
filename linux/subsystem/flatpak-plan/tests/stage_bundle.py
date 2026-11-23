@@ -97,6 +97,39 @@ def main():
             if "app/org.example.FlatpakBundleTest/x86_64/stable\t" not in output:
                 raise SystemExit(f"app ref row missing from output:\n{output}")
             print(output, end="")
+
+    if shutil.which("gpg") is not None:
+        gnupg_home = out / "gnupg"
+        gnupg_home.mkdir(mode=0o700)
+        gpg_env = os.environ.copy()
+        gpg_env["GNUPGHOME"] = str(gnupg_home)
+        run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key",
+             "MatonOS bundle test <bundle-test@matonos.invalid>", "ed25519", "sign", "0"],
+            env=gpg_env)
+        key_listing = run(["gpg", "--batch", "--with-colons", "--list-secret-keys"],
+                          env=gpg_env, capture=True).stdout
+        key_id = next(line.split(":")[4] for line in key_listing.splitlines()
+                      if line.startswith("sec:"))
+        signed_repo = out / "signed-repo"
+        run(["flatpak", "build-export", f"--gpg-sign={key_id}",
+             f"--gpg-homedir={gnupg_home}", str(signed_repo), str(app_dir), "stable"])
+        run(["flatpak", "build-update-repo", str(signed_repo)])
+        signed_bundle = out / "signed-app.flatpak"
+        run(["flatpak", "build-bundle", str(signed_repo), str(signed_bundle),
+             "org.example.FlatpakBundleTest", "stable"])
+        signed_data = out / "signed/data"
+        signed_data.mkdir(parents=True, exist_ok=True)
+        signed_env = os.environ.copy()
+        signed_env["XDG_DATA_HOME"] = str(signed_data)
+        run(["flatpak", "--user", "remote-add", "--no-gpg-verify", "test-runtime",
+             runtime_repo.as_uri()], env=signed_env)
+        result = run([str(helper), "--stage-bundle", str(signed_data / "flatpak"),
+                      str(signed_bundle), "false"], env=signed_env,
+                     check=False, capture=True)
+        expected_signed = "BUNDLE\tSIGNED\tapp/org.example.FlatpakBundleTest/x86_64/stable"
+        if result.returncode != 0 or expected_signed not in result.stdout:
+            raise SystemExit(f"signed bundle mismatch: rc={result.returncode}\n{result.stderr}\n{result.stdout}")
+        print(result.stdout, end="")
     print("stage-bundle host test: PASS")
 
 
