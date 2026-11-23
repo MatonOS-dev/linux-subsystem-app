@@ -11,8 +11,6 @@
         android:protectionLevel="signature" />
     <permission android:name="org.matonos.permission.WRITE_DBUS_PROVIDER_SETTINGS"
         android:protectionLevel="signature" />
-    <permission android:name="org.matonos.permission.BIND_EMBEDDED_SETTINGS"
-        android:protectionLevel="signature|privileged" />
     <uses-permission android:name="org.matonos.permission.READ_DBUS_PROVIDER_SETTINGS" />
     <uses-permission android:name="org.matonos.permission.WRITE_DBUS_PROVIDER_SETTINGS" />
     <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
