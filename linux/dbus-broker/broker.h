@@ -12,6 +12,7 @@ gboolean broker_add_service(Broker *broker, const char *name,
                             const GDBusInterfaceVTable *vtable,
                             gpointer user_data, GError **error);
 gboolean broker_add_bridge(Broker *broker, int fd, const char *const *names, GError **error);
+void broker_clear_bridges(Broker *broker);
 Broker *broker_new(const char *socket_path, const char *config_path,
                    GError **error);
 gboolean broker_register_session_services(Broker *broker, int backend_fd, GError **error);

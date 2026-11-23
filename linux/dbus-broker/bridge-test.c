@@ -222,7 +222,11 @@ int main(void) {
     send_message(client[1],alive);g_object_unref(alive);drain_context();GDBusMessage *alive_reply=receive_message(client[1]);
     assert(alive_reply && g_dbus_message_get_message_type(alive_reply)==G_DBUS_MESSAGE_TYPE_METHOD_RETURN);g_object_unref(alive_reply);
 
+    /* Settings changes clear all existing provider bridges before selected ones reattach. */
+    broker_clear_bridges(b);drain_context();
+    assert(owner_of(b,"org.matonos.test.Client")==NULL);
+    assert(owner_of(b,"org.matonos.test.Queue")==NULL);
     close(client[1]);close(observer[1]);close(queue_waiter[1]);drain_context();broker_free(b);unlink(policy);rmdir(directory);
-    puts("PASS: bridge Echo/reverse calls, broadcast matches, bus-driver parity, attach/EOF name changes and pending errors");
+    puts("PASS: bridge Echo/reverse calls, broadcast matches, bus-driver parity, attach/EOF name changes, pending errors and clear-all");
     return 0;
 }

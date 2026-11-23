@@ -46,6 +46,19 @@ static gboolean add_bridge_on_context(gpointer data) {
     g_clear_error(&error);g_strfreev(a->names);free(a);return G_SOURCE_REMOVE;
 }
 
+static gboolean clear_bridges_on_context(gpointer data) {
+    (void)data;
+    pthread_mutex_lock(&g_lock); Broker *broker=g_broker; pthread_mutex_unlock(&g_lock);
+    if (broker) broker_clear_bridges(broker);
+    return G_SOURCE_REMOVE;
+}
+
+JNIEXPORT void JNICALL
+Java_org_matonos_linux_runtime_NativeBroker_nativeClearBridges(JNIEnv *env,jclass clazz) {
+    (void)env; (void)clazz;
+    g_main_context_invoke(NULL,clear_bridges_on_context,NULL);
+}
+
 JNIEXPORT void JNICALL
 Java_org_matonos_linux_runtime_NativeBroker_nativeAddBridge(JNIEnv *env,jclass clazz,jint fd,jobjectArray names) {
     (void)clazz;

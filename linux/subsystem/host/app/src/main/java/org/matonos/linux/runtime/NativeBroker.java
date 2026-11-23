@@ -30,4 +30,5 @@ public final class NativeBroker {
 
     /** Transfers ownership of fd and registers a provider as a virtual bus client. */
     public static native void nativeAddBridge(int fd, String[] names);
+    public static native void nativeClearBridges();
 }

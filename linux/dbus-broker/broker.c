@@ -1222,6 +1222,14 @@ gboolean broker_add_bridge(Broker *b, int fd, const char *const *names, GError *
     if(!c->bridge_source){g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_FAILED,"cannot create bridge fd source");client_bridge_closed(c);return FALSE;}
     return TRUE;
 }
+void broker_clear_bridges(Broker *b) {
+    if (!b) return;
+    for (guint i = b->clients->len; i > 0; i--) {
+        Client *c = g_ptr_array_index(b->clients, i - 1);
+        if (c->bridge) client_bridge_closed(c);
+    }
+}
+
 gboolean broker_run(Broker *b, GError **error) {
     struct stat st;
     if (lstat(b->socket_path, &st) == 0) {
