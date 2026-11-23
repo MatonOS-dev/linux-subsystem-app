@@ -5,10 +5,15 @@ SCRATCH=${MATON_MUSL_SCRATCH:?set MATON_MUSL_SCRATCH (see DEPENDENCIES.md in the
 WORK=${FLATPAK_MUSL_WORK:-$SCRATCH/flatpak-musl}
 PLAN_BUILD=${MATON_FLATPAK_PLAN_BUILD:-$WORK/build/flatpak}
 PLAN_OUT=${MATON_FLATPAK_PLAN_OUT:-$WORK/plan}
+BUILD_PREFIX=${MATON_FLATPAK_BUILD_PREFIX:-$(dirname -- "$PLAN_BUILD")/prefix}
 GPGME_LITE_SRC=${GPGME_LITE_SRC:-$SCRATCH/flatpak-musl/cache/src/DullPGP}
 case "$(realpath -m "$PLAN_BUILD")" in
   "$(realpath -m "$WORK")"/*) ;;
   *) echo "Flatpak plan build must be under FLATPAK_MUSL_WORK: $PLAN_BUILD" >&2; exit 2;;
+esac
+case "$(realpath -m "$BUILD_PREFIX")" in
+  "$(realpath -m "$WORK")"/*) ;;
+  *) echo "Flatpak plan dependency prefix must be under FLATPAK_MUSL_WORK: $BUILD_PREFIX" >&2; exit 2;;
 esac
 for path in "$GPGME_LITE_SRC"; do
   case "$(realpath -m "$path")" in
@@ -17,6 +22,7 @@ for path in "$GPGME_LITE_SRC"; do
   esac
 done
 work_inner_path() { printf '/scratch/work/%s' "${1#"$(realpath -m "$WORK")"/}"; }
+prefix_inner_path() { printf '/scratch/work/%s' "${1#"$(realpath -m "$WORK")"/}"; }
 mkdir -p "$WORK/plan-source" "$WORK/plan-out" "$PLAN_OUT"
 install -m644 "$ROOT/linux/subsystem/flatpak-plan/build.py" "$WORK/plan-source/build.py"
 install -m644 "$ROOT/linux/subsystem/flatpak-plan/inspect.c" "$WORK/plan-source/inspect.c"
@@ -25,12 +31,12 @@ install -m644 "$ROOT/linux/subsystem/flatpak-plan/inspect.c" "$WORK/plan-source/
 SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$SCRATCH/flatpak-musl/cache" \
   GPGME_LITE_SRC="$GPGME_LITE_SRC" \
   "$ROOT/linux/flatpak/build-support/alpine-enter.sh" \
-  env PKG_CONFIG_LIBDIR=/scratch/work/build/prefix/lib/pkgconfig:/scratch/work/build/prefix/share/pkgconfig \
+  env PKG_CONFIG_LIBDIR="$(prefix_inner_path "$BUILD_PREFIX")/lib/pkgconfig:$(prefix_inner_path "$BUILD_PREFIX")/share/pkgconfig" \
   ninja -C "$(work_inner_path "$PLAN_BUILD")" common/libflatpak.a
 SCRATCH="$SCRATCH" FLATPAK_MUSL_WORK="$WORK" FLATPAK_CACHE="$SCRATCH/flatpak-musl/cache" GPGME_LITE_SRC="$GPGME_LITE_SRC" \
   MATON_FLATPAK_PLAN_BUILD="$(work_inner_path "$PLAN_BUILD")" \
   "$ROOT/linux/flatpak/build-support/alpine-enter.sh" \
-  env PKG_CONFIG_LIBDIR=/scratch/work/build/prefix/lib/pkgconfig:/scratch/work/build/prefix/share/pkgconfig \
+  env PKG_CONFIG_LIBDIR="$(prefix_inner_path "$BUILD_PREFIX")/lib/pkgconfig:$(prefix_inner_path "$BUILD_PREFIX")/share/pkgconfig" \
   python3 /scratch/work/plan-source/build.py /scratch/work/plan-out
 install -m755 "$WORK/plan-out/libmatonos-flatpak-plan.so" "$PLAN_OUT/libmatonos-flatpak-plan.so"
 install -m755 "$WORK/plan-out/libmatonos-flatpak-plan.so.symbols" "$PLAN_OUT/libmatonos-flatpak-plan.so.symbols"
