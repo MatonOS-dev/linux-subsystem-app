@@ -1,6 +1,7 @@
 /* Read-only adapter using only Flatpak's public API. */
 #include <flatpak.h>
 #include <appstream.h>
+#include <ostree.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -154,8 +155,82 @@ failed:
     fprintf(stderr,"flatpak-source stage installation=%s remote=%s ref=%s: %s\n",
             argv[2],argv[3],argv[4],error?error->message:"Invalid transaction");return 1;
 }
+/* Stage a bundle through the stock transaction resolver. Bundle RuntimeRepo
+ * handling, origin creation, dependency selection and verification remain in
+ * libflatpak; the signature status is read from the imported OSTree commit. */
+static int stage_bundle(char **argv) {
+    g_autoptr(GError) error=NULL;
+    g_autoptr(GFile) path=g_file_new_for_path(argv[2]);
+    g_autoptr(GFile) bundle=g_file_new_for_path(argv[3]);
+    g_autoptr(GFile) repo_path=g_file_new_build_filename(argv[2],"repo",NULL);
+    g_autoptr(FlatpakInstallation) installation=flatpak_installation_new_for_path(path,FALSE,NULL,&error);
+    g_autoptr(OstreeRepo) repo=ostree_repo_new(repo_path);
+    g_autoptr(FlatpakTransaction) transaction=NULL;
+    gboolean allow_unsigned=!strcmp(argv[4],"true");
+    gboolean signed_bundle=FALSE,found_bundle=FALSE;
+    const char *bundle_ref=NULL;
+    if(strcmp(argv[4],"true")&&strcmp(argv[4],"false")) {
+        fprintf(stderr,"flatpak-source bundle installation=%s file=%s invalid allowUnsigned=%s\n",argv[2],argv[3],argv[4]);return 2;
+    }
+    if(!installation)goto failed;
+    if(!ostree_repo_open(repo,NULL,&error))goto failed;
+    transaction=flatpak_transaction_new_for_installation(installation,NULL,&error);
+    if(!transaction)goto failed;
+    flatpak_transaction_set_no_deploy(transaction,TRUE);
+    if(!flatpak_transaction_add_install_bundle(transaction,bundle,NULL,&error)||
+       !flatpak_transaction_run(transaction,NULL,&error))goto failed;
+    GList *operations=flatpak_transaction_get_operations(transaction);
+    for(GList *it=operations;it;it=it->next) {
+        FlatpakTransactionOperation *op=it->data;
+        if(flatpak_transaction_operation_get_operation_type(op)==FLATPAK_TRANSACTION_OPERATION_UNINSTALL) {
+            fprintf(stderr,"flatpak-source bundle: unexpected uninstall ref=%s\n",flatpak_transaction_operation_get_ref(op));
+            g_list_free_full(operations,g_object_unref);return 1;
+        }
+        const char *commit=flatpak_transaction_operation_get_commit(op);
+        const char *ref=flatpak_transaction_operation_get_ref(op);
+        const char *remote=flatpak_transaction_operation_get_remote(op);
+        if(!commit||!ref||!remote) {
+            fprintf(stderr,"flatpak-source bundle: incomplete transaction operation ref=%s origin=%s commit=%s\n",ref?ref:"<null>",remote?remote:"<null>",commit?commit:"<null>");
+            g_list_free_full(operations,g_object_unref);return 1;
+        }
+        if(flatpak_transaction_operation_get_operation_type(op)==FLATPAK_TRANSACTION_OPERATION_INSTALL_BUNDLE) {
+            g_autoptr(GVariant) detached=NULL;
+            if(!ostree_repo_read_commit_detached_metadata(repo,commit,&detached,NULL,&error)) {
+                fprintf(stderr,"flatpak-source bundle signature ref=%s commit=%s: %s\n",ref,commit,error?error->message:"cannot read detached commit metadata");
+                g_list_free_full(operations,g_object_unref);return 1;
+            }
+            g_autoptr(GVariant) signatures=detached?g_variant_lookup_value(detached,"ostree.gpgsigs",G_VARIANT_TYPE("aay")):NULL;
+            signed_bundle=signatures!=NULL;found_bundle=TRUE;bundle_ref=ref;
+        }
+    }
+    if(!found_bundle) {
+        fprintf(stderr,"flatpak-source bundle: transaction did not include its bundle operation file=%s\n",argv[3]);
+        g_list_free_full(operations,g_object_unref);return 1;
+    }
+    if(!signed_bundle&&!allow_unsigned) {
+        fprintf(stderr,"flatpak-source bundle: unsigned bundle refused without explicit allowUnsigned file=%s\n",argv[3]);
+        g_list_free_full(operations,g_object_unref);return 1;
+    }
+    printf("BUNDLE\t%s\t%s\n",signed_bundle?"SIGNED":"UNSIGNED",bundle_ref);
+    for(GList *it=operations;it;it=it->next) {
+        FlatpakTransactionOperation *op=it->data;
+        const char * const *subpaths=flatpak_transaction_operation_get_subpaths(op);
+        printf("%s\t%s\t%s\t",flatpak_transaction_operation_get_ref(op),flatpak_transaction_operation_get_remote(op),flatpak_transaction_operation_get_commit(op));
+        for(guint i=0;subpaths&&subpaths[i];i++) {
+            g_autofree char *encoded=g_uri_escape_string(subpaths[i],NULL,FALSE);
+            printf("%s%s",i?",":"",encoded);
+        }
+        putchar('\n');
+    }
+    g_list_free_full(operations,g_object_unref);
+    if(fflush(stdout)){perror("flatpak-source bundle stdout");return 1;}
+    return 0;
+failed:
+    fprintf(stderr,"flatpak-source bundle installation=%s file=%s allowUnsigned=%s: %s\n",argv[2],argv[3],argv[4],error?error->message:"Invalid bundle transaction");return 1;
+}
 int main(int argc,char **argv) {
     if(argc==5&&!strcmp(argv[1],"--stage"))return stage(argv);
+    if(argc==5&&!strcmp(argv[1],"--stage-bundle"))return stage_bundle(argv);
     if(argc==3&&!strcmp(argv[1],"--installed"))return installed_refs(argv[2],INSTALLED_ALL);
     if(argc==3&&!strcmp(argv[1],"--updates"))return installed_refs(argv[2],INSTALLED_UPDATES);
     if(argc==3&&!strcmp(argv[1],"--unused"))return installed_refs(argv[2],INSTALLED_UNUSED);

@@ -2,6 +2,7 @@ package org.matonos.linux.store;
 
 import android.content.Context;
 import android.content.pm.*;
+import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import java.io.*;
 import java.nio.file.Files;
@@ -17,16 +18,50 @@ import org.matonos.store.source.IInstallCallback;
 /** Flatpak resolves and downloads into a private installation. Android commits belong to the store. */
 public final class StorePackages {
     public static void install(Context context,StoreFlatpak catalogue,Map<String,Object> app,String operation,IInstallCallback callback,SourceOperations.Operation cancellation) throws Exception {
-        String ref=(String)app.get("ref"),remote=(String)app.get("origin");
+        install(context,catalogue,app,null,null,false,operation,callback,cancellation);
+    }
+    public static void installLocalFile(Context context,StoreFlatpak catalogue,ParcelFileDescriptor input,String displayName,boolean allowUnsigned,String operation,IInstallCallback callback,SourceOperations.Operation cancellation) throws Exception {
+        install(context,catalogue,null,input,displayName,allowUnsigned,operation,callback,cancellation);
+    }
+    private static void install(Context context,StoreFlatpak catalogue,Map<String,Object> app,ParcelFileDescriptor input,String displayName,boolean allowUnsigned,String operation,IInstallCallback callback,SourceOperations.Operation cancellation) throws Exception {
+        boolean bundle=input!=null;
+        String ref=bundle?null:(String)app.get("ref"),remote=bundle?null:(String)app.get("origin");
         File work=Files.createTempDirectory(WorkDirs.directory(context,"store-installs").toPath(),"operation-").toFile();
         try(AutoCloseable lease=WorkDirs.keep(work)) {
             cancellation.check();StoreFlatpak staging=new StoreFlatpak(context,work);staging.cancellation=cancellation;
             catalogue.copyRemotesTo(staging);
+            File bundleFile=null;
+            if(bundle) {
+                if(displayName==null||displayName.isBlank())throw new IllegalArgumentException("Local bundle display name is required");
+                bundleFile=new File(work,"local.flatpak");long total=0;byte[] buffer=new byte[65536];
+                try(InputStream source=new FileInputStream(input.getFileDescriptor());OutputStream destination=Files.newOutputStream(bundleFile.toPath())) {
+                    for(int count;(count=source.read(buffer))!=-1;) {
+                        cancellation.check();
+                        try { total=Math.addExact(total,(long)count); }
+                        catch(ArithmeticException overflow) { throw new IOException("Local bundle byte count overflow displayName="+displayName,overflow); }
+                        destination.write(buffer,0,count);
+                    }
+                } catch(Exception error) {Log.e("FlatpakSource","Copy local bundle displayName="+displayName+" bytes="+total+" op="+operation+" failed",error);throw error;}
+                if(total==0)throw new IOException("Local Flatpak bundle is empty displayName="+displayName);
+            }
             callback.progress(operation,"Flatpak download and verification",0,0,-1);
             // Flatpak selects dependencies, related extensions and subpaths, and verifies signatures.
             List<String> refs=new ArrayList<>();Map<String,String> origins=new LinkedHashMap<>();
             Map<String,JSONObject> manifests=new LinkedHashMap<>();Map<String,String> metadata=new LinkedHashMap<>();
-            for(String line:staging.helper("--stage",staging.installation.getAbsolutePath(),remote,ref).split("\n")) {
+            String staged=bundle?staging.helper("--stage-bundle",staging.installation.getAbsolutePath(),bundleFile.getAbsolutePath(),Boolean.toString(allowUnsigned)):
+                    staging.helper("--stage",staging.installation.getAbsolutePath(),remote,ref);
+            String[] stagedLines=staged.split("\n");
+            if(bundle) {
+                String[] result=stagedLines.length==0?new String[0]:stagedLines[0].split("\t",-1);
+                if(result.length!=3||!result[0].equals("BUNDLE")||!DeployManifest.validRef(result[2])||!result[1].equals("SIGNED")&&!result[1].equals("UNSIGNED"))
+                    throw new IOException("Invalid Flatpak bundle signature result displayName="+displayName+" firstRow="+(stagedLines.length==0?"<empty>":stagedLines[0]));
+                ref=result[2];boolean signed=result[1].equals("SIGNED");
+                if(!signed&&!allowUnsigned)throw new IOException("Unsigned Flatpak bundle refused without explicit allowUnsigned displayName="+displayName);
+                callback.progress(operation,"Local bundle signature: "+(signed?"signed":"unsigned"),0,0,-1);
+            }
+            int firstRow=bundle?1:0;
+            for(int row=firstRow;row<stagedLines.length;row++) {
+                String line=stagedLines[row];
                 if(line.isBlank())continue;String[] fields=line.split("\t",-1);
                 if(fields.length!=4||!DeployManifest.validRef(fields[0])||!fields[2].matches("[0-9a-f]{64}"))
                     throw new IOException("Invalid Flatpak staged transaction row: "+line);
@@ -70,7 +105,7 @@ public final class StorePackages {
             JSONArray rows=new JSONArray();
             for(String item:refs)rows.put(new JSONObject(manifests.get(item).toString()).put("ref",item)
                     .put("commit",manifests.get(item).getString("appCommit"))
-                    .put("origin",catalogue.origin(origins.get(item)))
+                    .put("origin",(bundle?staging:catalogue).origin(origins.get(item)))
                     .put("mount",item.equals(ref)?"/app":PackageMounts.mountPoint(item,metadata.get(item),metadata)));
             Map<String,CommitChain.Followup> extraData=new LinkedHashMap<>();
             Map<String,File> artifacts=new LinkedHashMap<>();List<CommitChain.Package> packages=new ArrayList<>();
@@ -123,7 +158,7 @@ public final class StorePackages {
                     File primaryObjects=null;
                     for(int j=0;j<members.size();j++) {
                         cancellation.check();String item=members.get(j);
-                        JSONObject manifest=new JSONObject(manifests.get(item).toString()).put("origin",catalogue.origin(origins.get(item)))
+                        JSONObject manifest=new JSONObject(manifests.get(item).toString()).put("origin",(bundle?staging:catalogue).origin(origins.get(item)))
                                 .put("mount",mount).put("dependencies",new JSONArray(dependencies.get(item))).put("deployments",rows);
                         // StoreExtraData expects the extra-data branch's objects at <artifacts>/objects.
                         File objects=new File(artifactsDir,item.equals(extraItem)?"objects":"objects-"+j);

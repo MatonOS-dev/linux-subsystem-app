@@ -99,6 +99,30 @@ Artifacts remain leased until terminal results and are removed afterwards.
 Successful dependencies remain installed if a later package fails; the source
 cannot roll them back because the store owns installation/uninstallation.
 
+## Local `.flatpak` bundles
+
+The source contract adds `installLocalFile(in ParcelFileDescriptor file,
+String displayName, boolean allowUnsigned, String operationId,
+IInstallCallback callback)`. The caller supplies an already-open local bundle
+descriptor; the source copies it with overflow-checked byte accounting into
+the operation's leased `WorkDirs` tree. The display name is diagnostic only.
+Cancellation, progress, commit ownership and terminal callbacks use the same
+operation lifecycle as a repository install. `.flatpakref` is not accepted by
+this entry point.
+
+The native plan helper adds the bundle to a stock `FlatpakTransaction` with
+`flatpak_transaction_add_install_bundle()` and runs the transaction with
+`no_deploy`. Flatpak itself selects the bundle app, runtime, RuntimeRepo
+origin, related refs and commits. Those operations feed the existing
+`flatpak.<app-id>` carrier and `<arch>.<branch>` split pipeline. A bundle
+without a detached commit signature is refused unless `allowUnsigned=true`;
+that argument is intended to be set only after the store's unverified-bundle
+warning. No APK commit is submitted before this check. The source reports the
+result to the store as a progress phase exactly `Local bundle signature:
+signed` or `Local bundle signature: unsigned`; `done`/`failed` retain their
+existing terminal meaning. Repository installs keep their existing
+verification path.
+
 ## Extra-data through the store
 
 Extra-data metadata selects a real stub base declaring ExtraDataInstallService;

@@ -217,6 +217,31 @@ public final class FlatpakSourceService extends Service {
             },"flatpak-source-install");
             op.worker=worker;worker.start();
         }
+        @Override public void installLocalFile(ParcelFileDescriptor file,String displayName,boolean allowUnsigned,String operation,IInstallCallback callback){
+            if(file==null)throw new IllegalArgumentException("Local bundle descriptor required");
+            if(callback==null){closeRejectedBundle(file,"Callback required");throw new IllegalArgumentException("Callback required");}
+            if(displayName==null||displayName.isBlank()){closeRejectedBundle(file,"Display name required");throw new IllegalArgumentException("Display name required");}
+            final int sourceFd=file.getFd();
+            SourceOperations.Operation op;
+            try{op=operations.start(operation);}catch(RuntimeException error){closeRejectedBundle(file,"Starting operation failed id="+operation);throw error;}
+            IInstallCallback terminal=new IInstallCallback.Stub(){
+                @Override public void progress(String key,String phase,int percent,long done,long total)throws RemoteException{if(!op.cancelled())callback.progress(key,phase,percent,done,total);}
+                @Override public void commit(String key,String pkg,String[] names,ParcelFileDescriptor[] files,String[] remove,ICommitResult result)throws RemoteException{op.check();callback.commit(key,pkg,names,files,remove,result);}
+                @Override public void done(String key)throws RemoteException{if(op.claimTerminal())try{if(op.cancelled())callback.failed(key,"cancelled");else callback.done(key);}finally{op.finish();}}
+                @Override public void failed(String key,String error)throws RemoteException{if(op.claimTerminal())try{callback.failed(key,op.cancelled()?"cancelled":error);}finally{op.finish();}}
+            };
+            active.add(operation);
+            Thread worker=new Thread(()->{
+                boolean began=false;
+                try {
+                    beginInstall();began=true;op.check();
+                    ensure();op.check();synchronized(mutationLock){StorePackages.installLocalFile(FlatpakSourceService.this,flatpak,file,displayName,allowUnsigned,operation,terminal,op);}
+                }catch(Exception error){Log.e(TAG,"installLocalFile displayName="+displayName+" allowUnsigned="+allowUnsigned+" op="+operation+" failed",error);try{terminal.failed(operation,error.toString());}catch(RemoteException delivery){Log.e(TAG,"failed local-file callback op="+operation,delivery);}}
+                finally{try{file.close();}catch(IOException error){Log.e(TAG,"close local bundle fd="+sourceFd+" at FlatpakSourceService.installLocalFile op="+operation+" failed",error);}invalidateUpdates();invalidateRepositoryMetadata();op.finish();if(began)endInstall(operation);else active.remove(operation);}
+            },"flatpak-source-local-install");
+            op.worker=worker;worker.start();
+        }
+        private void closeRejectedBundle(ParcelFileDescriptor file,String reason){int fd=file.getFd();try{file.close();}catch(IOException error){Log.e(TAG,"close rejected local bundle fd="+fd+" reason="+reason+" failed",error);}}
 
     };
     @Override public IBinder onBind(Intent intent){return binder;}
