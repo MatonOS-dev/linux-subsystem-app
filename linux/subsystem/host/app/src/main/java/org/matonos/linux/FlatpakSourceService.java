@@ -121,7 +121,7 @@ public final class FlatpakSourceService extends Service {
         return null;
     }
     private final ISoftwareSource.Stub binder=new ISoftwareSource.Stub() {
-        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_PERMISSIONS;return info;}
+        @Override public SourceInfo info(){SourceInfo info=new SourceInfo();info.version=ISoftwareSource.VERSION;info.revision=ISoftwareSource.REVISION;info.name="flatpak";info.label="Flatpak";info.description="Desktop applications from configured software repositories.";info.capabilities=CAP_AGE_RATINGS|CAP_PERMISSIONS|CAP_LOCAL_FILES;return info;}
         @Override public synchronized ParcelFileDescriptor catalogue(){return call("catalogue",()->{
             File file=new File(getFilesDir(),"store-catalogue.json");long generation=catalogueGeneration.get(),now=System.currentTimeMillis();boolean refreshExpired=file.isFile()&&now-catalogueFileCheckedAt>=6L*60*60*1000;if(file.isFile()&&catalogueFileVersion==generation&&!refreshExpired)return ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY);
             // Package changes only change installed/update state; AppStream is fetched on the refresh interval.
