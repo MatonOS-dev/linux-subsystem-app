@@ -26,10 +26,11 @@ fi
 [[ $(cat "$BUILD/src/REVISION") == "$REV" ]] || { echo 'PipeWire revision mismatch' >&2; exit 1; }
 # libc/header gaps shared with the other NDK recipes. The repository override
 # also permits consuming a reviewed local commit before it is published.
-BIONIC_FILL_REV=87643d36a708287bb745cfe6482a65c475352db3
+BIONIC_FILL_REV=50e5459fdfbf9722193e74ab40d074645ef90be0
 BIONIC_FILL_REPO=${MATON_BIONIC_FILL_REPO:-https://github.com/MatonOS-dev/bionic-fill.git}
 BIONIC_FILL=$BUILD/bionic-fill
-if [[ ! -f $BIONIC_FILL/REVISION ]]; then
+if [[ $(cat "$BIONIC_FILL/REVISION" 2>/dev/null) != "$BIONIC_FILL_REV" ]]; then
+    rm -rf "$BIONIC_FILL"
     mkdir -p "$BIONIC_FILL"
     git init "$BUILD/bionic-fill-git"
     git -C "$BUILD/bionic-fill-git" fetch --depth=1 "$BIONIC_FILL_REPO" "$BIONIC_FILL_REV"
