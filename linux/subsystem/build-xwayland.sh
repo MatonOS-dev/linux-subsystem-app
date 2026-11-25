@@ -141,9 +141,14 @@ configure_meson() { # name src args...
   local name=$1 src=$2; shift 2
   local dir=$BUILD/xwayland-stack/$name
   [[ -d $src ]] || tar -xf "$DOWN/$(basename "$src").tar.xz" -C "$SRC"
+  # Meson reads cross-file flags only at first setup: a changed cross file
+  # means a fresh build dir, otherwise reconfigure keeps stale c_args.
+  local cross=$BUILD/android-x86_64-x.ini
+  cmp -s "$cross" "$dir/.cross.ini" 2>/dev/null || rm -rf "$dir"
   local reconfigure=(); [[ -f $dir/build.ninja ]] && reconfigure=(--reconfigure)
   meson setup "${reconfigure[@]}" "$dir" "$src" --cross-file "$BUILD/android-x86_64-x.ini" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release "$@"
+  cp "$cross" "$dir/.cross.ini"
   meson compile -C "$dir" -j"$JOBS"
   meson install -C "$dir" >/dev/null
   echo "== $name installed"

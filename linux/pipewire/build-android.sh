@@ -51,18 +51,19 @@ system = 'android'
 cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
-[built-in options]
-c_args = ['-O2', '-march=x86-64-v2', '-I$BIONIC_FILL', '-include', '$BIONIC_FILL/bionic-fill.h', '-I$ROOT/compat', '-include', '$ROOT/compat/android.h']
 [properties]
 needs_exe_wrapper = true
 CROSS
 export PKG_CONFIG_LIBDIR="$BUILD/no-host-packages" PKG_CONFIG_PATH=
+# c_args on the command line: meson reads cross-file built-in options only at
+# first setup, so a reconfigure of an existing build dir would keep stale flags.
 opts=(--cross-file "$BUILD/android.ini" --prefix /pipewire --libdir lib --buildtype release
+    "-Dc_args=-O2 -march=x86-64-v2 -I$BIONIC_FILL -include $BIONIC_FILL/bionic-fill.h -I$ROOT/compat -include $ROOT/compat/android.h"
     -Dauto_features=disabled -Ddbus=disabled -Dflatpak=disabled -Dspa-plugins=enabled -Dsupport=enabled -Daudioconvert=enabled -Daudiomixer=enabled
     -Dpipewire-jack=disabled -Dpipewire-alsa=disabled -Dpipewire-v4l2=disabled
     -Dsession-managers=[] -Dtests=disabled -Dexamples=disabled)
 if [[ -f $BUILD/build/build.ninja ]]; then
-    meson setup --reconfigure "$BUILD/build" "$BUILD/src" "${opts[@]}"
+    meson setup --reconfigure --clearcache "$BUILD/build" "$BUILD/src" "${opts[@]}"
 else
     meson setup "$BUILD/build" "$BUILD/src" "${opts[@]}"
 fi
