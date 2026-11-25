@@ -206,3 +206,16 @@ nested cross-ABI exec and identifies per-PID operation counts/time. See the comp
 proxy README for record fields. The existing untraced day-r67 logs do not contain
 these counters: pressure-vessel's setup bottleneck has not yet been measured or
 fixed. Do not infer operation costs from log volume or host timings.
+
+### Xwayland libc headers
+
+`build-xwayland.sh` now fetches pinned bionic-fill for the `<values.h>`
+`MAXINT` used by libxshmfence's futex helper, replacing the generated prefix
+header. The empty `libpthread.a` stays because bionic provides pthreads in libc.
+Autotools and Meson receive the bionic-fill include path; the umbrella header
+is not force-included because this stack does not consistently enable GNU
+feature declarations. Autotools configurations are refreshed when the fill pin
+changes. The pin is recorded in `xwayland-SOURCE` under the build directory.
+`MATON_BIONIC_FILL_REPO` can select a local Git repository before publication.
+Focused API 35 NDK compilation of both libxshmfence translation units passed
+with `-Werror`; full stack and runtime verification remain with the coordinator.

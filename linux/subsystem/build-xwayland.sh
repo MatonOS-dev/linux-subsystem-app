@@ -46,15 +46,29 @@ mkdir -p "$PREFIX/lib"
 printf 'void maton_empty_pthread_archive(void) {}\n' > "$BUILD/empty-pthread.c"
 "$CC" -fPIC -c "$BUILD/empty-pthread.c" -o "$BUILD/empty-pthread.o"
 "$AR" rcs "$PREFIX/lib/libpthread.a" "$BUILD/empty-pthread.o"
-# <values.h> is a BSD/glibc header bionic lacks; upstream's futex helper only
-# uses it for limits. A shim in our prefix satisfies it.
-mkdir -p "$PREFIX/include"
-cat > "$PREFIX/include/values.h" <<'EOF'
-#include <limits.h>
-#ifndef MAXINT
-#define MAXINT INT_MAX
-#endif
-EOF
+# libc/header gaps shared with the other NDK recipes. The repository override
+# also permits consuming a reviewed local commit before it is published.
+BIONIC_FILL_REV=87643d36a708287bb745cfe6482a65c475352db3
+BIONIC_FILL_REPO=${MATON_BIONIC_FILL_REPO:-https://github.com/MatonOS-dev/bionic-fill.git}
+BIONIC_FILL=$SRC/bionic-fill
+if [[ ! -f $BIONIC_FILL/REVISION ]]; then
+    mkdir -p "$BIONIC_FILL"
+    git init "$SOURCES/bionic-fill-git"
+    git -C "$SOURCES/bionic-fill-git" fetch --depth=1 "$BIONIC_FILL_REPO" "$BIONIC_FILL_REV"
+    git -C "$SOURCES/bionic-fill-git" archive "$BIONIC_FILL_REV" | tar -x -C "$BIONIC_FILL"
+    printf '%s\n' "$BIONIC_FILL_REV" > "$BIONIC_FILL/REVISION"
+fi
+[[ $(cat "$BIONIC_FILL/REVISION") == "$BIONIC_FILL_REV" ]] || {
+    echo 'bionic-fill revision mismatch; remove the cached bionic-fill source directory' >&2
+    exit 1
+}
+# Remove the old generated limits shim on incremental builds.
+rm -f "$PREFIX/include/values.h"
+# Both autotools and Meson consume the shared header directory. Do not
+# force-include bionic-fill.h: these POSIX builds do not enable _GNU_SOURCE.
+export CFLAGS="${CFLAGS:-} -I$BIONIC_FILL"
+export CXXFLAGS="${CXXFLAGS:-} -I$BIONIC_FILL"
+printf 'bionic-fill %s\n' "$BIONIC_FILL_REV" > "$BUILD/xwayland-SOURCE"
 
 # Pinned archives; sizes and hashes are recorded in UPSTREAMS.
 for entry in \
@@ -112,8 +126,10 @@ configure_build() { # name configure-args...
   [[ -d $src ]] || { tar -xf "$DOWN/$name.tar.xz" -C "$SRC" 2>/dev/null ||
     tar -xzf "$DOWN/$name.tar.gz" -C "$SRC"; }
   local dir; dir=$(autotools_dir "$name")
-  if [[ ! -f $dir/config.status ]]; then
+  if [[ ! -f $dir/config.status || ! -f $dir/.bionic-fill-revision ||
+        $(cat "$dir/.bionic-fill-revision") != "$BIONIC_FILL_REV" ]]; then
     (cd "$dir" && "$src/configure" --host=x86_64-linux-android --prefix="$PREFIX" "$@") || die "configure failed: $name"
+    printf '%s\n' "$BIONIC_FILL_REV" > "$dir/.bionic-fill-revision"
   fi
   make -C "$dir" -j"$JOBS" || die "make failed: $name"
   make -C "$dir" install || die "install failed: $name"
@@ -149,8 +165,8 @@ endian = 'little'
 
 [properties]
 needs_exe_wrapper = true
-c_args = ['-march=x86-64-v2']
-cpp_args = ['-march=x86-64-v2']
+c_args = ['-march=x86-64-v2', '-I$BIONIC_FILL']
+cpp_args = ['-march=x86-64-v2', '-I$BIONIC_FILL']
 c_link_args = ['-L$PREFIX/lib']
 EOF
 
@@ -245,9 +261,11 @@ crypto_build() {
   local name=$1 dirs=$2; shift 2
   local src=$SRC/$name
   local dir; dir=$(autotools_dir "$name")
-  if [[ ! -f $dir/config.status ]]; then
+  if [[ ! -f $dir/config.status || ! -f $dir/.bionic-fill-revision ||
+        $(cat "$dir/.bionic-fill-revision") != "$BIONIC_FILL_REV" ]]; then
     (cd "$dir" && "$src/configure" --host=x86_64-linux-android --prefix="$PREFIX" \
       --libdir="$PREFIX/lib" --enable-shared --disable-static --disable-doc "$@")
+    printf '%s\n' "$BIONIC_FILL_REV" > "$dir/.bionic-fill-revision"
   fi
   make -C "$dir" -j"$JOBS" SUBDIRS="$dirs" extra_ltoptions=-avoid-version
   make -C "$dir" install SUBDIRS="$dirs" extra_ltoptions=-avoid-version

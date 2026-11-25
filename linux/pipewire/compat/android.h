@@ -1,6 +1,7 @@
-/* Build-time compatibility for unmodified upstream PipeWire on bionic.
+/* MatonOS behavior adapters for unmodified upstream PipeWire.
+ * libc/header gaps come from the separately force-included bionic-fill.
  * loop.cancel stays false: normal shutdown invokes the loop's stop callback.
- * Optional pthread affinity tuning is unavailable through the NDK. */
+ */
 #pragma once
 #include <errno.h>
 #include <pthread.h>
@@ -29,9 +30,4 @@ static inline int maton_pw_cancel(pthread_t thread) {
     (void)thread;
     return ENOTSUP;
 }
-static inline int maton_pw_affinity(pthread_t thread, size_t size, const void *set) {
-    (void)thread; (void)size; (void)set;
-    return ENOTSUP;
-}
 #define pthread_cancel maton_pw_cancel
-#define pthread_setaffinity_np maton_pw_affinity

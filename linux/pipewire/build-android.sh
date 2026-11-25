@@ -24,6 +24,22 @@ if [[ ! -f $BUILD/src/meson.build ]]; then
     printf '%s\n' "$REV" > "$BUILD/src/REVISION"
 fi
 [[ $(cat "$BUILD/src/REVISION") == "$REV" ]] || { echo 'PipeWire revision mismatch' >&2; exit 1; }
+# libc/header gaps shared with the other NDK recipes. The repository override
+# also permits consuming a reviewed local commit before it is published.
+BIONIC_FILL_REV=87643d36a708287bb745cfe6482a65c475352db3
+BIONIC_FILL_REPO=${MATON_BIONIC_FILL_REPO:-https://github.com/MatonOS-dev/bionic-fill.git}
+BIONIC_FILL=$BUILD/bionic-fill
+if [[ ! -f $BIONIC_FILL/REVISION ]]; then
+    mkdir -p "$BIONIC_FILL"
+    git init "$BUILD/bionic-fill-git"
+    git -C "$BUILD/bionic-fill-git" fetch --depth=1 "$BIONIC_FILL_REPO" "$BIONIC_FILL_REV"
+    git -C "$BUILD/bionic-fill-git" archive "$BIONIC_FILL_REV" | tar -x -C "$BIONIC_FILL"
+    printf '%s\n' "$BIONIC_FILL_REV" > "$BIONIC_FILL/REVISION"
+fi
+[[ $(cat "$BIONIC_FILL/REVISION") == "$BIONIC_FILL_REV" ]] || {
+    echo 'bionic-fill revision mismatch; remove the cached bionic-fill source directory' >&2
+    exit 1
+}
 cat > "$BUILD/android.ini" <<CROSS
 [binaries]
 c = '$TOOLCHAIN/bin/x86_64-linux-android35-clang'
@@ -36,7 +52,7 @@ cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
 [built-in options]
-c_args = ['-O2', '-march=x86-64-v2', '-I$ROOT/compat', '-include', '$ROOT/compat/android.h']
+c_args = ['-O2', '-march=x86-64-v2', '-I$BIONIC_FILL', '-include', '$BIONIC_FILL/bionic-fill.h', '-I$ROOT/compat', '-include', '$ROOT/compat/android.h']
 [properties]
 needs_exe_wrapper = true
 CROSS
@@ -64,6 +80,6 @@ done
 for plugin in support/libspa-support audioconvert/libspa-audioconvert audiomixer/libspa-audiomixer; do
     cp -L "$LIBS/spa-0.2/$plugin.so" "$BUILD/jniLibs/x86_64/"
 done
-printf 'PipeWire 1.6.9\ncommit %s\nunmodified upstream; NDK compatibility header linux/pipewire/compat/android.h\n' "$REV" > "$BUILD/SOURCE"
+printf 'PipeWire 1.6.9\ncommit %s\nbionic-fill %s\nunmodified upstream; APK stat and cancellation behavior header linux/pipewire/compat/android.h\n' "$REV" "$BIONIC_FILL_REV" > "$BUILD/SOURCE"
 cp "$BUILD/src/COPYING" "$BUILD/COPYING"
 echo "Embedded PipeWire libraries staged in $BUILD/jniLibs/x86_64"
